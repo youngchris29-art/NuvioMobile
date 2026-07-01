@@ -4,6 +4,8 @@
 **/build/
 !composeApp/src/**/kotlin/com/nuvio/app/core/build/
 !composeApp/src/**/kotlin/com/nuvio/app/core/build/**
+!shared/src/**/kotlin/com/nuvio/app/core/build/
+!shared/src/**/kotlin/com/nuvio/app/core/build/**
 xcuserdata
 !src/**/build/
 local.properties
