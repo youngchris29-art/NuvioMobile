@@ -6,9 +6,17 @@
 //
 
 import SwiftUI
+import SharedCore
 
 @main
 struct NuvioTVApp: App {
+    init() {
+        // Wire the shared provider seams for tvOS. The phone app does this in composeApp's App()
+        // (which tvOS never runs), so without this the profile seams fall back to defaults and
+        // nothing is profile-scoped. Runs once, before any repository is accessed.
+        TvOsProviderInstallerKt.installTvOsSharedProviders()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
