@@ -312,7 +312,8 @@ final class MPVTVPlayerViewController: UIViewController {
             imdbId: context.parentMetaId,
             season: Int32(season),
             episode: Int32(episode),
-            requireSkipIntroEnabled: false
+            // Respect the Settings > Playback "Skip Intro" toggle (skipIntroEnabled).
+            requireSkipIntroEnabled: true
         ) { [weak self] intervals, _ in
             guard let intervals else { return }
             let segments = intervals.map { SkipSegment(start: $0.startTime, end: $0.endTime, type: $0.type) }
