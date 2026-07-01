@@ -12,7 +12,7 @@ struct DetailView: View {
 
     init(preview: MetaPreview) {
         self.preview = preview
-        _model = StateObject(wrappedValue: DetailViewModel(type: preview.type, id: preview.id))
+        _model = StateObject(wrappedValue: DetailViewModel(preview: preview))
     }
 
     var body: some View {
@@ -22,18 +22,7 @@ struct DetailView: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     header
                     metaLine
-                    if !isSeries {
-                        Button {
-                            showStreams = true
-                        } label: {
-                            Label("Play", systemImage: "play.fill")
-                                .font(Theme.Font.meta)
-                                .padding(.horizontal, Theme.Spacing.lg)
-                                .padding(.vertical, Theme.Spacing.xxs + 2)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.Palette.accent)
-                    }
+                    actionRow
                     if !genres.isEmpty {
                         Text(genres.joined(separator: " \u{2022} "))
                             .font(Theme.Font.caption)
@@ -138,6 +127,51 @@ struct DetailView: View {
         }
         .font(Theme.Font.meta)
         .foregroundStyle(Theme.Palette.textSecondary)
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            if !isSeries {
+                Button {
+                    showStreams = true
+                } label: {
+                    Label("Play", systemImage: "play.fill")
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.lg)
+                        .padding(.vertical, Theme.Spacing.xxs + 2)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.Palette.accent)
+            }
+
+            Button {
+                model.toggleWatched()
+            } label: {
+                Label(
+                    model.isWatched ? "Watched" : "Mark Watched",
+                    systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                )
+                .font(Theme.Font.meta)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
+            .buttonStyle(.bordered)
+            .tint(model.isWatched ? Theme.Palette.accent : nil)
+
+            Button {
+                model.toggleLibrary()
+            } label: {
+                Label(
+                    model.isSaved ? "In Library" : "Add to Library",
+                    systemImage: model.isSaved ? "checkmark" : "plus"
+                )
+                .font(Theme.Font.meta)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
+            .buttonStyle(.bordered)
+            .tint(model.isSaved ? Theme.Palette.accent : nil)
+        }
     }
 
     @ViewBuilder

@@ -2,28 +2,37 @@ import Combine
 import Foundation
 import SharedCore
 
-/// Loads and observes the full metadata for a single title via the shared `MetaDetailsRepository`.
+/// Loads and observes the full metadata for a single title via the shared `MetaDetailsRepository`,
+/// and tracks its Watched / Library state via the shared `WatchedRepository` / `LibraryRepository`.
 ///
 /// `MetaDetailsRepository.load(type:id:)` kicks off the fetch (cache-first, then addon/TMDB enrich);
 /// `uiState` (a `StateFlow<MetaDetailsUiState>`) emits `{isLoading, meta, errorMessage}` as it resolves.
+/// The watched/library flags are recomputed from their repositories on every emission so the Detail
+/// action buttons stay in sync after a toggle (persisted per-profile via the Phase 0 seams).
 @MainActor
 final class DetailViewModel: ObservableObject {
     @Published private(set) var meta: MetaDetails?
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var isWatched: Bool = false
+    @Published private(set) var isSaved: Bool = false
 
-    private var watcher: FlowWatcher?
-    private let type: String
-    private let id: String
+    private var detailWatcher: FlowWatcher?
+    private var watchedWatcher: FlowWatcher?
+    private var libraryWatcher: FlowWatcher?
 
-    init(type: String, id: String) {
-        self.type = type
-        self.id = id
+    private let preview: MetaPreview
+    private var type: String { preview.type }
+    private var id: String { preview.id }
+
+    init(preview: MetaPreview) {
+        self.preview = preview
     }
 
     func start() {
-        guard watcher == nil else { return }
-        watcher = FlowWatcherKt.watch(MetaDetailsRepository.shared.uiState) { [weak self] emitted in
+        guard detailWatcher == nil else { return }
+
+        detailWatcher = FlowWatcherKt.watch(MetaDetailsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MetaDetailsUiState else { return }
             // The shared repo holds one in-flight detail at a time — only adopt emissions for ours.
             if let m = state.meta, m.type != self.type || m.id != self.id { return }
@@ -31,16 +40,56 @@ final class DetailViewModel: ObservableObject {
             self.meta = state.meta
             self.errorMessage = state.errorMessage
         }
+
+        // Live Watched / Library state for the action buttons.
+        WatchedRepository.shared.ensureLoaded()
+        LibraryRepository.shared.ensureLoaded()
+        watchedWatcher = FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] _ in
+            guard let self else { return }
+            self.refreshFlags()
+        }
+        libraryWatcher = FlowWatcherKt.watch(LibraryRepository.shared.uiState) { [weak self] _ in
+            guard let self else { return }
+            self.refreshFlags()
+        }
+        refreshFlags()
+
         MetaDetailsRepository.shared.load(type: type, id: id)
     }
 
     func stop() {
-        watcher?.cancel()
-        watcher = nil
+        detailWatcher?.cancel(); detailWatcher = nil
+        watchedWatcher?.cancel(); watchedWatcher = nil
+        libraryWatcher?.cancel(); libraryWatcher = nil
         MetaDetailsRepository.shared.clear()
     }
 
+    // MARK: - Actions
+
+    /// Toggle the title-level watched marker. Uses the shared `MetaPreview.toWatchedItem` builder
+    /// (a Kotlin extension → Swift instance method; matches mobile's Detail screen). The repo stamps
+    /// `markedAtEpochMs` itself, so we pass 0.
+    func toggleWatched() {
+        WatchedRepository.shared.toggleWatched(item: preview.toWatchedItem(markedAtEpochMs: 0))
+    }
+
+    /// Toggle library membership. Prefers the enriched `meta`, falling back to the preview card.
+    /// `toLibraryItem` is a Kotlin extension → Swift instance method; the repo stamps
+    /// `savedAtEpochMs` itself, so we pass 0.
+    func toggleLibrary() {
+        let item: LibraryItem = meta.map { $0.toLibraryItem(savedAtEpochMs: 0) }
+            ?? preview.toLibraryItem(savedAtEpochMs: 0)
+        LibraryRepository.shared.toggleSaved(item: item)
+    }
+
+    private func refreshFlags() {
+        isWatched = WatchedRepository.shared.isWatched(id: id, type: type, season: nil, episode: nil)
+        isSaved = LibraryRepository.shared.isSaved(id: id, type: type)
+    }
+
     deinit {
-        watcher?.cancel()
+        detailWatcher?.cancel()
+        watchedWatcher?.cancel()
+        libraryWatcher?.cancel()
     }
 }

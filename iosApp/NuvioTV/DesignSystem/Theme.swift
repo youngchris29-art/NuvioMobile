@@ -91,4 +91,34 @@ extension Color {
         let b = Double(hex & 0xFF) / 255.0
         self.init(.sRGB, red: r, green: g, blue: b, opacity: alpha)
     }
+
+    /// Parse a `#RGB` / `#RRGGBB` / `#RRGGBBAA` (or unprefixed) hex string, e.g. from a shared
+    /// `StreamBadge` color field. Returns nil for empty or malformed input so callers can fall back.
+    init?(hexString: String) {
+        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 3 || s.count == 6 || s.count == 8,
+              let value = UInt64(s, radix: 16) else { return nil }
+
+        let r, g, b, a: Double
+        switch s.count {
+        case 3:
+            r = Double((value >> 8) & 0xF) / 15.0
+            g = Double((value >> 4) & 0xF) / 15.0
+            b = Double(value & 0xF) / 15.0
+            a = 1.0
+        case 6:
+            r = Double((value >> 16) & 0xFF) / 255.0
+            g = Double((value >> 8) & 0xFF) / 255.0
+            b = Double(value & 0xFF) / 255.0
+            a = 1.0
+        default: // 8: RRGGBBAA
+            r = Double((value >> 24) & 0xFF) / 255.0
+            g = Double((value >> 16) & 0xFF) / 255.0
+            b = Double((value >> 8) & 0xFF) / 255.0
+            a = Double(value & 0xFF) / 255.0
+        }
+        self.init(.sRGB, red: r, green: g, blue: b, opacity: a)
+    }
 }

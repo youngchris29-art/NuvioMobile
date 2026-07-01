@@ -122,16 +122,24 @@ struct StreamPickerView: View {
         let urlString: String? = stream.playableDirectUrl
         let title: String = stream.streamLabel
         let desc: String? = stream.description_
+        let badges: [StreamBadge] = stream.badges
         return Button {
             if let urlString, let url = URL(string: urlString) {
                 selected = context(url: url, stream: stream)
             }
         } label: {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Text(title)
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textPrimary)
                     .lineLimit(2)
+                if !badges.isEmpty {
+                    HStack(spacing: Theme.Spacing.xs) {
+                        ForEach(Array(badges.prefix(6).enumerated()), id: \.offset) { _, badge in
+                            StreamBadgeChip(badge: badge)
+                        }
+                    }
+                }
                 if let desc, !desc.isEmpty {
                     Text(desc)
                         .font(Theme.Font.caption)
@@ -143,6 +151,28 @@ struct StreamPickerView: View {
             .padding(.vertical, Theme.Spacing.xs + 2)
         }
         .buttonStyle(.bordered)
+    }
+}
+
+/// A single quality/source chip derived from a shared `StreamBadge` (resolution, HDR, cached, etc.).
+/// Uses the badge's own hex colors when present, falling back to design-system defaults.
+private struct StreamBadgeChip: View {
+    let badge: StreamBadge
+
+    var body: some View {
+        let background = Color(hexString: badge.tagColor) ?? Theme.Palette.surfaceElevated
+        let foreground = Color(hexString: badge.textColor) ?? Theme.Palette.textPrimary
+        let border = Color(hexString: badge.borderColor)
+
+        Text(badge.name)
+            .font(Theme.Font.caption)
+            .foregroundStyle(foreground)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .padding(.vertical, Theme.Spacing.xxs)
+            .background(background, in: Capsule())
+            .overlay(
+                Capsule().stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1)
+            )
     }
 }
 
