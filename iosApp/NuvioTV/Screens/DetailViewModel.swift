@@ -86,8 +86,10 @@ final class DetailViewModel: ObservableObject {
         HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { [weak self] source, _ in
             DispatchQueue.main.async {
                 guard let self, let source else { return }
-                let video: String = source.videoUrl
-                if !video.isEmpty { self.trailerVideoURL = video }
+                // Use the AVPlayer-friendly progressive/HLS URL (tvOS plays trailers via AVPlayer,
+                // not libmpv). Falls back to nil → static backdrop when only adaptive VP9/AV1 exists.
+                let progressive: String? = source.progressiveUrl
+                if let progressive, !progressive.isEmpty { self.trailerVideoURL = progressive }
             }
         }
     }

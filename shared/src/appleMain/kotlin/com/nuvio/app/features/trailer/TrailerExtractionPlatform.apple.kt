@@ -90,9 +90,15 @@ internal actual object TrailerExtractionPlatform {
         val videoUrl = resolveReachableUrl(bestVideo?.url ?: combinedUrl ?: return@withContext null)
         val audioUrl = bestAudio?.url?.let { resolveReachableUrl(it) }
 
+        // AVPlayer-friendly muxed progressive (H.264/AAC MP4), falling back to the HLS manifest —
+        // both play natively via AVPlayer. Used by tvOS instead of the adaptive video URL.
+        val progressiveUrl = bestProgressive?.url?.let { resolveReachableUrl(it) }
+            ?: bestManifest?.manifestUrl
+
         TrailerPlaybackSource(
             videoUrl = videoUrl,
             audioUrl = audioUrl,
+            progressiveUrl = progressiveUrl,
         )
     }
 

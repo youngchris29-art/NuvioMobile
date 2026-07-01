@@ -21,7 +21,7 @@ struct DetailView: View {
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             if let trailer = model.trailerVideoURL, !showStreams {
-                TrailerHeroPlayer(videoURL: trailer, onFailure: { model.trailerFailed() })
+                TrailerHeroPlayer(urlString: trailer, onFailure: { model.trailerFailed() })
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
