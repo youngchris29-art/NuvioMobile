@@ -38,12 +38,14 @@ internal actual object DownloadsLiveStatusPlatform {
                     status = item.status.name,
                     downloadedBytes = item.downloadedBytes,
                     totalBytes = item.totalBytes,
-                    progressPercent = if (item.totalBytes != null && item.totalBytes > 0L) {
-                        ((item.downloadedBytes.toDouble() / item.totalBytes.toDouble()) * 100.0)
-                            .toInt()
-                            .coerceIn(0, 100)
-                    } else {
-                        -1
+                    progressPercent = item.totalBytes.let { total ->
+                        if (total != null && total > 0L) {
+                            ((item.downloadedBytes.toDouble() / total.toDouble()) * 100.0)
+                                .toInt()
+                                .coerceIn(0, 100)
+                        } else {
+                            -1
+                        }
                     },
                 ),
             )

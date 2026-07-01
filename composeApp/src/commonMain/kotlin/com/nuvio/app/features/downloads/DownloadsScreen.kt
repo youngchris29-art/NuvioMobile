@@ -392,7 +392,8 @@ private fun DownloadRow(
             }
 
             if (item.status == DownloadStatus.Downloading) {
-                if (item.totalBytes != null && item.totalBytes > 0L) {
+                val totalBytes = item.totalBytes
+                if (totalBytes != null && totalBytes > 0L) {
                     LinearProgressIndicator(
                         progress = item.progressFraction,
                         modifier = Modifier.fillMaxWidth(),
@@ -450,8 +451,9 @@ private fun SectionTitle(title: String) {
 
 @Composable
 private fun statusText(item: DownloadItem): String {
-    val size = if (item.totalBytes != null && item.totalBytes > 0L) {
-        "${formatBytes(item.downloadedBytes)} / ${formatBytes(item.totalBytes)}"
+    val totalBytes = item.totalBytes
+    val size = if (totalBytes != null && totalBytes > 0L) {
+        "${formatBytes(item.downloadedBytes)} / ${formatBytes(totalBytes)}"
     } else {
         formatBytes(item.downloadedBytes)
     }

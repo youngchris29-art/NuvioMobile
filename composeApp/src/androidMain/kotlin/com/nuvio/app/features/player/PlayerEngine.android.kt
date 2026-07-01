@@ -1154,10 +1154,10 @@ private class NuvioLibmpvView(
 
             override fun applySubtitleStyle(style: SubtitleStyleState) {
                 mpv.setPropertyString("sub-ass-override", "no")
-                mpv.setPropertyString("sub-color", style.textColor.toMpvColor())
-                mpv.setPropertyString("sub-back-color", style.backgroundColor.toMpvColor())
-                mpv.setPropertyString("sub-outline-color", style.outlineColor.toMpvColor())
-                mpv.setPropertyString("sub-border-color", style.outlineColor.toMpvColor())
+                mpv.setPropertyString("sub-color", style.textColor.toComposeColor().toMpvColor())
+                mpv.setPropertyString("sub-back-color", style.backgroundColor.toComposeColor().toMpvColor())
+                mpv.setPropertyString("sub-outline-color", style.outlineColor.toComposeColor().toMpvColor())
+                mpv.setPropertyString("sub-border-color", style.outlineColor.toComposeColor().toMpvColor())
                 mpv.setPropertyString("sub-border-style", style.toMpvSubtitleBorderStyle())
                 mpv.setPropertyString("sub-bold", if (style.bold) "yes" else "no")
                 mpv.setPropertyInt("sub-font-size", style.toMpvSubtitleFontSize())
@@ -1459,11 +1459,11 @@ private fun PlayerView.applySubtitleStyle(style: SubtitleStyleState) {
         setBottomPaddingFraction(bottomPaddingFraction)
         setStyle(
             CaptionStyleCompat(
-                style.textColor.toArgb(),
-                style.backgroundColor.toArgb(),
+                style.textColor.toComposeColor().toArgb(),
+                style.backgroundColor.toComposeColor().toArgb(),
                 android.graphics.Color.TRANSPARENT,
                 if (style.outlineEnabled) CaptionStyleCompat.EDGE_TYPE_OUTLINE else CaptionStyleCompat.EDGE_TYPE_NONE,
-                style.outlineColor.toArgb(),
+                style.outlineColor.toComposeColor().toArgb(),
                 if (style.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT,
             )
         )

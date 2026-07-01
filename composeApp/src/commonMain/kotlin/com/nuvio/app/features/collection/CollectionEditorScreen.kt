@@ -481,7 +481,7 @@ private fun FolderListItem(
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(text = folder.coverEmoji, style = MaterialTheme.typography.titleLarge)
+                        Text(text = folder.coverEmoji.orEmpty(), style = MaterialTheme.typography.titleLarge)
                     }
                 }
                 Spacer(modifier = Modifier.width(12.dp))
@@ -644,7 +644,7 @@ private fun FolderEditorPage(
 
                             if (folder.coverEmoji != null) {
                                 NuvioInputField(
-                                    value = folder.coverEmoji,
+                                    value = folder.coverEmoji.orEmpty(),
                                     onValueChange = { CollectionEditorRepository.updateFolderCoverEmoji(it) },
                                     placeholder = stringResource(Res.string.collections_editor_cover_emoji),
                                     modifier = Modifier.width(100.dp),
@@ -653,7 +653,7 @@ private fun FolderEditorPage(
 
                             if (folder.coverImageUrl != null) {
                                 NuvioInputField(
-                                    value = folder.coverImageUrl,
+                                    value = folder.coverImageUrl.orEmpty(),
                                     onValueChange = { CollectionEditorRepository.updateFolderCoverImage(it) },
                                     placeholder = stringResource(Res.string.collections_editor_cover_image_url),
                                 )
@@ -1010,7 +1010,7 @@ private fun TmdbSourcePickerScreen(
                         )
                         if (state.tmdbSearchError != null) {
                             Text(
-                                text = state.tmdbSearchError,
+                                text = state.tmdbSearchError.orEmpty(),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.error,
                             )
@@ -1528,7 +1528,7 @@ private fun TraktSourcePickerScreen(
                         )
                         if (state.traktSearchError != null) {
                             Text(
-                                text = state.traktSearchError,
+                                text = state.traktSearchError.orEmpty(),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.error,
                             )

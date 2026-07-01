@@ -73,7 +73,7 @@ fun DetailCastSection(
                         sizing = sizing,
                         sharedTransitionScope = sharedTransitionScope,
                         animatedVisibilityScope = animatedVisibilityScope,
-                        onClick = if (onCastClick != null && person.tmdbId != null && person.tmdbId > 0) {
+                        onClick = if (onCastClick != null && (person.tmdbId ?: 0) > 0) {
                             { onCastClick(person, sharedTransitionKey) }
                         } else {
                             null
@@ -175,7 +175,7 @@ private fun CastItem(
         )
         if (!person.role.isNullOrBlank()) {
             Text(
-                text = person.role,
+                text = person.role.orEmpty(),
                 modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.bodySmall.copy(
                     fontSize = sizing.subLabelSize,

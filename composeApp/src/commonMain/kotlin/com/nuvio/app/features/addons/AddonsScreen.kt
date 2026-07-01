@@ -521,7 +521,7 @@ private fun InstalledAddonCard(
             addon.errorMessage != null && manifest == null -> {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = addon.errorMessage,
+                    text = addon.errorMessage ?: "",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.error,
                 )

@@ -70,6 +70,8 @@ import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.STREAM_AUTO_PLAY_TIMEOUT_VALUES
 import com.nuvio.app.features.player.SubtitleBackgroundColorSwatches
 import com.nuvio.app.features.player.SubtitleColorSwatches
+import com.nuvio.app.features.player.toComposeColor
+import com.nuvio.app.features.player.toSubtitleColor
 import com.nuvio.app.features.player.SubtitleLanguageOption
 import com.nuvio.app.features.player.formatPlaybackSpeedLabel
 import com.nuvio.app.features.player.languageLabelForCode
@@ -245,7 +247,7 @@ private fun subtitleColorLabel(color: Color): String {
     return if (color.alpha == 0f) {
         stringResource(Res.string.settings_playback_subtitle_color_transparent)
     } else {
-        color.toStorageHexString()
+        color.toSubtitleColor().toStorageHexString()
     }
 }
 
@@ -547,7 +549,7 @@ private fun PlaybackSettingsSection(
                 SettingsGroupDivider(isTablet = isTablet)
                 SettingsNavigationRow(
                     title = stringResource(Res.string.settings_playback_subtitle_text_color),
-                    description = subtitleColorLabel(subtitleStyle.textColor),
+                    description = subtitleColorLabel(subtitleStyle.textColor.toComposeColor()),
                     enabled = subtitleRenderingEnabled,
                     isTablet = isTablet,
                     onClick = { showSubtitleTextColorDialog = true },
@@ -555,7 +557,7 @@ private fun PlaybackSettingsSection(
                 SettingsGroupDivider(isTablet = isTablet)
                 SettingsNavigationRow(
                     title = stringResource(Res.string.settings_playback_subtitle_background_color),
-                    description = subtitleColorLabel(subtitleStyle.backgroundColor),
+                    description = subtitleColorLabel(subtitleStyle.backgroundColor.toComposeColor()),
                     enabled = subtitleRenderingEnabled,
                     isTablet = isTablet,
                     onClick = { showSubtitleBackgroundColorDialog = true },
@@ -575,7 +577,7 @@ private fun PlaybackSettingsSection(
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsNavigationRow(
                         title = stringResource(Res.string.settings_playback_subtitle_outline_color),
-                        description = subtitleColorLabel(subtitleStyle.outlineColor),
+                        description = subtitleColorLabel(subtitleStyle.outlineColor.toComposeColor()),
                         enabled = subtitleRenderingEnabled,
                         isTablet = isTablet,
                         onClick = { showSubtitleOutlineColorDialog = true },
@@ -1244,10 +1246,10 @@ private fun PlaybackSettingsSection(
     if (showSubtitleTextColorDialog) {
         SubtitleColorDialog(
             title = stringResource(Res.string.settings_playback_subtitle_text_color),
-            colors = SubtitleColorSwatches,
-            selectedColor = autoPlayPlayerSettings.subtitleStyle.textColor,
+            colors = SubtitleColorSwatches.map { it.toComposeColor() },
+            selectedColor = autoPlayPlayerSettings.subtitleStyle.textColor.toComposeColor(),
             onColorSelected = { color ->
-                PlayerSettingsRepository.setSubtitleStyle(autoPlayPlayerSettings.subtitleStyle.copy(textColor = color))
+                PlayerSettingsRepository.setSubtitleStyle(autoPlayPlayerSettings.subtitleStyle.copy(textColor = color.toSubtitleColor()))
                 showSubtitleTextColorDialog = false
             },
             onDismiss = { showSubtitleTextColorDialog = false },
@@ -1257,10 +1259,10 @@ private fun PlaybackSettingsSection(
     if (showSubtitleBackgroundColorDialog) {
         SubtitleColorDialog(
             title = stringResource(Res.string.settings_playback_subtitle_background_color),
-            colors = SubtitleBackgroundColorSwatches,
-            selectedColor = autoPlayPlayerSettings.subtitleStyle.backgroundColor,
+            colors = SubtitleBackgroundColorSwatches.map { it.toComposeColor() },
+            selectedColor = autoPlayPlayerSettings.subtitleStyle.backgroundColor.toComposeColor(),
             onColorSelected = { color ->
-                PlayerSettingsRepository.setSubtitleStyle(autoPlayPlayerSettings.subtitleStyle.copy(backgroundColor = color))
+                PlayerSettingsRepository.setSubtitleStyle(autoPlayPlayerSettings.subtitleStyle.copy(backgroundColor = color.toSubtitleColor()))
                 showSubtitleBackgroundColorDialog = false
             },
             onDismiss = { showSubtitleBackgroundColorDialog = false },
@@ -1270,10 +1272,10 @@ private fun PlaybackSettingsSection(
     if (showSubtitleOutlineColorDialog) {
         SubtitleColorDialog(
             title = stringResource(Res.string.settings_playback_subtitle_outline_color),
-            colors = SubtitleColorSwatches,
-            selectedColor = autoPlayPlayerSettings.subtitleStyle.outlineColor,
+            colors = SubtitleColorSwatches.map { it.toComposeColor() },
+            selectedColor = autoPlayPlayerSettings.subtitleStyle.outlineColor.toComposeColor(),
             onColorSelected = { color ->
-                PlayerSettingsRepository.setSubtitleStyle(autoPlayPlayerSettings.subtitleStyle.copy(outlineColor = color))
+                PlayerSettingsRepository.setSubtitleStyle(autoPlayPlayerSettings.subtitleStyle.copy(outlineColor = color.toSubtitleColor()))
                 showSubtitleOutlineColorDialog = false
             },
             onDismiss = { showSubtitleOutlineColorDialog = false },
@@ -2546,7 +2548,7 @@ private fun SubtitleColorDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     colors.forEach { color ->
-                        val isSelected = selectedColor.toStorageHexString() == color.toStorageHexString()
+                        val isSelected = selectedColor.toSubtitleColor() == color.toSubtitleColor()
                         val containerColor = if (isSelected) {
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
                         } else {

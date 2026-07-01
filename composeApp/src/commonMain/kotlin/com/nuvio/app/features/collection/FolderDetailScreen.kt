@@ -270,7 +270,7 @@ private fun TabbedGridContent(
 
             when {
                 selectedTab.isLoading && selectedTab.items.isEmpty() -> LoadingIndicator()
-                selectedTab.error != null && selectedTab.items.isEmpty() -> ErrorMessage(selectedTab.error)
+                selectedTab.error != null && selectedTab.items.isEmpty() -> ErrorMessage(selectedTab.error.orEmpty())
                 selectedTab.items.isEmpty() -> EmptyMessage()
                 else -> {
                     LazyVerticalGrid(

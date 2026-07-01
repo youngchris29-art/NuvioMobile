@@ -159,7 +159,7 @@ private fun CollectionFolderCard(
                     }
                     !folder.coverEmoji.isNullOrBlank() -> {
                         Text(
-                            text = folder.coverEmoji,
+                            text = folder.coverEmoji.orEmpty(),
                             fontSize = 36.sp,
                         )
                     }

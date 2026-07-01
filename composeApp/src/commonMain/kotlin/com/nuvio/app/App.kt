@@ -410,6 +410,64 @@ private suspend fun refreshSyncBackendSelection() {
 @Composable
 @Preview
 fun App() {
+    // Route the shared (UI-free) localization helpers through Compose Resources so the
+    // phone app keeps all bundled locales. Idempotent; safe to call on every recomposition.
+    com.nuvio.app.core.i18n.ComposeResourcesStringProvider.install()
+    // Feed the shared FeaturePolicy seam from this app's flavor-specific AppFeaturePolicy.
+    com.nuvio.app.core.build.AppFeaturePolicyAdapter.install()
+    // Feed the shared addon profile seam from this app's ProfileRepository (breaks the
+    // AddonRepository <-> ProfileRepository cycle).
+    com.nuvio.app.features.addons.ProfileRepositoryAddonProfileContext.install()
+    // Feed the shared hide-unreleased seam from HomeCatalogSettingsRepository (keeps the
+    // HomeRepository/ProfileRepository god-objects out of MetaDetailsRepository in :shared).
+    com.nuvio.app.features.home.HomeUnreleasedContentPolicyAdapter.install()
+    // Feed the shared plugin-scraper seam from the flavor-bound PluginRepository (whose actuals
+    // live in flavor source sets, so it can't move to :shared with StreamsRepository).
+    com.nuvio.app.features.plugins.PluginRepositoryScraperHost.install()
+    // Feed the shared subtitle language-label seam (SubtitleRepository uses it; keeps the
+    // 81-string PlayerLanguageLabels.kt out of :shared).
+    com.nuvio.app.features.player.PlayerLanguageLabelSubtitleLabeler.install()
+    // Feed the shared profile-lifecycle seam (ProfileRepository.selectProfile fan-out to the
+    // ~24 feature repos; breaks the god-object knot so ProfileRepository can live in :shared).
+    com.nuvio.app.features.profiles.ProfileLifecycleCoordinatorAdapter.install()
+    // Feed the shared toast seam from this app's Compose NuvioToastController (LibraryRepository uses it).
+    com.nuvio.app.core.ui.ToastControllerAdapter.install()
+    // Feed the shared external-subtitle-cache seam from this app's SubtitleCacheProvider (external player launch uses it).
+    com.nuvio.app.features.player.ExternalSubtitleCacheAdapter.install()
+    // Feed the shared downloads seams from this app's platform downloader + live-status (DownloadsRepository uses them).
+    com.nuvio.app.features.downloads.DownloadFileDownloaderAdapter.install()
+    com.nuvio.app.features.downloads.DownloadsLiveStatusAdapter.install()
+    // Feed the shared episode-release notification seam from this app's platform scheduler.
+    com.nuvio.app.features.notifications.EpisodeReleaseNotificationSchedulerAdapter.install()
+    // Feed the shared theme seams (native tab bar + theme settings storage) used by ThemeSettingsRepository.
+    com.nuvio.app.core.ui.NativeTabControllerAdapter.install()
+    com.nuvio.app.features.settings.ThemeSettingsStoreAdapter.install()
+    // Feed the shared plugin-sync seam from this app's flavor-bound PluginRepository (SyncManager uses it).
+    com.nuvio.app.features.plugins.PluginSyncAdapter.install()
+    // Feed the shared active-profile-id seam (core/storage ProfileScopedKey reads it).
+    com.nuvio.app.core.profile.ActiveProfileProvider.provider =
+        com.nuvio.app.core.profile.ActiveProfileIdProvider {
+            com.nuvio.app.features.profiles.ProfileRepository.activeProfileId
+        }
+    // Feed the shared account-data-cleaner seam (core/auth AuthRepository uses it; breaks the
+    // dependency on the LocalAccountDataCleaner god-object).
+    com.nuvio.app.core.account.AccountDataCleanerProvider.cleaner =
+        com.nuvio.app.core.account.AccountDataCleaner {
+            com.nuvio.app.core.storage.LocalAccountDataCleaner.wipe()
+        }
+    // Feed the shared cloud-poster seam (WatchProgressModels uses it; keeps features.cloud/debrid
+    // out of :shared).
+    com.nuvio.app.features.watchprogress.CloudPosterProvider.resolver =
+        com.nuvio.app.features.watchprogress.CloudPosterResolver { contentType, parentMetaType, parentMetaId, providerAddonId ->
+            if (!contentType.equals(com.nuvio.app.features.cloud.CloudLibraryContentType, ignoreCase = true) &&
+                !parentMetaType.equals(com.nuvio.app.features.cloud.CloudLibraryContentType, ignoreCase = true)
+            ) {
+                null
+            } else {
+                com.nuvio.app.features.cloud.cloudLibraryProviderPosterUrl(parentMetaId)
+                    ?: com.nuvio.app.features.cloud.cloudLibraryProviderPosterUrl(providerAddonId)
+            }
+        }
     setSingletonImageLoaderFactory { context ->
         ImageLoader.Builder(context)
             .crossfade(true)

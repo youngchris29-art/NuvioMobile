@@ -166,7 +166,7 @@ fun DetailMetaInfo(
                 modifier = Modifier.animateContentSize(),
             ) {
                 Text(
-                    text = meta.description,
+                    text = meta.description.orEmpty(),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = if (expanded) Int.MAX_VALUE else 3,

@@ -78,15 +78,18 @@ private fun continueWatchingProgressPercent(progressFraction: Float): Int =
     (progressFraction * 100f).roundToInt().coerceIn(1, 99)
 
 @Composable
-private fun localizedContinueWatchingMetaLine(item: ContinueWatchingItem): String =
-    when {
-        item.seasonNumber != null && item.episodeNumber != null ->
-            stringResource(Res.string.compose_player_episode_code_full, item.seasonNumber, item.episodeNumber)
+private fun localizedContinueWatchingMetaLine(item: ContinueWatchingItem): String {
+    val seasonNumber = item.seasonNumber
+    val episodeNumber = item.episodeNumber
+    return when {
+        seasonNumber != null && episodeNumber != null ->
+            stringResource(Res.string.compose_player_episode_code_full, seasonNumber, episodeNumber)
         item.isCloudLibraryItem() ->
             stringResource(Res.string.library_source_cloud)
         else ->
             stringResource(Res.string.media_movie)
     }
+}
 
 private fun ContinueWatchingItem.isCloudLibraryItem(): Boolean =
     parentMetaType.equals(CloudLibraryContentType, ignoreCase = true)
@@ -580,8 +583,10 @@ private fun ContinueWatchingCard(
         preferBackdropForNextUp = preferBackdropForNextUp,
     )
     val shouldBlurArtwork = blurNextUp && useEpisodeThumbnails && item.isNextUp
-    val episodeCode = if (item.seasonNumber != null && item.episodeNumber != null) {
-        stringResource(Res.string.streams_episode_badge, item.seasonNumber, item.episodeNumber)
+    val episodeCodeSeason = item.seasonNumber
+    val episodeCodeEpisode = item.episodeNumber
+    val episodeCode = if (episodeCodeSeason != null && episodeCodeEpisode != null) {
+        stringResource(Res.string.streams_episode_badge, episodeCodeSeason, episodeCodeEpisode)
     } else {
         null
     }
@@ -982,12 +987,14 @@ private fun ContinueWatchingPosterCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (item.seasonNumber != null && item.episodeNumber != null) {
+            val posterEpisodeSeason = item.seasonNumber
+            val posterEpisodeEpisode = item.episodeNumber
+            if (posterEpisodeSeason != null && posterEpisodeEpisode != null) {
                 Text(
                     text = stringResource(
                         Res.string.streams_episode_badge,
-                        item.seasonNumber,
-                        item.episodeNumber,
+                        posterEpisodeSeason,
+                        posterEpisodeEpisode,
                     ),
                     modifier = Modifier.padding(start = 6.dp),
                     style = MaterialTheme.typography.labelSmall.copy(

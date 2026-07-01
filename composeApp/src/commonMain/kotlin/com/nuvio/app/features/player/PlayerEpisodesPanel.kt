@@ -398,12 +398,12 @@ private fun EpisodeRow(
                         append(
                             stringResource(
                                 Res.string.compose_player_episode_code_full,
-                                episode.season,
-                                episode.episode,
+                                episode.season ?: 0,
+                                episode.episode ?: 0,
                             ),
                         )
                     } else if (episode.episode != null) {
-                        append(stringResource(Res.string.compose_player_episode_code_episode_only, episode.episode))
+                        append(stringResource(Res.string.compose_player_episode_code_episode_only, episode.episode ?: 0))
                     }
                 }
                 if (episodeLabel.isNotBlank()) {
@@ -518,8 +518,8 @@ private fun EpisodeStreamsSubView(
                         append(
                             stringResource(
                                 Res.string.compose_player_episode_code_full,
-                                episode.season,
-                                episode.episode,
+                                episode.season ?: 0,
+                                episode.episode ?: 0,
                             ),
                         )
                     }

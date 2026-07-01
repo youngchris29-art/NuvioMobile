@@ -749,7 +749,7 @@ private fun EpisodeHorizontalCard(
 
             if (!video.overview.isNullOrBlank()) {
                 Text(
-                    text = video.overview,
+                    text = video.overview.orEmpty(),
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = metrics.bodyTextSize,
                         lineHeight = metrics.bodyLineHeight,
@@ -1151,7 +1151,7 @@ private fun EpisodeListCard(
 
                 if (!video.overview.isNullOrBlank()) {
                     Text(
-                        text = video.overview,
+                        text = video.overview.orEmpty(),
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontSize = sizing.bodyTextSize,
                             lineHeight = sizing.bodyLineHeight,

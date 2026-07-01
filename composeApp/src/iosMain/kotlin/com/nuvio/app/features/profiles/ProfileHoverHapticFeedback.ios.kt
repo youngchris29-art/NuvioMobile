@@ -2,7 +2,7 @@ package com.nuvio.app.features.profiles
 
 import platform.UIKit.UISelectionFeedbackGenerator
 
-internal actual object ProfileHoverHapticFeedback {
+actual object ProfileHoverHapticFeedback {
     private var generator: UISelectionFeedbackGenerator? = null
 
     actual fun prepare() {

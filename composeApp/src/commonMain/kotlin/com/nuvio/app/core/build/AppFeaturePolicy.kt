@@ -1,10 +1,7 @@
 package com.nuvio.app.core.build
 
-enum class TrailerPlaybackMode {
-    IN_APP,
-    EXTERNAL,
-}
-
+// TrailerPlaybackMode now lives in :shared (com.nuvio.app.core.build, same package) so the
+// shared FeaturePolicy seam can expose it; this expect/actual flavor object stays in composeApp.
 expect object AppFeaturePolicy {
     val pluginsEnabled: Boolean
     val supportersContributorsPageEnabled: Boolean

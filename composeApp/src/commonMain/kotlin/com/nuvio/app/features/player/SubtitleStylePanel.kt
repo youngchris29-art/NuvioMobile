@@ -239,9 +239,9 @@ private fun StyleControlsCard(
 
         ColorPickerRow(
             label = stringResource(Res.string.compose_player_color),
-            colors = SubtitleColorSwatches,
-            selectedColor = style.textColor,
-            onColorSelected = { onStyleChanged(style.copy(textColor = it)) },
+            colors = SubtitleColorSwatches.map { it.toComposeColor() },
+            selectedColor = style.textColor.toComposeColor(),
+            onColorSelected = { onStyleChanged(style.copy(textColor = it.toSubtitleColor())) },
         )
 
         Row(
@@ -249,7 +249,7 @@ private fun StyleControlsCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val currentAlphaPercent = (style.textColor.alpha * 100f).roundToInt().coerceIn(0, 100)
+            val currentAlphaPercent = (style.textColor.toComposeColor().alpha * 100f).roundToInt().coerceIn(0, 100)
             Text(
                 text = stringResource(Res.string.compose_player_text_opacity),
                 color = colorScheme.onSurfaceVariant,
@@ -260,11 +260,11 @@ private fun StyleControlsCard(
                 value = "$currentAlphaPercent%",
                 onMinus = {
                     val newAlpha = (currentAlphaPercent - 10).coerceAtLeast(0) / 100f
-                    onStyleChanged(style.copy(textColor = style.textColor.copy(alpha = newAlpha)))
+                    onStyleChanged(style.copy(textColor = style.textColor.toComposeColor().copy(alpha = newAlpha).toSubtitleColor()))
                 },
                 onPlus = {
                     val newAlpha = (currentAlphaPercent + 10).coerceAtMost(100) / 100f
-                    onStyleChanged(style.copy(textColor = style.textColor.copy(alpha = newAlpha)))
+                    onStyleChanged(style.copy(textColor = style.textColor.toComposeColor().copy(alpha = newAlpha).toSubtitleColor()))
                 },
                 buttonSize = btnSize,
                 buttonRadius = btnRadius,
@@ -274,9 +274,9 @@ private fun StyleControlsCard(
 
         ColorPickerRow(
             label = stringResource(Res.string.compose_player_outline_color),
-            colors = SubtitleColorSwatches,
-            selectedColor = style.outlineColor,
-            onColorSelected = { onStyleChanged(style.copy(outlineColor = it)) },
+            colors = SubtitleColorSwatches.map { it.toComposeColor() },
+            selectedColor = style.outlineColor.toComposeColor(),
+            onColorSelected = { onStyleChanged(style.copy(outlineColor = it.toSubtitleColor())) },
         )
 
         Row(
