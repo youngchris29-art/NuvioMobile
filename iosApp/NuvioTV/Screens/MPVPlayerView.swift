@@ -38,6 +38,19 @@ struct PlayerTrack: Identifiable {
     let isSelected: Bool
 }
 
+/// A skippable segment (intro/recap/outro) resolved from `SkipIntroRepository`.
+struct SkipSegment {
+    let start: Double
+    let end: Double
+    let type: String
+}
+
+/// The currently-offered skip action (shown while playback is inside a `SkipSegment`).
+struct SkipPrompt: Equatable {
+    let label: String      // e.g. "Skip Intro"
+    let targetSec: Double   // absolute seek target (segment end)
+}
+
 /// CAMetalLayer subclass that ignores degenerate drawable sizes (mirrors the iOS player's MetalLayer).
 final class TVMetalLayer: CAMetalLayer {
     override var drawableSize: CGSize {
@@ -63,6 +76,9 @@ final class MPVPlaybackState: ObservableObject {
     @Published var audioTracks: [PlayerTrack] = []
     @Published var subtitleTracks: [PlayerTrack] = []
     @Published var showTracks: Bool = false
+
+    /// Active skip prompt ("Skip Intro"/"Skip Outro") when playback is inside a known segment.
+    @Published var skipPrompt: SkipPrompt?
 
     /// Wired by the controller so the SwiftUI track picker can drive libmpv.
     var selectAudio: ((Int) -> Void)?
@@ -100,6 +116,7 @@ final class MPVTVPlayerViewController: UIViewController {
     private var subtitleWatcher: FlowWatcher?
     private var addedSubtitleUrls = Set<String>()
     private var fileLoaded = false
+    private var skipSegments: [SkipSegment] = []
 
     /// Called when the user presses Menu, so the SwiftUI cover can dismiss.
     var onExit: (() -> Void)?
@@ -195,7 +212,11 @@ final class MPVTVPlayerViewController: UIViewController {
         checkError(mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &metalLayer))
 
         let options: [(String, String)] = [
-            ("vo", "gpu-next"),
+            // Use the classic `gpu` output rather than `gpu-next` (libplacebo): on the tvOS
+            // simulator libplacebo's vo asserts ("vo: hit program assert") on some streams. `gpu`
+            // is the more stable backend (same fix that stabilized the trailer surface). Trade-off:
+            // slightly less advanced HDR tone-mapping, in exchange for not crashing.
+            ("vo", "gpu"),
             ("gpu-api", "vulkan"),
             ("gpu-context", "moltenvk"),
             ("hwdec", "videotoolbox"),
@@ -279,6 +300,24 @@ final class MPVTVPlayerViewController: UIViewController {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language)
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        fetchSkipSegments()
+    }
+
+    /// Fetch intro/recap/outro segments for a series episode (no-op for movies / missing episode
+    /// numbers). Works for anime out of the box (AniSkip/AnimeSkip); other content needs an
+    /// `INTRO_DB_URL` configured. `requireSkipIntroEnabled: false` bypasses the mobile settings gate.
+    private func fetchSkipSegments() {
+        guard let season = context.season, let episode = context.episode else { return }
+        SkipIntroRepository.shared.getSkipIntervals(
+            imdbId: context.parentMetaId,
+            season: Int32(season),
+            episode: Int32(episode),
+            requireSkipIntroEnabled: false
+        ) { [weak self] intervals, _ in
+            guard let intervals else { return }
+            let segments = intervals.map { SkipSegment(start: $0.startTime, end: $0.endTime, type: $0.type) }
+            DispatchQueue.main.async { self?.skipSegments = segments }
+        }
     }
 
     private func addAddonSubtitles(_ subs: [AddonSubtitle]) {
@@ -390,6 +429,24 @@ final class MPVTVPlayerViewController: UIViewController {
             lastSaveUptime = now
             saveProgress()
         }
+
+        updateSkipPrompt(position: position)
+    }
+
+    /// Show a skip prompt while the playhead is inside a segment (leaving a 1s tail so the button
+    /// disappears cleanly at the end).
+    private func updateSkipPrompt(position: Double) {
+        let active = skipSegments.first { position >= $0.start && position < $0.end - 1 }
+        let prompt = active.map { SkipPrompt(label: skipLabel(for: $0.type), targetSec: $0.end) }
+        if prompt != state.skipPrompt { state.skipPrompt = prompt }
+    }
+
+    private func skipLabel(for type: String) -> String {
+        switch type.lowercased() {
+        case "outro", "ed", "credits": return "Skip Outro"
+        case "recap": return "Skip Recap"
+        default: return "Skip Intro"
+        }
     }
 
     // MARK: - Siri-remote transport
@@ -408,6 +465,13 @@ final class MPVTVPlayerViewController: UIViewController {
                 refreshTracks()
                 if state.hasTracks { state.showTracks = true }
                 handled = true
+            case .downArrow:
+                if let prompt = state.skipPrompt {
+                    seekAbsolute(prompt.targetSec)
+                    state.skipPrompt = nil
+                    flashControls()
+                    handled = true
+                }
             case .menu:
                 onExit?(); handled = true
             default:
@@ -458,6 +522,11 @@ final class MPVTVPlayerViewController: UIViewController {
     private func seekBy(_ seconds: Double) {
         guard mpv != nil else { return }
         command("seek", args: [String(format: "%.3f", seconds), "relative"])
+    }
+
+    private func seekAbsolute(_ seconds: Double) {
+        guard mpv != nil else { return }
+        command("seek", args: [String(format: "%.3f", seconds), "absolute"])
     }
 
     private func flashControls() {
@@ -623,7 +692,20 @@ struct MPVPlayerScreen: View {
             PlayerControlsOverlay(state: state)
                 .opacity(state.controlsVisible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
+
+            if let prompt = state.skipPrompt {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        SkipPromptPill(label: prompt.label)
+                            .padding(60)
+                    }
+                }
+                .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.25), value: state.skipPrompt)
         .fullScreenCover(isPresented: $state.showTracks, onDismiss: { state.reclaimFocus?() }) {
             TrackPickerView(state: state)
         }
@@ -687,6 +769,24 @@ private struct ProgressBar: View {
                     .frame(width: max(0, geo.size.width * fraction))
             }
         }
+    }
+}
+
+/// Bottom-trailing "Skip Intro/Outro" pill. The chevron hints the press-down gesture that triggers
+/// the skip (the libmpv player owns the remote, so a focusable button would fight it).
+private struct SkipPromptPill: View {
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(label).font(.title3).bold()
+            Image(systemName: "chevron.down.circle.fill")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 30)
+        .padding(.vertical, 16)
+        .background(Theme.Palette.accent, in: Capsule())
+        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
     }
 }
 
