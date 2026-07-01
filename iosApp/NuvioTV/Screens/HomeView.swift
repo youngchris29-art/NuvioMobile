@@ -9,33 +9,38 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 48) {
-                    Text("Nuvio")
-                        .font(.largeTitle).bold()
-                        .padding(.bottom, 8)
+            ZStack {
+                Theme.Palette.background.ignoresSafeArea()
 
-                    if let hero = model.heroItems.first {
-                        HeroBanner(item: hero)
-                    }
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
+                        Text("Nuvio")
+                            .font(Theme.Font.screenTitle)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .padding(.bottom, Theme.Spacing.xs)
 
-                    if model.sections.isEmpty {
-                        placeholder
-                    }
+                        if let hero = model.heroItems.first {
+                            HeroBanner(item: hero)
+                        }
 
-                    if !model.continueWatching.isEmpty {
-                        ContinueWatchingRow(
-                            entries: model.continueWatching,
-                            onSelect: { resume = ResumeTarget(entry: $0) },
-                            onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId) }
-                        )
-                    }
+                        if model.sections.isEmpty {
+                            placeholder
+                        }
 
-                    ForEach(model.sections, id: \.key) { section in
-                        CatalogRowView(section: section)
+                        if !model.continueWatching.isEmpty {
+                            ContinueWatchingRow(
+                                entries: model.continueWatching,
+                                onSelect: { resume = ResumeTarget(entry: $0) },
+                                onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId) }
+                            )
+                        }
+
+                        ForEach(model.sections, id: \.key) { section in
+                            CatalogRowView(section: section)
+                        }
                     }
+                    .padding(Theme.Spacing.screen)
                 }
-                .padding(60)
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -58,16 +63,23 @@ struct HomeView: View {
     @ViewBuilder
     private var placeholder: some View {
         if model.isLoading {
-            HStack(spacing: 16) {
+            HStack(spacing: Theme.Spacing.md) {
                 ProgressView()
-                Text("Loading catalogs\u{2026}").font(.title3).foregroundStyle(.secondary)
+                Text("Loading catalogs\u{2026}")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
             }
-            .padding(.vertical, 40)
+            .padding(.vertical, Theme.Spacing.xl)
         } else if let message = model.errorMessage {
-            Text(message).font(.title3).foregroundStyle(.red).padding(.vertical, 40)
+            Text(message)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.accent)
+                .padding(.vertical, Theme.Spacing.xl)
         } else {
             Text("Setting up your catalogs\u{2026}")
-                .font(.title3).foregroundStyle(.secondary).padding(.vertical, 40)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .padding(.vertical, Theme.Spacing.xl)
         }
     }
 }
@@ -81,15 +93,20 @@ struct ContinueWatchingRow: View {
     let onRemove: (WatchProgressEntry) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text("Continue Watching")
-                .font(.title2).bold()
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 28) {
+                LazyHStack(spacing: Theme.Spacing.rowGap) {
                     ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
                         Button { onSelect(entry) } label: {
-                            ContinueCard(entry: entry)
+                            LandscapeCard(
+                                title: entry.title,
+                                imageURL: imageURL(entry),
+                                progress: fraction(entry)
+                            )
                         }
                         .buttonStyle(.card)
                         .contextMenu {
@@ -101,9 +118,20 @@ struct ContinueWatchingRow: View {
                         }
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, Theme.Spacing.sm)
             }
         }
+    }
+
+    private func fraction(_ entry: WatchProgressEntry) -> Double? {
+        entry.durationMs > 0 ? Double(entry.lastPositionMs) / Double(entry.durationMs) : nil
+    }
+
+    private func imageURL(_ entry: WatchProgressEntry) -> String? {
+        let bg: String? = entry.background
+        if let bg, !bg.isEmpty { return bg }
+        let poster: String? = entry.poster
+        return poster
     }
 }
 
@@ -121,63 +149,63 @@ struct HeroBanner: View {
     var body: some View {
         NavigationLink(value: TitleRoute(preview: item)) {
             ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: URL(string: backdropURL)) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        Color.gray.opacity(0.2)
-                    }
-                }
-                .frame(height: 480)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .overlay(
-                    LinearGradient(
-                        colors: [.black.opacity(0.85), .black.opacity(0.2), .clear],
-                        startPoint: .bottom, endPoint: .top
+                CachedAsyncImage(string: backdropURL)
+                    .frame(height: Theme.Size.heroHeight)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .overlay(
+                        LinearGradient(
+                            colors: [.black.opacity(0.85), .black.opacity(0.2), .clear],
+                            startPoint: .bottom, endPoint: .top
+                        )
                     )
-                )
 
-                VStack(alignment: .leading, spacing: 14) {
-                    if let logo = logoURL {
-                        AsyncImage(url: URL(string: logo)) { phase in
-                            if case .success(let image) = phase {
-                                image.resizable().aspectRatio(contentMode: .fit)
-                            } else {
-                                Text(item.name).font(.system(size: 52, weight: .bold))
-                            }
-                        }
-                        .frame(maxWidth: 520, maxHeight: 150, alignment: .leading)
-                    } else {
-                        Text(item.name).font(.system(size: 52, weight: .bold))
-                    }
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    logo
 
                     if !metaLine.isEmpty {
-                        Text(metaLine).font(.headline).foregroundStyle(.white.opacity(0.85))
+                        Text(metaLine)
+                            .font(Theme.Font.meta)
+                            .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
                     }
 
                     if let synopsis, !synopsis.isEmpty {
                         Text(synopsis)
-                            .font(.callout)
-                            .foregroundStyle(.white.opacity(0.85))
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
                             .lineLimit(2)
                             .frame(maxWidth: 1000, alignment: .leading)
                     }
                 }
-                .foregroundStyle(.white)
-                .padding(40)
+                .padding(Theme.Spacing.xl)
             }
-            .frame(height: 480)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .frame(height: Theme.Size.heroHeight)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.hero))
         }
         .buttonStyle(.card)
     }
 
-    private var backdropURL: String {
+    @ViewBuilder
+    private var logo: some View {
+        if let logoURL {
+            AsyncImage(url: URL(string: logoURL)) { phase in
+                if case .success(let image) = phase {
+                    image.resizable().aspectRatio(contentMode: .fit)
+                } else {
+                    Text(item.name).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
+                }
+            }
+            .frame(maxWidth: 520, maxHeight: 150, alignment: .leading)
+        } else {
+            Text(item.name).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
+        }
+    }
+
+    private var backdropURL: String? {
         let banner: String? = item.banner
         if let banner, !banner.isEmpty { return banner }
         let poster: String? = item.poster
-        return poster ?? ""
+        return poster
     }
 
     private var logoURL: String? {
@@ -194,49 +222,5 @@ struct HeroBanner: View {
         let genres = item.genres.prefix(3)
         if !genres.isEmpty { parts.append(genres.joined(separator: " \u{00B7} ")) }
         return parts.joined(separator: "  \u{00B7}  ")
-    }
-}
-
-private struct ContinueCard: View {
-    let entry: WatchProgressEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ZStack(alignment: .bottom) {
-                AsyncImage(url: URL(string: imageURL)) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        Color.gray.opacity(0.2)
-                    }
-                }
-                .frame(width: 360, height: 203)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Rectangle().fill(.white.opacity(0.3))
-                        Rectangle().fill(.red).frame(width: geo.size.width * fraction)
-                    }
-                }
-                .frame(height: 6)
-            }
-            .frame(width: 360, height: 203)
-
-            Text(entry.title)
-                .font(.caption).lineLimit(1)
-                .frame(width: 360, alignment: .leading)
-        }
-    }
-
-    private var fraction: Double {
-        entry.durationMs > 0 ? min(max(Double(entry.lastPositionMs) / Double(entry.durationMs), 0), 1) : 0
-    }
-
-    private var imageURL: String {
-        let bg: String? = entry.background
-        if let bg, !bg.isEmpty { return bg }
-        let poster: String? = entry.poster
-        return poster ?? ""
     }
 }

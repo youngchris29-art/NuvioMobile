@@ -28,12 +28,13 @@ struct CatalogRowView: View {
     var onSelect: ((MetaPreview) -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text(section.title)
-                .font(.title2).bold()
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 28) {
+                LazyHStack(spacing: Theme.Spacing.rowGap) {
                     ForEach(section.items, id: \.id) { item in
                         if let onSelect {
                             Button { onSelect(item) } label: { PosterCardView(item: item) }
@@ -46,41 +47,18 @@ struct CatalogRowView: View {
                         }
                     }
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, Theme.Spacing.sm)
             }
         }
     }
 }
 
-/// A single poster tile. `.card` button style (applied to the enclosing NavigationLink) gives the
-/// standard tvOS focus lift/parallax.
+/// A single poster tile, now backed by the shared `PosterCard` design-system component
+/// (cached artwork, shimmer, brand focus ring, focus-aware title).
 struct PosterCardView: View {
     let item: MetaPreview
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            AsyncImage(url: URL(string: item.poster ?? "")) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().aspectRatio(contentMode: .fill)
-                case .empty:
-                    ZStack { Color.gray.opacity(0.2); ProgressView() }
-                case .failure:
-                    ZStack {
-                        Color.gray.opacity(0.2)
-                        Image(systemName: "film").font(.largeTitle).foregroundStyle(.secondary)
-                    }
-                @unknown default:
-                    Color.gray.opacity(0.2)
-                }
-            }
-            .frame(width: 220, height: 330)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-
-            Text(item.name)
-                .font(.caption)
-                .lineLimit(1)
-                .frame(width: 220, alignment: .leading)
-        }
+        PosterCard(title: item.name, imageURL: item.poster)
     }
 }
