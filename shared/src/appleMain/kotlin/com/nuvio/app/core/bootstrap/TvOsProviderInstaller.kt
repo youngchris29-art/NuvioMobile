@@ -4,7 +4,16 @@ import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.features.addons.AddonProfileContext
 import com.nuvio.app.features.addons.AddonProfileProvider
+import com.nuvio.app.features.addons.AddonRepository
+import com.nuvio.app.features.home.HomeRepository
+import com.nuvio.app.features.library.LibraryRepository
+import com.nuvio.app.features.profiles.ProfileLifecycleCoordinator
+import com.nuvio.app.features.profiles.ProfileLifecycleProvider
 import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.search.SearchHistoryRepository
+import com.nuvio.app.features.watched.WatchedRepository
+import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
+import com.nuvio.app.features.watchprogress.WatchProgressRepository
 
 /**
  * tvOS-side install block for the shared provider seams.
@@ -42,10 +51,35 @@ fun installTvOsSharedProviders() {
     // profile-scoped (mirrors composeApp's ProfileRepositoryAddonProfileContext).
     AddonProfileProvider.context = TvOsAddonProfileContext
 
+    // Fan out profile switches to the per-profile repositories tvOS uses. The phone app does this
+    // via composeApp's ProfileLifecycleCoordinatorAdapter (~24 repos); tvOS only needs the ones it
+    // actually reads. Without this, switching profiles leaves stale data (continue watching,
+    // library, addons) from the previous profile on screen.
+    ProfileLifecycleProvider.coordinator = TvOsProfileLifecycleCoordinator
+
     // Restore any previously-persisted profiles + active selection from NSUserDefaults before the
     // repositories read the active profile id. No-op on a fresh install (no stored payload yet);
     // wrapped defensively so a malformed cache can never crash startup.
     runCatching { ProfileRepository.loadCachedProfiles() }
+}
+
+/**
+ * tvOS fan-out for profile-lifecycle events. `ProfileRepository.selectProfile()` calls
+ * [onProfileSelected]; each target repository reloads its data for the new profile (mirrors the
+ * subset of composeApp's adapter that applies to the screens tvOS ships today).
+ */
+private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
+    override fun onProfileSelected(profileIndex: Int) {
+        WatchedRepository.onProfileChanged(profileIndex)
+        LibraryRepository.onProfileChanged(profileIndex)
+        WatchProgressRepository.onProfileChanged(profileIndex)
+        ContinueWatchingEnrichmentCache.onProfileChanged()
+        AddonRepository.onProfileChanged(profileIndex)
+        SearchHistoryRepository.onProfileChanged()
+        HomeRepository.clear()
+    }
+
+    override fun onProfilesCached() {}
 }
 
 /**

@@ -4,6 +4,8 @@ import SharedCore
 /// First real content screen for tvOS: a focus-navigable grid of catalog rows, fed entirely by the
 /// shared Kotlin `HomeRepository`. Tapping a poster pushes the detail screen.
 struct HomeView: View {
+    var activeProfile: NuvioProfile? = nil
+    var onSwitchProfile: (() -> Void)? = nil
     @StateObject private var model = HomeViewModel()
     @State private var resume: ResumeTarget?
 
@@ -14,10 +16,19 @@ struct HomeView: View {
 
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-                        Text("Nuvio")
-                            .font(Theme.Font.screenTitle)
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                            .padding(.bottom, Theme.Spacing.xs)
+                        HStack(alignment: .center) {
+                            Text("Nuvio")
+                                .font(Theme.Font.screenTitle)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+                            Spacer()
+                            if let profile = activeProfile, let onSwitchProfile {
+                                Button { onSwitchProfile() } label: {
+                                    ProfileAvatar(profile: profile, size: 64)
+                                }
+                                .buttonStyle(.card)
+                            }
+                        }
+                        .padding(.bottom, Theme.Spacing.xs)
 
                         if let hero = model.heroItems.first {
                             HeroBanner(item: hero)
