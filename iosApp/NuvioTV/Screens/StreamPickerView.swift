@@ -58,17 +58,23 @@ struct StreamPickerView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
+                    Text(title)
+                        .font(Theme.Font.screenTitle)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+
                     if model.isLoading {
-                        HStack(spacing: 16) {
+                        HStack(spacing: Theme.Spacing.md) {
                             ProgressView()
-                            Text("Finding streams\u{2026}").foregroundStyle(.secondary)
+                            Text("Finding streams\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
                         }
                     }
 
                     ForEach(model.groups) { group in
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text(group.addonName).font(.title3).bold()
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            Text(group.addonName)
+                                .font(Theme.Font.sectionTitle)
+                                .foregroundStyle(Theme.Palette.textPrimary)
                             ForEach(Array(group.streams.enumerated()), id: \.offset) { _, stream in
                                 streamRow(stream)
                             }
@@ -76,28 +82,32 @@ struct StreamPickerView: View {
                     }
 
                     if let reason = model.emptyReason {
-                        Text(reason).foregroundStyle(.secondary).padding(.top, 8)
+                        Text(reason)
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .padding(.top, Theme.Spacing.xs)
                     }
 
                     // Dev/verification affordance — always available.
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Test").font(.title3).bold()
+                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        Text("Test")
+                            .font(Theme.Font.sectionTitle)
+                            .foregroundStyle(Theme.Palette.textPrimary)
                         Button {
                             selected = context(url: testStreamURL, stream: nil)
                         } label: {
                             Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
-                                .padding(.vertical, 8)
+                                .padding(.vertical, Theme.Spacing.xs)
                         }
                         .buttonStyle(.bordered)
                     }
-                    .padding(.top, 24)
+                    .padding(.top, Theme.Spacing.lg)
                 }
-                .padding(60)
+                .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black.ignoresSafeArea())
-            .navigationTitle(title)
+            .background(Theme.Palette.background.ignoresSafeArea())
             .onAppear { model.start() }
             .onDisappear { model.stop() }
             .fullScreenCover(item: $selected) { ctx in
@@ -117,14 +127,20 @@ struct StreamPickerView: View {
                 selected = context(url: url, stream: stream)
             }
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).lineLimit(2)
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                Text(title)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .lineLimit(2)
                 if let desc, !desc.isEmpty {
-                    Text(desc).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(desc)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 10)
+            .padding(.vertical, Theme.Spacing.xs + 2)
         }
         .buttonStyle(.bordered)
     }

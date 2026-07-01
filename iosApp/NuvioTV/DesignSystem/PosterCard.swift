@@ -34,6 +34,8 @@ struct PosterCard: View {
                     .font(Theme.Font.cardTitle)
                     .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: width, alignment: .leading)
             }
         }
@@ -82,6 +84,8 @@ struct LandscapeCard: View {
                 .font(Theme.Font.cardTitle)
                 .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, Theme.Spacing.xs)
                 .frame(width: width, alignment: .leading)
         }
         .animation(.easeOut(duration: 0.15), value: isFocused)

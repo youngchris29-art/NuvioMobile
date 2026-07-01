@@ -19,7 +19,7 @@ struct DetailView: View {
         ZStack(alignment: .topLeading) {
             backgroundLayer
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 36) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     header
                     metaLine
                     if !isSeries {
@@ -27,20 +27,23 @@ struct DetailView: View {
                             showStreams = true
                         } label: {
                             Label("Play", systemImage: "play.fill")
-                                .font(.title3).bold()
-                                .padding(.horizontal, 24).padding(.vertical, 6)
+                                .font(Theme.Font.meta)
+                                .padding(.horizontal, Theme.Spacing.lg)
+                                .padding(.vertical, Theme.Spacing.xxs + 2)
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(Theme.Palette.accent)
                     }
                     if !genres.isEmpty {
                         Text(genres.joined(separator: " \u{2022} "))
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
                     }
                     if let overview, !overview.isEmpty {
                         Text(overview)
-                            .font(.body)
+                            .font(Theme.Font.body)
                             .frame(maxWidth: 1100, alignment: .leading)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Theme.Palette.textPrimary)
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
                         EpisodesSection(meta: meta)
@@ -48,7 +51,7 @@ struct DetailView: View {
                     castRow
                     moreLikeThisRow
                 }
-                .padding(60)
+                .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -76,27 +79,21 @@ struct DetailView: View {
 
     private var backgroundLayer: some View {
         GeometryReader { geo in
-            AsyncImage(url: URL(string: backgroundUrl ?? "")) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Color.black
-                }
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .clipped()
-            .overlay(
-                LinearGradient(
-                    colors: [.black.opacity(0.95), .black.opacity(0.4), .black.opacity(0.85)],
-                    startPoint: .leading, endPoint: .trailing
+            CachedAsyncImage(string: backgroundUrl)
+                .frame(width: geo.size.width, height: geo.size.height)
+                .clipped()
+                .overlay(
+                    LinearGradient(
+                        colors: [.black.opacity(0.95), .black.opacity(0.4), .black.opacity(0.85)],
+                        startPoint: .leading, endPoint: .trailing
+                    )
                 )
-            )
-            .overlay(
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.9)],
-                    startPoint: .center, endPoint: .bottom
+                .overlay(
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.9)],
+                        startPoint: .center, endPoint: .bottom
+                    )
                 )
-            )
         }
         .ignoresSafeArea()
     }
@@ -108,17 +105,17 @@ struct DetailView: View {
                 if case .success(let image) = phase {
                     image.resizable().aspectRatio(contentMode: .fit)
                 } else {
-                    Text(title).font(.system(size: 64, weight: .bold))
+                    Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
                 }
             }
             .frame(maxWidth: 600, maxHeight: 180, alignment: .leading)
         } else {
-            Text(title).font(.system(size: 64, weight: .bold))
+            Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
         }
     }
 
     private var metaLine: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: Theme.Spacing.md + 2) {
             if let year = model.meta?.releaseInfo ?? preview.releaseInfo, !year.isEmpty {
                 label(year)
             }
@@ -126,36 +123,38 @@ struct DetailView: View {
                 label(runtime)
             }
             if let rating = model.meta?.imdbRating ?? preview.imdbRating, !rating.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "star.fill").foregroundStyle(.yellow)
+                HStack(spacing: Theme.Spacing.xs - 2) {
+                    Image(systemName: "star.fill").foregroundStyle(Theme.Palette.star)
                     Text(rating)
                 }
-                .font(.headline)
             }
             if let age = model.meta?.ageRating, !age.isEmpty {
                 label(age).overlay(
-                    RoundedRectangle(cornerRadius: 4).stroke(.secondary, lineWidth: 1).padding(-4)
+                    RoundedRectangle(cornerRadius: Theme.Radius.chip - 2)
+                        .stroke(Theme.Palette.textSecondary, lineWidth: 1).padding(-4)
                 )
             }
             if model.isLoading { ProgressView() }
         }
-        .font(.headline)
-        .foregroundStyle(.secondary)
+        .font(Theme.Font.meta)
+        .foregroundStyle(Theme.Palette.textSecondary)
     }
 
     @ViewBuilder
     private var castRow: some View {
         let cast = model.meta?.cast ?? []
         if !cast.isEmpty {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Cast").font(.title2).bold()
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Text("Cast")
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 24) {
+                    LazyHStack(spacing: Theme.Spacing.lg) {
                         ForEach(Array(cast.enumerated()), id: \.offset) { _, person in
                             CastCard(person: person)
                         }
                     }
-                    .padding(.vertical, 8)
+                    .padding(.vertical, Theme.Spacing.xs)
                 }
             }
         }
@@ -165,18 +164,25 @@ struct DetailView: View {
     private var moreLikeThisRow: some View {
         let items = model.meta?.moreLikeThis ?? []
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("More Like This").font(.title2).bold()
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Text("More Like This")
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 24) {
+                    LazyHStack(spacing: Theme.Spacing.lg) {
                         ForEach(items, id: \.id) { item in
                             NavigationLink(value: TitleRoute(preview: item)) {
-                                MiniPoster(item: item)
+                                PosterCard(
+                                    title: item.name,
+                                    imageURL: item.poster,
+                                    width: Theme.Size.miniPosterWidth,
+                                    height: Theme.Size.miniPosterHeight
+                                )
                             }
                             .buttonStyle(.card)
                         }
                     }
-                    .padding(.vertical, 8)
+                    .padding(.vertical, Theme.Spacing.xs)
                 }
             }
         }
@@ -190,41 +196,33 @@ struct DetailView: View {
 private struct CastCard: View {
     let person: MetaPerson
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: Theme.Spacing.xs) {
             AsyncImage(url: URL(string: person.photo ?? "")) { phase in
                 if case .success(let image) = phase {
                     image.resizable().aspectRatio(contentMode: .fill)
                 } else {
                     ZStack {
-                        Color.gray.opacity(0.25)
-                        Image(systemName: "person.fill").font(.largeTitle).foregroundStyle(.secondary)
+                        Theme.Palette.surface
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(Theme.Palette.textSecondary)
                     }
                 }
             }
-            .frame(width: 140, height: 140)
+            .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
             .clipShape(Circle())
-            Text(person.name).font(.caption).lineLimit(1).frame(width: 150)
+            Text(person.name)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textPrimary)
+                .lineLimit(1)
+                .frame(width: Theme.Size.castAvatar + 10)
             if let role = person.role, !role.isEmpty {
-                Text(role).font(.caption2).foregroundStyle(.secondary).lineLimit(1).frame(width: 150)
+                Text(role)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .lineLimit(1)
+                    .frame(width: Theme.Size.castAvatar + 10)
             }
-        }
-    }
-}
-
-private struct MiniPoster: View {
-    let item: MetaPreview
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            AsyncImage(url: URL(string: item.poster ?? "")) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Color.gray.opacity(0.2)
-                }
-            }
-            .frame(width: 180, height: 270)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            Text(item.name).font(.caption).lineLimit(1).frame(width: 180, alignment: .leading)
         }
     }
 }

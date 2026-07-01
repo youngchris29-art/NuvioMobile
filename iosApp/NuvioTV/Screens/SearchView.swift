@@ -11,36 +11,41 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 40) {
-                    HStack(spacing: 16) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("Search movies & shows", text: $query)
-                            .textFieldStyle(.plain)
-                            .font(.title3)
-                    }
-                    .padding(20)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            ZStack {
+                Theme.Palette.background.ignoresSafeArea()
 
-                    if model.isLoading {
-                        HStack(spacing: 16) {
-                            ProgressView()
-                            Text("Searching\u{2026}").foregroundStyle(.secondary)
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                        HStack(spacing: Theme.Spacing.md) {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                            TextField("Search movies & shows", text: $query)
+                                .textFieldStyle(.plain)
+                                .font(Theme.Font.body)
+                                .foregroundStyle(Theme.Palette.textPrimary)
                         }
-                    } else if let message = model.emptyMessage {
-                        Text(message).font(.title3).foregroundStyle(.secondary)
-                    } else if model.sections.isEmpty {
-                        Text("Search for movies and shows.")
-                            .font(.title3).foregroundStyle(.secondary)
-                    }
+                        .padding(Theme.Spacing.lg)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
-                    ForEach(model.sections, id: \.key) { section in
-                        CatalogRowView(section: section)
+                        if model.isLoading {
+                            HStack(spacing: Theme.Spacing.md) {
+                                ProgressView()
+                                Text("Searching\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                            }
+                        } else if let message = model.emptyMessage {
+                            Text(message).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
+                        } else if model.sections.isEmpty {
+                            Text("Search for movies and shows.")
+                                .font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
+                        }
+
+                        ForEach(model.sections, id: \.key) { section in
+                            CatalogRowView(section: section)
+                        }
                     }
+                    .padding(Theme.Spacing.screen)
                 }
-                .padding(60)
             }
-            .navigationTitle("Search")
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
             }

@@ -42,6 +42,9 @@ struct CachedAsyncImage: View {
                         .font(.system(size: 44))
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
+            } else if url == nil {
+                // Nothing to load — flat surface rather than an endless shimmer.
+                Theme.Palette.surface
             } else {
                 ShimmerView()
             }
