@@ -30,6 +30,8 @@ struct MainTabView: View {
                 .tabItem { Label("Home", systemImage: "house") }
             SearchView()
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
+            LibraryView()
+                .tabItem { Label("Library", systemImage: "books.vertical") }
             AddonsView()
                 .tabItem { Label("Add-ons", systemImage: "puzzlepiece.extension") }
         }
