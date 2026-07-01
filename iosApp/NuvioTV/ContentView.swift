@@ -34,6 +34,8 @@ struct MainTabView: View {
                 .tabItem { Label("Library", systemImage: "books.vertical") }
             AddonsView()
                 .tabItem { Label("Add-ons", systemImage: "puzzlepiece.extension") }
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
     }
 }
