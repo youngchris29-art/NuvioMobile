@@ -16,10 +16,13 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isWatched: Bool = false
     @Published private(set) var isSaved: Bool = false
+    /// Resolved, directly-playable trailer video URL for the hero (nil until/unless one resolves).
+    @Published private(set) var trailerVideoURL: String?
 
     private var detailWatcher: FlowWatcher?
     private var watchedWatcher: FlowWatcher?
     private var libraryWatcher: FlowWatcher?
+    private var didRequestTrailer = false
 
     private let preview: MetaPreview
     private var type: String { preview.type }
@@ -39,6 +42,7 @@ final class DetailViewModel: ObservableObject {
             self.isLoading = state.isLoading
             self.meta = state.meta
             self.errorMessage = state.errorMessage
+            if let m = state.meta { self.resolveTrailerIfNeeded(m) }
         }
 
         // Live Watched / Library state for the action buttons.
@@ -61,7 +65,37 @@ final class DetailViewModel: ObservableObject {
         detailWatcher?.cancel(); detailWatcher = nil
         watchedWatcher?.cancel(); watchedWatcher = nil
         libraryWatcher?.cancel(); libraryWatcher = nil
+        trailerVideoURL = nil
+        didRequestTrailer = false
         MetaDetailsRepository.shared.clear()
+    }
+
+    // MARK: - Hero trailer
+
+    /// Once per title: pick the best trailer (`selectHeroTrailer`), resolve its YouTube URL into a
+    /// directly-playable stream via the shared `HeroTrailerResolver`, and publish it. Fails soft —
+    /// if nothing resolves, `trailerVideoURL` stays nil and Detail keeps the static backdrop.
+    private func resolveTrailerIfNeeded(_ meta: MetaDetails) {
+        guard !didRequestTrailer else { return }
+        let trailers = meta.trailers
+        guard !trailers.isEmpty,
+              let trailer = HeroTrailerSelectorKt.selectHeroTrailer(trailers: trailers) else { return }
+        didRequestTrailer = true
+
+        let youtubeUrl = trailer.youtubePlaybackUrl()
+        HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { [weak self] source, _ in
+            DispatchQueue.main.async {
+                guard let self, let source else { return }
+                let video: String = source.videoUrl
+                if !video.isEmpty { self.trailerVideoURL = video }
+            }
+        }
+    }
+
+    /// The trailer surface reports it couldn't start (undecodable/stalled) — drop it so Detail keeps
+    /// the static backdrop. Not retried for this title.
+    func trailerFailed() {
+        trailerVideoURL = nil
     }
 
     // MARK: - Actions

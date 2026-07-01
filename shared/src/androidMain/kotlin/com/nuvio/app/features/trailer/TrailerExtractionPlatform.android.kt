@@ -15,8 +15,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-internal object TrailerExtractionPlatform {
-    val defaultHeaders: Map<String, String> = mapOf(
+internal actual object TrailerExtractionPlatform {
+    actual val defaultHeaders: Map<String, String> = mapOf(
         "accept-language" to "en-US,en;q=0.9",
         "user-agent" to
             "Mozilla/5.0 (Linux; Android 12; Android TV) AppleWebKit/537.36 " +
@@ -40,7 +40,7 @@ internal object TrailerExtractionPlatform {
         .followSslRedirects(true)
         .build()
 
-    suspend fun performRequest(
+    actual suspend fun performRequest(
         url: String,
         method: String,
         headers: Map<String, String>,
@@ -75,7 +75,7 @@ internal object TrailerExtractionPlatform {
             }
     }
 
-    suspend fun buildPlaybackSource(
+    actual suspend fun buildPlaybackSource(
         bestManifest: ManifestCandidate?,
         bestProgressive: StreamCandidate?,
         bestVideo: StreamCandidate?,

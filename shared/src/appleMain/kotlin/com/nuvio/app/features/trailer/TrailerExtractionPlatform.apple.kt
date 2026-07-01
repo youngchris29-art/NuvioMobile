@@ -20,8 +20,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSURLComponents
 import platform.Foundation.NSURLQueryItem
 
-internal object TrailerExtractionPlatform {
-    val defaultHeaders: Map<String, String> = mapOf(
+internal actual object TrailerExtractionPlatform {
+    actual val defaultHeaders: Map<String, String> = mapOf(
         "accept-language" to "en-US,en;q=0.9",
         "user-agent" to
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 " +
@@ -34,7 +34,7 @@ internal object TrailerExtractionPlatform {
         expectSuccess = false
     }
 
-    suspend fun performRequest(
+    actual suspend fun performRequest(
         url: String,
         method: String,
         headers: Map<String, String>,
@@ -71,7 +71,7 @@ internal object TrailerExtractionPlatform {
         )
     }
 
-    suspend fun buildPlaybackSource(
+    actual suspend fun buildPlaybackSource(
         bestManifest: ManifestCandidate?,
         bestProgressive: StreamCandidate?,
         bestVideo: StreamCandidate?,

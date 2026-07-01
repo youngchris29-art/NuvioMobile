@@ -17,7 +17,15 @@ struct DetailView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            backgroundLayer
+            backdropImage
+            // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
+            // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
+            if let trailer = model.trailerVideoURL, !showStreams {
+                TrailerHeroPlayer(videoURL: trailer, onFailure: { model.trailerFailed() })
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+            }
+            scrimOverlay
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     header
@@ -44,6 +52,7 @@ struct DetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .animation(.easeInOut(duration: 0.8), value: model.trailerVideoURL != nil)
         .onAppear { model.start() }
         .onDisappear { model.stop() }
         .fullScreenCover(isPresented: $showStreams) {
@@ -66,25 +75,29 @@ struct DetailView: View {
 
     // MARK: - Sections
 
-    private var backgroundLayer: some View {
+    private var backdropImage: some View {
         GeometryReader { geo in
             CachedAsyncImage(string: backgroundUrl)
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
-                .overlay(
-                    LinearGradient(
-                        colors: [.black.opacity(0.95), .black.opacity(0.4), .black.opacity(0.85)],
-                        startPoint: .leading, endPoint: .trailing
-                    )
-                )
-                .overlay(
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.9)],
-                        startPoint: .center, endPoint: .bottom
-                    )
-                )
         }
         .ignoresSafeArea()
+    }
+
+    /// Gradient scrims for text legibility, drawn over the backdrop (and the trailer, when present).
+    private var scrimOverlay: some View {
+        ZStack {
+            LinearGradient(
+                colors: [.black.opacity(0.95), .black.opacity(0.4), .black.opacity(0.85)],
+                startPoint: .leading, endPoint: .trailing
+            )
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.9)],
+                startPoint: .center, endPoint: .bottom
+            )
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
