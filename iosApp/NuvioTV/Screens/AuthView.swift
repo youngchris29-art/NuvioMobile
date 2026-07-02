@@ -37,7 +37,7 @@ struct AuthView: View {
                         .foregroundStyle(Theme.Palette.textPrimary)
                         .padding(Theme.Spacing.lg)
                         .frame(maxWidth: 800)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
                     SecureField("Password", text: $password)
                         .textFieldStyle(.plain)
@@ -46,7 +46,7 @@ struct AuthView: View {
                         .foregroundStyle(Theme.Palette.textPrimary)
                         .padding(Theme.Spacing.lg)
                         .frame(maxWidth: 800)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
                 }
 
                 if let error = model.errorMessage {

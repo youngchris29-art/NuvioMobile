@@ -69,7 +69,7 @@ struct ProfileSelectionView: View {
                                                 .font(.system(size: 28))
                                                 .foregroundStyle(Theme.Palette.textPrimary)
                                                 .padding(10)
-                                                .background(.thinMaterial, in: Circle())
+                                                .glassEffect(.regular, in: Circle())
                                         }
                                     }
                                 }
@@ -260,7 +260,7 @@ struct ProfileEditView: View {
                         .foregroundStyle(Theme.Palette.textPrimary)
                         .padding(Theme.Spacing.lg)
                         .frame(maxWidth: 700)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
                     // Cloud avatar catalog (hidden when empty — guest mode / offline).
                     if !model.avatars.isEmpty {

@@ -72,22 +72,24 @@ struct MainTabView: View {
     @Binding var selectedTab: Int
 
     var body: some View {
+        // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
+        // `.tabItem` API renders the older chrome).
         TabView(selection: $selectedTab) {
-            HomeView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
-                .tabItem { Label("Home", systemImage: "house") }
-                .tag(0)
-            SearchView()
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                .tag(1)
-            LibraryView()
-                .tabItem { Label("Library", systemImage: "books.vertical") }
-                .tag(2)
-            AddonsView()
-                .tabItem { Label("Add-ons", systemImage: "puzzlepiece.extension") }
-                .tag(3)
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(4)
+            Tab("Home", systemImage: "house", value: 0) {
+                HomeView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
+            }
+            Tab("Search", systemImage: "magnifyingglass", value: 1) {
+                SearchView()
+            }
+            Tab("Library", systemImage: "books.vertical", value: 2) {
+                LibraryView()
+            }
+            Tab("Add-ons", systemImage: "puzzlepiece.extension", value: 3) {
+                AddonsView()
+            }
+            Tab("Settings", systemImage: "gearshape", value: 4) {
+                SettingsView()
+            }
         }
     }
 }

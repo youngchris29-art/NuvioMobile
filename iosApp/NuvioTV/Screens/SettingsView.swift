@@ -460,7 +460,7 @@ private struct TmdbKeyEntryRow: View {
                     .foregroundStyle(Theme.Palette.textPrimary)
             }
             .padding(Theme.Spacing.lg)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
             Button {
                 if !key.isEmpty { onSave(key) }

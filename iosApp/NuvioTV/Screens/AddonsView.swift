@@ -37,7 +37,7 @@ struct AddonsView: View {
                     .font(.title3)
             }
             .padding(20)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
 
             HStack(spacing: 20) {
                 Button {
@@ -117,6 +117,6 @@ private struct AddonRow: View {
             .buttonStyle(.bordered)
         }
         .padding(20)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
     }
 }

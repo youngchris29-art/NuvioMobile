@@ -121,22 +121,22 @@ struct DetailView: View {
     private var metaLine: some View {
         HStack(spacing: Theme.Spacing.md + 2) {
             if let year = model.meta?.releaseInfo ?? preview.releaseInfo, !year.isEmpty {
-                label(year)
+                metaChip { Text(year) }
             }
             if let runtime = model.meta?.runtime, !runtime.isEmpty {
-                label(runtime)
+                metaChip { Text(runtime) }
             }
             if let rating = model.meta?.imdbRating ?? preview.imdbRating, !rating.isEmpty {
-                HStack(spacing: Theme.Spacing.xs - 2) {
-                    Image(systemName: "star.fill").foregroundStyle(Theme.Palette.star)
-                    Text(rating)
+                metaChip {
+                    HStack(spacing: Theme.Spacing.xs - 2) {
+                        Image(systemName: "star.fill").foregroundStyle(Theme.Palette.star)
+                        Text(rating)
+                    }
                 }
             }
             if let age = model.meta?.ageRating, !age.isEmpty {
-                label(age).overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.chip - 2)
-                        .stroke(Theme.Palette.textSecondary, lineWidth: 1).padding(-4)
-                )
+                // Outlined rating chip (e.g. "TV-MA"), mirroring mobile's bordered pill.
+                metaChip(stroked: true) { Text(age) }
             }
             if model.isLoading { ProgressView() }
         }
@@ -144,48 +144,66 @@ struct DetailView: View {
         .foregroundStyle(Theme.Palette.textSecondary)
     }
 
-    private var actionRow: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            if !isSeries {
-                Button {
-                    showStreams = true
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.lg)
-                        .padding(.vertical, Theme.Spacing.xxs + 2)
+    /// A small Liquid Glass capsule around one metadata item (year / runtime / rating).
+    private func metaChip(stroked: Bool = false, @ViewBuilder content: () -> some View) -> some View {
+        content()
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs - 2)
+            .glassEffect(.regular, in: .capsule)
+            .overlay {
+                if stroked {
+                    Capsule().stroke(Theme.Palette.textSecondary, lineWidth: 1)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.Palette.accent)
             }
+    }
 
-            Button {
-                model.toggleWatched()
-            } label: {
-                Label(
-                    model.isWatched ? "Watched" : "Mark Watched",
-                    systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
-                )
-                .font(Theme.Font.meta)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xxs + 2)
-            }
-            .buttonStyle(.bordered)
-            .tint(model.isWatched ? Theme.Palette.accent : nil)
+    /// Play + library/watched controls as one Liquid Glass cluster. The container lets the
+    /// individual glass shapes blend/morph as focus moves between them (mobile-reference look:
+    /// prominent Play pill next to compact glass buttons).
+    private var actionRow: some View {
+        GlassEffectContainer(spacing: Theme.Spacing.md) {
+            HStack(spacing: Theme.Spacing.md) {
+                if !isSeries {
+                    Button {
+                        showStreams = true
+                    } label: {
+                        Label("Play", systemImage: "play.fill")
+                            .font(Theme.Font.meta)
+                            .padding(.horizontal, Theme.Spacing.lg)
+                            .padding(.vertical, Theme.Spacing.xxs + 2)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.Palette.accent)
+                }
 
-            Button {
-                model.toggleLibrary()
-            } label: {
-                Label(
-                    model.isSaved ? "In Library" : "Add to Library",
-                    systemImage: model.isSaved ? "checkmark" : "plus"
-                )
-                .font(Theme.Font.meta)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xxs + 2)
+                Button {
+                    model.toggleWatched()
+                } label: {
+                    Label(
+                        model.isWatched ? "Watched" : "Mark Watched",
+                        systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                    )
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+                }
+                .buttonStyle(.glass)
+                .tint(model.isWatched ? Theme.Palette.accent : nil)
+
+                Button {
+                    model.toggleLibrary()
+                } label: {
+                    Label(
+                        model.isSaved ? "In Library" : "Add to Library",
+                        systemImage: model.isSaved ? "checkmark" : "plus"
+                    )
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+                }
+                .buttonStyle(.glass)
+                .tint(model.isSaved ? Theme.Palette.accent : nil)
             }
-            .buttonStyle(.bordered)
-            .tint(model.isSaved ? Theme.Palette.accent : nil)
         }
     }
 
@@ -340,9 +358,6 @@ struct DetailView: View {
         return "Collection"
     }
 
-    private func label(_ text: String) -> some View {
-        Text(text)
-    }
 }
 
 /// One label/value pair in the Detail info block. `id` is the label (unique within the block).
