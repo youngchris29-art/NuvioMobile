@@ -1,11 +1,15 @@
 import SwiftUI
 import SharedCore
 
-/// The Library tab: a focusable poster grid of the titles saved via "Add to Library". Tap opens the
-/// detail screen; long-press removes. Empty until the user saves something.
+/// The Library tab: a focusable poster grid of the titles saved via "Add to Library" (tap opens
+/// detail; long-press removes), plus — when a debrid provider with cloud support is connected —
+/// a "Debrid Cloud" source listing the provider's cloud files for direct playback.
 struct LibraryView: View {
     @StateObject private var model = LibraryViewModel()
+    @StateObject private var cloud = CloudLibraryViewModel()
     @Environment(\.posterStyle) private var posterStyle
+    @State private var showingCloud = false
+    @State private var filePicker: CloudFilePickerRoute?
 
     private var columns: [GridItem] {
         [GridItem(
@@ -25,7 +29,13 @@ struct LibraryView: View {
                             .font(Theme.Font.screenTitle)
                             .foregroundStyle(Theme.Palette.textPrimary)
 
-                        if model.items.isEmpty {
+                        if cloud.hasConnectedProvider {
+                            sourceChips
+                        }
+
+                        if showingCloud && cloud.hasConnectedProvider {
+                            cloudContent
+                        } else if model.items.isEmpty {
                             emptyState
                         } else {
                             LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
@@ -56,8 +66,95 @@ struct LibraryView: View {
                 PersonDetailView(personId: route.id, personName: route.name)
             }
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
+        .onAppear {
+            model.start()
+            cloud.start()
+        }
+        .onDisappear {
+            model.stop()
+            cloud.stop()
+        }
+        .fullScreenCover(item: $filePicker) { route in
+            CloudFilePickerView(item: route.item) { file in
+                cloud.play(item: route.item, file: file)
+            }
+        }
+        .fullScreenCover(item: $cloud.playback) { ctx in
+            // `.id` forces a fresh libmpv controller per context (same rule as StreamPickerView).
+            MPVPlayerScreen(context: ctx)
+                .ignoresSafeArea()
+                .id(ctx.id)
+        }
+    }
+
+    // MARK: - Source switcher (Saved / Debrid Cloud)
+
+    private var sourceChips: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            sourceChip("Saved", isActive: !showingCloud) { showingCloud = false }
+            sourceChip("Debrid Cloud", isActive: showingCloud) { showingCloud = true }
+        }
+    }
+
+    private func sourceChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.xs) {
+                if isActive {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                Text(label)
+            }
+            .font(Theme.Font.meta)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+        }
+        .buttonStyle(.bordered)
+        .tint(isActive ? Theme.Palette.accent : nil)
+    }
+
+    // MARK: - Debrid cloud content
+
+    @ViewBuilder
+    private var cloudContent: some View {
+        if let error = cloud.errorMessage {
+            Text(error)
+                .font(Theme.Font.caption)
+                .foregroundStyle(.red)
+                .frame(maxWidth: 1100, alignment: .leading)
+        }
+
+        HStack(spacing: Theme.Spacing.md) {
+            Button {
+                cloud.refresh()
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xs)
+            }
+            .buttonStyle(.bordered)
+            if cloud.isRefreshing {
+                ProgressView()
+            }
+        }
+
+        ForEach(cloud.providers, id: \.providerId) { provider in
+            CloudProviderSection(
+                provider: provider,
+                resolvingFileKey: cloud.resolvingFileKey
+            ) { item in
+                selectCloudItem(item)
+            }
+        }
+    }
+
+    private func selectCloudItem(_ item: CloudLibraryItem) {
+        let files = item.playableFiles
+        if files.count == 1, let file = files.first {
+            cloud.play(item: item, file: file)
+        } else if !files.isEmpty {
+            filePicker = CloudFilePickerRoute(item: item)
+        }
     }
 
     private var emptyState: some View {
