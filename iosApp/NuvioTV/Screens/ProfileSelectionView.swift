@@ -49,19 +49,30 @@ struct ProfileSelectionView: View {
     var body: some View {
         ZStack {
             Theme.Palette.background.ignoresSafeArea()
+            // Accent-derived wash (mobile reference: color-graded backdrop behind the picker).
+            LinearGradient(
+                colors: [Theme.Palette.accent.opacity(0.22), .clear],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea()
 
             VStack(spacing: Theme.Spacing.sectionGap) {
-                Text("Who\u{2019}s watching?")
-                    .font(Theme.Font.hero)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                VStack(spacing: Theme.Spacing.md) {
+                    Text("Who\u{2019}s watching?")
+                        .font(Theme.Font.hero)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                    Text("Select a profile to continue")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Theme.Spacing.xl) {
+                    HStack(alignment: .top, spacing: Theme.Spacing.xl) {
                         ForEach(model.profiles, id: \.profileIndex) { profile in
                             Button {
                                 requirePin(for: profile, action: .select)
                             } label: {
-                                profileTile(name: profile.name) {
+                                profileTile(name: profile.name, isPrimary: profile.profileIndex == 1) {
                                     ZStack(alignment: .bottomTrailing) {
                                         ProfileAvatar(profile: profile, avatars: model.avatars)
                                         if profile.pinEnabled {
@@ -70,6 +81,13 @@ struct ProfileSelectionView: View {
                                                 .foregroundStyle(Theme.Palette.textPrimary)
                                                 .padding(10)
                                                 .glassEffect(.regular, in: Circle())
+                                        } else if profile.profileIndex == 1 {
+                                            // Primary-profile star badge (mobile reference).
+                                            Image(systemName: "star.fill")
+                                                .font(.system(size: 22))
+                                                .foregroundStyle(.black)
+                                                .padding(8)
+                                                .background(Theme.Palette.star, in: Circle())
                                         }
                                     }
                                 }
@@ -107,6 +125,13 @@ struct ProfileSelectionView: View {
                     .padding(.horizontal, Theme.Spacing.screen)
                     .padding(.vertical, Theme.Spacing.lg)
                 }
+
+                Text("Hold to manage profile")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .padding(.horizontal, Theme.Spacing.lg)
+                    .padding(.vertical, Theme.Spacing.xs + 2)
+                    .glassEffect(.regular, in: .capsule)
             }
         }
         .onAppear { model.start() }
@@ -161,13 +186,26 @@ struct ProfileSelectionView: View {
         }
     }
 
-    private func profileTile<Content: View>(name: String, @ViewBuilder avatar: () -> Content) -> some View {
+    private func profileTile<Content: View>(
+        name: String,
+        isPrimary: Bool = false,
+        @ViewBuilder avatar: () -> Content
+    ) -> some View {
         VStack(spacing: Theme.Spacing.md) {
             avatar()
             Text(name)
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
                 .lineLimit(1)
+            if isPrimary {
+                Text("PRIMARY")
+                    .font(.system(size: 20, weight: .bold))
+                    .tracking(2)
+                    .foregroundStyle(Theme.Palette.star)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, 4)
+                    .glassEffect(.regular, in: .capsule)
+            }
         }
     }
 }
