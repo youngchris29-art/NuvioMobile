@@ -11,10 +11,14 @@ import SharedCore
 final class SettingsViewModel: ObservableObject {
     @Published private(set) var skipIntroEnabled = true
     @Published private(set) var catalogs: [HomeCatalogSettingsItem] = []
+    /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
+    @Published private(set) var tmdbEnabled = false
+    @Published private(set) var tmdbHasKey = false
 
     private var playerWatcher: FlowWatcher?
     private var catalogWatcher: FlowWatcher?
     private var addonWatcher: FlowWatcher?
+    private var tmdbWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -24,6 +28,13 @@ final class SettingsViewModel: ObservableObject {
         playerWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PlayerSettingsUiState else { return }
             self.skipIntroEnabled = state.skipIntroEnabled
+        }
+
+        TmdbSettingsRepository.shared.ensureLoaded()
+        tmdbWatcher = FlowWatcherKt.watch(TmdbSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? TmdbSettings else { return }
+            self.tmdbEnabled = state.enabled
+            self.tmdbHasKey = state.hasApiKey
         }
 
         // The catalog list is derived from the installed add-ons; sync it whenever they change so
@@ -44,12 +55,31 @@ final class SettingsViewModel: ObservableObject {
         playerWatcher?.cancel(); playerWatcher = nil
         catalogWatcher?.cancel(); catalogWatcher = nil
         addonWatcher?.cancel(); addonWatcher = nil
+        tmdbWatcher?.cancel(); tmdbWatcher = nil
     }
 
     // MARK: - Actions
 
     func setSkipIntro(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setSkipIntroEnabled(enabled: enabled)
+    }
+
+    // MARK: - TMDB
+
+    /// Save a key and turn enrichment on. Order matters: `setEnabled(true)` is a no-op while the key
+    /// is blank, so set the key first (the repo trims it and persists via NSUserDefaults).
+    func saveTmdbKey(_ key: String) {
+        TmdbSettingsRepository.shared.setApiKey(value: key)
+        TmdbSettingsRepository.shared.setEnabled(value: true)
+    }
+
+    func setTmdbEnabled(_ enabled: Bool) {
+        TmdbSettingsRepository.shared.setEnabled(value: enabled)
+    }
+
+    /// Clearing the key also disables enrichment (handled inside the repo).
+    func clearTmdbKey() {
+        TmdbSettingsRepository.shared.setApiKey(value: "")
     }
 
     func toggleCatalog(_ item: HomeCatalogSettingsItem) {
@@ -76,5 +106,6 @@ final class SettingsViewModel: ObservableObject {
         playerWatcher?.cancel()
         catalogWatcher?.cancel()
         addonWatcher?.cancel()
+        tmdbWatcher?.cancel()
     }
 }

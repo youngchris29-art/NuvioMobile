@@ -36,6 +36,17 @@ struct CatalogRoute: Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(key) }
 }
 
+/// Navigation value for a cast/crew member's detail page (TMDB person id + name for the initial
+/// render). Only produced when a `MetaPerson` has a `tmdbId`. Hashes on the id.
+struct PersonRoute: Hashable {
+    let id: Int
+    let name: String
+
+    static func == (lhs: PersonRoute, rhs: PersonRoute) -> Bool { lhs.id == rhs.id }
+
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
 /// One horizontal catalog (e.g. "Popular Movies", or a search-result group) as a focus-scrollable row
 /// of poster cards.
 ///

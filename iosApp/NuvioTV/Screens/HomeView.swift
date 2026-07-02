@@ -59,6 +59,9 @@ struct HomeView: View {
             .navigationDestination(for: CatalogRoute.self) { route in
                 CatalogGridView(route: route)
             }
+            .navigationDestination(for: PersonRoute.self) { route in
+                PersonDetailView(personId: route.id, personName: route.name)
+            }
             .fullScreenCover(item: $resume) { target in
                 StreamPickerView(
                     type: target.entry.parentMetaType,

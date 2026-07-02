@@ -51,6 +51,9 @@ struct LibraryView: View {
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
             }
+            .navigationDestination(for: PersonRoute.self) { route in
+                PersonDetailView(personId: route.id, personName: route.name)
+            }
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }

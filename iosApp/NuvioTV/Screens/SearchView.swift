@@ -52,6 +52,9 @@ struct SearchView: View {
             .navigationDestination(for: CatalogRoute.self) { route in
                 CatalogGridView(route: route)
             }
+            .navigationDestination(for: PersonRoute.self) { route in
+                PersonDetailView(personId: route.id, personName: route.name)
+            }
         }
         .onChange(of: query) { _, newValue in
             model.queryChanged(newValue)
