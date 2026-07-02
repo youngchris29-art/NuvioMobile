@@ -12,10 +12,26 @@ import SharedCore
 ///   4. `HomeRepository.uiState` emits the assembled catalog sections, which we republish for SwiftUI.
 ///
 /// Both flows are observed through the hand-written `FlowWatcher` bridge (no SKIE / kmp-nativecoroutines).
+/// One Home row: either an addon catalog section or a collection (folder tiles). Interleaved per
+/// the user's Home Rows settings order (`HomeCatalogSettingsItem`, collections keyed
+/// `collection_<id>`), mirroring mobile's Home composition.
+enum HomeRow: Identifiable {
+    case catalog(HomeCatalogSection)
+    case collection(NuvioCollection)
+
+    var id: String {
+        switch self {
+        case .catalog(let section): return section.key
+        case .collection(let collection): return "collection_\(collection.id)"
+        }
+    }
+}
+
 @MainActor
 final class HomeViewModel: ObservableObject {
     @Published private(set) var heroItems: [MetaPreview] = []
     @Published private(set) var sections: [HomeCatalogSection] = []
+    @Published private(set) var rows: [HomeRow] = []
     @Published private(set) var continueWatching: [WatchProgressEntry] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var errorMessage: String?
@@ -26,6 +42,10 @@ final class HomeViewModel: ObservableObject {
     private var addonWatcher: FlowWatcher?
     private var homeWatcher: FlowWatcher?
     private var progressWatcher: FlowWatcher?
+    private var collectionsWatcher: FlowWatcher?
+    private var catalogSettingsWatcher: FlowWatcher?
+    private var collections: [NuvioCollection] = []
+    private var settingsItems: [HomeCatalogSettingsItem] = []
     private var didSeed = false
     /// Guards against redundant `refresh` calls — only re-refresh when the ready-addon set changes.
     private var lastRefreshSignature = ""
@@ -42,6 +62,22 @@ final class HomeViewModel: ObservableObject {
             self.heroItems = state.heroItems
             self.sections = state.sections
             self.errorMessage = state.errorMessage
+            self.rebuildRows()
+        }
+
+        // Collections (synced from the cloud / curated on mobile) → folder-tile rows. Registering
+        // them with HomeCatalogSettingsRepository (like mobile's HomeScreen does) lets the Home Rows
+        // settings order/enable them alongside addon catalogs.
+        collectionsWatcher = FlowWatcherKt.watch(CollectionRepository.shared.collections) { [weak self] emitted in
+            guard let self, let collections = emitted as? [NuvioCollection] else { return }
+            self.collections = collections.filter { !$0.folders.isEmpty }
+            HomeCatalogSettingsRepository.shared.syncCollections(collections: collections)
+            self.rebuildRows()
+        }
+        catalogSettingsWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
+            self.settingsItems = state.items
+            self.rebuildRows()
         }
 
         // Installed addons → drive Home refresh.
@@ -58,16 +94,56 @@ final class HomeViewModel: ObservableObject {
 
         AddonRepository.shared.initialize()
         WatchProgressRepository.shared.ensureLoaded()
+        CollectionRepository.shared.initialize()
     }
 
     func stop() {
         addonWatcher?.cancel()
         homeWatcher?.cancel()
         progressWatcher?.cancel()
+        collectionsWatcher?.cancel()
+        catalogSettingsWatcher?.cancel()
         addonWatcher = nil
         homeWatcher = nil
         progressWatcher = nil
+        collectionsWatcher = nil
+        catalogSettingsWatcher = nil
         started = false
+    }
+
+    /// Interleaves catalog sections and collection rows per the Home Rows settings order (enabled
+    /// items only), mirroring mobile's Home composition. Anything the settings don't know about yet
+    /// (fresh install, settings sync lag) is appended in its natural order so nothing disappears.
+    private func rebuildRows() {
+        var built: [HomeRow] = []
+        var usedSectionKeys = Set<String>()
+        var usedCollectionIds = Set<String>()
+        let sectionsByKey = Dictionary(uniqueKeysWithValues: sections.map { ($0.key, $0) })
+        let collectionsById = Dictionary(uniqueKeysWithValues: collections.map { ($0.id, $0) })
+
+        for item in settingsItems {
+            if item.isCollection {
+                guard let id = item.collectionId else { continue }
+                usedCollectionIds.insert(id)
+                guard item.enabled, let collection = collectionsById[id] else { continue }
+                built.append(.collection(collection))
+            } else {
+                usedSectionKeys.insert(item.key)
+                guard item.enabled, let section = sectionsByKey[item.key] else { continue }
+                built.append(.catalog(section))
+            }
+        }
+
+        // Anything settings don't know about yet keeps rendering (disabled items were marked
+        // "used" above, so they stay hidden).
+        for section in sections where !usedSectionKeys.contains(section.key) {
+            built.append(.catalog(section))
+        }
+        for collection in collections where !usedCollectionIds.contains(collection.id) {
+            built.append(.collection(collection))
+        }
+
+        rows = built
     }
 
     private func onAddonsChanged(_ state: AddonsUiState) {

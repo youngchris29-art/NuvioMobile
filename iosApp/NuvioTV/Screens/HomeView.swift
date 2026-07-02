@@ -34,7 +34,7 @@ struct HomeView: View {
                             HeroBanner(item: hero)
                         }
 
-                        if model.sections.isEmpty {
+                        if model.rows.isEmpty {
                             placeholder
                         }
 
@@ -46,8 +46,15 @@ struct HomeView: View {
                             )
                         }
 
-                        ForEach(model.sections, id: \.key) { section in
-                            CatalogRowView(section: section)
+                        // Catalog sections and collection folder-tile rows, interleaved per the
+                        // user's Home Rows settings order.
+                        ForEach(model.rows) { row in
+                            switch row {
+                            case .catalog(let section):
+                                CatalogRowView(section: section)
+                            case .collection(let collection):
+                                CollectionRowView(collection: collection)
+                            }
                         }
                     }
                     .padding(Theme.Spacing.screen)
@@ -61,6 +68,9 @@ struct HomeView: View {
             }
             .navigationDestination(for: PersonRoute.self) { route in
                 PersonDetailView(personId: route.id, personName: route.name)
+            }
+            .navigationDestination(for: FolderRoute.self) { route in
+                FolderDetailView(route: route)
             }
             .fullScreenCover(item: $resume) { target in
                 StreamPickerView(
