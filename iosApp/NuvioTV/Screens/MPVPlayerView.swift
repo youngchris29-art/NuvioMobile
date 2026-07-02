@@ -1007,7 +1007,8 @@ private struct SkipPromptPill: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 30)
         .padding(.vertical, 16)
-        .background(Theme.Palette.accent, in: Capsule())
+        // Accent-tinted Liquid Glass over the video (matches the up-next card treatment).
+        .glassEffect(.regular.tint(Theme.Palette.accent.opacity(0.75)), in: .capsule)
         .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
     }
 }

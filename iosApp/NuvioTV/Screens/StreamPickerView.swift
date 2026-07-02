@@ -131,7 +131,7 @@ struct StreamPickerView: View {
                             Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
                                 .padding(.vertical, Theme.Spacing.xs)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
                     }
                     .padding(.top, Theme.Spacing.lg)
                 }
@@ -189,7 +189,7 @@ struct StreamPickerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, Theme.Spacing.xs + 2)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.glass)
     }
 }
 

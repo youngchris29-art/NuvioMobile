@@ -409,10 +409,11 @@ struct UpNextCard: View {
         }
         .padding(24)
         .frame(maxWidth: 620, alignment: .leading)
-        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 16))
+        // Liquid Glass over the playing video; the dark tint keeps text readable on bright scenes.
+        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 16))
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .stroke(Theme.Palette.accent.opacity(0.6), lineWidth: 2)
+                .stroke(Theme.Palette.accent.opacity(0.5), lineWidth: 1.5)
         )
         .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
     }
