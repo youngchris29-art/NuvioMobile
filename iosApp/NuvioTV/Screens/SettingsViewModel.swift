@@ -14,6 +14,8 @@ final class SettingsViewModel: ObservableObject {
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
     @Published private(set) var tmdbEnabled = false
     @Published private(set) var tmdbHasKey = false
+    /// Subtitle appearance (applied by the player on file load). Nil until settings load.
+    @Published private(set) var subtitleStyle: SubtitleStyleState?
 
     private var playerWatcher: FlowWatcher?
     private var catalogWatcher: FlowWatcher?
@@ -28,6 +30,7 @@ final class SettingsViewModel: ObservableObject {
         playerWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PlayerSettingsUiState else { return }
             self.skipIntroEnabled = state.skipIntroEnabled
+            self.subtitleStyle = state.subtitleStyle
         }
 
         TmdbSettingsRepository.shared.ensureLoaded()
@@ -80,6 +83,45 @@ final class SettingsViewModel: ObservableObject {
     /// Clearing the key also disables enrichment (handled inside the repo).
     func clearTmdbKey() {
         TmdbSettingsRepository.shared.setApiKey(value: "")
+    }
+
+    // MARK: - Subtitles
+
+    /// Rebuild the whole `SubtitleStyleState` with one field changed (KMP has no partial copy in
+    /// Swift), then persist. Colors are argb longs (0xAARRGGBB). No-ops until the style has loaded.
+    private func updateSubtitleStyle(_ transform: (SubtitleStyleState) -> SubtitleStyleState) {
+        guard let current = subtitleStyle else { return }
+        PlayerSettingsRepository.shared.setSubtitleStyle(style: transform(current))
+    }
+
+    func setSubtitleTextColor(_ argb: Int64) {
+        updateSubtitleStyle {
+            SubtitleStyleState(textColor: argb, backgroundColor: $0.backgroundColor, outlineColor: $0.outlineColor, outlineEnabled: $0.outlineEnabled, outlineWidth: $0.outlineWidth, bold: $0.bold, fontSizeSp: $0.fontSizeSp, bottomOffset: $0.bottomOffset, useForcedSubtitles: $0.useForcedSubtitles, showOnlyPreferredLanguages: $0.showOnlyPreferredLanguages)
+        }
+    }
+
+    func setSubtitleFontSize(_ sizeSp: Int32) {
+        updateSubtitleStyle {
+            SubtitleStyleState(textColor: $0.textColor, backgroundColor: $0.backgroundColor, outlineColor: $0.outlineColor, outlineEnabled: $0.outlineEnabled, outlineWidth: $0.outlineWidth, bold: $0.bold, fontSizeSp: sizeSp, bottomOffset: $0.bottomOffset, useForcedSubtitles: $0.useForcedSubtitles, showOnlyPreferredLanguages: $0.showOnlyPreferredLanguages)
+        }
+    }
+
+    func setSubtitleBackground(_ argb: Int64) {
+        updateSubtitleStyle {
+            SubtitleStyleState(textColor: $0.textColor, backgroundColor: argb, outlineColor: $0.outlineColor, outlineEnabled: $0.outlineEnabled, outlineWidth: $0.outlineWidth, bold: $0.bold, fontSizeSp: $0.fontSizeSp, bottomOffset: $0.bottomOffset, useForcedSubtitles: $0.useForcedSubtitles, showOnlyPreferredLanguages: $0.showOnlyPreferredLanguages)
+        }
+    }
+
+    func setSubtitleBold(_ bold: Bool) {
+        updateSubtitleStyle {
+            SubtitleStyleState(textColor: $0.textColor, backgroundColor: $0.backgroundColor, outlineColor: $0.outlineColor, outlineEnabled: $0.outlineEnabled, outlineWidth: $0.outlineWidth, bold: bold, fontSizeSp: $0.fontSizeSp, bottomOffset: $0.bottomOffset, useForcedSubtitles: $0.useForcedSubtitles, showOnlyPreferredLanguages: $0.showOnlyPreferredLanguages)
+        }
+    }
+
+    func setSubtitleOutline(_ enabled: Bool) {
+        updateSubtitleStyle {
+            SubtitleStyleState(textColor: $0.textColor, backgroundColor: $0.backgroundColor, outlineColor: $0.outlineColor, outlineEnabled: enabled, outlineWidth: $0.outlineWidth, bold: $0.bold, fontSizeSp: $0.fontSizeSp, bottomOffset: $0.bottomOffset, useForcedSubtitles: $0.useForcedSubtitles, showOnlyPreferredLanguages: $0.showOnlyPreferredLanguages)
+        }
     }
 
     func toggleCatalog(_ item: HomeCatalogSettingsItem) {

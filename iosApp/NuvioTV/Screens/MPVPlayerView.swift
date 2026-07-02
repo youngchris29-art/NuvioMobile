@@ -123,6 +123,8 @@ final class MPVTVPlayerViewController: UIViewController {
     private var seekDirection: Double = 0
     private var seekHoldCount = 0
     private var subtitleWatcher: FlowWatcher?
+    private var playerSettingsWatcher: FlowWatcher?
+    private var subtitleStyle: SubtitleStyleState?
     private var addedSubtitleUrls = Set<String>()
     private var fileLoaded = false
     private var skipSegments: [SkipSegment] = []
@@ -178,6 +180,15 @@ final class MPVTVPlayerViewController: UIViewController {
             subtitleWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.addonSubtitles) { [weak self] emitted in
                 guard let self, let subs = emitted as? [AddonSubtitle] else { return }
                 self.addAddonSubtitles(subs)
+            }
+
+            // Subtitle appearance from Settings (color/size/bold/outline/background). The watcher
+            // emits the current value immediately; re-apply live if the style changes mid-playback.
+            PlayerSettingsRepository.shared.ensureLoaded()
+            playerSettingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
+                guard let self, let settings = emitted as? PlayerSettingsUiState else { return }
+                self.subtitleStyle = settings.subtitleStyle
+                if self.fileLoaded { self.applySubtitleStyle() }
             }
         }
     }
@@ -309,7 +320,60 @@ final class MPVTVPlayerViewController: UIViewController {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language)
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        applySubtitleStyle()
         fetchSkipSegments()
+    }
+
+    // MARK: - Subtitle appearance (mirrors the mobile libmpv mapping)
+
+    /// Push the user's subtitle style into libmpv. Colors are `SubtitleColor` argb longs (0xAARRGGBB);
+    /// the size/outline/border-style formulas match `PlayerEngine.android`'s `applySubtitleStyle`.
+    private func applySubtitleStyle() {
+        guard mpv != nil, let style = subtitleStyle else { return }
+        setMpvString("sub-ass-override", "no")
+        setMpvString("sub-color", mpvColorString(style.textColor))
+        setMpvString("sub-back-color", mpvColorString(style.backgroundColor))
+        setMpvString("sub-outline-color", mpvColorString(style.outlineColor))
+        setMpvString("sub-border-color", mpvColorString(style.outlineColor))
+        setMpvString("sub-border-style", subtitleBorderStyle(style))
+        setMpvString("sub-bold", style.bold ? "yes" : "no")
+        setMpvInt("sub-font-size", subtitleFontSize(style))
+        let outline = subtitleOutlineSize(style)
+        setMpvInt("sub-outline-size", outline)
+        setMpvInt("sub-border-size", outline)
+        setMpvInt("sub-pos", Int64(max(0, min(100, 100 - Int(style.bottomOffset) / 10))))
+    }
+
+    private func mpvColorString(_ argb: Int64) -> String {
+        let a = (argb >> 24) & 0xFF, r = (argb >> 16) & 0xFF, g = (argb >> 8) & 0xFF, b = argb & 0xFF
+        return String(format: "#%02X%02X%02X%02X", a, r, g, b)
+    }
+
+    private func subtitleFontSize(_ s: SubtitleStyleState) -> Int64 {
+        let scaled = Int(Double(s.fontSizeSp) * (55.0 / 18.0))
+        return Int64(max(36, min(122, scaled)))
+    }
+
+    private func subtitleOutlineSize(_ s: SubtitleStyleState) -> Int64 {
+        guard s.outlineEnabled else { return 0 }
+        return Int64(max(1, Int(Double(s.outlineWidth) * 1.5)))
+    }
+
+    private func subtitleBorderStyle(_ s: SubtitleStyleState) -> String {
+        if s.outlineEnabled { return "outline-and-shadow" }
+        let backgroundAlpha = (s.backgroundColor >> 24) & 0xFF
+        return backgroundAlpha > 0 ? "opaque-box" : "outline-and-shadow"
+    }
+
+    private func setMpvString(_ name: String, _ value: String) {
+        guard let mpv else { return }
+        checkError(mpv_set_property_string(mpv, name, value))
+    }
+
+    private func setMpvInt(_ name: String, _ value: Int64) {
+        guard let mpv else { return }
+        var v = value
+        mpv_set_property(mpv, name, MPV_FORMAT_INT64, &v)
     }
 
     /// Fetch intro/recap/outro segments for a series episode (no-op for movies / missing episode
@@ -560,6 +624,7 @@ final class MPVTVPlayerViewController: UIViewController {
         pollTimer?.invalidate()
         seekTimer?.invalidate()
         subtitleWatcher?.cancel()
+        playerSettingsWatcher?.cancel()
         SubtitleRepository.shared.clear()
         destroyPlayer()
     }
