@@ -6,6 +6,8 @@ import SharedCore
 /// then title. Tapping an episode opens the stream picker with that episode's playback videoId.
 struct EpisodesSection: View {
     let meta: MetaDetails
+    /// IMDb ratings keyed "season:episode" (from `DetailViewModel.episodeRatings`); empty = no badges.
+    var episodeRatings: [String: Double] = [:]
 
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
@@ -42,7 +44,11 @@ struct EpisodesSection: View {
                     Button {
                         episodeForStreams = EpisodeRoute(meta: meta, episode: episode)
                     } label: {
-                        EpisodeCard(episode: episode, fallbackImage: meta.background ?? meta.poster)
+                        EpisodeCard(
+                            episode: episode,
+                            fallbackImage: meta.background ?? meta.poster,
+                            rating: rating(for: episode)
+                        )
                     }
                     .buttonStyle(.card)
                 }
@@ -116,6 +122,11 @@ struct EpisodesSection: View {
         }
         return episode.title
     }
+
+    private func rating(for episode: MetaVideo) -> Double? {
+        guard let s = episode.season?.value, let e = episode.episode?.value else { return nil }
+        return episodeRatings["\(s):\(e)"]
+    }
 }
 
 /// `KotlinInt` is an `NSNumber` subclass, whose `.intValue` Swift accessor is `Int32`. This converts
@@ -134,6 +145,8 @@ private struct EpisodeRoute: Identifiable {
 private struct EpisodeCard: View {
     let episode: MetaVideo
     let fallbackImage: String?
+    /// IMDb rating for this episode (badge hidden when nil).
+    var rating: Double? = nil
 
     var body: some View {
         // Widen the Kotlin String to an explicit optional (it surfaces as non-optional in Swift).
@@ -153,7 +166,12 @@ private struct EpisodeCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(heading).font(.headline).lineLimit(2)
+                HStack(spacing: 12) {
+                    Text(heading).font(.headline).lineLimit(2)
+                    if let rating {
+                        ratingBadge(rating)
+                    }
+                }
                 if let text = overview, !text.isEmpty {
                     Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(3)
                 }
@@ -161,6 +179,28 @@ private struct EpisodeCard: View {
             Spacer(minLength: 0)
         }
         .padding(12)
+    }
+
+    /// Heatmap-colored IMDb rating chip (green ≥ 8.5, lime ≥ 7, orange ≥ 5.5, red below).
+    private func ratingBadge(_ value: Double) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "star.fill")
+            Text(String(format: "%.1f", value))
+        }
+        .font(.caption.bold())
+        .foregroundStyle(.black.opacity(0.85))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(ratingColor(value), in: Capsule())
+    }
+
+    private func ratingColor(_ value: Double) -> Color {
+        switch value {
+        case 8.5...: return Color(red: 0.22, green: 0.78, blue: 0.36)
+        case 7.0..<8.5: return Color(red: 0.68, green: 0.85, blue: 0.25)
+        case 5.5..<7.0: return .orange
+        default: return Color(red: 0.9, green: 0.3, blue: 0.25)
+        }
     }
 
     private var thumbnailURL: String {

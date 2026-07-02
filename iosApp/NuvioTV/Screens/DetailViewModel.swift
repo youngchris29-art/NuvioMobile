@@ -18,11 +18,20 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var isSaved: Bool = false
     /// Resolved, directly-playable trailer video URL for the hero (nil until/unless one resolves).
     @Published private(set) var trailerVideoURL: String?
+    /// Trakt community comments (empty while Trakt is disconnected — the shared repo no-ops).
+    @Published private(set) var comments: [TraktCommentReview] = []
+    /// IMDb episode ratings keyed "season:episode" (api.imdbapi.dev, keyless).
+    @Published private(set) var episodeRatings: [String: Double] = [:]
+    /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
+    @Published private(set) var parentalWarnings: [ParentalWarning] = []
 
     private var detailWatcher: FlowWatcher?
     private var watchedWatcher: FlowWatcher?
     private var libraryWatcher: FlowWatcher?
     private var didRequestTrailer = false
+    private var didRequestComments = false
+    private var didRequestRatings = false
+    private var didRequestGuide = false
 
     private let preview: MetaPreview
     private var type: String { preview.type }
@@ -42,7 +51,12 @@ final class DetailViewModel: ObservableObject {
             self.isLoading = state.isLoading
             self.meta = state.meta
             self.errorMessage = state.errorMessage
-            if let m = state.meta { self.resolveTrailerIfNeeded(m) }
+            if let m = state.meta {
+                self.resolveTrailerIfNeeded(m)
+                self.fetchCommentsIfNeeded(m)
+                self.fetchEpisodeRatingsIfNeeded(m)
+                self.fetchParentalGuideIfNeeded(m)
+            }
         }
 
         // Live Watched / Library state for the action buttons.
@@ -99,6 +113,83 @@ final class DetailViewModel: ObservableObject {
     func trailerFailed() {
         trailerVideoURL = nil
     }
+
+    // MARK: - Trakt comments
+
+    /// Once per title: first page of Trakt community comments. The shared repo resolves the Trakt
+    /// ids from `meta` itself and returns an empty page when Trakt isn't connected, so the section
+    /// simply stays hidden in that case.
+    private func fetchCommentsIfNeeded(_ meta: MetaDetails) {
+        guard !didRequestComments else { return }
+        didRequestComments = true
+        TraktCommentsRepository.shared.getCommentsPage(meta: meta, page: 1, forceRefresh: false) { [weak self] page, _ in
+            DispatchQueue.main.async {
+                guard let self, let page else { return }
+                self.comments = page.items
+            }
+        }
+    }
+
+    // MARK: - IMDb episode ratings (series only)
+
+    /// Once per series: per-episode IMDb ratings from api.imdbapi.dev (keyless), keyed
+    /// "season:episode" for the episode list to badge. Movies and titles without a tt/tmdb id skip.
+    private func fetchEpisodeRatingsIfNeeded(_ meta: MetaDetails) {
+        guard !didRequestRatings, EpisodesSection.isSeriesLike(meta) else { return }
+        let imdbId = ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: meta.id)
+            ?? ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: id)
+        let tmdbId = ParentalGuideRepositoryKt.extractParentalGuideTmdbId(value: meta.id)
+            ?? ParentalGuideRepositoryKt.extractParentalGuideTmdbId(value: id)
+        guard imdbId != nil || tmdbId != nil else { return }
+        didRequestRatings = true
+
+        ImdbEpisodeRatingsRepository.shared.getEpisodeRatings(imdbId: imdbId, tmdbId: tmdbId) { [weak self] ratings, _ in
+            DispatchQueue.main.async {
+                guard let self, let ratings else { return }
+                // Kotlin Map<Pair<Int, Int>, Double> — unwrap the KotlinPair keys defensively
+                // (generics erase across the ObjC bridge).
+                var mapped: [String: Double] = [:]
+                for (key, value) in ratings {
+                    guard let season = (key.first as? KotlinInt)?.value,
+                          let episode = (key.second as? KotlinInt)?.value else { continue }
+                    mapped["\(season):\(episode)"] = value.doubleValue
+                }
+                self.episodeRatings = mapped
+            }
+        }
+    }
+
+    // MARK: - Parental guide
+
+    /// Once per title: IMDb parents-guide severities, mapped to display chips via the shared
+    /// `buildParentalWarnings` (labels supplied here — tvOS is English-only).
+    private func fetchParentalGuideIfNeeded(_ meta: MetaDetails) {
+        guard !didRequestGuide else { return }
+        guard let imdbId = ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: meta.id)
+            ?? ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: id) else { return }
+        didRequestGuide = true
+
+        ParentalGuideRepository.shared.getParentalGuide(imdbId: imdbId) { [weak self] result, _ in
+            DispatchQueue.main.async {
+                guard let self, let result else { return }
+                self.parentalWarnings = ParentalGuideRepositoryKt.buildParentalWarnings(
+                    guide: result,
+                    labels: Self.parentalGuideLabels
+                )
+            }
+        }
+    }
+
+    static let parentalGuideLabels = ParentalGuideLabels(
+        nudity: "Nudity",
+        violence: "Violence",
+        profanity: "Profanity",
+        alcohol: "Alcohol & Drugs",
+        frightening: "Frightening Scenes",
+        severe: "Severe",
+        moderate: "Moderate",
+        mild: "Mild"
+    )
 
     // MARK: - Actions
 

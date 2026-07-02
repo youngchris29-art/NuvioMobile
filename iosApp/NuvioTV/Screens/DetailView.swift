@@ -9,6 +9,8 @@ struct DetailView: View {
 
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
+    /// Trakt comment ids the user has expanded (reveals spoilers / full text).
+    @State private var expandedComments: Set<Int64> = []
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -42,13 +44,21 @@ struct DetailView: View {
                             .frame(maxWidth: 1100, alignment: .leading)
                             .foregroundStyle(Theme.Palette.textPrimary)
                     }
-                    infoSection
-                    if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
-                        EpisodesSection(meta: meta)
+                    // Grouped to stay under ViewBuilder's 10-subview ceiling.
+                    Group {
+                        infoSection
+                        companyLogosRow
+                        parentalGuideSection
                     }
-                    castRow
-                    collectionRow
-                    moreLikeThisRow
+                    if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
+                        EpisodesSection(meta: meta, episodeRatings: model.episodeRatings)
+                    }
+                    Group {
+                        castRow
+                        collectionRow
+                        moreLikeThisRow
+                        commentsSection
+                    }
                 }
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -356,6 +366,176 @@ struct DetailView: View {
         let name: String? = model.meta?.collectionName
         if let name, !name.isEmpty { return name }
         return "Collection"
+    }
+
+    // MARK: - Company logos (studios & networks with TMDB logo art)
+
+    /// Logo strip for the production companies/networks that carry TMDB logo art (the info rows
+    /// above already list all of them by name). White chips keep the mostly-dark logos readable.
+    @ViewBuilder
+    private var companyLogosRow: some View {
+        let companies = companyLogos
+        if !companies.isEmpty {
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(Array(companies.enumerated()), id: \.offset) { _, company in
+                    AsyncImage(url: URL(string: company.logo ?? "")) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().aspectRatio(contentMode: .fit)
+                        } else {
+                            Text(company.name)
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(.black)
+                        }
+                    }
+                    .frame(height: 36)
+                    .frame(minWidth: 60, maxWidth: 180)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xs)
+                    .background(Color.white.opacity(0.92), in: Capsule())
+                }
+            }
+        }
+    }
+
+    private var companyLogos: [MetaCompany] {
+        guard let meta = model.meta else { return [] }
+        var seen = Set<String>()
+        return (meta.productionCompanies + meta.networks).filter { company in
+            let logo: String? = company.logo
+            guard let logo, !logo.isEmpty, !seen.contains(company.name) else { return false }
+            seen.insert(company.name)
+            return true
+        }
+        .prefix(6).map { $0 }
+    }
+
+    // MARK: - Parental guide (IMDb parents-guide severities)
+
+    @ViewBuilder
+    private var parentalGuideSection: some View {
+        let warnings = model.parentalWarnings
+        if !warnings.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Text("Parental Guide")
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                HStack(spacing: Theme.Spacing.md) {
+                    ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in
+                        HStack(spacing: Theme.Spacing.xs) {
+                            Circle()
+                                .fill(severityColor(warning.severity))
+                                .frame(width: 12, height: 12)
+                            Text(warning.label)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+                            Text(warning.severity)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                        }
+                        .font(Theme.Font.caption)
+                        .padding(.horizontal, Theme.Spacing.md)
+                        .padding(.vertical, Theme.Spacing.xs)
+                        .glassEffect(.regular, in: .capsule)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Severity strings come back as the labels we supplied (`parentalGuideLabels`).
+    private func severityColor(_ severity: String) -> Color {
+        switch severity {
+        case "Severe": return .red
+        case "Moderate": return .orange
+        default: return .yellow
+        }
+    }
+
+    // MARK: - Trakt community comments
+
+    @ViewBuilder
+    private var commentsSection: some View {
+        let comments = model.comments
+        if !comments.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Text("Comments")
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    ForEach(Array(comments.prefix(8).enumerated()), id: \.element.id) { _, comment in
+                        commentCard(comment)
+                    }
+                }
+                Text("From Trakt")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            .frame(maxWidth: 1100, alignment: .leading)
+        }
+    }
+
+    /// One comment as a focusable card. Pressing reveals spoilers / expands long text.
+    private func commentCard(_ comment: TraktCommentReview) -> some View {
+        let expanded = expandedComments.contains(comment.id)
+        let hidesForSpoiler = (comment.spoiler || comment.hasSpoilerContent) && !expanded
+        return Button {
+            if expanded {
+                expandedComments.remove(comment.id)
+            } else {
+                expandedComments.insert(comment.id)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                HStack(spacing: Theme.Spacing.md) {
+                    Text(comment.authorDisplayName)
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                    if let rating = comment.rating?.value {
+                        HStack(spacing: 2) {
+                            Image(systemName: "star.fill")
+                                .foregroundStyle(Theme.Palette.star)
+                            Text("\(rating)/10")
+                        }
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                    if let date = commentDate(comment) {
+                        Text(date)
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                    if comment.review {
+                        Text("Review")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.accent)
+                    }
+                    Spacer(minLength: 0)
+                    if comment.likes > 0 {
+                        Label("\(comment.likes)", systemImage: "heart.fill")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                }
+                if hidesForSpoiler {
+                    Label("Contains spoilers \u{2014} press to reveal", systemImage: "eye.slash")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                } else {
+                    Text(comment.comment)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .lineLimit(expanded ? nil : 5)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(Theme.Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.card)
+    }
+
+    private func commentDate(_ comment: TraktCommentReview) -> String? {
+        let raw: String? = comment.createdAt
+        guard let raw, raw.count >= 10 else { return nil }
+        return String(raw.prefix(10))
     }
 
 }
