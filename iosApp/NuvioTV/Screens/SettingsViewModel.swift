@@ -16,6 +16,9 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var tmdbHasKey = false
     /// Subtitle appearance (applied by the player on file load). Nil until settings load.
     @Published private(set) var subtitleStyle: SubtitleStyleState?
+    /// Preferred track languages (player auto-selects a matching track on load).
+    @Published private(set) var preferredAudioLanguage = "device"
+    @Published private(set) var preferredSubtitleLanguage = "none"
 
     private var playerWatcher: FlowWatcher?
     private var catalogWatcher: FlowWatcher?
@@ -31,6 +34,8 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? PlayerSettingsUiState else { return }
             self.skipIntroEnabled = state.skipIntroEnabled
             self.subtitleStyle = state.subtitleStyle
+            self.preferredAudioLanguage = state.preferredAudioLanguage
+            self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
         }
 
         TmdbSettingsRepository.shared.ensureLoaded()
@@ -122,6 +127,16 @@ final class SettingsViewModel: ObservableObject {
         updateSubtitleStyle {
             SubtitleStyleState(textColor: $0.textColor, backgroundColor: $0.backgroundColor, outlineColor: $0.outlineColor, outlineEnabled: enabled, outlineWidth: $0.outlineWidth, bold: $0.bold, fontSizeSp: $0.fontSizeSp, bottomOffset: $0.bottomOffset, useForcedSubtitles: $0.useForcedSubtitles, showOnlyPreferredLanguages: $0.showOnlyPreferredLanguages)
         }
+    }
+
+    // MARK: - Track languages
+
+    func setPreferredAudioLanguage(_ code: String) {
+        PlayerSettingsRepository.shared.setPreferredAudioLanguage(language: code)
+    }
+
+    func setPreferredSubtitleLanguage(_ code: String) {
+        PlayerSettingsRepository.shared.setPreferredSubtitleLanguage(language: code)
     }
 
     func toggleCatalog(_ item: HomeCatalogSettingsItem) {

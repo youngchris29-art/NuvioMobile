@@ -66,6 +66,23 @@ struct SettingsView: View {
                             }
                         }
 
+                        section("Audio & Subtitle Language") {
+                            Text("When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .frame(maxWidth: 1100, alignment: .leading)
+                            LanguageSelectRow(
+                                title: "Audio",
+                                options: LanguageOptions.audio,
+                                selected: model.preferredAudioLanguage
+                            ) { model.setPreferredAudioLanguage($0) }
+                            LanguageSelectRow(
+                                title: "Subtitles",
+                                options: LanguageOptions.subtitle,
+                                selected: model.preferredSubtitleLanguage
+                            ) { model.setPreferredSubtitleLanguage($0) }
+                        }
+
                         section("Metadata (TMDB)") {
                             Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
                                 .font(Theme.Font.caption)
@@ -390,5 +407,53 @@ private struct SubtitleAppearanceControls: View {
             blue: Double(argb & 0xFF) / 255.0,
             opacity: Double((argb >> 24) & 0xFF) / 255.0
         )
+    }
+}
+
+/// Language options for the audio/subtitle preference pickers. Special sentinels (`device`,
+/// `original`, `none`) match the shared `AudioLanguageOption`/`SubtitleLanguageOption` constants;
+/// labels are local since the shared label table lives in the mobile module.
+private enum LanguageOptions {
+    static let languages: [(name: String, code: String)] = [
+        ("English", "en"), ("Spanish", "es"), ("French", "fr"), ("German", "de"),
+        ("Italian", "it"), ("Portuguese", "pt"), ("Japanese", "ja"), ("Korean", "ko"),
+        ("Chinese", "zh"), ("Russian", "ru"), ("Hindi", "hi"), ("Arabic", "ar")
+    ]
+    static var audio: [(name: String, code: String)] {
+        [("Device", "device"), ("Original", "original")] + languages
+    }
+    static var subtitle: [(name: String, code: String)] {
+        [("Off", "none"), ("Device", "device")] + languages
+    }
+}
+
+/// A horizontally-scrolling row of language chips; the current selection is tinted.
+private struct LanguageSelectRow: View {
+    let title: String
+    let options: [(name: String, code: String)]
+    let selected: String
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Text(title)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Theme.Spacing.md) {
+                    ForEach(options, id: \.code) { option in
+                        Button { onSelect(option.code) } label: {
+                            Text(option.name)
+                                .font(Theme.Font.meta)
+                                .padding(.horizontal, Theme.Spacing.md)
+                                .padding(.vertical, Theme.Spacing.xxs + 2)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(selected == option.code ? Theme.Palette.accent : nil)
+                    }
+                }
+                .padding(.vertical, Theme.Spacing.xs)
+            }
+        }
     }
 }

@@ -124,7 +124,8 @@ final class MPVTVPlayerViewController: UIViewController {
     private var seekHoldCount = 0
     private var subtitleWatcher: FlowWatcher?
     private var playerSettingsWatcher: FlowWatcher?
-    private var subtitleStyle: SubtitleStyleState?
+    private var playerSettings: PlayerSettingsUiState?
+    private var didAutoSelectTracks = false
     private var addedSubtitleUrls = Set<String>()
     private var fileLoaded = false
     private var skipSegments: [SkipSegment] = []
@@ -187,7 +188,7 @@ final class MPVTVPlayerViewController: UIViewController {
             PlayerSettingsRepository.shared.ensureLoaded()
             playerSettingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
                 guard let self, let settings = emitted as? PlayerSettingsUiState else { return }
-                self.subtitleStyle = settings.subtitleStyle
+                self.playerSettings = settings
                 if self.fileLoaded { self.applySubtitleStyle() }
             }
         }
@@ -293,6 +294,63 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         state.audioTracks = audio
         state.subtitleTracks = subs.count > 1 ? subs : []
+        autoSelectPreferredTracks()
+    }
+
+    /// Once, on first load: pick the audio/subtitle track matching the user's preferred languages
+    /// (Settings > Audio & Subtitle Language) using the shared language matcher. Leaves mpv's own
+    /// defaults when nothing matches or no preference is set.
+    private func autoSelectPreferredTracks() {
+        guard !didAutoSelectTracks, let settings = playerSettings, mpv != nil else { return }
+        let count = getInt("track-list/count")
+        guard count > 0 else { return }
+
+        var audioTracks: [(id: Int, lang: String)] = []
+        var subTracks: [(id: Int, lang: String)] = []
+        for i in 0..<count {
+            let type = getString("track-list/\(i)/type") ?? ""
+            let id = getInt("track-list/\(i)/id")
+            let lang = getString("track-list/\(i)/lang") ?? ""
+            if type == "audio" { audioTracks.append((id, lang)) }
+            else if type == "sub" { subTracks.append((id, lang)) }
+        }
+        guard !audioTracks.isEmpty || !subTracks.isEmpty else { return }
+        didAutoSelectTracks = true
+
+        let deviceLanguages = DeviceLanguagePreferences.shared.preferredLanguageCodes()
+
+        // Audio: only worth switching when there's more than one option.
+        if audioTracks.count > 1 {
+            let targets = PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
+                preferredAudioLanguage: settings.preferredAudioLanguage,
+                secondaryPreferredAudioLanguage: settings.secondaryPreferredAudioLanguage,
+                deviceLanguages: deviceLanguages,
+                contentOriginalLanguage: nil
+            )
+            if let id = firstTrackId(matching: targets, in: audioTracks) {
+                setMpvInt("aid", Int64(id))
+            }
+        }
+
+        // Subtitles: enable the preferred-language track if one exists (targets empty for "Off").
+        let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
+            preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
+            secondaryPreferredSubtitleLanguage: settings.secondaryPreferredSubtitleLanguage,
+            deviceLanguages: deviceLanguages
+        )
+        if !subTracks.isEmpty, let id = firstTrackId(matching: subTargets, in: subTracks) {
+            setMpvInt("sid", Int64(id))
+        }
+    }
+
+    /// First track (in track order) whose language matches the highest-priority target with any hit.
+    private func firstTrackId(matching targets: [String], in tracks: [(id: Int, lang: String)]) -> Int? {
+        for target in targets {
+            for track in tracks where PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: track.lang, targetLanguage: target) {
+                return track.id
+            }
+        }
+        return nil
     }
 
     private func trackLabel(index: Int, fallbackId: Int) -> String {
@@ -329,7 +387,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Push the user's subtitle style into libmpv. Colors are `SubtitleColor` argb longs (0xAARRGGBB);
     /// the size/outline/border-style formulas match `PlayerEngine.android`'s `applySubtitleStyle`.
     private func applySubtitleStyle() {
-        guard mpv != nil, let style = subtitleStyle else { return }
+        guard mpv != nil, let style = playerSettings?.subtitleStyle else { return }
         setMpvString("sub-ass-override", "no")
         setMpvString("sub-color", mpvColorString(style.textColor))
         setMpvString("sub-back-color", mpvColorString(style.backgroundColor))
