@@ -41,6 +41,14 @@ struct SettingsView: View {
                             }
                         }
 
+                        section("Theme") {
+                            Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .frame(maxWidth: 1100, alignment: .leading)
+                            ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
+                        }
+
                         section("Trakt") {
                             traktSection
                         }
@@ -235,6 +243,56 @@ struct SettingsView: View {
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
             content()
+        }
+    }
+}
+
+/// A row of theme swatches (one per shared `AppTheme`); the selected one wears a ring. Swatch
+/// colors mirror `AppTheme.nativeAccentHex` (and Theme.Palette.applyTheme's table).
+private struct ThemePickerRow: View {
+    let selectedName: String
+    let onSelect: (AppTheme) -> Void
+
+    private static let options: [(theme: AppTheme, label: String, color: Color)] = [
+        (.crimson, "Crimson", Color(hex: 0xE53935)),
+        (.ocean, "Ocean", Color(hex: 0x1E88E5)),
+        (.violet, "Violet", Color(hex: 0x8E24AA)),
+        (.emerald, "Emerald", Color(hex: 0x43A047)),
+        (.amber, "Amber", Color(hex: 0xFB8C00)),
+        (.rose, "Rose", Color(hex: 0xD81B60)),
+        (.white, "White", Color(hex: 0xF5F5F5)),
+    ]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(Self.options, id: \.label) { option in
+                    let isSelected = option.theme.name == selectedName
+                    Button {
+                        onSelect(option.theme)
+                    } label: {
+                        VStack(spacing: Theme.Spacing.xs) {
+                            Circle()
+                                .fill(option.color)
+                                .frame(width: 56, height: 56)
+                                .overlay(
+                                    Circle().strokeBorder(
+                                        isSelected ? Theme.Palette.textPrimary : .clear,
+                                        lineWidth: 4
+                                    )
+                                )
+                            Text(option.label)
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(
+                                    isSelected ? Theme.Palette.textPrimary : Theme.Palette.textSecondary
+                                )
+                        }
+                        .padding(Theme.Spacing.sm)
+                    }
+                    .buttonStyle(.card)
+                }
+            }
+            .padding(.vertical, Theme.Spacing.sm)
         }
     }
 }

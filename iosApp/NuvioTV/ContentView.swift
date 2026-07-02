@@ -9,7 +9,9 @@ struct ContentView: View {
     @StateObject private var auth = AuthViewModel()
     @StateObject private var profiles = ProfilesViewModel()
     @StateObject private var posterStyle = PosterStyleModel()
+    @StateObject private var appTheme = AppThemeModel()
     @State private var entered = false
+    @State private var selectedTab = 0
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -27,7 +29,8 @@ struct ContentView: View {
                 if entered {
                     MainTabView(
                         activeProfile: profiles.activeProfile,
-                        onSwitchProfile: { entered = false }
+                        onSwitchProfile: { entered = false },
+                        selectedTab: $selectedTab
                     )
                     .environmentObject(auth)
                 } else {
@@ -36,9 +39,13 @@ struct ContentView: View {
             }
         }
         .environment(\.posterStyle, posterStyle.style)
+        // Theme change → rebuild the tree so every static Theme.Palette.accent read re-evaluates.
+        // (Navigation/focus state resets on change — acceptable; it only happens in Settings.)
+        .id(appTheme.themeName)
         .onAppear {
             auth.start()
             posterStyle.start()
+            appTheme.start()
         }
         .onChange(of: auth.gate) { _, newGate in
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
@@ -60,19 +67,27 @@ struct ContentView: View {
 struct MainTabView: View {
     let activeProfile: NuvioProfile?
     let onSwitchProfile: () -> Void
+    /// Owned by ContentView (above the theme `.id()` rebuild boundary) so changing the theme in
+    /// Settings doesn't dump the user back onto the Home tab.
+    @Binding var selectedTab: Int
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             HomeView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
                 .tabItem { Label("Home", systemImage: "house") }
+                .tag(0)
             SearchView()
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
+                .tag(1)
             LibraryView()
                 .tabItem { Label("Library", systemImage: "books.vertical") }
+                .tag(2)
             AddonsView()
                 .tabItem { Label("Add-ons", systemImage: "puzzlepiece.extension") }
+                .tag(3)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(4)
         }
     }
 }

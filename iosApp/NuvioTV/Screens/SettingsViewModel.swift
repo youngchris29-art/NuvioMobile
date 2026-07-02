@@ -10,6 +10,9 @@ import SharedCore
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published private(set) var skipIntroEnabled = true
+    /// The selected app theme's enum name ("CRIMSON", "OCEAN", ...). Persisted profile-scoped via
+    /// the tvOS ThemeSettingsStore adapter; the root AppThemeModel applies it to the palette.
+    @Published private(set) var themeName = "CRIMSON"
     @Published private(set) var catalogs: [HomeCatalogSettingsItem] = []
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
     @Published private(set) var tmdbEnabled = false
@@ -25,6 +28,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var posterHideLabels = false
     @Published private(set) var posterLandscapeRows = false
 
+    private var themeWatcher: FlowWatcher?
     private var playerWatcher: FlowWatcher?
     private var catalogWatcher: FlowWatcher?
     private var addonWatcher: FlowWatcher?
@@ -34,6 +38,12 @@ final class SettingsViewModel: ObservableObject {
 
     func start() {
         guard playerWatcher == nil else { return }
+
+        ThemeSettingsRepository.shared.ensureLoaded()
+        themeWatcher = FlowWatcherKt.watch(ThemeSettingsRepository.shared.selectedTheme) { [weak self] emitted in
+            guard let self, let theme = emitted as? AppTheme else { return }
+            self.themeName = theme.name
+        }
 
         PlayerSettingsRepository.shared.ensureLoaded()
         playerWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
@@ -75,6 +85,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func stop() {
+        themeWatcher?.cancel(); themeWatcher = nil
         playerWatcher?.cancel(); playerWatcher = nil
         catalogWatcher?.cancel(); catalogWatcher = nil
         addonWatcher?.cancel(); addonWatcher = nil
@@ -83,6 +94,10 @@ final class SettingsViewModel: ObservableObject {
     }
 
     // MARK: - Actions
+
+    func setTheme(_ theme: AppTheme) {
+        ThemeSettingsRepository.shared.setTheme(theme: theme)
+    }
 
     func setSkipIntro(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setSkipIntroEnabled(enabled: enabled)

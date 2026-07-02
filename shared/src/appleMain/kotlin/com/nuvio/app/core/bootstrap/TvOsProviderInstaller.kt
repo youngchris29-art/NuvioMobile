@@ -29,6 +29,8 @@ import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.search.SearchHistoryRepository
 import com.nuvio.app.features.search.SearchRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
+import com.nuvio.app.features.settings.ThemeSettingsStoreProvider
+import com.nuvio.app.features.settings.TvOsThemeSettingsStore
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamContextStore
 import com.nuvio.app.features.streams.StreamLaunchStore
@@ -87,6 +89,11 @@ fun installTvOsSharedProviders() {
     // platform (p_platform), so tvOS must identify as "tv" — otherwise it would read/overwrite the
     // phone's blob (the shared default is "mobile").
     SyncPlatformProvider.platform = TV_SYNC_PLATFORM
+
+    // Theme persistence: the shared default ThemeSettingsStore is a no-op (theme would reset every
+    // launch). The tvOS adapter persists to NSUserDefaults (profile-scoped keys) and defaults to
+    // CRIMSON — the app's launch look. Installed before any ThemeSettingsRepository.ensureLoaded().
+    ThemeSettingsStoreProvider.store = TvOsThemeSettingsStore
 
     // Account-data cleaner: AuthRepository.signOut()/session-invalidation call this seam to wipe
     // local state. The default is a no-op, which on tvOS would let guest-mode data (keyed by
@@ -234,6 +241,8 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         ContinueWatchingEnrichmentCache.onProfileChanged()
         AddonRepository.onProfileChanged(profileIndex)
         SearchHistoryRepository.onProfileChanged()
+        // Theme is profile-scoped (ProfileScopedKey) — reload it for the new profile.
+        ThemeSettingsRepository.onProfileChanged()
         HomeRepository.clear()
     }
 

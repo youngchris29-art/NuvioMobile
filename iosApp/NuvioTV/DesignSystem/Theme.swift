@@ -16,10 +16,26 @@ enum Theme {
         static let surface = Color(hex: 0x1A1A1A)
         /// Higher-elevation surface (chips, controls).
         static let surfaceElevated = Color(hex: 0x242424)
-        /// Brand accent (Crimson secondary).
-        static let accent = Color(hex: 0xE53935)
-        /// Focus ring / highlight (brighter accent).
-        static let accentFocus = Color(hex: 0xFF5252)
+        /// Brand accent — mutable so the user's theme choice applies (see `applyTheme`). Reads are
+        /// re-evaluated when ContentView re-identifies the tree on a theme change, so plain static
+        /// access everywhere keeps working. `nonisolated(unsafe)`: only mutated on the main actor.
+        nonisolated(unsafe) static var accent = Color(hex: 0xE53935)
+        /// Focus ring / highlight (brighter accent). Mutable — follows the theme with `accent`.
+        nonisolated(unsafe) static var accentFocus = Color(hex: 0xFF5252)
+
+        /// Retints the palette for a shared `AppTheme` (by enum name). Accents mirror mobile's
+        /// `ThemeColors.kt` (`AppTheme.nativeAccentHex`), with a brighter focus variant per theme.
+        static func applyTheme(named name: String) {
+            switch name {
+            case "OCEAN":   accent = Color(hex: 0x1E88E5); accentFocus = Color(hex: 0x42A5F5)
+            case "VIOLET":  accent = Color(hex: 0x8E24AA); accentFocus = Color(hex: 0xAB47BC)
+            case "EMERALD": accent = Color(hex: 0x43A047); accentFocus = Color(hex: 0x66BB6A)
+            case "AMBER":   accent = Color(hex: 0xFB8C00); accentFocus = Color(hex: 0xFFA726)
+            case "ROSE":    accent = Color(hex: 0xD81B60); accentFocus = Color(hex: 0xEC407A)
+            case "WHITE":   accent = Color(hex: 0xF5F5F5); accentFocus = Color(hex: 0xFFFFFF)
+            default:        accent = Color(hex: 0xE53935); accentFocus = Color(hex: 0xFF5252) // CRIMSON
+            }
+        }
         /// Primary text on dark backgrounds.
         static let textPrimary = Color(hex: 0xF5F7F8)
         /// Secondary / muted text.
