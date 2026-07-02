@@ -21,6 +21,10 @@ struct StreamPickerView: View {
 
     @StateObject private var model: StreamsViewModel
     @State private var selected: PlaybackContext?
+    /// Episodes fetched on demand when a series launch path didn't supply them (Home
+    /// continue-watching, Detail's primary Play). Filled from `MetaDetailsRepository.fetch`
+    /// (cache-first, side-effect free) so next-episode autoplay works from every path.
+    @State private var fetchedEpisodes: [MetaVideo] = []
     @Environment(\.dismiss) private var dismiss
 
     private let testStreamURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!
@@ -65,8 +69,22 @@ struct StreamPickerView: View {
                 SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
             },
             bingeGroup: { let bg: String? = stream?.behaviorHints.bingeGroup; return bg }(),
-            episodes: episodes
+            episodes: episodes.isEmpty ? fetchedEpisodes : episodes
         )
+    }
+
+    /// Series launch paths that don't carry the episode list (Home continue-watching, Detail's
+    /// primary Play) get it fetched here so the player can offer next-episode autoplay. No-op for
+    /// movies and for paths that already passed `episodes` (EpisodesSection).
+    private func fetchEpisodesIfNeeded() {
+        guard episodes.isEmpty, fetchedEpisodes.isEmpty,
+              ["series", "tv", "show", "tvshow"].contains(type.lowercased()) else { return }
+        MetaDetailsRepository.shared.fetch(type: type, id: parentMetaId) { details, _ in
+            let videos = details?.videos ?? []
+            guard !videos.isEmpty else { return }
+            // Suspend completions can land off-main; hop before mutating view state.
+            DispatchQueue.main.async { fetchedEpisodes = videos }
+        }
     }
 
     var body: some View {
@@ -122,7 +140,10 @@ struct StreamPickerView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.Palette.background.ignoresSafeArea())
-            .onAppear { model.start() }
+            .onAppear {
+                model.start()
+                fetchEpisodesIfNeeded()
+            }
             .onDisappear { model.stop() }
             .fullScreenCover(item: $selected) { ctx in
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
