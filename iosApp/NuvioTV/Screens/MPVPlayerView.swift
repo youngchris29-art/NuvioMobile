@@ -1,3 +1,4 @@
+import AVFAudio
 import Combine
 import SwiftUI
 import UIKit
@@ -230,6 +231,20 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - MPV setup (proven option set from the iOS player)
 
     private func setupMpv() {
+        // On REAL tvOS hardware no audio routes to HDMI unless the AVAudioSession is active
+        // BEFORE the audio unit initializes — and with audio-fallback-to-null=yes a failed
+        // audiounit init silently plays video with no sound (the simulator doesn't enforce
+        // this, which is why audio worked there). The app-startup activation is async on a
+        // background queue, so re-activate synchronously here (idempotent, cheap) and LOG
+        // failures instead of swallowing them.
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setActive(true)
+        } catch {
+            print("[MPV] AVAudioSession activation FAILED: \(error)")
+        }
+
         mpv = mpv_create()
         guard mpv != nil else { print("[MPV] Failed to create mpv instance"); return }
 
@@ -245,7 +260,13 @@ final class MPVTVPlayerViewController: UIViewController {
             ("gpu-api", "vulkan"),
             ("gpu-context", "moltenvk"),
             ("hwdec", "videotoolbox"),
-            ("ao", "audiounit"),
+            // On REAL Apple TV hardware ao_audiounit fails to init entirely: its channel-layout
+            // query returns kAudioUnitErr_InvalidProperty (-10879) → ao=null → silence (the sim
+            // worked because the Mac's stereo output answers the query). ao_avfoundation
+            // (AVSampleBufferAudioRenderer, Apple-native) doesn't need that query — use it first,
+            // fall back to audiounit. Requires MPVKit >= 0.41.0-n8.1.2 (PR #73 enabled the
+            // avfoundation ao for tvOS; PROVEN working on Apple TV 4K 3rd gen 2026-07-02).
+            ("ao", "avfoundation,audiounit"),
             ("audio-channels", "auto"),
             ("audio-fallback-to-null", "yes"),
             ("vulkan-swap-mode", "fifo"),
