@@ -55,7 +55,8 @@ struct EpisodesSection: View {
                 title: Self.episodeTitle(route.episode),
                 parentMetaId: route.meta.id,
                 season: route.episode.season?.value,
-                episode: route.episode.episode?.value
+                episode: route.episode.episode?.value,
+                episodes: route.meta.videos
             )
         }
     }

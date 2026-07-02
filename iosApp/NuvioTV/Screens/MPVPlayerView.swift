@@ -20,6 +20,10 @@ struct PlaybackContext: Identifiable {
     let streamTitle: String?
     let streamSubtitle: String?
     let externalSubtitles: [SubtitleFile]
+    /// Binge group of the playing stream (steers next-episode auto-select toward the same release).
+    var bingeGroup: String? = nil
+    /// All episodes of the parent series (empty for movies) — enables next-episode autoplay.
+    var episodes: [MetaVideo] = []
 
     var id: String { "\(videoId)|\(url.absoluteString)" }
 }
@@ -84,6 +88,11 @@ final class MPVPlaybackState: ObservableObject {
     var selectAudio: ((Int) -> Void)?
     var selectSubtitle: ((Int) -> Void)?
     var reclaimFocus: (() -> Void)?
+
+    /// Wired by `NextEpisodeEngine`: down-press plays the ready next episode (returns true when
+    /// consumed, so the skip pill doesn't also fire); backward seek cancels the countdown.
+    var upNextPlayNow: (() -> Bool)?
+    var upNextCancel: (() -> Void)?
 
     let title: String
     init(title: String) { self.title = title }
@@ -467,7 +476,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 if state.hasTracks { state.showTracks = true }
                 handled = true
             case .downArrow:
-                if let prompt = state.skipPrompt {
+                if state.upNextPlayNow?() == true {
+                    handled = true
+                } else if let prompt = state.skipPrompt {
                     seekAbsolute(prompt.targetSec)
                     state.skipPrompt = nil
                     flashControls()
@@ -492,6 +503,8 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Start seeking in `dir` (±1). Immediate ±10s, then holds seek in accelerating steps.
     private func beginSeek(_ dir: Double) {
+        // Seeking backward means the user is still watching — abandon next-episode autoplay.
+        if dir < 0 { state.upNextCancel?() }
         endSeek()
         seekDirection = dir
         seekHoldCount = 0
@@ -667,16 +680,28 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: MPVTVPlayerViewController, context: Context) {}
 }
 
-/// SwiftUI host for the libmpv player + transport overlay; presented full-screen over the stream picker.
+/// SwiftUI host for the libmpv player + transport overlay; presented full-screen over the stream
+/// picker. When `onPlayNext` is provided and the context carries the series episode list, a
+/// next-episode autoplay card appears near the end of playback (`NextEpisodeEngine`).
+///
+/// NOTE for presenters: when swapping contexts for autoplay, apply `.id(context.id)` so SwiftUI
+/// rebuilds this screen (and the libmpv controller) for the new episode.
 struct MPVPlayerScreen: View {
     let context: PlaybackContext
+    var onPlayNext: ((PlaybackContext) -> Void)? = nil
 
     @StateObject private var state: MPVPlaybackState
+    @StateObject private var upNext: NextEpisodeEngine
     @Environment(\.dismiss) private var dismiss
 
-    init(context: PlaybackContext) {
+    init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil) {
         self.context = context
+        self.onPlayNext = onPlayNext
         _state = StateObject(wrappedValue: MPVPlaybackState(title: context.title))
+        _upNext = StateObject(wrappedValue: NextEpisodeEngine(
+            context: context,
+            onPlayNext: onPlayNext ?? { _ in }
+        ))
     }
 
     var body: some View {
@@ -694,7 +719,17 @@ struct MPVPlayerScreen: View {
                 .opacity(state.controlsVisible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
 
-            if let prompt = state.skipPrompt {
+            if upNext.phase != .hidden {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        UpNextCard(engine: upNext)
+                            .padding(60)
+                    }
+                }
+                .transition(.opacity)
+            } else if let prompt = state.skipPrompt {
                 VStack {
                     Spacer()
                     HStack {
@@ -707,8 +742,18 @@ struct MPVPlayerScreen: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: state.skipPrompt)
+        .animation(.easeInOut(duration: 0.25), value: upNext.phase)
         .fullScreenCover(isPresented: $state.showTracks, onDismiss: { state.reclaimFocus?() }) {
             TrackPickerView(state: state)
+        }
+        .onAppear {
+            if onPlayNext != nil, !context.episodes.isEmpty {
+                upNext.start(state: state)
+            }
+        }
+        .onDisappear { upNext.stop() }
+        .onChange(of: state.positionSec) { _, position in
+            upNext.onProgress(positionSec: position, durationSec: state.durationSec)
         }
     }
 }

@@ -15,6 +15,9 @@ struct StreamPickerView: View {
     let parentMetaId: String
     let season: Int?
     let episode: Int?
+    /// All episodes of the parent series (from `MetaDetails.videos`); enables next-episode
+    /// autoplay in the player. Empty for movies or launch paths without the series meta.
+    let episodes: [MetaVideo]
 
     @StateObject private var model: StreamsViewModel
     @State private var selected: PlaybackContext?
@@ -22,13 +25,22 @@ struct StreamPickerView: View {
 
     private let testStreamURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!
 
-    init(type: String, videoId: String, title: String, parentMetaId: String? = nil, season: Int? = nil, episode: Int? = nil) {
+    init(
+        type: String,
+        videoId: String,
+        title: String,
+        parentMetaId: String? = nil,
+        season: Int? = nil,
+        episode: Int? = nil,
+        episodes: [MetaVideo] = []
+    ) {
         self.type = type
         self.videoId = videoId
         self.title = title
         self.parentMetaId = parentMetaId ?? videoId
         self.season = season
         self.episode = episode
+        self.episodes = episodes
         _model = StateObject(wrappedValue: StreamsViewModel(
             type: type, videoId: videoId, parentMetaId: parentMetaId, season: season, episode: episode
         ))
@@ -51,7 +63,9 @@ struct StreamPickerView: View {
             streamSubtitle: { let s: String? = stream?.description_; return s }(),
             externalSubtitles: (stream?.externalSubtitles ?? []).map { sub in
                 SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
-            }
+            },
+            bingeGroup: { let bg: String? = stream?.behaviorHints.bingeGroup; return bg }(),
+            episodes: episodes
         )
     }
 
@@ -111,8 +125,12 @@ struct StreamPickerView: View {
             .onAppear { model.start() }
             .onDisappear { model.stop() }
             .fullScreenCover(item: $selected) { ctx in
-                MPVPlayerScreen(context: ctx)
+                // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
+                // episode's context (a same-position cover would otherwise keep the old libmpv
+                // controller and just ignore the new context).
+                MPVPlayerScreen(context: ctx, onPlayNext: { next in selected = next })
                     .ignoresSafeArea()
+                    .id(ctx.id)
             }
         }
     }
