@@ -15,12 +15,14 @@ struct CatalogGridView: View {
         _model = StateObject(wrappedValue: CatalogGridViewModel(target: route.target))
     }
 
-    private let columns = [
-        GridItem(
-            .adaptive(minimum: Theme.Size.posterWidth + Theme.Spacing.rowGap),
+    @Environment(\.posterStyle) private var posterStyle
+
+    private var columns: [GridItem] {
+        [GridItem(
+            .adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap),
             spacing: Theme.Spacing.rowGap
-        )
-    ]
+        )]
+    }
 
     var body: some View {
         ZStack {

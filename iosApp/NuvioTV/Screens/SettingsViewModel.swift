@@ -19,11 +19,17 @@ final class SettingsViewModel: ObservableObject {
     /// Preferred track languages (player auto-selects a matching track on load).
     @Published private(set) var preferredAudioLanguage = "device"
     @Published private(set) var preferredSubtitleLanguage = "none"
+    /// Poster card style (size in dp, corner radius in dp, hide titles, landscape catalog rows).
+    @Published private(set) var posterWidthDp: Int32 = 126
+    @Published private(set) var posterCornerRadiusDp: Int32 = 12
+    @Published private(set) var posterHideLabels = false
+    @Published private(set) var posterLandscapeRows = false
 
     private var playerWatcher: FlowWatcher?
     private var catalogWatcher: FlowWatcher?
     private var addonWatcher: FlowWatcher?
     private var tmdbWatcher: FlowWatcher?
+    private var posterStyleWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -45,6 +51,15 @@ final class SettingsViewModel: ObservableObject {
             self.tmdbHasKey = state.hasApiKey
         }
 
+        PosterCardStyleRepository.shared.ensureLoaded()
+        posterStyleWatcher = FlowWatcherKt.watch(PosterCardStyleRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? PosterCardStyleUiState else { return }
+            self.posterWidthDp = state.widthDp
+            self.posterCornerRadiusDp = state.cornerRadiusDp
+            self.posterHideLabels = state.hideLabelsEnabled
+            self.posterLandscapeRows = state.catalogLandscapeModeEnabled
+        }
+
         // The catalog list is derived from the installed add-ons; sync it whenever they change so
         // the Home Rows list stays current (tvOS has to call this itself).
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
@@ -64,6 +79,7 @@ final class SettingsViewModel: ObservableObject {
         catalogWatcher?.cancel(); catalogWatcher = nil
         addonWatcher?.cancel(); addonWatcher = nil
         tmdbWatcher?.cancel(); tmdbWatcher = nil
+        posterStyleWatcher?.cancel(); posterStyleWatcher = nil
     }
 
     // MARK: - Actions
@@ -139,6 +155,28 @@ final class SettingsViewModel: ObservableObject {
         PlayerSettingsRepository.shared.setPreferredSubtitleLanguage(language: code)
     }
 
+    // MARK: - Poster style
+
+    func setPosterWidth(_ dp: Int32) {
+        PosterCardStyleRepository.shared.setWidthDp(widthDp: dp)
+    }
+
+    func setPosterCorner(_ dp: Int32) {
+        PosterCardStyleRepository.shared.setCornerRadiusDp(cornerRadiusDp: dp)
+    }
+
+    func setPosterHideLabels(_ enabled: Bool) {
+        PosterCardStyleRepository.shared.setHideLabelsEnabled(enabled: enabled)
+    }
+
+    func setPosterLandscapeRows(_ enabled: Bool) {
+        PosterCardStyleRepository.shared.setCatalogLandscapeModeEnabled(enabled: enabled)
+    }
+
+    func resetPosterStyle() {
+        PosterCardStyleRepository.shared.resetToDefaults()
+    }
+
     func toggleCatalog(_ item: HomeCatalogSettingsItem) {
         HomeCatalogSettingsRepository.shared.setEnabled(key: item.key, enabled: !item.enabled)
         refreshHome()
@@ -164,5 +202,6 @@ final class SettingsViewModel: ObservableObject {
         catalogWatcher?.cancel()
         addonWatcher?.cancel()
         tmdbWatcher?.cancel()
+        posterStyleWatcher?.cancel()
     }
 }

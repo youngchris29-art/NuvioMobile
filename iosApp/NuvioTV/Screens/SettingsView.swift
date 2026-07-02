@@ -83,6 +83,20 @@ struct SettingsView: View {
                             ) { model.setPreferredSubtitleLanguage($0) }
                         }
 
+                        section("Poster Style") {
+                            PosterStyleControls(
+                                widthDp: model.posterWidthDp,
+                                cornerDp: model.posterCornerRadiusDp,
+                                hideLabels: model.posterHideLabels,
+                                landscapeRows: model.posterLandscapeRows,
+                                onSize: { model.setPosterWidth($0) },
+                                onCorner: { model.setPosterCorner($0) },
+                                onHideLabels: { model.setPosterHideLabels($0) },
+                                onLandscape: { model.setPosterLandscapeRows($0) },
+                                onReset: { model.resetPosterStyle() }
+                            )
+                        }
+
                         section("Metadata (TMDB)") {
                             Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
                                 .font(Theme.Font.caption)
@@ -455,5 +469,73 @@ private struct LanguageSelectRow: View {
                 .padding(.vertical, Theme.Spacing.xs)
             }
         }
+    }
+}
+
+/// Poster card style controls: size, corner radius, hide-titles and landscape-rows toggles, and a
+/// reset. Values are the shared dp presets (scaled to tvOS points by `PosterStyle`).
+private struct PosterStyleControls: View {
+    let widthDp: Int32
+    let cornerDp: Int32
+    let hideLabels: Bool
+    let landscapeRows: Bool
+    let onSize: (Int32) -> Void
+    let onCorner: (Int32) -> Void
+    let onHideLabels: (Bool) -> Void
+    let onLandscape: (Bool) -> Void
+    let onReset: () -> Void
+
+    private let sizes: [(name: String, dp: Int32)] = [("Small", 105), ("Medium", 126), ("Large", 154)]
+    private let corners: [(name: String, dp: Int32)] = [("Square", 0), ("Rounded", 12), ("Round", 28)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            controlRow("Size") {
+                ForEach(sizes, id: \.dp) { size in
+                    chip(size.name, selected: widthDp == size.dp) { onSize(size.dp) }
+                }
+            }
+            controlRow("Corners") {
+                ForEach(corners, id: \.dp) { corner in
+                    chip(corner.name, selected: cornerDp == corner.dp) { onCorner(corner.dp) }
+                }
+            }
+
+            SettingsToggleRow(title: "Hide Titles", subtitle: "Show posters without a title label", isOn: hideLabels) {
+                onHideLabels(!hideLabels)
+            }
+            SettingsToggleRow(title: "Landscape Rows", subtitle: "Show Home & Search catalog rows as wide 16:9 cards", isOn: landscapeRows) {
+                onLandscape(!landscapeRows)
+            }
+
+            Button(role: .destructive, action: onReset) {
+                Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Text(title)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            HStack(spacing: Theme.Spacing.md) { content() }
+        }
+    }
+
+    private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(Theme.Font.meta)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xxs + 2)
+        }
+        .buttonStyle(.bordered)
+        .tint(selected ? Theme.Palette.accent : nil)
     }
 }

@@ -5,13 +5,14 @@ import SharedCore
 /// detail screen; long-press removes. Empty until the user saves something.
 struct LibraryView: View {
     @StateObject private var model = LibraryViewModel()
+    @Environment(\.posterStyle) private var posterStyle
 
-    private let columns = [
-        GridItem(
-            .adaptive(minimum: Theme.Size.posterWidth + Theme.Spacing.rowGap),
+    private var columns: [GridItem] {
+        [GridItem(
+            .adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap),
             spacing: Theme.Spacing.rowGap
-        )
-    ]
+        )]
+    }
 
     var body: some View {
         NavigationStack {

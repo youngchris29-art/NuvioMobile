@@ -57,6 +57,8 @@ struct CatalogRowView: View {
     let section: HomeCatalogSection
     var onSelect: ((MetaPreview) -> Void)? = nil
 
+    @Environment(\.posterStyle) private var posterStyle
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             HStack(alignment: .firstTextBaseline) {
@@ -83,11 +85,11 @@ struct CatalogRowView: View {
                 LazyHStack(spacing: Theme.Spacing.rowGap) {
                     ForEach(section.items, id: \.id) { item in
                         if let onSelect {
-                            Button { onSelect(item) } label: { PosterCardView(item: item) }
+                            Button { onSelect(item) } label: { card(for: item) }
                                 .buttonStyle(.card)
                         } else {
                             NavigationLink(value: TitleRoute(preview: item)) {
-                                PosterCardView(item: item)
+                                card(for: item)
                             }
                             .buttonStyle(.card)
                         }
@@ -96,6 +98,23 @@ struct CatalogRowView: View {
                 .padding(.vertical, Theme.Spacing.sm)
             }
         }
+    }
+
+    /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog rows.
+    @ViewBuilder
+    private func card(for item: MetaPreview) -> some View {
+        if posterStyle.landscapeCatalogRows {
+            LandscapeCard(title: item.name, imageURL: landscapeImageURL(item))
+        } else {
+            PosterCardView(item: item)
+        }
+    }
+
+    private func landscapeImageURL(_ item: MetaPreview) -> String? {
+        let banner: String? = item.banner
+        if let banner, !banner.isEmpty { return banner }
+        let poster: String? = item.poster
+        return poster
     }
 }
 

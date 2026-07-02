@@ -8,6 +8,7 @@ import SharedCore
 struct ContentView: View {
     @StateObject private var auth = AuthViewModel()
     @StateObject private var profiles = ProfilesViewModel()
+    @StateObject private var posterStyle = PosterStyleModel()
     @State private var entered = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -34,7 +35,11 @@ struct ContentView: View {
                 }
             }
         }
-        .onAppear { auth.start() }
+        .environment(\.posterStyle, posterStyle.style)
+        .onAppear {
+            auth.start()
+            posterStyle.start()
+        }
         .onChange(of: auth.gate) { _, newGate in
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
             if newGate != .main { entered = false }

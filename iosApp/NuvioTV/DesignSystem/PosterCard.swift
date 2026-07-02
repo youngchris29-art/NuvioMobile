@@ -13,30 +13,37 @@ import SwiftUI
 struct PosterCard: View {
     let title: String
     let imageURL: String?
-    var width: CGFloat = Theme.Size.posterWidth
-    var height: CGFloat = Theme.Size.posterHeight
-    var showTitle: Bool = true
+    /// Explicit sizes override the environment style (used by the small "more like this" / credit
+    /// rails); leave nil to follow the user's Poster Style setting.
+    var width: CGFloat? = nil
+    var height: CGFloat? = nil
+    var showTitle: Bool? = nil
 
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.posterStyle) private var style
+
+    private var resolvedWidth: CGFloat { width ?? style.width }
+    private var resolvedHeight: CGFloat { height ?? style.height }
+    private var titleVisible: Bool { showTitle ?? style.showTitle }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             CachedAsyncImage(string: imageURL)
-                .frame(width: width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+                .frame(width: resolvedWidth, height: resolvedHeight)
+                .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
                 .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    RoundedRectangle(cornerRadius: style.cornerRadius)
                         .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
                 )
 
-            if showTitle {
+            if titleVisible {
                 Text(title)
                     .font(Theme.Font.cardTitle)
                     .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
-                    .frame(width: width, alignment: .leading)
+                    .frame(width: resolvedWidth, alignment: .leading)
             }
         }
         .animation(.easeOut(duration: 0.15), value: isFocused)
@@ -52,17 +59,21 @@ struct LandscapeCard: View {
     var progress: Double? = nil
     var width: CGFloat = Theme.Size.landscapeWidth
     var height: CGFloat = Theme.Size.landscapeHeight
+    var showTitle: Bool? = nil
 
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.posterStyle) private var style
+
+    private var titleVisible: Bool { showTitle ?? style.showTitle }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: imageURL)
                     .frame(width: width, height: height)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+                    .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.card)
+                        RoundedRectangle(cornerRadius: style.cornerRadius)
                             .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
                     )
 
@@ -80,13 +91,15 @@ struct LandscapeCard: View {
             }
             .frame(width: width, height: height)
 
-            Text(title)
-                .font(Theme.Font.cardTitle)
-                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .padding(.horizontal, Theme.Spacing.xs)
-                .frame(width: width, alignment: .leading)
+            if titleVisible {
+                Text(title)
+                    .font(Theme.Font.cardTitle)
+                    .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, Theme.Spacing.xs)
+                    .frame(width: width, alignment: .leading)
+            }
         }
         .animation(.easeOut(duration: 0.15), value: isFocused)
     }
