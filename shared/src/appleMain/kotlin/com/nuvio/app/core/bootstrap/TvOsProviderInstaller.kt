@@ -13,6 +13,7 @@ import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.catalog.CatalogRepository
 import com.nuvio.app.features.collection.CollectionMobileSettingsRepository
 import com.nuvio.app.features.collection.CollectionRepository
+import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
@@ -243,6 +244,9 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         SearchHistoryRepository.onProfileChanged()
         // Theme is profile-scoped (ProfileScopedKey) — reload it for the new profile.
         ThemeSettingsRepository.onProfileChanged()
+        // Debrid keys/settings are profile-scoped too; without this a guest profile switch
+        // (no cloud pull) would keep the previous profile's keys in memory.
+        DebridSettingsRepository.onProfileChanged()
         HomeRepository.clear()
     }
 

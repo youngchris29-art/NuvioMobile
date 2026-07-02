@@ -6,9 +6,12 @@ import SharedCore
 struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
     @StateObject private var trakt = TraktViewModel()
+    @StateObject private var debrid = DebridViewModel()
     @EnvironmentObject private var auth: AuthViewModel
     @State private var confirmingSignOut = false
     @State private var confirmingTraktDisconnect = false
+    /// Provider id pending a debrid disconnect confirmation (drives the alert).
+    @State private var debridDisconnectId: String?
 
     var body: some View {
         NavigationStack {
@@ -51,6 +54,10 @@ struct SettingsView: View {
 
                         section("Trakt") {
                             traktSection
+                        }
+
+                        section("Debrid") {
+                            debridSection
                         }
 
                         section("Playback") {
@@ -162,16 +169,33 @@ struct SettingsView: View {
         .onAppear {
             model.start()
             trakt.start()
+            debrid.start()
         }
         .onDisappear {
             model.stop()
             trakt.stop()
+            debrid.stop()
         }
         .alert("Disconnect Trakt?", isPresented: $confirmingTraktDisconnect) {
             Button("Disconnect", role: .destructive) { trakt.disconnect() }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Scrobbling stops and this Apple TV's Trakt access token is revoked. Your Trakt history is untouched.")
+        }
+        .alert(
+            "Disconnect debrid provider?",
+            isPresented: Binding(
+                get: { debridDisconnectId != nil },
+                set: { if !$0 { debridDisconnectId = nil } }
+            )
+        ) {
+            Button("Disconnect", role: .destructive) {
+                if let id = debridDisconnectId { debrid.disconnect(id) }
+                debridDisconnectId = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes this provider's key from this profile. Streams will no longer resolve through it.")
         }
         .alert(
             auth.isAnonymous ? "Switch to a Nuvio account?" : "Sign out?",
@@ -232,6 +256,117 @@ struct SettingsView: View {
                 Text(error)
                     .font(Theme.Font.caption)
                     .foregroundStyle(.red)
+            }
+        }
+    }
+
+    // MARK: - Debrid (native TorBox/Premiumize resolution via the shared debrid stack)
+
+    @ViewBuilder
+    private var debridSection: some View {
+        Text("Connect a debrid service to resolve cached torrent results into direct streaming links on this Apple TV \u{2014} no pre-configured addon URL needed. Keys are per profile and sync between Apple TVs.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
+
+        ForEach(debrid.providers, id: \.id) { provider in
+            debridProviderRows(provider)
+        }
+
+        if debrid.hasAnyKey {
+            SettingsToggleRow(
+                title: "Resolve Streams with Debrid",
+                subtitle: "Turn cached torrent results into direct links automatically",
+                isOn: debrid.resolverEnabled
+            ) {
+                debrid.setResolverEnabled(!debrid.resolverEnabled)
+            }
+        }
+
+        if debrid.resolverProviders.count > 1 {
+            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                Text("Preferred resolver")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                HStack(spacing: Theme.Spacing.md) {
+                    ForEach(debrid.resolverProviders, id: \.id) { provider in
+                        Button {
+                            debrid.setPreferredResolver(provider.id)
+                        } label: {
+                            HStack(spacing: Theme.Spacing.xs) {
+                                if debrid.activeResolverId == provider.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                }
+                                Text(provider.displayName)
+                            }
+                            .font(Theme.Font.meta)
+                            .padding(.horizontal, Theme.Spacing.md)
+                            .padding(.vertical, Theme.Spacing.xs)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(debrid.activeResolverId == provider.id ? Theme.Palette.accent : nil)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func debridProviderRows(_ provider: DebridProvider) -> some View {
+        if debrid.isConnected(provider.id) {
+            SettingsActionRow(
+                title: "\(provider.displayName) \u{00B7} Connected",
+                subtitle: debrid.activeResolverId == provider.id
+                    ? "Active resolver \u{00B7} press to disconnect"
+                    : "Press to disconnect",
+                systemImage: "checkmark.circle.fill"
+            ) {
+                debridDisconnectId = provider.id
+            }
+        } else if debrid.authProviderId == provider.id {
+            switch debrid.authPhase {
+            case .starting:
+                HStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                    Text("Requesting a sign-in code from \(provider.displayName)\u{2026}")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+            case .waiting:
+                if let session = debrid.activeSession {
+                    DebridActivationCard(
+                        providerName: provider.displayName,
+                        code: session.userCode,
+                        verificationUrl: session.friendlyVerificationUrl
+                    ) {
+                        debrid.cancelActivation()
+                    }
+                }
+            case .failed(let message):
+                Text(message)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                SettingsActionRow(
+                    title: "Dismiss",
+                    subtitle: "Back to the connect options for \(provider.displayName).",
+                    systemImage: "xmark.circle"
+                ) {
+                    debrid.cancelActivation()
+                }
+            case .idle:
+                EmptyView()
+            }
+        } else {
+            SettingsActionRow(
+                title: "Connect \(provider.displayName)",
+                subtitle: "Shows a short code to enter on your phone (device sign-in).",
+                systemImage: "antenna.radiowaves.left.and.right"
+            ) {
+                debrid.connect(provider)
+            }
+            DebridKeyEntryRow(providerName: provider.displayName) { key in
+                debrid.saveManualKey(provider.id, key: key)
             }
         }
     }
@@ -335,6 +470,84 @@ private struct TraktActivationCard: View {
             }
         }
         .frame(maxWidth: 1100, alignment: .leading)
+    }
+}
+
+/// Shown while a debrid device-code flow awaits approval (mirrors `TraktActivationCard`).
+private struct DebridActivationCard: View {
+    let providerName: String
+    let code: String
+    let verificationUrl: String
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            Text("On your phone or computer, go to")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text(verificationUrl)
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            Text("and enter this code:")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text(code)
+                .font(.system(size: 72, weight: .bold, design: .monospaced))
+                .kerning(12)
+                .foregroundStyle(Theme.Palette.accent)
+                .padding(.vertical, Theme.Spacing.md)
+            HStack(spacing: Theme.Spacing.md) {
+                ProgressView()
+                Text("Waiting for \(providerName) approval\u{2026} this screen updates automatically.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            SettingsActionRow(
+                title: "Cancel",
+                subtitle: "Stop waiting and dismiss the code.",
+                systemImage: "xmark.circle"
+            ) {
+                onCancel()
+            }
+        }
+        .frame(maxWidth: 1100, alignment: .leading)
+    }
+}
+
+/// Manual API-key fallback for a debrid provider (from the provider's account/settings page).
+private struct DebridKeyEntryRow: View {
+    let providerName: String
+    let onSave: (String) -> Void
+    @State private var key = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            HStack(spacing: Theme.Spacing.md) {
+                Image(systemName: "key")
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                TextField("Or paste a \(providerName) API key", text: $key)
+                    .textFieldStyle(.plain)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
+            .padding(Theme.Spacing.lg)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+
+            Button {
+                if !key.isEmpty {
+                    onSave(key)
+                    key = ""
+                }
+            } label: {
+                Label("Save Key", systemImage: "checkmark")
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.lg)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.Palette.accent)
+            .disabled(key.isEmpty)
+        }
     }
 }
 
