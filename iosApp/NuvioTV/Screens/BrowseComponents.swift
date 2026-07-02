@@ -75,9 +75,12 @@ struct CatalogRowView: View {
                             Text("See All")
                             Image(systemName: "chevron.right")
                         }
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.accent)
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .padding(.horizontal, Theme.Spacing.md)
+                        .padding(.vertical, Theme.Spacing.xs)
                     }
+                    .buttonStyle(.glass)
                 }
             }
 

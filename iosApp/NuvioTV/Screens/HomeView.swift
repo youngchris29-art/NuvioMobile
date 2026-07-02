@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import SharedCore
 
@@ -30,8 +31,8 @@ struct HomeView: View {
                         }
                         .padding(.bottom, Theme.Spacing.xs)
 
-                        if let hero = model.heroItems.first {
-                            HeroBanner(item: hero)
+                        if !model.heroItems.isEmpty {
+                            HeroPager(items: Array(model.heroItems.prefix(8)))
                         }
 
                         if model.rows.isEmpty {
@@ -166,6 +167,52 @@ struct ContinueWatchingRow: View {
 struct ResumeTarget: Identifiable {
     let entry: WatchProgressEntry
     var id: String { entry.videoId }
+}
+
+/// Auto-rotating hero carousel: cycles through the hero items every few seconds with a crossfade,
+/// pausing while the banner is focused (so it doesn't swap out under the user). Page dots in a
+/// Liquid Glass capsule track the position (mobile-reference look).
+struct HeroPager: View {
+    let items: [MetaPreview]
+
+    @State private var index = 0
+    @FocusState private var heroFocused: Bool
+    private let timer = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let safeIndex = min(index, items.count - 1)
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            HeroBanner(item: items[safeIndex])
+                .id(items[safeIndex].id)
+                .focused($heroFocused)
+
+            if items.count > 1 {
+                HStack(spacing: Theme.Spacing.xs) {
+                    ForEach(0..<items.count, id: \.self) { i in
+                        Capsule()
+                            .fill(i == safeIndex
+                                  ? Theme.Palette.textPrimary
+                                  : Theme.Palette.textSecondary.opacity(0.45))
+                            .frame(width: i == safeIndex ? 34 : 10, height: 10)
+                    }
+                }
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xs)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.leading, Theme.Spacing.xs)
+                .animation(.easeInOut(duration: 0.3), value: safeIndex)
+            }
+        }
+        .onReceive(timer) { _ in
+            guard items.count > 1, !heroFocused else { return }
+            withAnimation(.easeInOut(duration: 0.6)) {
+                index = (safeIndex + 1) % items.count
+            }
+        }
+        .onChange(of: items.count) { _, newCount in
+            if index >= newCount { index = 0 }
+        }
+    }
 }
 
 /// Large featured banner at the top of Home for the first hero item — backdrop, logo/title, a short
