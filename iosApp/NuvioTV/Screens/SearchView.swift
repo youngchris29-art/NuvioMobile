@@ -49,6 +49,9 @@ struct SearchView: View {
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
             }
+            .navigationDestination(for: CatalogRoute.self) { route in
+                CatalogGridView(route: route)
+            }
         }
         .onChange(of: query) { _, newValue in
             model.queryChanged(newValue)

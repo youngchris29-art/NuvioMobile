@@ -17,6 +17,25 @@ struct TitleRoute: Hashable {
     }
 }
 
+/// Navigation value for the full-grid "See All" screen. `CatalogTarget` is a Kotlin sealed interface
+/// and can't be a `NavigationStack` value directly, so we wrap it — hashing on the section's stable
+/// `key` while carrying the title + target for the destination (same approach as `TitleRoute`).
+struct CatalogRoute: Hashable {
+    let key: String
+    let title: String
+    let target: any CatalogTarget
+
+    init(section: HomeCatalogSection) {
+        self.key = section.key
+        self.title = section.title
+        self.target = section.target
+    }
+
+    static func == (lhs: CatalogRoute, rhs: CatalogRoute) -> Bool { lhs.key == rhs.key }
+
+    func hash(into hasher: inout Hasher) { hasher.combine(key) }
+}
+
 /// One horizontal catalog (e.g. "Popular Movies", or a search-result group) as a focus-scrollable row
 /// of poster cards.
 ///
@@ -29,9 +48,25 @@ struct CatalogRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text(section.title)
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
+            HStack(alignment: .firstTextBaseline) {
+                Text(section.title)
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+
+                Spacer()
+
+                // Only when the catalog can actually page further (hasMore = supportsPagination && nextSkip != nil).
+                if section.hasMore {
+                    NavigationLink(value: CatalogRoute(section: section)) {
+                        HStack(spacing: Theme.Spacing.xs) {
+                            Text("See All")
+                            Image(systemName: "chevron.right")
+                        }
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.accent)
+                    }
+                }
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: Theme.Spacing.rowGap) {
