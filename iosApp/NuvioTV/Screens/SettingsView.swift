@@ -1,10 +1,12 @@
 import SwiftUI
 import SharedCore
 
-/// The Settings tab. v1 has two sections that genuinely affect tvOS: Playback (Skip Intro toggle)
-/// and Home Rows (enable/disable + reorder the Home catalog rows).
+/// The Settings tab: Account (sign in / sign out), Playback (Skip Intro toggle) and Home Rows
+/// (enable/disable + reorder the Home catalog rows).
 struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
+    @EnvironmentObject private var auth: AuthViewModel
+    @State private var confirmingSignOut = false
 
     var body: some View {
         NavigationStack {
@@ -16,6 +18,26 @@ struct SettingsView: View {
                         Text("Settings")
                             .font(Theme.Font.screenTitle)
                             .foregroundStyle(Theme.Palette.textPrimary)
+
+                        section("Account") {
+                            if auth.isAnonymous {
+                                SettingsActionRow(
+                                    title: "Sign In to Nuvio",
+                                    subtitle: "Sync your library, watch progress, and profiles across devices. Local guest data on this Apple TV will be cleared.",
+                                    systemImage: "person.crop.circle.badge.plus"
+                                ) {
+                                    confirmingSignOut = true
+                                }
+                            } else {
+                                SettingsActionRow(
+                                    title: "Sign Out",
+                                    subtitle: "Signed in as \(auth.accountEmail ?? "your Nuvio account"). Local data on this Apple TV will be cleared.",
+                                    systemImage: "rectangle.portrait.and.arrow.right"
+                                ) {
+                                    confirmingSignOut = true
+                                }
+                            }
+                        }
 
                         section("Playback") {
                             SettingsToggleRow(
@@ -51,6 +73,23 @@ struct SettingsView: View {
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+        .alert(
+            auth.isAnonymous ? "Switch to a Nuvio account?" : "Sign out?",
+            isPresented: $confirmingSignOut
+        ) {
+            Button(auth.isAnonymous ? "Continue" : "Sign Out", role: .destructive) {
+                // Clears the session AND wipes local data (AccountDataCleaner seam), then the root
+                // gate drops to the Welcome screen where an account can be signed in.
+                auth.signOut()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                auth.isAnonymous
+                    ? "Guest data on this Apple TV (profiles, library, watch progress) will be cleared. You can then sign in on the welcome screen."
+                    : "Local data on this Apple TV will be cleared. Your synced data stays in your Nuvio account."
+            )
+        }
     }
 
     @ViewBuilder
@@ -61,6 +100,39 @@ struct SettingsView: View {
                 .foregroundStyle(Theme.Palette.textPrimary)
             content()
         }
+    }
+}
+
+/// A focusable settings row that performs an action on select (chevron affordance).
+private struct SettingsActionRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.lg) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 34))
+                    .foregroundStyle(Theme.Palette.accent)
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    Text(title)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                    Text(subtitle)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            .padding(Theme.Spacing.lg)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.card)
     }
 }
 

@@ -101,7 +101,7 @@ object ProfileSettingsSync {
 
                 val params = buildJsonObject {
                     put("p_profile_id", profileId)
-                    put("p_platform", MOBILE_SYNC_PLATFORM)
+                    put("p_platform", SyncPlatformProvider.platform)
                 }
                 val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profile_settings_blob", params)
                 if (ProfileRepository.activeProfileId != profileId) return@withLock false
@@ -204,7 +204,7 @@ object ProfileSettingsSync {
     private suspend fun pushToRemoteLocked(profileId: Int, blob: MobileProfileSettingsBlob) {
         val params = buildJsonObject {
             put("p_profile_id", profileId)
-            put("p_platform", MOBILE_SYNC_PLATFORM)
+            put("p_platform", SyncPlatformProvider.platform)
             put("p_settings_json", json.encodeToJsonElement(MobileProfileSettingsBlob.serializer(), blob))
         }
         SupabaseProvider.client.postgrest.rpc("sync_push_profile_settings_blob", params)

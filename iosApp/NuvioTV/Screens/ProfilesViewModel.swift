@@ -36,6 +36,9 @@ final class ProfilesViewModel: ObservableObject {
 
     func select(_ profile: NuvioProfile) {
         ProfileRepository.shared.selectProfile(profileIndex: profile.profileIndex)
+        // Full cloud pull for the selected profile (addons first, then the rest in parallel).
+        // Self-guarding: no-op in guest mode / signed out, so the local-only flow is unchanged.
+        SyncManager.shared.pullAllForProfile(profileId: profile.profileIndex)
     }
 
     func createProfile(name: String, colorHex: String, completion: @escaping () -> Void) {
