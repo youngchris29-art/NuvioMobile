@@ -5,8 +5,10 @@ import SharedCore
 /// (enable/disable + reorder the Home catalog rows).
 struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
+    @StateObject private var trakt = TraktViewModel()
     @EnvironmentObject private var auth: AuthViewModel
     @State private var confirmingSignOut = false
+    @State private var confirmingTraktDisconnect = false
 
     var body: some View {
         NavigationStack {
@@ -37,6 +39,10 @@ struct SettingsView: View {
                                     confirmingSignOut = true
                                 }
                             }
+                        }
+
+                        section("Trakt") {
+                            traktSection
                         }
 
                         section("Playback") {
@@ -145,8 +151,20 @@ struct SettingsView: View {
                 }
             }
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
+        .onAppear {
+            model.start()
+            trakt.start()
+        }
+        .onDisappear {
+            model.stop()
+            trakt.stop()
+        }
+        .alert("Disconnect Trakt?", isPresented: $confirmingTraktDisconnect) {
+            Button("Disconnect", role: .destructive) { trakt.disconnect() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Scrobbling stops and this Apple TV's Trakt access token is revoked. Your Trakt history is untouched.")
+        }
         .alert(
             auth.isAnonymous ? "Switch to a Nuvio account?" : "Sign out?",
             isPresented: $confirmingSignOut
@@ -166,6 +184,50 @@ struct SettingsView: View {
         }
     }
 
+    /// The Trakt section body — four states: keys missing / connected / awaiting code approval /
+    /// disconnected. The device flow runs in the shared repo; this just renders its uiState.
+    @ViewBuilder
+    private var traktSection: some View {
+        if !trakt.credentialsConfigured {
+            Text("Trakt isn't configured in this build. Add TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET to local.properties, then rebuild the shared framework.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+        } else if trakt.isConnected {
+            SettingsActionRow(
+                title: "Disconnect Trakt",
+                subtitle: "Connected as \(trakt.username ?? "your Trakt account") \u{00B7} watched history is scrobbled automatically as you play.",
+                systemImage: "checkmark.circle.fill"
+            ) {
+                confirmingTraktDisconnect = true
+            }
+        } else if let code = trakt.deviceUserCode {
+            TraktActivationCard(
+                code: code,
+                verificationUrl: trakt.deviceVerificationUrl ?? "https://trakt.tv/activate"
+            ) {
+                trakt.cancelActivation()
+            }
+        } else {
+            Text("Scrobble what you watch on this Apple TV to your Trakt profile (movies and episodes are marked watched automatically).")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+            SettingsActionRow(
+                title: trakt.isLoading ? "Requesting code\u{2026}" : "Connect Trakt",
+                subtitle: "Shows a short code to enter at trakt.tv/activate on your phone or computer.",
+                systemImage: "antenna.radiowaves.left.and.right"
+            ) {
+                trakt.connect()
+            }
+            if let error = trakt.errorMessage {
+                Text(error)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
     @ViewBuilder
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -174,6 +236,47 @@ struct SettingsView: View {
                 .foregroundStyle(Theme.Palette.textPrimary)
             content()
         }
+    }
+}
+
+/// Shown while a Trakt device-code flow awaits approval: the big user code, where to enter it,
+/// a waiting spinner (the shared repo polls in the background), and a Cancel row.
+private struct TraktActivationCard: View {
+    let code: String
+    let verificationUrl: String
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            Text("On your phone or computer, go to")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text(verificationUrl)
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            Text("and enter this code:")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text(code)
+                .font(.system(size: 72, weight: .bold, design: .monospaced))
+                .kerning(12)
+                .foregroundStyle(Theme.Palette.accent)
+                .padding(.vertical, Theme.Spacing.md)
+            HStack(spacing: Theme.Spacing.md) {
+                ProgressView()
+                Text("Waiting for approval\u{2026} this screen updates automatically.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            SettingsActionRow(
+                title: "Cancel",
+                subtitle: "Stop waiting and dismiss the code.",
+                systemImage: "xmark.circle"
+            ) {
+                onCancel()
+            }
+        }
+        .frame(maxWidth: 1100, alignment: .leading)
     }
 }
 

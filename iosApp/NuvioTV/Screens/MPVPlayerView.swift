@@ -128,6 +128,9 @@ final class MPVTVPlayerViewController: UIViewController {
     private var didAutoSelectTracks = false
     private var addedSubtitleUrls = Set<String>()
     private var fileLoaded = false
+    /// Trakt scrobbling (no-ops while Trakt is disconnected — the shared repo checks auth).
+    private var traktScrobbleItem: TraktScrobbleItem?
+    private var traktScrobbleRequested = false
     private var skipSegments: [SkipSegment] = []
 
     /// Called when the user presses Menu, so the SwiftUI cover can dismiss.
@@ -200,6 +203,7 @@ final class MPVTVPlayerViewController: UIViewController {
         pollTimer = nil
         endSeek()
         saveProgress(flush: true)
+        stopTraktScrobble()
     }
 
     override var canBecomeFirstResponder: Bool { true }
@@ -380,6 +384,55 @@ final class MPVTVPlayerViewController: UIViewController {
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
         applySubtitleStyle()
         fetchSkipSegments()
+        startTraktScrobble()
+    }
+
+    // MARK: - Trakt scrobbling
+    //
+    // Simplified vs. mobile: scrobble "start" once when the file loads, "stop" once with the final
+    // progress when the player goes away (Trakt marks the item watched at >= 80%). The shared repo
+    // resolves IMDB/TMDB ids itself and silently no-ops when Trakt isn't connected.
+
+    private func startTraktScrobble() {
+        guard !traktScrobbleRequested else { return }
+        traktScrobbleRequested = true
+        TraktScrobbleRepository.shared.buildItem(
+            contentType: context.contentType,
+            parentMetaId: context.parentMetaId,
+            videoId: context.videoId,
+            title: context.title,
+            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
+            episodeTitle: nil,
+            releaseInfo: nil
+        ) { [weak self] item, _ in
+            // Suspend completions can land off-main; hop before touching controller state.
+            DispatchQueue.main.async {
+                guard let self, let item else { return }
+                self.traktScrobbleItem = item
+                TraktScrobbleRepository.shared.scrobbleStart(
+                    profileId: ActiveProfileProvider.shared.activeProfileId,
+                    item: item,
+                    progressPercent: self.currentProgressPercent()
+                ) { _ in }
+            }
+        }
+    }
+
+    private func stopTraktScrobble() {
+        guard let item = traktScrobbleItem else { return }
+        traktScrobbleItem = nil
+        TraktScrobbleRepository.shared.scrobbleStop(
+            profileId: ActiveProfileProvider.shared.activeProfileId,
+            item: item,
+            progressPercent: currentProgressPercent()
+        ) { _ in }
+    }
+
+    private func currentProgressPercent() -> Float {
+        let duration = state.durationSec
+        guard duration > 0 else { return 0 }
+        return Float(min(100, max(0, state.positionSec / duration * 100)))
     }
 
     // MARK: - Subtitle appearance (mirrors the mobile libmpv mapping)
