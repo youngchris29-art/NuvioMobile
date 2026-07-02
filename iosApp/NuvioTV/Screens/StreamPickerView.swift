@@ -164,6 +164,8 @@ struct StreamPickerView: View {
         let badges: [StreamBadge] = stream.badges
         return Button {
             if let urlString, let url = URL(string: urlString) {
+                // A manual stream pick is user interaction — reset the Still Watching run.
+                NextEpisodeEngine.consecutiveAutoPlays = 0
                 selected = context(url: url, stream: stream)
             }
         } label: {

@@ -56,6 +56,23 @@ struct SkipPrompt: Equatable {
     let targetSec: Double   // absolute seek target (segment end)
 }
 
+/// Live stream diagnostics read from libmpv properties (shown by the Stream Info overlay).
+struct StreamInfoSnapshot: Equatable {
+    var videoCodec = ""
+    var resolution = ""
+    var fps = ""
+    var hwdec = ""
+    var videoBitrate = ""
+    var audio = ""
+    var cache = ""
+
+    var rows: [(String, String)] {
+        [("Video", videoCodec), ("Resolution", resolution), ("Frame rate", fps),
+         ("Hardware decode", hwdec), ("Video bitrate", videoBitrate),
+         ("Audio", audio), ("Cache", cache)].filter { !$0.1.isEmpty }
+    }
+}
+
 /// CAMetalLayer subclass that ignores degenerate drawable sizes (mirrors the iOS player's MetalLayer).
 final class TVMetalLayer: CAMetalLayer {
     override var drawableSize: CGSize {
@@ -85,9 +102,19 @@ final class MPVPlaybackState: ObservableObject {
     /// Active skip prompt ("Skip Intro"/"Skip Outro") when playback is inside a known segment.
     @Published var skipPrompt: SkipPrompt?
 
+    /// Playback-settings panel state (speed, subtitle/audio delay, diagnostics).
+    @Published var playbackSpeed: Double = 1.0
+    @Published var subtitleDelaySec: Double = 0
+    @Published var audioDelaySec: Double = 0
+    @Published var showStreamInfo: Bool = false
+    @Published var streamInfo: StreamInfoSnapshot?
+
     /// Wired by the controller so the SwiftUI track picker can drive libmpv.
     var selectAudio: ((Int) -> Void)?
     var selectSubtitle: ((Int) -> Void)?
+    var setSpeed: ((Double) -> Void)?
+    var setSubtitleDelay: ((Double) -> Void)?
+    var setAudioDelay: ((Double) -> Void)?
     var reclaimFocus: (() -> Void)?
 
     /// Wired by `NextEpisodeEngine`: down-press plays the ready next episode (returns true when
@@ -161,6 +188,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
         state.selectAudio = { [weak self] id in self?.selectAudio(id) }
         state.selectSubtitle = { [weak self] id in self?.selectSubtitle(id) }
+        state.setSpeed = { [weak self] speed in self?.setSpeed(speed) }
+        state.setSubtitleDelay = { [weak self] seconds in self?.setSubtitleDelay(seconds) }
+        state.setAudioDelay = { [weak self] seconds in self?.setAudioDelay(seconds) }
         state.reclaimFocus = { [weak self] in self?.becomeFirstResponder() }
 
         setupMpv()
@@ -553,6 +583,60 @@ final class MPVTVPlayerViewController: UIViewController {
         refreshTracks()
     }
 
+    // MARK: - Playback speed & A/V-subtitle timing
+
+    private func setSpeed(_ speed: Double) {
+        guard mpv != nil else { return }
+        setMpvDouble("speed", speed)
+        state.playbackSpeed = speed
+    }
+
+    private func setSubtitleDelay(_ seconds: Double) {
+        guard mpv != nil else { return }
+        setMpvDouble("sub-delay", seconds)
+        state.subtitleDelaySec = seconds
+    }
+
+    private func setAudioDelay(_ seconds: Double) {
+        guard mpv != nil else { return }
+        setMpvDouble("audio-delay", seconds)
+        state.audioDelaySec = seconds
+    }
+
+    private func setMpvDouble(_ name: String, _ value: Double) {
+        guard mpv != nil else { return }
+        var v = value
+        mpv_set_property(mpv, name, MPV_FORMAT_DOUBLE, &v)
+    }
+
+    // MARK: - Stream info (diagnostics overlay)
+
+    private func buildStreamInfo() -> StreamInfoSnapshot {
+        var info = StreamInfoSnapshot()
+        let w = getInt("video-params/w"), h = getInt("video-params/h")
+        if w > 0, h > 0 { info.resolution = "\(w)\u{00D7}\(h)" }
+        info.videoCodec = getString("video-codec") ?? ""
+        let fps = getDouble("container-fps")
+        if fps > 0 { info.fps = String(format: "%.3f fps", fps) }
+        info.hwdec = getString("hwdec-current") ?? ""
+        let vbr = getDouble("video-bitrate")
+        if vbr > 0 { info.videoBitrate = String(format: "%.1f Mbps", vbr / 1_000_000) }
+        let audioCodec = getString("audio-codec-name") ?? ""
+        let channels = getInt("audio-params/channel-count")
+        let sampleRate = getInt("audio-params/samplerate")
+        var audioParts = [audioCodec]
+        if channels > 0 { audioParts.append("\(channels)ch") }
+        if sampleRate > 0 { audioParts.append("\(sampleRate / 1000) kHz") }
+        info.audio = audioParts.filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
+        var cacheParts: [String] = []
+        let cacheSec = getDouble("demuxer-cache-duration")
+        if cacheSec > 0 { cacheParts.append(String(format: "%.0fs buffered", cacheSec)) }
+        let cacheSpeed = getDouble("cache-speed")
+        if cacheSpeed > 0 { cacheParts.append(String(format: "%.1f MB/s", cacheSpeed / 1_000_000)) }
+        info.cache = cacheParts.joined(separator: " \u{00B7} ")
+        return info
+    }
+
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
@@ -597,7 +681,7 @@ final class MPVTVPlayerViewController: UIViewController {
             durationMs: Int64(duration * 1000),
             positionMs: Int64(position * 1000),
             bufferedPositionMs: Int64(position * 1000),
-            playbackSpeed: 1.0
+            playbackSpeed: Float(state.playbackSpeed)
         )
         if flush {
             WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
@@ -629,6 +713,11 @@ final class MPVTVPlayerViewController: UIViewController {
         state.positionSec = max(position, 0)
         state.isPaused = paused
         state.isBuffering = cacheWait || (coreIdle && !paused)
+
+        if state.showStreamInfo {
+            let info = buildStreamInfo()
+            if info != state.streamInfo { state.streamInfo = info }
+        }
 
         let now = ProcessInfo.processInfo.systemUptime
         if !paused, now - lastSaveUptime > 5 {
@@ -669,7 +758,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 beginSeek(1); handled = true
             case .upArrow:
                 refreshTracks()
-                if state.hasTracks { state.showTracks = true }
+                state.showTracks = true
                 handled = true
             case .downArrow:
                 if state.upNextPlayNow?() == true {
@@ -686,7 +775,12 @@ final class MPVTVPlayerViewController: UIViewController {
                 break
             }
         }
-        if !handled { super.pressesBegan(presses, with: event) }
+        if handled {
+            // Any remote interaction proves someone's watching — reset the Still Watching counter.
+            NextEpisodeEngine.consecutiveAutoPlays = 0
+        } else {
+            super.pressesBegan(presses, with: event)
+        }
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -890,6 +984,8 @@ struct MPVPlayerScreen: View {
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
     @Environment(\.dismiss) private var dismiss
+    @State private var showPauseInfo = false
+    @State private var pauseInfoTask: Task<Void, Never>?
 
     init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil) {
         self.context = context
@@ -916,6 +1012,22 @@ struct MPVPlayerScreen: View {
                 .opacity(state.controlsVisible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.25), value: state.controlsVisible)
 
+            // Metadata card after a sustained pause (Android TV PauseOverlay parity).
+            if showPauseInfo, state.isPaused, !state.isBuffering {
+                PauseInfoCard(context: context, state: state)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(60)
+                    .transition(.opacity)
+            }
+
+            // Live diagnostics, toggled from the playback-settings panel.
+            if state.showStreamInfo, let info = state.streamInfo {
+                StreamInfoOverlayView(info: info)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(60)
+                    .transition(.opacity)
+            }
+
             if upNext.phase != .hidden {
                 VStack {
                     Spacer()
@@ -940,6 +1052,8 @@ struct MPVPlayerScreen: View {
         }
         .animation(.easeInOut(duration: 0.25), value: state.skipPrompt)
         .animation(.easeInOut(duration: 0.25), value: upNext.phase)
+        .animation(.easeInOut(duration: 0.25), value: showPauseInfo)
+        .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .fullScreenCover(isPresented: $state.showTracks, onDismiss: { state.reclaimFocus?() }) {
             TrackPickerView(state: state)
         }
@@ -951,6 +1065,18 @@ struct MPVPlayerScreen: View {
         .onDisappear { upNext.stop() }
         .onChange(of: state.positionSec) { _, position in
             upNext.onProgress(positionSec: position, durationSec: state.durationSec)
+        }
+        .onChange(of: state.isPaused) { _, paused in
+            pauseInfoTask?.cancel()
+            if paused {
+                pauseInfoTask = Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    guard !Task.isCancelled else { return }
+                    showPauseInfo = true
+                }
+            } else {
+                showPauseInfo = false
+            }
         }
     }
 }
@@ -979,10 +1105,8 @@ private struct PlayerControlsOverlay: View {
                     .font(.callout).monospacedDigit()
             }
 
-            if state.hasTracks {
-                Label("Swipe up for audio & subtitles", systemImage: "chevron.up")
-                    .font(.caption).foregroundStyle(.white.opacity(0.7))
-            }
+            Label("Swipe up for audio, subtitles & playback settings", systemImage: "chevron.up")
+                .font(.caption).foregroundStyle(.white.opacity(0.7))
         }
         .foregroundStyle(.white)
         .padding(40)
@@ -1034,11 +1158,94 @@ private struct SkipPromptPill: View {
     }
 }
 
-/// Audio + subtitle track chooser, presented over the player. A normal SwiftUI focus context so its
+/// Metadata card shown top-leading after playback has been paused for a moment: artwork, title,
+/// episode line, stream/source info, and time remaining (Android TV `PauseOverlay` parity).
+private struct PauseInfoCard: View {
+    let context: PlaybackContext
+    @ObservedObject var state: MPVPlaybackState
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 24) {
+            if let poster = context.poster, !poster.isEmpty {
+                CachedAsyncImage(string: poster)
+                    .frame(width: 140, height: 210)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Paused")
+                    .font(.caption).bold()
+                    .foregroundStyle(.white.opacity(0.7))
+                Text(context.title)
+                    .font(.title2).bold()
+                    .lineLimit(2)
+                if let season = context.season, let episode = context.episode {
+                    Text("Season \(season) \u{00B7} Episode \(episode)")
+                        .font(.callout)
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+                if state.durationSec > 0 {
+                    Text("\(remainingString) remaining")
+                        .font(.callout).monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+                if let provider = context.providerName, !provider.isEmpty {
+                    Text(provider)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(28)
+        .frame(maxWidth: 860, alignment: .leading)
+        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+    }
+
+    private var remainingString: String {
+        let total = Int(max(state.durationSec - state.positionSec, 0))
+        let h = total / 3600, m = (total % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    }
+}
+
+/// Top-trailing live diagnostics card (codec, resolution, fps, hwdec, bitrate, audio, cache).
+private struct StreamInfoOverlayView: View {
+    let info: StreamInfoSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Stream Info")
+                .font(.caption).bold()
+                .foregroundStyle(.white.opacity(0.7))
+            ForEach(info.rows, id: \.0) { row in
+                HStack(alignment: .top, spacing: 12) {
+                    Text(row.0)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 190, alignment: .leading)
+                    Text(row.1)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                }
+                .font(.caption.monospacedDigit())
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: 560, alignment: .leading)
+        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+    }
+}
+
+/// Playback-settings panel presented over the player: audio/subtitle tracks, playback speed,
+/// subtitle & audio delay, and the stream-info toggle. A normal SwiftUI focus context so its
 /// buttons receive focus (unlike an overlay sibling to the UIKit player).
 private struct TrackPickerView: View {
     @ObservedObject var state: MPVPlaybackState
     @Environment(\.dismiss) private var dismiss
+
+    private static let speeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
     var body: some View {
         ScrollView {
@@ -1055,6 +1262,9 @@ private struct TrackPickerView: View {
                         dismiss()
                     }
                 }
+                speedSection
+                timingSection
+                diagnosticsSection
             }
             .padding(60)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1078,6 +1288,81 @@ private struct TrackPickerView: View {
                 }
                 .buttonStyle(.bordered)
             }
+        }
+    }
+
+    private var speedSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Playback Speed").font(.title2).bold().foregroundStyle(.white)
+            HStack(spacing: 12) {
+                ForEach(Self.speeds, id: \.self) { speed in
+                    Button { state.setSpeed?(speed) } label: {
+                        HStack(spacing: 8) {
+                            if state.playbackSpeed == speed {
+                                Image(systemName: "checkmark.circle.fill")
+                            }
+                            Text(String(format: "%g\u{00D7}", speed))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private var timingSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Timing").font(.title2).bold().foregroundStyle(.white)
+            delayRow(title: "Subtitle Delay", value: state.subtitleDelaySec, step: 0.5, limit: 30) {
+                state.setSubtitleDelay?($0)
+            }
+            delayRow(title: "Audio Delay", value: state.audioDelaySec, step: 0.25, limit: 10) {
+                state.setAudioDelay?($0)
+            }
+            Text("Positive values delay the track; negative values play it earlier.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+    }
+
+    private func delayRow(
+        title: String, value: Double, step: Double, limit: Double,
+        apply: @escaping (Double) -> Void
+    ) -> some View {
+        HStack(spacing: 16) {
+            Text(title)
+                .foregroundStyle(.white)
+                .frame(width: 320, alignment: .leading)
+            Button { apply(max(-limit, value - step)) } label: { Image(systemName: "minus") }
+            Text(value == 0 ? "0.00 s" : String(format: "%+.2f s", value))
+                .foregroundStyle(.white)
+                .monospacedDigit()
+                .frame(width: 180)
+            Button { apply(min(limit, value + step)) } label: { Image(systemName: "plus") }
+            if value != 0 {
+                Button("Reset") { apply(0) }
+            }
+        }
+        .buttonStyle(.bordered)
+        .font(.title3)
+    }
+
+    private var diagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Diagnostics").font(.title2).bold().foregroundStyle(.white)
+            Button {
+                state.showStreamInfo.toggle()
+                dismiss()
+            } label: {
+                HStack(spacing: 16) {
+                    Image(systemName: state.showStreamInfo ? "checkmark.circle.fill" : "info.circle")
+                    Text(state.showStreamInfo ? "Hide Stream Info" : "Show Stream Info")
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 8)
+                .frame(maxWidth: 900, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
         }
     }
 }

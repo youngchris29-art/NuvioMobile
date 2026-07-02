@@ -22,8 +22,16 @@ final class NextEpisodeEngine: ObservableObject {
         case hidden
         case searching
         case counting(Int)
+        case stillWatching
         case noStream
     }
+
+    /// Consecutive episodes started WITHOUT any remote interaction. Any handled press in the
+    /// player resets it (see `MPVTVPlayerViewController.pressesBegan`), as does a manual stream
+    /// pick in `StreamPickerView`. At `stillWatchingThreshold` the countdown ends in a
+    /// "Still watching?" prompt instead of autoplaying (Android TV parity).
+    static var consecutiveAutoPlays = 0
+    static let stillWatchingThreshold = 3
 
     @Published private(set) var phase: Phase = .hidden
     @Published private(set) var nextEpisodeTitle = ""
@@ -116,15 +124,19 @@ final class NextEpisodeEngine: ObservableObject {
 
     // MARK: - User actions (wired into the Siri-remote handler via MPVPlaybackState)
 
-    /// Down-press while the card is up: play immediately when a stream is ready.
-    /// Returns true when consumed (so the skip pill doesn't also fire).
+    /// Down-press while the card is up: play immediately when a stream is ready. Also confirms
+    /// the "Still watching?" prompt. Returns true when consumed (so the skip pill doesn't fire).
     func playNow() -> Bool {
-        guard case .counting = phase, let stream = selectedStream, let next = nextVideo else {
+        guard let stream = selectedStream, let next = nextVideo else { return false }
+        switch phase {
+        case .counting, .stillWatching:
+            countdownTask?.cancel()
+            Self.consecutiveAutoPlays = 0
+            play(stream: stream, next: next)
+            return true
+        default:
             return false
         }
-        countdownTask?.cancel()
-        play(stream: stream, next: next)
-        return true
     }
 
     /// Backward seek / exit: abandon autoplay for this playback session.
@@ -264,6 +276,13 @@ final class NextEpisodeEngine: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
             guard let self, !Task.isCancelled, !self.cancelled else { return }
+            // The countdown finished untouched. If this would be the Nth unattended autoplay in
+            // a row, ask instead of playing — a down-press (playNow) resumes and resets the run.
+            if Self.consecutiveAutoPlays >= Self.stillWatchingThreshold - 1 {
+                self.phase = .stillWatching
+                return
+            }
+            Self.consecutiveAutoPlays += 1
             self.play(stream: stream, next: next)
         }
     }
@@ -399,6 +418,13 @@ struct UpNextCard: View {
                         .foregroundStyle(.white.opacity(0.6))
                         .lineLimit(1)
                 }
+            case .stillWatching:
+                HStack(spacing: 10) {
+                    Image(systemName: "chevron.down.circle.fill")
+                    Text("Still watching? Press \u{2193} to continue")
+                        .font(.callout)
+                }
+                .foregroundStyle(.white.opacity(0.9))
             case .noStream:
                 Text("No stream found for the next episode.")
                     .font(.callout)
