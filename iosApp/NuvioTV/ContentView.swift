@@ -10,8 +10,13 @@ struct ContentView: View {
     @StateObject private var profiles = ProfilesViewModel()
     @StateObject private var posterStyle = PosterStyleModel()
     @StateObject private var appTheme = AppThemeModel()
+    @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
     @State private var selectedTab = 0
+    /// Deep link currently presented (Top Shelf → resume / title). Held until the user is past
+    /// the auth + profile gates when the app is cold-launched from the Top Shelf.
+    @State private var deepLink: DeepLink?
+    @State private var pendingDeepLinkURL: URL?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -50,6 +55,44 @@ struct ContentView: View {
         .onChange(of: auth.gate) { _, newGate in
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
             if newGate != .main { entered = false }
+        }
+        // Top Shelf snapshot mirrors the active profile's continue watching; only meaningful
+        // once a profile is entered (data is profile-scoped).
+        .onChange(of: entered) { _, isEntered in
+            if isEntered {
+                topShelf.start()
+                if let url = pendingDeepLinkURL {
+                    pendingDeepLinkURL = nil
+                    deepLink = DeepLink.parse(url)
+                }
+            } else {
+                // Sign-out wipes local progress first, so the watcher's final emission already
+                // rewrote the snapshot empty before we stop observing.
+                topShelf.stop()
+            }
+        }
+        .onOpenURL { url in
+            if auth.gate == .main, entered {
+                deepLink = DeepLink.parse(url)
+            } else {
+                // Cold launch from the Top Shelf: apply once the profile gate is passed.
+                pendingDeepLinkURL = url
+            }
+        }
+        .fullScreenCover(item: $deepLink) { link in
+            switch link {
+            case .resume(let type, let videoId, let title, let parentMetaId, let season, let episode):
+                StreamPickerView(
+                    type: type,
+                    videoId: videoId,
+                    title: title,
+                    parentMetaId: parentMetaId,
+                    season: season,
+                    episode: episode
+                )
+            case .title(let preview):
+                DeepLinkTitleView(preview: preview)
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             // Foreground refresh (mirrors mobile's AppForegroundMonitor → requestForegroundPull).
