@@ -8,7 +8,7 @@ struct WelcomeView: View {
     @ObservedObject var model: AuthViewModel
 
     private enum AuthSheet: String, Identifiable {
-        case signIn, signUp
+        case signIn, signUp, qr
         var id: String { rawValue }
     }
 
@@ -33,13 +33,22 @@ struct WelcomeView: View {
                 VStack(spacing: Theme.Spacing.lg) {
                     Button {
                         model.clearError()
-                        sheet = .signIn
+                        sheet = .qr
                     } label: {
-                        Text("Sign In")
+                        Label("Sign In with Phone", systemImage: "qrcode")
                             .frame(maxWidth: 600)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.Palette.accent)
+
+                    Button {
+                        model.clearError()
+                        sheet = .signIn
+                    } label: {
+                        Text("Sign In with Email")
+                            .frame(maxWidth: 600)
+                    }
+                    .buttonStyle(.bordered)
 
                     Button {
                         model.clearError()
@@ -62,7 +71,11 @@ struct WelcomeView: View {
             .padding(Theme.Spacing.screen)
         }
         .fullScreenCover(item: $sheet) { mode in
-            AuthView(model: model, isSignUp: mode == .signUp)
+            if mode == .qr {
+                QrSignInView()
+            } else {
+                AuthView(model: model, isSignUp: mode == .signUp)
+            }
         }
     }
 }

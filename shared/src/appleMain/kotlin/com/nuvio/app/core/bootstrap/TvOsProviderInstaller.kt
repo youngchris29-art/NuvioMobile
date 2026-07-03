@@ -4,6 +4,7 @@ import com.nuvio.app.core.account.AccountDataCleanerProvider
 import com.nuvio.app.core.network.SyncBackendRepository
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
+import com.nuvio.app.core.sync.ProfileSettingsSync
 import com.nuvio.app.core.sync.SyncPlatformProvider
 import com.nuvio.app.core.sync.TV_SYNC_PLATFORM
 import com.nuvio.app.core.ui.PosterCardStyleRepository
@@ -107,6 +108,12 @@ fun installTvOsSharedProviders() {
     // AuthRepository.initialize()'s collector waits for this `isLoaded` flag — without it the auth
     // state never leaves Loading. composeApp does this at App() startup; tvOS must too.
     SyncBackendRepository.ensureLoaded()
+
+    // Push settings changes to the per-platform ("tv") cloud blob — debrid/TMDB/MDBList keys,
+    // subtitle style, poster style, theme, etc. composeApp starts this in App(); without it every
+    // tvOS-set key stays local-only, so the sign-out wipe loses them and the next sign-in's pull
+    // REPLACES local settings with the (empty) server blob. With it, sign-in restores everything.
+    ProfileSettingsSync.startObserving()
 
     // Restore any previously-persisted profiles + active selection from NSUserDefaults before the
     // repositories read the active profile id. No-op on a fresh install (no stored payload yet);

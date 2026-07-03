@@ -60,6 +60,9 @@ object AuthRepository {
                     when (status) {
                         is SessionStatus.Authenticated -> {
                             val user = status.session.user
+                            // Anonymous Supabase sessions are QR-login scaffolding
+                            // (TvLoginRepository), never a signed-in account — ignore them.
+                            if (user?.isAnonymous == true) return@collect
                             val userId = user?.id.orEmpty()
                             if (!validateRemoteSession(userId)) return@collect
                             _state.value = AuthState.Authenticated(
