@@ -37,8 +37,23 @@ final class NextEpisodeEngine: ObservableObject {
     @Published private(set) var nextEpisodeTitle = ""
     @Published private(set) var sourceName: String?
 
+    /// Alternate streams for the CURRENTLY-playing video (in-player source switching).
+    @Published private(set) var sources: [StreamItem] = []
+    @Published private(set) var sourcesLoading = false
+    private var sourcesWatcher: FlowWatcher?
+
     private let context: PlaybackContext
     private let onPlayNext: (PlaybackContext) -> Void
+
+    /// Panel accessors (the playback-settings panel renders episode/source sections from these).
+    var episodes: [MetaVideo] { context.episodes }
+    var currentSeason: Int? { context.season }
+    var currentEpisode: Int? { context.episode }
+    var currentUrlString: String { context.url.absoluteString }
+
+    /// True while a manual episode jump is searching — plays immediately when a stream is found
+    /// (no countdown, no Still Watching gate: a jump IS user interaction).
+    private var immediatePlay = false
 
     private var settings: PlayerSettingsUiState?
     private var settingsWatcher: FlowWatcher?
@@ -85,7 +100,88 @@ final class NextEpisodeEngine: ObservableObject {
     func stop() {
         settingsWatcher?.cancel()
         settingsWatcher = nil
+        sourcesWatcher?.cancel()
+        sourcesWatcher = nil
         tearDownSearch()
+    }
+
+    // MARK: - Manual episode jump (player panel)
+
+    /// Jump straight to an arbitrary episode: search its streams and play the auto-selected one
+    /// immediately. Reuses the autoplay search/selection machinery without the countdown.
+    func jumpToEpisode(_ episode: MetaVideo) {
+        guard settings != nil else { return }
+        tearDownSearch()
+        cancelSourceLoad()
+        Self.consecutiveAutoPlays = 0
+        cancelled = false
+        triggered = true          // the threshold trigger must not re-fire for this session
+        selectedStream = nil
+        immediatePlay = true
+        nextVideo = episode
+        nextEpisodeTitle = Self.episodeTitle(episode)
+        beginSearch()
+    }
+
+    // MARK: - Source switching (player panel)
+
+    /// Load alternate streams for the video that's playing right now.
+    func loadSources() {
+        guard !sourcesLoading else { return }
+        sourcesLoading = true
+        sources = []
+
+        PlayerStreamsRepository.shared.loadEpisodeStreams(
+            type: context.contentType,
+            videoId: context.videoId,
+            season: context.season.map { KotlinInt(int: Int32($0)) },
+            episode: context.episode.map { KotlinInt(int: Int32($0)) },
+            forceRefresh: false
+        )
+        sourcesWatcher?.cancel()
+        sourcesWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
+            guard let self, let state = emitted as? StreamsUiState else { return }
+            self.sources = self.allStreams(state.groups)
+            if !state.isAnyLoading { self.sourcesLoading = false }
+        }
+    }
+
+    private func cancelSourceLoad() {
+        sourcesWatcher?.cancel()
+        sourcesWatcher = nil
+        sources = []
+        sourcesLoading = false
+    }
+
+    /// Switch the current video to a different stream (position resumes via saved watch progress).
+    /// Returns false when the stream has no direct URL.
+    func playSource(_ stream: StreamItem) -> Bool {
+        let urlString: String? = stream.playableDirectUrl
+        guard let urlString, let url = URL(string: urlString) else { return false }
+        Self.consecutiveAutoPlays = 0
+
+        let switched = PlaybackContext(
+            url: url,
+            title: context.title,
+            contentType: context.contentType,
+            parentMetaId: context.parentMetaId,
+            videoId: context.videoId,
+            season: context.season,
+            episode: context.episode,
+            poster: context.poster,
+            background: context.background,
+            providerName: stream.addonName,
+            providerAddonId: stream.addonId,
+            streamTitle: stream.streamLabel,
+            streamSubtitle: { let s: String? = stream.description_; return s }(),
+            externalSubtitles: (stream.externalSubtitles).map { sub in
+                SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
+            },
+            bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
+            episodes: context.episodes
+        )
+        onPlayNext(switched)
+        return true
     }
 
     private func tearDownSearch() {
@@ -139,10 +235,11 @@ final class NextEpisodeEngine: ObservableObject {
         }
     }
 
-    /// Backward seek / exit: abandon autoplay for this playback session.
+    /// Backward seek / exit: abandon autoplay (or an in-flight jump) for this playback session.
     func cancel() {
         guard triggered || phase != .hidden else { return }
         cancelled = true
+        immediatePlay = false
         phase = .hidden
         tearDownSearch()
     }
@@ -151,6 +248,8 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func beginSearch() {
         guard let next = nextVideo, let settings else { return }
+        // The search and the source list share the repo's episodeStreamsState flow — never both.
+        cancelSourceLoad()
         phase = .searching
         sourceName = nil
 
@@ -268,6 +367,14 @@ final class NextEpisodeEngine: ObservableObject {
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
+
+        // Manual episode jump: play as soon as a stream resolves — no countdown, no
+        // Still Watching gate (the jump itself is user interaction).
+        if immediatePlay {
+            immediatePlay = false
+            play(stream: stream, next: next)
+            return
+        }
 
         countdownTask = Task { [weak self] in
             for second in stride(from: 3, through: 1, by: -1) {

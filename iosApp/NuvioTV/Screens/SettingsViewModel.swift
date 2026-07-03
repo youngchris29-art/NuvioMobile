@@ -103,6 +103,30 @@ final class SettingsViewModel: ObservableObject {
         PlayerSettingsRepository.shared.setSkipIntroEnabled(enabled: enabled)
     }
 
+    // MARK: - Device-local player tuning (UserDefaults — hardware knobs, deliberately unsynced)
+
+    /// Streaming buffer size in MiB (0 = mpv defaults). Applies to the next playback.
+    @Published var bufferMB: Int = UserDefaults.standard.integer(forKey: PlayerTuning.bufferMBKey)
+    /// Network readahead in seconds (0 = mpv defaults). Applies to the next playback.
+    @Published var readaheadSec: Int = UserDefaults.standard.integer(forKey: PlayerTuning.readaheadSecKey)
+    /// Ask tvOS to match the display's refresh rate (and dynamic range) to the content.
+    @Published var matchFrameRate: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey)
+
+    func setBufferMB(_ value: Int) {
+        bufferMB = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.bufferMBKey)
+    }
+
+    func setReadaheadSec(_ value: Int) {
+        readaheadSec = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.readaheadSecKey)
+    }
+
+    func setMatchFrameRate(_ value: Bool) {
+        matchFrameRate = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.matchFrameRateKey)
+    }
+
     // MARK: - TMDB
 
     /// Save a key and turn enrichment on. Order matters: `setEnabled(true)` is a no-op while the key

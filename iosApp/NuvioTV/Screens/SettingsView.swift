@@ -68,6 +68,27 @@ struct SettingsView: View {
                             ) {
                                 model.setSkipIntro(!model.skipIntroEnabled)
                             }
+                            SettingsToggleRow(
+                                title: "Match Content Frame Rate",
+                                subtitle: "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings \u{2192} Video and Audio.",
+                                isOn: model.matchFrameRate
+                            ) {
+                                model.setMatchFrameRate(!model.matchFrameRate)
+                            }
+                            tuningChipRow(
+                                title: "Streaming Buffer",
+                                options: [(0, "Default"), (64, "64 MB"), (150, "150 MB"), (512, "512 MB")],
+                                selected: model.bufferMB
+                            ) { model.setBufferMB($0) }
+                            tuningChipRow(
+                                title: "Network Readahead",
+                                options: [(0, "Default"), (30, "30 s"), (60, "60 s"), (120, "120 s")],
+                                selected: model.readaheadSec
+                            ) { model.setReadaheadSec($0) }
+                            Text("Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .frame(maxWidth: 1100, alignment: .leading)
                         }
 
                         section("Subtitles") {
@@ -367,6 +388,39 @@ struct SettingsView: View {
             }
             DebridKeyEntryRow(providerName: provider.displayName) { key in
                 debrid.saveManualKey(provider.id, key: key)
+            }
+        }
+    }
+
+    /// A labeled row of value chips for the device-local player tuning knobs.
+    private func tuningChipRow(
+        title: String,
+        options: [(value: Int, label: String)],
+        selected: Int,
+        onSelect: @escaping (Int) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Text(title)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(options, id: \.value) { option in
+                    Button {
+                        onSelect(option.value)
+                    } label: {
+                        HStack(spacing: Theme.Spacing.xs) {
+                            if selected == option.value {
+                                Image(systemName: "checkmark.circle.fill")
+                            }
+                            Text(option.label)
+                        }
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.md)
+                        .padding(.vertical, Theme.Spacing.xs)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(selected == option.value ? Theme.Palette.accent : nil)
+                }
             }
         }
     }

@@ -1,9 +1,20 @@
 import AVFAudio
+import AVFoundation
+import AVKit
 import Combine
+import CoreMedia
 import SwiftUI
 import UIKit
 import Libmpv
 import SharedCore
+
+/// UserDefaults keys for device-local player tuning (Settings > Playback). Device-specific
+/// hardware knobs, deliberately NOT synced.
+enum PlayerTuning {
+    static let bufferMBKey = "player.bufferMB"
+    static let readaheadSecKey = "player.readaheadSec"
+    static let matchFrameRateKey = "player.matchFrameRate"
+}
 
 /// Everything the player needs to render a stream and record watch progress for it.
 struct PlaybackContext: Identifiable {
@@ -109,12 +120,16 @@ final class MPVPlaybackState: ObservableObject {
     @Published var showStreamInfo: Bool = false
     @Published var streamInfo: StreamInfoSnapshot?
 
+    /// True once playback hit end-of-file (keep-open holds the last frame; drives the post-play cover).
+    @Published var isEnded: Bool = false
+
     /// Wired by the controller so the SwiftUI track picker can drive libmpv.
     var selectAudio: ((Int) -> Void)?
     var selectSubtitle: ((Int) -> Void)?
     var setSpeed: ((Double) -> Void)?
     var setSubtitleDelay: ((Double) -> Void)?
     var setAudioDelay: ((Double) -> Void)?
+    var replay: (() -> Void)?
     var reclaimFocus: (() -> Void)?
 
     /// Wired by `NextEpisodeEngine`: down-press plays the ready next episode (returns true when
@@ -160,6 +175,8 @@ final class MPVTVPlayerViewController: UIViewController {
     private var traktScrobbleItem: TraktScrobbleItem?
     private var traktScrobbleRequested = false
     private var skipSegments: [SkipSegment] = []
+    /// Last raw eof-reached value (edge detection for the post-play cover).
+    private var lastEofFlag = false
 
     /// Called when the user presses Menu, so the SwiftUI cover can dismiss.
     var onExit: (() -> Void)?
@@ -191,6 +208,7 @@ final class MPVTVPlayerViewController: UIViewController {
         state.setSpeed = { [weak self] speed in self?.setSpeed(speed) }
         state.setSubtitleDelay = { [weak self] seconds in self?.setSubtitleDelay(seconds) }
         state.setAudioDelay = { [weak self] seconds in self?.setAudioDelay(seconds) }
+        state.replay = { [weak self] in self?.replay() }
         state.reclaimFocus = { [weak self] in self?.becomeFirstResponder() }
 
         setupMpv()
@@ -235,6 +253,7 @@ final class MPVTVPlayerViewController: UIViewController {
         endSeek()
         saveProgress(flush: true)
         stopTraktScrobble()
+        clearDisplayCriteria()
     }
 
     override var canBecomeFirstResponder: Bool { true }
@@ -313,6 +332,19 @@ final class MPVTVPlayerViewController: UIViewController {
         ]
         for (key, value) in options {
             checkError(mpv_set_option_string(mpv, key, value))
+        }
+
+        // User-tunable streaming buffer (Settings > Playback > Streaming Buffer). 0 = mpv defaults.
+        let bufferMB = UserDefaults.standard.integer(forKey: PlayerTuning.bufferMBKey)
+        if bufferMB > 0 {
+            checkError(mpv_set_option_string(mpv, "demuxer-max-bytes", "\(bufferMB)MiB"))
+            checkError(mpv_set_option_string(mpv, "demuxer-max-back-bytes", "\(max(bufferMB / 2, 16))MiB"))
+        }
+        let readaheadSec = UserDefaults.standard.integer(forKey: PlayerTuning.readaheadSecKey)
+        if readaheadSec > 0 {
+            checkError(mpv_set_option_string(mpv, "cache", "yes"))
+            checkError(mpv_set_option_string(mpv, "demuxer-readahead-secs", "\(readaheadSec)"))
+            checkError(mpv_set_option_string(mpv, "cache-secs", "\(readaheadSec)"))
         }
 
         checkError(mpv_initialize(mpv))
@@ -434,8 +466,67 @@ final class MPVTVPlayerViewController: UIViewController {
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
         applySubtitleStyle()
+        applyDisplayCriteriaIfEnabled()
         fetchSkipSegments()
         startTraktScrobble()
+    }
+
+    // MARK: - Match content frame rate (AVDisplayManager)
+
+    /// Window whose display criteria we set — cleared on teardown so the display mode reverts.
+    private weak var displayCriteriaWindow: UIWindow?
+
+    /// Ask tvOS to switch the display mode to the content's native frame rate (and dynamic range,
+    /// when mpv reports BT.2020/PQ/HLG). Public-API path for non-AVAsset players: build a
+    /// `CMVideoFormatDescription` from mpv's reported params and use
+    /// `AVDisplayCriteria(refreshRate:formatDescription:)`. Requires the user's tvOS
+    /// Settings > Video and Audio > Match Content to allow frame-rate matching.
+    private func applyDisplayCriteriaIfEnabled() {
+        guard UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey) else { return }
+        let fps = getDouble("container-fps")
+        guard fps > 10, let window = view.window else { return }
+        let width = getInt("video-params/w")
+        let height = getInt("video-params/h")
+        guard width > 0, height > 0 else { return }
+
+        let codecName = (getString("video-codec") ?? "").lowercased()
+        let codecType: CMVideoCodecType =
+            (codecName.contains("hevc") || codecName.contains("265")) ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
+
+        var extensions: [CFString: Any] = [:]
+        let primaries = (getString("video-params/primaries") ?? "").lowercased()
+        let gamma = (getString("video-params/gamma") ?? "").lowercased()
+        if primaries.contains("2020") {
+            extensions[kCMFormatDescriptionExtension_ColorPrimaries] = kCMFormatDescriptionColorPrimaries_ITU_R_2020
+            extensions[kCMFormatDescriptionExtension_YCbCrMatrix] = kCMFormatDescriptionYCbCrMatrix_ITU_R_2020
+        }
+        if gamma.contains("pq") {
+            extensions[kCMFormatDescriptionExtension_TransferFunction] = kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ
+        } else if gamma.contains("hlg") {
+            extensions[kCMFormatDescriptionExtension_TransferFunction] = kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG
+        }
+
+        var formatDescription: CMFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: codecType,
+            width: Int32(width),
+            height: Int32(height),
+            extensions: extensions.isEmpty ? nil : extensions as CFDictionary,
+            formatDescriptionOut: &formatDescription
+        )
+        guard status == noErr, let formatDescription else { return }
+
+        displayCriteriaWindow = window
+        window.avDisplayManager.preferredDisplayCriteria = AVDisplayCriteria(
+            refreshRate: Float(fps),
+            formatDescription: formatDescription
+        )
+    }
+
+    private func clearDisplayCriteria() {
+        displayCriteriaWindow?.avDisplayManager.preferredDisplayCriteria = nil
+        displayCriteriaWindow = nil
     }
 
     // MARK: - Trakt scrobbling
@@ -714,6 +805,14 @@ final class MPVTVPlayerViewController: UIViewController {
         state.isPaused = paused
         state.isBuffering = cacheWait || (coreIdle && !paused)
 
+        // Rising-edge detection: eof-reached STAYS true while keep-open holds the last frame, so
+        // only propagate transitions — otherwise a dismissed post-play cover re-presents each tick.
+        let ended = getFlag("eof-reached")
+        if ended != lastEofFlag {
+            lastEofFlag = ended
+            state.isEnded = ended
+        }
+
         if state.showStreamInfo {
             let info = buildStreamInfo()
             if info != state.streamInfo { state.streamInfo = info }
@@ -821,6 +920,16 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         setFlag("pause", !getFlag("pause"))
         refreshState()
+    }
+
+    /// Post-play "Play Again": back to the start and resume playing.
+    private func replay() {
+        guard mpv != nil else { return }
+        seekAbsolute(0)
+        setFlag("pause", false)
+        state.isEnded = false
+        flashControls()
+        becomeFirstResponder()
     }
 
     private func seekBy(_ seconds: Double) {
@@ -1055,10 +1164,26 @@ struct MPVPlayerScreen: View {
         .animation(.easeInOut(duration: 0.25), value: showPauseInfo)
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .fullScreenCover(isPresented: $state.showTracks, onDismiss: { state.reclaimFocus?() }) {
-            TrackPickerView(state: state)
+            TrackPickerView(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil)
+        }
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { state.isEnded && upNext.phase == .hidden },
+                set: { if !$0 { state.isEnded = false } }
+            ),
+            onDismiss: { state.reclaimFocus?() }
+        ) {
+            PostPlayView(
+                title: context.title,
+                poster: context.poster,
+                onReplay: { state.replay?() },
+                onExit: { dismiss() }
+            )
         }
         .onAppear {
-            if onPlayNext != nil, !context.episodes.isEmpty {
+            // Start the orchestration whenever a presenter can swap contexts — autoplay needs
+            // episodes, but source switching works for movies too (the engine no-ops the rest).
+            if onPlayNext != nil {
                 upNext.start(state: state)
             }
         }
@@ -1158,6 +1283,61 @@ private struct SkipPromptPill: View {
     }
 }
 
+/// Post-play screen shown when playback reaches the end without an autoplay hand-off
+/// (Android TV `PostPlayOverlay` parity, simplified): replay or exit.
+private struct PostPlayView: View {
+    let title: String
+    let poster: String?
+    let onReplay: () -> Void
+    let onExit: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            HStack(alignment: .center, spacing: 48) {
+                if let poster, !poster.isEmpty {
+                    CachedAsyncImage(string: poster)
+                        .frame(width: 260, height: 390)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                VStack(alignment: .leading, spacing: 24) {
+                    Text("That's the end of")
+                        .font(.title3)
+                        .foregroundStyle(.white.opacity(0.7))
+                    Text(title)
+                        .font(.title).bold()
+                        .foregroundStyle(.white)
+                        .lineLimit(3)
+                        .frame(maxWidth: 800, alignment: .leading)
+
+                    Button {
+                        dismiss()
+                        onReplay()
+                    } label: {
+                        Label("Play Again", systemImage: "arrow.counterclockwise")
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        // Dismissing the player screen tears the cover down with it —
+                        // don't also dismiss the cover (competing transitions).
+                        onExit()
+                    } label: {
+                        Label("Back to Details", systemImage: "chevron.backward")
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(80)
+        }
+    }
+}
+
 /// Metadata card shown top-leading after playback has been paused for a moment: artwork, title,
 /// episode line, stream/source info, and time remaining (Android TV `PauseOverlay` parity).
 private struct PauseInfoCard: View {
@@ -1239,10 +1419,13 @@ private struct StreamInfoOverlayView: View {
 }
 
 /// Playback-settings panel presented over the player: audio/subtitle tracks, playback speed,
-/// subtitle & audio delay, and the stream-info toggle. A normal SwiftUI focus context so its
-/// buttons receive focus (unlike an overlay sibling to the UIKit player).
+/// subtitle & audio delay, episode jump, source switching, and the stream-info toggle. A normal
+/// SwiftUI focus context so its buttons receive focus (unlike an overlay sibling to the UIKit player).
 private struct TrackPickerView: View {
     @ObservedObject var state: MPVPlaybackState
+    @ObservedObject var engine: NextEpisodeEngine
+    /// True when the presenter can swap playback contexts (episode jump / source switching).
+    let canSwitchStreams: Bool
     @Environment(\.dismiss) private var dismiss
 
     private static let speeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
@@ -1264,6 +1447,12 @@ private struct TrackPickerView: View {
                 }
                 speedSection
                 timingSection
+                if canSwitchStreams, !engine.episodes.isEmpty {
+                    episodesSection
+                }
+                if canSwitchStreams {
+                    sourcesSection
+                }
                 diagnosticsSection
             }
             .padding(60)
@@ -1271,6 +1460,112 @@ private struct TrackPickerView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.92).ignoresSafeArea())
+    }
+
+    // MARK: - Episodes (jump to any aired episode)
+
+    private var episodesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Episodes").font(.title2).bold().foregroundStyle(.white)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) {
+                    ForEach(Array(sortedEpisodes.enumerated()), id: \.offset) { _, episode in
+                        let isCurrent = isCurrentEpisode(episode)
+                        Button {
+                            guard !isCurrent else { return }
+                            engine.jumpToEpisode(episode)
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 8) {
+                                if isCurrent {
+                                    Image(systemName: "play.fill")
+                                }
+                                Text(episodeChipLabel(episode))
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            Text("Jumping finds a stream automatically and switches playback.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+    }
+
+    private var sortedEpisodes: [MetaVideo] {
+        engine.episodes
+            .compactMap { video -> (MetaVideo, Int, Int)? in
+                guard let s = video.season?.value, let e = video.episode?.value else { return nil }
+                return (video, s, e)
+            }
+            .sorted { a, b in a.1 == b.1 ? a.2 < b.2 : a.1 < b.1 }
+            .map { $0.0 }
+    }
+
+    private func isCurrentEpisode(_ episode: MetaVideo) -> Bool {
+        guard let s = episode.season?.value, let e = episode.episode?.value else { return false }
+        return s == engine.currentSeason && e == engine.currentEpisode
+    }
+
+    private func episodeChipLabel(_ episode: MetaVideo) -> String {
+        if let s = episode.season?.value, let e = episode.episode?.value {
+            return "S\(s)E\(e)"
+        }
+        return episode.title
+    }
+
+    // MARK: - Sources (switch the current video's stream)
+
+    private var sourcesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 16) {
+                Text("Sources").font(.title2).bold().foregroundStyle(.white)
+                if engine.sourcesLoading { ProgressView() }
+            }
+            if engine.sources.isEmpty && !engine.sourcesLoading {
+                Text("No alternate sources found yet.")
+                    .font(.callout)
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            ForEach(Array(engine.sources.prefix(12).enumerated()), id: \.offset) { _, stream in
+                sourceRow(stream)
+            }
+            Text("Switching resumes from your last saved position.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .onAppear { engine.loadSources() }
+    }
+
+    private func sourceRow(_ stream: StreamItem) -> some View {
+        let urlString: String? = stream.playableDirectUrl
+        let isCurrent = urlString == engine.currentUrlString
+        return Button {
+            guard !isCurrent else { return }
+            if engine.playSource(stream) { dismiss() }
+        } label: {
+            HStack(spacing: 16) {
+                Image(systemName: isCurrent ? "play.circle.fill" : "arrow.triangle.2.circlepath")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(stream.streamLabel).lineLimit(1)
+                    Text(stream.addonName)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if isCurrent {
+                    Text("Playing")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .padding(.vertical, 8)
+            .frame(maxWidth: 900, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
     }
 
     private func section(title: String, tracks: [PlayerTrack], onSelect: @escaping (Int) -> Void) -> some View {
