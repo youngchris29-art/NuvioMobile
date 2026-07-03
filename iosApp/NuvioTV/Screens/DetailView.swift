@@ -22,7 +22,8 @@ struct DetailView: View {
             backdropImage
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
-            if let trailer = model.trailerVideoURL, !showStreams {
+            // Also pause it while a full-screen trailer plays (no doubled decode/audio).
+            if let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil {
                 TrailerHeroPlayer(urlString: trailer, onFailure: { model.trailerFailed() })
                     .ignoresSafeArea()
                     .transition(.opacity)
@@ -56,6 +57,7 @@ struct DetailView: View {
                     Group {
                         castRow
                         collectionRow
+                        trailersRow
                         moreLikeThisRow
                         commentsSection
                     }
@@ -69,6 +71,10 @@ struct DetailView: View {
         .onDisappear { model.stop() }
         .fullScreenCover(isPresented: $showStreams) {
             StreamPickerView(type: preview.type, videoId: preview.id, title: title)
+        }
+        .fullScreenCover(item: $model.trailerPlayback) { item in
+            FullScreenTrailerPlayer(urlString: item.url)
+                .ignoresSafeArea()
         }
     }
 
@@ -446,6 +452,51 @@ struct DetailView: View {
         case "Severe": return .red
         case "Moderate": return .orange
         default: return .yellow
+        }
+    }
+
+    // MARK: - Trailers & extras
+
+    @ViewBuilder
+    private var trailersRow: some View {
+        let trailers = model.meta?.trailers ?? []
+        if !trailers.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Text("Trailers & Extras")
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: Theme.Spacing.lg) {
+                        ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { _, trailer in
+                            Button {
+                                model.playTrailer(trailer)
+                            } label: {
+                                HStack(spacing: Theme.Spacing.sm) {
+                                    if model.resolvingTrailerId == trailer.id {
+                                        ProgressView()
+                                    } else {
+                                        Image(systemName: "play.circle.fill")
+                                            .foregroundStyle(Theme.Palette.accent)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(trailer.name)
+                                            .font(Theme.Font.meta)
+                                            .foregroundStyle(Theme.Palette.textPrimary)
+                                            .lineLimit(1)
+                                            .frame(maxWidth: 420, alignment: .leading)
+                                        Text(trailer.type)
+                                            .font(Theme.Font.caption)
+                                            .foregroundStyle(Theme.Palette.textSecondary)
+                                    }
+                                }
+                                .padding(Theme.Spacing.md)
+                            }
+                            .buttonStyle(.card)
+                        }
+                    }
+                    .padding(.vertical, Theme.Spacing.xs)
+                }
+            }
         }
     }
 

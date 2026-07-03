@@ -17,6 +17,10 @@ final class SettingsViewModel: ObservableObject {
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
     @Published private(set) var tmdbEnabled = false
     @Published private(set) var tmdbHasKey = false
+    /// MDBList external ratings (IMDb/RT/Metacritic/Trakt/Letterboxd on Detail). Gated on a user key;
+    /// the shared MetaDetailsRepository applies the enrichment itself on every load.
+    @Published private(set) var mdbListEnabled = false
+    @Published private(set) var mdbListHasKey = false
     /// Subtitle appearance (applied by the player on file load). Nil until settings load.
     @Published private(set) var subtitleStyle: SubtitleStyleState?
     /// Preferred track languages (player auto-selects a matching track on load).
@@ -33,6 +37,7 @@ final class SettingsViewModel: ObservableObject {
     private var catalogWatcher: FlowWatcher?
     private var addonWatcher: FlowWatcher?
     private var tmdbWatcher: FlowWatcher?
+    private var mdbListWatcher: FlowWatcher?
     private var posterStyleWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
@@ -59,6 +64,13 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? TmdbSettings else { return }
             self.tmdbEnabled = state.enabled
             self.tmdbHasKey = state.hasApiKey
+        }
+
+        MdbListSettingsRepository.shared.ensureLoaded()
+        mdbListWatcher = FlowWatcherKt.watch(MdbListSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? MdbListSettings else { return }
+            self.mdbListEnabled = state.enabled
+            self.mdbListHasKey = state.hasApiKey
         }
 
         PosterCardStyleRepository.shared.ensureLoaded()
@@ -90,6 +102,7 @@ final class SettingsViewModel: ObservableObject {
         catalogWatcher?.cancel(); catalogWatcher = nil
         addonWatcher?.cancel(); addonWatcher = nil
         tmdbWatcher?.cancel(); tmdbWatcher = nil
+        mdbListWatcher?.cancel(); mdbListWatcher = nil
         posterStyleWatcher?.cancel(); posterStyleWatcher = nil
     }
 
@@ -134,6 +147,24 @@ final class SettingsViewModel: ObservableObject {
     func saveTmdbKey(_ key: String) {
         TmdbSettingsRepository.shared.setApiKey(value: key)
         TmdbSettingsRepository.shared.setEnabled(value: true)
+    }
+
+    // MARK: - MDBList
+
+    /// Save a key and enable external ratings (provider sub-toggles all default on). Enrichment
+    /// applies to titles opened after enabling.
+    func saveMdbListKey(_ key: String) {
+        MdbListSettingsRepository.shared.setApiKey(value: key)
+        MdbListSettingsRepository.shared.setEnabled(value: true)
+    }
+
+    func setMdbListEnabled(_ enabled: Bool) {
+        MdbListSettingsRepository.shared.setEnabled(value: enabled)
+    }
+
+    func clearMdbListKey() {
+        MdbListSettingsRepository.shared.setApiKey(value: "")
+        MdbListSettingsRepository.shared.setEnabled(value: false)
     }
 
     func setTmdbEnabled(_ enabled: Bool) {

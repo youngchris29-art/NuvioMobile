@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import AVKit
 
 /// A muted, looping, controls-free trailer surface behind the Detail hero, backed by **AVPlayer**.
 ///
@@ -114,4 +115,23 @@ struct TrailerHeroPlayer: UIViewRepresentable {
 
         deinit { teardown() }
     }
+}
+
+/// Full-screen trailer playback with sound and transport controls (from the Detail "Trailers &
+/// Extras" row). `AVPlayerViewController` supplies the standard tvOS player UI; the presenting
+/// `fullScreenCover` handles Menu-to-dismiss.
+struct FullScreenTrailerPlayer: UIViewControllerRepresentable {
+    let urlString: String
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        if let url = URL(string: urlString) {
+            let player = AVPlayer(url: url)
+            controller.player = player
+            player.play()
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {}
 }

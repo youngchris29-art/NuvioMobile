@@ -24,6 +24,10 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var episodeRatings: [String: Double] = [:]
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
+    /// Resolved full-screen trailer (from the Trailers row); drives a player cover with sound.
+    @Published var trailerPlayback: TrailerPlaybackItem?
+    /// Trailer currently resolving (spinner on its row card).
+    @Published private(set) var resolvingTrailerId: String?
 
     private var detailWatcher: FlowWatcher?
     private var watchedWatcher: FlowWatcher?
@@ -112,6 +116,22 @@ final class DetailViewModel: ObservableObject {
     /// the static backdrop. Not retried for this title.
     func trailerFailed() {
         trailerVideoURL = nil
+    }
+
+    /// Trailers row: resolve one trailer's YouTube URL into an AVPlayer-friendly stream and present
+    /// it full-screen (with sound — unlike the muted hero loop).
+    func playTrailer(_ trailer: MetaTrailer) {
+        guard resolvingTrailerId == nil else { return }
+        resolvingTrailerId = trailer.id
+        HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: trailer.youtubePlaybackUrl()) { [weak self] source, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.resolvingTrailerId = nil
+                let progressive: String? = source?.progressiveUrl
+                guard let progressive, !progressive.isEmpty else { return }
+                self.trailerPlayback = TrailerPlaybackItem(id: trailer.id, url: progressive, title: trailer.name)
+            }
+        }
     }
 
     // MARK: - Trakt comments
@@ -219,4 +239,11 @@ final class DetailViewModel: ObservableObject {
         watchedWatcher?.cancel()
         libraryWatcher?.cancel()
     }
+}
+
+/// One resolved trailer ready for full-screen playback (`id` keys the presenting cover).
+struct TrailerPlaybackItem: Identifiable {
+    let id: String
+    let url: String
+    let title: String
 }

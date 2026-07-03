@@ -165,6 +165,34 @@ struct SettingsView: View {
                             }
                         }
 
+                        section("Ratings (MDBList)") {
+                            Text("Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open after enabling will show the ratings.")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .frame(maxWidth: 1100, alignment: .leading)
+
+                            if model.mdbListHasKey {
+                                SettingsToggleRow(
+                                    title: "MDBList Ratings",
+                                    subtitle: model.mdbListEnabled ? "On \u{00B7} API key saved" : "Off \u{00B7} API key saved",
+                                    isOn: model.mdbListEnabled
+                                ) {
+                                    model.setMdbListEnabled(!model.mdbListEnabled)
+                                }
+                                SettingsActionRow(
+                                    title: "Remove API Key",
+                                    subtitle: "Clears the saved MDBList key and turns ratings off.",
+                                    systemImage: "trash"
+                                ) {
+                                    model.clearMdbListKey()
+                                }
+                            } else {
+                                DebridKeyEntryRow(providerName: "MDBList", placeholder: "MDBList API key") {
+                                    model.saveMdbListKey($0)
+                                }
+                            }
+                        }
+
                         section("Home Rows") {
                             if model.catalogs.isEmpty {
                                 Text("Install add-ons to customize your Home rows.")
@@ -568,9 +596,10 @@ private struct DebridActivationCard: View {
     }
 }
 
-/// Manual API-key fallback for a debrid provider (from the provider's account/settings page).
+/// Manual API-key entry row (debrid fallback, MDBList, and similar key-gated services).
 private struct DebridKeyEntryRow: View {
     let providerName: String
+    var placeholder: String?
     let onSave: (String) -> Void
     @State private var key = ""
 
@@ -579,7 +608,7 @@ private struct DebridKeyEntryRow: View {
             HStack(spacing: Theme.Spacing.md) {
                 Image(systemName: "key")
                     .foregroundStyle(Theme.Palette.textSecondary)
-                TextField("Or paste a \(providerName) API key", text: $key)
+                TextField(placeholder ?? "Or paste a \(providerName) API key", text: $key)
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textPrimary)
