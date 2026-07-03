@@ -70,6 +70,9 @@ struct HomeView: View {
             .navigationDestination(for: PersonRoute.self) { route in
                 PersonDetailView(personId: route.id, personName: route.name)
             }
+            .navigationDestination(for: EntityRoute.self) { route in
+                EntityBrowseView(route: route)
+            }
             .navigationDestination(for: FolderRoute.self) { route in
                 FolderDetailView(route: route)
             }

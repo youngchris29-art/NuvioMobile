@@ -47,6 +47,26 @@ struct PersonRoute: Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
+/// Navigation value for a studio/network browse page (TMDB discover-by-company/network). Only
+/// produced when a `MetaCompany` has a `tmdbId`. `isNetwork` picks the TMDB entity kind (networks
+/// come from `meta.networks`, studios from `meta.productionCompanies`); `sourceType` is the origin
+/// title's type ("movie"/"series"), which orders the rails. Hashes on kind + id.
+struct EntityRoute: Hashable {
+    let id: Int
+    let name: String
+    let isNetwork: Bool
+    let sourceType: String
+
+    static func == (lhs: EntityRoute, rhs: EntityRoute) -> Bool {
+        lhs.id == rhs.id && lhs.isNetwork == rhs.isNetwork
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(isNetwork)
+    }
+}
+
 /// One horizontal catalog (e.g. "Popular Movies", or a search-result group) as a focus-scrollable row
 /// of poster cards.
 ///

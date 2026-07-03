@@ -65,6 +65,9 @@ struct LibraryView: View {
             .navigationDestination(for: PersonRoute.self) { route in
                 PersonDetailView(personId: route.id, personName: route.name)
             }
+            .navigationDestination(for: EntityRoute.self) { route in
+                EntityBrowseView(route: route)
+            }
         }
         .onAppear {
             model.start()

@@ -378,38 +378,57 @@ struct DetailView: View {
 
     /// Logo strip for the production companies/networks that carry TMDB logo art (the info rows
     /// above already list all of them by name). White chips keep the mostly-dark logos readable.
+    /// Chips with a TMDB id push the studio/network browse page (`EntityRoute`).
     @ViewBuilder
     private var companyLogosRow: some View {
         let companies = companyLogos
         if !companies.isEmpty {
             HStack(spacing: Theme.Spacing.md) {
-                ForEach(Array(companies.enumerated()), id: \.offset) { _, company in
-                    AsyncImage(url: URL(string: company.logo ?? "")) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().aspectRatio(contentMode: .fit)
-                        } else {
-                            Text(company.name)
-                                .font(Theme.Font.caption)
-                                .foregroundStyle(.black)
+                ForEach(Array(companies.enumerated()), id: \.offset) { _, entry in
+                    if let tmdbId = entry.company.tmdbId?.value {
+                        NavigationLink(value: EntityRoute(
+                            id: tmdbId,
+                            name: entry.company.name,
+                            isNetwork: entry.isNetwork,
+                            sourceType: model.meta?.type ?? preview.type
+                        )) {
+                            companyChip(entry.company)
                         }
+                        .buttonStyle(.card)
+                    } else {
+                        companyChip(entry.company)
                     }
-                    .frame(height: 36)
-                    .frame(minWidth: 60, maxWidth: 180)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.xs)
-                    .background(Color.white.opacity(0.92), in: Capsule())
                 }
             }
         }
     }
 
-    private var companyLogos: [MetaCompany] {
+    private func companyChip(_ company: MetaCompany) -> some View {
+        AsyncImage(url: URL(string: company.logo ?? "")) { phase in
+            if case .success(let image) = phase {
+                image.resizable().aspectRatio(contentMode: .fit)
+            } else {
+                Text(company.name)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.black)
+            }
+        }
+        .frame(height: 36)
+        .frame(minWidth: 60, maxWidth: 180)
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.xs)
+        .background(Color.white.opacity(0.92), in: Capsule())
+    }
+
+    private var companyLogos: [(company: MetaCompany, isNetwork: Bool)] {
         guard let meta = model.meta else { return [] }
         var seen = Set<String>()
-        return (meta.productionCompanies + meta.networks).filter { company in
-            let logo: String? = company.logo
-            guard let logo, !logo.isEmpty, !seen.contains(company.name) else { return false }
-            seen.insert(company.name)
+        let tagged = meta.productionCompanies.map { (company: $0, isNetwork: false) }
+            + meta.networks.map { (company: $0, isNetwork: true) }
+        return tagged.filter { entry in
+            let logo: String? = entry.company.logo
+            guard let logo, !logo.isEmpty, !seen.contains(entry.company.name) else { return false }
+            seen.insert(entry.company.name)
             return true
         }
         .prefix(6).map { $0 }
