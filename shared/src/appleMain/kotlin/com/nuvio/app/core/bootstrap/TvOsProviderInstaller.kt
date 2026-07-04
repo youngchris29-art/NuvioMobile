@@ -185,6 +185,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
     )
 
     override fun wipe() {
+        // 0) tvOS-only extras installed from tvosMain (plugins today).
+        TvOsExtraLifecycleHooks.onClearLocalState()
+
         // 1) Repo/in-memory state (active profile scope).
         ProfileRepository.clearInMemory()
         AddonRepository.clearLocalState()
@@ -232,6 +235,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
             if (keyString.startsWith("stream_link_")) {
                 defaults.removeObjectForKey(keyString)
             }
+            // Plugin state + per-scraper settings (scraper ids embed the manifest URL, so the
+            // settings keys look like "settings_https://…" — safe to match on that prefix).
+            if (keyString.startsWith("plugins_state_") || keyString.startsWith("settings_http")) {
+                defaults.removeObjectForKey(keyString)
+            }
         }
     }
 }
@@ -241,8 +249,23 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
  * [onProfileSelected]; each target repository reloads its data for the new profile (mirrors the
  * subset of composeApp's adapter that applies to the screens tvOS ships today).
  */
+/**
+ * Extension points for tvOS-only source sets. appleMain compiles for iOS too (where these hooks
+ * stay as no-ops), so appleMain code can't reference tvosMain classes directly — tvosMain
+ * installers (e.g. `installTvOsPlugins()`) assign these instead, and the cleaner/coordinator
+ * below invoke them alongside the statically-known repos.
+ */
+object TvOsExtraLifecycleHooks {
+    @kotlin.concurrent.Volatile
+    var onProfileChanged: (Int) -> Unit = {}
+
+    @kotlin.concurrent.Volatile
+    var onClearLocalState: () -> Unit = {}
+}
+
 private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
     override fun onProfileSelected(profileIndex: Int) {
+        TvOsExtraLifecycleHooks.onProfileChanged(profileIndex)
         WatchedRepository.onProfileChanged(profileIndex)
         LibraryRepository.onProfileChanged(profileIndex)
         WatchProgressRepository.onProfileChanged(profileIndex)

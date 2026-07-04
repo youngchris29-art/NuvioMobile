@@ -280,6 +280,14 @@ kotlin {
             baseName = "SharedCore"
             isStatic = true
         }
+        // CommonCrypto shim for the tvOS plugin runtime's PluginCrypto (same def as composeApp's
+        // iOS targets — CommonCrypto ships in libSystem on tvOS too).
+        if (target.name.startsWith("tvos")) {
+            target.compilations.getByName("main").cinterops.create("commoncrypto") {
+                defFile(project.file("src/nativeInterop/cinterop/commoncrypto.def"))
+                compilerOpts("-I${project.projectDir}/src/nativeInterop/cinterop")
+            }
+        }
     }
 
     sourceSets {
@@ -301,6 +309,13 @@ kotlin {
         // iosMain + tvosMain — the SyncBackendStorage apple actual will live here later.
         appleMain.dependencies {
             implementation(libs.ktor.client.darwin)
+        }
+        // JS plugin runtime (tvOS only — iOS/Android get it from composeApp's flavor source
+        // sets). quickjs-kt 1.0.5-tvos is the local fork with tvOS targets: see the top-level
+        // repo's scaffolding/quickjs-kt-tvos.patch + build-quickjs-tvos.sh → mavenLocal.
+        tvosMain.dependencies {
+            implementation("io.github.dokar3:quickjs-kt:1.0.5-tvos")
+            implementation(libs.ksoup)
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.android)

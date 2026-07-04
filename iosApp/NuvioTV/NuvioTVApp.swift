@@ -17,6 +17,11 @@ struct NuvioTVApp: App {
         // never runs). Runs once, before any repository is accessed.
         TvOsProviderInstallerKt.installTvOsSharedProviders()
 
+        // Wire the JS plugin stack (QuickJS runtime, tvosMain-only): scraper host for
+        // StreamsRepository, cloud sync controller (plugin repos sync from mobile), and
+        // profile-change/sign-out lifecycle hooks.
+        TvOsPluginsInstallerKt.installTvOsPlugins()
+
         // Configure + activate the audio session off the main thread once at startup. libmpv /
         // AVFoundation otherwise activate it lazily on the main thread at first playback, which
         // trips Xcode's "AVAudioSession Hang Risk" runtime diagnostic.

@@ -8,6 +8,7 @@ struct SettingsView: View {
     @StateObject private var trakt = TraktViewModel()
     @StateObject private var debrid = DebridViewModel()
     @StateObject private var remote = RemoteSetupViewModel()
+    @StateObject private var plugins = PluginsViewModel()
     @EnvironmentObject private var auth: AuthViewModel
     @State private var confirmingSignOut = false
     @State private var confirmingTraktDisconnect = false
@@ -194,6 +195,10 @@ struct SettingsView: View {
                             }
                         }
 
+                        section("Plugins") {
+                            pluginsSection
+                        }
+
                         section("Remote Setup") {
                             remoteSetupSection
                         }
@@ -224,11 +229,13 @@ struct SettingsView: View {
             model.start()
             trakt.start()
             debrid.start()
+            plugins.start()
         }
         .onDisappear {
             model.stop()
             trakt.stop()
             debrid.stop()
+            plugins.stop()
             remote.stop()
         }
         .alert(
@@ -285,6 +292,84 @@ struct SettingsView: View {
 
     /// The Trakt section body — four states: keys missing / connected / awaiting code approval /
     /// disconnected. The device flow runs in the shared repo; this just renders its uiState.
+    /// The Plugins section body: master switch + per-scraper toggles. Repos are managed on the
+    /// phone and arrive via cloud sync (sync-only v1) — reflected in the empty-state copy.
+    @ViewBuilder
+    private var pluginsSection: some View {
+        Text("JS plugin providers add extra stream sources. Install a repository by its manifest URL \u{2014} it syncs to your other Nuvio devices automatically.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
+
+        SettingsToggleRow(
+            title: "Enable Plugins",
+            subtitle: "Run enabled plugin providers when loading streams.",
+            isOn: plugins.pluginsEnabled
+        ) {
+            plugins.setPluginsEnabled(!plugins.pluginsEnabled)
+        }
+
+        PluginRepoEntryRow(isInstalling: plugins.isInstalling) { plugins.addRepository($0) }
+
+        if let status = plugins.statusMessage {
+            Text(status)
+                .font(Theme.Font.caption)
+                .foregroundStyle(status.hasPrefix("Installed") ? Theme.Palette.textSecondary : .red)
+        }
+
+        if plugins.repositories.isEmpty {
+            Text("No plugin repositories installed yet.")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+        } else {
+            ForEach(plugins.repositories, id: \.manifestUrl) { repo in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        Text(repo.name)
+                            .font(Theme.Font.body.weight(.semibold))
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                        if repo.isRefreshing {
+                            ProgressView().scaleEffect(0.6)
+                        }
+                        Text("\(repo.scraperCount) provider\(repo.scraperCount == 1 ? "" : "s")")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                        Button {
+                            plugins.removeRepository(repo)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(Theme.Font.caption)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    if let error = repo.errorMessage, !error.isEmpty {
+                        Text(error)
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(.red)
+                    }
+                    ForEach(plugins.scrapers(in: repo), id: \.id) { scraper in
+                        SettingsToggleRow(
+                            title: scraper.name,
+                            subtitle: scraper.description_.isEmpty
+                                ? "v\(scraper.version)"
+                                : "\(scraper.description_) \u{00B7} v\(scraper.version)",
+                            isOn: scraper.enabled
+                        ) {
+                            plugins.toggleScraper(scraper, !scraper.enabled)
+                        }
+                    }
+                }
+            }
+            SettingsActionRow(
+                title: "Refresh Plugins",
+                subtitle: "Re-download provider code from every repository.",
+                systemImage: "arrow.clockwise"
+            ) {
+                plugins.refreshAll()
+            }
+        }
+    }
+
     /// The Remote Setup section body: start/stop the LAN config server and, while it runs, show
     /// the URL + QR a phone/laptop browser uses to manage add-ons, Home rows, and API keys.
     /// Changes proposed from the browser surface as a confirm alert on this screen.
@@ -667,6 +752,47 @@ private struct DebridActivationCard: View {
 }
 
 /// Manual API-key entry row (debrid fallback, MDBList, and similar key-gated services).
+/// Manifest-URL entry for installing a plugin repository from the TV (mirrors the addon install
+/// row; the shared repo normalizes the URL and appends /manifest.json).
+private struct PluginRepoEntryRow: View {
+    let isInstalling: Bool
+    let onInstall: (String) -> Void
+    @State private var url = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            HStack(spacing: Theme.Spacing.md) {
+                Image(systemName: "puzzlepiece.extension")
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                TextField("Repository manifest URL", text: $url)
+                    .textFieldStyle(.plain)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
+            .padding(Theme.Spacing.lg)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+
+            Button {
+                if !url.isEmpty {
+                    onInstall(url)
+                    url = ""
+                }
+            } label: {
+                if isInstalling {
+                    ProgressView()
+                } else {
+                    Label("Install Repository", systemImage: "plus")
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.lg)
+                        .padding(.vertical, Theme.Spacing.xxs + 2)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isInstalling)
+        }
+    }
+}
+
 private struct DebridKeyEntryRow: View {
     let providerName: String
     var placeholder: String?
