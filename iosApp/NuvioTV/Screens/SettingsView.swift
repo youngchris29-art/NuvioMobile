@@ -7,6 +7,7 @@ struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
     @StateObject private var trakt = TraktViewModel()
     @StateObject private var debrid = DebridViewModel()
+    @StateObject private var remote = RemoteSetupViewModel()
     @EnvironmentObject private var auth: AuthViewModel
     @State private var confirmingSignOut = false
     @State private var confirmingTraktDisconnect = false
@@ -193,6 +194,10 @@ struct SettingsView: View {
                             }
                         }
 
+                        section("Remote Setup") {
+                            remoteSetupSection
+                        }
+
                         section("Home Rows") {
                             if model.catalogs.isEmpty {
                                 Text("Install add-ons to customize your Home rows.")
@@ -224,6 +229,19 @@ struct SettingsView: View {
             model.stop()
             trakt.stop()
             debrid.stop()
+            remote.stop()
+        }
+        .alert(
+            "Apply changes from browser?",
+            isPresented: Binding(
+                get: { remote.pendingChange != nil },
+                set: { if !$0 { remote.rejectPending() } }
+            )
+        ) {
+            Button("Apply") { remote.confirmPending() }
+            Button("Decline", role: .cancel) { remote.rejectPending() }
+        } message: {
+            Text(remote.pendingSummary)
         }
         .alert("Disconnect Trakt?", isPresented: $confirmingTraktDisconnect) {
             Button("Disconnect", role: .destructive) { trakt.disconnect() }
@@ -267,6 +285,58 @@ struct SettingsView: View {
 
     /// The Trakt section body — four states: keys missing / connected / awaiting code approval /
     /// disconnected. The device flow runs in the shared repo; this just renders its uiState.
+    /// The Remote Setup section body: start/stop the LAN config server and, while it runs, show
+    /// the URL + QR a phone/laptop browser uses to manage add-ons, Home rows, and API keys.
+    /// Changes proposed from the browser surface as a confirm alert on this screen.
+    @ViewBuilder
+    private var remoteSetupSection: some View {
+        Text("Manage add-ons, Home rows, and API keys from a phone or laptop browser on the same network \u{2014} no on-screen keyboard. Changes only apply after you confirm them here.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
+
+        if let url = remote.serverURL {
+            HStack(alignment: .top, spacing: 40) {
+                if let qr = remote.qrImage {
+                    Image(uiImage: qr)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 220, height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Scan the code, or open in any browser:")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                    Text(url)
+                        .font(.system(size: 40, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                    Text("Keep this Settings screen open while you make changes.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+            }
+            SettingsActionRow(
+                title: "Stop Remote Setup",
+                subtitle: "Closes the local config page.",
+                systemImage: "stop.circle"
+            ) {
+                remote.stop()
+            }
+        } else {
+            SettingsActionRow(
+                title: "Start Remote Setup",
+                subtitle: remote.startFailed
+                    ? "Couldn't start the local server. Check the network connection and try again."
+                    : "Starts a local config page on your network.",
+                systemImage: "network"
+            ) {
+                remote.start()
+            }
+        }
+    }
+
     @ViewBuilder
     private var traktSection: some View {
         if !trakt.credentialsConfigured {
