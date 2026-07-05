@@ -60,6 +60,7 @@ struct CollectionRowView: View {
                 .padding(.vertical, Theme.Spacing.sm)
             }
         }
+        .focusSection()
     }
 }
 

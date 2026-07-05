@@ -5,34 +5,44 @@ import SharedCore
 /// First real content screen for tvOS: a focus-navigable grid of catalog rows, fed entirely by the
 /// shared Kotlin `HomeRepository`. Tapping a poster pushes the detail screen.
 struct HomeView: View {
-    var activeProfile: NuvioProfile? = nil
-    var onSwitchProfile: (() -> Void)? = nil
     @StateObject private var model = HomeViewModel()
     @State private var resume: ResumeTarget?
 
+    // Hero rotation state, hoisted here so the full-bleed backdrop (behind the scroll) and the
+    // focusable text overlay (inside the scroll) share the same index.
+    @State private var heroIndex = 0
+    @FocusState private var heroFocused: Bool
+    private let heroTimer = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
+
+    private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
+    private var currentHero: MetaPreview? {
+        guard !heroItems.isEmpty else { return nil }
+        return heroItems[min(heroIndex, heroItems.count - 1)]
+    }
+
     var body: some View {
         NavigationStack {
-            ZStack {
+            ZStack(alignment: .top) {
                 Theme.Palette.background.ignoresSafeArea()
+
+                // Full-bleed hero backdrop runs to every edge (and under the floating glass tab
+                // bar); the rows scroll over it, Detail-style.
+                if let hero = currentHero {
+                    HomeHeroBackdrop(item: hero)
+                    HomeHeroScrim()
+                }
 
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-                        HStack(alignment: .center) {
-                            Text("Nuvio")
-                                .font(Theme.Font.screenTitle)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-                            Spacer()
-                            if let profile = activeProfile, let onSwitchProfile {
-                                Button { onSwitchProfile() } label: {
-                                    ProfileAvatar(profile: profile, size: 64)
-                                }
-                                .buttonStyle(.card)
-                            }
-                        }
-                        .padding(.bottom, Theme.Spacing.xs)
-
-                        if !model.heroItems.isEmpty {
-                            HeroPager(items: Array(model.heroItems.prefix(8)))
+                        if let hero = currentHero {
+                            HomeHeroForeground(
+                                item: hero,
+                                pageCount: heroItems.count,
+                                index: min(heroIndex, heroItems.count - 1)
+                            )
+                            .focused($heroFocused)
+                            .focusSection()
+                            .padding(.top, Theme.Size.heroForegroundTopPad)
                         }
 
                         if model.rows.isEmpty {
@@ -60,6 +70,15 @@ struct HomeView: View {
                     }
                     .padding(Theme.Spacing.screen)
                 }
+            }
+            .onReceive(heroTimer) { _ in
+                guard heroItems.count > 1, !heroFocused else { return }
+                withAnimation(.easeInOut(duration: 0.6)) {
+                    heroIndex = (min(heroIndex, heroItems.count - 1) + 1) % heroItems.count
+                }
+            }
+            .onChange(of: heroItems.count) { _, newCount in
+                if heroIndex >= newCount { heroIndex = 0 }
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -152,6 +171,7 @@ struct ContinueWatchingRow: View {
                 .padding(.vertical, Theme.Spacing.sm)
             }
         }
+        .focusSection()
     }
 
     private func fraction(_ entry: WatchProgressEntry) -> Double? {
@@ -172,71 +192,65 @@ struct ResumeTarget: Identifiable {
     var id: String { entry.videoId }
 }
 
-/// Auto-rotating hero carousel: cycles through the hero items every few seconds with a crossfade,
-/// pausing while the banner is focused (so it doesn't swap out under the user). Page dots in a
-/// Liquid Glass capsule track the position (mobile-reference look).
-struct HeroPager: View {
-    let items: [MetaPreview]
-
-    @State private var index = 0
-    @FocusState private var heroFocused: Bool
-    private let timer = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        let safeIndex = min(index, items.count - 1)
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HeroBanner(item: items[safeIndex])
-                .id(items[safeIndex].id)
-                .focused($heroFocused)
-
-            if items.count > 1 {
-                HStack(spacing: Theme.Spacing.xs) {
-                    ForEach(0..<items.count, id: \.self) { i in
-                        Capsule()
-                            .fill(i == safeIndex
-                                  ? Theme.Palette.textPrimary
-                                  : Theme.Palette.textSecondary.opacity(0.45))
-                            .frame(width: i == safeIndex ? 34 : 10, height: 10)
-                    }
-                }
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xs)
-                .glassEffect(.regular, in: .capsule)
-                .padding(.leading, Theme.Spacing.xs)
-                .animation(.easeInOut(duration: 0.3), value: safeIndex)
-            }
-        }
-        .onReceive(timer) { _ in
-            guard items.count > 1, !heroFocused else { return }
-            withAnimation(.easeInOut(duration: 0.6)) {
-                index = (safeIndex + 1) % items.count
-            }
-        }
-        .onChange(of: items.count) { _, newCount in
-            if index >= newCount { index = 0 }
-        }
-    }
-}
-
-/// Large featured banner at the top of Home for the first hero item — backdrop, logo/title, a short
-/// synopsis, and metadata. Tapping opens the detail screen.
-struct HeroBanner: View {
+/// Full-bleed hero backdrop drawn behind the scrolling rows (Detail-style): fills the top region
+/// to every edge — no corner radius, no inset — and runs under the floating glass tab bar. The
+/// image crossfades when the parent advances `item`.
+struct HomeHeroBackdrop: View {
     let item: MetaPreview
 
     var body: some View {
-        NavigationLink(value: TitleRoute(preview: item)) {
-            ZStack(alignment: .bottomLeading) {
-                CachedAsyncImage(string: backdropURL)
-                    .frame(height: Theme.Size.heroHeight)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-                    .overlay(
-                        LinearGradient(
-                            colors: [.black.opacity(0.85), .black.opacity(0.2), .clear],
-                            startPoint: .bottom, endPoint: .top
-                        )
-                    )
+        CachedAsyncImage(string: backdropURL)
+            .frame(height: Theme.Size.heroBackdropHeight)
+            .frame(maxWidth: .infinity)
+            .clipped()
+            .frame(maxHeight: .infinity, alignment: .top)
+            .ignoresSafeArea()
+            .id(item.id)
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.6), value: item.id)
+    }
 
+    private var backdropURL: String? {
+        let banner: String? = item.banner
+        if let banner, !banner.isEmpty { return banner }
+        let poster: String? = item.poster
+        return poster
+    }
+}
+
+/// Gradient scrims over the hero backdrop: a subtle top darkening under the tab bar, and a bottom
+/// fade to the app background so the backdrop blends into the rows region below.
+struct HomeHeroScrim: View {
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black.opacity(0.55), location: 0.0),
+                .init(color: .black.opacity(0.15), location: 0.18),
+                .init(color: .clear, location: 0.42),
+                .init(color: Theme.Palette.background.opacity(0.85), location: 0.82),
+                .init(color: Theme.Palette.background, location: 1.0),
+            ],
+            startPoint: .top, endPoint: .bottom
+        )
+        .frame(height: Theme.Size.heroBackdropHeight)
+        .frame(maxWidth: .infinity)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
+/// The interactive hero: logo/title, metadata and a short synopsis, plus page dots — a single
+/// focusable target that opens the detail screen. Sits in the scroll content (pushed down onto the
+/// lower third of the backdrop by the parent's top padding), so it scrolls away with the rows.
+struct HomeHeroForeground: View {
+    let item: MetaPreview
+    let pageCount: Int
+    let index: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            NavigationLink(value: TitleRoute(preview: item)) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                     logo
 
@@ -254,12 +268,28 @@ struct HeroBanner: View {
                             .frame(maxWidth: 1000, alignment: .leading)
                     }
                 }
-                .padding(Theme.Spacing.xl)
+                .padding(Theme.Spacing.lg)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: Theme.Size.heroHeight)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.hero))
+            .buttonStyle(.card)
+
+            if pageCount > 1 {
+                HStack(spacing: Theme.Spacing.xs) {
+                    ForEach(0..<pageCount, id: \.self) { i in
+                        Capsule()
+                            .fill(i == index
+                                  ? Theme.Palette.textPrimary
+                                  : Theme.Palette.textSecondary.opacity(0.45))
+                            .frame(width: i == index ? 34 : 10, height: 10)
+                    }
+                }
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xs)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.leading, Theme.Spacing.lg)
+                .animation(.easeInOut(duration: 0.3), value: index)
+            }
         }
-        .buttonStyle(.card)
     }
 
     @ViewBuilder
@@ -276,13 +306,6 @@ struct HeroBanner: View {
         } else {
             Text(item.name).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
         }
-    }
-
-    private var backdropURL: String? {
-        let banner: String? = item.banner
-        if let banner, !banner.isEmpty { return banner }
-        let poster: String? = item.poster
-        return poster
     }
 
     private var logoURL: String? {

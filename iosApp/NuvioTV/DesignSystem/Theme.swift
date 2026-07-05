@@ -96,6 +96,11 @@ enum Theme {
         static let miniPosterHeight: CGFloat = 270
         static let castAvatar: CGFloat = 140
         static let heroHeight: CGFloat = 480
+        /// Height of the full-bleed Home hero backdrop (image + scrim) behind the scrolling rows.
+        static let heroBackdropHeight: CGFloat = 820
+        /// Top padding that pushes the hero's logo/synopsis overlay down onto the lower third of
+        /// the backdrop (mirrors Detail's layout).
+        static let heroForegroundTopPad: CGFloat = 340
     }
 }
 

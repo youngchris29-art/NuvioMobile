@@ -119,7 +119,7 @@ struct MainTabView: View {
         // `.tabItem` API renders the older chrome).
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: 0) {
-                HomeView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
+                HomeView()
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
                 SearchView()
@@ -133,6 +133,40 @@ struct MainTabView: View {
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView()
             }
+            Tab("Profile", systemImage: "person.crop.circle", value: 5) {
+                ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
+            }
+        }
+    }
+}
+
+/// The Profile tab: shows the active profile's avatar and name with a button to return to the
+/// "Who's watching?" picker. Replaces the old Home-header avatar shortcut.
+struct ProfileTabView: View {
+    let activeProfile: NuvioProfile?
+    let onSwitchProfile: () -> Void
+
+    var body: some View {
+        ZStack {
+            Theme.Palette.background.ignoresSafeArea()
+
+            VStack(spacing: Theme.Spacing.xl) {
+                if let profile = activeProfile {
+                    ProfileAvatar(profile: profile, size: 220)
+                    Text(profile.name)
+                        .font(Theme.Font.screenTitle)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                }
+
+                Button(action: onSwitchProfile) {
+                    Label("Switch Profile", systemImage: "arrow.left.arrow.right")
+                        .font(Theme.Font.body)
+                        .padding(.horizontal, Theme.Spacing.xl)
+                        .padding(.vertical, Theme.Spacing.md)
+                }
+                .buttonStyle(.card)
+            }
+            .padding(Theme.Spacing.screen)
         }
     }
 }

@@ -14,6 +14,9 @@ enum PlayerTuning {
     static let bufferMBKey = "player.bufferMB"
     static let readaheadSecKey = "player.readaheadSec"
     static let matchFrameRateKey = "player.matchFrameRate"
+    /// Opt into mpv's `gpu-next` (libplacebo) video output for better HDR tone-mapping. Device-only
+    /// (never applied on the simulator, where libplacebo's vo asserts). Applies to the next playback.
+    static let enhancedRendererKey = "player.enhancedRenderer"
 }
 
 /// Everything the player needs to render a stream and record watch progress for it.
@@ -300,12 +303,19 @@ final class MPVTVPlayerViewController: UIViewController {
         checkError(mpv_request_log_messages(mpv, "warn"))
         checkError(mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &metalLayer))
 
+        // Video output: default `gpu` (stable). On REAL Apple TV hardware the user can opt into
+        // `gpu-next` (libplacebo) via Settings → Playback → Enhanced Video Renderer for better HDR
+        // tone-mapping (dynamic peak detection, DV/HDR10+). Never on the simulator, where
+        // libplacebo's vo asserts ("vo: hit program assert").
+        var videoOutput = "gpu"
+        #if !targetEnvironment(simulator)
+        if UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey) {
+            videoOutput = "gpu-next"
+        }
+        #endif
+
         let options: [(String, String)] = [
-            // Use the classic `gpu` output rather than `gpu-next` (libplacebo): on the tvOS
-            // simulator libplacebo's vo asserts ("vo: hit program assert") on some streams. `gpu`
-            // is the more stable backend (same fix that stabilized the trailer surface). Trade-off:
-            // slightly less advanced HDR tone-mapping, in exchange for not crashing.
-            ("vo", "gpu"),
+            ("vo", videoOutput),
             ("gpu-api", "vulkan"),
             ("gpu-context", "moltenvk"),
             ("hwdec", "videotoolbox"),
@@ -1431,35 +1441,137 @@ private struct TrackPickerView: View {
     private static let speeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
     var body: some View {
+        NavigationStack {
+            menuList
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black.opacity(0.92).ignoresSafeArea())
+        }
+    }
+
+    // MARK: - Level 1: compact category menu (drill into each for its options)
+
+    private var menuList: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 48) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Playback Settings")
+                    .font(.largeTitle).bold().foregroundStyle(.white)
+                    .padding(.bottom, 16)
+
                 if !state.audioTracks.isEmpty {
-                    section(title: "Audio", tracks: state.audioTracks) { id in
-                        state.selectAudio?(id)
-                        dismiss()
+                    menuLink(title: "Audio", value: currentAudioLabel) {
+                        destination { audioDestination }
                     }
                 }
                 if !state.subtitleTracks.isEmpty {
-                    section(title: "Subtitles", tracks: state.subtitleTracks) { id in
-                        state.selectSubtitle?(id)
-                        dismiss()
+                    menuLink(title: "Subtitles", value: currentSubtitleLabel) {
+                        destination { subtitleDestination }
                     }
                 }
-                speedSection
-                timingSection
+                menuLink(title: "Playback Speed", value: currentSpeedLabel) {
+                    destination { speedSection }
+                }
+                menuLink(title: "Timing", value: currentTimingLabel) {
+                    destination { timingSection }
+                }
                 if canSwitchStreams, !engine.episodes.isEmpty {
-                    episodesSection
+                    menuLink(title: "Episodes", value: currentEpisodeLabel) {
+                        destination { episodesSection }
+                    }
                 }
                 if canSwitchStreams {
-                    sourcesSection
+                    menuLink(title: "Sources", value: "") {
+                        destination { sourcesSection }
+                    }
                 }
-                diagnosticsSection
+                menuLink(title: "Diagnostics", value: state.showStreamInfo ? "On" : "Off") {
+                    destination { diagnosticsSection }
+                }
             }
             .padding(60)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: 1000, alignment: .leading)
+        }
+    }
+
+    /// A focusable level-1 row: title + current value + chevron, pushing the category's options.
+    private func menuLink<D: View>(
+        title: String,
+        value: String,
+        @ViewBuilder destination: () -> D
+    ) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HStack(spacing: 16) {
+                Text(title).foregroundStyle(.white)
+                Spacer(minLength: 0)
+                if !value.isEmpty {
+                    Text(value)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .font(.title3)
+            .padding(.vertical, 14)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: 900, alignment: .leading)
+        }
+        .buttonStyle(.card)
+    }
+
+    /// Wraps a category's options view in the same scroll/pad/background as the menu, so each
+    /// drilled-in screen looks consistent.
+    private func destination<C: View>(@ViewBuilder content: () -> C) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                content()
+            }
+            .padding(60)
+            .frame(maxWidth: 1000, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.92).ignoresSafeArea())
+    }
+
+    // MARK: - Track destinations + current-value summaries
+
+    private var audioDestination: some View {
+        section(title: "Audio", tracks: state.audioTracks) { id in
+            state.selectAudio?(id)
+            dismiss()
+        }
+    }
+
+    private var subtitleDestination: some View {
+        section(title: "Subtitles", tracks: state.subtitleTracks) { id in
+            state.selectSubtitle?(id)
+            dismiss()
+        }
+    }
+
+    private var currentAudioLabel: String {
+        state.audioTracks.first(where: { $0.isSelected })?.label ?? "\u{2014}"
+    }
+
+    private var currentSubtitleLabel: String {
+        state.subtitleTracks.first(where: { $0.isSelected })?.label ?? "Off"
+    }
+
+    private var currentSpeedLabel: String {
+        String(format: "%g\u{00D7}", state.playbackSpeed)
+    }
+
+    private var currentTimingLabel: String {
+        func fmt(_ v: Double) -> String { v == 0 ? "0s" : String(format: "%+.2gs", v) }
+        return "Sub \(fmt(state.subtitleDelaySec)) \u{00B7} Audio \(fmt(state.audioDelaySec))"
+    }
+
+    private var currentEpisodeLabel: String {
+        if let ep = sortedEpisodes.first(where: { isCurrentEpisode($0) }) {
+            return episodeChipLabel(ep)
+        }
+        return ""
     }
 
     // MARK: - Episodes (jump to any aired episode)

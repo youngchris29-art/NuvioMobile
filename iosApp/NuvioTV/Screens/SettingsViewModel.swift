@@ -124,6 +124,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var readaheadSec: Int = UserDefaults.standard.integer(forKey: PlayerTuning.readaheadSecKey)
     /// Ask tvOS to match the display's refresh rate (and dynamic range) to the content.
     @Published var matchFrameRate: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.matchFrameRateKey)
+    /// Use mpv's `gpu-next` (libplacebo) renderer for better HDR (real Apple TV only).
+    @Published var enhancedRenderer: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey)
 
     func setBufferMB(_ value: Int) {
         bufferMB = value
@@ -138,6 +140,11 @@ final class SettingsViewModel: ObservableObject {
     func setMatchFrameRate(_ value: Bool) {
         matchFrameRate = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.matchFrameRateKey)
+    }
+
+    func setEnhancedRenderer(_ value: Bool) {
+        enhancedRenderer = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.enhancedRendererKey)
     }
 
     // MARK: - TMDB

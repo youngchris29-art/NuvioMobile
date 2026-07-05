@@ -121,6 +121,7 @@ struct CatalogRowView: View {
                 .padding(.vertical, Theme.Spacing.sm)
             }
         }
+        .focusSection()
     }
 
     /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog rows.

@@ -14,19 +14,27 @@ struct SettingsView: View {
     @State private var confirmingTraktDisconnect = false
     /// Provider id pending a debrid disconnect confirmation (drives the alert).
     @State private var debridDisconnectId: String?
+    /// Which category's sections are shown in the detail pane (split-view, tvOS-Settings style).
+    @State private var selectedCategory: SettingsCategory = .accountServices
+    @FocusState private var focusedCategory: SettingsCategory?
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Theme.Palette.background.ignoresSafeArea()
 
-                ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-                        Text("Settings")
-                            .font(Theme.Font.screenTitle)
-                            .foregroundStyle(Theme.Palette.textPrimary)
+                HStack(alignment: .top, spacing: 0) {
+                    categorySidebar
+                        .frame(width: 460)
+                        .focusSection()
 
-                        section("Account") {
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
+                            Text(selectedCategory.title)
+                                .font(Theme.Font.screenTitle)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+
+                        section("Account", .accountServices) {
                             if auth.isAnonymous {
                                 SettingsActionRow(
                                     title: "Sign In to Nuvio",
@@ -46,7 +54,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        section("Theme") {
+                        section("Theme", .appearance) {
                             Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -54,15 +62,15 @@ struct SettingsView: View {
                             ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
                         }
 
-                        section("Trakt") {
+                        section("Trakt", .accountServices) {
                             traktSection
                         }
 
-                        section("Debrid") {
+                        section("Debrid", .accountServices) {
                             debridSection
                         }
 
-                        section("Playback") {
+                        section("Playback", .playback) {
                             SettingsToggleRow(
                                 title: "Skip Intro",
                                 subtitle: "Show a Skip button during intros and outros",
@@ -76,6 +84,13 @@ struct SettingsView: View {
                                 isOn: model.matchFrameRate
                             ) {
                                 model.setMatchFrameRate(!model.matchFrameRate)
+                            }
+                            SettingsToggleRow(
+                                title: "Enhanced Video Renderer",
+                                subtitle: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video.",
+                                isOn: model.enhancedRenderer
+                            ) {
+                                model.setEnhancedRenderer(!model.enhancedRenderer)
                             }
                             tuningChipRow(
                                 title: "Streaming Buffer",
@@ -93,7 +108,7 @@ struct SettingsView: View {
                                 .frame(maxWidth: 1100, alignment: .leading)
                         }
 
-                        section("Subtitles") {
+                        section("Subtitles", .playback) {
                             if let style = model.subtitleStyle {
                                 SubtitleAppearanceControls(
                                     style: style,
@@ -110,7 +125,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        section("Audio & Subtitle Language") {
+                        section("Audio & Subtitle Language", .playback) {
                             Text("When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -127,7 +142,7 @@ struct SettingsView: View {
                             ) { model.setPreferredSubtitleLanguage($0) }
                         }
 
-                        section("Poster Style") {
+                        section("Poster Style", .appearance) {
                             PosterStyleControls(
                                 widthDp: model.posterWidthDp,
                                 cornerDp: model.posterCornerRadiusDp,
@@ -141,7 +156,7 @@ struct SettingsView: View {
                             )
                         }
 
-                        section("Metadata (TMDB)") {
+                        section("Metadata (TMDB)", .contentSources) {
                             Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -167,7 +182,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        section("Ratings (MDBList)") {
+                        section("Ratings (MDBList)", .contentSources) {
                             Text("Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open after enabling will show the ratings.")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -195,15 +210,15 @@ struct SettingsView: View {
                             }
                         }
 
-                        section("Plugins") {
+                        section("Plugins", .contentSources) {
                             pluginsSection
                         }
 
-                        section("Remote Setup") {
+                        section("Remote Setup", .advanced) {
                             remoteSetupSection
                         }
 
-                        section("Home Rows") {
+                        section("Home Rows", .homeScreen) {
                             if model.catalogs.isEmpty {
                                 Text("Install add-ons to customize your Home rows.")
                                     .font(Theme.Font.body)
@@ -219,9 +234,11 @@ struct SettingsView: View {
                                 }
                             }
                         }
+                        }
+                        .padding(Theme.Spacing.screen)
+                        .frame(maxWidth: 1500, alignment: .leading)
                     }
-                    .padding(Theme.Spacing.screen)
-                    .frame(maxWidth: 1500, alignment: .leading)
+                    .focusSection()
                 }
             }
         }
@@ -609,12 +626,101 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func section<Content: View>(
+        _ title: String,
+        _ category: SettingsCategory,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        // Only the selected category's sections render into the detail pane; the body is not even
+        // built for other categories (keeps focus + perf clean).
+        Group {
+            if category == selectedCategory {
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    Text(title)
+                        .font(Theme.Font.sectionTitle)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                    content()
+                }
+                // Each settings section is a focus region: vertical swipes enter the nearest section
+                // without needing precise horizontal alignment with the next control.
+                .focusSection()
+            }
+        }
+    }
+
+    /// Left column: one focusable row per category. Focusing a row live-updates the detail pane
+    /// (tvOS Settings pattern); swiping right enters the pane.
+    private var categorySidebar: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text(title)
-                .font(Theme.Font.sectionTitle)
+            Text("Settings")
+                .font(Theme.Font.screenTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
-            content()
+                .padding(.bottom, Theme.Spacing.md)
+
+            ForEach(SettingsCategory.allCases) { category in
+                Button {
+                    selectedCategory = category
+                } label: {
+                    HStack(spacing: Theme.Spacing.md) {
+                        Image(systemName: category.icon)
+                            .font(.system(size: 30))
+                            .frame(width: 40)
+                        Text(category.title)
+                            .font(Theme.Font.body)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(
+                        category == selectedCategory
+                            ? Theme.Palette.accent
+                            : Theme.Palette.textPrimary
+                    )
+                    .padding(.horizontal, Theme.Spacing.lg)
+                    .padding(.vertical, Theme.Spacing.md)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.card)
+                .focused($focusedCategory, equals: category)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(Theme.Spacing.screen)
+        .onChange(of: focusedCategory) { _, newValue in
+            // Live-preview the focused category in the detail pane.
+            if let newValue { selectedCategory = newValue }
+        }
+    }
+}
+
+/// Settings categories for the split-view sidebar. Order here is the sidebar order.
+enum SettingsCategory: String, CaseIterable, Identifiable {
+    case accountServices
+    case playback
+    case appearance
+    case homeScreen
+    case contentSources
+    case advanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .accountServices: return "Account & Services"
+        case .playback: return "Playback"
+        case .appearance: return "Appearance"
+        case .homeScreen: return "Home Screen"
+        case .contentSources: return "Content Sources"
+        case .advanced: return "Advanced"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .accountServices: return "person.crop.circle"
+        case .playback: return "play.rectangle"
+        case .appearance: return "paintbrush"
+        case .homeScreen: return "house"
+        case .contentSources: return "square.stack.3d.up"
+        case .advanced: return "gearshape.2"
         }
     }
 }

@@ -10,9 +10,11 @@ struct AddonsView: View {
     var body: some View {
         NavigationStack {
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 40) {
+                LazyVStack(alignment: .leading, spacing: 40) {
                     installSection
+                        .focusSection()
                     installedSection
+                        .focusSection()
                 }
                 .padding(60)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,6 +92,7 @@ struct AddonsView: View {
     }
 }
 
+/// A focusable add-on card. Select toggles enabled/disabled; long-press (context menu) removes.
 private struct AddonRow: View {
     let title: String
     let subtitle: String
@@ -98,25 +101,28 @@ private struct AddonRow: View {
     let onRemove: () -> Void
 
     var body: some View {
-        HStack(spacing: 24) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.headline).lineLimit(1)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        Button(action: onToggle) {
+            HStack(spacing: 24) {
+                Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 34))
+                    .foregroundStyle(enabled ? Theme.Palette.accent : Theme.Palette.textSecondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.headline).lineLimit(1)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Text(enabled ? "Enabled" : "Disabled")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-
-            Button(action: onToggle) {
-                Label(enabled ? "Enabled" : "Disabled",
-                      systemImage: enabled ? "checkmark.circle.fill" : "circle")
-            }
-            .buttonStyle(.bordered)
-
-            Button(role: .destructive, action: onRemove) {
-                Label("Remove", systemImage: "trash")
-            }
-            .buttonStyle(.bordered)
+            .padding(20)
+            .frame(maxWidth: .infinity)
         }
-        .padding(20)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
+        .buttonStyle(.card)
+        .contextMenu {
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove Add-on", systemImage: "trash")
+            }
+        }
     }
 }
