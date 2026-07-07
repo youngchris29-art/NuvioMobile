@@ -111,6 +111,16 @@ enum RemoteSetupWebPage {
   </section>
 
   <section>
+    <h2>Stream Badge Packs</h2>
+    <p class="hint">Badge packs add quality / HDR / audio chips to stream results. Paste a pack's JSON URL to import it on the TV. Remove packs on the TV under Settings &rarr; Appearance &rarr; Stream Badges.</p>
+    <div id="badges"></div>
+    <div class="addbar">
+      <input type="text" id="badge-url" placeholder="https://example.com/badges.json" autocapitalize="off" autocorrect="off">
+      <button onclick="addBadgeUrl()">Add</button>
+    </div>
+  </section>
+
+  <section>
     <h2>API Keys</h2>
     <p class="hint">Optional. TMDB enriches titles (cast, studios, collections); MDBList adds IMDb/RT/Metacritic ratings. Keys are only sent when you enter one.</p>
     <div class="keyrow">
@@ -132,6 +142,8 @@ enum RemoteSetupWebPage {
 
 <script>
 let addons = [];   // {url, name, description, enabled, isNew}
+let badgePacks = [];      // source URLs already imported on the TV (read-only here)
+let stagedBadgeUrls = []; // pack URLs staged for import on Send
 let rows = [];     // {key, title, enabled, isCollection}
 
 const el = id => document.getElementById(id);
@@ -149,6 +161,7 @@ async function load() {
     const state = await res.json();
     addons = (state.addons || []).map(a => ({ ...a, isNew: false }));
     rows = state.rows || [];
+    badgePacks = state.badgePacks || [];
     if (state.tmdbKeySet) el("tmdb-key").placeholder = "Saved on TV — enter to replace";
     if (state.mdblistKeySet) el("mdblist-key").placeholder = "Saved on TV — enter to replace";
     render();
@@ -180,6 +193,22 @@ function render() {
       <button class="icon danger" onclick="addons.splice(${i}, 1); render()">&#10005;</button>
     </div>`).join("") : `<div class="empty">No add-ons installed.</div>`;
 
+  const badgeRows = badgePacks.map(u => `
+    <div class="row">
+      <div class="info">
+        <div class="name">Imported</div>
+        <div class="sub">${esc(u)}</div>
+      </div>
+    </div>`).concat(stagedBadgeUrls.map((u, i) => `
+    <div class="row">
+      <div class="info">
+        <div class="name">New pack (on Send)</div>
+        <div class="sub">${esc(u)}</div>
+      </div>
+      <button class="icon danger" onclick="stagedBadgeUrls.splice(${i}, 1); render()">&#10005;</button>
+    </div>`));
+  el("badges").innerHTML = badgeRows.length ? badgeRows.join("") : `<div class="empty">No badge packs imported.</div>`;
+
   el("rows").innerHTML = rows.length ? rows.map((r, i) => `
     <div class="row ${r.enabled ? "" : "disabled"}">
       <label class="toggle"><input type="checkbox" ${r.enabled ? "checked" : ""}
@@ -191,6 +220,19 @@ function render() {
       <button class="icon" onclick="move(rows, ${i}, -1)">&#8593;</button>
       <button class="icon" onclick="move(rows, ${i}, 1)">&#8595;</button>
     </div>`).join("") : `<div class="empty">Rows appear after add-ons load.</div>`;
+}
+
+function addBadgeUrl() {
+  const input = el("badge-url");
+  const url = input.value.trim();
+  if (!url) return;
+  if (stagedBadgeUrls.includes(url) || badgePacks.includes(url)) {
+    setStatus("That badge pack is already in the list.", "err");
+    return;
+  }
+  stagedBadgeUrls.push(url);
+  input.value = "";
+  render();
 }
 
 function addAddon() {
@@ -216,6 +258,7 @@ async function apply() {
   const mdbl = el("mdblist-key").value.trim();
   if (tmdb) payload.tmdbKey = tmdb;
   if (mdbl) payload.mdblistKey = mdbl;
+  if (stagedBadgeUrls.length) payload.badgeUrls = stagedBadgeUrls.slice();
 
   try {
     const res = await fetch("/api/apply", {
@@ -240,6 +283,7 @@ async function poll(id, tries) {
     if (status === "confirmed") {
       setStatus("Applied on the TV ✓", "ok");
       el("tmdb-key").value = ""; el("mdblist-key").value = "";
+      stagedBadgeUrls = [];
       setTimeout(load, 1500);
       el("apply").disabled = false;
       return;

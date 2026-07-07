@@ -36,6 +36,8 @@ final class RemoteSetupServer {
         /// New API keys; only sent when the user typed one (never echoes saved keys).
         let tmdbKey: String?
         let mdblistKey: String?
+        /// Stream badge pack JSON URLs to import (staged additions only; removal happens on TV).
+        let badgeUrls: [String]?
     }
 
     enum ChangeStatus: String {

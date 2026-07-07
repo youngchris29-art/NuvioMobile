@@ -1,12 +1,20 @@
 import SwiftUI
 import SharedCore
 
-/// Presented when the user taps Play. Resolves streams for the title, lists the playable ones grouped
-/// by addon, and opens the native player on selection.
+/// Presented when the user taps Play. Resolves streams for the title, lists the playable ones
+/// grouped by addon, and opens the native player on selection.
 ///
-/// Includes one clearly-marked "test stream" (Apple's public HLS sample) so the AVPlayer path can be
-/// verified on the simulator even before a real streaming addon is installed. Remove `testStreamURL`
-/// once a direct-link / debrid addon is wired in.
+/// Debrid: torrent/`clientResolve` results from installed addons (no direct URL) are listed when
+/// in-app debrid resolution is enabled, and resolve to a direct link at click time through the
+/// shared `DirectDebridPlaybackResolver` (mobile parity: `App.kt:2157`, `StreamsScreen.kt:363`).
+/// Failures surface as a transient toast using the same wording as the shared `toastMessage()`.
+///
+/// Badges: rows render imported badge-pack chips, the file-size chip, TOP/BOTTOM placement, the
+/// optional addon logo and the "- <Provider> Instant" cached suffix (mobile `StreamCard` parity).
+///
+/// Focus: rows carry stable focus keys and initial focus is moved to the FIRST stream row when
+/// rows first arrive. (Previously the dev test-stream button at the bottom was the only
+/// focusable view while loading, so focus landed — and stayed — at the bottom of the list.)
 struct StreamPickerView: View {
     let type: String
     let videoId: String
@@ -25,8 +33,14 @@ struct StreamPickerView: View {
     /// continue-watching, Detail's primary Play). Filled from `MetaDetailsRepository.fetch`
     /// (cache-first, side-effect free) so next-episode autoplay works from every path.
     @State private var fetchedEpisodes: [MetaVideo] = []
+    /// Row key currently mid debrid-resolve (drives the row spinner; one resolve at a time).
+    @State private var resolvingKey: String?
+    /// Transient failure message (debrid resolve errors), auto-dismissed after a few seconds.
+    @State private var toast: String?
+    @FocusState private var focusedRow: String?
     @Environment(\.dismiss) private var dismiss
 
+    private static let testRowKey = "test-stream"
     private let testStreamURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!
 
     init(
@@ -107,8 +121,8 @@ struct StreamPickerView: View {
                             Text(group.addonName)
                                 .font(Theme.Font.sectionTitle)
                                 .foregroundStyle(Theme.Palette.textPrimary)
-                            ForEach(Array(group.streams.enumerated()), id: \.offset) { _, stream in
-                                streamRow(stream)
+                            ForEach(Array(group.streams.enumerated()), id: \.offset) { index, stream in
+                                streamRow(stream, key: StreamsViewModel.rowKey(groupId: group.id, index: index))
                             }
                         }
                     }
@@ -120,26 +134,51 @@ struct StreamPickerView: View {
                             .padding(.top, Theme.Spacing.xs)
                     }
 
-                    // Dev/verification affordance — always available.
-                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                        Text("Test")
-                            .font(Theme.Font.sectionTitle)
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                        Button {
-                            selected = context(url: testStreamURL, stream: nil)
-                        } label: {
-                            Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
-                                .padding(.vertical, Theme.Spacing.xs)
+                    // Dev/diagnostics affordance — only when there is nothing real to play, so it
+                    // can never steal initial focus from the stream list (the old always-visible
+                    // button was the only focusable view while loading → focus started at the
+                    // bottom of the screen).
+                    if model.groups.isEmpty && !model.isLoading {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            Text("Test")
+                                .font(Theme.Font.sectionTitle)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+                            Button {
+                                selected = context(url: testStreamURL, stream: nil)
+                            } label: {
+                                Label("Play test stream (Apple HLS sample)", systemImage: "play.circle")
+                                    .padding(.vertical, Theme.Spacing.xs)
+                            }
+                            .buttonStyle(.glass)
+                            .focused($focusedRow, equals: Self.testRowKey)
                         }
-                        .buttonStyle(.glass)
+                        .padding(.top, Theme.Spacing.lg)
                     }
-                    .padding(.top, Theme.Spacing.lg)
                 }
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.Palette.background.ignoresSafeArea())
+            .overlay(alignment: .bottom) {
+                if let toast {
+                    Text(toast)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .padding(.horizontal, Theme.Spacing.lg)
+                        .padding(.vertical, Theme.Spacing.md)
+                        .background(Theme.Palette.surfaceElevated, in: Capsule())
+                        .padding(.bottom, Theme.Spacing.xl)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .onChange(of: model.firstRowKey) { _, newKey in
+                // Move initial focus to the first stream row when rows (first) arrive. Never
+                // steals focus after the user has moved it to a real row: only fires while focus
+                // is nowhere or on the (now hidden) test button.
+                guard let newKey, focusedRow == nil || focusedRow == Self.testRowKey else { return }
+                DispatchQueue.main.async { focusedRow = newKey }
+            }
             .onAppear {
                 model.start()
                 fetchEpisodesIfNeeded()
@@ -156,64 +195,171 @@ struct StreamPickerView: View {
         }
     }
 
-    private func streamRow(_ stream: StreamItem) -> some View {
-        // Kotlin nullable Strings surface as non-optional Swift String, so widen explicitly to String?.
-        let urlString: String? = stream.playableDirectUrl
-        let title: String = stream.streamLabel
+    // MARK: - Rows
+
+    private func streamRow(_ stream: StreamItem, key: String) -> some View {
+        // Kotlin nullable Strings surface as non-optional Swift String, so widen explicitly.
         let desc: String? = stream.description_
         let badges: [StreamBadge] = stream.badges
+        let sizeBytes: Int64? = stream.behaviorHints.videoSize?.int64Value
+        let showSize = model.showFileSizeBadges && sizeBytes != nil
+        let hasBadgeRow = !badges.isEmpty || showSize
+
         return Button {
-            if let urlString, let url = URL(string: urlString) {
-                // A manual stream pick is user interaction — reset the Still Watching run.
-                NextEpisodeEngine.consecutiveAutoPlays = 0
-                selected = context(url: url, stream: stream)
-            }
+            play(stream, rowKey: key)
         } label: {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                Text(title)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                    .lineLimit(2)
-                if !badges.isEmpty {
-                    HStack(spacing: Theme.Spacing.xs) {
-                        ForEach(Array(badges.prefix(6).enumerated()), id: \.offset) { _, badge in
-                            StreamBadgeChip(badge: badge)
+            HStack(alignment: .center, spacing: Theme.Spacing.lg) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    if hasBadgeRow && model.badgesOnTop {
+                        badgeRow(badges: badges, sizeBytes: showSize ? sizeBytes : nil)
+                    }
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Text(rowTitle(stream))
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .lineLimit(2)
+                        if resolvingKey == key {
+                            ProgressView().scaleEffect(0.7)
                         }
                     }
+                    if let desc, !desc.isEmpty {
+                        Text(desc)
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .lineLimit(2)
+                    }
+                    if hasBadgeRow && !model.badgesOnTop {
+                        badgeRow(badges: badges, sizeBytes: showSize ? sizeBytes : nil)
+                    }
                 }
-                if let desc, !desc.isEmpty {
-                    Text(desc)
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if model.showAddonLogo {
+                    addonLogoColumn(stream)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, Theme.Spacing.xs + 2)
         }
         .buttonStyle(.glass)
+        .focused($focusedRow, equals: key)
+    }
+
+    @ViewBuilder
+    private func badgeRow(badges: [StreamBadge], sizeBytes: Int64?) -> some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            ForEach(Array(badges.prefix(8).enumerated()), id: \.offset) { _, badge in
+                StreamBadgeChipView(badge: badge)
+            }
+            if let sizeBytes {
+                StreamFileSizeChip(bytes: sizeBytes)
+            }
+        }
+    }
+
+    private func addonLogoColumn(_ stream: StreamItem) -> some View {
+        VStack(spacing: Theme.Spacing.xxs) {
+            let logo: String? = stream.addonLogo
+            if let logo, !logo.isEmpty, let url = URL(string: logo) {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFit()
+                } placeholder: {
+                    Color.clear
+                }
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            Text(stream.addonName)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .lineLimit(1)
+        }
+        .frame(width: 150)
+    }
+
+    /// Row title with the mobile "- <Provider> Instant" suffix on debrid-cached torrent rows
+    /// (`StreamCard.kt:instantServiceLabel`), shown only while debrid resolution is enabled and
+    /// no custom stream-name template is active.
+    private func rowTitle(_ stream: StreamItem) -> String {
+        let base = stream.streamLabel
+        guard model.instantSuffixEnabled,
+              let status = stream.debridCacheStatus,
+              status.state == .cached else { return base }
+        var provider = DebridProviders.shared.shortName(id: status.providerId)
+        if provider.trimmingCharacters(in: .whitespaces).isEmpty {
+            provider = status.providerName.trimmingCharacters(in: .whitespaces)
+        }
+        if provider.isEmpty {
+            provider = DebridProviders.shared.displayName(id: status.providerId)
+        }
+        return provider.isEmpty ? base : "\(base) - \(provider) Instant"
+    }
+
+    // MARK: - Playback / debrid resolve
+
+    private func play(_ stream: StreamItem, rowKey: String) {
+        let direct: String? = stream.playableDirectUrl
+        if let direct, !direct.isEmpty, let url = URL(string: direct) {
+            // A manual stream pick is user interaction — reset the Still Watching run.
+            NextEpisodeEngine.consecutiveAutoPlays = 0
+            selected = context(url: url, stream: stream)
+            return
+        }
+
+        // Torrent / clientResolve result → resolve through the in-app debrid connection.
+        guard resolvingKey == nil else { return }
+        guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
+            showToast("This stream needs a debrid account. Connect one in Settings \u{2192} Debrid.")
+            return
+        }
+        resolvingKey = rowKey
+        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
+            stream: stream,
+            season: season.map { KotlinInt(int: Int32($0)) },
+            episode: episode.map { KotlinInt(int: Int32($0)) }
+        ) { result, _ in
+            // Kotlin suspend completions can land off-main; hop before touching view state.
+            DispatchQueue.main.async {
+                resolvingKey = nil
+                if let success = result as? DirectDebridPlayableResult.Success {
+                    let resolvedUrl: String? = success.stream.playableDirectUrl
+                    if let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) {
+                        NextEpisodeEngine.consecutiveAutoPlays = 0
+                        selected = context(url: url, stream: success.stream)
+                        return
+                    }
+                }
+                showToast(Self.resolveFailureMessage(result))
+                // The toast promises a refresh — deliver it: stale cached links mean the whole
+                // result set is old, so re-fetch (focus is preserved; see onChange guard).
+                if result is DirectDebridPlayableResult.Stale {
+                    model.reload()
+                }
+            }
+        }
+    }
+
+    /// Mirrors the shared `DirectDebridPlayableResult.toastMessage()` wording (tvOS renders the
+    /// English fallbacks; matching locally avoids depending on the ext-fun's bridged name).
+    private static func resolveFailureMessage(_ result: DirectDebridPlayableResult?) -> String {
+        switch result {
+        case is DirectDebridPlayableResult.MissingApiKey:
+            return "Connect an account in Settings."
+        case is DirectDebridPlayableResult.NotCached:
+            return "Not cached on your debrid service."
+        case is DirectDebridPlayableResult.Stale:
+            return "This link expired. Refreshing results."
+        default:
+            return "Could not open this link."
+        }
+    }
+
+    private func showToast(_ message: String) {
+        withAnimation { toast = message }
+        let shown = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            if toast == shown {
+                withAnimation { toast = nil }
+            }
+        }
     }
 }
-
-/// A single quality/source chip derived from a shared `StreamBadge` (resolution, HDR, cached, etc.).
-/// Uses the badge's own hex colors when present, falling back to design-system defaults.
-private struct StreamBadgeChip: View {
-    let badge: StreamBadge
-
-    var body: some View {
-        let background = Color(hexString: badge.tagColor) ?? Theme.Palette.surfaceElevated
-        let foreground = Color(hexString: badge.textColor) ?? Theme.Palette.textPrimary
-        let border = Color(hexString: badge.borderColor)
-
-        Text(badge.name)
-            .font(Theme.Font.caption)
-            .foregroundStyle(foreground)
-            .padding(.horizontal, Theme.Spacing.sm)
-            .padding(.vertical, Theme.Spacing.xxs)
-            .background(background, in: Capsule())
-            .overlay(
-                Capsule().stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1)
-            )
-    }
-}
-

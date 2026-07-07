@@ -26,12 +26,15 @@ final class RemoteSetupViewModel: ObservableObject {
     private var rowWatcher: FlowWatcher?
     private var tmdbWatcher: FlowWatcher?
     private var mdbListWatcher: FlowWatcher?
+    private var badgeWatcher: FlowWatcher?
 
     // Cached snapshots (updated by the watchers, read when building state JSON + applying diffs).
     private var addons: [ManagedAddon] = []
     private var rows: [HomeCatalogSettingsItem] = []
     private var tmdbKeySet = false
     private var mdbListKeySet = false
+    /// Source URLs of currently imported stream badge packs (shown read-only on the web page).
+    private var badgePackUrls: [String] = []
 
     // MARK: - Lifecycle
 
@@ -62,9 +65,15 @@ final class RemoteSetupViewModel: ObservableObject {
             self.mdbListKeySet = state.hasApiKey
             self.pushState()
         }
+        badgeWatcher = FlowWatcherKt.watch(StreamBadgeSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? StreamBadgeSettingsUiState else { return }
+            self.badgePackUrls = state.rules.imports.map(\.sourceUrl)
+            self.pushState()
+        }
         AddonRepository.shared.initialize()
         TmdbSettingsRepository.shared.ensureLoaded()
         MdbListSettingsRepository.shared.ensureLoaded()
+        StreamBadgeSettingsRepository.shared.ensureLoaded()
 
         server.onChangeProposed = { [weak self] change in
             Task { @MainActor in
@@ -97,10 +106,12 @@ final class RemoteSetupViewModel: ObservableObject {
         rowWatcher?.cancel()
         tmdbWatcher?.cancel()
         mdbListWatcher?.cancel()
+        badgeWatcher?.cancel()
         addonWatcher = nil
         rowWatcher = nil
         tmdbWatcher = nil
         mdbListWatcher = nil
+        badgeWatcher = nil
     }
 
     // MARK: - Confirm / reject
@@ -138,6 +149,7 @@ final class RemoteSetupViewModel: ObservableObject {
         let rows: [StateRow]
         let tmdbKeySet: Bool
         let mdblistKeySet: Bool
+        let badgePacks: [String]
     }
 
     private func pushState() {
@@ -160,7 +172,8 @@ final class RemoteSetupViewModel: ObservableObject {
                 )
             },
             tmdbKeySet: tmdbKeySet,
-            mdblistKeySet: mdbListKeySet
+            mdblistKeySet: mdbListKeySet,
+            badgePacks: badgePackUrls
         )
         if let data = try? JSONEncoder().encode(snapshot) {
             server.updateState(data)
@@ -179,6 +192,13 @@ final class RemoteSetupViewModel: ObservableObject {
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             MdbListSettingsRepository.shared.setApiKey(value: key)
             MdbListSettingsRepository.shared.setEnabled(value: true)
+        }
+        // Badge pack imports (async fetch+parse; the badge watcher refreshes the page state as
+        // each one lands). Already-imported URLs are re-fetched/updated by the shared repo.
+        for url in proposal.badgeUrls ?? [] {
+            let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            StreamBadgeSettingsRepository.shared.importStreamBadgeRulesFromUrl(url: trimmed) { _, _ in }
         }
     }
 
@@ -279,6 +299,9 @@ final class RemoteSetupViewModel: ObservableObject {
 
         if proposal.tmdbKey?.isEmpty == false { parts.append("TMDB key set") }
         if proposal.mdblistKey?.isEmpty == false { parts.append("MDBList key set") }
+        if let badgeCount = proposal.badgeUrls?.count, badgeCount > 0 {
+            parts.append("\(badgeCount) badge pack\(badgeCount == 1 ? "" : "s") imported")
+        }
 
         return parts.isEmpty ? "No changes detected." : parts.joined(separator: " \u{00B7} ") + "."
     }
@@ -301,5 +324,6 @@ final class RemoteSetupViewModel: ObservableObject {
         rowWatcher?.cancel()
         tmdbWatcher?.cancel()
         mdbListWatcher?.cancel()
+        badgeWatcher?.cancel()
     }
 }

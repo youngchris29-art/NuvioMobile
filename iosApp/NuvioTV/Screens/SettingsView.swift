@@ -9,6 +9,7 @@ struct SettingsView: View {
     @StateObject private var debrid = DebridViewModel()
     @StateObject private var remote = RemoteSetupViewModel()
     @StateObject private var plugins = PluginsViewModel()
+    @StateObject private var badges = BadgeSettingsViewModel()
     @EnvironmentObject private var auth: AuthViewModel
     @State private var confirmingSignOut = false
     @State private var confirmingTraktDisconnect = false
@@ -156,6 +157,10 @@ struct SettingsView: View {
                             )
                         }
 
+                        section("Stream Badges", .appearance) {
+                            streamBadgesSection
+                        }
+
                         section("Metadata (TMDB)", .contentSources) {
                             Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
                                 .font(Theme.Font.caption)
@@ -247,12 +252,14 @@ struct SettingsView: View {
             trakt.start()
             debrid.start()
             plugins.start()
+            badges.start()
         }
         .onDisappear {
             model.stop()
             trakt.stop()
             debrid.stop()
             plugins.stop()
+            badges.stop()
             remote.stop()
         }
         .alert(
@@ -387,12 +394,92 @@ struct SettingsView: View {
         }
     }
 
+    /// The Stream Badges section body: toggles + placement + imported badge-pack management,
+    /// all backed by the shared `StreamBadgeSettingsRepository` (syncs across devices).
+    @ViewBuilder
+    private var streamBadgesSection: some View {
+        Text("Badge packs add quality / HDR / audio-channel chips to stream results. Import a pack by its JSON URL \u{2014} packs imported on the Nuvio mobile app sync here automatically. Tip: Remote Setup (Advanced) lets you paste the URL from a phone browser.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
+
+        SettingsToggleRow(
+            title: "File Size Badges",
+            subtitle: "Show the video size (GB/MB) as a chip on stream results.",
+            isOn: badges.showFileSizeBadges
+        ) {
+            badges.setShowFileSizeBadges(!badges.showFileSizeBadges)
+        }
+        SettingsToggleRow(
+            title: "Show Add-on Logo",
+            subtitle: "Show each result's add-on logo and name on the right of the row.",
+            isOn: badges.showAddonLogo
+        ) {
+            badges.setShowAddonLogo(!badges.showAddonLogo)
+        }
+        SettingsToggleRow(
+            title: "Badges Above Title",
+            subtitle: badges.badgesOnTop
+                ? "Badge chips render above the stream name."
+                : "Badge chips render below the stream description.",
+            isOn: badges.badgesOnTop
+        ) {
+            badges.setBadgesOnTop(!badges.badgesOnTop)
+        }
+
+        if badges.imports.isEmpty {
+            Text("No badge packs imported yet.")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+        } else {
+            ForEach(badges.imports, id: \.sourceUrl) { pack in
+                HStack(spacing: Theme.Spacing.md) {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                        Text(BadgeSettingsViewModel.packLabel(pack.sourceUrl))
+                            .font(Theme.Font.body.weight(.semibold))
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .lineLimit(1)
+                        Text("\(pack.enabledFilterCount) filter\(pack.enabledFilterCount == 1 ? "" : "s") \u{00B7} \(pack.sourceUrl)")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    if pack.isActive {
+                        Label("Active", systemImage: "checkmark.circle.fill")
+                            .font(Theme.Font.meta)
+                            .foregroundStyle(Theme.Palette.accent)
+                    } else {
+                        Button("Set Active") { badges.setActive(pack.sourceUrl) }
+                            .buttonStyle(.bordered)
+                            .font(Theme.Font.meta)
+                    }
+                    Button {
+                        badges.deletePack(pack.sourceUrl)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(Theme.Font.caption)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+
+        BadgeUrlEntryRow(isImporting: badges.isImporting) { badges.importPack(url: $0) }
+
+        if let status = badges.statusMessage {
+            Text(status)
+                .font(Theme.Font.caption)
+                .foregroundStyle(status.hasPrefix("Imported") ? Theme.Palette.textSecondary : .red)
+        }
+    }
+
     /// The Remote Setup section body: start/stop the LAN config server and, while it runs, show
-    /// the URL + QR a phone/laptop browser uses to manage add-ons, Home rows, and API keys.
-    /// Changes proposed from the browser surface as a confirm alert on this screen.
+    /// the URL + QR a phone/laptop browser uses to manage add-ons, Home rows, API keys, and
+    /// badge packs. Changes proposed from the browser surface as a confirm alert on this screen.
     @ViewBuilder
     private var remoteSetupSection: some View {
-        Text("Manage add-ons, Home rows, and API keys from a phone or laptop browser on the same network \u{2014} no on-screen keyboard. Changes only apply after you confirm them here.")
+        Text("Manage add-ons, Home rows, API keys, and stream badge packs from a phone or laptop browser on the same network \u{2014} no on-screen keyboard. Changes only apply after you confirm them here.")
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)
@@ -895,6 +982,46 @@ private struct PluginRepoEntryRow: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(isInstalling)
+        }
+    }
+}
+
+/// URL entry + import button for a stream badge pack (mirrors `PluginRepoEntryRow`).
+private struct BadgeUrlEntryRow: View {
+    let isImporting: Bool
+    let onImport: (String) -> Void
+    @State private var url = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            HStack(spacing: Theme.Spacing.md) {
+                Image(systemName: "tag")
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                TextField("Badge pack JSON URL", text: $url)
+                    .textFieldStyle(.plain)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
+            .padding(Theme.Spacing.lg)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+
+            Button {
+                if !url.isEmpty {
+                    onImport(url)
+                    url = ""
+                }
+            } label: {
+                if isImporting {
+                    ProgressView()
+                } else {
+                    Label("Import Badge Pack", systemImage: "plus")
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.lg)
+                        .padding(.vertical, Theme.Spacing.xxs + 2)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isImporting)
         }
     }
 }
