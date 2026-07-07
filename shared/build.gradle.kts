@@ -38,6 +38,9 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     abstract val supabaseFallbackUrl: Property<String>
 
     @get:Input
+    abstract val realtimeSyncEnabled: Property<Boolean>
+
+    @get:Input
     abstract val debugBuild: Property<Boolean>
 
     @get:Input
@@ -74,6 +77,18 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
                 |    const val URL = "${supabaseUrl.get()}"
                 |    const val ANON_KEY = "${supabaseAnonKey.get()}"
                 |    const val FALLBACK_URL = "${supabaseFallbackUrl.get()}"
+                |}
+                """.trimMargin()
+            )
+        }
+        outDir.resolve("com/nuvio/app/core/sync").apply {
+            mkdirs()
+            resolve("RealtimeSyncConfig.kt").writeText(
+                """
+                |package com.nuvio.app.core.sync
+                |
+                |object RealtimeSyncConfig {
+                |    const val ENABLED = ${realtimeSyncEnabled.get()}
                 |}
                 """.trimMargin()
             )
@@ -230,6 +245,13 @@ val generateSharedRuntimeConfigs = tasks.register<GenerateSharedRuntimeConfigsTa
     )
     supabaseFallbackUrl.set(
         sharedRuntimeConfigValue("NUVIO_SUPABASE_FALLBACK_URL").ifBlank { sharedRuntimeConfigValue("SUPABASE_FALLBACK_URL") }
+    )
+    realtimeSyncEnabled.set(
+        when (sharedRuntimeConfigValue("NUVIO_REALTIME_SYNC_ENABLED").lowercase()) {
+            "1", "true", "yes", "y", "on" -> true
+            "0", "false", "no", "n", "off" -> false
+            else -> true
+        }
     )
     debugBuild.set(sharedIsDebugBuild)
     traktClientId.set(sharedRuntimeConfigValue("TRAKT_CLIENT_ID"))

@@ -32,9 +32,36 @@ private data class ProviderCredentialRow(
     @SerialName("updated_at") val updatedAt: String? = null,
 )
 
+/**
+ * FORK NOTE (Trakt API-client ownership guards): Trakt tokens are bound to the OAuth client
+ * (`TraktConfig.CLIENT_ID`) that minted them — a token synced from a build using a different
+ * client id gets 401 on every API call and cannot be refreshed here (refresh needs that
+ * client's secret). Upstream assumes all devices ship the same official client id; this fork's
+ * tvOS build uses its own registration, so blindly adopting the phone's synced token bricked
+ * Trakt on the TV (hit 2026-07-07: detail page comments 401).
+ *
+ * Guards: pushed credentials are tagged with `api_client_id`; pull only ADOPTS rows minted by
+ * OUR client id; push/delete only touch the remote row when it's absent or ours — a foreign
+ * row (e.g. the official phone app's) is never clobbered or deleted, since that client pulls
+ * unconditionally and would break. Fork builds sharing one client id sync exactly as upstream.
+ */
 object TraktCredentialSync {
     private val log = Logger.withTag("TraktCredentialSync")
     private val mutex = Mutex()
+
+    private enum class RemoteOwnership { NoRow, Ours, Foreign }
+
+    private suspend fun remoteOwnership(profileId: Int): RemoteOwnership {
+        val params = buildJsonObject {
+            put("p_profile_id", profileId)
+        }
+        val result = SupabaseProvider.client.postgrest.rpc("sync_pull_provider_credentials", params)
+        val rows = result.decodeList<ProviderCredentialRow>()
+        val row = rows.firstOrNull { it.provider.equals(TRAKT_PROVIDER, ignoreCase = true) }
+            ?: return RemoteOwnership.NoRow
+        val rowClientId = row.credentialJson.stringValue("api_client_id")
+        return if (rowClientId == TraktConfig.CLIENT_ID) RemoteOwnership.Ours else RemoteOwnership.Foreign
+    }
 
     suspend fun pushCurrentToRemote(profileId: Int = ProfileRepository.activeProfileId): Boolean =
         mutex.withLock {
@@ -44,6 +71,10 @@ object TraktCredentialSync {
             val state = TraktAuthRepository.currentStateForSync()
             val credentialJson = state.toCredentialJson() ?: return@withLock false
             runCatching {
+                if (remoteOwnership(profileId) == RemoteOwnership.Foreign) {
+                    log.i { "Skipping Trakt credential push; remote row belongs to another API client" }
+                    return@runCatching false
+                }
                 val params = buildJsonObject {
                     put("p_profile_id", profileId)
                     put("p_credentials", buildJsonArray {
@@ -75,6 +106,13 @@ object TraktCredentialSync {
                 val rows = result.decodeList<ProviderCredentialRow>()
                 val row = rows.firstOrNull { it.provider.equals(TRAKT_PROVIDER, ignoreCase = true) }
                     ?: return@runCatching false
+                // Only adopt credentials minted by OUR Trakt API client — a foreign token 401s
+                // on every call here and can't be refreshed (see fork note above).
+                val rowClientId = row.credentialJson.stringValue("api_client_id")
+                if (rowClientId != TraktConfig.CLIENT_ID) {
+                    log.i { "Skipping Trakt credential pull; remote row belongs to another API client" }
+                    return@runCatching false
+                }
                 val remoteState = row.credentialJson.toTraktAuthState() ?: return@runCatching false
                 TraktAuthRepository.replaceStateFromSync(remoteState)
             }.getOrElse { error ->
@@ -89,6 +127,10 @@ object TraktCredentialSync {
             if (authState !is AuthState.Authenticated || authState.isAnonymous) return@withLock false
 
             runCatching {
+                if (remoteOwnership(profileId) == RemoteOwnership.Foreign) {
+                    log.i { "Skipping Trakt credential delete; remote row belongs to another API client" }
+                    return@runCatching false
+                }
                 val params = buildJsonObject {
                     put("p_profile_id", profileId)
                     put("p_provider", TRAKT_PROVIDER)
@@ -109,6 +151,9 @@ private fun TraktAuthState.toCredentialJson(): JsonObject? {
     return buildJsonObject {
         put("access_token", accessTokenValue)
         put("refresh_token", refreshTokenValue)
+        // Fork addition: tag which Trakt OAuth client minted this token, so pulls can refuse
+        // credentials that would 401 under this build's TraktConfig.CLIENT_ID.
+        put("api_client_id", TraktConfig.CLIENT_ID)
         put("token_type", tokenType ?: "bearer")
         put("created_at", createdAt ?: (TraktPlatformClock.nowEpochMs() / 1_000L))
         put("expires_in", normalizeTraktTokenLifetime(expiresIn ?: TRAKT_TOKEN_FALLBACK_LIFETIME_SECONDS))

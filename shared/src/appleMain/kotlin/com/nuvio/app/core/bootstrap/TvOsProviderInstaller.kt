@@ -42,6 +42,16 @@ import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
+import com.nuvio.app.core.auth.AuthRepository
+import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.sync.RealtimeSyncConfig
+import com.nuvio.app.core.sync.RealtimeSyncInvalidationService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import platform.Foundation.NSUserDefaults
 
 /**
@@ -117,6 +127,41 @@ fun installTvOsSharedProviders() {
     // repositories read the active profile id. No-op on a fresh install (no stored payload yet);
     // wrapped defensively so a malformed cache can never crash startup.
     runCatching { ProfileRepository.loadCachedProfiles() }
+
+    // Live sync invalidation: subscribe to the account's Supabase realtime channel so changes made
+    // on other devices (library, watched, addons, profile settings…) pull within seconds instead
+    // of waiting for the next launch/foreground sync. Mirrors composeApp App()'s
+    // LaunchedEffect(authState, activeProfile) start/stop logic.
+    startRealtimeInvalidationObserver()
+}
+
+private val realtimeObserverScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+private var realtimeObserverStarted = false
+
+private fun startRealtimeInvalidationObserver() {
+    if (realtimeObserverStarted) return
+    realtimeObserverStarted = true
+    realtimeObserverScope.launch {
+        combine(AuthRepository.state, ProfileRepository.state) { auth, profiles ->
+            (auth as? AuthState.Authenticated) to profiles.activeProfile?.profileIndex
+        }
+            .distinctUntilChanged()
+            .collect { (authenticated, profileIndex) ->
+                if (
+                    !RealtimeSyncConfig.ENABLED ||
+                    authenticated == null ||
+                    authenticated.isAnonymous ||
+                    profileIndex == null
+                ) {
+                    RealtimeSyncInvalidationService.stop()
+                } else {
+                    RealtimeSyncInvalidationService.start(
+                        userId = authenticated.userId,
+                        profileId = profileIndex,
+                    )
+                }
+            }
+    }
 }
 
 /**
