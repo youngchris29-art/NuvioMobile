@@ -139,10 +139,14 @@ final class DetailViewModel: ObservableObject {
     /// Once per title: first page of Trakt community comments. The shared repo resolves the Trakt
     /// ids from `meta` itself and returns an empty page when Trakt isn't connected, so the section
     /// simply stays hidden in that case.
+    ///
+    /// Goes through `TraktCommentsSwiftBridge`: the raw repo call THROWS on HTTP errors (e.g. 401
+    /// when the synced Trakt token is rejected), and an undeclared Kotlin exception crossing a
+    /// suspend completion terminates the app. The bridge collapses failures to nil.
     private func fetchCommentsIfNeeded(_ meta: MetaDetails) {
         guard !didRequestComments else { return }
         didRequestComments = true
-        TraktCommentsRepository.shared.getCommentsPage(meta: meta, page: 1, forceRefresh: false) { [weak self] page, _ in
+        TraktCommentsSwiftBridge.shared.pageOrNull(meta: meta, page: 1, forceRefresh: false) { [weak self] page, _ in
             DispatchQueue.main.async {
                 guard let self, let page else { return }
                 self.comments = page.items
