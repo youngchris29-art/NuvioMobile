@@ -27,9 +27,15 @@ struct HomeView: View {
 
                 // Full-bleed hero backdrop runs to every edge (and under the floating glass tab
                 // bar); the rows scroll over it, Detail-style.
+                // Only show the artwork while the hero itself is highlighted; once focus moves
+                // down into Continue Watching / the catalogs, fade to the flat dark background.
                 if let hero = currentHero {
-                    HomeHeroBackdrop(item: hero)
-                    HomeHeroScrim()
+                    Group {
+                        HomeHeroBackdrop(item: hero)
+                        HomeHeroScrim()
+                    }
+                    .opacity(heroFocused ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.4), value: heroFocused)
                 }
 
                 ScrollView(.vertical) {
@@ -70,6 +76,7 @@ struct HomeView: View {
                     }
                     .padding(Theme.Spacing.screen)
                 }
+                .scrollClipDisabled()
             }
             .onReceive(heroTimer) { _ in
                 guard heroItems.count > 1, !heroFocused else { return }
@@ -158,7 +165,7 @@ struct ContinueWatchingRow: View {
                                 progress: fraction(entry)
                             )
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.poster)
                         .contextMenu {
                             Button(role: .destructive) {
                                 onRemove(entry)
@@ -168,8 +175,9 @@ struct ContinueWatchingRow: View {
                         }
                     }
                 }
-                .padding(.vertical, Theme.Spacing.sm)
+                .padding(.vertical, Theme.Spacing.lg)
             }
+            .scrollClipDisabled()
         }
         .focusSection()
     }

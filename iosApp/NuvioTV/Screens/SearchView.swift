@@ -48,6 +48,7 @@ struct SearchView: View {
                     }
                     .padding(Theme.Spacing.screen)
                 }
+                .scrollClipDisabled()
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -207,7 +208,7 @@ struct SearchView: View {
                     NavigationLink(value: TitleRoute(preview: item)) {
                         PosterCard(title: item.name, imageURL: item.poster)
                     }
-                    .buttonStyle(.card)
+                    .buttonStyle(.poster)
                     .onAppear { model.discoverItemAppeared(at: index) }
                 }
             }

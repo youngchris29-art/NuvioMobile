@@ -66,8 +66,9 @@ struct ProfileSelectionView: View {
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: Theme.Spacing.xl) {
+                // Max 6 profiles + Add tile fit on screen, so no ScrollView — a plain HStack
+                // centers the row in the middle of the screen (a ScrollView would pin it left).
+                HStack(alignment: .top, spacing: Theme.Spacing.xl) {
                         ForEach(model.profiles, id: \.profileIndex) { profile in
                             Button {
                                 requirePin(for: profile, action: .select)
@@ -92,7 +93,7 @@ struct ProfileSelectionView: View {
                                     }
                                 }
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.poster)
                             .contextMenu {
                                 Button {
                                     requirePin(for: profile, action: .edit)
@@ -119,12 +120,13 @@ struct ProfileSelectionView: View {
                                     .frame(width: 170, height: 170)
                                 }
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.poster)
                         }
                     }
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, Theme.Spacing.screen)
                     .padding(.vertical, Theme.Spacing.lg)
-                }
+                    .focusSection()
 
                 Text("Hold to manage profile")
                     .font(Theme.Font.caption)
@@ -191,11 +193,35 @@ struct ProfileSelectionView: View {
         isPrimary: Bool = false,
         @ViewBuilder avatar: () -> Content
     ) -> some View {
+        ProfileTileLabel(name: name, isPrimary: isPrimary, avatar: avatar)
+    }
+}
+
+/// Focus-aware profile tile label used with the platter-free `.poster` button style: no grey
+/// border — the focused avatar zooms slightly and gets a soft white + accent glow, and the name
+/// brightens. `@Environment(\.isFocused)` reflects the enclosing Button's focus.
+private struct ProfileTileLabel<Content: View>: View {
+    let name: String
+    var isPrimary: Bool = false
+    let avatar: Content
+
+    @Environment(\.isFocused) private var isFocused
+
+    init(name: String, isPrimary: Bool = false, @ViewBuilder avatar: () -> Content) {
+        self.name = name
+        self.isPrimary = isPrimary
+        self.avatar = avatar()
+    }
+
+    var body: some View {
         VStack(spacing: Theme.Spacing.md) {
-            avatar()
+            avatar
+                .scaleEffect(isFocused ? 1.12 : 1)
+                .shadow(color: .white.opacity(isFocused ? 0.4 : 0), radius: 26)
+                .shadow(color: Theme.Palette.accent.opacity(isFocused ? 0.35 : 0), radius: 44)
             Text(name)
                 .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
+                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                 .lineLimit(1)
             if isPrimary {
                 Text("PRIMARY")
@@ -207,6 +233,7 @@ struct ProfileSelectionView: View {
                     .glassEffect(.regular, in: .capsule)
             }
         }
+        .animation(.easeOut(duration: 0.18), value: isFocused)
     }
 }
 

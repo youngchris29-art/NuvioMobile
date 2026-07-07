@@ -109,17 +109,18 @@ struct CatalogRowView: View {
                     ForEach(section.items, id: \.id) { item in
                         if let onSelect {
                             Button { onSelect(item) } label: { card(for: item) }
-                                .buttonStyle(.card)
+                                .buttonStyle(.poster)
                         } else {
                             NavigationLink(value: TitleRoute(preview: item)) {
                                 card(for: item)
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.poster)
                         }
                     }
                 }
-                .padding(.vertical, Theme.Spacing.sm)
+                .padding(.vertical, Theme.Spacing.lg)
             }
+            .scrollClipDisabled()
         }
         .focusSection()
     }

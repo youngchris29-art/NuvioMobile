@@ -43,7 +43,7 @@ struct LibraryView: View {
                                     NavigationLink(value: TitleRoute(preview: item.toMetaPreview())) {
                                         PosterCard(title: item.name, imageURL: item.poster)
                                     }
-                                    .buttonStyle(.card)
+                                    .buttonStyle(.poster)
                                     .contextMenu {
                                         Button(role: .destructive) {
                                             model.remove(item)
@@ -58,6 +58,7 @@ struct LibraryView: View {
                     .padding(Theme.Spacing.screen)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .scrollClipDisabled()
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)

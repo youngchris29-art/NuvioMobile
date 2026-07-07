@@ -42,7 +42,7 @@ struct CatalogGridView: View {
                                 NavigationLink(value: TitleRoute(preview: item)) {
                                     PosterCard(title: item.name, imageURL: item.poster)
                                 }
-                                .buttonStyle(.card)
+                                .buttonStyle(.poster)
                                 .onAppear { model.itemAppeared(at: index) }
                             }
                         }
@@ -57,6 +57,7 @@ struct CatalogGridView: View {
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .scrollClipDisabled()
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }

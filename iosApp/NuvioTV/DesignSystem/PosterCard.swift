@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// Platter-free replacement for the system `.card` button style: no background platter, no grey
+/// border around the label. Focus motion (scale + shadow/glow) is added by the tile views
+/// themselves via `@Environment(\.isFocused)` — the `Button` stays the focusable element, so that
+/// environment keeps working exactly as it did under `.card`.
+struct PosterButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == PosterButtonStyle {
+    /// Platter-free tile style for poster/landscape/profile tiles.
+    static var poster: PosterButtonStyle { .init() }
+}
+
 /// The standard portrait poster tile used across catalog rows, search results, and "more like this".
 ///
 /// Designed to be used as the label of a `Button` / `NavigationLink` with `.buttonStyle(.card)` —
@@ -35,6 +52,8 @@ struct PosterCard: View {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
                         .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
                 )
+                .scaleEffect(isFocused ? 1.07 : 1)
+                .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
             if titleVisible {
                 Text(title)
@@ -90,6 +109,8 @@ struct LandscapeCard: View {
                 }
             }
             .frame(width: width, height: height)
+            .scaleEffect(isFocused ? 1.07 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
             if titleVisible {
                 Text(title)

@@ -116,11 +116,12 @@ struct PersonDetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.poster)
                         }
                     }
-                    .padding(.vertical, Theme.Spacing.xs)
+                    .padding(.vertical, Theme.Spacing.md)
                 }
+                .scrollClipDisabled()
             }
         }
     }

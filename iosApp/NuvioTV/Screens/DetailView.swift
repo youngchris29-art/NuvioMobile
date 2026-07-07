@@ -271,11 +271,12 @@ struct DetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.poster)
                         }
                     }
-                    .padding(.vertical, Theme.Spacing.xs)
+                    .padding(.vertical, Theme.Spacing.md)
                 }
+                .scrollClipDisabled()
             }
         }
     }
@@ -359,11 +360,12 @@ struct DetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.poster)
                         }
                     }
-                    .padding(.vertical, Theme.Spacing.xs)
+                    .padding(.vertical, Theme.Spacing.md)
                 }
+                .scrollClipDisabled()
             }
         }
     }
@@ -513,8 +515,9 @@ struct DetailView: View {
                             .buttonStyle(.card)
                         }
                     }
-                    .padding(.vertical, Theme.Spacing.xs)
+                    .padding(.vertical, Theme.Spacing.md)
                 }
+                .scrollClipDisabled()
             }
         }
     }

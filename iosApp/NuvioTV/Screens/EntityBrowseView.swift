@@ -248,7 +248,7 @@ struct EntityBrowseView: View {
                                 height: Theme.Size.miniPosterHeight
                             )
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.poster)
                         .onAppear { model.itemAppeared(railId: rail.id, index: index) }
                     }
                     if rail.isLoadingMore {
@@ -256,8 +256,9 @@ struct EntityBrowseView: View {
                             .frame(width: Theme.Size.miniPosterWidth, height: Theme.Size.miniPosterHeight)
                     }
                 }
-                .padding(.vertical, Theme.Spacing.xs)
+                .padding(.vertical, Theme.Spacing.md)
             }
+            .scrollClipDisabled()
         }
     }
 }
