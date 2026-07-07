@@ -23,7 +23,7 @@ fun MetaDetails.sortedPlayableEpisodes(): List<MetaVideo> =
         .filter { it.season != null || it.episode != null }
         .sortedWith(metaVideoSeasonEpisodeComparator)
 
-internal fun List<MetaVideo>.filterUnavailableFutureSeasons(
+fun List<MetaVideo>.filterUnavailableFutureSeasons(
     todayIsoDate: String,
 ): List<MetaVideo> {
     val unavailableSeasons = groupBy { episode -> normalizeSeasonNumber(episode.season) }
@@ -32,7 +32,7 @@ internal fun List<MetaVideo>.filterUnavailableFutureSeasons(
             val firstEpisode = episodes.minWithOrNull(
                 compareBy<MetaVideo>({ it.episode ?: Int.MAX_VALUE }, { it.released.orEmpty() }),
             ) ?: return@filter false
-            !isReleasedBy(todayIsoDate = todayIsoDate, releasedDate = firstEpisode.released)
+            !firstEpisode.isReleasedBy(todayIsoDate)
         }
         .keys
 
@@ -48,7 +48,7 @@ internal fun MetaDetails.firstPlayableEpisode(): MetaVideo? =
 
 internal fun MetaDetails.firstReleasedPlayableEpisode(todayIsoDate: String): MetaVideo? =
     sortedPlayableEpisodes().firstOrNull { video ->
-        isReleasedBy(todayIsoDate = todayIsoDate, releasedDate = video.released)
+        video.isReleasedBy(todayIsoDate)
     }
 
 fun MetaDetails.nextReleasedEpisodeAfter(
@@ -122,6 +122,7 @@ fun MetaDetails.nextReleasedEpisodeAfter(
                 todayIsoDate = todayIsoDate,
                 releasedDate = episode.released,
                 showUnairedNextUp = showUnairedNextUp,
+                available = episode.available,
             )
         }
     return candidates.firstOrNull { normalizeSeasonNumber(it.season) > 0 }
@@ -181,7 +182,11 @@ internal fun WatchProgressEntry.resumeLabel(): String =
     resumeLabel(seasonNumber = seasonNumber, episodeNumber = episodeNumber)
 
 fun MetaVideo.isReleasedBy(todayIsoDate: String): Boolean =
-    isReleasedBy(todayIsoDate = todayIsoDate, releasedDate = released)
+    isReleasedBy(
+        todayIsoDate = todayIsoDate,
+        releasedDate = released,
+        available = available,
+    )
 
 data class CompletedSeriesEpisode(
     val seasonNumber: Int,
@@ -209,6 +214,7 @@ private fun MetaVideo.toDomainReleasedEpisode(): WatchingReleasedEpisode =
         title = title,
         thumbnail = thumbnail,
         releasedDate = released,
+        available = available,
     )
 
 private fun WatchProgressEntry.toDomainProgressRecord(): WatchingProgressRecord =

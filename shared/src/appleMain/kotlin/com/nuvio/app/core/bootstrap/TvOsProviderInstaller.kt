@@ -1,7 +1,6 @@
 package com.nuvio.app.core.bootstrap
 
 import com.nuvio.app.core.account.AccountDataCleanerProvider
-import com.nuvio.app.core.network.SyncBackendRepository
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.sync.ProfileSettingsSync
@@ -107,7 +106,6 @@ fun installTvOsSharedProviders() {
     // Load the sync-backend selection (defaults to the hosted backend from SupabaseConfig).
     // AuthRepository.initialize()'s collector waits for this `isLoaded` flag — without it the auth
     // state never leaves Loading. composeApp does this at App() startup; tvOS must too.
-    SyncBackendRepository.ensureLoaded()
 
     // Push settings changes to the per-platform ("tv") cloud blob — debrid/TMDB/MDBList keys,
     // subtitle style, poster style, theme, etc. composeApp starts this in App(); without it every

@@ -28,7 +28,6 @@ interface FeaturePolicy {
     val heroTrailerPlaybackSupported: Boolean
     val inAppUpdaterEnabled: Boolean
     val imdbRatingLogoEnabled: Boolean
-    val debugBackendSwitcherEnabled: Boolean
 }
 
 /**
@@ -45,7 +44,6 @@ object DefaultFeaturePolicy : FeaturePolicy {
     override val heroTrailerPlaybackSupported: Boolean = false
     override val inAppUpdaterEnabled: Boolean = false
     override val imdbRatingLogoEnabled: Boolean = false
-    override val debugBackendSwitcherEnabled: Boolean = false
 }
 
 /** Process-wide holder for the active [FeaturePolicy]; defaults to [DefaultFeaturePolicy]. */

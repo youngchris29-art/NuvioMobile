@@ -5,7 +5,6 @@ import com.nuvio.app.core.i18n.resourceString
 
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.SupabaseProvider
-import com.nuvio.app.core.network.SyncBackendRepository
 import com.nuvio.app.core.account.AccountDataCleanerProvider
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.builtin.Email
@@ -20,7 +19,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 object AuthRepository {
@@ -40,48 +38,42 @@ object AuthRepository {
         if (initialized) return
         initialized = true
 
+        val savedAnonId = AuthStorage.loadAnonymousUserId()
+        if (savedAnonId != null) {
+            _state.value = AuthState.Authenticated(
+                userId = savedAnonId,
+                email = null,
+                isAnonymous = true,
+            )
+        }
+
         scope.launch {
-            SyncBackendRepository.state.collectLatest { backendState ->
-                if (!backendState.isLoaded) return@collectLatest
-                validatedRemoteUserId = null
-
-                AuthStorage.loadAnonymousUserId()?.let { savedAnonId ->
-                    _state.value = AuthState.Authenticated(
-                        userId = savedAnonId,
-                        email = null,
-                        isAnonymous = true,
-                    )
-                } ?: run {
-                    _state.value = AuthState.Loading
-                }
-
-                SupabaseProvider.client.auth.sessionStatus.collect { status ->
-                    if (AuthStorage.loadAnonymousUserId() != null) return@collect
-                    when (status) {
-                        is SessionStatus.Authenticated -> {
-                            val user = status.session.user
-                            // Anonymous Supabase sessions are QR-login scaffolding
-                            // (TvLoginRepository), never a signed-in account — ignore them.
-                            if (user?.isAnonymous == true) return@collect
-                            val userId = user?.id.orEmpty()
-                            if (!validateRemoteSession(userId)) return@collect
-                            _state.value = AuthState.Authenticated(
-                                userId = userId,
-                                email = user?.email,
-                                isAnonymous = false,
-                            )
+            SupabaseProvider.client.auth.sessionStatus.collect { status ->
+                if (AuthStorage.loadAnonymousUserId() != null) return@collect
+                when (status) {
+                    is SessionStatus.Authenticated -> {
+                        val user = status.session.user
+                        // Anonymous Supabase sessions are QR-login scaffolding
+                        // (TvLoginRepository), never a signed-in account — ignore them.
+                        if (user?.isAnonymous == true) return@collect
+                        val userId = user?.id.orEmpty()
+                        if (!validateRemoteSession(userId)) return@collect
+                        _state.value = AuthState.Authenticated(
+                            userId = userId,
+                            email = user?.email,
+                            isAnonymous = false,
+                        )
+                    }
+                    is SessionStatus.NotAuthenticated -> {
+                        _state.value = AuthState.Unauthenticated
+                    }
+                    is SessionStatus.Initializing -> {
+                        if (AuthStorage.loadAnonymousUserId() == null) {
+                            _state.value = AuthState.Loading
                         }
-                        is SessionStatus.NotAuthenticated -> {
-                            _state.value = AuthState.Unauthenticated
-                        }
-                        is SessionStatus.Initializing -> {
-                            if (AuthStorage.loadAnonymousUserId() == null) {
-                                _state.value = AuthState.Loading
-                            }
-                        }
-                        is SessionStatus.RefreshFailure -> {
-                            _state.value = AuthState.Unauthenticated
-                        }
+                    }
+                    is SessionStatus.RefreshFailure -> {
+                        _state.value = AuthState.Unauthenticated
                     }
                 }
             }
@@ -176,27 +168,6 @@ object AuthRepository {
         }
         _state.value = AuthState.Unauthenticated
         AccountDataCleanerProvider.cleaner.wipe()
-    }
-
-    suspend fun resetForSyncBackendChange(): Result<Unit> = runCatching {
-        _error.value = null
-        val wasAnonymous = AuthStorage.loadAnonymousUserId() != null
-        AuthStorage.clearAnonymousUserId()
-        validatedRemoteUserId = null
-
-        if (!wasAnonymous) {
-            runCatching {
-                SupabaseProvider.client.auth.signOut()
-            }.onFailure { e ->
-                log.w(e) { "Supabase sign-out failed during sync backend reset; continuing local reset" }
-            }
-        }
-
-        _state.value = AuthState.Unauthenticated
-        AccountDataCleanerProvider.cleaner.wipe()
-    }.onFailure { e ->
-        log.e(e) { "Sync backend auth reset failed" }
-        _error.value = e.message ?: resourceString("Sign-out failed", StringKey.auth_sign_out_failed)
     }
 
     suspend fun deleteAccount(): Result<Unit> = runCatching {

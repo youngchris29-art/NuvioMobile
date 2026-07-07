@@ -14,7 +14,7 @@ import java.util.Properties
 // Targets mirror composeApp (android + iOS) plus tvOS. No Compose / coil / navigation here.
 
 // Generates the runtime-config classes that the migrated data layer needs, in :shared only,
-// so the FQNs (com.nuvio.app.core.network.SupabaseConfig / SyncBackendBootstrapConfig and
+// so the FQNs (com.nuvio.app.core.network.SupabaseConfig and
 // com.nuvio.app.core.build.AppVersionConfig / AppBuildConfig) are produced in exactly one
 // module. composeApp consumes them transitively via implementation(projects.shared). The
 // remaining feature configs (trakt/debrid/tmdb/community/intro-db/imdb) stay in composeApp.
@@ -35,13 +35,7 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     abstract val supabaseAnonKey: Property<String>
 
     @get:Input
-    abstract val nuvioSupabaseUrl: Property<String>
-
-    @get:Input
-    abstract val nuvioSupabaseAnonKey: Property<String>
-
-    @get:Input
-    abstract val syncBackendManifestUrl: Property<String>
+    abstract val supabaseFallbackUrl: Property<String>
 
     @get:Input
     abstract val debugBuild: Property<Boolean>
@@ -79,17 +73,7 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
                 |object SupabaseConfig {
                 |    const val URL = "${supabaseUrl.get()}"
                 |    const val ANON_KEY = "${supabaseAnonKey.get()}"
-                |    const val NUVIO_URL = "${nuvioSupabaseUrl.get()}"
-                |    const val NUVIO_ANON_KEY = "${nuvioSupabaseAnonKey.get()}"
-                |}
-                """.trimMargin()
-            )
-            resolve("SyncBackendBootstrapConfig.kt").writeText(
-                """
-                |package com.nuvio.app.core.network
-                |
-                |object SyncBackendBootstrapConfig {
-                |    const val SWITCH_MANIFEST_URL = "${syncBackendManifestUrl.get()}"
+                |    const val FALLBACK_URL = "${supabaseFallbackUrl.get()}"
                 |}
                 """.trimMargin()
             )
@@ -235,11 +219,18 @@ val generateSharedRuntimeConfigs = tasks.register<GenerateSharedRuntimeConfigsTa
     outputDir.set(sharedGeneratedConfigDir)
     appVersionName.set(sharedAppVersionName)
     appVersionCode.set(sharedAppVersionCode)
-    supabaseUrl.set(sharedRuntimeConfigValue("SUPABASE_URL"))
-    supabaseAnonKey.set(sharedRuntimeConfigValue("SUPABASE_ANON_KEY"))
-    nuvioSupabaseUrl.set(sharedRuntimeConfigValue("NUVIO_SUPABASE_URL"))
-    nuvioSupabaseAnonKey.set(sharedRuntimeConfigValue("NUVIO_SUPABASE_ANON_KEY"))
-    syncBackendManifestUrl.set(sharedRuntimeConfigValue("SYNC_BACKEND_MANIFEST_URL"))
+    // Primary URL/key: accept both the fork's historical SUPABASE_* keys and upstream's
+    // NUVIO_SUPABASE_* names so existing local.properties keep working after the
+    // upstream runtime-config refactor (switchdb revert).
+    supabaseUrl.set(
+        sharedRuntimeConfigValue("SUPABASE_URL").ifBlank { sharedRuntimeConfigValue("NUVIO_SUPABASE_URL") }
+    )
+    supabaseAnonKey.set(
+        sharedRuntimeConfigValue("SUPABASE_ANON_KEY").ifBlank { sharedRuntimeConfigValue("NUVIO_SUPABASE_ANON_KEY") }
+    )
+    supabaseFallbackUrl.set(
+        sharedRuntimeConfigValue("NUVIO_SUPABASE_FALLBACK_URL").ifBlank { sharedRuntimeConfigValue("SUPABASE_FALLBACK_URL") }
+    )
     debugBuild.set(sharedIsDebugBuild)
     traktClientId.set(sharedRuntimeConfigValue("TRAKT_CLIENT_ID"))
     traktClientSecret.set(sharedRuntimeConfigValue("TRAKT_CLIENT_SECRET"))
@@ -303,6 +294,9 @@ kotlin {
                 api(libs.supabase.postgrest)
                 api(libs.supabase.auth)
                 api(libs.supabase.functions)
+                // Upstream's SupabaseProvider installs the Realtime plugin (sync invalidation);
+                // realtime-kt ships the same target set as the other supabase-kt modules.
+                api(libs.supabase.realtime)
             }
         }
         // Default hierarchy template (Kotlin 2.x) creates `appleMain` as the parent of
@@ -318,8 +312,9 @@ kotlin {
             implementation(libs.ksoup)
         }
         androidMain.dependencies {
-            implementation(libs.ktor.client.android)
-            // SyncBackendStorage.android uses okhttp + IPv4FirstDns directly (matches composeApp).
+            // Upstream's catalog dropped ktor-client-android; okhttp is the Android engine now.
+            implementation(libs.ktor.client.okhttp)
+            // AddonPlatform.android uses okhttp + IPv4FirstDns directly (matches composeApp).
             implementation("com.squareup.okhttp3:okhttp:4.12.0")
         }
     }

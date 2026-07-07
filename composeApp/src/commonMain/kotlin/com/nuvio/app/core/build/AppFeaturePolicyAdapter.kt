@@ -17,7 +17,6 @@ object AppFeaturePolicyAdapter : FeaturePolicy {
     override val heroTrailerPlaybackSupported: Boolean get() = AppFeaturePolicy.heroTrailerPlaybackSupported
     override val inAppUpdaterEnabled: Boolean get() = AppFeaturePolicy.inAppUpdaterEnabled
     override val imdbRatingLogoEnabled: Boolean get() = AppFeaturePolicy.imdbRatingLogoEnabled
-    override val debugBackendSwitcherEnabled: Boolean get() = AppFeaturePolicy.debugBackendSwitcherEnabled
 
     /** Register this adapter as the process-wide feature policy. Idempotent. */
     fun install() {

@@ -7,6 +7,7 @@ import com.nuvio.app.core.auth.isAnonymous
 import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
+import com.nuvio.app.core.sync.putSyncOriginClientId
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlinx.coroutines.CoroutineScope
@@ -136,6 +137,7 @@ object ProfileRepository {
             val params = buildJsonObject {
                 put("p_client_max_profiles", MAX_PROFILES)
                 put("p_profiles", json.encodeToJsonElement(profiles))
+                putSyncOriginClientId()
             }
             SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
             pullProfiles()
@@ -226,7 +228,10 @@ object ProfileRepository {
             return
         }
         try {
-            val params = buildJsonObject { put("p_profile_id", profileIndex) }
+            val params = buildJsonObject {
+                put("p_profile_id", profileIndex)
+                putSyncOriginClientId()
+            }
             SupabaseProvider.client.postgrest.rpc("sync_delete_profile_data", params)
             pullProfiles()
         } catch (e: Throwable) {

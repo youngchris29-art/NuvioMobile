@@ -39,7 +39,7 @@ suspend fun prepareExternalPlayerLaunch(
 
     val subtitlesDeferred = if (forwardSubtitles && !preferredLanguage.equals(SubtitleLanguageOption.NONE, ignoreCase = true)) {
         async {
-            onOverlayMessage("Loading subtitles from addons...")
+            onOverlayMessage("Loading subtitles...")
 
             val subtitles = SubtitleForwarder.fetchForExternalPlayer(
                 type = type,
