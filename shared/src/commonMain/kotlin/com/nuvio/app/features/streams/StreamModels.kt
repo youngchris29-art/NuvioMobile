@@ -40,16 +40,26 @@ data class StreamItem(
         get() = description
 
     val directPlaybackUrl: String?
-        get() = url ?: externalUrl
+        get() = url?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
      * First URL that can be handed directly to a player or HTTP consumer.
-     * `magnet:` and `torrent://` URLs are filtered out, falling back to
-     * [externalUrl] when [url] carries one of those schemes.
+     * `magnet:` and `torrent://` URLs are filtered out. `externalUrl` is not
+     * a media URL in the Stremio SDK contract and must be opened externally.
      */
     val playableDirectUrl: String?
-        get() = listOfNotNull(url, externalUrl)
-            .firstOrNull { !it.isMagnetLink() && !it.isTorrentSchemeUrl() }
+        get() = directPlaybackUrl?.takeIf { !it.isMagnetLink() && !it.isTorrentSchemeUrl() }
+
+    val externalOpenUrl: String?
+        get() = externalUrl
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.isMagnetLink() && !it.isTorrentSchemeUrl() }
+
+    val shouldOpenExternally: Boolean
+        get() = url.isNullOrBlank() &&
+            infoHash.isNullOrBlank() &&
+            clientResolve == null &&
+            externalOpenUrl != null
 
     val torrentMagnetUri: String?
         get() = listOfNotNull(url, externalUrl)
@@ -165,6 +175,7 @@ private fun String?.extractBtihInfoHash(): String? {
 
 fun StreamItem.isSelectableForPlayback(debridEnabled: Boolean): Boolean =
     playableDirectUrl != null ||
+        shouldOpenExternally ||
         (FeaturePolicyProvider.policy.p2pEnabled && needsLocalDebridResolve && p2pInfoHash != null) ||
         (debridEnabled && isAddonDebridCandidate)
 

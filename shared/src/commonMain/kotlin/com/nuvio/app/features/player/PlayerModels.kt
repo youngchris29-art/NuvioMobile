@@ -2,11 +2,6 @@ package com.nuvio.app.features.player
 
 import kotlinx.serialization.Serializable
 
-@Serializable
-data class PlayerRoute(
-    val launchId: Long,
-)
-
 data class PlayerLaunch(
     val profileId: Int,
     val title: String,

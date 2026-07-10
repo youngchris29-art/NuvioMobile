@@ -13,6 +13,7 @@ import io.github.jan.supabase.exceptions.RestException
 import io.github.jan.supabase.functions.functions
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -134,19 +135,45 @@ object AuthRepository {
         _error.value = e.message ?: resourceString("Sign-in failed", StringKey.auth_sign_in_failed)
     }
 
-    suspend fun signOut(): Result<Unit> = runCatching {
+    suspend fun signOut(): Result<Unit> {
         _error.value = null
-        val wasAnonymous = AuthStorage.loadAnonymousUserId() != null
-        AuthStorage.clearAnonymousUserId()
+        val anonymousRead = runCatching { AuthStorage.loadAnonymousUserId() }
+        val wasAnonymous = anonymousRead.getOrNull() != null
+        val anonymousClear = runCatching { AuthStorage.clearAnonymousUserId() }
         validatedRemoteUserId = null
-        if (!wasAnonymous) {
-            SupabaseProvider.client.auth.signOut()
+        val remoteSignOut = if (wasAnonymous) {
+            Result.success(Unit)
+        } else {
+            runCatching { SupabaseProvider.client.auth.signOut() }
         }
+
+        val fallbackSessionClear = if (remoteSignOut.isFailure) {
+            runCatching { SupabaseProvider.client.auth.clearSession() }
+                .onFailure { error -> log.w(error) { "Failed to clear Supabase session after sign-out failure" } }
+        } else {
+            Result.success(Unit)
+        }
+        // Fork: route local cleanup through the AccountDataCleanerProvider seam
+        // (LocalAccountDataCleaner is composeApp-only).
+        val localCleanup = runCatching { AccountDataCleanerProvider.cleaner.wipe() }
         _state.value = AuthState.Unauthenticated
-        AccountDataCleanerProvider.cleaner.wipe()
-    }.onFailure { e ->
-        log.e(e) { "Sign-out failed" }
-        _error.value = e.message ?: resourceString("Sign-out failed", StringKey.auth_sign_out_failed)
+
+        val failure = anonymousRead.exceptionOrNull()
+            ?: anonymousClear.exceptionOrNull()
+            ?: remoteSignOut.exceptionOrNull()
+            ?: fallbackSessionClear.exceptionOrNull()
+            ?: localCleanup.exceptionOrNull()
+        val cancellation = remoteSignOut.exceptionOrNull() as? CancellationException
+            ?: fallbackSessionClear.exceptionOrNull() as? CancellationException
+        if (cancellation != null) throw cancellation
+        return if (failure == null) {
+            Result.success(Unit)
+        } else {
+            log.e(failure) { "Sign-out did not complete cleanly; all local cleanup steps were attempted" }
+            _error.value = failure.message
+                ?: resourceString("Sign out failed", StringKey.auth_sign_out_failed)
+            Result.failure(failure)
+        }
     }
 
     suspend fun signOutIfSessionInvalid(error: Throwable, source: String): Boolean {
@@ -166,8 +193,11 @@ object AuthRepository {
         }.onFailure { e ->
             log.w(e) { "Failed to clear Supabase session after remote invalidation; continuing local reset" }
         }
+        val localCleanup = runCatching { AccountDataCleanerProvider.cleaner.wipe() }
         _state.value = AuthState.Unauthenticated
-        AccountDataCleanerProvider.cleaner.wipe()
+        localCleanup.onFailure { error ->
+            log.e(error) { "Local account cleanup failed after remote session invalidation" }
+        }
     }
 
     suspend fun deleteAccount(): Result<Unit> = runCatching {
@@ -175,8 +205,11 @@ object AuthRepository {
         SupabaseProvider.client.functions.invoke("delete-account")
         SupabaseProvider.client.auth.signOut()
         validatedRemoteUserId = null
-        _state.value = AuthState.Unauthenticated
-        AccountDataCleanerProvider.cleaner.wipe()
+        try {
+            AccountDataCleanerProvider.cleaner.wipe()
+        } finally {
+            _state.value = AuthState.Unauthenticated
+        }
     }.onFailure { e ->
         log.e(e) { "Account deletion failed" }
         _error.value = e.message ?: resourceString("Account deletion failed", StringKey.auth_account_deletion_failed)

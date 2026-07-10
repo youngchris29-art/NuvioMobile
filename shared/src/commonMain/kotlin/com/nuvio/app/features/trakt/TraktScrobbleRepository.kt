@@ -237,7 +237,7 @@ object TraktScrobbleRepository {
         )
 
         if (action == "stop") {
-            runCatching { TraktProgressRepository.refreshNow() }
+            runCatching { TraktProgressRepository.invalidateAndRefresh() }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
                     log.w { "Failed to refresh Trakt progress after stop: ${error.message}" }

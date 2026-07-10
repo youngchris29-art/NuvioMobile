@@ -55,6 +55,7 @@ data class CollectionEditorUiState(
     val traktTrendingResults: List<TraktPublicListSearchResult> = emptyList(),
     val traktPopularResults: List<TraktPublicListSearchResult> = emptyList(),
     val traktSearchError: String? = null,
+    val sourcePickerCompletionGeneration: Long = 0L,
 )
 
 enum class TmdbBuilderMode {
@@ -709,6 +710,7 @@ object CollectionEditorRepository {
             tmdbCompanyResults = emptyList(),
             tmdbCollectionResults = emptyList(),
             tmdbSearchError = null,
+            sourcePickerCompletionGeneration = _uiState.value.sourcePickerCompletionGeneration + 1L,
         )
     }
 
@@ -817,6 +819,7 @@ object CollectionEditorRepository {
             traktTitleInput = "",
             traktSearchResults = emptyList(),
             traktSearchError = null,
+            sourcePickerCompletionGeneration = state.sourcePickerCompletionGeneration + 1L,
         )
     }
 
