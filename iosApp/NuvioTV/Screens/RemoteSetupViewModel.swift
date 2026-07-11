@@ -21,6 +21,14 @@ final class RemoteSetupViewModel: ObservableObject {
 
     var isRunning: Bool { serverURL != nil }
 
+    /// True between `start()` and the server's bind completion. Blocks re-entrant starts so a
+    /// Retry tap can't stack a second attempt (and a second set of watchers) on an unresolved
+    /// one (ME-002).
+    private var isStarting = false
+    /// Bumped by `start()` and `stop()`; a bind completion from a superseded attempt is ignored
+    /// so it can't republish the URL/QR after the user pressed Stop (HI-002/ME-002).
+    private var startAttempt = 0
+
     private let server = RemoteSetupServer()
     private var addonWatcher: FlowWatcher?
     private var rowWatcher: FlowWatcher?
@@ -39,12 +47,59 @@ final class RemoteSetupViewModel: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        guard !isRunning else { return }
+        guard !isRunning, !isStarting else { return }
+        isStarting = true
         startFailed = false
-        // Keep the TV awake while the user edits from another device — if tvOS idles into the
-        // screensaver the app suspends and the server dies mid-edit.
-        UIApplication.shared.isIdleTimerDisabled = true
+        startAttempt += 1
+        let attempt = startAttempt
 
+        server.onChangeProposed = { [weak self] change in
+            Task { @MainActor in
+                guard let self else { return }
+                self.pendingSummary = self.summarize(change.proposal)
+                self.pendingChange = change
+            }
+        }
+        server.start { [weak self] port in
+            Task { @MainActor in
+                guard let self, attempt == self.startAttempt else { return }
+                self.isStarting = false
+                guard let port, let ip = DeviceIpAddress.current(),
+                      let token = self.server.sessionToken else {
+                    // Bind failed or no LAN address: tear the half-started server down so a
+                    // Retry begins from a clean slate (ME-002).
+                    self.server.stop()
+                    self.startFailed = true
+                    return
+                }
+                // Only now that the listener is actually ready: keep the TV awake (if tvOS idles
+                // into the screensaver the app suspends and the server dies mid-edit) and start
+                // feeding state. On failure the idle timer was never touched (ME-002).
+                UIApplication.shared.isIdleTimerDisabled = true
+                self.installWatchers()
+                // The token is part of the URL — scanning the QR (or typing the short URL) is
+                // what authorizes the browser session (HI-001).
+                let url = "http://\(ip):\(port)/?t=\(token)"
+                self.serverURL = url
+                self.qrImage = Self.makeQrImage(from: url)
+            }
+        }
+    }
+
+    func stop() {
+        startAttempt += 1
+        isStarting = false
+        startFailed = false
+        UIApplication.shared.isIdleTimerDisabled = false
+        server.stop()
+        serverURL = nil
+        qrImage = nil
+        pendingChange = nil
+        cancelWatchers()
+    }
+
+    private func installWatchers() {
+        cancelWatchers()
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? AddonsUiState else { return }
             self.addons = state.addons
@@ -74,34 +129,9 @@ final class RemoteSetupViewModel: ObservableObject {
         TmdbSettingsRepository.shared.ensureLoaded()
         MdbListSettingsRepository.shared.ensureLoaded()
         StreamBadgeSettingsRepository.shared.ensureLoaded()
-
-        server.onChangeProposed = { [weak self] change in
-            Task { @MainActor in
-                guard let self else { return }
-                self.pendingSummary = self.summarize(change.proposal)
-                self.pendingChange = change
-            }
-        }
-        server.start { [weak self] port in
-            Task { @MainActor in
-                guard let self else { return }
-                if let port, let ip = DeviceIpAddress.current() {
-                    let url = "http://\(ip):\(port)"
-                    self.serverURL = url
-                    self.qrImage = Self.makeQrImage(from: url)
-                } else {
-                    self.startFailed = true
-                }
-            }
-        }
     }
 
-    func stop() {
-        UIApplication.shared.isIdleTimerDisabled = false
-        server.stop()
-        serverURL = nil
-        qrImage = nil
-        pendingChange = nil
+    private func cancelWatchers() {
         addonWatcher?.cancel()
         rowWatcher?.cancel()
         tmdbWatcher?.cancel()

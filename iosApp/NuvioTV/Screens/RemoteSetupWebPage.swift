@@ -149,6 +149,10 @@ let rows = [];     // {key, title, enabled, isCollection}
 const el = id => document.getElementById(id);
 const esc = s => (s || "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
+// Per-session pairing token from the QR/typed URL; the server requires it on every route.
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const AUTH = { "X-Setup-Token": TOKEN };
+
 function setStatus(text, cls) {
   const s = el("status");
   s.textContent = text;
@@ -157,7 +161,7 @@ function setStatus(text, cls) {
 
 async function load() {
   try {
-    const res = await fetch("/api/state");
+    const res = await fetch("/api/state", { headers: AUTH });
     const state = await res.json();
     addons = (state.addons || []).map(a => ({ ...a, isNew: false }));
     rows = state.rows || [];
@@ -263,7 +267,7 @@ async function apply() {
   try {
     const res = await fetch("/api/apply", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...AUTH },
       body: JSON.stringify(payload)
     });
     const { id, error } = await res.json();
@@ -278,7 +282,7 @@ async function apply() {
 async function poll(id, tries) {
   if (tries > 120) { setStatus("Timed out waiting for the TV.", "err"); el("apply").disabled = false; return; }
   try {
-    const res = await fetch("/api/status/" + id);
+    const res = await fetch("/api/status/" + id, { headers: AUTH });
     const { status } = await res.json();
     if (status === "confirmed") {
       setStatus("Applied on the TV ✓", "ok");
