@@ -1,6 +1,7 @@
+import Combine
+import ImageIO
 import SwiftUI
 import UIKit
-import Combine
 
 /// A lightweight, dependency-free replacement for SwiftUI's `AsyncImage`.
 ///
@@ -64,12 +65,18 @@ private final class CachedImageLoader: ObservableObject {
     private var currentURL: URL?
     private var task: Task<Void, Never>?
 
-    /// Process-wide in-memory decoded-image cache.
+    /// Process-wide in-memory decoded-image cache. Bounded by decoded bytes, not just count —
+    /// 400 unbounded images (a 4K RGBA backdrop is ~32 MB decoded) could exceed the Apple TV
+    /// process budget during long catalog browsing (HI-006).
     private static let memory: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 400
+        cache.totalCostLimit = 128 * 1024 * 1024   // decoded bytes
         return cache
     }()
+
+    /// Largest artwork payload we'll accept from the network (compressed bytes).
+    private static let maxDownloadBytes = 20 * 1024 * 1024
 
     /// Dedicated session with a large disk cache for artwork, isolated from data requests.
     private static let session: URLSession = {
@@ -98,11 +105,30 @@ private final class CachedImageLoader: ObservableObject {
 
         task = Task { [weak self] in
             do {
-                let (data, _) = try await Self.session.data(from: url)
-                guard let decoded = UIImage(data: data) else {
-                    throw URLError(.cannotDecodeContentData)
+                let (data, response) = try await Self.session.data(from: url)
+
+                // Reject unsuccessful responses, non-image payloads, and oversized downloads
+                // before spending any decode work on them (HI-006).
+                if let http = response as? HTTPURLResponse {
+                    guard (200...299).contains(http.statusCode) else {
+                        throw URLError(.badServerResponse)
+                    }
+                    if let mime = http.mimeType?.lowercased(), !mime.hasPrefix("image/") {
+                        throw URLError(.cannotDecodeContentData)
+                    }
                 }
-                Self.memory.setObject(decoded, forKey: url as NSURL)
+                guard data.count <= Self.maxDownloadBytes else {
+                    throw URLError(.dataLengthExceedsMaximum)
+                }
+
+                // Decode off the main actor, downsampled to at most the panel's own resolution —
+                // decoding artwork at source dimensions is what made the old cache balloon.
+                let decoded = try await Task.detached(priority: .userInitiated) {
+                    try Self.downsample(data: data)
+                }.value
+
+                let cost = decoded.cgImage.map { $0.bytesPerRow * $0.height } ?? 4 * 1024 * 1024
+                Self.memory.setObject(decoded, forKey: url as NSURL, cost: cost)
                 if Task.isCancelled { return }
                 guard let self, self.currentURL == url else { return }
                 withAnimation(.easeIn(duration: 0.25)) { self.image = decoded }
@@ -112,6 +138,33 @@ private final class CachedImageLoader: ObservableObject {
                 self.failed = true
             }
         }
+    }
+
+    /// ImageIO downsampling: decodes straight to a bounded thumbnail without ever materializing
+    /// the full-size bitmap. 1920 px covers a full-screen 1080p-point layer; posters and cards
+    /// render far smaller. Absurd source dimensions are rejected before any real decode work.
+    nonisolated private static func downsample(data: Data) throws -> UIImage {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = props[kCGImagePropertyPixelWidth] as? Double,
+           let height = props[kCGImagePropertyPixelHeight] as? Double {
+            guard width > 0, height > 0, width <= 12_000, height <= 12_000 else {
+                throw URLError(.cannotDecodeContentData)
+            }
+        }
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1920
+        ] as CFDictionary
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        return UIImage(cgImage: cgImage)
     }
 
     deinit { task?.cancel() }
