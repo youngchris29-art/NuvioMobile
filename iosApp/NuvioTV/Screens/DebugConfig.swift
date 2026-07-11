@@ -8,9 +8,13 @@ import Foundation
 /// Keep your real API key out of version control — don't commit this with the key filled in.
 enum DebugConfig {
     /// e.g. "https://torrentio.strem.fun/...|torbox=YOUR_KEY/manifest.json"
-    static let manifestURL = "https://torrentio.strem.fun/qualityfilter=unknown,cam,other,scr,480p,720p|debridoptions=nodownloadlinks|torbox=baf5c753-a8ee-4960-9266-e324045e62eb/manifest.json"
+    static let manifestURL = ""
 
     static var hasManifestURL: Bool {
-        !manifestURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        #if DEBUG
+        return !manifestURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        #else
+        return false
+        #endif
     }
 }

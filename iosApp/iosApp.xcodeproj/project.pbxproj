@@ -797,8 +797,8 @@
 				DEVELOPMENT_TEAM = WNYA9B575G;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
-				"FRAMEWORK_SEARCH_PATHS[sdk=appletvos*]" = "$(SRCROOT)/../shared/build/bin/tvosArm64/debugFramework";
-				"FRAMEWORK_SEARCH_PATHS[sdk=appletvsimulator*]" = "$(SRCROOT)/../shared/build/bin/tvosSimulatorArm64/debugFramework";
+				"FRAMEWORK_SEARCH_PATHS[sdk=appletvos*]" = "$(SRCROOT)/../shared/build/bin/tvosArm64/releaseFramework";
+				"FRAMEWORK_SEARCH_PATHS[sdk=appletvsimulator*]" = "$(SRCROOT)/../shared/build/bin/tvosSimulatorArm64/releaseFramework";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NuvioTV/Info.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

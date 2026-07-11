@@ -52,6 +52,7 @@ struct AddonsView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(model.isInstalling)
 
+                #if DEBUG
                 if DebugConfig.hasManifestURL {
                     Button {
                         model.install(DebugConfig.manifestURL)
@@ -62,6 +63,7 @@ struct AddonsView: View {
                     .buttonStyle(.bordered)
                     .disabled(model.isInstalling)
                 }
+                #endif
 
                 if model.isInstalling { ProgressView() }
                 if let status = model.statusMessage {

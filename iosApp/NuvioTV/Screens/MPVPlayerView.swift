@@ -177,6 +177,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Trakt scrobbling (no-ops while Trakt is disconnected — the shared repo checks auth).
     private var traktScrobbleItem: TraktScrobbleItem?
     private var traktScrobbleRequested = false
+    /// Set once the player is going away. `buildItem` completes asynchronously — if the user backs
+    /// out before it returns, the late completion must not start a scrobble that nothing will ever
+    /// stop (ME-004).
+    private var traktSessionClosed = false
     private var skipSegments: [SkipSegment] = []
     /// Last raw eof-reached value (edge detection for the post-play cover).
     private var lastEofFlag = false
@@ -560,7 +564,7 @@ final class MPVTVPlayerViewController: UIViewController {
         ) { [weak self] item, _ in
             // Suspend completions can land off-main; hop before touching controller state.
             DispatchQueue.main.async {
-                guard let self, let item else { return }
+                guard let self, let item, !self.traktSessionClosed else { return }
                 self.traktScrobbleItem = item
                 TraktScrobbleRepository.shared.scrobbleStart(
                     profileId: ActiveProfileProvider.shared.activeProfileId,
@@ -572,6 +576,7 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func stopTraktScrobble() {
+        traktSessionClosed = true
         guard let item = traktScrobbleItem else { return }
         traktScrobbleItem = nil
         TraktScrobbleRepository.shared.scrobbleStop(
@@ -970,6 +975,9 @@ final class MPVTVPlayerViewController: UIViewController {
         seekTimer?.invalidate()
         subtitleWatcher?.cancel()
         playerSettingsWatcher?.cancel()
+        // Idempotent final scrobble stop — normally a no-op after viewDidDisappear, but covers
+        // teardown paths where the disappearance callback never ran (ME-004).
+        stopTraktScrobble()
         SubtitleRepository.shared.clear()
         destroyPlayer()
     }

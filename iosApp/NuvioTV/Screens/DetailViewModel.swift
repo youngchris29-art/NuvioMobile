@@ -29,6 +29,13 @@ final class DetailViewModel: ObservableObject {
     /// Trailer currently resolving (spinner on its row card).
     @Published private(set) var resolvingTrailerId: String?
 
+    /// Ownership of the shared (unkeyed) `MetaDetailsRepository`. Nested pushes (Detail → More Like
+    /// This → Detail) overlap start/stop: the destination may `load()` before the source's
+    /// `onDisappear` fires, and an unconditional `clear()` there wipes the destination's in-flight
+    /// request (HI-005). Only the most recent screen to call `start()` owns the repo and may clear it.
+    private static var currentOwner: UUID?
+    private let ownerToken = UUID()
+
     private var detailWatcher: FlowWatcher?
     private var watchedWatcher: FlowWatcher?
     private var libraryWatcher: FlowWatcher?
@@ -47,11 +54,18 @@ final class DetailViewModel: ObservableObject {
 
     func start() {
         guard detailWatcher == nil else { return }
+        Self.currentOwner = ownerToken
 
         detailWatcher = FlowWatcherKt.watch(MetaDetailsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MetaDetailsUiState else { return }
             // The shared repo holds one in-flight detail at a time — only adopt emissions for ours.
-            if let m = state.meta, m.type != self.type || m.id != self.id { return }
+            // Emissions carrying a meta are matched by id; loading/error emissions carry no id, so
+            // only the current owner may adopt them.
+            if let m = state.meta {
+                if m.type != self.type || m.id != self.id { return }
+            } else if Self.currentOwner != self.ownerToken {
+                return
+            }
             self.isLoading = state.isLoading
             self.meta = state.meta
             self.errorMessage = state.errorMessage
@@ -85,7 +99,12 @@ final class DetailViewModel: ObservableObject {
         libraryWatcher?.cancel(); libraryWatcher = nil
         trailerVideoURL = nil
         didRequestTrailer = false
-        MetaDetailsRepository.shared.clear()
+        // Only the current owner clears the shared repo — a source screen disappearing mid-push
+        // must not cancel the destination's request (HI-005).
+        if Self.currentOwner == ownerToken {
+            Self.currentOwner = nil
+            MetaDetailsRepository.shared.clear()
+        }
     }
 
     // MARK: - Hero trailer

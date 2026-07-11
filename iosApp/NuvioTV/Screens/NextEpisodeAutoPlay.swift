@@ -41,6 +41,10 @@ final class NextEpisodeEngine: ObservableObject {
     @Published private(set) var sources: [StreamItem] = []
     @Published private(set) var sourcesLoading = false
     private var sourcesWatcher: FlowWatcher?
+    /// Identity of the current `loadSources()` request. `episodeStreamsState` is a shared StateFlow
+    /// that replays its last value on subscribe — without this, a new subscription can adopt the
+    /// previous episode's (or the autoplay search's) streams as if they were ours (ME-005).
+    private var sourceLoadGeneration = 0
 
     private let context: PlaybackContext
     private let onPlayNext: (PlaybackContext) -> Void
@@ -131,6 +135,25 @@ final class NextEpisodeEngine: ObservableObject {
         sourcesLoading = true
         sources = []
 
+        // Reset the shared flow *before* subscribing so the StateFlow replay is the cleared state,
+        // not a previous request's results; then subscribe *before* triggering the load so no
+        // emission is missed. Late emissions from a superseded request are dropped by generation.
+        sourcesWatcher?.cancel()
+        PlayerStreamsRepository.shared.clearEpisodeStreams()
+        sourceLoadGeneration += 1
+        let generation = sourceLoadGeneration
+
+        // The first emission may be the cleared-state replay (empty, not loading) — don't let it
+        // end the loading phase before the load has actually produced anything.
+        var sawActivity = false
+        sourcesWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
+            guard let self, generation == self.sourceLoadGeneration,
+                  let state = emitted as? StreamsUiState else { return }
+            self.sources = self.allStreams(state.groups)
+            if state.isAnyLoading || !state.groups.isEmpty { sawActivity = true }
+            if sawActivity, !state.isAnyLoading { self.sourcesLoading = false }
+        }
+
         PlayerStreamsRepository.shared.loadEpisodeStreams(
             type: context.contentType,
             videoId: context.videoId,
@@ -138,15 +161,10 @@ final class NextEpisodeEngine: ObservableObject {
             episode: context.episode.map { KotlinInt(int: Int32($0)) },
             forceRefresh: false
         )
-        sourcesWatcher?.cancel()
-        sourcesWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
-            guard let self, let state = emitted as? StreamsUiState else { return }
-            self.sources = self.allStreams(state.groups)
-            if !state.isAnyLoading { self.sourcesLoading = false }
-        }
     }
 
     private func cancelSourceLoad() {
+        sourceLoadGeneration += 1
         sourcesWatcher?.cancel()
         sourcesWatcher = nil
         sources = []
