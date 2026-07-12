@@ -1,4 +1,4 @@
 [submodule "MPVKit"]
 	path = MPVKit
 	url = https://github.com/youngchris29-art/MPVKit.git
-	branch = download-xcframeworks
+	branch = nuvio2-tvos-fix
