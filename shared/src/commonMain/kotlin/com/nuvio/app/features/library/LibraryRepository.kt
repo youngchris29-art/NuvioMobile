@@ -164,7 +164,7 @@ object LibraryRepository {
         _uiState.value = LibraryUiState()
     }
 
-    internal fun runAccountStorageWipe(wipeStorage: () -> Unit) {
+    fun runAccountStorageWipe(wipeStorage: () -> Unit) {
         synchronized(loadLock) {
             val transition = localState.reset()
             transition.detachedPushJob?.cancel()
