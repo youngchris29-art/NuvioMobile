@@ -13,11 +13,14 @@ import nuvio.composeapp.generated.resources.lang_italian
 import nuvio.composeapp.generated.resources.lang_polish
 import nuvio.composeapp.generated.resources.lang_portuguese_brazil
 import nuvio.composeapp.generated.resources.lang_portuguese_portugal
+import nuvio.composeapp.generated.resources.lang_romanian
 import nuvio.composeapp.generated.resources.lang_slovak
 import nuvio.composeapp.generated.resources.lang_spanish
 import nuvio.composeapp.generated.resources.lang_turkish
 import nuvio.composeapp.generated.resources.lang_norwegian
+import nuvio.composeapp.generated.resources.lang_dutch
 import nuvio.composeapp.generated.resources.lang_japanese
+import nuvio.composeapp.generated.resources.lang_vietnamese
 import nuvio.composeapp.generated.resources.settings_appearance_app_language_device
 import org.jetbrains.compose.resources.StringResource
 
@@ -36,9 +39,12 @@ val AppLanguage.labelRes: StringResource
         AppLanguage.POLISH -> Res.string.lang_polish
         AppLanguage.PORTUGUESE_BRAZIL -> Res.string.lang_portuguese_brazil
         AppLanguage.PORTUGUESE -> Res.string.lang_portuguese_portugal
+        AppLanguage.ROMANIAN -> Res.string.lang_romanian
         AppLanguage.SLOVAK -> Res.string.lang_slovak
         AppLanguage.SPANISH -> Res.string.lang_spanish
         AppLanguage.TURKISH -> Res.string.lang_turkish
         AppLanguage.NORWEGIAN -> Res.string.lang_norwegian
+        AppLanguage.DUTCH -> Res.string.lang_dutch
         AppLanguage.JAPANESE -> Res.string.lang_japanese
+        AppLanguage.VIETNAMESE -> Res.string.lang_vietnamese
     }

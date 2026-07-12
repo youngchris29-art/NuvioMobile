@@ -16,11 +16,14 @@ enum class AppLanguage(
     POLISH("pl"),
     PORTUGUESE_BRAZIL("pt-BR"),
     PORTUGUESE("pt"),
+    ROMANIAN("ro"),
     SLOVAK("sk"),
     SPANISH("es"),
     TURKISH("tr"),
     NORWEGIAN("nb"),
+    DUTCH("nl"),
     JAPANESE("ja"),
+    VIETNAMESE("vi"),
     ;
 
     companion object {
