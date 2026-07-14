@@ -791,7 +791,9 @@ final class MPVTVPlayerViewController: UIViewController {
             durationMs: Int64(duration * 1000),
             positionMs: Int64(position * 1000),
             bufferedPositionMs: Int64(position * 1000),
-            playbackSpeed: Float(state.playbackSpeed)
+            playbackSpeed: Float(state.playbackSpeed),
+            videoWidth: 0,
+            videoHeight: 0
         )
         if flush {
             WatchProgressRepository.shared.flushPlaybackProgress(session: session, snapshot: snapshot, syncRemote: false)
