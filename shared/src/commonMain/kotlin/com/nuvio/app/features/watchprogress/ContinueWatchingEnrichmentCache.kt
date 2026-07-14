@@ -53,7 +53,17 @@ data class CachedInProgressItem(
     val duration: Long,
     val lastWatched: Long,
     val progressPercent: Float? = null,
+    val progressKey: String? = null,
 )
+
+// Fork: public (upstream: internal) — composeApp HomeScreen consumes this cross-module.
+fun CachedInProgressItem.resolvedProgressKey(): String =
+    progressKey?.takeIf(String::isNotBlank)
+        ?: buildWatchProgressKey(
+            contentId = contentId,
+            seasonNumber = season,
+            episodeNumber = episode,
+        )
 
 @Serializable
 private data class CachedEnrichmentPayload(

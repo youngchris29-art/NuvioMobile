@@ -17,6 +17,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -94,6 +95,7 @@ object TraktProgressRepository {
     private var refreshRequestId: Long = 0L
     private val refreshJobMutex = Mutex()
     private var inFlightRefresh: Deferred<Unit>? = null
+    private var metadataHydrationJob: Job? = null
     private var remoteEntriesSnapshot: List<WatchProgressEntry> = emptyList()
     private var refreshIntervalMs = REFRESH_BASE_INTERVAL_MS
     private var lastKnownMoviesWatchedAt: String? = null
@@ -266,11 +268,13 @@ object TraktProgressRepository {
 
     private suspend fun hasActivityChanged(headers: Map<String, String>): Boolean {
         val activities = runCatching {
+            val endpoint = "$BASE_URL/sync/last_activities"
+            val payload = httpGetTextWithHeaders(
+                url = endpoint,
+                headers = headers,
+            )
             json.decodeFromString<TraktLastActivitiesResponse>(
-                httpGetTextWithHeaders(
-                    url = "$BASE_URL/sync/last_activities",
-                    headers = headers,
-                ),
+                payload,
             )
         }.onFailure { error ->
             if (error is CancellationException) throw error
@@ -419,7 +423,8 @@ object TraktProgressRepository {
         requestId: Long,
         entries: List<WatchProgressEntry>,
     ) {
-        scope.launch {
+        metadataHydrationJob?.cancel()
+        metadataHydrationJob = scope.launch {
             runCatching {
                 hydrateEntriesFromAddonMeta(
                     requestId = requestId,
@@ -438,8 +443,9 @@ object TraktProgressRepository {
         errorMessage: String? = _uiState.value.errorMessage,
         hasLoadedRemoteProgress: Boolean = _uiState.value.hasLoadedRemoteProgress,
     ) {
+        val publishedEntries = mergeWithActiveOptimistic(entries)
         _uiState.value = TraktProgressUiState(
-            entries = mergeWithActiveOptimistic(entries),
+            entries = publishedEntries,
             isLoading = isLoading,
             errorMessage = errorMessage,
             hasLoadedRemoteProgress = hasLoadedRemoteProgress,
@@ -554,14 +560,13 @@ object TraktProgressRepository {
         if (!TraktAuthRepository.isAuthenticated.value) return
         val normalizedContentId = contentId.trim()
         if (normalizedContentId.isBlank()) return
+        if (!hasCompleteTraktEpisodeContext(seasonNumber, episodeNumber)) return
         val shouldRemove: (WatchProgressEntry) -> Boolean = { entry ->
-            if (entry.parentMetaId != normalizedContentId) {
-                false
-            } else if (seasonNumber != null && episodeNumber != null) {
-                entry.seasonNumber == seasonNumber && entry.episodeNumber == episodeNumber
-            } else {
-                true
-            }
+            entry.matchesTraktRemovalContext(
+                contentId = normalizedContentId,
+                seasonNumber = seasonNumber,
+                episodeNumber = episodeNumber,
+            )
         }
         removeOptimisticProgress(shouldRemove)
         remoteEntriesSnapshot = remoteEntriesSnapshot.filterNot(shouldRemove)
@@ -582,6 +587,7 @@ object TraktProgressRepository {
     ) {
         val normalizedContentId = contentId.trim()
         if (normalizedContentId.isBlank()) return
+        if (!hasCompleteTraktEpisodeContext(seasonNumber, episodeNumber)) return
         val headers = TraktAuthRepository.authorizedHeaders() ?: return
 
         applyOptimisticRemoval(
@@ -659,9 +665,10 @@ object TraktProgressRepository {
         var page = 1
         val limit = 1000
         while (true) {
+            val endpoint = "$BASE_URL/users/hidden/dropped?type=show&page=$page&limit=$limit"
             val payload = runCatching {
                 httpGetTextWithHeaders(
-                    url = "$BASE_URL/users/hidden/dropped?type=show&page=$page&limit=$limit",
+                    url = endpoint,
                     headers = headers,
                 )
             }.getOrNull() ?: break
@@ -684,16 +691,18 @@ object TraktProgressRepository {
     }
 
     private suspend fun fetchPlaybackEntries(headers: Map<String, String>): List<WatchProgressEntry> = withContext(Dispatchers.Default) {
+        val moviesEndpoint = "$BASE_URL/sync/playback/movies"
+        val episodesEndpoint = "$BASE_URL/sync/playback/episodes"
         val payloads = coroutineScope {
             val moviesPayload = async {
                 httpGetTextWithHeaders(
-                    url = "$BASE_URL/sync/playback/movies",
+                    url = moviesEndpoint,
                     headers = headers,
                 )
             }
             val episodesPayload = async {
                 httpGetTextWithHeaders(
-                    url = "$BASE_URL/sync/playback/episodes",
+                    url = episodesEndpoint,
                     headers = headers,
                 )
             }
@@ -789,10 +798,11 @@ object TraktProgressRepository {
             cutoffMs?.let { append("&start_at=").append(epochMsToTraktIso(it)) }
         }
         val payload = httpGetTextWithHeaders(url = url, headers = headers)
-        return json.decodeFromString<List<TraktHistoryMovieItem>>(payload)
+        val mapped = json.decodeFromString<List<TraktHistoryMovieItem>>(payload)
             .mapIndexedNotNull { index, item -> mapHistoryMovie(item = item, fallbackIndex = index) }
             .filter { entry -> cutoffMs == null || entry.lastUpdatedEpochMs >= cutoffMs }
             .distinctBy { entry -> entry.videoId }
+        return mapped
     }
 
     private suspend fun fetchWatchedShowSeedEntries(
@@ -1157,6 +1167,8 @@ object TraktProgressRepository {
         refreshRequestId += 1L
         inFlightRefresh?.cancel()
         inFlightRefresh = null
+        metadataHydrationJob?.cancel()
+        metadataHydrationJob = null
     }
 
     private fun isLatestRefreshRequest(requestId: Long): Boolean = refreshRequestId == requestId
@@ -1178,7 +1190,10 @@ object TraktProgressRepository {
             launch {
                 val (metaType, metaId) = key
                 val meta = semaphore.withPermit {
-                    fetchAddonMetaForHydration(metaType = metaType, metaId = metaId)
+                    fetchAddonMetaForHydration(
+                        metaType = metaType,
+                        metaId = metaId,
+                    )
                 }
                 results.send(
                     TraktMetadataHydrationResult(
@@ -1191,9 +1206,14 @@ object TraktProgressRepository {
 
         repeat(entriesByContent.size) {
             val result = results.receive()
-            if (!isLatestRefreshRequest(requestId)) return@coroutineScope
+            if (!isLatestRefreshRequest(requestId)) {
+                throw CancellationException("Superseded Trakt metadata hydration request $requestId")
+            }
             val meta = result.meta ?: return@repeat
-            val hydrated = hydrateEntriesWithAddonMeta(entries = result.entries, meta = meta)
+            val hydrated = hydrateEntriesWithAddonMeta(
+                entries = result.entries,
+                meta = meta,
+            )
             if (hydrated.isEmpty()) return@repeat
 
             val hydratedByVideoId = hydrated.associateBy { entry -> entry.videoId }
@@ -1298,16 +1318,16 @@ object TraktProgressRepository {
 
             entry.copy(
                 title = entry.title.takeIf { it.isNotBlank() } ?: meta.name,
-                logo = entry.logo ?: meta.logo,
-                poster = entry.poster ?: meta.poster,
-                background = entry.background ?: meta.background,
+                logo = entry.logo?.takeIf(String::isNotBlank) ?: meta.logo,
+                poster = entry.poster?.takeIf(String::isNotBlank) ?: meta.poster,
+                background = entry.background?.takeIf(String::isNotBlank) ?: meta.background,
                 seasonNumber = if (entry.isCompleted) entry.seasonNumber else (resolvedSeason ?: entry.seasonNumber),
                 episodeNumber = if (entry.isCompleted) entry.episodeNumber else (resolvedEpisode ?: entry.episodeNumber),
-                episodeTitle = entry.episodeTitle ?: episode?.title,
-                episodeThumbnail = entry.episodeThumbnail ?: episode?.thumbnail,
-                pauseDescription = entry.pauseDescription
-                    ?: episode?.overview
-                    ?: meta.description,
+                episodeTitle = entry.episodeTitle?.takeIf(String::isNotBlank) ?: episode?.title,
+                episodeThumbnail = entry.episodeThumbnail?.takeIf(String::isNotBlank) ?: episode?.thumbnail,
+                pauseDescription = entry.pauseDescription?.takeIf(String::isNotBlank)
+                    ?: episode?.overview?.takeIf(String::isNotBlank)
+                    ?: meta.description?.takeIf(String::isNotBlank),
             )
         }
 
@@ -1561,6 +1581,26 @@ object TraktProgressRepository {
             ?.let { return it }
         return TraktPlatformClock.nowEpochMs() - (fallbackIndex * 1_000L)
     }
+}
+
+// Fork: public (upstream: internal) — composeApp TraktProgressRemovalTest consumes these cross-module.
+fun hasCompleteTraktEpisodeContext(
+    seasonNumber: Int?,
+    episodeNumber: Int?,
+): Boolean = (seasonNumber == null) == (episodeNumber == null)
+
+fun WatchProgressEntry.matchesTraktRemovalContext(
+    contentId: String,
+    seasonNumber: Int? = null,
+    episodeNumber: Int? = null,
+): Boolean {
+    val normalizedContentId = contentId.trim()
+    if (normalizedContentId.isBlank()) return false
+    if (!hasCompleteTraktEpisodeContext(seasonNumber, episodeNumber)) return false
+    if (parentMetaId != normalizedContentId) return false
+    return seasonNumber == null || (
+        this.seasonNumber == seasonNumber && this.episodeNumber == episodeNumber
+    )
 }
 
 @Serializable

@@ -1,6 +1,7 @@
 package com.nuvio.app.features.profiles
 
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.core.ui.CardDepthStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.collection.CollectionMobileSettingsRepository
@@ -44,6 +45,7 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
         }
         ThemeSettingsRepository.onProfileChanged()
         PosterCardStyleRepository.onProfileChanged()
+        CardDepthStyleRepository.onProfileChanged()
         PlayerSettingsRepository.onProfileChanged()
         StreamBadgeSettingsRepository.onProfileChanged()
         P2pSettingsRepository.onProfileChanged()
