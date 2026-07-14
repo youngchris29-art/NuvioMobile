@@ -253,6 +253,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 94AEB9EE2FF2294D007C43F2 /* Build configuration list for PBXNativeTarget "NuvioTV" */;
 			buildPhases = (
+				94AEB9F12FF2294B007C43F2 /* Compile Kotlin Framework */,
 				94AEB9E02FF2294B007C43F2 /* Sources */,
 				94AEB9E12FF2294B007C43F2 /* Frameworks */,
 				94AEB9E22FF2294B007C43F2 /* Resources */,
@@ -399,6 +400,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "if [ \"YES\" = \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" ]; then\n  echo \"Skipping Gradle build task invocation due to OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED environment variable set to \\\"YES\\\"\"\n  exit 0\nfi\nif [ -z \"$JAVA_HOME\" ] && [ -x \"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java\" ]; then\n  export JAVA_HOME=\"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home\"\nfi\nif [ -n \"$JAVA_HOME\" ]; then\n  export PATH=\"$JAVA_HOME/bin:/opt/homebrew/bin:$PATH\"\nelse\n  export PATH=\"/opt/homebrew/bin:$PATH\"\nfi\nif [ -z \"$GRADLE_OPTS\" ]; then\n  export GRADLE_OPTS=\"-Xmx12288M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=2048m\"\nfi\nif [ -z \"$KOTLIN_DAEMON_JVMARGS\" ]; then\n  export KOTLIN_DAEMON_JVMARGS=\"-Xmx8192M\"\nfi\ncd \"$SRCROOT/..\"\n./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\n";
+		};
+		94AEB9F12FF2294B007C43F2 /* Compile Kotlin Framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Compile Kotlin Framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"YES\" = \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" ]; then\n  echo \"Skipping Gradle build task invocation due to OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED environment variable set to \\\"YES\\\"\"\n  exit 0\nfi\nif [ -z \"$JAVA_HOME\" ] && [ -x \"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java\" ]; then\n  export JAVA_HOME=\"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home\"\nfi\nif [ -n \"$JAVA_HOME\" ]; then\n  export PATH=\"$JAVA_HOME/bin:/opt/homebrew/bin:$PATH\"\nelse\n  export PATH=\"/opt/homebrew/bin:$PATH\"\nfi\nif [ -z \"$GRADLE_OPTS\" ]; then\n  export GRADLE_OPTS=\"-Xmx12288M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=2048m\"\nfi\nif [ -z \"$KOTLIN_DAEMON_JVMARGS\" ]; then\n  export KOTLIN_DAEMON_JVMARGS=\"-Xmx8192M\"\nfi\ncase \"$CONFIGURATION\" in\n  Release*|release*) KOTLIN_FRAMEWORK_CONFIG=\"Release\" ;;\n  *) KOTLIN_FRAMEWORK_CONFIG=\"Debug\" ;;\nesac\ncase \"$SDK_NAME\" in\n  appletvos*) KONAN_TARGET=\"TvosArm64\" ;;\n  appletvsimulator*) KONAN_TARGET=\"TvosSimulatorArm64\" ;;\n  *) echo \"error: NuvioTV shared-framework build: unsupported SDK '$SDK_NAME'\"; exit 1 ;;\nesac\ncd \"$SRCROOT/..\"\n./gradlew \":shared:link${KOTLIN_FRAMEWORK_CONFIG}Framework${KONAN_TARGET}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -754,7 +774,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNYA9B575G;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"FRAMEWORK_SEARCH_PATHS[sdk=appletvos*]" = "$(SRCROOT)/../shared/build/bin/tvosArm64/debugFramework";
 				"FRAMEWORK_SEARCH_PATHS[sdk=appletvsimulator*]" = "$(SRCROOT)/../shared/build/bin/tvosSimulatorArm64/debugFramework";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -796,7 +816,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNYA9B575G;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"FRAMEWORK_SEARCH_PATHS[sdk=appletvos*]" = "$(SRCROOT)/../shared/build/bin/tvosArm64/releaseFramework";
 				"FRAMEWORK_SEARCH_PATHS[sdk=appletvsimulator*]" = "$(SRCROOT)/../shared/build/bin/tvosSimulatorArm64/releaseFramework";
 				GENERATE_INFOPLIST_FILE = YES;
