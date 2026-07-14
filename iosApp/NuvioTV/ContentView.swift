@@ -9,6 +9,7 @@ struct ContentView: View {
     @StateObject private var auth = AuthViewModel()
     @StateObject private var profiles = ProfilesViewModel()
     @StateObject private var posterStyle = PosterStyleModel()
+    @StateObject private var cardDepth = CardDepthStyleModel()
     @StateObject private var appTheme = AppThemeModel()
     @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
@@ -44,12 +45,14 @@ struct ContentView: View {
             }
         }
         .environment(\.posterStyle, posterStyle.style)
+        .environment(\.cardDepthStyle, cardDepth.style)
         // Theme change → rebuild the tree so every static Theme.Palette.accent read re-evaluates.
         // (Navigation/focus state resets on change — acceptable; it only happens in Settings.)
         .id(appTheme.themeName)
         .onAppear {
             auth.start()
             posterStyle.start()
+            cardDepth.start()
             appTheme.start()
         }
         .onChange(of: auth.gate) { _, newGate in

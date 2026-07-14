@@ -129,7 +129,7 @@ struct CatalogRowView: View {
     @ViewBuilder
     private func card(for item: MetaPreview) -> some View {
         if posterStyle.landscapeCatalogRows {
-            LandscapeCard(title: item.name, imageURL: landscapeImageURL(item))
+            LandscapeCard(title: item.name, imageURL: landscapeImageURL(item), depthSurface: .posters)
         } else {
             PosterCardView(item: item)
         }

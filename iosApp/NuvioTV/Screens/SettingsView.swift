@@ -157,6 +157,18 @@ struct SettingsView: View {
                             )
                         }
 
+                        section("Card Depth", .appearance) {
+                            CardDepthControls(
+                                style: model.cardDepth,
+                                onEnabled: { model.setCardDepthEnabled($0) },
+                                onEdge: { model.setCardDepthEdge($0) },
+                                onSheen: { model.setCardDepthSheen($0) },
+                                onCoverage: { model.setCardDepthCoverage($0) },
+                                onSurface: { model.setCardDepthSurface($0, $1) },
+                                onReset: { model.resetCardDepth() }
+                            )
+                        }
+
                         section("Stream Badges", .appearance) {
                             streamBadgesSection
                         }
@@ -1401,6 +1413,108 @@ private struct PosterStyleControls: View {
                     .padding(.vertical, Theme.Spacing.xxs + 2)
             }
             .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Text(title)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            HStack(spacing: Theme.Spacing.md) { content() }
+        }
+    }
+
+    private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(Theme.Font.meta)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xxs + 2)
+        }
+        .buttonStyle(.bordered)
+        .tint(selected ? Theme.Palette.accent : nil)
+    }
+}
+
+/// Card-depth controls: a master toggle, then edge/sheen/coverage strength presets and per-surface
+/// enables (progressively revealed once on), plus a reset. Mirrors composeApp's card-depth section;
+/// the effect itself is rendered by `View.nuvioCardDepth`. Preset values match the Compose page.
+private struct CardDepthControls: View {
+    let style: CardDepthStyle
+    let onEnabled: (Bool) -> Void
+    let onEdge: (Int32) -> Void
+    let onSheen: (Int32) -> Void
+    let onCoverage: (Int32) -> Void
+    let onSurface: (CardDepthSurface, Bool) -> Void
+    let onReset: () -> Void
+
+    private let edgeOptions: [(name: String, value: Int32)] = [("Subtle", 28), ("Balanced", 42), ("Bold", 56)]
+    private let sheenOptions: [(name: String, value: Int32)] = [("Off", 0), ("Soft", 10), ("Bright", 16)]
+    private let coverageOptions: [(name: String, value: Int32)] = [("Top", 0), ("Half", 50), ("Full", 100)]
+    private let surfaces: [(name: String, subtitle: String, surface: CardDepthSurface)] = [
+        ("Posters", "Catalog & search posters", .posters),
+        ("Continue Watching", "Home Continue Watching cards", .continueWatching),
+        ("Episodes", "Episode thumbnails", .episodeCards),
+        ("Cast", "Cast avatars", .cast),
+        ("Trailers", "Trailer rows", .trailers),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            Text("Add a raised edge highlight and a glossy top sheen to cards for a little more depth.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+
+            SettingsToggleRow(title: "Card Depth", subtitle: "Enable the edge highlight and top sheen", isOn: style.enabled) {
+                onEnabled(!style.enabled)
+            }
+
+            if style.enabled {
+                controlRow("Edge") {
+                    ForEach(edgeOptions, id: \.value) { opt in
+                        chip(opt.name, selected: Int32(style.edgeStrength) == opt.value) { onEdge(opt.value) }
+                    }
+                }
+                controlRow("Sheen") {
+                    ForEach(sheenOptions, id: \.value) { opt in
+                        chip(opt.name, selected: Int32(style.sheenStrength) == opt.value) { onSheen(opt.value) }
+                    }
+                }
+                controlRow("Edge Coverage") {
+                    ForEach(coverageOptions, id: \.value) { opt in
+                        chip(opt.name, selected: Int32(style.edgeCoverage) == opt.value) { onCoverage(opt.value) }
+                    }
+                }
+
+                Text("Apply To")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                ForEach(surfaces, id: \.name) { entry in
+                    SettingsToggleRow(title: entry.name, subtitle: entry.subtitle, isOn: isOn(entry.surface)) {
+                        onSurface(entry.surface, !isOn(entry.surface))
+                    }
+                }
+            }
+
+            Button(role: .destructive, action: onReset) {
+                Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private func isOn(_ surface: CardDepthSurface) -> Bool {
+        switch surface {
+        case .posters: return style.postersEnabled
+        case .continueWatching: return style.continueWatchingEnabled
+        case .episodeCards: return style.episodeCardsEnabled
+        case .cast: return style.castEnabled
+        case .trailers: return style.trailersEnabled
         }
     }
 

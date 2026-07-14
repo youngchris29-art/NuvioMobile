@@ -6,6 +6,7 @@ import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.sync.ProfileSettingsSync
 import com.nuvio.app.core.sync.SyncPlatformProvider
 import com.nuvio.app.core.sync.TV_SYNC_PLATFORM
+import com.nuvio.app.core.ui.CardDepthStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.features.addons.AddonProfileContext
 import com.nuvio.app.features.addons.AddonProfileProvider
@@ -246,6 +247,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         CollectionRepository.clearLocalState()
         ThemeSettingsRepository.clearLocalState()
         PosterCardStyleRepository.clearLocalState()
+        CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
         PlayerSettingsRepository.clearLocalState()
@@ -317,6 +319,9 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         SearchHistoryRepository.onProfileChanged()
         // Theme is profile-scoped (ProfileScopedKey) — reload it for the new profile.
         ThemeSettingsRepository.onProfileChanged()
+        // Card-depth poster styling is profile-scoped too; reload so a local (guest) profile switch
+        // doesn't leave the previous profile's setting live on the tvOS card surfaces.
+        CardDepthStyleRepository.onProfileChanged()
         // Debrid keys/settings are profile-scoped too; without this a guest profile switch
         // (no cloud pull) would keep the previous profile's keys in memory.
         DebridSettingsRepository.onProfileChanged()

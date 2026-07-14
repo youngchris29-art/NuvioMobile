@@ -164,6 +164,7 @@ private struct EpisodeCard: View {
             }
             .frame(width: 300, height: 170)
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            .nuvioCardDepth(RoundedRectangle(cornerRadius: 10), surface: .episodeCards)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 12) {

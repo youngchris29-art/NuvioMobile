@@ -48,6 +48,7 @@ struct PosterCard: View {
             CachedAsyncImage(string: imageURL)
                 .frame(width: resolvedWidth, height: resolvedHeight)
                 .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+                .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
                 .overlay(
                     RoundedRectangle(cornerRadius: style.cornerRadius)
                         .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
@@ -79,6 +80,9 @@ struct LandscapeCard: View {
     var width: CGFloat = Theme.Size.landscapeWidth
     var height: CGFloat = Theme.Size.landscapeHeight
     var showTitle: Bool? = nil
+    /// Card-depth surface this landscape card belongs to — Continue Watching by default; catalog rows
+    /// rendered in landscape mode pass `.posters` so the depth toggles map to the right setting.
+    var depthSurface: CardDepthSurface = .continueWatching
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
@@ -91,6 +95,7 @@ struct LandscapeCard: View {
                 CachedAsyncImage(string: imageURL)
                     .frame(width: width, height: height)
                     .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+                    .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: depthSurface)
                     .overlay(
                         RoundedRectangle(cornerRadius: style.cornerRadius)
                             .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)

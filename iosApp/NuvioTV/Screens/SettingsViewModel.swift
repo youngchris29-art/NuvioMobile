@@ -31,6 +31,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var posterCornerRadiusDp: Int32 = 12
     @Published private(set) var posterHideLabels = false
     @Published private(set) var posterLandscapeRows = false
+    /// Card-depth styling (master toggle + edge/sheen/coverage strengths + per-surface flags).
+    @Published private(set) var cardDepth = CardDepthStyle.default
 
     private var themeWatcher: FlowWatcher?
     private var playerWatcher: FlowWatcher?
@@ -39,6 +41,7 @@ final class SettingsViewModel: ObservableObject {
     private var tmdbWatcher: FlowWatcher?
     private var mdbListWatcher: FlowWatcher?
     private var posterStyleWatcher: FlowWatcher?
+    private var cardDepthWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -82,6 +85,12 @@ final class SettingsViewModel: ObservableObject {
             self.posterLandscapeRows = state.catalogLandscapeModeEnabled
         }
 
+        CardDepthStyleRepository.shared.ensureLoaded()
+        cardDepthWatcher = FlowWatcherKt.watch(CardDepthStyleRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? CardDepthStyleUiState else { return }
+            self.cardDepth = CardDepthStyle(from: state)
+        }
+
         // The catalog list is derived from the installed add-ons; sync it whenever they change so
         // the Home Rows list stays current (tvOS has to call this itself).
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
@@ -104,6 +113,7 @@ final class SettingsViewModel: ObservableObject {
         tmdbWatcher?.cancel(); tmdbWatcher = nil
         mdbListWatcher?.cancel(); mdbListWatcher = nil
         posterStyleWatcher?.cancel(); posterStyleWatcher = nil
+        cardDepthWatcher?.cancel(); cardDepthWatcher = nil
     }
 
     // MARK: - Actions
@@ -254,6 +264,42 @@ final class SettingsViewModel: ObservableObject {
         PosterCardStyleRepository.shared.resetToDefaults()
     }
 
+    // MARK: - Card depth
+
+    func setCardDepthEnabled(_ enabled: Bool) {
+        CardDepthStyleRepository.shared.setEnabled(enabled: enabled)
+    }
+
+    func setCardDepthEdge(_ strength: Int32) {
+        CardDepthStyleRepository.shared.setEdgeStrength(strength: strength)
+    }
+
+    func setCardDepthSheen(_ strength: Int32) {
+        CardDepthStyleRepository.shared.setSheenStrength(strength: strength)
+    }
+
+    func setCardDepthCoverage(_ coverage: Int32) {
+        CardDepthStyleRepository.shared.setEdgeCoverage(coverage: coverage)
+    }
+
+    func setCardDepthSurface(_ surface: CardDepthSurface, _ enabled: Bool) {
+        // NB: Kotlin/Native lowercases the whole enum-entry name across the ObjC bridge, so the
+        // Kotlin `ContinueWatching`/`EpisodeCards` surface here as `.continuewatching`/`.episodecards`.
+        let shared: NuvioCardDepthSurface
+        switch surface {
+        case .posters: shared = .posters
+        case .continueWatching: shared = .continuewatching
+        case .episodeCards: shared = .episodecards
+        case .cast: shared = .cast
+        case .trailers: shared = .trailers
+        }
+        CardDepthStyleRepository.shared.setSurfaceEnabled(surface: shared, enabled: enabled)
+    }
+
+    func resetCardDepth() {
+        CardDepthStyleRepository.shared.resetToDefaults()
+    }
+
     func toggleCatalog(_ item: HomeCatalogSettingsItem) {
         HomeCatalogSettingsRepository.shared.setEnabled(key: item.key, enabled: !item.enabled)
         refreshHome()
@@ -280,5 +326,6 @@ final class SettingsViewModel: ObservableObject {
         addonWatcher?.cancel()
         tmdbWatcher?.cancel()
         posterStyleWatcher?.cancel()
+        cardDepthWatcher?.cancel()
     }
 }

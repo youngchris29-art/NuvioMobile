@@ -511,6 +511,9 @@ struct DetailView: View {
                                     }
                                 }
                                 .padding(Theme.Spacing.md)
+                                // tvOS trailers are text rows (no thumbnail); the depth toggle opts them
+                                // into a bordered/sheen card. No-op — and no visual change — when off.
+                                .nuvioCardDepth(RoundedRectangle(cornerRadius: Theme.Radius.card), surface: .trailers)
                             }
                             .buttonStyle(.card)
                         }
@@ -638,6 +641,7 @@ private struct CastCard: View {
             }
             .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
             .clipShape(Circle())
+            .nuvioCardDepth(Circle(), surface: .cast)
             Text(person.name)
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textPrimary)
