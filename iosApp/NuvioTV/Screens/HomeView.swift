@@ -59,7 +59,7 @@ struct HomeView: View {
                             ContinueWatchingRow(
                                 entries: model.continueWatching,
                                 onSelect: { resume = ResumeTarget(entry: $0) },
-                                onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId) }
+                                onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) }
                             )
                         }
 

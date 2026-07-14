@@ -746,8 +746,12 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
-        guard let entry = WatchProgressRepository.shared.progressForVideo(videoId: context.videoId),
-              !entry.isCompleted else { return }
+        guard let entry = WatchProgressRepository.shared.progressForVideo(
+            videoId: context.videoId,
+            parentMetaId: context.parentMetaId,
+            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) }
+        ), !entry.isCompleted else { return }
         let seconds = Double(entry.lastPositionMs) / 1000.0
         if seconds > 10 { pendingResumeSec = seconds }
     }
