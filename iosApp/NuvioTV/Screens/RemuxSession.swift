@@ -124,6 +124,17 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             }
         }
 
+        // AVPlayer admission control rejects High-tier HEVC declarations (master stage when declared
+        // in CODECS: "unsupported URL"; media stage from the init segment's hvcC: -12927) even though
+        // VideoToolbox decodes such streams fine — the declared tier is advisory. Patch the hvcC
+        // record to Main tier; the bitstream itself is untouched.
+        if videoPar.pointee.codec_id == AV_CODEC_ID_HEVC,
+           videoPar.pointee.extradata_size >= 13,
+           let ed = videoPar.pointee.extradata, ed[0] == 1, (ed[1] & 0x20) != 0 {
+            ed[1] &= 0xDF
+            print("[Remux] hvcC declares High tier — patched to Main tier for AVPlayer admission")
+        }
+
         let signaling = Self.videoSignaling(videoPar)
         lock.lock(); _signaling = signaling; lock.unlock()
         print("[Remux] signaling CODECS=\(signaling.codecs)"
