@@ -31,6 +31,11 @@ struct NuvioTVApp: App {
             try? session.setActive(true)
         }
 
+        #if DEBUG
+        // Phase 2 headless remux/HLS-server validation, gated on the `debug.remuxSmokeURL` default.
+        RemuxSmokeTest.runIfRequested()
+        #endif
+
         // Auth is started by AuthViewModel (ContentView.onAppear): existing guest installs
         // authenticate instantly from their stored anonymous id; otherwise the Supabase session is
         // restored, or the Welcome gate (Sign In / Create Account / Continue as Guest) is shown.
