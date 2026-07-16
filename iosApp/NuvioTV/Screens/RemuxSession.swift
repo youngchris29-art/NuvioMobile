@@ -192,16 +192,21 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard let pkt = av_packet_alloc() else { return fail("packet_alloc") }
         defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
 
-        // Per-output-stream synthetic DTS state (output timebase) for sources whose packets arrive
-        // without timestamps even after +genpts. Real MKVs sometimes carry PTS-only packets; the mp4
-        // muxer requires a monotonic DTS or it writes a timeline AVPlayer rejects (-12927). Healthy
-        // streams are passed through untouched — synthesis only engages once a stream actually
-        // produces a timestamp-less packet.
+        // Timestamp hygiene. Sloppy real-world muxes carry missing or NON-MONOTONIC video DTS (seen
+        // in the wild: dts zig-zagging backwards while pts is clean); the mp4 muxer writes them
+        // through and AVPlayer rejects the resulting timeline (-12927). Video DTS is therefore
+        // REGENERATED wholesale on a uniform grid anchored at the first PTS and offset back a few
+        // frames for B-frame reorder (validated against AVPlayer on the pulled device output).
+        // Audio keeps source timestamps, with gap-filling only if a packet arrives without them.
         let noTS = Int64.min                                     // AV_NOPTS_VALUE
+        let reorderSlack: Int64 = 6                              // frames of pts>=dts headroom
+        let videoOutIdx = indexMap[videoIn] ?? 0
+        var vIndex: Int64 = 0
+        var vAnchor: Int64? = nil
+        var vDur: Int64 = 0
+        var vPrevDTS: Int64? = nil
         let nStreams = Int(output.pointee.nb_streams)
         var nextDTS = [Int64](repeating: 0, count: nStreams)
-        var synthesizing = [Bool](repeating: false, count: nStreams)
-        var synthesized = 0
 
         var writeError = false
         while !isCancelled() {
@@ -214,24 +219,33 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 pkt.pointee.stream_index = Int32(outIdx)
                 pkt.pointee.pos = -1
 
-                if pkt.pointee.dts == noTS { synthesizing[outIdx] = true }
-                if synthesizing[outIdx] {
+                if outIdx == videoOutIdx {
+                    if vAnchor == nil { vAnchor = pkt.pointee.pts != noTS ? pkt.pointee.pts : 0 }
+                    if pkt.pointee.duration > 0 {
+                        vDur = pkt.pointee.duration
+                    } else if vDur == 0, pkt.pointee.pts != noTS, let anchor = vAnchor, pkt.pointee.pts > anchor {
+                        vDur = pkt.pointee.pts - anchor
+                    }
+                    var dts = vAnchor! + (vIndex - reorderSlack) * max(vDur, 1)
+                    if pkt.pointee.pts != noTS, dts > pkt.pointee.pts { dts = pkt.pointee.pts }
+                    if let prev = vPrevDTS, dts <= prev { dts = prev + 1 }
+                    vPrevDTS = dts
+                    pkt.pointee.dts = dts
+                    if pkt.pointee.pts == noTS { pkt.pointee.pts = vAnchor! + vIndex * max(vDur, 1) }
+                    vIndex += 1
+                } else {
                     if pkt.pointee.dts == noTS {
-                        pkt.pointee.dts = pkt.pointee.pts == noTS ? nextDTS[outIdx] : min(pkt.pointee.pts, nextDTS[outIdx])
-                        synthesized += 1
+                        pkt.pointee.dts = pkt.pointee.pts == noTS ? nextDTS[outIdx] : pkt.pointee.pts
                     }
-                    if pkt.pointee.dts < nextDTS[outIdx] { pkt.pointee.dts = nextDTS[outIdx] }   // monotonic DTS
-                    if pkt.pointee.pts == noTS || pkt.pointee.pts < pkt.pointee.dts {
-                        pkt.pointee.pts = pkt.pointee.dts
-                    }
+                    if pkt.pointee.dts < nextDTS[outIdx] { pkt.pointee.dts = nextDTS[outIdx] }
+                    if pkt.pointee.pts == noTS || pkt.pointee.pts < pkt.pointee.dts { pkt.pointee.pts = pkt.pointee.dts }
+                    nextDTS[outIdx] = pkt.pointee.dts + max(pkt.pointee.duration, 1)
                 }
-                nextDTS[outIdx] = (pkt.pointee.dts == noTS ? nextDTS[outIdx] : pkt.pointee.dts) + max(pkt.pointee.duration, 1)
 
                 if av_interleaved_write_frame(output, pkt) < 0 { writeError = true; av_packet_unref(pkt); break }
             }
             av_packet_unref(pkt)
         }
-        if synthesized > 0 { print("[Remux] synthesized timestamps for \(synthesized) packets (source had missing PTS/DTS)") }
 
         if isCancelled() { return fail("cancelled") }
         if writeError { return fail("write_frame") }

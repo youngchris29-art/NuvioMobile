@@ -15,6 +15,7 @@ nonisolated enum RemuxSmokeTest {
     @MainActor private static var coordinator: NativePlaybackCoordinator?
 
     static func runIfRequested() {
+        startProbeLoopIfRequested()
         guard let raw = UserDefaults.standard.string(forKey: "debug.remuxSmokeURL"),
               let url = URL(string: raw) else { return }
         Task { @MainActor in
@@ -64,6 +65,67 @@ nonisolated enum RemuxSmokeTest {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             observe(coordinator, attempt: attempt)
         }
+    }
+
+    // MARK: - Remote-controlled AVPlayer probe loop
+
+    /// When `debug.avplayerProbeURL` holds a URL (typically a playlist served by a dev Mac on the
+    /// LAN), probe it with a fresh AVPlayer every ~20s and POST each verdict to `<host>:<port>/report`
+    /// on the same server. Lets playlist/media variants be A/B-tested against THIS device's actual
+    /// AVFoundation without touching the app flow or relaying console output by hand: the Mac swaps
+    /// what the URL serves between rounds and watches the reports arrive.
+    @MainActor private static var probePlayer: AVPlayer?
+
+    private static func startProbeLoopIfRequested() {
+        guard let raw = UserDefaults.standard.string(forKey: "debug.avplayerProbeURL"),
+              let base = URL(string: raw) else { return }
+        print("[ProbeLoop] starting against \(raw)")
+        Task { @MainActor in
+            var round = 0
+            while true {
+                round += 1
+                var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+                comps.queryItems = [URLQueryItem(name: "round", value: String(round))]   // cache-bust
+                let item = AVPlayerItem(url: comps.url!)
+                let player = AVPlayer(playerItem: item)
+                player.isMuted = true
+                probePlayer = player
+                player.play()
+
+                var verdict = "TIMEOUT(unknown)"
+                for _ in 0..<60 {                                    // ≤15s per round
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    if item.status == .readyToPlay {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        let pos = CMTimeGetSeconds(player.currentTime())
+                        verdict = "READY pos=\(String(format: "%.1f", pos))"
+                        break
+                    }
+                    if item.status == .failed {
+                        let err = item.error.map { "\(($0 as NSError).domain)#\(($0 as NSError).code)" } ?? "?"
+                        let logs = (item.errorLog()?.events ?? [])
+                            .map { "\($0.errorStatusCode):\($0.errorComment ?? "")" }.joined(separator: "; ")
+                        verdict = "FAILED \(err) [\(logs)]"
+                        break
+                    }
+                }
+                player.replaceCurrentItem(with: nil)
+                probePlayer = nil
+                print("[ProbeLoop] round \(round): \(verdict)")
+                report(base: base, message: "round=\(round) \(verdict)")
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+    }
+
+    private static func report(base: URL, message: String) {
+        guard let host = base.host else { return }
+        let port = base.port.map { ":\($0)" } ?? ""
+        guard let url = URL(string: "http://\(host)\(port)/report") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.httpBody = Data(message.utf8)
+        URLSession.shared.dataTask(with: req).resume()
     }
 
     /// After ready: sample position/rate every 2s so stalls (e.g. live-edge waiting on a growing
