@@ -169,18 +169,19 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         }
         let fileURL = rootDir.appendingPathComponent(name)
         guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
-            send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8), on: connection)
+            send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8), on: connection, requestPath: name)
             return
         }
         let ctype = Self.contentType(for: name)
 
         // Playlists are small and fetched whole — rewrite them on the fly and serve 200:
-        // master CODECS repair + EVENT tagging for still-growing media playlists.
+        // master CODECS repair + EVENT tagging + TARGETDURATION repair for real-world GOPs.
         if name.hasSuffix(".m3u8"), let text = String(data: data, encoding: .utf8) {
             var fixed = text
             if let videoCodecToken { fixed = Self.rewriteMasterCodecs(fixed, videoToken: videoCodecToken) }
             fixed = Self.tagEventPlaylist(fixed)
-            send(status: "200 OK", contentType: ctype, body: Data(fixed.utf8), on: connection, extraHeaders: ["Accept-Ranges": "bytes"])
+            fixed = Self.fixTargetDuration(fixed)
+            send(status: "200 OK", contentType: ctype, body: Data(fixed.utf8), on: connection, extraHeaders: ["Accept-Ranges": "bytes"], requestPath: name)
             return
         }
 
@@ -189,16 +190,20 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                  on: connection, extraHeaders: [
                     "Content-Range": "bytes \(start)-\(end)/\(data.count)",
                     "Accept-Ranges": "bytes",
-                 ])
+                 ], requestPath: name)
         } else {
-            send(status: "200 OK", contentType: ctype, body: data, on: connection, extraHeaders: ["Accept-Ranges": "bytes"])
+            send(status: "200 OK", contentType: ctype, body: data, on: connection, extraHeaders: ["Accept-Ranges": "bytes"], requestPath: name)
         }
     }
 
     // MARK: - Response
 
     private func send(status: String, contentType: String, body: Data, on connection: NWConnection,
-                      extraHeaders: [String: String] = [:]) {
+                      extraHeaders: [String: String] = [:], requestPath: String? = nil) {
+        #if DEBUG
+        // Request log: shows exactly what AVPlayer fetched (and where it stopped) during device runs.
+        if let requestPath { print("[HLS] \(status.prefix(3)) \(requestPath) (\(body.count)b)") }
+        #endif
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(body.count)\r\n"
@@ -220,7 +225,28 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                   let close = line[open.upperBound...].firstIndex(of: "\"") else { return line }
             var tokens = line[open.upperBound..<close].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
             if tokens.isEmpty { tokens = [videoToken] } else { tokens[0] = videoToken }
+            tokens = tokens.filter { !$0.isEmpty }   // an empty audio token would also invalidate CODECS
             return line.replacingCharacters(in: open.upperBound..<close, with: tokens.joined(separator: ","))
+        }.joined(separator: "\n")
+    }
+
+    /// The dash muxer cuts segments at keyframes, so real-world content with long/irregular GOPs
+    /// produces segments far longer than the requested duration — while the playlist still declares
+    /// the requested value as `EXT-X-TARGETDURATION`. `EXTINF > TARGETDURATION` violates the HLS spec
+    /// on every long segment and AVPlayer can refuse the stream outright. Recompute TARGETDURATION
+    /// from the actual max segment duration at serve time.
+    private static func fixTargetDuration(_ text: String) -> String {
+        guard text.contains("#EXTINF") else { return text }
+        var maxDur = 0.0
+        for line in text.components(separatedBy: "\n") where line.hasPrefix("#EXTINF:") {
+            let value = Double(line.dropFirst("#EXTINF:".count).split(separator: ",").first ?? "") ?? 0
+            maxDur = max(maxDur, value)
+        }
+        guard maxDur > 0 else { return text }
+        return text.components(separatedBy: "\n").map { line -> String in
+            guard line.hasPrefix("#EXT-X-TARGETDURATION:") else { return line }
+            let declared = Int(line.dropFirst("#EXT-X-TARGETDURATION:".count)) ?? 0
+            return "#EXT-X-TARGETDURATION:\(max(declared, Int(maxDur.rounded(.up))))"
         }.joined(separator: "\n")
     }
 

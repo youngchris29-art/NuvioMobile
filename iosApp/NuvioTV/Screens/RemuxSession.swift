@@ -72,6 +72,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
     private func runRemux() {
         setState(.running)
+        // Errors/warnings only — the muxer otherwise logs two "Opening … for writing" info lines per
+        // segment, which floods the Xcode console on long content.
+        av_log_set_level(AV_LOG_WARNING)
 
         // --- Open + inspect the source ------------------------------------------------------------
         var inCtx: UnsafeMutablePointer<AVFormatContext>?

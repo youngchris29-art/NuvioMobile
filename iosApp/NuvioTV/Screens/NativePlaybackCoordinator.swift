@@ -120,11 +120,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         observeTask = Task { @MainActor [weak self] in
             var readied = false
             var waitingTicks = 0
+            var notReadyTicks = 0
             while !Task.isCancelled {
                 guard let self, self.player === player else { return }
 
                 if !readied, item.status == .readyToPlay {
                     readied = true
+                    print("[NativePlayer] item readyToPlay")
                     let duration = CMTimeGetSeconds(item.duration)
                     if let resume = self.recorder.resumePositionSec() {
                         await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
@@ -133,10 +135,21 @@ final class NativePlaybackCoordinator: ObservableObject {
                     player.play()
                     self.recorder.startTrakt(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
                 } else if item.status == .failed {
-                    // Item failed before we ever played → treat as pre-playback fallback.
-                    if self.phase != .playing || self.lastDurationSec == 0 {
-                        self.failIfPreplayback(item.error?.localizedDescription ?? "item failed")
+                    print("[NativePlayer] item FAILED — \(item.error?.localizedDescription ?? "unknown")")
+                    Self.dumpItemLogs(item)
+                    // Nothing ever rendered → hand this context to mpv instead of a dead screen.
+                    if self.lastDurationSec == 0 {
+                        print("[NativePlayer] failing over to mpv (item failed before playback started)")
+                        self.phase = .failed("item failed before start")
                         return
+                    }
+                } else if !readied {
+                    // Blind-spot coverage: the item can sit in .unknown forever (bad playlist, codec
+                    // rejection) with no state change to observe. Surface why every ~10s.
+                    notReadyTicks += 1
+                    if notReadyTicks % 50 == 0 {          // 50 ticks × 200ms ≈ 10s
+                        print("[NativePlayer] item still not ready after ~\(notReadyTicks / 5)s (status=\(item.status.rawValue))")
+                        Self.dumpItemLogs(item)
                     }
                 }
 
@@ -159,9 +172,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                         if waitingTicks == 3 || waitingTicks % 10 == 3 {
                             let reason = player.reasonForWaitingToPlay?.rawValue ?? "?"
                             print("[NativePlayer] waiting (\(reason)) at \(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))s")
-                            for event in item.errorLog()?.events ?? [] {
-                                print("[NativePlayer] errorLog: status=\(event.errorStatusCode) \(event.errorComment ?? "") uri=\(event.uri ?? "")")
-                            }
+                            Self.dumpItemLogs(item)
                         }
                     } else {
                         waitingTicks = 0
@@ -169,6 +180,16 @@ final class NativePlaybackCoordinator: ObservableObject {
                 }
                 try? await Task.sleep(nanoseconds: readied ? 3_000_000_000 : 200_000_000)
             }
+        }
+    }
+
+    /// Error + access logs from the item — names the exact URI/status/comment AVPlayer choked on.
+    private static func dumpItemLogs(_ item: AVPlayerItem) {
+        for event in item.errorLog()?.events ?? [] {
+            print("[NativePlayer] errorLog: status=\(event.errorStatusCode) \(event.errorComment ?? "") uri=\(event.uri ?? "")")
+        }
+        if let access = item.accessLog()?.events.last {
+            print("[NativePlayer] accessLog: uri=\(access.uri ?? "?") bytes=\(access.numberOfBytesTransferred) stalls=\(access.numberOfStalls)")
         }
     }
 
