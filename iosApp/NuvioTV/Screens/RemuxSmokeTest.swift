@@ -81,6 +81,9 @@ nonisolated enum RemuxSmokeTest {
               let base = URL(string: raw) else { return }
         print("[ProbeLoop] starting against \(raw)")
         Task { @MainActor in
+            // Fresh AVPlayer(playerItem:) per round — empirically a single reused AVPlayer fails to
+            // load MULTIVARIANT (master) playlists (-12927) while direct media plays. The slow
+            // cadence below is what prevents decoder-session exhaustion.
             var round = 0
             while true {
                 round += 1
@@ -109,11 +112,12 @@ nonisolated enum RemuxSmokeTest {
                         break
                     }
                 }
+                player.pause()
                 player.replaceCurrentItem(with: nil)
                 probePlayer = nil
                 print("[ProbeLoop] round \(round): \(verdict)")
                 report(base: base, message: "round=\(round) \(verdict)")
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
             }
         }
     }
