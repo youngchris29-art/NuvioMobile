@@ -19,6 +19,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let rootDir: URL
     /// Per-session path token; every request must be `/{token}/{file}`.
     let token: String
+    /// When set, served `.m3u8` playlists have their video CODECS token rewritten on the fly — this
+    /// FFmpeg build's dash muxer emits an empty video token in the master playlist. Doing it at serve
+    /// time is race-free during progressive playback (the muxer may rewrite the file mid-stream).
+    private let videoCodecToken: String?
 
     private let queue = DispatchQueue(label: "media.nuvio.hls-server")
     private let lock = NSLock()
@@ -27,8 +31,9 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
 
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
-    init(rootDir: URL) {
+    init(rootDir: URL, videoCodecToken: String? = nil) {
         self.rootDir = rootDir
+        self.videoCodecToken = videoCodecToken
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
@@ -168,6 +173,14 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
         let ctype = Self.contentType(for: name)
+
+        // Playlists are small and fetched whole — rewrite the master CODECS on the fly and serve 200.
+        if name.hasSuffix(".m3u8"), let videoCodecToken, let text = String(data: data, encoding: .utf8) {
+            let fixed = Data(Self.rewriteMasterCodecs(text, videoToken: videoCodecToken).utf8)
+            send(status: "200 OK", contentType: ctype, body: fixed, on: connection, extraHeaders: ["Accept-Ranges": "bytes"])
+            return
+        }
+
         if let rangeHeader, let (start, end) = Self.parseRange(rangeHeader, total: data.count) {
             send(status: "206 Partial Content", contentType: ctype, body: data.subdata(in: start..<(end + 1)),
                  on: connection, extraHeaders: [
@@ -192,6 +205,20 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         var out = Data(head.utf8)
         out.append(body)
         connection.send(content: out, completion: .contentProcessed { _ in connection.cancel() })
+    }
+
+    /// Rewrite the first (video) token of every `CODECS="…"` on an `#EXT-X-STREAM-INF` line to
+    /// `videoToken`. Media playlists have no such line, so this is a no-op on them.
+    private static func rewriteMasterCodecs(_ text: String, videoToken: String) -> String {
+        guard !videoToken.isEmpty else { return text }
+        return text.components(separatedBy: "\n").map { line -> String in
+            guard line.hasPrefix("#EXT-X-STREAM-INF:"),
+                  let open = line.range(of: "CODECS=\""),
+                  let close = line[open.upperBound...].firstIndex(of: "\"") else { return line }
+            var tokens = line[open.upperBound..<close].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            if tokens.isEmpty { tokens = [videoToken] } else { tokens[0] = videoToken }
+            return line.replacingCharacters(in: open.upperBound..<close, with: tokens.joined(separator: ","))
+        }.joined(separator: "\n")
     }
 
     private static func contentType(for name: String) -> String {

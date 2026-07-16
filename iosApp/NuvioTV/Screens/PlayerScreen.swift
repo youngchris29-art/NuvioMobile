@@ -1,28 +1,52 @@
 import SwiftUI
 
-/// Engine dispatcher for all video playback in NuvioTV. Call sites present `PlayerScreen`; it
-/// decides which engine actually renders the stream so the choice stays invisible to callers.
+/// Engine dispatcher for all video playback in NuvioTV. Call sites present `PlayerScreen`; it probes
+/// the stream and routes to the native AVPlayer path (`NativePlayerScreen` — true Dolby Vision via
+/// the on-device remux) or the libmpv path (`MPVPlayerScreen` — universal fallback), keeping the
+/// choice invisible to callers.
 ///
-/// Phase 1 probes the stream and computes a routing decision (`PlayerEngineRouter`) that is logged
-/// and surfaced in the player's Stream Info overlay, but playback still always goes through the
-/// libmpv-backed `MPVPlayerScreen` — flipping the switch to the native AVPlayer path happens in a
-/// later phase. Gated by `PlayerTuning.nativeDVKey`. See docs/tvos-hybrid-player-plan.md.
+/// The native path is gated by `PlayerTuning.nativeDVKey` (Settings > Playback beta toggle). With the
+/// flag off, playback goes straight to mpv with no probe delay — non-beta behavior is unchanged. With
+/// it on, a brief probe decides per file, and any native-path failure falls back to mpv for the same
+/// context. See docs/tvos-hybrid-player-plan.md.
 struct PlayerScreen: View {
     let context: PlaybackContext
-    /// Present when a caller can swap the playing context (source switch / next-episode autoplay).
     var onPlayNext: ((PlaybackContext) -> Void)? = nil
 
-    /// The routing decision's short label, shown in Stream Info once the async probe finishes.
-    @State private var routingNote: String?
+    @State private var decision: EngineDecision?
+    /// Set when the native path fails; pins this context to mpv.
+    @State private var forcedMPV = false
 
-    var body: some View {
-        MPVPlayerScreen(context: context, onPlayNext: onPlayNext, routingNote: routingNote)
-            .task(id: context.id) { await computeRouting() }
+    private var nativeDVEnabled: Bool { UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey) }
+
+    private enum Shown { case deciding, native, mpv }
+    private var shown: Shown {
+        if forcedMPV { return .mpv }
+        guard nativeDVEnabled else { return .mpv }       // flag off → mpv immediately, no probe wait
+        guard let decision else { return .deciding }
+        return decision.engine == .native ? .native : .mpv
     }
 
-    /// Probe the stream off the main thread (hard-bounded), route it, and record the decision. Never
-    /// affects playback in this phase — purely diagnostic.
-    private func computeRouting() async {
+    var body: some View {
+        Group {
+            switch shown {
+            case .native:
+                NativePlayerScreen(context: context, onPlayNext: onPlayNext, onFallback: { _ in forcedMPV = true })
+            case .mpv:
+                MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
+                                routingNote: forcedMPV ? "mpv \u{00B7} fallback" : decision?.displayNote)
+            case .deciding:
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    ProgressView().scaleEffect(1.5)
+                }
+            }
+        }
+        .task(id: context.id) { await decideEngine() }
+    }
+
+    /// Probe off-main (hard-bounded) and pick the engine. No-op straight to mpv when the flag is off.
+    private func decideEngine() async {
         #if DEBUG
         let failures = PlayerEngineRouter.selfCheckFailures()
         if failures.isEmpty {
@@ -32,14 +56,14 @@ struct PlayerScreen: View {
         }
         #endif
 
-        let nativeDVEnabled = UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey)
-        let url = context.url
-        let decision = await Task.detached(priority: .utility) {
-            let probe = MediaProbe.probe(url: url, timeoutSec: 4)
-            return PlayerEngineRouter.route(probe: probe, nativeDVEnabled: nativeDVEnabled)
-        }.value
+        guard nativeDVEnabled else { return }
 
-        print("[PlayerRouter] \(decision.engine.rawValue) — \(decision.reason) — \(context.title)")
-        routingNote = decision.displayNote
+        let url = context.url
+        let result = await Task.detached(priority: .utility) {
+            let probe = MediaProbe.probe(url: url, timeoutSec: 4)
+            return PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true)
+        }.value
+        print("[PlayerRouter] \(result.engine.rawValue) — \(result.reason) — \(context.title)")
+        decision = result
     }
 }

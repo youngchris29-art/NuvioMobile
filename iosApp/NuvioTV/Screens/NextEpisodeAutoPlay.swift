@@ -80,8 +80,19 @@ final class NextEpisodeEngine: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Wires the player state's up-next hooks and resolves the next aired episode (if any).
+    /// Wires the mpv player state's up-next hooks and resolves the next aired episode (if any).
     func start(state: MPVPlaybackState) {
+        prime()
+        state.upNextPlayNow = { [weak self] in self?.playNow() ?? false }
+        state.upNextCancel = { [weak self] in self?.cancel() }
+    }
+
+    /// Engine-agnostic start for the native AVPlayer path: same settings watch + next-episode
+    /// resolution, without the mpv-specific remote hooks (the countdown still auto-plays via
+    /// `onProgress` → `onPlayNext`). See docs/tvos-hybrid-player-plan.md.
+    func startNative() { prime() }
+
+    private func prime() {
         PlayerSettingsRepository.shared.ensureLoaded()
         settingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? PlayerSettingsUiState else { return }
@@ -96,9 +107,6 @@ final class NextEpisodeEngine: ObservableObject {
         if let next = nextVideo {
             nextEpisodeTitle = Self.episodeTitle(next)
         }
-
-        state.upNextPlayNow = { [weak self] in self?.playNow() ?? false }
-        state.upNextCancel = { [weak self] in self?.cancel() }
     }
 
     func stop() {

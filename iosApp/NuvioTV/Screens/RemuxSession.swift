@@ -40,10 +40,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private let lock = NSLock()
     private var _state: State = .idle
     private var _cancelled = false
+    private var _videoToken: String?
     private var onStateChange: (@Sendable (State) -> Void)?
     private let queue = DispatchQueue(label: "media.nuvio.remux", qos: .userInitiated)
 
     var state: State { lock.lock(); defer { lock.unlock() }; return _state }
+
+    /// Sample-entry token (`hvc1`/`dvh1`/`avc1`) for the copied video, set once the video stream is
+    /// selected. `LocalHLSServer` uses it to repair the master playlist's CODECS attribute, which
+    /// this FFmpeg 8.1.2 dash muxer emits with an empty video token.
+    var videoToken: String? { lock.lock(); defer { lock.unlock() }; return _videoToken }
 
     init(config: Config, outputDir: URL? = nil) {
         self.config = config
@@ -87,6 +93,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard videoIn >= 0, let videoPar = input.pointee.streams[videoIn]?.pointee.codecpar else {
             return fail("no video stream")
         }
+        lock.lock(); _videoToken = videoCodecToken(videoPar); lock.unlock()
 
         // --- Allocate the dash output -------------------------------------------------------------
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
@@ -148,12 +155,6 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         if isCancelled() { return fail("cancelled") }
         if writeError { return fail("write_frame") }
         guard av_write_trailer(output) >= 0 else { return fail("write_trailer") }
-
-        // This FFmpeg build's dash muxer can emit an empty video token in the master playlist's
-        // CODECS attribute (its detailed HEVC codec-string parse doesn't fire on 8.1.2), which
-        // breaks AVPlayer variant selection. Rewrite CODECS from what we actually copied. This is
-        // also where DV `CODECS`/`SUPPLEMENTAL-CODECS` signaling will be filled in (Phase 3/5).
-        fixupMasterPlaylistCodecs(videoToken: videoCodecToken(videoPar))
         setState(.ready)
     }
 
@@ -190,23 +191,6 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         case AV_CODEC_ID_H264: return "avc1"
         default: return ""
         }
-    }
-
-    /// Rewrite the first (video) token of every `CODECS="…"` in the master playlist to `videoToken`,
-    /// working around the muxer emitting an empty/wrong video token on this FFmpeg build.
-    private func fixupMasterPlaylistCodecs(videoToken: String) {
-        guard !videoToken.isEmpty else { return }
-        let master = outputDir.appendingPathComponent(masterPlaylistName)
-        guard let text = try? String(contentsOf: master, encoding: .utf8) else { return }
-        let rewritten = text.components(separatedBy: "\n").map { line -> String in
-            guard line.hasPrefix("#EXT-X-STREAM-INF:"),
-                  let open = line.range(of: "CODECS=\""),
-                  let close = line[open.upperBound...].firstIndex(of: "\"") else { return line }
-            var tokens = line[open.upperBound..<close].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-            if tokens.isEmpty { tokens = [videoToken] } else { tokens[0] = videoToken }
-            return line.replacingCharacters(in: open.upperBound..<close, with: tokens.joined(separator: ","))
-        }.joined(separator: "\n")
-        try? rewritten.write(to: master, atomically: true, encoding: .utf8)
     }
 
     private func dolbyProfile(_ par: UnsafeMutablePointer<AVCodecParameters>) -> Int? {
