@@ -73,6 +73,8 @@ struct SkipPrompt: Equatable {
 
 /// Live stream diagnostics read from libmpv properties (shown by the Stream Info overlay).
 struct StreamInfoSnapshot: Equatable {
+    /// Router decision label ("Native · DV P8.1" / "mpv · audio truehd"). Diagnostic only in Phase 1.
+    var engine = ""
     var videoCodec = ""
     var resolution = ""
     var fps = ""
@@ -82,7 +84,7 @@ struct StreamInfoSnapshot: Equatable {
     var cache = ""
 
     var rows: [(String, String)] {
-        [("Video", videoCodec), ("Resolution", resolution), ("Frame rate", fps),
+        [("Engine", engine), ("Video", videoCodec), ("Resolution", resolution), ("Frame rate", fps),
          ("Hardware decode", hwdec), ("Video bitrate", videoBitrate),
          ("Audio", audio), ("Cache", cache)].filter { !$0.1.isEmpty }
     }

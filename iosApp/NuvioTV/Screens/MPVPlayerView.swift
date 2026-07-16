@@ -46,6 +46,9 @@ final class MPVPlaybackState: ObservableObject {
     @Published var audioDelaySec: Double = 0
     @Published var showStreamInfo: Bool = false
     @Published var streamInfo: StreamInfoSnapshot?
+    /// Engine routing decision from `PlayerEngineRouter`, shown as the Stream Info "Engine" row.
+    /// Diagnostic only in Phase 1 — playback still runs through libmpv regardless.
+    @Published var routingNote: String = ""
 
     /// True once playback hit end-of-file (keep-open holds the last frame; drives the post-play cover).
     @Published var isEnded: Bool = false
@@ -643,6 +646,7 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func buildStreamInfo() -> StreamInfoSnapshot {
         var info = StreamInfoSnapshot()
+        info.engine = state.routingNote
         let w = getInt("video-params/w"), h = getInt("video-params/h")
         if w > 0, h > 0 { info.resolution = "\(w)\u{00D7}\(h)" }
         info.videoCodec = getString("video-codec") ?? ""
@@ -1037,6 +1041,9 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
 struct MPVPlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)? = nil
+    /// Phase 1 routing diagnostic (from `PlayerEngineRouter`) surfaced in Stream Info; playback is
+    /// unaffected — this screen always renders via libmpv.
+    var routingNote: String? = nil
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -1044,9 +1051,10 @@ struct MPVPlayerScreen: View {
     @State private var showPauseInfo = false
     @State private var pauseInfoTask: Task<Void, Never>?
 
-    init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil) {
+    init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil) {
         self.context = context
         self.onPlayNext = onPlayNext
+        self.routingNote = routingNote
         _state = StateObject(wrappedValue: MPVPlaybackState(title: context.title))
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(
             context: context,
@@ -1129,12 +1137,14 @@ struct MPVPlayerScreen: View {
             )
         }
         .onAppear {
+            if let routingNote { state.routingNote = routingNote }
             // Start the orchestration whenever a presenter can swap contexts — autoplay needs
             // episodes, but source switching works for movies too (the engine no-ops the rest).
             if onPlayNext != nil {
                 upNext.start(state: state)
             }
         }
+        .onChange(of: routingNote) { _, note in state.routingNote = note ?? "" }
         .onDisappear { upNext.stop() }
         .onChange(of: state.positionSec) { _, position in
             upNext.onProgress(positionSec: position, durationSec: state.durationSec)
