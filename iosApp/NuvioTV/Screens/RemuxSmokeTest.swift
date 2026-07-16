@@ -42,6 +42,7 @@ nonisolated enum RemuxSmokeTest {
                 let secs = coordinator.player?.currentItem.map { CMTimeGetSeconds($0.duration) } ?? .nan
                 let text = secs.isFinite ? String(format: "%.1fs", secs) : "live"
                 print("[RemuxSmoke] coordinator playing + AVPlayer readyToPlay \u{2705} duration=\(text)")
+                samplePlayback(coordinator, sample: 0)
             } else if attempt < 40 {
                 schedule(coordinator, attempt: attempt + 1)
             } else {
@@ -62,6 +63,28 @@ nonisolated enum RemuxSmokeTest {
     private static func schedule(_ coordinator: NativePlaybackCoordinator, attempt: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             observe(coordinator, attempt: attempt)
+        }
+    }
+
+    /// After ready: sample position/rate every 2s so stalls (e.g. live-edge waiting on a growing
+    /// playlist) are visible in the console.
+    @MainActor
+    private static func samplePlayback(_ coordinator: NativePlaybackCoordinator, sample: Int) {
+        guard sample < 30, let player = coordinator.player, let item = player.currentItem else { return }
+        let pos = CMTimeGetSeconds(player.currentTime())
+        let dur = CMTimeGetSeconds(item.duration)
+        let control: String
+        switch player.timeControlStatus {
+        case .playing: control = "playing"
+        case .paused: control = "paused"
+        case .waitingToPlayAtSpecifiedRate:
+            control = "waiting(\(player.reasonForWaitingToPlay?.rawValue ?? "?"))"
+        @unknown default: control = "?"
+        }
+        let durText = dur.isFinite ? String(format: "%.1f", dur) : "live"
+        print("[RemuxSmoke] t=\(sample * 2)s pos=\(String(format: "%.1f", pos)) dur=\(durText) \(control) bufferEmpty=\(item.isPlaybackBufferEmpty) likelyToKeepUp=\(item.isPlaybackLikelyToKeepUp)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            samplePlayback(coordinator, sample: sample + 1)
         }
     }
 }

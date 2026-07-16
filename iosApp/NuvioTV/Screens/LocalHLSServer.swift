@@ -174,10 +174,13 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         }
         let ctype = Self.contentType(for: name)
 
-        // Playlists are small and fetched whole — rewrite the master CODECS on the fly and serve 200.
-        if name.hasSuffix(".m3u8"), let videoCodecToken, let text = String(data: data, encoding: .utf8) {
-            let fixed = Data(Self.rewriteMasterCodecs(text, videoToken: videoCodecToken).utf8)
-            send(status: "200 OK", contentType: ctype, body: fixed, on: connection, extraHeaders: ["Accept-Ranges": "bytes"])
+        // Playlists are small and fetched whole — rewrite them on the fly and serve 200:
+        // master CODECS repair + EVENT tagging for still-growing media playlists.
+        if name.hasSuffix(".m3u8"), let text = String(data: data, encoding: .utf8) {
+            var fixed = text
+            if let videoCodecToken { fixed = Self.rewriteMasterCodecs(fixed, videoToken: videoCodecToken) }
+            fixed = Self.tagEventPlaylist(fixed)
+            send(status: "200 OK", contentType: ctype, body: Data(fixed.utf8), on: connection, extraHeaders: ["Accept-Ranges": "bytes"])
             return
         }
 
@@ -219,6 +222,20 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             if tokens.isEmpty { tokens = [videoToken] } else { tokens[0] = videoToken }
             return line.replacingCharacters(in: open.upperBound..<close, with: tokens.joined(separator: ","))
         }.joined(separator: "\n")
+    }
+
+    /// Media playlists emitted while the remux is still running have no `EXT-X-ENDLIST`, which HLS
+    /// clients read as a LIVE stream — AVPlayer then hugs the live edge and stalls against the remux.
+    /// Tagging them `EXT-X-PLAYLIST-TYPE:EVENT` (append-only) makes AVPlayer start at 0 and grow the
+    /// seekable range; when the remux finishes and `ENDLIST` appears the stream becomes plain VOD.
+    private static func tagEventPlaylist(_ text: String) -> String {
+        guard text.contains("#EXTINF"),                       // media playlist, not master
+              !text.contains("#EXT-X-ENDLIST"),               // still growing
+              !text.contains("#EXT-X-PLAYLIST-TYPE") else { return text }
+        return text.replacingOccurrences(
+            of: "#EXT-X-MEDIA-SEQUENCE",
+            with: "#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-MEDIA-SEQUENCE"
+        )
     }
 
     private static func contentType(for name: String) -> String {

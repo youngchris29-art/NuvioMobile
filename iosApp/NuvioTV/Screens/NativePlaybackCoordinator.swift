@@ -71,19 +71,26 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     // MARK: - Progressive startup
 
-    /// Poll the remux output for the init segment + first media segment, then start serving/playing.
+    /// Poll the remux output until enough of the stream exists to start playback: the playlists +
+    /// init segment, and a couple of media segments of head start (joining at the very first segment
+    /// pins AVPlayer to the remux's write edge and it stalls). A finished remux overrides the gate
+    /// (short files may complete with fewer segments than the threshold).
     private func pollForFirstSegment(remux: RemuxSession) {
         pollTask = Task { @MainActor [weak self] in
             let fm = FileManager.default
             let dir = remux.outputDir
-            for _ in 0..<160 {                          // ~40s ceiling
+            for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
                 let hasCore = fm.fileExists(atPath: dir.appendingPathComponent("master.m3u8").path)
                     && fm.fileExists(atPath: dir.appendingPathComponent("media_0.m3u8").path)
                     && fm.fileExists(atPath: dir.appendingPathComponent("init-0.mp4").path)
-                let hasSegment = ((try? fm.contentsOfDirectory(atPath: dir.path))?.contains { $0.hasPrefix("seg-0-") }) ?? false
-                if hasCore && hasSegment { self?.beginPlayback(remux: remux); return }
+                let segments = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix("seg-0-") }.count
+                let remuxDone = remux.state == .ready
+                if hasCore && (segments >= 2 || (remuxDone && segments >= 1)) {
+                    self?.beginPlayback(remux: remux)
+                    return
+                }
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
             self?.failIfPreplayback("no segments produced")
@@ -97,6 +104,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         server.start(masterName: remux.masterPlaylistName) { [weak self] url in
             guard let self else { return }
             guard let url else { self.failIfPreplayback("server bind failed"); return }
+            print("[NativePlayer] serving \(url.absoluteString)")
             let item = AVPlayerItem(url: url)
             let player = AVPlayer(playerItem: item)
             self.playerItem = item
@@ -111,6 +119,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func observePlayback(player: AVPlayer, item: AVPlayerItem) {
         observeTask = Task { @MainActor [weak self] in
             var readied = false
+            var waitingTicks = 0
             while !Task.isCancelled {
                 guard let self, self.player === player else { return }
 
@@ -141,6 +150,22 @@ final class NativePlaybackCoordinator: ObservableObject {
                         self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false)
                         self.onTick?(pos, dur)
                     }
+
+                    // Stall diagnostics: if the player sits in a waiting state across several ticks,
+                    // dump why — the item's error log carries segment/format errors (decode
+                    // rejections, 404s) that are otherwise invisible outside Xcode.
+                    if player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                        waitingTicks += 1
+                        if waitingTicks == 3 || waitingTicks % 10 == 3 {
+                            let reason = player.reasonForWaitingToPlay?.rawValue ?? "?"
+                            print("[NativePlayer] waiting (\(reason)) at \(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))s")
+                            for event in item.errorLog()?.events ?? [] {
+                                print("[NativePlayer] errorLog: status=\(event.errorStatusCode) \(event.errorComment ?? "") uri=\(event.uri ?? "")")
+                            }
+                        }
+                    } else {
+                        waitingTicks = 0
+                    }
                 }
                 try? await Task.sleep(nanoseconds: readied ? 3_000_000_000 : 200_000_000)
             }
@@ -148,7 +173,12 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     private func failIfPreplayback(_ stage: String) {
-        guard phase != .playing else { return }
+        guard phase != .playing else {
+            // Mid-play remux failure: segments stop appearing and the player will eventually stall.
+            // Mid-stream fallback is Phase 5 — for now make the cause unmissable in the console.
+            print("[NativePlayer] \u{26A0}\u{FE0F} remux failed MID-PLAY at \(stage) — playback will stall (mid-stream fallback lands in Phase 5)")
+            return
+        }
         if case .failed = phase { return }
         print("[NativePlayer] pre-playback failure: \(stage) — falling back to mpv")
         phase = .failed(stage)
