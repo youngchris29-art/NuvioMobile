@@ -44,7 +44,13 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
 
     /// The master playlist exactly as a client would receive it right now (for failure diagnostics).
     func renderedMasterPlaylist() -> String? {
-        lock.lock(); let signaling = _signaling; let name = _masterName; lock.unlock()
+        lock.lock(); let name = _masterName; lock.unlock()
+        return renderedPlaylist(named: name)
+    }
+
+    /// Any playlist exactly as a client would receive it right now (for failure diagnostics).
+    func renderedPlaylist(named name: String) -> String? {
+        lock.lock(); let signaling = _signaling; lock.unlock()
         guard let text = try? String(contentsOf: rootDir.appendingPathComponent(name), encoding: .utf8) else { return nil }
         var fixed = text
         if let signaling { fixed = Self.rewriteMasterSignaling(fixed, signaling: signaling) }

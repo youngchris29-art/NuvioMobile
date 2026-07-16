@@ -134,10 +134,11 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// (some AVPlayer builds reject the full CODECS/SUPPLEMENTAL form at the master stage);
     /// attempt 1 → give up and hand the context to mpv.
     private func handlePrePlaybackItemFailure(player: AVPlayer) {
-        if let master = server?.renderedMasterPlaylist() {
+        for name in ["master.m3u8", "media_0.m3u8", "media_1.m3u8"] {
+            guard let playlist = server?.renderedPlaylist(named: name) else { continue }
             // Prefix every line so console filters on "NativePlayer" keep the playlist content.
-            let prefixed = master.components(separatedBy: "\n").map { "[NativePlayer] | \($0)" }.joined(separator: "\n")
-            print("[NativePlayer] served master playlist (\(master.count) chars):\n\(prefixed)")
+            let prefixed = playlist.components(separatedBy: "\n").map { "[NativePlayer] | \($0)" }.joined(separator: "\n")
+            print("[NativePlayer] served \(name) (\(playlist.count) chars):\n\(prefixed)")
         }
         if let dir = remux?.outputDir, let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
             let listing = names.sorted().map { "\($0)=\(Self.fileSize(dir, $0))b" }.joined(separator: " ")
