@@ -105,7 +105,7 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     private func beginPlayback(remux: RemuxSession) {
         guard phase == .preparing, player == nil else { return }
-        let server = LocalHLSServer(rootDir: remux.outputDir, videoCodecToken: remux.videoToken)
+        let server = LocalHLSServer(rootDir: remux.outputDir, signaling: remux.videoSignaling)
         self.server = server
         server.start(masterName: remux.masterPlaylistName) { [weak self] url in
             guard let self else { return }

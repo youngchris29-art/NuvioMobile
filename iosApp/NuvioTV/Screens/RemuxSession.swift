@@ -19,6 +19,15 @@ import Libavutil
 // playlist never sees a half-written segment. Just-in-time seek-anywhere generation is a later
 // refinement layered on the same directory/server machinery.
 
+/// HLS master-playlist signaling for the remuxed video, per Apple's HLS authoring spec: a full
+/// RFC 6381 CODECS token (bare "hvc1" is non-compliant and stricter tvOS builds reject it), plus
+/// Dolby Vision SUPPLEMENTAL-CODECS and VIDEO-RANGE for HDR — required for true DV to engage.
+nonisolated struct VideoSignaling: Sendable {
+    var codecs: String                 // e.g. "hvc1.2.4.L153.B0" or "dvh1.05.06"
+    var supplementalCodecs: String?    // e.g. "dvh1.08.06/db4h" (DV P8 over HDR10)
+    var videoRange: String?            // "PQ" / "HLG"
+}
+
 nonisolated final class RemuxSession: @unchecked Sendable {
     enum State: Equatable, Sendable {
         case idle
@@ -40,16 +49,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private let lock = NSLock()
     private var _state: State = .idle
     private var _cancelled = false
-    private var _videoToken: String?
+    private var _signaling: VideoSignaling?
     private var onStateChange: (@Sendable (State) -> Void)?
     private let queue = DispatchQueue(label: "media.nuvio.remux", qos: .userInitiated)
 
     var state: State { lock.lock(); defer { lock.unlock() }; return _state }
 
-    /// Sample-entry token (`hvc1`/`dvh1`/`avc1`) for the copied video, set once the video stream is
-    /// selected. `LocalHLSServer` uses it to repair the master playlist's CODECS attribute, which
-    /// this FFmpeg 8.1.2 dash muxer emits with an empty video token.
-    var videoToken: String? { lock.lock(); defer { lock.unlock() }; return _videoToken }
+    /// Master-playlist signaling for the copied video, set once the video stream is inspected.
+    /// `LocalHLSServer` uses it to repair the master playlist (this FFmpeg 8.1.2 dash muxer emits an
+    /// empty CODECS video token, no VIDEO-RANGE, and no DV signaling).
+    var videoSignaling: VideoSignaling? { lock.lock(); defer { lock.unlock() }; return _signaling }
 
     init(config: Config, outputDir: URL? = nil) {
         self.config = config
@@ -101,8 +110,6 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard videoIn >= 0, let videoPar = input.pointee.streams[videoIn]?.pointee.codecpar else {
             return fail("no video stream")
         }
-        lock.lock(); _videoToken = videoCodecToken(videoPar); lock.unlock()
-
         // Some sources carry the video with EMPTY extradata (parameter sets only inband). The init
         // segment then has no valid hvcC/avcC decoder configuration and AVPlayer rejects the stream
         // with CoreMediaErrorDomain -12927. Recover the parameter sets from the bitstream, then
@@ -116,6 +123,12 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 return fail("rewind after extradata extraction")
             }
         }
+
+        let signaling = Self.videoSignaling(videoPar)
+        lock.lock(); _signaling = signaling; lock.unlock()
+        print("[Remux] signaling CODECS=\(signaling.codecs)"
+              + (signaling.supplementalCodecs.map { " SUPPLEMENTAL=\($0)" } ?? "")
+              + (signaling.videoRange.map { " RANGE=\($0)" } ?? ""))
 
         // --- Allocate the dash output -------------------------------------------------------------
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
@@ -276,21 +289,73 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         }
     }
 
-    /// RFC 6381-ish sample-entry token for the master playlist's CODECS attribute. Short forms
-    /// (`hvc1`/`dvh1`/`avc1`) are what Infuse-style output uses and AVPlayer accepts; Phase 3/5 will
-    /// extend this to the detailed DV strings + a SUPPLEMENTAL-CODECS attribute for Profile 8.1.
-    private func videoCodecToken(_ par: UnsafeMutablePointer<AVCodecParameters>) -> String {
+    /// Full master-playlist signaling for the video track, per Apple's HLS authoring spec.
+    private static func videoSignaling(_ par: UnsafeMutablePointer<AVCodecParameters>) -> VideoSignaling {
+        let trc = par.pointee.color_trc
+        let range: String? = trc == AVCOL_TRC_SMPTE2084 ? "PQ" : (trc == AVCOL_TRC_ARIB_STD_B67 ? "HLG" : nil)
+        let dovi = doviRecord(par)
+
         switch par.pointee.codec_id {
-        case AV_CODEC_ID_HEVC: return dolbyProfile(par) == 5 ? "dvh1" : "hvc1"
-        case AV_CODEC_ID_H264: return "avc1"
-        default: return ""
+        case AV_CODEC_ID_HEVC:
+            if let dovi, dovi.dv_profile == 5 {
+                // P5 has no cross-compatible base layer — the DV string IS the codec string.
+                return VideoSignaling(codecs: String(format: "dvh1.05.%02d", dovi.dv_level),
+                                      supplementalCodecs: nil, videoRange: "PQ")
+            }
+            let base = hevcCodecString(par)
+            if let dovi, dovi.dv_profile == 8 {
+                return VideoSignaling(codecs: base,
+                                      supplementalCodecs: String(format: "dvh1.08.%02d/db4h", dovi.dv_level),
+                                      videoRange: "PQ")
+            }
+            return VideoSignaling(codecs: base, supplementalCodecs: nil, videoRange: range)
+        case AV_CODEC_ID_H264:
+            return VideoSignaling(codecs: avcCodecString(par), supplementalCodecs: nil, videoRange: range)
+        default:
+            return VideoSignaling(codecs: "", supplementalCodecs: nil, videoRange: nil)
         }
     }
 
-    private func dolbyProfile(_ par: UnsafeMutablePointer<AVCodecParameters>) -> Int? {
+    /// RFC 6381 HEVC token from the hvcC decoder configuration (ISO 14496-15 Annex E), e.g.
+    /// `hvc1.2.4.L153.B0`. Falls back to the bare tag if the extradata isn't hvcC-shaped.
+    private static func hevcCodecString(_ par: UnsafeMutablePointer<AVCodecParameters>) -> String {
+        let size = Int(par.pointee.extradata_size)
+        guard size >= 13, let ed = par.pointee.extradata else { return "hvc1" }
+        let b = UnsafeBufferPointer(start: ed, count: size)
+        guard b[0] == 1 else { return "hvc1" }                       // hvcC configurationVersion
+        let profileSpace = Int((b[1] >> 6) & 0x3)
+        let tier = (b[1] >> 5) & 0x1
+        let profileIdc = b[1] & 0x1F
+        var compat: UInt32 = 0
+        for i in 2...5 { compat = (compat << 8) | UInt32(b[i]) }
+        var reversed: UInt32 = 0                                     // bit-reversed per Annex E
+        for i in 0..<32 where compat & (1 << UInt32(i)) != 0 { reversed |= 1 << UInt32(31 - i) }
+        var s = "hvc1.\(["", "A", "B", "C"][profileSpace])\(profileIdc)"
+            + ".\(String(reversed, radix: 16, uppercase: true))"
+            + ".\(tier == 0 ? "L" : "H")\(b[12])"
+        var constraints = Array(b[6...11])
+        while constraints.count > 1, constraints.last == 0 { constraints.removeLast() }
+        if !(constraints.count == 1 && constraints[0] == 0) {
+            for c in constraints { s += "." + String(format: "%02X", c) }
+        }
+        return s
+    }
+
+    /// RFC 6381 AVC token from avcC (profile/constraints/level), e.g. `avc1.640028`.
+    private static func avcCodecString(_ par: UnsafeMutablePointer<AVCodecParameters>) -> String {
+        let size = Int(par.pointee.extradata_size)
+        guard size >= 4, let ed = par.pointee.extradata, ed[0] == 1 else { return "avc1" }
+        return String(format: "avc1.%02X%02X%02X", ed[1], ed[2], ed[3])
+    }
+
+    private static func doviRecord(_ par: UnsafeMutablePointer<AVCodecParameters>) -> AVDOVIDecoderConfigurationRecord? {
         guard let sd = av_packet_side_data_get(par.pointee.coded_side_data, par.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF),
               let data = sd.pointee.data else { return nil }
-        return Int(data.withMemoryRebound(to: AVDOVIDecoderConfigurationRecord.self, capacity: 1) { $0.pointee.dv_profile })
+        return data.withMemoryRebound(to: AVDOVIDecoderConfigurationRecord.self, capacity: 1) { $0.pointee }
+    }
+
+    private func dolbyProfile(_ par: UnsafeMutablePointer<AVCodecParameters>) -> Int? {
+        Self.doviRecord(par).map { Int($0.dv_profile) }
     }
 
     private func fourcc(_ s: String) -> UInt32 {

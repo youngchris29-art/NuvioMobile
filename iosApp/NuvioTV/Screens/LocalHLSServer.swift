@@ -19,10 +19,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let rootDir: URL
     /// Per-session path token; every request must be `/{token}/{file}`.
     let token: String
-    /// When set, served `.m3u8` playlists have their video CODECS token rewritten on the fly — this
-    /// FFmpeg build's dash muxer emits an empty video token in the master playlist. Doing it at serve
-    /// time is race-free during progressive playback (the muxer may rewrite the file mid-stream).
-    private let videoCodecToken: String?
+    /// When set, served `.m3u8` playlists are repaired on the fly — this FFmpeg build's dash muxer
+    /// emits an empty video CODECS token and no VIDEO-RANGE/DV signaling. Doing it at serve time is
+    /// race-free during progressive playback (the muxer rewrites the files mid-stream).
+    private let signaling: VideoSignaling?
 
     private let queue = DispatchQueue(label: "media.nuvio.hls-server")
     private let lock = NSLock()
@@ -31,9 +31,9 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
 
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
-    init(rootDir: URL, videoCodecToken: String? = nil) {
+    init(rootDir: URL, signaling: VideoSignaling? = nil) {
         self.rootDir = rootDir
-        self.videoCodecToken = videoCodecToken
+        self.signaling = signaling
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
@@ -178,7 +178,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         // master CODECS repair + EVENT tagging + TARGETDURATION repair for real-world GOPs.
         if name.hasSuffix(".m3u8"), let text = String(data: data, encoding: .utf8) {
             var fixed = text
-            if let videoCodecToken { fixed = Self.rewriteMasterCodecs(fixed, videoToken: videoCodecToken) }
+            if let signaling { fixed = Self.rewriteMasterSignaling(fixed, signaling: signaling) }
             fixed = Self.tagEventPlaylist(fixed)
             fixed = Self.fixTargetDuration(fixed)
             send(status: "200 OK", contentType: ctype, body: Data(fixed.utf8), on: connection, extraHeaders: ["Accept-Ranges": "bytes"], requestPath: name)
@@ -215,18 +215,29 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         connection.send(content: out, completion: .contentProcessed { _ in connection.cancel() })
     }
 
-    /// Rewrite the first (video) token of every `CODECS="…"` on an `#EXT-X-STREAM-INF` line to
-    /// `videoToken`. Media playlists have no such line, so this is a no-op on them.
-    private static func rewriteMasterCodecs(_ text: String, videoToken: String) -> String {
-        guard !videoToken.isEmpty else { return text }
-        return text.components(separatedBy: "\n").map { line -> String in
-            guard line.hasPrefix("#EXT-X-STREAM-INF:"),
-                  let open = line.range(of: "CODECS=\""),
-                  let close = line[open.upperBound...].firstIndex(of: "\"") else { return line }
-            var tokens = line[open.upperBound..<close].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-            if tokens.isEmpty { tokens = [videoToken] } else { tokens[0] = videoToken }
-            tokens = tokens.filter { !$0.isEmpty }   // an empty audio token would also invalidate CODECS
-            return line.replacingCharacters(in: open.upperBound..<close, with: tokens.joined(separator: ","))
+    /// Repair every `#EXT-X-STREAM-INF` line: replace the first (video) CODECS token with the full
+    /// RFC 6381 string, and append SUPPLEMENTAL-CODECS / VIDEO-RANGE when the content calls for them
+    /// (required by Apple's HLS authoring spec; DV won't engage without the supplemental signaling).
+    /// Media playlists have no such line, so this is a no-op on them.
+    private static func rewriteMasterSignaling(_ text: String, signaling: VideoSignaling) -> String {
+        text.components(separatedBy: "\n").map { line -> String in
+            guard line.hasPrefix("#EXT-X-STREAM-INF:") else { return line }
+            var out = line
+            if !signaling.codecs.isEmpty,
+               let open = out.range(of: "CODECS=\""),
+               let close = out[open.upperBound...].firstIndex(of: "\"") {
+                var tokens = out[open.upperBound..<close].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+                if tokens.isEmpty { tokens = [signaling.codecs] } else { tokens[0] = signaling.codecs }
+                tokens = tokens.filter { !$0.isEmpty }   // an empty audio token would also invalidate CODECS
+                out = out.replacingCharacters(in: open.upperBound..<close, with: tokens.joined(separator: ","))
+            }
+            if let supp = signaling.supplementalCodecs, !out.contains("SUPPLEMENTAL-CODECS") {
+                out += ",SUPPLEMENTAL-CODECS=\"\(supp)\""
+            }
+            if let range = signaling.videoRange, !out.contains("VIDEO-RANGE") {
+                out += ",VIDEO-RANGE=\(range)"
+            }
+            return out
         }.joined(separator: "\n")
     }
 
