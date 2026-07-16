@@ -81,30 +81,22 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     // MARK: - Progressive startup
 
-    /// Poll the remux output until enough of the stream exists to start playback: the playlists +
-    /// init segment, and a couple of media segments of head start (joining at the very first segment
-    /// pins AVPlayer to the remux's write edge and it stalls). A finished remux overrides the gate
-    /// (short files may complete with fewer segments than the threshold).
+    /// Poll the remux output until playback can start: the segment map exists (else the source has no
+    /// usable keyframe index → mpv), the init segment is written, and the first media segment is ready
+    /// so AVPlayer's opening requests are instant. The playlist is a COMPLETE VOD list from the first
+    /// fetch (the JIT server synthesizes it from the map), so there is no EVENT ≥3-segment join rule
+    /// anymore; later segments simply block briefly on the JIT server until the remux produces them.
     private func pollForFirstSegment(remux: RemuxSession) {
         pollTask = Task { @MainActor [weak self] in
             let dir = remux.outputDir
             for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
-                // NON-EMPTY, not merely present: the muxer can create a playlist file before filling
-                // it, and AVPlayer rejects a zero-byte master outright ("unsupported URL").
-                let hasCore = Self.fileSize(dir, "master.m3u8") > 0
-                    && Self.fileSize(dir, "media_0.m3u8") > 0
-                    && Self.fileSize(dir, "init-0.mp4") > 0
-                // ≥3 segments before joining: HLS forbids clients starting a live/EVENT playlist with
-                // fewer than 3 completed segments, and tvOS enforces it (-12927 after fetching the
-                // first segment). A finished remux (VOD, ENDLIST present) may start with fewer.
-                // Completed segments only — the muxer's in-progress ".m4s.tmp" must not count, or the
-                // gate opens one segment early and the playlist is still below the live-join minimum.
-                let segments = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
-                    .filter { $0.hasPrefix("seg-0-") && $0.hasSuffix(".m4s") }.count
-                let remuxDone = remux.state == .ready
-                if hasCore && (segments >= 3 || (remuxDone && segments >= 1)) {
+                let hasMap = remux.segmentMap != nil
+                let hasInit = Self.fileSize(dir, "init.mp4") > 0
+                // A finished remux (short clip that is a single segment) finalizes seg-00001 only at EOF.
+                let hasFirst = Self.fileSize(dir, RemuxSession.segmentName(1)) > 0 || remux.state == .ready
+                if hasMap && hasInit && hasFirst {
                     self?.beginPlayback(remux: remux)
                     return
                 }
@@ -120,7 +112,10 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     private func beginPlayback(remux: RemuxSession) {
         guard phase == .preparing, player == nil else { return }
-        let server = LocalHLSServer(rootDir: remux.outputDir, signaling: remux.videoSignaling)
+        guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
+        let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
+                                    signaling: remux.videoSignaling ?? VideoSignaling(codecs: ""),
+                                    audioCodec: remux.audioCodecToken, bandwidth: remux.estimatedBandwidth)
         self.server = server
         server.start(masterName: remux.masterPlaylistName) { [weak self] url in
             guard let self else { return }
@@ -128,6 +123,10 @@ final class NativePlaybackCoordinator: ObservableObject {
             print("[NativePlayer] serving \(url.absoluteString)")
             self.servedURL = url
             let item = AVPlayerItem(url: url)
+            // Bound how far ahead AVPlayer prefetches: over the infinite-bandwidth loopback origin it
+            // would otherwise race minutes past the ~realtime remux frontier and block on segments that
+            // don't exist yet, tripping CFNetwork's request timeout.
+            item.preferredForwardBufferDuration = 24
             let player = AVPlayer(playerItem: item)
             self.playerItem = item
             self.player = player
@@ -140,14 +139,16 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// (some AVPlayer builds reject the full CODECS/SUPPLEMENTAL form at the master stage);
     /// attempt 1 → give up and hand the context to mpv.
     private func handlePrePlaybackItemFailure(player: AVPlayer) {
-        for name in ["master.m3u8", "media_0.m3u8", "media_1.m3u8"] {
+        for name in ["master.m3u8", "media.m3u8"] {
             guard let playlist = server?.renderedPlaylist(named: name) else { continue }
-            // Prefix every line so console filters on "NativePlayer" keep the playlist content.
-            let prefixed = playlist.components(separatedBy: "\n").map { "[NativePlayer] | \($0)" }.joined(separator: "\n")
+            // Prefix every line so console filters on "NativePlayer" keep the playlist content. The
+            // media playlist can be long (one line per segment) — cap the dump.
+            let prefixed = playlist.components(separatedBy: "\n").prefix(40)
+                .map { "[NativePlayer] | \($0)" }.joined(separator: "\n")
             print("[NativePlayer] served \(name) (\(playlist.count) chars):\n\(prefixed)")
         }
         if let dir = remux?.outputDir, let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
-            let listing = names.sorted().map { "\($0)=\(Self.fileSize(dir, $0))b" }.joined(separator: " ")
+            let listing = names.sorted().prefix(24).map { "\($0)=\(Self.fileSize(dir, $0))b" }.joined(separator: " ")
             print("[NativePlayer] output dir: \(listing)")
         }
         guard signalingAttempt == 0, let servedURL else {
@@ -156,16 +157,19 @@ final class NativePlaybackCoordinator: ObservableObject {
             return
         }
         signalingAttempt = 1
-        // Diagnostic retry: video-only master. The device provably plays this media behind a
-        // video-only master, so this splits "audio rendition is the problem" from "EVENT playlist
-        // form is the problem" in a single run.
-        let base = remux?.videoSignaling?.codecs.split(separator: ".").first.map(String.init) ?? "hvc1"
-        server?.setSignaling(VideoSignaling(codecs: base, supplementalCodecs: nil, videoRange: nil, stripAudio: true))
-        print("[NativePlayer] retrying with minimal VIDEO-ONLY signaling CODECS=\(base)")
+        // Retry once with reduced signaling: drop only SUPPLEMENTAL-CODECS (some AVPlayer builds
+        // reject the DV supplemental form at the master stage). The full RFC 6381 CODECS token and
+        // VIDEO-RANGE MUST stay — bare tags are non-compliant, and PQ media without a declared
+        // VIDEO-RANGE is itself rejected on tvOS 27 (the retry would fail for the wrong reason).
+        var reduced = remux?.videoSignaling ?? VideoSignaling(codecs: "hvc1")
+        reduced.supplementalCodecs = nil
+        server?.setSignaling(reduced)
+        print("[NativePlayer] retrying without SUPPLEMENTAL-CODECS (CODECS=\(reduced.codecs) RANGE=\(reduced.videoRange ?? "-"))")
         observeTask?.cancel()
         // Cache-bust so AVPlayer refetches the master (the server ignores query strings).
         let retryURL = URL(string: servedURL.absoluteString + "?r=1") ?? servedURL
         let item = AVPlayerItem(url: retryURL)
+        item.preferredForwardBufferDuration = 24
         playerItem = item
         player.replaceCurrentItem(with: item)
         observePlayback(player: player, item: item)
@@ -197,8 +201,13 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // Nothing ever rendered → retry with minimal signaling, then hand to mpv.
                     if self.lastDurationSec == 0 {
                         self.handlePrePlaybackItemFailure(player: player)
-                        return
+                    } else {
+                        // Failed AFTER playback started — e.g. a forward seek past the linear remux
+                        // frontier that the JIT server fast-503'd until AVPlayer gave up. Hand to mpv
+                        // (which seeks anywhere via its own demuxer) at the current/target position.
+                        self.fallbackMidPlay("item failed mid-play")
                     }
+                    return
                 } else if !readied {
                     // Blind-spot coverage: the item can sit in .unknown forever (bad playlist, codec
                     // rejection) with no state change to observe. Surface why every ~10s.
@@ -230,6 +239,13 @@ final class NativePlaybackCoordinator: ObservableObject {
                             print("[NativePlayer] waiting (\(reason)) at \(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))s")
                             Self.dumpItemLogs(item)
                         }
+                        // Sustained stall (~30s at 3s/tick) the JIT server can't resolve: a seek/resume
+                        // past the linear remux frontier that will take minutes to reach, or a source
+                        // slower than playback. Hand to mpv at the current position rather than spin.
+                        if waitingTicks >= 10 {
+                            self.fallbackMidPlay("stalled ~30s waiting for segments")
+                            return
+                        }
                     } else {
                         waitingTicks = 0
                     }
@@ -251,13 +267,26 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     private func failIfPreplayback(_ stage: String) {
         guard phase != .playing else {
-            // Mid-play remux failure: segments stop appearing and the player will eventually stall.
-            // Mid-stream fallback is Phase 5 — for now make the cause unmissable in the console.
-            print("[NativePlayer] \u{26A0}\u{FE0F} remux failed MID-PLAY at \(stage) — playback will stall (mid-stream fallback lands in Phase 5)")
+            // Mid-play remux failure (e.g. a truncated debrid source): the remaining segments will
+            // never appear, so JIT requests would block until playback stalls. Hand to mpv now rather
+            // than wait for the stall watchdog.
+            print("[NativePlayer] remux failed MID-PLAY at \(stage) — handing to mpv")
+            fallbackMidPlay("remux failed mid-play: \(stage)")
             return
         }
         if case .failed = phase { return }
         print("[NativePlayer] pre-playback failure: \(stage) — falling back to mpv")
         phase = .failed(stage)
+    }
+
+    /// Mid-play escalation to mpv: the native path started but can no longer make progress (a seek past
+    /// the linear remux frontier, or the source truncated). Flipping `phase` to `.failed` makes
+    /// `NativePlayerScreen` call `onFallback(lastPositionSec)`, which re-presents mpv at the same
+    /// position — mpv seeks anywhere via its own demuxer. No-op unless we are actually playing.
+    private func fallbackMidPlay(_ reason: String) {
+        guard phase == .playing else { return }
+        observeTask?.cancel()
+        print("[NativePlayer] mid-play fallback to mpv at \(String(format: "%.1f", lastPositionSec))s — \(reason)")
+        phase = .failed(reason)
     }
 }
