@@ -84,8 +84,8 @@ struct LibraryView: View {
             }
         }
         .fullScreenCover(item: $cloud.playback) { ctx in
-            // `.id` forces a fresh libmpv controller per context (same rule as StreamPickerView).
-            MPVPlayerScreen(context: ctx)
+            // `.id` forces a fresh player per context (same rule as StreamPickerView).
+            PlayerScreen(context: ctx)
                 .ignoresSafeArea()
                 .id(ctx.id)
         }

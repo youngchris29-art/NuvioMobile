@@ -93,6 +93,13 @@ struct SettingsView: View {
                             ) {
                                 model.setEnhancedRenderer(!model.enhancedRenderer)
                             }
+                            SettingsToggleRow(
+                                title: "Native player for Dolby Vision (beta)",
+                                subtitle: "Play Dolby Vision and other compatible files through the native AVPlayer engine for true DV output on Apple TV 4K, falling back to the mpv player for everything else. Under construction \u{2014} no effect yet.",
+                                isOn: model.nativeDolbyVision
+                            ) {
+                                model.setNativeDolbyVision(!model.nativeDolbyVision)
+                            }
                             tuningChipRow(
                                 title: "Streaming Buffer",
                                 options: [(0, "Default"), (64, "64 MB"), (150, "150 MB"), (512, "512 MB")],

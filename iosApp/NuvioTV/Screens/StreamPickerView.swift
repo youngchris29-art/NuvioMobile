@@ -188,7 +188,7 @@ struct StreamPickerView: View {
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
                 // episode's context (a same-position cover would otherwise keep the old libmpv
                 // controller and just ignore the new context).
-                MPVPlayerScreen(context: ctx, onPlayNext: { next in selected = next })
+                PlayerScreen(context: ctx, onPlayNext: { next in selected = next })
                     .ignoresSafeArea()
                     .id(ctx.id)
             }
