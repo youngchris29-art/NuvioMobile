@@ -19,28 +19,43 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let rootDir: URL
     /// Per-session path token; every request must be `/{token}/{file}`.
     let token: String
-    /// When set, served `.m3u8` playlists are repaired on the fly — this FFmpeg build's dash muxer
-    /// emits an empty video CODECS token and no VIDEO-RANGE/DV signaling. Doing it at serve time is
-    /// race-free during progressive playback (the muxer rewrites the files mid-stream).
-    private let signaling: VideoSignaling?
-
     private let queue = DispatchQueue(label: "media.nuvio.hls-server")
     private let lock = NSLock()
     private var listener: NWListener?
     private var _port: UInt16?
+    /// Served `.m3u8` playlists are repaired on the fly using this — this FFmpeg build's dash muxer
+    /// emits an empty video CODECS token and no VIDEO-RANGE/DV signaling. Mutable so the coordinator
+    /// can retry with reduced signaling when a strict AVPlayer rejects the full form.
+    private var _signaling: VideoSignaling?
+    private var _masterName = "master.m3u8"
 
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
     init(rootDir: URL, signaling: VideoSignaling? = nil) {
         self.rootDir = rootDir
-        self.signaling = signaling
+        self._signaling = signaling
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    /// Swap the playlist signaling (used for the minimal-signaling retry).
+    func setSignaling(_ signaling: VideoSignaling?) {
+        lock.lock(); _signaling = signaling; lock.unlock()
+    }
+
+    /// The master playlist exactly as a client would receive it right now (for failure diagnostics).
+    func renderedMasterPlaylist() -> String? {
+        lock.lock(); let signaling = _signaling; let name = _masterName; lock.unlock()
+        guard let text = try? String(contentsOf: rootDir.appendingPathComponent(name), encoding: .utf8) else { return nil }
+        var fixed = text
+        if let signaling { fixed = Self.rewriteMasterSignaling(fixed, signaling: signaling) }
+        return Self.fixTargetDuration(Self.tagEventPlaylist(fixed))
     }
 
     /// Start listening on loopback and return the URL of `masterName` within the served directory,
     /// or nil if no port could be bound. `completion` runs on the main queue.
     func start(masterName: String, completion: @escaping (URL?) -> Void) {
         lock.lock()
+        _masterName = masterName
         guard listener == nil else {
             let existing = _port.map { url(port: $0, path: masterName) }
             lock.unlock()
@@ -177,6 +192,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         // Playlists are small and fetched whole — rewrite them on the fly and serve 200:
         // master CODECS repair + EVENT tagging + TARGETDURATION repair for real-world GOPs.
         if name.hasSuffix(".m3u8"), let text = String(data: data, encoding: .utf8) {
+            lock.lock(); let signaling = _signaling; lock.unlock()
             var fixed = text
             if let signaling { fixed = Self.rewriteMasterSignaling(fixed, signaling: signaling) }
             fixed = Self.tagEventPlaylist(fixed)

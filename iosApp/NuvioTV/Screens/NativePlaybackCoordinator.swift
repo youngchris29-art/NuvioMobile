@@ -33,6 +33,10 @@ final class NativePlaybackCoordinator: ObservableObject {
     private var playerItem: AVPlayerItem?
     private var pollTask: Task<Void, Never>?
     private var observeTask: Task<Void, Never>?
+    private var servedURL: URL?
+    /// 0 = full signaling (RFC 6381 + DV supplemental + range); 1 = minimal (bare sample-entry tag).
+    /// A strict AVPlayer that rejects the full form at the master stage gets one retry at minimal.
+    private var signalingAttempt = 0
 
     init(context: PlaybackContext) {
         self.context = context
@@ -111,6 +115,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             guard let self else { return }
             guard let url else { self.failIfPreplayback("server bind failed"); return }
             print("[NativePlayer] serving \(url.absoluteString)")
+            self.servedURL = url
             let item = AVPlayerItem(url: url)
             let player = AVPlayer(playerItem: item)
             self.playerItem = item
@@ -118,6 +123,31 @@ final class NativePlaybackCoordinator: ObservableObject {
             self.phase = .playing
             self.observePlayback(player: player, item: item)
         }
+    }
+
+    /// Item failed before playback ever started. Attempt 0 → retry once with minimal signaling
+    /// (some AVPlayer builds reject the full CODECS/SUPPLEMENTAL form at the master stage);
+    /// attempt 1 → give up and hand the context to mpv.
+    private func handlePrePlaybackItemFailure(player: AVPlayer) {
+        if let master = server?.renderedMasterPlaylist() {
+            print("[NativePlayer] served master playlist:\n\(master)")
+        }
+        guard signalingAttempt == 0, let servedURL else {
+            print("[NativePlayer] failing over to mpv (item failed before playback started)")
+            phase = .failed("item failed before start")
+            return
+        }
+        signalingAttempt = 1
+        let base = remux?.videoSignaling?.codecs.split(separator: ".").first.map(String.init) ?? "hvc1"
+        server?.setSignaling(VideoSignaling(codecs: base, supplementalCodecs: nil, videoRange: nil))
+        print("[NativePlayer] retrying with minimal signaling CODECS=\(base)")
+        observeTask?.cancel()
+        // Cache-bust so AVPlayer refetches the master (the server ignores query strings).
+        let retryURL = URL(string: servedURL.absoluteString + "?r=1") ?? servedURL
+        let item = AVPlayerItem(url: retryURL)
+        playerItem = item
+        player.replaceCurrentItem(with: item)
+        observePlayback(player: player, item: item)
     }
 
     // MARK: - AVPlayer observation (resume + progress + Trakt)
@@ -143,10 +173,9 @@ final class NativePlaybackCoordinator: ObservableObject {
                 } else if item.status == .failed {
                     print("[NativePlayer] item FAILED — \(item.error?.localizedDescription ?? "unknown")")
                     Self.dumpItemLogs(item)
-                    // Nothing ever rendered → hand this context to mpv instead of a dead screen.
+                    // Nothing ever rendered → retry with minimal signaling, then hand to mpv.
                     if self.lastDurationSec == 0 {
-                        print("[NativePlayer] failing over to mpv (item failed before playback started)")
-                        self.phase = .failed("item failed before start")
+                        self.handlePrePlaybackItemFailure(player: player)
                         return
                     }
                 } else if !readied {
