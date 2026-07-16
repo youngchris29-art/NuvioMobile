@@ -87,15 +87,16 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// (short files may complete with fewer segments than the threshold).
     private func pollForFirstSegment(remux: RemuxSession) {
         pollTask = Task { @MainActor [weak self] in
-            let fm = FileManager.default
             let dir = remux.outputDir
             for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
-                let hasCore = fm.fileExists(atPath: dir.appendingPathComponent("master.m3u8").path)
-                    && fm.fileExists(atPath: dir.appendingPathComponent("media_0.m3u8").path)
-                    && fm.fileExists(atPath: dir.appendingPathComponent("init-0.mp4").path)
-                let segments = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix("seg-0-") }.count
+                // NON-EMPTY, not merely present: the muxer can create a playlist file before filling
+                // it, and AVPlayer rejects a zero-byte master outright ("unsupported URL").
+                let hasCore = Self.fileSize(dir, "master.m3u8") > 0
+                    && Self.fileSize(dir, "media_0.m3u8") > 0
+                    && Self.fileSize(dir, "init-0.mp4") > 0
+                let segments = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix("seg-0-") }.count
                 let remuxDone = remux.state == .ready
                 if hasCore && (segments >= 2 || (remuxDone && segments >= 1)) {
                     self?.beginPlayback(remux: remux)
@@ -105,6 +106,10 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
             self?.failIfPreplayback("no segments produced")
         }
+    }
+
+    private static func fileSize(_ dir: URL, _ name: String) -> Int {
+        ((try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(name).path))?[.size] as? Int) ?? 0
     }
 
     private func beginPlayback(remux: RemuxSession) {
@@ -130,7 +135,11 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// attempt 1 → give up and hand the context to mpv.
     private func handlePrePlaybackItemFailure(player: AVPlayer) {
         if let master = server?.renderedMasterPlaylist() {
-            print("[NativePlayer] served master playlist:\n\(master)")
+            print("[NativePlayer] served master playlist (\(master.count) chars):\n\(master)")
+        }
+        if let dir = remux?.outputDir, let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
+            let listing = names.sorted().map { "\($0)=\(Self.fileSize(dir, $0))b" }.joined(separator: " ")
+            print("[NativePlayer] output dir: \(listing)")
         }
         guard signalingAttempt == 0, let servedURL else {
             print("[NativePlayer] failing over to mpv (item failed before playback started)")
