@@ -96,9 +96,12 @@ final class NativePlaybackCoordinator: ObservableObject {
                 let hasCore = Self.fileSize(dir, "master.m3u8") > 0
                     && Self.fileSize(dir, "media_0.m3u8") > 0
                     && Self.fileSize(dir, "init-0.mp4") > 0
+                // ≥3 segments before joining: HLS forbids clients starting a live/EVENT playlist with
+                // fewer than 3 completed segments, and tvOS enforces it (-12927 after fetching the
+                // first segment). A finished remux (VOD, ENDLIST present) may start with fewer.
                 let segments = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix("seg-0-") }.count
                 let remuxDone = remux.state == .ready
-                if hasCore && (segments >= 2 || (remuxDone && segments >= 1)) {
+                if hasCore && (segments >= 3 || (remuxDone && segments >= 1)) {
                     self?.beginPlayback(remux: remux)
                     return
                 }

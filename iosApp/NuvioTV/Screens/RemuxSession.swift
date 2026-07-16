@@ -314,10 +314,12 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         }
     }
 
-    /// Full master-playlist signaling for the video track, per Apple's HLS authoring spec.
+    /// Full master-playlist signaling for the video track, per Apple's HLS authoring spec —
+    /// EXCEPT `VIDEO-RANGE`: tvOS 27 rejects a master carrying `VIDEO-RANGE=PQ` at parse time
+    /// ("unsupported URL", confirmed on-device with the request log: master fetched, nothing else).
+    /// HDR/DV engage from the in-stream color tags and the dvvC box + SUPPLEMENTAL-CODECS instead.
     private static func videoSignaling(_ par: UnsafeMutablePointer<AVCodecParameters>) -> VideoSignaling {
-        let trc = par.pointee.color_trc
-        let range: String? = trc == AVCOL_TRC_SMPTE2084 ? "PQ" : (trc == AVCOL_TRC_ARIB_STD_B67 ? "HLG" : nil)
+        let range: String? = nil
         let dovi = doviRecord(par)
 
         switch par.pointee.codec_id {
@@ -325,13 +327,13 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             if let dovi, dovi.dv_profile == 5 {
                 // P5 has no cross-compatible base layer — the DV string IS the codec string.
                 return VideoSignaling(codecs: String(format: "dvh1.05.%02d", dovi.dv_level),
-                                      supplementalCodecs: nil, videoRange: "PQ")
+                                      supplementalCodecs: nil, videoRange: range)
             }
             let base = hevcCodecString(par)
             if let dovi, dovi.dv_profile == 8 {
                 return VideoSignaling(codecs: base,
                                       supplementalCodecs: String(format: "dvh1.08.%02d/db4h", dovi.dv_level),
-                                      videoRange: "PQ")
+                                      videoRange: range)
             }
             return VideoSignaling(codecs: base, supplementalCodecs: nil, videoRange: range)
         case AV_CODEC_ID_H264:
