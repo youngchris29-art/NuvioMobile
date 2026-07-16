@@ -242,7 +242,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// (required by Apple's HLS authoring spec; DV won't engage without the supplemental signaling).
     /// Media playlists have no such line, so this is a no-op on them.
     private static func rewriteMasterSignaling(_ text: String, signaling: VideoSignaling) -> String {
-        text.components(separatedBy: "\n").map { line -> String in
+        text.components(separatedBy: "\n").compactMap { line -> String? in
+            if signaling.stripAudio, line.hasPrefix("#EXT-X-MEDIA:") { return nil }
             guard line.hasPrefix("#EXT-X-STREAM-INF:") else { return line }
             var out = line
             if !signaling.codecs.isEmpty,
@@ -251,7 +252,11 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                 var tokens = out[open.upperBound..<close].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
                 if tokens.isEmpty { tokens = [signaling.codecs] } else { tokens[0] = signaling.codecs }
                 tokens = tokens.filter { !$0.isEmpty }   // an empty audio token would also invalidate CODECS
+                if signaling.stripAudio { tokens = [signaling.codecs] }
                 out = out.replacingCharacters(in: open.upperBound..<close, with: tokens.joined(separator: ","))
+            }
+            if signaling.stripAudio, let audioAttr = out.range(of: ",AUDIO=\"group_A1\"") {
+                out.removeSubrange(audioAttr)
             }
             if let supp = signaling.supplementalCodecs, !out.contains("SUPPLEMENTAL-CODECS") {
                 out += ",SUPPLEMENTAL-CODECS=\"\(supp)\""

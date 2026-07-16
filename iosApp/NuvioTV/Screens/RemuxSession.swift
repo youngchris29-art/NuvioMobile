@@ -26,6 +26,8 @@ nonisolated struct VideoSignaling: Sendable {
     var codecs: String                 // e.g. "hvc1.2.4.L153.B0" or "dvh1.05.06"
     var supplementalCodecs: String?    // e.g. "dvh1.08.06/db4h" (DV P8 over HDR10)
     var videoRange: String?            // "PQ" / "HLG"
+    /// Diagnostic: serve a video-only master (drop the audio rendition + audio codec token).
+    var stripAudio = false
 }
 
 nonisolated final class RemuxSession: @unchecked Sendable {

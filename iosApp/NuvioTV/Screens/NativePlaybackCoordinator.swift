@@ -156,9 +156,12 @@ final class NativePlaybackCoordinator: ObservableObject {
             return
         }
         signalingAttempt = 1
+        // Diagnostic retry: video-only master. The device provably plays this media behind a
+        // video-only master, so this splits "audio rendition is the problem" from "EVENT playlist
+        // form is the problem" in a single run.
         let base = remux?.videoSignaling?.codecs.split(separator: ".").first.map(String.init) ?? "hvc1"
-        server?.setSignaling(VideoSignaling(codecs: base, supplementalCodecs: nil, videoRange: nil))
-        print("[NativePlayer] retrying with minimal signaling CODECS=\(base)")
+        server?.setSignaling(VideoSignaling(codecs: base, supplementalCodecs: nil, videoRange: nil, stripAudio: true))
+        print("[NativePlayer] retrying with minimal VIDEO-ONLY signaling CODECS=\(base)")
         observeTask?.cancel()
         // Cache-bust so AVPlayer refetches the master (the server ignores query strings).
         let retryURL = URL(string: servedURL.absoluteString + "?r=1") ?? servedURL
