@@ -66,7 +66,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         remux = nil
         player = nil
         playerItem = nil
-        if let dir { try? FileManager.default.removeItem(at: dir) }
+        // debug.keepRemuxOutput=1 preserves the emitted files so they can be pulled off the device
+        // (devicectl copy from the app container) and inspected with ffprobe on a Mac.
+        if let dir, !UserDefaults.standard.bool(forKey: "debug.keepRemuxOutput") {
+            try? FileManager.default.removeItem(at: dir)
+        } else if let dir {
+            print("[NativePlayer] kept remux output at \(dir.path)")
+        }
     }
 
     // MARK: - Progressive startup

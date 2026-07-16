@@ -103,6 +103,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         }
         lock.lock(); _videoToken = videoCodecToken(videoPar); lock.unlock()
 
+        // Some sources carry the video with EMPTY extradata (parameter sets only inband). The init
+        // segment then has no valid hvcC/avcC decoder configuration and AVPlayer rejects the stream
+        // with CoreMediaErrorDomain -12927. Recover the parameter sets from the bitstream, then
+        // rewind so the copy loop starts from the beginning.
+        if videoPar.pointee.extradata_size == 0 {
+            print("[Remux] video extradata missing — extracting parameter sets from bitstream")
+            guard extractVideoExtradata(input: input, videoIndex: videoIn) else {
+                return fail("extract extradata")
+            }
+            guard av_seek_frame(input, Int32(videoIn), 0, AVSEEK_FLAG_BACKWARD) >= 0 else {
+                return fail("rewind after extradata extraction")
+            }
+        }
+
         // --- Allocate the dash output -------------------------------------------------------------
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         let manifestPath = outputDir.appendingPathComponent("manifest.mpd").path
@@ -126,6 +140,15 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         }
         guard addStream(videoIn, tag: videoOutputTag(videoPar)) else { return fail("add video stream") }
         if audioIn >= 0 { _ = addStream(audioIn, tag: 0) }   // keep the muxer's default audio tag (mp4a)
+
+        // Stream fingerprint for device debugging: extradata_size==0 on video means the init segment
+        // will lack a valid hvcC/avcC decoder config and AVPlayer rejects the stream (-12927).
+        for (inIdx, outIdx) in indexMap.sorted(by: { $0.value < $1.value }) {
+            if let par = input.pointee.streams[inIdx]?.pointee.codecpar?.pointee {
+                let codec = avcodec_get_name(par.codec_id).map { String(cString: $0) } ?? "?"
+                print("[Remux] out#\(outIdx) \(codec) \(par.width)x\(par.height) extradata=\(par.extradata_size)b bitrate=\(par.bit_rate)")
+            }
+        }
 
         // dash muxer options — the validated recipe.
         var opts: OpaquePointer?
@@ -190,6 +213,43 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         if writeError { return fail("write_frame") }
         guard av_write_trailer(output) >= 0 else { return fail("write_trailer") }
         setState(.ready)
+    }
+
+    /// Run the video stream's first packets through FFmpeg's `extract_extradata` bitstream filter
+    /// and install the recovered parameter sets on the stream's codecpar. Returns false if none were
+    /// found within a bounded scan.
+    private func extractVideoExtradata(input: UnsafeMutablePointer<AVFormatContext>, videoIndex: Int) -> Bool {
+        guard let stream = input.pointee.streams[videoIndex], let par = stream.pointee.codecpar,
+              let filter = av_bsf_get_by_name("extract_extradata") else { return false }
+        var bsfOpt: UnsafeMutablePointer<AVBSFContext>?
+        guard av_bsf_alloc(filter, &bsfOpt) >= 0, let bsf = bsfOpt else { return false }
+        defer { var b: UnsafeMutablePointer<AVBSFContext>? = bsf; av_bsf_free(&b) }
+        guard avcodec_parameters_copy(bsf.pointee.par_in, par) >= 0 else { return false }
+        bsf.pointee.time_base_in = stream.pointee.time_base
+        guard av_bsf_init(bsf) >= 0 else { return false }
+
+        guard let pkt = av_packet_alloc() else { return false }
+        defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
+
+        for _ in 0..<200 {                                   // bounded scan of the leading packets
+            guard av_read_frame(input, pkt) >= 0 else { return false }
+            if Int(pkt.pointee.stream_index) != videoIndex { av_packet_unref(pkt); continue }
+            guard av_bsf_send_packet(bsf, pkt) >= 0 else { av_packet_unref(pkt); return false }
+            while av_bsf_receive_packet(bsf, pkt) >= 0 {
+                var size = 0
+                if let data = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, &size), size > 0,
+                   let buf = av_mallocz(size + Int(AV_INPUT_BUFFER_PADDING_SIZE)) {
+                    memcpy(buf, data, size)
+                    par.pointee.extradata = buf.assumingMemoryBound(to: UInt8.self)
+                    par.pointee.extradata_size = Int32(size)
+                    print("[Remux] recovered \(size)b of video extradata")
+                    av_packet_unref(pkt)
+                    return true
+                }
+                av_packet_unref(pkt)
+            }
+        }
+        return false
     }
 
     // MARK: - Stream selection / tagging
