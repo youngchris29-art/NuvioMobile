@@ -77,8 +77,13 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         av_log_set_level(AV_LOG_WARNING)
 
         // --- Open + inspect the source ------------------------------------------------------------
+        // +genpts: some sources (sloppy MKV muxes) emit packets with missing PTS/DTS, which poisons
+        // the output fMP4 timeline (AVPlayer rejects it with CoreMediaErrorDomain -12927).
+        var inOpts: OpaquePointer?
+        av_dict_set(&inOpts, "fflags", "+genpts", 0)
+        defer { av_dict_free(&inOpts) }
         var inCtx: UnsafeMutablePointer<AVFormatContext>?
-        guard avformat_open_input(&inCtx, config.url.absoluteString, nil, nil) == 0, let input = inCtx else {
+        guard avformat_open_input(&inCtx, config.url.absoluteString, nil, &inOpts) == 0, let input = inCtx else {
             return fail("avformat_open_input")
         }
         defer { var p: UnsafeMutablePointer<AVFormatContext>? = input; avformat_close_input(&p) }
@@ -140,6 +145,17 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard let pkt = av_packet_alloc() else { return fail("packet_alloc") }
         defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
 
+        // Per-output-stream synthetic DTS state (output timebase) for sources whose packets arrive
+        // without timestamps even after +genpts. Real MKVs sometimes carry PTS-only packets; the mp4
+        // muxer requires a monotonic DTS or it writes a timeline AVPlayer rejects (-12927). Healthy
+        // streams are passed through untouched — synthesis only engages once a stream actually
+        // produces a timestamp-less packet.
+        let noTS = Int64.min                                     // AV_NOPTS_VALUE
+        let nStreams = Int(output.pointee.nb_streams)
+        var nextDTS = [Int64](repeating: 0, count: nStreams)
+        var synthesizing = [Bool](repeating: false, count: nStreams)
+        var synthesized = 0
+
         var writeError = false
         while !isCancelled() {
             if av_read_frame(input, pkt) < 0 { break }      // EOF or read error
@@ -150,10 +166,25 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 av_packet_rescale_ts(pkt, inS.pointee.time_base, outS.pointee.time_base)
                 pkt.pointee.stream_index = Int32(outIdx)
                 pkt.pointee.pos = -1
+
+                if pkt.pointee.dts == noTS { synthesizing[outIdx] = true }
+                if synthesizing[outIdx] {
+                    if pkt.pointee.dts == noTS {
+                        pkt.pointee.dts = pkt.pointee.pts == noTS ? nextDTS[outIdx] : min(pkt.pointee.pts, nextDTS[outIdx])
+                        synthesized += 1
+                    }
+                    if pkt.pointee.dts < nextDTS[outIdx] { pkt.pointee.dts = nextDTS[outIdx] }   // monotonic DTS
+                    if pkt.pointee.pts == noTS || pkt.pointee.pts < pkt.pointee.dts {
+                        pkt.pointee.pts = pkt.pointee.dts
+                    }
+                }
+                nextDTS[outIdx] = (pkt.pointee.dts == noTS ? nextDTS[outIdx] : pkt.pointee.dts) + max(pkt.pointee.duration, 1)
+
                 if av_interleaved_write_frame(output, pkt) < 0 { writeError = true; av_packet_unref(pkt); break }
             }
             av_packet_unref(pkt)
         }
+        if synthesized > 0 { print("[Remux] synthesized timestamps for \(synthesized) packets (source had missing PTS/DTS)") }
 
         if isCancelled() { return fail("cancelled") }
         if writeError { return fail("write_frame") }
