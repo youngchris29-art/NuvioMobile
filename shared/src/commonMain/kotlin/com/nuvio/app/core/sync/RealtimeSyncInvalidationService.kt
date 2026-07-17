@@ -10,11 +10,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -28,8 +30,6 @@ import kotlinx.serialization.json.jsonPrimitive
 
 private const val REALTIME_INVALIDATION_COALESCE_MS = 500L
 private const val REALTIME_SUBSCRIBE_TIMEOUT_MS = 15_000L
-private const val REALTIME_RETRY_BASE_DELAY_MS = 1_000L
-private const val REALTIME_RETRY_MAX_DELAY_MS = 10_000L
 
 object RealtimeSyncInvalidationService {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -56,9 +56,31 @@ object RealtimeSyncInvalidationService {
         activeUserId = userId
         activeProfileId = profileId
         subscriptionJob = scope.launch {
-            var attempt = 1
+            val channelName = "sync-invalidations:$userId:$profileId"
+            var consecutiveFailures = 0
             while (isActive) {
-                val channelName = "sync-invalidations:$userId:$profileId:$attempt"
+                // Gate on a cheap plain-HTTP probe before touching supabase-kt: once its
+                // realtime plugin sees a failed connect it schedules an internal reconnect
+                // loop that retries forever, so against a down endpoint it must never engage.
+                val unhealthyReason = RealtimeEndpointProbe.unhealthyReason()
+                if (unhealthyReason != null) {
+                    consecutiveFailures += 1
+                    val retryDelay = RealtimeSyncRetryPolicy.delayMs(consecutiveFailures)
+                    if (consecutiveFailures == 1) {
+                        log.w {
+                            "Realtime endpoint unavailable ($unhealthyReason); live sync paused, " +
+                                "probing again in ${retryDelay}ms (periodic/foreground pulls still run)"
+                        }
+                    } else {
+                        log.d {
+                            "Realtime endpoint still unavailable ($unhealthyReason) " +
+                                "failures=$consecutiveFailures nextProbeIn=${retryDelay}ms"
+                        }
+                    }
+                    delay(retryDelay)
+                    continue
+                }
+
                 val channel = SupabaseProvider.client.channel(channelName)
                 val realtime = channel.realtime
                 val realtimeStatusJob = launch {
@@ -80,40 +102,55 @@ object RealtimeSyncInvalidationService {
                     handleInsert(profileId, action.record)
                 }.launchIn(this)
 
+                var failure: Throwable? = null
                 try {
-                    log.i { "Subscribing to sync invalidations channel=$channelName attempt=$attempt user=$userId profile=$profileId" }
+                    log.i { "Subscribing to sync invalidations channel=$channelName user=$userId profile=$profileId" }
                     withTimeout(REALTIME_SUBSCRIBE_TIMEOUT_MS) {
                         channel.subscribe(blockUntilSubscribed = true)
                     }
+                    consecutiveFailures = 0
                     log.i { "Subscribed to sync invalidations channel=$channelName profile=$profileId" }
                     awaitCancellation()
                 } catch (error: TimeoutCancellationException) {
-                    log.e(error) {
-                        "Timed out subscribing to sync invalidations channel=$channelName " +
-                            "realtimeStatus=${realtime.status.value} channelStatus=${channel.status.value}"
-                    }
+                    failure = error
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
-                    log.e(error) {
-                        "Failed to subscribe to sync invalidations channel=$channelName " +
-                            "realtimeStatus=${realtime.status.value} channelStatus=${channel.status.value}"
-                    }
+                    failure = error
                 } finally {
                     changesJob.cancel()
                     realtimeStatusJob.cancel()
                     channelStatusJob.cancel()
-                    runCatching { channel.unsubscribe() }
-                        .onSuccess { log.i { "Unsubscribed from sync invalidations channel=$channelName" } }
-                        .onFailure { error -> log.w(error) { "Failed to unsubscribe from sync invalidations channel=$channelName" } }
+                    // Evict the channel from the client's registry — a bare unsubscribe() would
+                    // leave it cached there and every later reconnect would try to rejoin it.
+                    // With no subscriptions left the client also closes the websocket instead of
+                    // holding an idle connection between retries.
+                    withContext(NonCancellable) {
+                        runCatching { realtime.removeChannel(channel) }
+                            .onFailure { error ->
+                                log.d { "Failed to remove realtime channel $channelName: ${error.message}" }
+                            }
+                    }
                 }
 
-                if (isActive) {
-                    val retryDelay = (REALTIME_RETRY_BASE_DELAY_MS * attempt)
-                        .coerceAtMost(REALTIME_RETRY_MAX_DELAY_MS)
-                    log.w { "Retrying sync invalidations subscription in ${retryDelay}ms profile=$profileId nextAttempt=${attempt + 1}" }
+                if (failure != null && isActive) {
+                    consecutiveFailures += 1
+                    val retryDelay = RealtimeSyncRetryPolicy.delayMs(consecutiveFailures)
+                    val reason = describeFailure(failure)
+                    // Routine failures log as a single line; the throwable (which the Apple log
+                    // writer prints as a full stack trace) is only attached to the first
+                    // unexpected failure of a streak.
+                    if (consecutiveFailures == 1 && failure !is TimeoutCancellationException) {
+                        log.w(failure) {
+                            "Realtime subscribe failed ($reason) channel=$channelName; retrying in ${retryDelay}ms"
+                        }
+                    } else {
+                        log.w {
+                            "Realtime subscribe failed ($reason) channel=$channelName " +
+                                "failures=$consecutiveFailures; retrying in ${retryDelay}ms"
+                        }
+                    }
                     delay(retryDelay)
-                    attempt += 1
                 }
             }
         }
@@ -130,6 +167,13 @@ object RealtimeSyncInvalidationService {
         activeUserId = null
         activeProfileId = null
         pendingSurfaces.clear()
+    }
+
+    private fun describeFailure(error: Throwable): String = when (error) {
+        is TimeoutCancellationException ->
+            "timed out after ${REALTIME_SUBSCRIBE_TIMEOUT_MS}ms waiting for subscription"
+        else -> listOfNotNull(error::class.simpleName ?: "error", error.message?.take(160))
+            .joinToString(": ")
     }
 
     private fun handleInsert(profileId: Int, record: JsonObject) {

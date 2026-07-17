@@ -5,16 +5,24 @@ import io.github.jan.supabase.annotations.SupabaseInternal
 import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.functions.Functions
+import io.github.jan.supabase.logging.LogLevel
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.realtime.Realtime
 import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.http.HttpHeaders
 import io.ktor.http.takeFrom
+import kotlin.time.Duration.Companion.seconds
 
 object SupabaseProvider {
     @OptIn(SupabaseInternal::class)
     val client by lazy {
+        // The realtime plugin logs every failed connect/receive at ERROR *with the throwable*,
+        // and Kermit's Apple writer println()s throwable stack traces straight to stdout — so a
+        // websocket drop (or a down endpoint) becomes steady multi-screen console churn.
+        // Silence the plugin logger; RealtimeSyncInvalidationService logs client/channel status
+        // transitions and failure summaries itself.
+        Realtime.logger.setLevel(LogLevel.NONE)
         val userAgent = "NuvioMobile/${AppVersionConfig.VERSION_NAME.ifBlank { "dev" }}"
         createSupabaseClient(
             supabaseUrl = SupabaseConfig.URL,
@@ -50,7 +58,12 @@ object SupabaseProvider {
             install(Auth)
             install(Postgrest)
             install(Functions)
-            install(Realtime)
+            install(Realtime) {
+                // supabase-kt retries a failed websocket on a fixed cadence forever (no
+                // backoff); the 7s default hammers the endpoint during outages. Realtime is
+                // best-effort here (periodic/foreground pulls cover sync), so reconnect gently.
+                reconnectDelay = 30.seconds
+            }
         }
     }
 }
