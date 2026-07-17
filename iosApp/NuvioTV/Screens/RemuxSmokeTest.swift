@@ -49,6 +49,40 @@ nonisolated enum RemuxSmokeTest {
             self.coordinator = coordinator
             coordinator.start()
             observe(coordinator, attempt: 0)
+            scheduleAudioSwitchIfRequested(coordinator)
+        }
+    }
+
+    /// debug.remuxSmokeAudioSwitchSec=N (float): N seconds after playback is up (re-armed while
+    /// still preparing), log the audio-track list and switch to the first non-selected playable
+    /// track (D4 session rebuild), then re-observe — the log shows teardown, the rebuilt session
+    /// muxing the new stream index, and the position resume.
+    @MainActor
+    private static func scheduleAudioSwitchIfRequested(_ coordinator: NativePlaybackCoordinator, retries: Int = 40) {
+        let delay = UserDefaults.standard.double(forKey: "debug.remuxSmokeAudioSwitchSec")
+        guard delay > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak coordinator] in
+            guard let coordinator else { return }
+            guard coordinator.phase == .playing, coordinator.lastPositionSec > 0.5 else {
+                if retries > 0 {          // still preparing/buffering — try again shortly
+                    scheduleAudioSwitchIfRequested(coordinator, retries: retries - 1)
+                } else {
+                    print("[RemuxSmoke] audio switch: playback never became ready — not exercised")
+                }
+                return
+            }
+            let tracks = coordinator.audioTracks
+            print("[RemuxSmoke] audio tracks: " + (tracks.isEmpty ? "none" : tracks.map {
+                "#\($0.streamIndex)\($0.selected ? "*" : "")=\($0.name)\($0.playable ? "" : " (unplayable)")"
+            }.joined(separator: " | ")))
+            guard let target = tracks.first(where: { !$0.selected && $0.playable }) else {
+                print("[RemuxSmoke] no alternate playable audio track — switch not exercised")
+                return
+            }
+            let before = coordinator.lastPositionSec
+            print("[RemuxSmoke] SWITCHING AUDIO → #\(target.streamIndex) (\(target.name)) at pos \(String(format: "%.1f", before))s")
+            coordinator.selectAudioTrack(streamIndex: target.streamIndex)
+            observe(coordinator, attempt: 0)
         }
     }
 

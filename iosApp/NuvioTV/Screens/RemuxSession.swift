@@ -42,6 +42,21 @@ nonisolated struct VideoSignaling: Sendable {
     var frameRate: Double = 0          // FRAME-RATE when known
 }
 
+/// One audio stream of the source, as the remux worker inspected it (D4 audio track switching).
+/// `playable` means this session type can serve it — stream-copyable or TrueHD/DTS-transcodable;
+/// `selected` marks the track this session actually muxes. `streamIndex` is the avformat stream
+/// index, stable across sessions on the same URL, so the player UI can hand it to a rebuilt
+/// session's `Config.audioStreamIndex`.
+nonisolated struct RemuxAudioTrack: Equatable, Sendable {
+    let streamIndex: Int
+    let codec: String        // canonical FFmpeg name: "aac", "eac3", "truehd", "dts", ...
+    let channels: Int
+    let language: String?    // ISO 639 tag from container metadata, when tagged
+    let title: String?       // container track title ("Commentary", "Surround 5.1", ...), when tagged
+    let playable: Bool
+    var selected: Bool
+}
+
 nonisolated final class RemuxSession: @unchecked Sendable {
     enum State: Equatable, Sendable {
         case idle
@@ -53,6 +68,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     struct Config: Sendable {
         let url: URL
         var segmentDurationSec: Int = 4
+        /// avformat stream index of the audio track to mux (D4 track switching — the player UI
+        /// passes the index picked from `audioTracks` into the rebuilt session). nil = automatic:
+        /// first stream-copyable track, else first transcodable one.
+        var audioStreamIndex: Int? = nil
     }
 
     let config: Config
@@ -68,6 +87,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private var _segmentMap: SegmentMap?
     private var _hasAudio = false
     private var _audioCodecToken: String?
+    private var _audioTracks: [RemuxAudioTrack] = []
     private var _estimatedBandwidth = 20_000_000
     private var onStateChange: (@Sendable (State) -> Void)?
     private let queue = DispatchQueue(label: "media.nuvio.remux", qos: .userInitiated)
@@ -137,6 +157,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
     /// RFC 6381 audio codec token for the master CODECS list (e.g. "mp4a.40.2", "ac-3", "ec-3"), or nil.
     var audioCodecToken: String? { lock.lock(); defer { lock.unlock() }; return _audioCodecToken }
+
+    /// Every audio stream the source carries, with playability and which one this session muxes —
+    /// the data behind the player's Audio menu (D4). Populated with the signaling, before the map.
+    var audioTracks: [RemuxAudioTrack] { lock.lock(); defer { lock.unlock() }; return _audioTracks }
 
     /// Rough peak bandwidth for the master EXT-X-STREAM-INF (single variant — advisory, no ABR).
     var estimatedBandwidth: Int { lock.lock(); defer { lock.unlock() }; return _estimatedBandwidth }
@@ -214,14 +238,25 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard avformat_find_stream_info(input, nil) >= 0 else { return fail("find_stream_info") }
 
         var videoIn = -1, audioCopyIn = -1, audioTranscodeIn = -1
+        var foundAudio: [RemuxAudioTrack] = []
         for i in 0..<Int(input.pointee.nb_streams) {
             guard let s = input.pointee.streams[i], let par = s.pointee.codecpar else { continue }
             switch par.pointee.codec_type {
             case AVMEDIA_TYPE_VIDEO where videoIn < 0: videoIn = i
             case AVMEDIA_TYPE_AUDIO:
-                if audioCopyIn < 0, isCopyableAudio(par.pointee.codec_id) {
+                let copyable = isCopyableAudio(par.pointee.codec_id)
+                let transcodable = AudioTranscoder.isTranscodable(par.pointee.codec_id)
+                foundAudio.append(RemuxAudioTrack(
+                    streamIndex: i,
+                    codec: avcodec_get_name(par.pointee.codec_id).map { String(cString: $0) } ?? "",
+                    channels: Int(par.pointee.ch_layout.nb_channels),
+                    language: Self.metadataValue(s.pointee.metadata, "language"),
+                    title: Self.metadataValue(s.pointee.metadata, "title"),
+                    playable: copyable || transcodable,
+                    selected: false))
+                if audioCopyIn < 0, copyable {
                     audioCopyIn = i
-                } else if audioTranscodeIn < 0, AudioTranscoder.isTranscodable(par.pointee.codec_id) {
+                } else if audioTranscodeIn < 0, transcodable {
                     audioTranscodeIn = i
                 }
             default: break
@@ -229,9 +264,22 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         }
         // Prefer a stream-copyable track (bit-exact, zero CPU); with none present, transcode a
         // TrueHD/DTS track to AAC (Phase 4 v2 — AVPlayer can't decode them and this FFmpeg build
-        // ships no AC3/EAC3 encoder). See AudioTranscoder.
-        let audioIn = audioCopyIn >= 0 ? audioCopyIn : audioTranscodeIn
-        let audioTranscodes = audioCopyIn < 0 && audioTranscodeIn >= 0
+        // ships no AC3/EAC3 encoder). See AudioTranscoder. An explicit choice from the player's
+        // Audio menu (D4 — the rebuilt session's config carries the picked stream index) overrides
+        // the automatic pick; a stale/unplayable request falls back to automatic rather than failing
+        // the session.
+        var audioIn = audioCopyIn >= 0 ? audioCopyIn : audioTranscodeIn
+        var audioTranscodes = audioCopyIn < 0 && audioTranscodeIn >= 0
+        if let want = config.audioStreamIndex {
+            if foundAudio.contains(where: { $0.streamIndex == want && $0.playable }),
+               let wantPar = input.pointee.streams[want]?.pointee.codecpar {
+                audioIn = want
+                audioTranscodes = !isCopyableAudio(wantPar.pointee.codec_id)
+            } else {
+                print("[Remux] requested audio stream \(want) missing/unplayable — using automatic pick")
+            }
+        }
+        for i in foundAudio.indices { foundAudio[i].selected = foundAudio[i].streamIndex == audioIn }
         guard videoIn >= 0, let videoPar = input.pointee.streams[videoIn]?.pointee.codecpar else {
             return fail("no video stream")
         }
@@ -301,12 +349,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         _signaling = signaling
         _hasAudio = audioIn >= 0
         _audioCodecToken = audioToken
+        _audioTracks = foundAudio
         _estimatedBandwidth = bandwidth
         lock.unlock()
         print("[Remux] signaling CODECS=\(signaling.codecs)"
               + (signaling.supplementalCodecs.map { " SUPPLEMENTAL=\($0)" } ?? "")
               + (audioToken.map { " AUDIO=\($0)" } ?? "")
               + (audioTranscodes ? " (transcode)" : ""))
+        if foundAudio.count > 1 {
+            let listing = foundAudio.map {
+                "#\($0.streamIndex)\($0.selected ? "*" : "") \($0.codec) \($0.channels)ch"
+                + ($0.language.map { " \($0)" } ?? "") + ($0.playable ? "" : " UNPLAYABLE")
+            }.joined(separator: " | ")
+            print("[Remux] audio tracks: \(listing)")
+        }
 
         // --- Build the up-front VOD segment map from the source keyframe index --------------------
         // The owned segmenter cuts fragments at exactly these keyframe boundaries, so the synthesized
@@ -903,6 +959,13 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     }
 
     // MARK: - Stream selection / tagging
+
+    /// Non-empty value of a stream-metadata key ("language", "title"), or nil.
+    private static func metadataValue(_ dict: OpaquePointer?, _ key: String) -> String? {
+        guard let entry = av_dict_get(dict, key, nil, 0), let value = entry.pointee.value else { return nil }
+        let s = String(cString: value)
+        return s.isEmpty ? nil : s
+    }
 
     private func isCopyableAudio(_ id: AVCodecID) -> Bool {
         switch id {

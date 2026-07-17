@@ -53,7 +53,7 @@ struct NativePlayerScreen: View {
             case .preparing:
                 VStack(spacing: 20) {
                     ProgressView().scaleEffect(1.6)
-                    Text("Preparing Dolby Vision\u{2026}")
+                    Text(coordinator.preparingLabel)
                         .font(.callout)
                         .foregroundStyle(.white.opacity(0.7))
                 }
@@ -63,11 +63,15 @@ struct NativePlayerScreen: View {
                         player: player,
                         skipPrompt: skipPrompt,
                         upNextReady: upNextActionAvailable,
+                        audioTracks: coordinator.audioTracks,
                         infoModel: info,
                         onSkip: { [weak coordinator] target in
                             coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
                         },
-                        onPlayNow: { [weak upNext] in _ = upNext?.playNow() }
+                        onPlayNow: { [weak upNext] in _ = upNext?.playNow() },
+                        onSelectAudio: { [weak coordinator] streamIndex in
+                            coordinator?.selectAudioTrack(streamIndex: streamIndex)
+                        }
                     )
                     .ignoresSafeArea()
                 }
@@ -175,9 +179,11 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     let player: AVPlayer
     let skipPrompt: SkipPrompt?
     let upNextReady: Bool
+    let audioTracks: [NativeAudioTrack]
     let infoModel: NativeStreamInfoModel
     let onSkip: (Double) -> Void
     let onPlayNow: () -> Void
+    let onSelectAudio: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -197,7 +203,10 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         // actions every SwiftUI update makes the transport bar re-animate them. The skip target is
         // part of the signature so back-to-back segments with the same label still refresh the
         // captured seek position.
-        let signature = "\(skipPrompt.map { "\($0.label)@\($0.targetSec)" } ?? "-")|\(upNextReady)"
+        let audioSignature = audioTracks.map {
+            "\($0.streamIndex)\($0.selected ? "+" : "-")\($0.playable ? "" : "!")"
+        }.joined(separator: ",")
+        let signature = "\(skipPrompt.map { "\($0.label)@\($0.targetSec)" } ?? "-")|\(upNextReady)|\(audioSignature)"
         guard signature != context.coordinator.actionsSignature else { return }
         context.coordinator.actionsSignature = signature
 
@@ -214,6 +223,24 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
                                     image: UIImage(systemName: "forward.end.fill")) { _ in playNow() })
         }
         controller.contextualActions = actions
+
+        // Audio menu (D4): our HLS stream carries exactly ONE audio rendition, so the system audio
+        // panel can't offer the source's other tracks — a transport-bar menu lists them all and a
+        // pick rebuilds the session on that track (NativePlaybackCoordinator.selectAudioTrack).
+        // Unplayable tracks (e.g. PCM) stay visible but disabled, so it's clear why they're absent.
+        if audioTracks.count > 1 {
+            let select = onSelectAudio
+            let items = audioTracks.map { track in
+                UIAction(title: track.name,
+                         attributes: track.playable ? [] : .disabled,
+                         state: track.selected ? .on : .off) { _ in select(track.streamIndex) }
+            }
+            controller.transportBarCustomMenuItems = [
+                UIMenu(title: "Audio", image: UIImage(systemName: "waveform"), children: items),
+            ]
+        } else if !controller.transportBarCustomMenuItems.isEmpty {
+            controller.transportBarCustomMenuItems = []
+        }
     }
 
     final class Coordinator {

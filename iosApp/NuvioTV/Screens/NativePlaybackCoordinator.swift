@@ -8,6 +8,18 @@ import SharedCore
 // available (rather than waiting for the whole file), and owns the AVPlayer lifecycle — resume seek,
 // periodic watch-progress save, and Trakt scrobbling via the shared PlaybackProgressRecorder.
 // See docs/tvos-hybrid-player-plan.md.
+
+/// One entry of the native player's Audio menu (D4): a source audio track with a 10-foot display
+/// name. `streamIndex` is the avformat stream index handed back to the rebuilt RemuxSession when the
+/// user picks this track.
+struct NativeAudioTrack: Identifiable, Equatable {
+    let streamIndex: Int
+    let name: String
+    let playable: Bool
+    let selected: Bool
+    var id: Int { streamIndex }
+}
+
 @MainActor
 final class NativePlaybackCoordinator: ObservableObject {
     enum Phase: Equatable {
@@ -17,6 +29,11 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .preparing
+    /// Source audio tracks for the player's Audio menu (D4) — populated once the remux inspects the
+    /// streams, emptied during an audio-switch rebuild.
+    @Published private(set) var audioTracks: [NativeAudioTrack] = []
+    /// Caption under the preparing spinner — first spin-up vs an audio-switch rebuild.
+    @Published private(set) var preparingLabel = "Preparing Dolby Vision\u{2026}"
     private(set) var player: AVPlayer?
 
     /// Fired ~every few seconds with (position, duration) while playing — the screen forwards it to
@@ -38,6 +55,16 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// 0 = full signaling (RFC 6381 + DV supplemental + range); 1 = minimal (bare sample-entry tag).
     /// A strict AVPlayer that rejects the full form at the master stage gets one retry at minimal.
     private var signalingAttempt = 0
+    /// Resume target for the next readyToPlay — set by an audio-switch rebuild so playback continues
+    /// where it was; takes precedence over the saved watch progress.
+    private var pendingResumeSec: Double?
+    /// Subtitle selection carried across an audio-switch rebuild (media selection dies with the item).
+    private var pendingSubtitleName: String?
+    /// The current item's legible selection group, cached async after readyToPlay so the switch
+    /// teardown can capture the active subtitle synchronously.
+    private var legibleGroup: AVMediaSelectionGroup?
+    /// Trakt scrobble sessions span audio-switch rebuilds — start once, stop once.
+    private var traktStarted = false
     /// Subtitles fetched from installed subtitle addons (OpenSubtitles etc.) — the same source the
     /// mpv player side-loads. Fetched at start(); playback start is gated (briefly, capped) on the
     /// fetch completing, because the VOD master is rendered exactly once — renditions that arrive
@@ -90,13 +117,61 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
-        let remux = RemuxSession(config: .init(url: context.url, segmentDurationSec: 6))
+        launchRemux(audioStreamIndex: nil)
+    }
+
+    /// Spin up a remux session and the first-segment poll — the shared tail of `start()` and an
+    /// audio-switch rebuild.
+    private func launchRemux(audioStreamIndex: Int?) {
+        let remux = RemuxSession(config: .init(url: context.url, segmentDurationSec: 6,
+                                               audioStreamIndex: audioStreamIndex))
         self.remux = remux
         remux.start { state in
             guard case .failed(let stage) = state else { return }
             Task { @MainActor [weak self] in self?.failIfPreplayback(stage) }
         }
         pollForFirstSegment(remux: remux)
+    }
+
+    // MARK: - Audio track switching (D4)
+
+    /// Switch the muxed audio track: tear the player/server/remux pipeline down and rebuild it on the
+    /// requested stream index, resuming at the current position (plan decision D4 — one audio track
+    /// per session; muxing every track as parallel renditions would cost N segment pipelines for no
+    /// gain). The subtitle selection is carried over; watch progress, the Trakt session, and the
+    /// fetched addon-subtitle list survive. A rebuild failure lands in the normal pre-playback
+    /// failure path → mpv at the same position.
+    func selectAudioTrack(streamIndex: Int) {
+        guard phase == .playing, let current = remux else { return }
+        guard let track = audioTracks.first(where: { $0.streamIndex == streamIndex }),
+              track.playable, !track.selected else { return }
+        print("[NativePlayer] audio switch → stream \(streamIndex) (\(track.name)) at \(String(format: "%.1f", lastPositionSec))s")
+        pendingResumeSec = lastPositionSec > 1 ? lastPositionSec : nil
+        if let item = playerItem, let group = legibleGroup {
+            pendingSubtitleName = item.currentMediaSelection.selectedMediaOption(in: group)?.displayName
+        }
+
+        observeTask?.cancel(); observeTask = nil
+        pollTask?.cancel(); pollTask = nil
+        player?.pause()
+        server?.stop(); server = nil
+        current.stop()
+        if UserDefaults.standard.bool(forKey: "debug.keepRemuxOutput") {
+            print("[NativePlayer] kept remux output at \(current.outputDir.path)")
+        } else {
+            current.scheduleCleanup()
+        }
+        remux = nil
+        player = nil
+        playerItem = nil
+        servedURL = nil
+        legibleGroup = nil
+        // signalingAttempt intentionally survives: if this device already proved it needs the
+        // reduced (no SUPPLEMENTAL-CODECS) master form, the rebuilt server starts there directly.
+        audioTracks = []
+        preparingLabel = "Switching Audio\u{2026}"
+        phase = .preparing
+        launchRemux(audioStreamIndex: streamIndex)
     }
 
     func stop() {
@@ -168,14 +243,24 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func beginPlayback(remux: RemuxSession) {
         guard phase == .preparing, player == nil else { return }
         guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
+        // Audio menu data (D4): the worker published the full track list with its selection when it
+        // inspected the streams — always before the map exists, so it's complete here.
+        audioTracks = remux.audioTracks.map {
+            NativeAudioTrack(streamIndex: $0.streamIndex, name: Self.audioTrackDisplayName($0),
+                             playable: $0.playable, selected: $0.selected)
+        }
         // External subtitles (D5): stream-attached files plus the addon-fetched list (the same
         // source the mpv player side-loads — streams rarely attach their own), offered as WebVTT
         // renditions in the synthesized master. The server downloads/converts on first selection.
         let subtitleRenditions = SubtitleVTT.renditions(from: context.externalSubtitles + addonSubtitles)
         print("[NativePlayer] subtitle renditions: \(subtitleRenditions.count)"
               + (subtitleRenditions.isEmpty ? "" : " — \(subtitleRenditions.prefix(6).map(\.name).joined(separator: ", "))\(subtitleRenditions.count > 6 ? ", …" : "")"))
+        // A device that already fell back to the reduced master form keeps it across an
+        // audio-switch rebuild (same video stream — the full form would just fail again).
+        var signaling = remux.videoSignaling ?? VideoSignaling(codecs: "")
+        if signalingAttempt > 0 { signaling.supplementalCodecs = nil }
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
-                                    signaling: remux.videoSignaling ?? VideoSignaling(codecs: ""),
+                                    signaling: signaling,
                                     audioCodec: remux.audioCodecToken, bandwidth: remux.estimatedBandwidth,
                                     subtitles: subtitleRenditions,
                                     producingInfo: { remux.producingInfo },
@@ -254,17 +339,28 @@ final class NativePlaybackCoordinator: ObservableObject {
                     readied = true
                     print("[NativePlayer] item readyToPlay")
                     let duration = CMTimeGetSeconds(item.duration)
-                    if let resume = self.recorder.resumePositionSec() {
+                    // An audio-switch rebuild resumes exactly where it left off; otherwise the saved
+                    // watch progress decides.
+                    let resume = self.pendingResumeSec ?? self.recorder.resumePositionSec()
+                    self.pendingResumeSec = nil
+                    if let resume {
                         await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
                         self.lastPositionSec = resume
                     }
                     player.play()
-                    self.recorder.startTrakt(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
+                    if !self.traktStarted {
+                        self.traktStarted = true
+                        self.recorder.startTrakt(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
+                    }
+                    self.loadLegibleSelection(item: item)
                 } else if item.status == .failed {
                     print("[NativePlayer] item FAILED — \(item.error?.localizedDescription ?? "unknown")")
                     Self.dumpItemLogs(item)
-                    // Nothing ever rendered → retry with minimal signaling, then hand to mpv.
-                    if self.lastDurationSec == 0 {
+                    // THIS item never became ready → retry with minimal signaling, then hand to mpv.
+                    // (Keyed on the item, not lifetime state: after an audio-switch rebuild the
+                    // coordinator has a duration from the previous item, but a pre-ready failure of
+                    // the new one still belongs to the signaling retry path.)
+                    if !readied {
                         self.handlePrePlaybackItemFailure(player: player)
                     } else {
                         // Failed AFTER playback started — e.g. a forward seek past the linear remux
@@ -332,6 +428,67 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
     }
 
+    /// Cache the item's legible media-selection group (so an audio-switch teardown can read the
+    /// active subtitle synchronously) and restore a subtitle choice carried over from the previous
+    /// item. Options are matched by display name — the rendition NAME we synthesized, unique enough
+    /// within one session's master.
+    private func loadLegibleSelection(item: AVPlayerItem) {
+        Task { @MainActor [weak self] in
+            let group = (try? await item.asset.loadMediaSelectionGroup(for: .legible)) ?? nil
+            guard let self, self.playerItem === item else { return }
+            self.legibleGroup = group
+            if let want = self.pendingSubtitleName {
+                self.pendingSubtitleName = nil
+                if let group, let option = group.options.first(where: { $0.displayName == want }) {
+                    item.select(option, in: group)
+                    print("[NativePlayer] restored subtitle selection: \(want)")
+                }
+            }
+        }
+    }
+
+    // MARK: - Audio track display names
+
+    /// 10-foot menu label: localized language, codec + channel layout, then the container's track
+    /// title when it adds information ("Commentary", "Atmos"). E.g. "English · TrueHD 7.1 · Atmos".
+    private static func audioTrackDisplayName(_ track: RemuxAudioTrack) -> String {
+        var parts: [String] = []
+        if let tag = track.language?.lowercased(), tag != "und",
+           let language = Locale.current.localizedString(forLanguageCode: Self.iso639BtoT[tag] ?? tag) {
+            parts.append(language)
+        }
+        let codec = Self.audioCodecDisplay[track.codec] ?? track.codec.uppercased()
+        parts.append("\(codec) \(Self.channelText(track.channels))")
+        if let title = track.title, !title.isEmpty, title.count <= 42 { parts.append(title) }
+        return parts.isEmpty ? "Track \(track.streamIndex)" : parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// MKV language tags are usually ISO 639-2/B; Locale wants /T for the codes where they differ.
+    private static let iso639BtoT: [String: String] = [
+        "fre": "fra", "ger": "deu", "dut": "nld", "chi": "zho", "cze": "ces", "gre": "ell",
+        "ice": "isl", "per": "fas", "rum": "ron", "slo": "slk", "arm": "hye", "geo": "kat",
+        "may": "msa", "alb": "sqi", "baq": "eus", "bur": "mya", "mac": "mkd", "tib": "bod",
+        "wel": "cym",
+    ]
+
+    private static let audioCodecDisplay: [String: String] = [
+        "aac": "AAC", "ac3": "Dolby Digital", "eac3": "Dolby Digital+", "truehd": "TrueHD",
+        "dts": "DTS", "flac": "FLAC", "alac": "ALAC", "mp3": "MP3", "opus": "Opus",
+        "vorbis": "Vorbis",
+    ]
+
+    private static func channelText(_ channels: Int) -> String {
+        switch channels {
+        case 1: return "Mono"
+        case 2: return "Stereo"
+        case 3: return "2.1"
+        case 6: return "5.1"
+        case 7: return "6.1"
+        case 8: return "7.1"
+        default: return "\(channels)ch"
+        }
+    }
+
     // MARK: - Stream Info tab
 
     /// Rows for the native player's Stream Info tab: routing decision, remux signaling, segment-map
@@ -351,7 +508,8 @@ final class NativePlaybackCoordinator: ObservableObject {
                 add("Resolution", "\(s.width)\u{00D7}\(s.height)\(fps)")
             }
         }
-        add("Audio", remux?.audioCodecToken)
+        let audioName = audioTracks.first(where: \.selected)?.name
+        add("Audio", [audioName, remux?.audioCodecToken].compactMap { $0 }.joined(separator: " \u{00B7} "))
         if let map = remux?.segmentMap {
             add("Segments", "\(map.count) \u{00D7} \(map.targetDurationSec)s \u{00B7} \(Self.timeString(map.totalDurationSec))")
         }
