@@ -66,17 +66,20 @@ final class NativePlaybackCoordinator: ObservableObject {
         player?.pause()
         server?.stop(); server = nil
         remux?.stop()
-        let dir = remux?.outputDir
+        // debug.keepRemuxOutput=1 preserves the emitted files so they can be pulled off the device
+        // (devicectl copy from the app container) and inspected with ffprobe on a Mac. Cleanup is
+        // scheduled on the remux worker's own queue so it runs strictly AFTER the worker exits —
+        // a direct removal here can race a final in-flight segment write.
+        if let remux {
+            if UserDefaults.standard.bool(forKey: "debug.keepRemuxOutput") {
+                print("[NativePlayer] kept remux output at \(remux.outputDir.path)")
+            } else {
+                remux.scheduleCleanup()
+            }
+        }
         remux = nil
         player = nil
         playerItem = nil
-        // debug.keepRemuxOutput=1 preserves the emitted files so they can be pulled off the device
-        // (devicectl copy from the app container) and inspected with ffprobe on a Mac.
-        if let dir, !UserDefaults.standard.bool(forKey: "debug.keepRemuxOutput") {
-            try? FileManager.default.removeItem(at: dir)
-        } else if let dir {
-            print("[NativePlayer] kept remux output at \(dir.path)")
-        }
     }
 
     // MARK: - Progressive startup
@@ -115,7 +118,9 @@ final class NativePlaybackCoordinator: ObservableObject {
         guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: remux.videoSignaling ?? VideoSignaling(codecs: ""),
-                                    audioCodec: remux.audioCodecToken, bandwidth: remux.estimatedBandwidth)
+                                    audioCodec: remux.audioCodecToken, bandwidth: remux.estimatedBandwidth,
+                                    producingInfo: { remux.producingInfo },
+                                    requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server
         server.start(masterName: remux.masterPlaylistName) { [weak self] url in
             guard let self else { return }
@@ -182,6 +187,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             var readied = false
             var waitingTicks = 0
             var notReadyTicks = 0
+            var lastProducingSeg = 0
             while !Task.isCancelled {
                 guard let self, self.player === player else { return }
 
@@ -221,6 +227,11 @@ final class NativePlaybackCoordinator: ObservableObject {
                 if readied {
                     let pos = CMTimeGetSeconds(player.currentTime())
                     let dur = CMTimeGetSeconds(item.duration)
+                    // A position jump = a user seek. Reset the stall budget so back-to-back scrubs
+                    // (each costing a ~10s reposition) can't accumulate into a false mpv fallback.
+                    if pos.isFinite, abs(pos - self.lastPositionSec) > 10 {
+                        waitingTicks = 0
+                    }
                     if pos.isFinite, dur.isFinite, dur > 0 {
                         let paused = player.timeControlStatus != .playing
                         self.lastPositionSec = pos
@@ -234,16 +245,23 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // rejections, 404s) that are otherwise invisible outside Xcode.
                     if player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
                         waitingTicks += 1
+                        // A stall with the remux still ADVANCING is a seek being refilled at source
+                        // speed, not a dead session — reset the budget on every producing-segment
+                        // advance. Only a frozen remux (dead source) runs the clock out.
+                        let producing = self.remux?.producingInfo.producing ?? 0
+                        if producing != lastProducingSeg {
+                            lastProducingSeg = producing
+                            waitingTicks = 1
+                        }
                         if waitingTicks == 3 || waitingTicks % 10 == 3 {
                             let reason = player.reasonForWaitingToPlay?.rawValue ?? "?"
                             print("[NativePlayer] waiting (\(reason)) at \(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))s")
                             Self.dumpItemLogs(item)
                         }
-                        // Sustained stall (~30s at 3s/tick) the JIT server can't resolve: a seek/resume
-                        // past the linear remux frontier that will take minutes to reach, or a source
-                        // slower than playback. Hand to mpv at the current position rather than spin.
+                        // Sustained stall (~30s at 3s/tick) with NO remux progress: dead/stalled
+                        // source. Hand to mpv at the current position rather than spin forever.
                         if waitingTicks >= 10 {
-                            self.fallbackMidPlay("stalled ~30s waiting for segments")
+                            self.fallbackMidPlay("stalled ~30s with no remux progress")
                             return
                         }
                     } else {

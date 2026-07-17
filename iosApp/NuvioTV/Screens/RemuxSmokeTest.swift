@@ -20,9 +20,11 @@ nonisolated enum RemuxSmokeTest {
               let url = URL(string: raw) else { return }
         Task { @MainActor in
             print("[RemuxSmoke] start — \(raw)")
+            // Unique videoId per launch so a stored watch position from a previous smoke run can't
+            // trigger a surprise resume-seek mid-test.
             let context = PlaybackContext(
                 url: url, title: "Smoke Test", contentType: "movie",
-                parentMetaId: "smoke", videoId: "smoke",
+                parentMetaId: "smoke", videoId: "smoke-\(Int(Date().timeIntervalSince1970))",
                 season: nil, episode: nil, poster: nil, background: nil,
                 providerName: nil, providerAddonId: nil,
                 streamTitle: nil, streamSubtitle: nil, externalSubtitles: []
@@ -43,8 +45,23 @@ nonisolated enum RemuxSmokeTest {
                 let secs = coordinator.player?.currentItem.map { CMTimeGetSeconds($0.duration) } ?? .nan
                 let text = secs.isFinite ? String(format: "%.1fs", secs) : "live"
                 print("[RemuxSmoke] coordinator playing + AVPlayer readyToPlay \u{2705} duration=\(text)")
+                // debug.remuxSmokeSeekTo="30,120,60": scrub mid-play to exercise the seek-anywhere
+                // reposition path — comma-separated targets fired 12s apart (far-forward, then
+                // backward-into-hole, etc., against a throttled source).
+                if let spec = UserDefaults.standard.string(forKey: "debug.remuxSmokeSeekTo") {
+                    let targets = spec.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                    for (i, target) in targets.enumerated() {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 4 + Double(i) * 12) { [weak coordinator] in
+                            guard let player = coordinator?.player else { return }
+                            print("[RemuxSmoke] SEEKING to \(target)s")
+                            player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { done in
+                                print("[RemuxSmoke] seek completed=\(done) pos=\(String(format: "%.1f", CMTimeGetSeconds(player.currentTime())))")
+                            }
+                        }
+                    }
+                }
                 samplePlayback(coordinator, sample: 0)
-            } else if attempt < 40 {
+            } else if attempt < 160 {   // throttled sources ready slowly (~40s ceiling)
                 schedule(coordinator, attempt: attempt + 1)
             } else {
                 print("[RemuxSmoke] playing but item not ready (status=\(String(describing: status)))")

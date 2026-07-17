@@ -51,21 +51,38 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     let mediaName = "media.m3u8"
 
     // JIT serve tuning.
-    /// Max time to block a not-yet-produced segment. Well under CFNetwork's ~60s request timeout so a
-    /// blocked GET never surfaces as a fatal network error — on timeout we return a retryable 503.
-    private let blockTimeout: TimeInterval = 20
-    /// How many segments past the current remux frontier we'll wait for (covers AVPlayer's forward
-    /// buffer). Beyond this a request is a real forward seek the linear remux can't serve soon → 503.
+    /// Max time to block a not-yet-produced segment. CoreMedia KILLS a variant after ~6s of silence on
+    /// a media request (-12889 "No response for media file in 6s" → -12880 "can not proceed after
+    /// removing variants", fatal for our single variant) — so we must ALWAYS respond inside that
+    /// window: hold up to ~5s (worst-case tick lands ≈5.1s, still safely inside on loopback), then 503
+    /// (retryable). 5s rather than 4s so an exactly-realtime source whose next segment needs ~4s of
+    /// production is served in-block instead of paying a deterministic 503 round-trip per segment.
+    /// A reposition needing ~8-10s spans two hold/503/retry cycles; AVPlayer's retries re-enter the
+    /// JIT wait with a fresh budget each time.
+    private let blockTimeout: TimeInterval = 5
+    /// How many segments past the current producing position a request is still worth polling for
+    /// (production reaches it within the JIT budget; covers AVPlayer's capped forward buffer).
+    /// Anything else — far forward seek OR a backward seek into an unproduced hole — repositions the
+    /// remux. Mirrors RemuxSession.repositionMargin.
     private let blockMargin = 6
+
+    /// (producing, pending) window from the remux worker — the JIT poll-vs-reposition decision input.
+    private let producingInfo: @Sendable () -> (producing: Int, pending: Int?)
+    /// Ask the remux to jump production to a segment (seek-anywhere).
+    private let requestReposition: @Sendable (Int) -> Void
 
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
-    init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling, audioCodec: String?, bandwidth: Int) {
+    init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling, audioCodec: String?, bandwidth: Int,
+         producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
+         requestReposition: @escaping @Sendable (Int) -> Void) {
         self.rootDir = rootDir
         self.map = map
         self._signaling = signaling
         self.audioCodec = audioCodec
         self.bandwidth = bandwidth
+        self.producingInfo = producingInfo
+        self.requestReposition = requestReposition
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
@@ -252,15 +269,24 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
 
         // init.mp4 / seg-NNNNN.m4s — produced just-in-time by the remux; block until present.
         serveSegmentJIT(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection,
-                        deadline: Date().addingTimeInterval(blockTimeout), decided: false, live: live)
+                        deadline: Date().addingTimeInterval(blockTimeout), mode: nil, live: live)
     }
 
-    /// Serve a media file if it exists; otherwise block (by async re-scheduling, holding no thread)
-    /// until the remux produces it, up to `deadline`. A request far past the remux frontier (a forward
-    /// seek the linear remux can't satisfy soon) fast-fails 503; a request past the last segment 404s;
-    /// a block that times out returns a retryable 503; an abandoned connection stops the loop at once.
+    /// How a JIT request decided to wait, fixed on FIRST evaluation. A `.poll` request (in-window when
+    /// it arrived) must NEVER fire a reposition later — a stale pre-seek poll seeing the window move
+    /// would otherwise yank production back and ping-pong against the new seek target (observed live:
+    /// seg-2's poll repositioning 21→2→21). Only a request that was OUT of window on arrival
+    /// repositions, exactly once.
+    private enum JITMode { case poll, repositioned }
+
+    /// Serve a media file if it exists; otherwise wait (async re-scheduling, no thread held) up to
+    /// `deadline`, then 503 — ALWAYS answering inside CoreMedia's ~6s no-response window. A request
+    /// outside the producing window on arrival — far forward seek OR backward seek into an unproduced
+    /// hole — repositions the remux once and waits; a `.poll` request whose window moves away fast-503s
+    /// (a newer seek won). Past the last segment → 404; abandoned connection → stop immediately.
     private func serveSegmentJIT(name: String, rangeHeader: String?, isHead: Bool,
-                                 on connection: NWConnection, deadline: Date, decided: Bool, live: ConnLive) {
+                                 on connection: NWConnection, deadline: Date,
+                                 mode: JITMode?, live: ConnLive) {
         guard live.alive else { connection.cancel(); return }   // client gave up mid-block
         let fileURL = rootDir.appendingPathComponent(name)
         if let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) {
@@ -268,20 +294,33 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
 
-        // First visit: decide whether to wait at all.
-        if !decided, let idx = Self.segmentIndex(name) {
-            if idx > map.count {
-                send(status: "404 Not Found", contentType: "text/plain", body: Data("Past end".utf8),
+        var mode = mode
+        if let idx = Self.segmentIndex(name) {
+            if idx < 1 || idx > map.count {
+                send(status: "404 Not Found", contentType: "text/plain", body: Data("Out of range".utf8),
                      on: connection, requestPath: name)
                 return
             }
-            let frontier = currentFrontier()
-            if idx > frontier + blockMargin {
-                // Forward seek beyond what the remux will reach soon. 503 is retryable; the coordinator's
-                // stall watchdog escalates a sustained forward-seek stall to the mpv fallback.
-                send(status: "503 Service Unavailable", contentType: "text/plain", body: Data("Ahead of remux".utf8),
-                     on: connection, extraHeaders: ["Retry-After": "1"], requestPath: name)
+            let (producing, pending) = producingInfo()
+            let effective = pending ?? producing
+            let inWindow = idx >= effective && idx <= effective + blockMargin
+            switch (mode, inWindow) {
+            case (nil, true):
+                mode = .poll
+            case (nil, false):
+                requestReposition(idx)
+                mode = .repositioned
+            case (.poll, false), (.repositioned, false):
+                // The window moved away from this request (a newer seek won) — pending == idx implies
+                // inWindow (effective == idx), so reaching this arm already means production is headed
+                // elsewhere. Fail fast: if AVPlayer still wants this segment its retry arrives as a
+                // fresh request and re-decides (including a fresh reposition).
+                send(status: "503 Service Unavailable", contentType: "text/plain",
+                     body: Data("Superseded".utf8), on: connection,
+                     extraHeaders: ["Retry-After": "1"], requestPath: name)
                 return
+            default:
+                break
             }
         }
 
@@ -292,7 +331,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         }
         connQueue.asyncAfter(deadline: .now() + 0.12) { [weak self] in
             self?.serveSegmentJIT(name: name, rangeHeader: rangeHeader, isHead: isHead,
-                                  on: connection, deadline: deadline, decided: true, live: live)
+                                  on: connection, deadline: deadline, mode: mode, live: live)
         }
     }
 
@@ -308,17 +347,6 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             send(status: "200 OK", contentType: ctype, body: data, on: connection,
                  extraHeaders: ["Accept-Ranges": "bytes"], requestPath: name, isHead: isHead)
         }
-    }
-
-    /// Highest completed segment index present on disk (0 if none). Completion is signalled by the
-    /// atomic `.part` → final rename in `SegmentWriter`, so a present `seg-NNNNN.m4s` is whole.
-    private func currentFrontier() -> Int {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: rootDir.path)) ?? []
-        var maxIdx = 0
-        for n in names where n.hasSuffix(".m4s") {
-            if let idx = Self.segmentIndex(n), idx > maxIdx { maxIdx = idx }
-        }
-        return maxIdx
     }
 
     /// Parse the 1-based index from `seg-NNNNN.m4s`, or nil for `init.mp4` / anything else.

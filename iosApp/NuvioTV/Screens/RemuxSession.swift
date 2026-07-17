@@ -19,9 +19,13 @@ import Libavutil
 // routes each fragment into its own atomically-renamed file. Published == produced by construction;
 // sparse Cues just yield longer-but-valid segments. See docs/tvos-hybrid-player-plan.md.
 //
-// The remux still runs linearly (whole file, start to finish); true seek-anywhere (av_seek_frame to an
-// arbitrary segment's keyframe and mux one independent fragment on demand) is the next increment the
-// owned segmenter unlocks.
+// SEEK-ANYWHERE: production happens in repositionable RUNS. A request for a segment outside the
+// current producing window makes the JIT server call `reposition(toSegment:)`: the worker abandons
+// its partial fragment, seeks the (Range-capable HTTP) demuxer to that segment's boundary keyframe,
+// and continues linearly from there with a fresh muxer context (`frag_discont` keeps tfdt absolute so
+// every fragment lands at its published playlist time regardless of which run produced it). Unproduced
+// holes are legal — a request into one triggers another reposition — and the worker parks at EOF
+// instead of exiting so late back-seeks still work.
 
 /// HLS master-playlist signaling for the remuxed video, per Apple's HLS authoring spec: a full
 /// RFC 6381 CODECS token (bare "hvc1" is non-compliant and stricter tvOS builds reject it), plus
@@ -69,6 +73,53 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
     var state: State { lock.lock(); defer { lock.unlock() }; return _state }
 
+    // MARK: Seek-anywhere control plane
+
+    /// Reposition mailbox + producing-position publication, guarded by one condition so the worker can
+    /// park on it at EOF and `reposition()`/`stop()` can wake it. Single-slot latest-wins: AVPlayer only
+    /// ever wants the newest position, so a queue would be wrong.
+    private let control = NSCondition()
+    private var _pendingTarget: Int?          // reposition target awaiting worker pickup
+    private var _producingSeg = 0             // segment the worker is currently producing (0 = none yet)
+    /// Interrupt flags shared with FFmpeg's blocking I/O (see `RemuxInterrupts`); set at input open.
+    private var _interrupts: RemuxInterrupts?
+
+    /// How far past the current production point a request is still worth waiting for instead of
+    /// repositioning (mirrors LocalHLSServer.blockMargin — production reaches it within the JIT budget).
+    static let repositionMargin = 6
+
+    /// The segment the worker is producing right now, and any reposition target it hasn't reached yet.
+    /// The JIT server uses this window to decide poll-vs-reposition.
+    var producingInfo: (producing: Int, pending: Int?) {
+        control.lock(); defer { control.unlock() }
+        return (_producingSeg, _pendingTarget)
+    }
+
+    /// Ask the worker to jump production to `target` (1-based segment number). Non-blocking; safe from
+    /// any thread. Latest-wins with lock-held admission: a target already inside the producing window
+    /// is dropped (the worker will reach it — the caller polls), which absorbs AVPlayer's post-seek
+    /// K, K+1, K+2 request burst so only the first miss repositions.
+    func reposition(toSegment target: Int) {
+        guard target >= 1, target <= (segmentMap?.count ?? Int.max) else { return }
+        // The interrupt kick MUST be published atomically with the mailbox (inside the same critical
+        // section): set after unlock, the worker can absorb the target and run its flag-clear in the
+        // gap, leaving an orphaned flag that turns the next av_read_frame into a phantom fatal error.
+        lock.lock(); let interrupts = _interrupts; lock.unlock()
+        control.lock()
+        let effective = _pendingTarget ?? _producingSeg
+        if target >= effective, target <= effective + Self.repositionMargin {
+            control.unlock()
+            return
+        }
+        _pendingTarget = target
+        // Kick the worker out of a blocked av_read_frame so the seek is responsive even when the
+        // source is stalled (the exact moment a user is most likely to scrub).
+        interrupts?.repositionPending = true
+        control.signal()
+        control.unlock()
+        print("[Remux] reposition requested → segment \(target)")
+    }
+
     /// Master-playlist signaling for the copied video, set once the video stream is inspected.
     /// `LocalHLSServer` bakes it into the synthesized master playlist (full RFC 6381 CODECS + DV
     /// SUPPLEMENTAL-CODECS; DV won't engage without it).
@@ -100,11 +151,25 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         queue.async { [weak self] in self?.runRemux() }
     }
 
-    /// Request cancellation; the remux loop stops at the next packet boundary.
-    func stop() { lock.lock(); _cancelled = true; lock.unlock() }
+    /// Request cancellation. Stops the copy loop at the next packet boundary, interrupts a blocked
+    /// read, wakes a parked worker, and SILENCES the state callback — a post-stop `.failed("cancelled")`
+    /// must not reach the coordinator, or it would trigger an mpv fallback after the user already left.
+    func stop() {
+        lock.lock()
+        _cancelled = true
+        onStateChange = nil
+        let interrupts = _interrupts
+        lock.unlock()
+        interrupts?.cancelled = true
+        control.lock(); control.signal(); control.unlock()
+    }
 
-    /// Remove the emitted directory. Call once the session is finished with.
-    func cleanup() { try? FileManager.default.removeItem(at: outputDir) }
+    /// Remove the emitted directory once the worker has fully exited: enqueued on the worker's own
+    /// serial queue, so it runs strictly after `runRemux` returns (a direct removal can race a final
+    /// in-flight segment write).
+    func scheduleCleanup() {
+        queue.async { [outputDir] in try? FileManager.default.removeItem(at: outputDir) }
+    }
 
     // MARK: - Remux worker
 
@@ -120,7 +185,21 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         var inOpts: OpaquePointer?
         av_dict_set(&inOpts, "fflags", "+genpts", 0)
         defer { av_dict_free(&inOpts) }
-        var inCtx: UnsafeMutablePointer<AVFormatContext>?
+        // Interrupt callback on the INPUT: without it, a reposition or stop() arriving while
+        // av_read_frame is blocked on a stalled HTTP read waits out the transport timeout (tens of
+        // seconds) — exactly when the user is most likely to be scrubbing. The box outlives the input
+        // via the `_interrupts` ivar.
+        let interrupts = RemuxInterrupts()
+        // Seed from the session cancel state in the same critical section: a stop() that ran before
+        // this publication would otherwise never reach the box, leaving a stalled avformat_open_input
+        // uninterruptible.
+        lock.lock(); _interrupts = interrupts; interrupts.cancelled = _cancelled; lock.unlock()
+        guard let allocated = avformat_alloc_context() else { return fail("alloc input ctx") }
+        allocated.pointee.interrupt_callback = AVIOInterruptCB(
+            callback: remuxShouldInterrupt,
+            opaque: Unmanaged.passUnretained(interrupts).toOpaque())
+        var inCtx: UnsafeMutablePointer<AVFormatContext>? = allocated
+        // On failure avformat_open_input frees and nils the context it was given — no manual free.
         guard avformat_open_input(&inCtx, config.url.absoluteString, nil, &inOpts) == 0, let input = inCtx else {
             return fail("avformat_open_input")
         }
@@ -173,10 +252,13 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         }
         let audioPar = audioIn >= 0 ? input.pointee.streams[audioIn]?.pointee.codecpar : nil
         let audioToken = audioPar.flatMap { Self.audioCodecString($0) }
-        // Rough peak bandwidth for the (single, non-ABR) master variant: sum of track bitrates + 10%,
-        // or a generous default when the container doesn't declare them.
+        // Rough peak bandwidth for the (single, non-ABR) master variant. Generous: undersized
+        // declarations draw CoreMedia -12318 "Segment exceeds specified bandwidth" complaints, and a
+        // container that omits the VIDEO bitrate (common for MKV) must not be priced off audio alone.
         let declaredBitrate = Int(videoPar.pointee.bit_rate) + (audioPar.map { Int($0.pointee.bit_rate) } ?? 0)
-        let bandwidth = declaredBitrate > 0 ? Int(Double(declaredBitrate) * 1.1) : 20_000_000
+        let bandwidth = videoPar.pointee.bit_rate > 0
+            ? Int(Double(declaredBitrate) * 1.5)
+            : max(Int(Double(declaredBitrate) * 1.5), 30_000_000)
         lock.lock()
         _signaling = signaling
         _hasAudio = audioIn >= 0
@@ -196,200 +278,406 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         lock.lock(); _segmentMap = map; lock.unlock()
         print("[Remux] segment map: \(map.count) segments, \(String(format: "%.1f", map.totalDurationSec))s, target=\(map.targetDurationSec)s")
 
-        // --- Allocate the mov/mp4 output with our own segment-splitting AVIO sink -----------------
+        // --- Multi-run production with seek-anywhere ------------------------------------------------
+        // Segments are produced in RUNS: one mp4 muxer context copying linearly from a start segment
+        // until EOF, a reposition request, cancellation, or an error. Seek-anywhere = end the current
+        // run and start a new one at the requested segment: the demuxer seeks (Range HTTP) to that
+        // segment's boundary keyframe and a FRESH muxer context continues from there. All timestamps
+        // are mapped onto the playlist timeline (origin = the first keyframe) and passed ABSOLUTE
+        // (avoid_negative_ts=disabled + movflag frag_discont), so every fragment's tfdt equals its
+        // playlist position no matter which run produced it — verified empirically: without
+        // frag_discont, movenc normalizes a fresh context's start to zero and encodes the offset as an
+        // edit list, which HLS ignores. The worker never exits at EOF; it PARKS so late seeks into
+        // unproduced holes can still reposition it, until stop().
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
-        var outCtx: UnsafeMutablePointer<AVFormatContext>?
-        guard avformat_alloc_output_context2(&outCtx, nil, "mp4", nil) >= 0, let output = outCtx else {
-            return fail("alloc_output_context2")
-        }
-        defer { avformat_free_context(output) }
-        output.pointee.strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL   // allow the DV (dvvC) box
-
-        var indexMap = [Int: Int]()
-        func addStream(_ inIdx: Int, tag: UInt32) -> Bool {
-            guard let inS = input.pointee.streams[inIdx], let inPar = inS.pointee.codecpar,
-                  let outS = avformat_new_stream(output, nil), let outPar = outS.pointee.codecpar,
-                  avcodec_parameters_copy(outPar, inPar) >= 0 else { return false }
-            if tag != 0 { outPar.pointee.codec_tag = tag }   // hvc1/dvh1/avc1; let movenc pick for audio
-            outS.pointee.time_base = inS.pointee.time_base
-            indexMap[inIdx] = Int(outS.pointee.index)
-            return true
-        }
-        guard addStream(videoIn, tag: videoOutputTag(videoPar)) else { return fail("add video stream") }
-        if audioIn >= 0 { _ = addStream(audioIn, tag: 0) }
-
-        // Stream fingerprint for device debugging: extradata_size==0 on video means the init segment
-        // will lack a valid hvcC/avcC decoder config and AVPlayer rejects the stream (-12927).
-        for (inIdx, outIdx) in indexMap.sorted(by: { $0.value < $1.value }) {
-            if let par = input.pointee.streams[inIdx]?.pointee.codecpar?.pointee {
-                let codec = avcodec_get_name(par.codec_id).map { String(cString: $0) } ?? "?"
-                print("[Remux] out#\(outIdx) \(codec) \(par.width)x\(par.height) extradata=\(par.extradata_size)b bitrate=\(par.bit_rate)")
-            }
-        }
-
-        // Custom AVIO sink: routes movenc's byte stream into init.mp4 + seg-NNNNN.m4s, each written
-        // atomically (.part → rename) so the loopback server never serves a torn file. The sink is
-        // APPEND-ONLY (no seek callback → movenc takes its streaming paths, as when writing to a pipe)
-        // and splits files by parsing top-level MP4 box headers: ftyp+moov → init.mp4, everything
-        // after → the current segment window. The AVIO context holds a RETAINED reference
-        // (`passRetained`) for its whole lifetime — the write callback reaches the object only through
-        // the opaque pointer, so a plain local `let` would let the ARC optimizer free it before the
-        // last callback (movenc's trailer). The retain is balanced by `release()` in the defer.
-        let writer = SegmentWriter(outputDir: outputDir)
-        let ioBufSize = 1 << 16
-        guard let ioBuf = av_malloc(ioBufSize) else { return fail("avio buffer") }
-        let opaque = Unmanaged.passRetained(writer).toOpaque()
-        guard let avio = avio_alloc_context(ioBuf.assumingMemoryBound(to: UInt8.self), Int32(ioBufSize),
-                                            1, opaque, nil, segmentWriterWrite, nil) else {
-            av_free(ioBuf)
-            Unmanaged<SegmentWriter>.fromOpaque(opaque).release()
-            return fail("avio_alloc_context")
-        }
-        output.pointee.pb = avio
-        defer {   // free the AVIO context (and its possibly-reallocated buffer) before the format ctx,
-                  // then release the sink's retain — after this no callback can fire.
-            if let pb = output.pointee.pb {
-                av_free(pb.pointee.buffer)
-                var p: UnsafeMutablePointer<AVIOContext>? = pb
-                avio_context_free(&p)
-                output.pointee.pb = nil
-            }
-            Unmanaged<SegmentWriter>.fromOpaque(opaque).release()
-        }
-
-        // frag_custom: WE cut fragments via av_write_frame(ctx, NULL). empty_moov + default_base_moof
-        // make each fragment self-contained. delay_moov is REQUIRED for EAC3 (and friends): movenc
-        // builds the ec-3 sample entry (dec3 box) from a PARSED audio frame, so writing the moov at
-        // write_header — before any packet — fails; with delay_moov the moov is emitted at the first
-        // fragment flush instead, and the sink's box parser routes it into init.mp4 whenever it
-        // arrives. skip_trailer drops the useless mfra.
-        var opts: OpaquePointer?
-        av_dict_set(&opts, "movflags", "frag_custom+empty_moov+default_base_moof+delay_moov+skip_trailer", 0)
-        defer { av_dict_free(&opts) }
-
-        // Only the ftyp is emitted here (moov is delayed); the sink accumulates it for init.mp4.
-        guard avformat_write_header(output, &opts) >= 0 else { return fail("write_header") }
-        avio_flush(output.pointee.pb)
-
-        // --- Stream-copy loop with owned fragment cutting -----------------------------------------
         guard let pkt = av_packet_alloc() else { return fail("packet_alloc") }
         defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
 
-        // Timestamp hygiene (unchanged from the dash path). Sloppy real-world muxes carry missing or
-        // NON-MONOTONIC video DTS; the mp4 muxer writes them through and AVPlayer rejects the timeline
-        // (-12927). Video DTS is REGENERATED wholesale on a uniform grid anchored at the first PTS and
-        // offset back a few frames for B-frame reorder. Audio keeps source timestamps, gap-filled only
-        // when a packet arrives without them.
         let noTS = Int64.min                                     // AV_NOPTS_VALUE
         let reorderSlack: Int64 = 6                              // frames of pts>=dts headroom
-        let videoOutIdx = indexMap[videoIn] ?? 0
-        var vIndex: Int64 = 0
-        var vAnchor: Int64? = nil
-        var vDur: Int64 = 0
-        var vPrevDTS: Int64? = nil
-        let nStreams = Int(output.pointee.nb_streams)
-        var nextDTS = [Int64](repeating: 0, count: nStreams)
-
-        // Fragment cutting: flush at the first VIDEO KEYFRAME whose SOURCE pts reaches the next map
-        // boundary. boundaries[0] is segment 1's start (the first packet), so the first flush is at
-        // boundaries[1]. Compared in the source video time_base — the same domain the keyframe index
-        // gave us — so each produced segment matches its published EXTINF exactly.
         let boundaries = map.boundaryTicks
-        var nextBoundary = 1
-        var currentSeg = 1
-        writer.beginFile(named: Self.segmentName(currentSeg))
+        let originTicks = boundaries[0]                          // playlist time zero, video time_base
+        let videoTag = videoOutputTag(videoPar)
+        guard let videoStream = input.pointee.streams[videoIn] else { return fail("video stream") }
+        let videoTB = videoStream.pointee.time_base
 
-        // Flush the pending fragment out of the muxer. Under delay_moov the FIRST flush emits only the
-        // moov (movenc keeps the fragment's samples buffered for the next flush) — detect that via the
-        // sink and force one extra flush so every boundary yields exactly one fragment, in its own file,
-        // aligned with the published playlist. Adaptive: a movenc that emits moov+fragment together
-        // skips the extra flush.
-        func flushFragment() -> Bool {
-            if av_write_frame(output, nil) < 0 { return false }
-            avio_flush(output.pointee.pb)
-            if writer.awaitingFirstFragment {
-                if av_write_frame(output, nil) < 0 { return false }
-                avio_flush(output.pointee.pb)
+        var vDur: Int64 = 0             // learned frame duration — a stream constant, kept across runs
+        var isFirstRun = true
+        var everRepositioned = false
+        var consecutiveErrorParks = 0
+        var startSeg = 1                // segment the next run begins at
+        var pendingBoundaryPacket = false   // pkt already holds the new run's boundary keyframe
+
+        // One muxer context + sink per run. Streams are added in the same order every run (same track
+        // IDs and timescales as the init.mp4 AVPlayer holds). originOut[outIdx] = the playlist origin
+        // rescaled into that stream's time_base.
+        typealias Run = (ctx: UnsafeMutablePointer<AVFormatContext>, writer: SegmentWriter,
+                         opaque: UnsafeMutableRawPointer, videoOutIdx: Int,
+                         indexMap: [Int: Int], originOut: [Int64])
+        func makeRun(discardInit: Bool) -> Run? {
+            var outCtx: UnsafeMutablePointer<AVFormatContext>?
+            guard avformat_alloc_output_context2(&outCtx, nil, "mp4", nil) >= 0, let output = outCtx else { return nil }
+            output.pointee.strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL   // allow the DV (dvvC) box
+            // We own the timeline: timestamps arrive pre-mapped onto the playlist origin, absolute.
+            // Core-level shifting would desync tfdt from the published playlist. (-1 = DISABLED.)
+            output.pointee.avoid_negative_ts = -1
+
+            var indexMap = [Int: Int]()
+            func addStream(_ inIdx: Int, tag: UInt32) -> Bool {
+                guard let inS = input.pointee.streams[inIdx], let inPar = inS.pointee.codecpar,
+                      let outS = avformat_new_stream(output, nil), let outPar = outS.pointee.codecpar,
+                      avcodec_parameters_copy(outPar, inPar) >= 0 else { return false }
+                if tag != 0 { outPar.pointee.codec_tag = tag }   // hvc1/dvh1/avc1; movenc picks for audio
+                outS.pointee.time_base = inS.pointee.time_base
+                indexMap[inIdx] = Int(outS.pointee.index)
+                return true
             }
-            return true
+            guard addStream(videoIn, tag: videoTag) else { avformat_free_context(output); return nil }
+            if audioIn >= 0, !addStream(audioIn, tag: 0) { avformat_free_context(output); return nil }
+
+            // Segment-splitting AVIO sink (append-only; box-router). Retained by the AVIO context —
+            // released in destroyRun after no callback can fire. A non-first run's duplicate ftyp+moov
+            // is parsed and DISCARDED (init.mp4 is already on disk; rewriting it mid-session would
+            // risk serving a moov different from the one AVPlayer admitted).
+            let writer = SegmentWriter(outputDir: outputDir, discardInit: discardInit)
+            let ioBufSize = 1 << 16
+            guard let ioBuf = av_malloc(ioBufSize) else { avformat_free_context(output); return nil }
+            let opaque = Unmanaged.passRetained(writer).toOpaque()
+            guard let avio = avio_alloc_context(ioBuf.assumingMemoryBound(to: UInt8.self), Int32(ioBufSize),
+                                                1, opaque, nil, segmentWriterWrite, nil) else {
+                av_free(ioBuf)
+                Unmanaged<SegmentWriter>.fromOpaque(opaque).release()
+                avformat_free_context(output)
+                return nil
+            }
+            output.pointee.pb = avio
+
+            // frag_custom: WE cut fragments. delay_moov: EAC3's dec3 sample entry needs a parsed
+            // frame, so the moov comes at the first fragment flush. skip_trailer: no mfra.
+            // frag_discont: do NOT normalize this context's first fragment — timestamps are absolute.
+            var opts: OpaquePointer?
+            av_dict_set(&opts, "movflags",
+                        "frag_custom+empty_moov+default_base_moof+delay_moov+skip_trailer+frag_discont", 0)
+            defer { av_dict_free(&opts) }
+            guard avformat_write_header(output, &opts) >= 0 else {
+                if let pb = output.pointee.pb {
+                    av_free(pb.pointee.buffer)
+                    var pp: UnsafeMutablePointer<AVIOContext>? = pb
+                    avio_context_free(&pp)
+                    output.pointee.pb = nil
+                }
+                Unmanaged<SegmentWriter>.fromOpaque(opaque).release()
+                avformat_free_context(output)
+                return nil
+            }
+            avio_flush(output.pointee.pb)
+            // TIMESCALE TRAP: avformat_write_header lets movenc REWRITE each stream's time_base
+            // (video 1/1000 → 1/16000, audio → 1/samplerate). Packets are rescaled into the
+            // POST-header time_base, so every constant we subtract from or compare against them —
+            // the playlist origin here, the grid anchor at the call site — must be rescaled into the
+            // post-header time_base too, never the input's. (Found the hard way: a reposition's grid
+            // anchor in source scale produced ~28s composition offsets.)
+            var originOut = [Int64](repeating: 0, count: indexMap.count)
+            for outIdx in indexMap.values {
+                if let os = output.pointee.streams[outIdx] {
+                    originOut[outIdx] = av_rescale_q(originTicks, videoTB, os.pointee.time_base)
+                }
+            }
+            return (output, writer, opaque, indexMap[videoIn] ?? 0, indexMap, originOut)
         }
 
-        var writeError = false
-        while !isCancelled() {
-            if av_read_frame(input, pkt) < 0 { break }      // EOF or read error
-            let inIdx = Int(pkt.pointee.stream_index)
-            if let outIdx = indexMap[inIdx],
-               let inS = input.pointee.streams[inIdx],
-               let outS = output.pointee.streams[outIdx] {
-                let isVideo = outIdx == videoOutIdx
+        // Tear a run down: buffered fragment bytes drain into the discard sink via the trailer, then
+        // the AVIO context is freed (before the format ctx) and the sink retain released.
+        func destroyRun(_ run: Run) {
+            run.writer.beginDiscard()
+            _ = av_write_trailer(run.ctx)
+            if let pb = run.ctx.pointee.pb {
+                av_free(pb.pointee.buffer)
+                var p: UnsafeMutablePointer<AVIOContext>? = pb
+                avio_context_free(&p)
+                run.ctx.pointee.pb = nil
+            }
+            Unmanaged<SegmentWriter>.fromOpaque(run.opaque).release()
+            avformat_free_context(run.ctx)
+        }
 
-                // Cut BEFORE writing the keyframe that opens the next segment, so the boundary keyframe
-                // becomes the first sample of the new fragment (independently decodable). Uses the
-                // packet's SOURCE pts — still in the input time_base at this point.
+        // Mailbox helpers. Producing is published and the mailbox cleared in the SAME critical
+        // section, so the JIT window (pending ?? producing) never has a gap for AVPlayer's post-seek
+        // K+1/K+2 burst to slip a spurious reposition through.
+        func takeReposition() -> Int? {
+            control.lock(); defer { control.unlock() }
+            return _pendingTarget
+        }
+        func publishProducing(_ seg: Int) {
+            control.lock()
+            _producingSeg = seg
+            if _pendingTarget == seg { _pendingTarget = nil }
+            control.unlock()
+        }
+        // Park until a reposition request or stop(). nil ⇒ cancelled. Timed waits are lost-wakeup
+        // insurance; reposition() and stop() both signal.
+        func parkForTarget() -> Int? {
+            control.lock()
+            while _pendingTarget == nil, !isCancelled() {
+                control.wait(until: Date().addingTimeInterval(0.25))
+            }
+            let target = _pendingTarget
+            control.unlock()
+            return isCancelled() ? nil : target
+        }
+
+        // After av_seek_frame, read until the boundary keyframe — it becomes the new run's first
+        // packet (left in pkt; the caller sets pendingBoundaryPacket). Audio before the boundary is
+        // dropped (sub-second gap at worst; the absolute timeline re-aligns). Returns false on cancel,
+        // read failure, a newer reposition (the interrupt kicks the read out), or landing on the wrong
+        // keyframe — one mis-timed segment would poison the published VOD timeline, so verify + abort.
+        func scanToBoundary(_ targetTicks: Int64) -> Bool {
+            let tolerance = max(vDur, 2)
+            while true {
+                if isCancelled() { return false }
+                let r = av_read_frame(input, pkt)
+                if r < 0 {
+                    if r == avErrorExit, interrupts.repositionPending, takeReposition() == nil {
+                        interrupts.repositionPending = false   // spurious kick — keep scanning
+                        continue
+                    }
+                    print("[Remux] reposition scan ended (\(r))")
+                    return false
+                }
+                if Int(pkt.pointee.stream_index) == videoIn,
+                   (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0,
+                   pkt.pointee.pts != noTS, pkt.pointee.pts + tolerance > targetTicks {
+                    if abs(pkt.pointee.pts - targetTicks) >= tolerance {
+                        print("[Remux] reposition landed at pts=\(pkt.pointee.pts) wanted \(targetTicks) — aborting")
+                        av_packet_unref(pkt)
+                        return false
+                    }
+                    return true
+                }
+                av_packet_unref(pkt)
+            }
+        }
+
+        runLoop: while !isCancelled() {
+            // Position the demuxer for a non-initial run.
+            if !isFirstRun {
+                interrupts.repositionPending = false        // must not abort our own seek/scan
+                avformat_flush(input)                        // clear sticky EOF/queued packets
+                let target = map.segments[startSeg - 1].startTicks
+                print("[Remux] seeking to segment \(startSeg) (pts \(target))")
+                if av_seek_frame(input, Int32(videoIn), target, AVSEEK_FLAG_BACKWARD) < 0 || !scanToBoundary(target) {
+                    if isCancelled() { break runLoop }
+                    if let newer = takeReposition(), newer != startSeg {
+                        startSeg = newer                     // a newer target interrupted the scan
+                        continue runLoop
+                    }
+                    consecutiveErrorParks += 1
+                    guard consecutiveErrorParks < 4 else { return fail("reposition failed repeatedly") }
+                    guard let next = parkForTarget() else { break runLoop }
+                    startSeg = next
+                    continue runLoop
+                }
+                pendingBoundaryPacket = true
+            }
+
+            guard let run = makeRun(discardInit: !isFirstRun) else { return fail("output context") }
+            isFirstRun = false
+            publishProducing(startSeg)
+
+            // Per-run timeline state. The video grid re-anchors at the run's start boundary on the
+            // playlist timeline; audio floors keep a timestamp-less packet from landing at t=0.
+            // anchorSrcTicks is in the SOURCE video time_base; every per-stream constant is rescaled
+            // into that stream's POST-header time_base (see the timescale-trap note in makeRun).
+            let anchorSrcTicks = map.segments[startSeg - 1].startTicks - originTicks
+            guard let videoOutStream = run.ctx.pointee.streams[run.videoOutIdx] else {
+                destroyRun(run); return fail("video out stream")
+            }
+            let vAnchorOut = av_rescale_q(anchorSrcTicks, videoTB, videoOutStream.pointee.time_base)
+            var vIndex: Int64 = 0
+            var vPrevDTS: Int64? = nil
+            var nextDTS = [Int64](repeating: noTS, count: run.indexMap.count)
+            var floors = [Int64](repeating: 0, count: run.indexMap.count)
+            for outIdx in run.indexMap.values {
+                if let os = run.ctx.pointee.streams[outIdx] {
+                    floors[outIdx] = av_rescale_q(anchorSrcTicks, videoTB, os.pointee.time_base)
+                }
+            }
+            var currentSeg = startSeg
+            var nextBoundary = startSeg     // boundaries[startSeg] opens segment startSeg+1
+            run.writer.beginFile(named: Self.segmentName(currentSeg))
+
+            // Flush the pending fragment. Under delay_moov the FIRST flush of a context emits only
+            // the moov (samples stay buffered for the next flush) — detect via the sink and force one
+            // extra flush so every boundary yields exactly one fragment in its own file.
+            func flushFragment() -> Bool {
+                if av_write_frame(run.ctx, nil) < 0 { return false }
+                avio_flush(run.ctx.pointee.pb)
+                if run.writer.awaitingFirstFragment {
+                    if av_write_frame(run.ctx, nil) < 0 { return false }
+                    avio_flush(run.ctx.pointee.pb)
+                }
+                return true
+            }
+
+            enum RunEnd { case eof, error, repositioned(Int), cancelled }
+            var runEnd: RunEnd?
+
+            while runEnd == nil {
+                if isCancelled() { runEnd = .cancelled; break }
+                if let target = takeReposition() {
+                    if target >= currentSeg, target <= currentSeg + Self.repositionMargin {
+                        // Production will reach it shortly — absorb. Mailbox and interrupt kick are
+                        // cleared in ONE critical section, and only when the mailbox actually clears:
+                        // an unconditional clear could eat a newer concurrent target's read-kick.
+                        publishProducing(currentSeg)
+                        control.lock()
+                        if _pendingTarget == target {
+                            _pendingTarget = nil
+                            interrupts.repositionPending = false
+                        }
+                        control.unlock()
+                    } else {
+                        everRepositioned = true
+                        av_packet_unref(pkt)
+                        runEnd = .repositioned(target)
+                        break
+                    }
+                }
+                if pendingBoundaryPacket {
+                    pendingBoundaryPacket = false           // pkt already holds the boundary keyframe
+                } else {
+                    let r = av_read_frame(input, pkt)
+                    if r < 0 {
+                        if isCancelled() { runEnd = .cancelled }
+                        else if let target = takeReposition() { everRepositioned = true; runEnd = .repositioned(target) }
+                        else if r == avErrorEOF { runEnd = .eof }
+                        else if r == avErrorExit, interrupts.repositionPending {
+                            // Defense-in-depth: a stray interrupt kick with an already-consumed
+                            // mailbox is a spurious wakeup, not a read failure — clear and retry.
+                            interrupts.repositionPending = false
+                            continue
+                        }
+                        else { print("[Remux] read error \(r) at segment \(currentSeg)"); runEnd = .error }
+                        break
+                    }
+                }
+                let inIdx = Int(pkt.pointee.stream_index)
+                guard let outIdx = run.indexMap[inIdx],
+                      let inS = input.pointee.streams[inIdx],
+                      let outS = run.ctx.pointee.streams[outIdx] else {
+                    av_packet_unref(pkt)
+                    continue
+                }
+                let isVideo = outIdx == run.videoOutIdx
+
+                // Cut BEFORE writing the keyframe that opens the next segment, so the boundary
+                // keyframe becomes the first sample of the new fragment. Compared in the SOURCE pts
+                // domain — the same domain the keyframe index gave us.
                 if isVideo, nextBoundary < boundaries.count,
                    pkt.pointee.pts != noTS, pkt.pointee.pts >= boundaries[nextBoundary],
                    (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0 {
-                    if !flushFragment() { writeError = true; av_packet_unref(pkt); break }
-                    if !writer.finalizeCurrent() { writeError = true; av_packet_unref(pkt); break }
+                    guard flushFragment(), run.writer.finalizeCurrent() else {
+                        av_packet_unref(pkt); runEnd = .error; break
+                    }
                     currentSeg += 1
                     nextBoundary += 1
-                    writer.beginFile(named: Self.segmentName(currentSeg))
+                    publishProducing(currentSeg)
+                    consecutiveErrorParks = 0   // a finalized segment = real progress; the error cap
+                                                // counts genuinely consecutive non-productive failures
+                    run.writer.beginFile(named: Self.segmentName(currentSeg))
                 }
 
                 av_packet_rescale_ts(pkt, inS.pointee.time_base, outS.pointee.time_base)
                 pkt.pointee.stream_index = Int32(outIdx)
                 pkt.pointee.pos = -1
+                // Map onto the playlist timeline: all runs share one absolute origin.
+                if pkt.pointee.pts != noTS { pkt.pointee.pts -= run.originOut[outIdx] }
+                if pkt.pointee.dts != noTS { pkt.pointee.dts -= run.originOut[outIdx] }
 
                 if isVideo {
-                    if vAnchor == nil { vAnchor = pkt.pointee.pts != noTS ? pkt.pointee.pts : 0 }
+                    // Video DTS regenerated on a uniform grid (sloppy sources carry missing or
+                    // non-monotonic DTS; AVPlayer rejects such timelines with -12927). Anchored at
+                    // the run's start boundary, offset back for B-frame reorder, clamped at zero.
                     if pkt.pointee.duration > 0 {
                         vDur = pkt.pointee.duration
-                    } else if vDur == 0, pkt.pointee.pts != noTS, let anchor = vAnchor, pkt.pointee.pts > anchor {
-                        vDur = pkt.pointee.pts - anchor
+                    } else if vDur == 0, pkt.pointee.pts != noTS, pkt.pointee.pts > vAnchorOut {
+                        vDur = pkt.pointee.pts - vAnchorOut
                     }
-                    var dts = vAnchor! + (vIndex - reorderSlack) * max(vDur, 1)
+                    var dts = vAnchorOut + (vIndex - reorderSlack) * max(vDur, 1)
+                    if dts < 0 { dts = 0 }
                     if pkt.pointee.pts != noTS, dts > pkt.pointee.pts { dts = pkt.pointee.pts }
                     if let prev = vPrevDTS, dts <= prev { dts = prev + 1 }
                     vPrevDTS = dts
                     pkt.pointee.dts = dts
-                    if pkt.pointee.pts == noTS { pkt.pointee.pts = vAnchor! + vIndex * max(vDur, 1) }
+                    if pkt.pointee.pts == noTS { pkt.pointee.pts = vAnchorOut + vIndex * max(vDur, 1) }
                     vIndex += 1
                 } else {
+                    // Audio keeps source timestamps; gap-fill only when absent, floored at the run
+                    // start so a timestamp-less packet can't land at t=0 in a fragment at t=T_K.
                     if pkt.pointee.dts == noTS {
-                        pkt.pointee.dts = pkt.pointee.pts == noTS ? nextDTS[outIdx] : pkt.pointee.pts
+                        pkt.pointee.dts = pkt.pointee.pts != noTS ? pkt.pointee.pts
+                            : (nextDTS[outIdx] != noTS ? nextDTS[outIdx] : floors[outIdx])
                     }
-                    if pkt.pointee.dts < nextDTS[outIdx] { pkt.pointee.dts = nextDTS[outIdx] }
+                    if nextDTS[outIdx] != noTS, pkt.pointee.dts < nextDTS[outIdx] { pkt.pointee.dts = nextDTS[outIdx] }
+                    if pkt.pointee.dts < 0 { pkt.pointee.dts = 0 }
                     if pkt.pointee.pts == noTS || pkt.pointee.pts < pkt.pointee.dts { pkt.pointee.pts = pkt.pointee.dts }
                     nextDTS[outIdx] = pkt.pointee.dts + max(pkt.pointee.duration, 1)
                 }
 
-                if av_write_frame(output, pkt) < 0 { writeError = true; av_packet_unref(pkt); break }
+                if av_write_frame(run.ctx, pkt) < 0 { av_packet_unref(pkt); runEnd = .error; break }
+                av_packet_unref(pkt)
             }
-            av_packet_unref(pkt)
+
+            switch runEnd ?? .cancelled {
+            case .cancelled:
+                destroyRun(run)
+                break runLoop
+
+            case .repositioned(let target):
+                print("[Remux] repositioning: abandoning segment \(currentSeg), jumping to \(target)")
+                destroyRun(run)                              // partial segment dropped, never finalized
+                startSeg = target
+                consecutiveErrorParks = 0
+                continue runLoop
+
+            case .error:
+                destroyRun(run)
+                if !everRepositioned { return fail("read/write error at segment \(currentSeg)") }
+                // Repositioned sessions self-heal: park; the JIT re-request repositions us again.
+                consecutiveErrorParks += 1
+                guard consecutiveErrorParks < 4 else { return fail("repeated run errors") }
+                guard let next = parkForTarget() else { break runLoop }
+                startSeg = next
+                continue runLoop
+
+            case .eof:
+                // Natural EOF. Completeness gate: a NEVER-repositioned run short of the map means a
+                // truncated source — fail so the coordinator uses mpv (serving .ready would strand
+                // AVPlayer waiting forever). A repositioned run's EOF means the TAIL is complete;
+                // holes below are legal and self-heal via reposition on demand.
+                var tailOK = true
+                if currentSeg == map.count, nextBoundary == boundaries.count {
+                    tailOK = flushFragment() && run.writer.finalizeCurrent()
+                }
+                let shortLinear = currentSeg != map.count && !everRepositioned
+                destroyRun(run)
+                if !tailOK { return fail("final segment flush") }
+                if shortLinear { return fail("truncated remux (\(currentSeg)/\(map.count) segments)") }
+                if currentSeg != map.count {
+                    print("[Remux] repositioned run EOF at \(currentSeg)/\(map.count) — partial dropped")
+                }
+                if state != .ready { setState(.ready) }
+                consecutiveErrorParks = 0
+                print("[Remux] parked at EOF — repositions still serviced")
+                guard let next = parkForTarget() else { break runLoop }
+                everRepositioned = true
+                startSeg = next
+                continue runLoop
+            }
         }
-
-        if isCancelled() { return fail("cancelled") }
-        if writeError { return fail("write_frame") }
-
-        // Completeness gate. The VOD playlist was published up front promising `map.count` segments.
-        // av_read_frame returns a negative for a mid-stream read error just as it does for a clean EOF,
-        // and debrid/HTTP sources (the target) truncate; the source's real keyframes can also diverge
-        // from the index. Any of these leaves us short of the map, and serving `.ready` would strand
-        // AVPlayer waiting for segments that will never be written. On a full remux both counters equal
-        // `map.count` (N-1 mid-loop flushes + the final one). Short ⇒ fail so the coordinator uses mpv.
-        guard nextBoundary == boundaries.count, currentSeg == map.count else {
-            return fail("truncated remux (\(currentSeg)/\(map.count) segments)")
-        }
-
-        // Flush the final fragment into the last segment file (the adaptive double-flush also covers a
-        // single-segment file whose delayed moov is still pending here), then write the trailer into a
-        // discard sink so any residual trailer bytes can't land in a segment file.
-        if !flushFragment() { return fail("flush final fragment") }
-        guard writer.finalizeCurrent() else { return fail("empty final segment") }
-        writer.beginDiscard()
-        guard av_write_trailer(output) >= 0 else { return fail("write_trailer") }
-        setState(.ready)
+        // Only cancellation exits the loop; stop() already silenced the state callback.
+        fail("cancelled")
     }
 
     // MARK: - Segment map / naming
@@ -647,8 +935,14 @@ private nonisolated final class SegmentWriter {
     private var segData = Data()
     private var segName: String?
     private var discarding = false
+    /// Seek-anywhere: a repositioned run's FRESH muxer context re-emits ftyp+moov. init.mp4 is already
+    /// on disk (and is the moov AVPlayer admitted), so the duplicate is parsed and DISCARDED.
+    private let discardInit: Bool
 
-    init(outputDir: URL) { self.outputDir = outputDir }
+    init(outputDir: URL, discardInit: Bool = false) {
+        self.outputDir = outputDir
+        self.discardInit = discardInit
+    }
 
     /// Whether init.mp4 has been written (the moov box has been seen and routed).
     var initFinalized: Bool { initDone }
@@ -721,7 +1015,9 @@ private nonisolated final class SegmentWriter {
                       && initData[off + 6] == 0x6F && initData[off + 7] == 0x76
             if isMoov {
                 let end = off + size
-                writeAtomic(initData.subdata(in: 0..<end), name: "init.mp4")
+                if !discardInit {
+                    writeAtomic(initData.subdata(in: 0..<end), name: "init.mp4")
+                }
                 initDone = true
                 if end < initData.count, !discarding, segName != nil {
                     segData.append(initData.subdata(in: end..<initData.count))
@@ -751,4 +1047,40 @@ private nonisolated func segmentWriterWrite(_ opaque: UnsafeMutableRawPointer?,
                                             _ buf: UnsafePointer<UInt8>?, _ size: Int32) -> Int32 {
     guard let opaque else { return 0 }
     return Unmanaged<SegmentWriter>.fromOpaque(opaque).takeUnretainedValue().write(buf, count: size)
+}
+
+// MARK: - Remux interrupts + FFmpeg error tags
+
+/// FFmpeg error codes are negated fourcc tags (FFERRTAG); the C macros don't import into Swift.
+private nonisolated func ffErrTag(_ tag: String) -> Int32 {
+    let b = Array(tag.utf8)
+    return -(Int32(b[0]) | Int32(b[1]) << 8 | Int32(b[2]) << 16 | Int32(b[3]) << 24)
+}
+/// AVERROR_EOF — genuine end of stream, distinct from read errors and interrupt kicks.
+nonisolated let avErrorEOF = ffErrTag("EOF ")
+/// AVERROR_EXIT — the interrupt callback aborted a blocking call (a reposition/stop kick).
+nonisolated let avErrorExit = ffErrTag("EXIT")
+
+/// Interrupt flags shared with FFmpeg's blocking I/O via `AVIOInterruptCB`. `cancelled` aborts
+/// everything (stop); `repositionPending` kicks the worker out of a blocked av_read_frame so a seek
+/// is responsive even when the source is stalled — the worker clears it before performing its own
+/// av_seek_frame, which runs I/O through the same callback.
+nonisolated final class RemuxInterrupts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _cancelled = false
+    private var _repositionPending = false
+    var cancelled: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _cancelled }
+        set { lock.lock(); _cancelled = newValue; lock.unlock() }
+    }
+    var repositionPending: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _repositionPending }
+        set { lock.lock(); _repositionPending = newValue; lock.unlock() }
+    }
+    var shouldInterrupt: Bool { cancelled || repositionPending }
+}
+
+nonisolated func remuxShouldInterrupt(_ opaque: UnsafeMutableRawPointer?) -> Int32 {
+    guard let opaque else { return 0 }
+    return Unmanaged<RemuxInterrupts>.fromOpaque(opaque).takeUnretainedValue().shouldInterrupt ? 1 : 0
 }
