@@ -70,6 +70,8 @@ final class NextEpisodeEngine: ObservableObject {
     private var triggered = false
     private var cancelled = false
     private var selectedStream: StreamItem?
+    /// A debrid resolve for the selected next-episode stream is in flight (play-time resolution).
+    private var resolvingNext = false
     /// Latest emission from `episodeStreamsState` (the exported StateFlow has no sync `.value`).
     private var latestStreamsState: StreamsUiState?
 
@@ -180,10 +182,32 @@ final class NextEpisodeEngine: ObservableObject {
     }
 
     /// Switch the current video to a different stream (position resumes via saved watch progress).
-    /// Returns false when the stream has no direct URL.
+    /// Returns false when the stream can't be played at all; true means "handled" — a debrid
+    /// stream resolves asynchronously first (the panel may dismiss; playback switches when the
+    /// link lands, ~1s for cached torrents, and a failed resolve leaves playback untouched).
     func playSource(_ stream: StreamItem) -> Bool {
-        let urlString: String? = stream.playableDirectUrl
-        guard let urlString, let url = URL(string: urlString) else { return false }
+        let direct: String? = stream.playableDirectUrl
+        if let direct, !direct.isEmpty, let url = URL(string: direct) {
+            switchToSource(stream: stream, url: url)
+            return true
+        }
+        guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else { return false }
+        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
+            stream: stream,
+            season: context.season.map { KotlinInt(int: Int32($0)) },
+            episode: context.episode.map { KotlinInt(int: Int32($0)) }
+        ) { [weak self] result, _ in
+            DispatchQueue.main.async {
+                guard let self, let success = result as? DirectDebridPlayableResult.Success else { return }
+                let resolved: String? = success.stream.playableDirectUrl
+                guard let resolved, !resolved.isEmpty, let url = URL(string: resolved) else { return }
+                self.switchToSource(stream: success.stream, url: url)
+            }
+        }
+        return true
+    }
+
+    private func switchToSource(stream: StreamItem, url: URL) {
         Self.consecutiveAutoPlays = 0
 
         let switched = PlaybackContext(
@@ -207,7 +231,6 @@ final class NextEpisodeEngine: ObservableObject {
             episodes: context.episodes
         )
         onPlayNext(switched)
-        return true
     }
 
     private func tearDownSearch() {
@@ -280,6 +303,7 @@ final class NextEpisodeEngine: ObservableObject {
         sourceName = nil
 
         let videoId = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
+        print("[UpNext] search begin — \(videoId) s\(next.season?.stringValue ?? "?")e\(next.episode?.stringValue ?? "?")")
         PlayerStreamsRepository.shared.loadEpisodeStreams(
             type: context.contentType,
             videoId: videoId,
@@ -291,6 +315,7 @@ final class NextEpisodeEngine: ObservableObject {
         streamsWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
             guard let self, let state = emitted as? StreamsUiState else { return }
             self.latestStreamsState = state
+            print("[UpNext] streams: groups=\(state.groups.count) playable=\(self.allStreams(state.groups).count) loading=\(state.isAnyLoading)")
             self.handleStreams(state, settings: settings)
         }
 
@@ -303,9 +328,18 @@ final class NextEpisodeEngine: ObservableObject {
             // still responding, let the watcher finish the job when loading completes.
             let state = self.latestStreamsState
             let groups = state?.groups ?? []
+            print("[UpNext] timeout(\(timeoutSeconds)s): groups=\(groups.count) loading=\(state?.isAnyLoading ?? false)")
             if !groups.isEmpty {
                 self.attemptSelection(groups: groups, settings: settings, loadFinished: !(state?.isAnyLoading ?? false))
             }
+            // Hard deadline: a hung addon can leave the flow "loading" forever, which used to strand
+            // the card at "Finding source…" with no terminal state. Give stragglers a grace window
+            // past the soft timeout, then resolve with whatever exists (or "no stream").
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            guard !Task.isCancelled, self.selectedStream == nil, !self.cancelled else { return }
+            let late = self.latestStreamsState
+            print("[UpNext] hard deadline: groups=\(late?.groups.count ?? 0) loading=\(late?.isAnyLoading ?? false) — resolving")
+            self.attemptSelection(groups: late?.groups ?? [], settings: settings, loadFinished: true)
         }
     }
 
@@ -326,7 +360,12 @@ final class NextEpisodeEngine: ObservableObject {
         groups.flatMap { group in
             group.streams.filter {
                 let direct: String? = $0.playableDirectUrl
-                return !(direct ?? "").isEmpty
+                if !(direct ?? "").isEmpty { return true }
+                // Debrid setups: torrent/clientResolve results carry NO direct URL — they resolve
+                // to one at play time (exactly like the stream picker's click path). Without this,
+                // an all-debrid account always ends in "no stream found" even though every result
+                // is instantly playable.
+                return DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: $0)
             }
         }
     }
@@ -388,6 +427,7 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func didSelect(_ stream: StreamItem) {
         guard selectedStream == nil, !cancelled, let next = nextVideo else { return }
+        print("[UpNext] selected — \(stream.addonName): \(stream.streamLabel)")
         selectedStream = stream
         sourceName = stream.addonName
         timeoutTask?.cancel()
@@ -422,6 +462,7 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func finishWithoutStream() {
         guard selectedStream == nil, !cancelled else { return }
+        print("[UpNext] no stream found")
         timeoutTask?.cancel()
         streamsWatcher?.cancel()
         streamsWatcher = nil
@@ -435,13 +476,45 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func play(stream: StreamItem, next: MetaVideo) {
         let urlString: String? = stream.playableDirectUrl
-        guard let urlString, let url = URL(string: urlString) else {
-            finishWithoutStream()
+        if let urlString, !urlString.isEmpty, let url = URL(string: urlString) {
+            phase = .hidden
+            onPlayNext(makeNextContext(stream: stream, url: url, next: next))
             return
         }
-        phase = .hidden
 
-        let nextContext = PlaybackContext(
+        // Debrid stream — resolve to a direct link first (picker-click parity). The card keeps its
+        // last state during the ~1s resolve; failure resolves to the "no stream" card.
+        guard !resolvingNext else { return }
+        resolvingNext = true
+        print("[UpNext] resolving debrid stream — \(stream.addonName)")
+        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
+            stream: stream,
+            season: next.season,
+            episode: next.episode
+        ) { [weak self] result, _ in
+            // Kotlin suspend completions can land off-main; hop before touching engine state.
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.resolvingNext = false
+                guard !self.cancelled else { return }
+                if let success = result as? DirectDebridPlayableResult.Success {
+                    let resolved: String? = success.stream.playableDirectUrl
+                    if let resolved, !resolved.isEmpty, let url = URL(string: resolved) {
+                        print("[UpNext] resolved — playing next episode")
+                        self.phase = .hidden
+                        self.onPlayNext(self.makeNextContext(stream: success.stream, url: url, next: next))
+                        return
+                    }
+                }
+                print("[UpNext] debrid resolve failed — \(String(describing: result))")
+                self.selectedStream = nil          // reopen finishWithoutStream's guard
+                self.finishWithoutStream()
+            }
+        }
+    }
+
+    private func makeNextContext(stream: StreamItem, url: URL, next: MetaVideo) -> PlaybackContext {
+        PlaybackContext(
             url: url,
             title: Self.episodeTitle(next),
             contentType: context.contentType,
@@ -461,7 +534,6 @@ final class NextEpisodeEngine: ObservableObject {
             bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
             episodes: context.episodes
         )
-        onPlayNext(nextContext)
     }
 
     // MARK: - Episode resolution (Swift port of mobile's PlayerNextEpisodeRules)

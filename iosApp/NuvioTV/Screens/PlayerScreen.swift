@@ -31,7 +31,9 @@ struct PlayerScreen: View {
         Group {
             switch shown {
             case .native:
-                NativePlayerScreen(context: context, onPlayNext: onPlayNext, onFallback: { _ in forcedMPV = true })
+                NativePlayerScreen(context: context, onPlayNext: onPlayNext,
+                                   onFallback: { _ in forcedMPV = true },
+                                   routingNote: decision?.displayNote)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
                                 routingNote: forcedMPV ? "mpv \u{00B7} fallback" : decision?.displayNote)

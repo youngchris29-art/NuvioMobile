@@ -273,6 +273,51 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - Stream Info tab
+
+    /// Rows for the native player's Stream Info tab: routing decision, remux signaling, segment-map
+    /// shape, and live transfer stats from the item's access log. Called on playback ticks.
+    func streamInfoRows(routingNote: String?) -> [NativeInfoRow] {
+        var rows: [NativeInfoRow] = []
+        func add(_ label: String, _ value: String?) {
+            if let value, !value.isEmpty { rows.append(NativeInfoRow(label: label, value: value)) }
+        }
+        add("Engine", routingNote ?? "Native")
+        if let s = remux?.videoSignaling {
+            add("Video", s.codecs)
+            add("Dolby Vision", s.supplementalCodecs)
+            add("Dynamic range", s.videoRange)
+            if s.width > 0, s.height > 0 {
+                let fps = s.frameRate > 0 ? String(format: " · %.6g fps", s.frameRate) : ""
+                add("Resolution", "\(s.width)\u{00D7}\(s.height)\(fps)")
+            }
+        }
+        add("Audio", remux?.audioCodecToken)
+        if let map = remux?.segmentMap {
+            add("Segments", "\(map.count) \u{00D7} \(map.targetDurationSec)s \u{00B7} \(Self.timeString(map.totalDurationSec))")
+        }
+        if let bandwidth = remux?.estimatedBandwidth, bandwidth > 0 {
+            add("Declared bandwidth", String(format: "%.1f Mb/s", Double(bandwidth) / 1_000_000))
+        }
+        if let event = playerItem?.accessLog()?.events.last {
+            if event.indicatedBitrate > 0 {
+                add("Indicated bitrate", String(format: "%.1f Mb/s", event.indicatedBitrate / 1_000_000))
+            }
+            if event.numberOfBytesTransferred > 0 {
+                add("Transferred", String(format: "%.0f MB", Double(event.numberOfBytesTransferred) / 1_048_576))
+            }
+            if event.numberOfStalls > 0 { add("Stalls", "\(event.numberOfStalls)") }
+        }
+        return rows
+    }
+
+    private static func timeString(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "" }
+        let total = Int(seconds.rounded())
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+
     /// Error + access logs from the item — names the exact URI/status/comment AVPlayer choked on.
     private static func dumpItemLogs(_ item: AVPlayerItem) {
         for event in item.errorLog()?.events ?? [] {
