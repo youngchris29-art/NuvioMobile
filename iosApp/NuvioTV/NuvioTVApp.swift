@@ -31,6 +31,12 @@ struct NuvioTVApp: App {
             try? session.setActive(true)
         }
 
+        // Sweep remux session dirs orphaned by a jetsam kill or crash (cleanup normally runs on
+        // playback stop, so anything under Caches/nuvio-remux at launch is a leak — and a single
+        // remux-bitrate session can be several GB). Async on a utility queue; live sessions are
+        // shielded via a registry.
+        RemuxCacheJanitor.sweepAtLaunch()
+
         #if DEBUG
         // Phase 2 headless remux/HLS-server validation, gated on the `debug.remuxSmokeURL` default.
         RemuxSmokeTest.runIfRequested()

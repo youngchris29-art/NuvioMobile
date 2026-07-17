@@ -144,6 +144,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     init(config: Config, outputDir: URL? = nil) {
         self.config = config
         self.outputDir = outputDir ?? RemuxSession.makeSessionDir()
+        // Shields the directory from the launch orphan sweep. Must precede the worker's mkdir —
+        // see RemuxCacheJanitor.registerLive.
+        RemuxCacheJanitor.registerLive(self.outputDir)
     }
 
     /// Begin remuxing on a background queue. `onStateChange` fires on every transition (off-main).
@@ -169,7 +172,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// serial queue, so it runs strictly after `runRemux` returns (a direct removal can race a final
     /// in-flight segment write).
     func scheduleCleanup() {
-        queue.async { [outputDir] in try? FileManager.default.removeItem(at: outputDir) }
+        queue.async { [outputDir] in
+            try? FileManager.default.removeItem(at: outputDir)
+            RemuxCacheJanitor.unregisterLive(outputDir)
+        }
     }
 
     // MARK: - Remux worker
@@ -981,10 +987,15 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         setState(.failed(stage))
     }
 
-    private static func makeSessionDir() -> URL {
+    /// Root of the remux segment cache — every session writes into its own UUID subdirectory.
+    /// `RemuxCacheJanitor` sweeps orphaned subdirectories at launch.
+    static var cacheRoot: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("nuvio-remux", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    private static func makeSessionDir() -> URL {
+        cacheRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
 }
 
