@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import SharedCore
 
 // Phase 3 of the hybrid player: ties Phase 2's remux + loopback server to an AVPlayer for one
 // PlaybackContext. Starts the remux, begins playback progressively as soon as the first segment is
@@ -37,6 +38,17 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// 0 = full signaling (RFC 6381 + DV supplemental + range); 1 = minimal (bare sample-entry tag).
     /// A strict AVPlayer that rejects the full form at the master stage gets one retry at minimal.
     private var signalingAttempt = 0
+    /// Subtitles fetched from installed subtitle addons (OpenSubtitles etc.) — the same source the
+    /// mpv player side-loads. Fetched at start(); playback start is gated (briefly, capped) on the
+    /// fetch completing, because the VOD master is rendered exactly once — renditions that arrive
+    /// after it are invisible to AVPlayer. Streams rarely attach their own subtitles.
+    private var addonSubtitles: [SubtitleFile] = []
+    private var addonSubsWatcher: FlowWatcher?
+    private var subsLoadingWatcher: FlowWatcher?
+    /// Fetch lifecycle: done when the repo's isLoading flow has been observed true → false (or when
+    /// the flow publishes a non-empty list — completion and results are equivalent for gating).
+    private var subsFetchSawLoading = false
+    private var subsFetchDone = false
 
     init(context: PlaybackContext) {
         self.context = context
@@ -47,6 +59,37 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     func start() {
         guard remux == nil else { return }
+        // Addon-subtitle fetch. SUBSCRIBE FIRST, fetch second: a fetch with no subtitle-capable
+        // addons completes in microseconds, and its isLoading true→false transition must not slip
+        // between fetch() and watch() (observed: the gate then burns its full budget and the
+        // "fetch finished" log never fires). The repo publishes results BEFORE flipping isLoading
+        // off, so gating on the transition always sees the final list; the pre-fetch replay
+        // emission is absorbed by the sawLoading latch.
+        addonSubsWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.addonSubtitles) { [weak self] emitted in
+            guard let subs = emitted as? [AddonSubtitle] else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.addonSubtitles = subs.map {
+                    SubtitleFile(url: $0.url, language: $0.language, name: $0.display)
+                }
+                if !subs.isEmpty {
+                    self.subsFetchDone = true
+                    print("[NativePlayer] addon subtitles arrived: \(subs.count)\(self.server == nil ? "" : " (after master — too late this session)")")
+                }
+            }
+        }
+        subsLoadingWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.isLoading) { [weak self] emitted in
+            guard let loading = (emitted as? NSNumber)?.boolValue else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if loading { self.subsFetchSawLoading = true }
+                if !loading, self.subsFetchSawLoading, !self.subsFetchDone {
+                    self.subsFetchDone = true
+                    print("[NativePlayer] addon subtitle fetch finished (\(self.addonSubtitles.count) found)")
+                }
+            }
+        }
+        SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
         let remux = RemuxSession(config: .init(url: context.url, segmentDurationSec: 6))
         self.remux = remux
         remux.start { state in
@@ -59,6 +102,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     func stop() {
         pollTask?.cancel(); pollTask = nil
         observeTask?.cancel(); observeTask = nil
+        addonSubsWatcher?.cancel(); addonSubsWatcher = nil
+        subsLoadingWatcher?.cancel(); subsLoadingWatcher = nil
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1, flush: true)
         }
@@ -92,6 +137,9 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func pollForFirstSegment(remux: RemuxSession) {
         pollTask = Task { @MainActor [weak self] in
             let dir = remux.outputDir
+            // The VOD master is rendered exactly once — subtitle renditions must exist by then. Give
+            // the addon fetch a bounded head start beyond remux readiness; never hold startup longer.
+            let subsDeadline = Date().addingTimeInterval(8)
             for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
@@ -100,6 +148,10 @@ final class NativePlaybackCoordinator: ObservableObject {
                 // A finished remux (short clip that is a single segment) finalizes seg-00001 only at EOF.
                 let hasFirst = Self.fileSize(dir, RemuxSession.segmentName(1)) > 0 || remux.state == .ready
                 if hasMap && hasInit && hasFirst {
+                    if let self, !self.subsFetchDone, Date() < subsDeadline {
+                        try? await Task.sleep(nanoseconds: 250_000_000)   // waiting only on subtitles now
+                        continue
+                    }
                     self?.beginPlayback(remux: remux)
                     return
                 }
@@ -116,12 +168,12 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func beginPlayback(remux: RemuxSession) {
         guard phase == .preparing, player == nil else { return }
         guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
-        // External subtitles (D5): offered as WebVTT renditions in the synthesized master — the
-        // native subtitle menu lists them; the server downloads/converts on first selection.
-        let subtitleRenditions = SubtitleVTT.renditions(from: context.externalSubtitles)
-        if !subtitleRenditions.isEmpty {
-            print("[NativePlayer] external subtitles: \(subtitleRenditions.map(\.name).joined(separator: ", "))")
-        }
+        // External subtitles (D5): stream-attached files plus the addon-fetched list (the same
+        // source the mpv player side-loads — streams rarely attach their own), offered as WebVTT
+        // renditions in the synthesized master. The server downloads/converts on first selection.
+        let subtitleRenditions = SubtitleVTT.renditions(from: context.externalSubtitles + addonSubtitles)
+        print("[NativePlayer] subtitle renditions: \(subtitleRenditions.count)"
+              + (subtitleRenditions.isEmpty ? "" : " — \(subtitleRenditions.prefix(6).map(\.name).joined(separator: ", "))\(subtitleRenditions.count > 6 ? ", …" : "")"))
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: remux.videoSignaling ?? VideoSignaling(codecs: ""),
                                     audioCodec: remux.audioCodecToken, bandwidth: remux.estimatedBandwidth,
