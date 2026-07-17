@@ -644,6 +644,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     currentSeg += 1
                     nextBoundary += 1
                     publishProducing(currentSeg)
+                    if (currentSeg - 1) % 15 == 0 || currentSeg == startSeg + 1 {
+                        print("[Remux] seg \(currentSeg - 1) done footprint=\(processFootprintMB())MB")
+                    }
                     consecutiveErrorParks = 0   // a finalized segment = real progress; the error cap
                                                 // counts genuinely consecutive non-productive failures
                     run.writer.beginFile(named: Self.segmentName(currentSeg))
@@ -754,19 +757,27 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private func buildSegmentMap(input: UnsafeMutablePointer<AVFormatContext>, videoIndex: Int) -> SegmentMap? {
         guard let vs = input.pointee.streams[videoIndex] else { return nil }
 
-        var ticks = keyframeTicks(vs)
-        if ticks.count < 2, input.pointee.duration > 0 {
-            // stream_index -1 ⇒ timestamp is in AV_TIME_BASE (µs), matching input.duration.
-            av_seek_frame(input, -1, input.pointee.duration, AVSEEK_FLAG_BACKWARD)
-            ticks = keyframeTicks(vs)
-            av_seek_frame(input, -1, 0, AVSEEK_FLAG_BACKWARD)     // rewind for the copy loop
-        }
-
         let tb = vs.pointee.time_base
         // Prefer the video stream's own duration; fall back to the container's (µs).
         let durationSec: Double = vs.pointee.duration > 0
             ? Double(vs.pointee.duration) * Double(tb.num) / Double(tb.den)
             : (input.pointee.duration > 0 ? Double(input.pointee.duration) / 1_000_000.0 : 0)
+
+        var ticks = keyframeTicks(vs)
+        // Prime whenever the index is too sparse to yield a usable map, not just when it's empty:
+        // find_stream_info's probing deposits a FEW keyframe entries (device truth: 3-6 on
+        // high-bitrate remuxes), which must not defeat priming — tail-loaded Cues (mkvmerge default)
+        // only parse once a seek forces them, while front-loaded Cues are indexed at open. The
+        // threshold mirrors SegmentMap.build's own sparsity gate (avg segment ≤ 30s), so any index
+        // that would be rejected below triggers one priming attempt first.
+        let minUsable = durationSec > 0 ? Int(durationSec / 30) + 1 : 2
+        if ticks.count < max(2, minUsable), input.pointee.duration > 0 {
+            // stream_index -1 ⇒ timestamp is in AV_TIME_BASE (µs), matching input.duration.
+            av_seek_frame(input, -1, input.pointee.duration, AVSEEK_FLAG_BACKWARD)
+            let primed = keyframeTicks(vs)
+            if primed.count > ticks.count { ticks = primed }
+            av_seek_frame(input, -1, 0, AVSEEK_FLAG_BACKWARD)     // rewind for the copy loop
+        }
         print("[Remux] keyframe index: \(ticks.count) keyframes tb=\(tb.num)/\(tb.den) dur=\(String(format: "%.1f", durationSec))s")
         return SegmentMap.build(keyframeTicks: ticks, timeBaseNum: tb.num, timeBaseDen: tb.den,
                                 totalDurationSec: durationSec, segDurSec: config.segmentDurationSec)
@@ -1111,6 +1122,21 @@ private nonisolated func segmentWriterWrite(_ opaque: UnsafeMutableRawPointer?,
                                             _ buf: UnsafePointer<UInt8>?, _ size: Int32) -> Int32 {
     guard let opaque else { return 0 }
     return Unmanaged<SegmentWriter>.fromOpaque(opaque).takeUnretainedValue().write(buf, count: size)
+}
+
+// MARK: - Diagnostics
+
+/// Process physical footprint in MB (the number jetsam judges) — logged per produced segment while
+/// chasing the 2 GB per-process kill observed on remux-bitrate sources (device, 2026-07-16).
+nonisolated func processFootprintMB() -> Int {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    return kr == KERN_SUCCESS ? Int(info.phys_footprint / 1_048_576) : -1
 }
 
 // MARK: - Remux interrupts + FFmpeg error tags
