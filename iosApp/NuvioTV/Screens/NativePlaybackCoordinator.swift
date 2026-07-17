@@ -116,9 +116,16 @@ final class NativePlaybackCoordinator: ObservableObject {
     private func beginPlayback(remux: RemuxSession) {
         guard phase == .preparing, player == nil else { return }
         guard let map = remux.segmentMap else { failIfPreplayback("no segment map"); return }
+        // External subtitles (D5): offered as WebVTT renditions in the synthesized master — the
+        // native subtitle menu lists them; the server downloads/converts on first selection.
+        let subtitleRenditions = SubtitleVTT.renditions(from: context.externalSubtitles)
+        if !subtitleRenditions.isEmpty {
+            print("[NativePlayer] external subtitles: \(subtitleRenditions.map(\.name).joined(separator: ", "))")
+        }
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: remux.videoSignaling ?? VideoSignaling(codecs: ""),
                                     audioCodec: remux.audioCodecToken, bandwidth: remux.estimatedBandwidth,
+                                    subtitles: subtitleRenditions,
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server

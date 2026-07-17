@@ -123,7 +123,8 @@ nonisolated struct SegmentMap: Sendable {
     func masterPlaylist(signaling: VideoSignaling,
                         audioCodec: String?,
                         bandwidth: Int,
-                        mediaName: String = "media.m3u8") -> String {
+                        mediaName: String = "media.m3u8",
+                        subtitles: [SubtitleRendition] = []) -> String {
         var codecTokens: [String] = []
         if !signaling.codecs.isEmpty { codecTokens.append(signaling.codecs) }
         if let audioCodec, !audioCodec.isEmpty { codecTokens.append(audioCodec) }
@@ -144,6 +145,22 @@ nonisolated struct SegmentMap: Sendable {
         if let range = signaling.videoRange {
             streamInf += ",VIDEO-RANGE=\(range)"
         }
-        return ["#EXTM3U", "#EXT-X-VERSION:7", streamInf, mediaName].joined(separator: "\n") + "\n"
+
+        var lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
+        // External-subtitle renditions (D5): WebVTT sidecars served by LocalHLSServer. AUTOSELECT
+        // lets tvOS pick per the user's language/accessibility preferences; nothing is DEFAULT.
+        if !subtitles.isEmpty {
+            for sub in subtitles {
+                var media = "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"\(sub.name.replacingOccurrences(of: "\"", with: ""))\""
+                media += ",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO"
+                if let language = sub.language { media += ",LANGUAGE=\"\(language)\"" }
+                media += ",URI=\"\(sub.playlistName)\""
+                lines.append(media)
+            }
+            streamInf += ",SUBTITLES=\"subs\""
+        }
+        lines.append(streamInf)
+        lines.append(mediaName)
+        return lines.joined(separator: "\n") + "\n"
     }
 }

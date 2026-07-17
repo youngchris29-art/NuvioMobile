@@ -47,6 +47,11 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private var _signaling: VideoSignaling
     private let audioCodec: String?
     private let bandwidth: Int
+    /// External-subtitle renditions (D5): each is an EXT-X-MEDIA SUBTITLES entry; the VTT payloads
+    /// download + convert just-in-time on first request and are cached here for the session.
+    private let subtitles: [SubtitleRendition]
+    private var vttCache = [Int: Data]()
+    private var vttFailed = Set<Int>()
     let masterName = "master.m3u8"
     let mediaName = "media.m3u8"
 
@@ -74,6 +79,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
     init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling, audioCodec: String?, bandwidth: Int,
+         subtitles: [SubtitleRendition] = [],
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
          requestReposition: @escaping @Sendable (Int) -> Void) {
         self.rootDir = rootDir
@@ -81,6 +87,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self._signaling = signaling
         self.audioCodec = audioCodec
         self.bandwidth = bandwidth
+        self.subtitles = subtitles
         self.producingInfo = producingInfo
         self.requestReposition = requestReposition
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -100,11 +107,23 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         case masterName:
             lock.lock(); let signaling = _signaling; lock.unlock()
             return map.masterPlaylist(signaling: signaling, audioCodec: audioCodec,
-                                      bandwidth: bandwidth, mediaName: mediaName)
+                                      bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles)
         case mediaName:
             return map.mediaPlaylist()
         default:
-            return nil
+            // sub-N.m3u8 — a one-segment VOD playlist covering the whole timeline (cue times are
+            // playlist times; no X-TIMESTAMP-MAP needed at origin zero).
+            guard let rendition = subtitles.first(where: { $0.playlistName == name }) else { return nil }
+            let total = map.totalDurationSec
+            return [
+                "#EXTM3U",
+                "#EXT-X-VERSION:7",
+                "#EXT-X-TARGETDURATION:\(Int(total.rounded(.up)))",
+                "#EXT-X-PLAYLIST-TYPE:VOD",
+                String(format: "#EXTINF:%.3f,", total),
+                rendition.fileName,
+                "#EXT-X-ENDLIST",
+            ].joined(separator: "\n") + "\n"
         }
     }
 
@@ -267,9 +286,58 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
 
+        // sub-N.vtt — external subtitle, downloaded + converted on first request.
+        if name.hasSuffix(".vtt") {
+            serveSubtitle(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            return
+        }
+
         // init.mp4 / seg-NNNNN.m4s — produced just-in-time by the remux; block until present.
         serveSegmentJIT(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection,
                         deadline: Date().addingTimeInterval(blockTimeout), mode: nil, live: live)
+    }
+
+    /// Serve a subtitle rendition: cached VTT if present, else download the addon file, convert
+    /// SRT→WebVTT and cache. Failures 404 — a missing subtitle track must never disturb playback
+    /// (AVPlayer keeps playing; the menu entry just doesn't render cues).
+    private func serveSubtitle(name: String, rangeHeader: String?, isHead: Bool, on connection: NWConnection) {
+        guard let rendition = subtitles.first(where: { $0.fileName == name }) else {
+            send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8),
+                 on: connection, requestPath: name)
+            return
+        }
+        lock.lock()
+        let cached = vttCache[rendition.index]
+        let failed = vttFailed.contains(rendition.index)
+        lock.unlock()
+        if let cached {
+            serveBytes(cached, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            return
+        }
+        if failed {
+            send(status: "404 Not Found", contentType: "text/plain", body: Data("Unavailable".utf8),
+                 on: connection, requestPath: name)
+            return
+        }
+
+        var request = URLRequest(url: rendition.sourceURL)
+        request.timeoutInterval = 10
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            guard let self else { connection.cancel(); return }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let vtt = (200..<300).contains(status) ? data.flatMap { SubtitleVTT.webVTT(from: $0) } : nil
+            if let vtt {
+                let body = Data(vtt.utf8)
+                self.lock.lock(); self.vttCache[rendition.index] = body; self.lock.unlock()
+                print("[HLS] subtitle \(rendition.index) ready (\(body.count)b, \(rendition.name))")
+                self.serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            } else {
+                self.lock.lock(); self.vttFailed.insert(rendition.index); self.lock.unlock()
+                print("[HLS] subtitle \(rendition.index) failed (http \(status), \(rendition.sourceURL.host ?? "?"))")
+                self.send(status: "404 Not Found", contentType: "text/plain", body: Data("Unavailable".utf8),
+                          on: connection, requestPath: name)
+            }
+        }.resume()
     }
 
     /// How a JIT request decided to wait, fixed on FIRST evaluation. A `.poll` request (in-window when
@@ -385,6 +453,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         if name.hasSuffix(".m3u8") { return "application/vnd.apple.mpegurl" }
         if name.hasSuffix(".mp4") { return "video/mp4" }
         if name.hasSuffix(".m4s") { return "video/iso.segment" }
+        if name.hasSuffix(".vtt") { return "text/vtt" }
         return "application/octet-stream"
     }
 

@@ -34,12 +34,16 @@ nonisolated enum RemuxSmokeTest {
             }
             // Unique videoId per launch so a stored watch position from a previous smoke run can't
             // trigger a surprise resume-seek mid-test.
+            // debug.remuxSmokeSubURL: inject an external subtitle (D5) so the sim run exercises the
+            // WebVTT rendition path — master EXT-X-MEDIA, sub playlist, JIT download + conversion.
+            let smokeSubs: [SubtitleFile] = UserDefaults.standard.string(forKey: "debug.remuxSmokeSubURL")
+                .map { [SubtitleFile(url: $0, language: "en", name: "Smoke Sub")] } ?? []
             let context = PlaybackContext(
                 url: url, title: "Smoke Test", contentType: "movie",
                 parentMetaId: "smoke", videoId: "smoke-\(Int(Date().timeIntervalSince1970))",
                 season: nil, episode: nil, poster: nil, background: nil,
                 providerName: nil, providerAddonId: nil,
-                streamTitle: nil, streamSubtitle: nil, externalSubtitles: []
+                streamTitle: nil, streamSubtitle: nil, externalSubtitles: smokeSubs
             )
             let coordinator = NativePlaybackCoordinator(context: context)
             self.coordinator = coordinator
@@ -57,6 +61,20 @@ nonisolated enum RemuxSmokeTest {
                 let secs = coordinator.player?.currentItem.map { CMTimeGetSeconds($0.duration) } ?? .nan
                 let text = secs.isFinite ? String(format: "%.1fs", secs) : "live"
                 print("[RemuxSmoke] coordinator playing + AVPlayer readyToPlay \u{2705} duration=\(text)")
+                // D5 assertion: the asset should expose a legible media-selection group when
+                // external subtitles were injected. Select the first option so the VTT actually
+                // downloads/converts and any rendition failure surfaces in the [HLS] log.
+                if let item = coordinator.player?.currentItem {
+                    Task {
+                        let group = try? await item.asset.loadMediaSelectionGroup(for: .legible)
+                        let names = group?.options.map(\.displayName) ?? []
+                        print("[RemuxSmoke] legible options: \(names.count)\(names.isEmpty ? "" : " — \(names.joined(separator: ", "))")")
+                        if let group, let first = group.options.first {
+                            await MainActor.run { item.select(first, in: group) }
+                            print("[RemuxSmoke] selected subtitle: \(first.displayName)")
+                        }
+                    }
+                }
                 // debug.remuxSmokeSeekTo="30,120,60": scrub mid-play to exercise the seek-anywhere
                 // reposition path — comma-separated targets fired 12s apart (far-forward, then
                 // backward-into-hole, etc., against a throttled source).
