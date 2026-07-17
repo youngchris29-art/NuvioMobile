@@ -46,9 +46,10 @@ nonisolated enum PlayerEngineRouter {
             }
         }
 
-        // At least one audio track must be AVPlayer-compatible (the remux selects it). All-TrueHD/DTS
-        // files route to mpv until the Phase 4 transcode exists. Video-only files are fine.
-        let hasCompatibleAudio = p.audio.isEmpty || p.audio.contains { isNativeAudio($0.codec) }
+        // At least one audio track must be AVPlayer-compatible (stream-copied) or TrueHD/DTS (the
+        // remux transcodes those to AAC — Phase 4 v2). Video-only files are fine.
+        let hasCompatibleAudio = p.audio.isEmpty
+            || p.audio.contains { isNativeAudio($0.codec) || isTranscodableAudio($0.codec) }
         guard hasCompatibleAudio else {
             return EngineDecision(engine: .mpv, reason: "audio \(p.audio.first?.codec ?? "none")")
         }
@@ -64,12 +65,19 @@ nonisolated enum PlayerEngineRouter {
         return c.contains("matroska") || c.contains("webm") || c.contains("mp4") || c.contains("mov")
     }
 
-    /// Audio codecs AVPlayer can play directly (passthrough or decode); everything else → mpv/Phase 4.
+    /// Audio codecs AVPlayer can play directly (the remux stream-copies these).
     private static func isNativeAudio(_ codec: String) -> Bool {
         switch codec {
         case "aac", "ac3", "eac3", "flac", "alac", "mp3": return true
         default: return false
         }
+    }
+
+    /// Codecs the remux transcodes to AAC when no copyable track exists (AudioTranscoder — decoders
+    /// verified present in the MPVKit FFmpeg build). Canonical descriptor names as MediaProbe reports
+    /// them: FFmpeg calls DTS (incl. DTS-HD, decoded via its core/extensions) "dts".
+    private static func isTranscodableAudio(_ codec: String) -> Bool {
+        codec == "truehd" || codec == "dts"
     }
 
     private static func nativeReason(_ p: ProbeResult) -> String {
@@ -114,7 +122,9 @@ extension PlayerEngineRouter {
         expect(route(probe: sample(hdr: .hdr10), nativeDVEnabled: true).engine, .native, "HDR10 HEVC → native")
         expect(route(probe: sample(video: "h264"), nativeDVEnabled: true).engine, .native, "H.264 → native")
         expect(route(probe: sample(video: "av1"), nativeDVEnabled: true).engine, .mpv, "AV1 → mpv")
-        expect(route(probe: sample(audio: ["truehd"]), nativeDVEnabled: true).engine, .mpv, "TrueHD-only → mpv")
+        expect(route(probe: sample(audio: ["truehd"]), nativeDVEnabled: true).engine, .native, "TrueHD-only → native (transcode)")
+        expect(route(probe: sample(audio: ["dts"]), nativeDVEnabled: true).engine, .native, "DTS-only → native (transcode)")
+        expect(route(probe: sample(audio: ["opus"]), nativeDVEnabled: true).engine, .mpv, "Opus-only → mpv")
         expect(route(probe: sample(audio: ["truehd", "ac3"]), nativeDVEnabled: true).engine, .native, "TrueHD+AC3 → native")
         expect(route(probe: sample(seekable: false), nativeDVEnabled: true).engine, .mpv, "non-seekable → mpv")
         expect(route(probe: sample(container: "avi"), nativeDVEnabled: true).engine, .mpv, "AVI → mpv")

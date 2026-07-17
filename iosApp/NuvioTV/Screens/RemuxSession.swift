@@ -6,8 +6,9 @@ import Libavutil
 // Phase 2/4 of the hybrid player: on-device MKV→fMP4 remux with an OWNED segmenter (plan decision D3).
 // Stream-copies (no re-encode) the compatible video and audio tracks of a source into fragmented-MP4
 // segments, preserving Dolby Vision (RPU NALs ride along in the copied bitstream; the `dvvC` box is
-// written by movenc from the DOVI side data). Runs on a background worker; the emitted directory —
-// one init segment plus `seg-NNNNN.m4s` files — is served to AVPlayer by `LocalHLSServer`.
+// written by movenc from the DOVI side data). Audio with no copyable track falls back to a TrueHD/DTS
+// → AAC transcode (`AudioTranscoder`, Phase 4 v2). Runs on a background worker; the emitted directory
+// — one init segment plus `seg-NNNNN.m4s` files — is served to AVPlayer by `LocalHLSServer`.
 //
 // WHY WE OWN THE SEGMENTER (not the `dash` muxer): tvOS 27 rejects EVENT/growing playlists and only
 // plays a VOD playlist (EXT-X-ENDLIST) published complete up front — but the segment files must still
@@ -206,15 +207,25 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         defer { var p: UnsafeMutablePointer<AVFormatContext>? = input; avformat_close_input(&p) }
         guard avformat_find_stream_info(input, nil) >= 0 else { return fail("find_stream_info") }
 
-        var videoIn = -1, audioIn = -1
+        var videoIn = -1, audioCopyIn = -1, audioTranscodeIn = -1
         for i in 0..<Int(input.pointee.nb_streams) {
             guard let s = input.pointee.streams[i], let par = s.pointee.codecpar else { continue }
             switch par.pointee.codec_type {
             case AVMEDIA_TYPE_VIDEO where videoIn < 0: videoIn = i
-            case AVMEDIA_TYPE_AUDIO where audioIn < 0 && isCopyableAudio(par.pointee.codec_id): audioIn = i
+            case AVMEDIA_TYPE_AUDIO:
+                if audioCopyIn < 0, isCopyableAudio(par.pointee.codec_id) {
+                    audioCopyIn = i
+                } else if audioTranscodeIn < 0, AudioTranscoder.isTranscodable(par.pointee.codec_id) {
+                    audioTranscodeIn = i
+                }
             default: break
             }
         }
+        // Prefer a stream-copyable track (bit-exact, zero CPU); with none present, transcode a
+        // TrueHD/DTS track to AAC (Phase 4 v2 — AVPlayer can't decode them and this FFmpeg build
+        // ships no AC3/EAC3 encoder). See AudioTranscoder.
+        let audioIn = audioCopyIn >= 0 ? audioCopyIn : audioTranscodeIn
+        let audioTranscodes = audioCopyIn < 0 && audioTranscodeIn >= 0
         guard videoIn >= 0, let videoPar = input.pointee.streams[videoIn]?.pointee.codecpar else {
             return fail("no video stream")
         }
@@ -251,11 +262,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             if fr.num > 0, fr.den > 0 { signaling.frameRate = Double(fr.num) / Double(fr.den) }
         }
         let audioPar = audioIn >= 0 ? input.pointee.streams[audioIn]?.pointee.codecpar : nil
-        let audioToken = audioPar.flatMap { Self.audioCodecString($0) }
+        // Transcoded audio is always AAC-LC (mp4a.40.2); its bandwidth contribution is the encoder
+        // target, not the (much larger) TrueHD/DTS source bitrate.
+        let audioToken = audioTranscodes ? "mp4a.40.2" : audioPar.flatMap { Self.audioCodecString($0) }
+        let audioBitrate = audioTranscodes
+            ? AudioTranscoder.targetBitrate(sourceChannels: audioPar?.pointee.ch_layout.nb_channels ?? 6)
+            : (audioPar.map { Int($0.pointee.bit_rate) } ?? 0)
         // Rough peak bandwidth for the (single, non-ABR) master variant. Generous: undersized
         // declarations draw CoreMedia -12318 "Segment exceeds specified bandwidth" complaints, and a
         // container that omits the VIDEO bitrate (common for MKV) must not be priced off audio alone.
-        let declaredBitrate = Int(videoPar.pointee.bit_rate) + (audioPar.map { Int($0.pointee.bit_rate) } ?? 0)
+        let declaredBitrate = Int(videoPar.pointee.bit_rate) + audioBitrate
         let bandwidth = videoPar.pointee.bit_rate > 0
             ? Int(Double(declaredBitrate) * 1.5)
             : max(Int(Double(declaredBitrate) * 1.5), 30_000_000)
@@ -267,7 +283,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         lock.unlock()
         print("[Remux] signaling CODECS=\(signaling.codecs)"
               + (signaling.supplementalCodecs.map { " SUPPLEMENTAL=\($0)" } ?? "")
-              + (audioToken.map { " AUDIO=\($0)" } ?? ""))
+              + (audioToken.map { " AUDIO=\($0)" } ?? "")
+              + (audioTranscodes ? " (transcode)" : ""))
 
         // --- Build the up-front VOD segment map from the source keyframe index --------------------
         // The owned segmenter cuts fragments at exactly these keyframe boundaries, so the synthesized
@@ -315,7 +332,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         typealias Run = (ctx: UnsafeMutablePointer<AVFormatContext>, writer: SegmentWriter,
                          opaque: UnsafeMutableRawPointer, videoOutIdx: Int,
                          indexMap: [Int: Int], originOut: [Int64])
-        func makeRun(discardInit: Bool) -> Run? {
+        func makeRun(discardInit: Bool, audioTx: AudioTranscoder?) -> Run? {
             var outCtx: UnsafeMutablePointer<AVFormatContext>?
             guard avformat_alloc_output_context2(&outCtx, nil, "mp4", nil) >= 0, let output = outCtx else { return nil }
             output.pointee.strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL   // allow the DV (dvvC) box
@@ -333,8 +350,20 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 indexMap[inIdx] = Int(outS.pointee.index)
                 return true
             }
+            /// Transcode mode: the audio stream's codecpar comes from the AAC ENCODER (including the
+            /// AudioSpecificConfig extradata movenc needs for the esds box), not the source track.
+            func addTranscodedAudio(_ inIdx: Int, _ tx: AudioTranscoder) -> Bool {
+                guard let outS = avformat_new_stream(output, nil), let outPar = outS.pointee.codecpar,
+                      avcodec_parameters_from_context(outPar, tx.encoderCtx) >= 0 else { return false }
+                outS.pointee.time_base = AVRational(num: 1, den: tx.outputSampleRate)
+                indexMap[inIdx] = Int(outS.pointee.index)
+                return true
+            }
             guard addStream(videoIn, tag: videoTag) else { avformat_free_context(output); return nil }
-            if audioIn >= 0, !addStream(audioIn, tag: 0) { avformat_free_context(output); return nil }
+            if audioIn >= 0 {
+                let ok = audioTx.map { addTranscodedAudio(audioIn, $0) } ?? addStream(audioIn, tag: 0)
+                guard ok else { avformat_free_context(output); return nil }
+            }
 
             // Segment-splitting AVIO sink (append-only; box-router). Retained by the AVIO context —
             // released in destroyRun after no callback can fire. A non-first run's duplicate ftyp+moov
@@ -481,7 +510,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 pendingBoundaryPacket = true
             }
 
-            guard let run = makeRun(discardInit: !isFirstRun) else { return fail("output context") }
+            // Fresh transcoder per run: decoder/resampler/fifo state must not leak across a seek,
+            // and the run's muxer header takes its audio codecpar from the new encoder.
+            var audioTx: AudioTranscoder?
+            if audioTranscodes, let par = audioPar, let audioStream = input.pointee.streams[audioIn] {
+                guard let tx = AudioTranscoder(sourcePar: par, sourceTimeBase: audioStream.pointee.time_base) else {
+                    return fail("audio transcoder init")
+                }
+                audioTx = tx
+            }
+            guard let run = makeRun(discardInit: !isFirstRun, audioTx: audioTx) else { return fail("output context") }
             isFirstRun = false
             publishProducing(startSeg)
 
@@ -506,6 +544,19 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             var currentSeg = startSeg
             var nextBoundary = startSeg     // boundaries[startSeg] opens segment startSeg+1
             run.writer.beginFile(named: Self.segmentName(currentSeg))
+
+            // Bind the transcoder to this run's output (post-header time_base — timescale trap) and
+            // define its emit path: encoded packets arrive already on the playlist timeline.
+            if let tx = audioTx, let audioOutIdx = run.indexMap[audioIn],
+               let audioOutStream = run.ctx.pointee.streams[audioOutIdx] {
+                tx.beginRun(outStreamIndex: Int32(audioOutIdx),
+                            outTimeBase: audioOutStream.pointee.time_base,
+                            originOut: run.originOut[audioOutIdx],
+                            fallbackAnchorOut: floors[audioOutIdx])
+            }
+            func writeTranscodedAudio(_ p: UnsafeMutablePointer<AVPacket>) -> Bool {
+                av_write_frame(run.ctx, p) >= 0
+            }
 
             // Flush the pending fragment. Under delay_moov the FIRST flush of a context emits only
             // the moov (samples stay buffered for the next flush) — detect via the sink and force one
@@ -570,6 +621,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     continue
                 }
                 let isVideo = outIdx == run.videoOutIdx
+
+                // Transcode mode consumes the SOURCE packet (source time_base) — decode → resample →
+                // AAC packets emitted on the playlist timeline. Cuts stay video-driven; encoded audio
+                // lands in whatever segment window is open when it emerges, same as copied audio.
+                if !isVideo, let tx = audioTx {
+                    let ok = tx.process(pkt, write: writeTranscodedAudio)
+                    av_packet_unref(pkt)
+                    if !ok { runEnd = .error }
+                    continue
+                }
 
                 // Cut BEFORE writing the keyframe that opens the next segment, so the boundary
                 // keyframe becomes the first sample of the new fragment. Compared in the SOURCE pts
@@ -658,7 +719,10 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 // holes below are legal and self-heal via reposition on demand.
                 var tailOK = true
                 if currentSeg == map.count, nextBoundary == boundaries.count {
-                    tailOK = flushFragment() && run.writer.finalizeCurrent()
+                    // Drain the transcode pipeline (decoder + resampler tail + encoder) into the
+                    // final segment before its fragment is flushed.
+                    if let tx = audioTx { tailOK = tx.drain(write: writeTranscodedAudio) }
+                    tailOK = tailOK && flushFragment() && run.writer.finalizeCurrent()
                 }
                 let shortLinear = currentSeg != map.count && !everRepositioned
                 destroyRun(run)
