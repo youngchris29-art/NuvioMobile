@@ -25,6 +25,10 @@ nonisolated struct DolbyVisionInfo: Equatable, Sendable {
     var elPresent: Bool       // enhancement layer (dual-layer P7)
     var rpuPresent: Bool      // reference processing unit (dynamic metadata)
     var compatId: Int         // dv_bl_signal_compatibility_id (1 = HDR10-compatible P8.1, etc.)
+    /// Profile 7 only: MEL/FEL flavor classified by parsing the first RPU out of the initial video
+    /// packets (Phase 5 — decides native-vs-mpv routing and what the 8.1 conversion costs). nil for
+    /// other profiles (no scan performed).
+    var elKind: DVELKind? = nil
 }
 
 nonisolated struct AudioStreamInfo: Sendable {
@@ -52,6 +56,10 @@ nonisolated struct ProbeResult: Sendable {
     var subtitles: [SubtitleStreamInfo]
     var durationSec: Double
     var seekable: Bool
+    /// Real video tracks in the container (attached-picture/cover-art streams excluded). A Profile 7
+    /// source with a SECOND video stream is the two-track BL+EL layout — the RPUs live in the EL
+    /// track, which the remux never reads, so those files stay on mpv.
+    var videoStreamCount: Int = 0
 }
 
 nonisolated enum MediaProbe {
@@ -93,6 +101,7 @@ nonisolated enum MediaProbe {
             seekable: fmt.pointee.pb.map { ($0.pointee.seekable & AVIO_SEEKABLE_NORMAL) != 0 } ?? false
         )
 
+        var videoStreamIndex = -1
         for i in 0..<Int(fmt.pointee.nb_streams) {
             guard let stream = fmt.pointee.streams[i], let parPtr = stream.pointee.codecpar else { continue }
             let par = parPtr.pointee
@@ -100,7 +109,13 @@ nonisolated enum MediaProbe {
 
             switch par.codec_type {
             case AVMEDIA_TYPE_VIDEO:
+                // Attached pictures (cover art muxed as an mjpeg/png "video" track) aren't playback
+                // streams — skip them entirely so they can't skew the two-track P7 detection.
+                let attachedPic: Int32 = 1 << 10                 // AV_DISPOSITION_ATTACHED_PIC
+                guard stream.pointee.disposition & attachedPic == 0 else { break }
+                result.videoStreamCount += 1
                 guard result.videoCodec.isEmpty else { break }   // first video stream only
+                videoStreamIndex = i
                 result.videoCodec = codecName(par.codec_id)
                 result.videoProfile = par.profile
                 result.hdr = hdrFormat(par.color_trc)
@@ -124,7 +139,40 @@ nonisolated enum MediaProbe {
                 break
             }
         }
+
+        // Profile 7 needs one more fact the container can't provide: the MEL/FEL flavor, read from
+        // the first RPU NAL in the bitstream (Phase 5 routing + the FEL fidelity sub-setting). The
+        // scan is bounded (packet counts + the same deadline interrupt) and only runs for P7 files;
+        // find_stream_info has already buffered the initial packets, so it rarely touches the network.
+        if let dv = result.dolbyVision, dv.profile == 7, videoStreamIndex >= 0 {
+            result.dolbyVision?.elKind = scanP7ELKind(fmt, videoStreamIndex: videoStreamIndex, deadline: deadline)
+        }
         return result
+    }
+
+    /// Read initial packets and classify the first RPU found on the video stream. `.missing` when the
+    /// scan exhausts its budget without seeing one (two-track P7 keeps its RPUs in the EL track),
+    /// `.unsupported` when the walker can't run (extradata not hvcC) or libdovi can't parse it.
+    private static func scanP7ELKind(_ fmt: UnsafeMutablePointer<AVFormatContext>,
+                                     videoStreamIndex: Int, deadline: ProbeDeadline) -> DVELKind {
+        guard let par = fmt.pointee.streams[videoStreamIndex]?.pointee.codecpar,
+              let nalLengthSize = DoviRpuConverter.hvccNalLengthSize(par),
+              let pkt = av_packet_alloc() else { return .unsupported }
+        defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
+
+        var reads = 0, videoPackets = 0
+        while reads < 400, videoPackets < 120, !deadline.expired, av_read_frame(fmt, pkt) >= 0 {
+            defer { av_packet_unref(pkt) }
+            reads += 1
+            guard Int(pkt.pointee.stream_index) == videoStreamIndex, let data = pkt.pointee.data else { continue }
+            videoPackets += 1
+            if let kind = DoviRpuConverter.classifyFirstRpu(packetData: data,
+                                                            size: Int(pkt.pointee.size),
+                                                            nalLengthSize: nalLengthSize) {
+                return kind
+            }
+        }
+        return .missing
     }
 
     // MARK: - Extraction helpers

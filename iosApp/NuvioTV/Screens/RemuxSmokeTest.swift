@@ -20,6 +20,18 @@ nonisolated enum RemuxSmokeTest {
               let url = URL(string: raw) else { return }
         Task { @MainActor in
             print("[RemuxSmoke] start — \(raw)")
+            // Log what the probe + router would decide for this source (the harness itself drives
+            // the coordinator directly, bypassing PlayerScreen's routing) — surfaces DV profile,
+            // P7 MEL/FEL classification and the chosen engine for the file under test.
+            Task.detached(priority: .utility) {
+                let probe = MediaProbe.probe(url: url, timeoutSec: 8)
+                let decision = PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true)
+                let dv = probe?.dolbyVision.map {
+                    "P\($0.profile) elKind=\($0.elKind?.rawValue ?? "-") el=\($0.elPresent) compat=\($0.compatId)"
+                } ?? "none"
+                print("[RemuxSmoke] probe: DV=\(dv) videoStreams=\(probe?.videoStreamCount ?? -1)"
+                      + " → router: \(decision.engine.rawValue) (\(decision.reason))")
+            }
             // Unique videoId per launch so a stored watch position from a previous smoke run can't
             // trigger a surprise resume-seek mid-test.
             let context = PlaybackContext(

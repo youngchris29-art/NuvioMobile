@@ -138,6 +138,9 @@ final class SettingsViewModel: ObservableObject {
     @Published var enhancedRenderer: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.enhancedRendererKey)
     /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output (beta).
     @Published var nativeDolbyVision: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey)
+    /// Native-DV sub-setting: keep DV Profile 7 FEL files on mpv (full-fidelity data path) instead
+    /// of converting them to Profile 8.1 for the native player.
+    @Published var dvP7FelMpv: Bool = UserDefaults.standard.bool(forKey: PlayerTuning.dvP7FelMpvKey)
 
     func setBufferMB(_ value: Int) {
         bufferMB = value
@@ -162,6 +165,11 @@ final class SettingsViewModel: ObservableObject {
     func setNativeDolbyVision(_ value: Bool) {
         nativeDolbyVision = value
         UserDefaults.standard.set(value, forKey: PlayerTuning.nativeDVKey)
+    }
+
+    func setDvP7FelMpv(_ value: Bool) {
+        dvP7FelMpv = value
+        UserDefaults.standard.set(value, forKey: PlayerTuning.dvP7FelMpvKey)
     }
 
     // MARK: - TMDB

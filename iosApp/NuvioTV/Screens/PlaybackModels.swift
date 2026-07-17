@@ -18,6 +18,10 @@ enum PlayerTuning {
     /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output (beta).
     /// Off by default while the native path is under construction; gates all engine routing.
     static let nativeDVKey = "player.nativeDolbyVision"
+    /// Sub-setting of the native-DV beta: keep DV Profile 7 FEL files on mpv instead of converting
+    /// them to 8.1 (the conversion discards FEL enhancement data; MEL converts losslessly and is
+    /// unaffected by this preference).
+    static let dvP7FelMpvKey = "player.dvP7FelPreferMpv"
 }
 
 /// Everything the player needs to render a stream and record watch progress for it.

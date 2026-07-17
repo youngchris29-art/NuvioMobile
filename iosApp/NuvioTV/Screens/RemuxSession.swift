@@ -260,6 +260,22 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             print("[Remux] hvcC declares High tier — patched to Main tier for AVPlayer admission")
         }
 
+        // Dolby Vision Profile 7 (dual-layer BluRay flavor) converts to single-layer 8.1 on the fly
+        // (Phase 5): every video packet has its EL NALs dropped and its RPU rewritten by libdovi.
+        // The stream's DOVI configuration is retagged FIRST — in place on the input codecpar, before
+        // signaling/tagging derive from it and before any run's parameters_copy — so movenc's dvvC
+        // box, the hvc1 sample entry and the master's SUPPLEMENTAL-CODECS all describe the converted
+        // bitstream (profile 8, no EL, HDR10-compatible base → dvh1.08/db1p), never the source's.
+        var doviConverter: DoviRpuConverter?
+        if let dovi = Self.doviRecord(videoPar), dovi.dv_profile == 7 {
+            guard let conv = DoviRpuConverter(videoPar: videoPar) else {
+                return fail("DV P7 converter init (extradata not hvcC)")
+            }
+            doviConverter = conv
+            Self.patchDoviConfToP81(videoPar)
+            print("[Remux] DV P7 → 8.1 conversion engaged (EL drop + RPU rewrite)")
+        }
+
         var signaling = Self.videoSignaling(videoPar)
         signaling.width = videoPar.pointee.width
         signaling.height = videoPar.pointee.height
@@ -638,6 +654,16 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     continue
                 }
 
+                // DV P7 → 8.1: rewrite the packet (drop EL NALs, convert the RPU) before anything
+                // downstream — cut decisions, DTS grid, muxer — sees it. Timestamps and flags are
+                // untouched, so the boundary logic behaves exactly as for a native 8.1 source.
+                if isVideo, let conv = doviConverter, !conv.filterPacket(pkt) {
+                    print("[Remux] DV P7 conversion aborted — \(conv.abortReason ?? "unknown")")
+                    av_packet_unref(pkt)
+                    runEnd = .error
+                    break
+                }
+
                 // Cut BEFORE writing the keyframe that opens the next segment, so the boundary
                 // keyframe becomes the first sample of the new fragment. Compared in the SOURCE pts
                 // domain — the same domain the keyframe index gave us.
@@ -645,6 +671,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                    pkt.pointee.pts != noTS, pkt.pointee.pts >= boundaries[nextBoundary],
                    (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0 {
                     guard flushFragment(), run.writer.finalizeCurrent() else {
+                        print("[Remux] fragment flush/finalize failed at segment \(currentSeg) boundary")
                         av_packet_unref(pkt); runEnd = .error; break
                     }
                     currentSeg += 1
@@ -664,6 +691,17 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 // Map onto the playlist timeline: all runs share one absolute origin.
                 if pkt.pointee.pts != noTS { pkt.pointee.pts -= run.originOut[outIdx] }
                 if pkt.pointee.dts != noTS { pkt.pointee.dts -= run.originOut[outIdx] }
+
+                // Pre-origin pre-roll: when the source's first INDEXED keyframe sits after earlier
+                // frames (matroskadec occasionally fails to index the very first Cue; open-GOP RASL
+                // frames then follow the origin CRA with earlier pts), packets from before playlist
+                // time zero arrive in the first run. They can't be presented — the published
+                // timeline starts at the origin — and their negative pts make movenc reject the
+                // write with EINVAL (pts < dts). Drop them before they reach the DTS grid.
+                if isVideo, pkt.pointee.pts != noTS, pkt.pointee.pts < 0 {
+                    av_packet_unref(pkt)
+                    continue
+                }
 
                 if isVideo {
                     // Video DTS regenerated on a uniform grid (sloppy sources carry missing or
@@ -695,7 +733,12 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     nextDTS[outIdx] = pkt.pointee.dts + max(pkt.pointee.duration, 1)
                 }
 
-                if av_write_frame(run.ctx, pkt) < 0 { av_packet_unref(pkt); runEnd = .error; break }
+                let wr = av_write_frame(run.ctx, pkt)
+                if wr < 0 {
+                    print("[Remux] write error \(wr) at segment \(currentSeg) "
+                          + "(\(isVideo ? "video" : "audio") dts=\(pkt.pointee.dts) pts=\(pkt.pointee.pts) size=\(pkt.pointee.size))")
+                    av_packet_unref(pkt); runEnd = .error; break
+                }
                 av_packet_unref(pkt)
             }
 
@@ -742,6 +785,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 }
                 if state != .ready { setState(.ready) }
                 consecutiveErrorParks = 0
+                if let conv = doviConverter { print("[Remux] DV P7→8.1: \(conv.statsDescription)") }
                 print("[Remux] parked at EOF — repositions still serviced")
                 guard let next = parkForTarget() else { break runLoop }
                 everRepositioned = true
@@ -961,6 +1005,21 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         guard let sd = av_packet_side_data_get(par.pointee.coded_side_data, par.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF),
               let data = sd.pointee.data else { return nil }
         return data.withMemoryRebound(to: AVDOVIDecoderConfigurationRecord.self, capacity: 1) { $0.pointee }
+    }
+
+    /// Retag the stream's Dolby Vision configuration as single-layer Profile 8.1 (HDR10-compatible
+    /// base) — mutated IN PLACE on the input stream's codecpar so every run's `parameters_copy`, the
+    /// `videoOutputTag` choice (profile 8 → hvc1) and `videoSignaling` (dvh1.08/db1p supplemental)
+    /// all see the post-conversion truth. Level and rpu/bl presence carry over from the source.
+    private static func patchDoviConfToP81(_ par: UnsafeMutablePointer<AVCodecParameters>) {
+        guard let sd = av_packet_side_data_get(par.pointee.coded_side_data, par.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF),
+              let data = sd.pointee.data,
+              sd.pointee.size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size else { return }
+        data.withMemoryRebound(to: AVDOVIDecoderConfigurationRecord.self, capacity: 1) {
+            $0.pointee.dv_profile = 8
+            $0.pointee.el_present_flag = 0
+            $0.pointee.dv_bl_signal_compatibility_id = 1
+        }
     }
 
     private func dolbyProfile(_ par: UnsafeMutablePointer<AVCodecParameters>) -> Int? {

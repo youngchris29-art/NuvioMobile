@@ -24,8 +24,10 @@ nonisolated struct EngineDecision: Equatable, Sendable {
 }
 
 nonisolated enum PlayerEngineRouter {
-    /// Decide the engine for a probed stream. `nativeDVEnabled` is the Settings > Playback beta flag.
-    static func route(probe: ProbeResult?, nativeDVEnabled: Bool) -> EngineDecision {
+    /// Decide the engine for a probed stream. `nativeDVEnabled` is the Settings > Playback beta flag;
+    /// `dvP7FelToMpv` is its FEL-fidelity sub-setting (send Profile 7 FEL files to mpv instead of
+    /// discarding their enhancement layer in the 8.1 conversion).
+    static func route(probe: ProbeResult?, nativeDVEnabled: Bool, dvP7FelToMpv: Bool = false) -> EngineDecision {
         guard nativeDVEnabled else { return EngineDecision(engine: .mpv, reason: "native engine off") }
         guard let p = probe else { return EngineDecision(engine: .mpv, reason: "probe unavailable") }
         guard p.seekable else { return EngineDecision(engine: .mpv, reason: "source not seekable") }
@@ -37,11 +39,26 @@ nonisolated enum PlayerEngineRouter {
         }
 
         // Dolby Vision profile gating. P5 and single-layer P8 play natively on tvOS 17.2+. Dual-layer
-        // P7 needs an RPU→8.1 conversion that lands in Phase 5, so route it to mpv until then.
+        // P7 converts to 8.1 during the remux (Phase 5: EL NALs dropped, RPUs rewritten via libdovi) —
+        // but only the single-track layout whose RPUs the probe could actually parse; anything else
+        // (two-track BL+EL, no RPU found, unparseable RPU) stays on mpv.
         if let dv = p.dolbyVision {
             switch dv.profile {
             case 5, 8: break
-            case 7: return EngineDecision(engine: .mpv, reason: "DV P7 dual-layer (native pending Phase 5)")
+            case 7:
+                guard p.videoStreamCount == 1 else {
+                    return EngineDecision(engine: .mpv, reason: "DV P7 two-track")
+                }
+                switch dv.elKind {
+                case .mel:
+                    break
+                case .fel:
+                    if dvP7FelToMpv {
+                        return EngineDecision(engine: .mpv, reason: "DV P7 FEL (fidelity preference)")
+                    }
+                case .missing, .unsupported, nil:
+                    return EngineDecision(engine: .mpv, reason: "DV P7 (no convertible RPU)")
+                }
             default: return EngineDecision(engine: .mpv, reason: "DV P\(dv.profile)")
             }
         }
@@ -82,6 +99,9 @@ nonisolated enum PlayerEngineRouter {
 
     private static func nativeReason(_ p: ProbeResult) -> String {
         if let dv = p.dolbyVision {
+            if dv.profile == 7 {
+                return "DV P7 \(dv.elKind == .fel ? "FEL" : "MEL") \u{2192} 8.1"
+            }
             // compatId 1 == HDR10-compatible base layer, i.e. Profile 8.1.
             return dv.profile == 8 && dv.compatId == 1 ? "DV P8.1" : "DV P\(dv.profile)"
         }
@@ -105,20 +125,30 @@ extension PlayerEngineRouter {
         }
         func sample(video: String = "hevc", dv: DolbyVisionInfo? = nil, hdr: HDRFormat = .sdr,
                     audio: [String] = ["eac3"], seekable: Bool = true,
-                    container: String = "matroska,webm") -> ProbeResult {
+                    container: String = "matroska,webm", videoStreams: Int = 1) -> ProbeResult {
             ProbeResult(
                 container: container, videoCodec: video, videoProfile: 0, hdr: hdr, dolbyVision: dv,
                 audio: audio.enumerated().map { AudioStreamInfo(index: $0.offset, codec: $0.element, channels: 6, language: "eng") },
-                subtitles: [], durationSec: 3600, seekable: seekable
+                subtitles: [], durationSec: 3600, seekable: seekable, videoStreamCount: videoStreams
             )
         }
         let p5 = DolbyVisionInfo(profile: 5, level: 6, blPresent: true, elPresent: false, rpuPresent: true, compatId: 0)
         let p81 = DolbyVisionInfo(profile: 8, level: 6, blPresent: true, elPresent: false, rpuPresent: true, compatId: 1)
-        let p7 = DolbyVisionInfo(profile: 7, level: 6, blPresent: true, elPresent: true, rpuPresent: true, compatId: 0)
+        func p7(_ kind: DVELKind?) -> DolbyVisionInfo {
+            DolbyVisionInfo(profile: 7, level: 6, blPresent: true, elPresent: true, rpuPresent: true,
+                            compatId: 0, elKind: kind)
+        }
 
         expect(route(probe: sample(dv: p5), nativeDVEnabled: true).engine, .native, "DV P5 MKV → native")
         expect(route(probe: sample(dv: p81), nativeDVEnabled: true).engine, .native, "DV P8.1 MKV → native")
-        expect(route(probe: sample(dv: p7), nativeDVEnabled: true).engine, .mpv, "DV P7 dual-layer → mpv pre-Phase 5")
+        expect(route(probe: sample(dv: p7(.mel)), nativeDVEnabled: true).engine, .native, "DV P7 MEL → native (8.1 conversion)")
+        expect(route(probe: sample(dv: p7(.fel)), nativeDVEnabled: true).engine, .native, "DV P7 FEL → native by default")
+        expect(route(probe: sample(dv: p7(.fel)), nativeDVEnabled: true, dvP7FelToMpv: true).engine, .mpv, "DV P7 FEL + fidelity pref → mpv")
+        expect(route(probe: sample(dv: p7(.mel)), nativeDVEnabled: true, dvP7FelToMpv: true).engine, .native, "DV P7 MEL unaffected by FEL pref")
+        expect(route(probe: sample(dv: p7(.mel), videoStreams: 2), nativeDVEnabled: true).engine, .mpv, "DV P7 two-track → mpv")
+        expect(route(probe: sample(dv: p7(.missing)), nativeDVEnabled: true).engine, .mpv, "DV P7 without RPUs → mpv")
+        expect(route(probe: sample(dv: p7(.unsupported)), nativeDVEnabled: true).engine, .mpv, "DV P7 unparseable RPU → mpv")
+        expect(route(probe: sample(dv: p7(nil)), nativeDVEnabled: true).engine, .mpv, "DV P7 unclassified → mpv")
         expect(route(probe: sample(hdr: .hdr10), nativeDVEnabled: true).engine, .native, "HDR10 HEVC → native")
         expect(route(probe: sample(video: "h264"), nativeDVEnabled: true).engine, .native, "H.264 → native")
         expect(route(probe: sample(video: "av1"), nativeDVEnabled: true).engine, .mpv, "AV1 → mpv")

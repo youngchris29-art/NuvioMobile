@@ -59,9 +59,10 @@ struct PlayerScreen: View {
         guard nativeDVEnabled else { return }
 
         let url = context.url
+        let felToMpv = UserDefaults.standard.bool(forKey: PlayerTuning.dvP7FelMpvKey)
         let result = await Task.detached(priority: .utility) {
             let probe = MediaProbe.probe(url: url, timeoutSec: 4)
-            return PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true)
+            return PlayerEngineRouter.route(probe: probe, nativeDVEnabled: true, dvP7FelToMpv: felToMpv)
         }.value
         print("[PlayerRouter] \(result.engine.rawValue) — \(result.reason) — \(context.title)")
         decision = result
