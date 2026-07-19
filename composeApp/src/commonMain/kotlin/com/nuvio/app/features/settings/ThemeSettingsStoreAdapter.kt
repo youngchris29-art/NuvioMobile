@@ -15,6 +15,8 @@ object ThemeSettingsStoreAdapter {
             override fun loadSelectedAppLanguage(): String? = ThemeSettingsStorage.loadSelectedAppLanguage()
             override fun saveSelectedAppLanguage(languageCode: String) = ThemeSettingsStorage.saveSelectedAppLanguage(languageCode)
             override fun applySelectedAppLanguage(languageCode: String) = ThemeSettingsStorage.applySelectedAppLanguage(languageCode)
+            override fun loadNavBarStyle(): String? = ThemeSettingsStorage.loadNavBarStyle()
+            override fun saveNavBarStyle(styleKey: String) = ThemeSettingsStorage.saveNavBarStyle(styleKey)
             override fun exportToSyncPayload(): JsonObject = ThemeSettingsStorage.exportToSyncPayload()
             override fun replaceFromSyncPayload(payload: JsonObject) = ThemeSettingsStorage.replaceFromSyncPayload(payload)
         }

@@ -115,6 +115,7 @@ enum class StringKey {
     trakt_authorization_denied,
     trakt_complete_sign_in_browser,
     trakt_connected_status,
+    trakt_authorization_expired_reconnect,
     trakt_disconnected_status,
     trakt_invalid_callback,
     trakt_invalid_callback_state,

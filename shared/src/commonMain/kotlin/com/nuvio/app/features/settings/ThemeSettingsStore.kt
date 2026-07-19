@@ -21,6 +21,8 @@ interface ThemeSettingsStore {
     fun loadSelectedAppLanguage(): String?
     fun saveSelectedAppLanguage(languageCode: String)
     fun applySelectedAppLanguage(languageCode: String)
+    fun loadNavBarStyle(): String?
+    fun saveNavBarStyle(styleKey: String)
     fun exportToSyncPayload(): JsonObject
     fun replaceFromSyncPayload(payload: JsonObject)
 }
@@ -38,6 +40,8 @@ private object NoOpThemeSettingsStore : ThemeSettingsStore {
     override fun saveAmoledEnabled(enabled: Boolean) {}
     override fun loadLiquidGlassNativeTabBarEnabled(): Boolean? = null
     override fun saveLiquidGlassNativeTabBarEnabled(enabled: Boolean) {}
+    override fun loadNavBarStyle(): String? = null
+    override fun saveNavBarStyle(styleKey: String) {}
     override fun loadSelectedAppLanguage(): String? = null
     override fun saveSelectedAppLanguage(languageCode: String) {}
     override fun applySelectedAppLanguage(languageCode: String) {}

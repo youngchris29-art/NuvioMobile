@@ -170,6 +170,7 @@ fun MetaDetails.seriesPrimaryAction(
         todayIsoDate = todayIsoDate,
         preferFurthestEpisode = preferFurthestEpisode,
         showUnairedNextUp = showUnairedNextUp,
+        defaultVideoId = defaultVideoId,
     )?.toLegacySeriesPrimaryAction()
 
 fun MetaVideo.playLabel(): String =

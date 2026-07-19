@@ -19,6 +19,7 @@ import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.HomeRepository
+import com.nuvio.app.features.library.LibraryDisplaySettingsRepository
 import com.nuvio.app.features.library.LibraryRepository
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.player.PlayerLaunchStore
@@ -188,6 +189,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
     )
     private val profileScopedBaseKeys = listOf(
         "catalog_settings_payload",
+        "library_display_settings_payload",
         "continue_watching_preferences_payload",
         "poster_card_style_payload",
         "episode_release_notifications_payload",
@@ -239,6 +241,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         HomeCatalogSettingsRepository.clearLocalState()
         MetaScreenSettingsRepository.clearLocalState()
         LibraryRepository.clearLocalState()
+        LibraryDisplaySettingsRepository.clearLocalState()
         WatchProgressRepository.clearLocalState()
         WatchedRepository.clearLocalState()
         ContinueWatchingPreferencesRepository.clearLocalState()
@@ -313,6 +316,7 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         TvOsExtraLifecycleHooks.onProfileChanged(profileIndex)
         WatchedRepository.onProfileChanged(profileIndex)
         LibraryRepository.onProfileChanged(profileIndex)
+        LibraryDisplaySettingsRepository.onProfileChanged()
         WatchProgressRepository.onProfileChanged(profileIndex)
         ContinueWatchingEnrichmentCache.onProfileChanged()
         AddonRepository.onProfileChanged(profileIndex)

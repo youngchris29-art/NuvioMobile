@@ -47,7 +47,11 @@ object CollectionRepository {
             val parsed = json.parseToJsonElement(payload)
             rawCollectionsJson = parsed
             val decoded = json.decodeFromString<List<Collection>>(payload)
-            _collections.value = CollectionMobileSettingsRepository.applyToCollections(decoded)
+            val normalized = normalizeCollections(decoded, source = "local storage")
+            _collections.value = CollectionMobileSettingsRepository.applyToCollections(normalized)
+            if (normalized.size != decoded.size) {
+                persist(sync = false)
+            }
         }.onFailure { e ->
             log.e(e) { "Failed to load collections from storage" }
         }
@@ -70,14 +74,15 @@ object CollectionRepository {
 
     fun addCollection(collection: Collection) {
         ensureLoaded()
-        _collections.value = _collections.value + CollectionMobileSettingsRepository.applyToCollection(collection)
+        val decorated = CollectionMobileSettingsRepository.applyToCollection(collection)
+        _collections.value = _collections.value.upsertCollectionById(decorated)
         persist()
     }
 
     fun updateCollection(collection: Collection) {
         ensureLoaded()
         val decorated = CollectionMobileSettingsRepository.applyToCollection(collection)
-        _collections.value = _collections.value.map {
+        _collections.value = _collections.value.deduplicatedById().map {
             if (it.id == collection.id) decorated else it
         }
         persist()
@@ -91,7 +96,8 @@ object CollectionRepository {
 
     fun setCollections(collections: List<Collection>) {
         ensureLoaded()
-        _collections.value = CollectionMobileSettingsRepository.applyToCollections(collections)
+        val normalized = normalizeCollections(collections, source = "setCollections")
+        _collections.value = CollectionMobileSettingsRepository.applyToCollections(normalized)
         persist()
     }
 
@@ -126,7 +132,7 @@ object CollectionRepository {
                 throw IllegalArgumentException(validation.error.orEmpty())
             }
             rawCollectionsJson = json.parseToJsonElement(jsonString)
-            val imported = json.decodeFromString<List<Collection>>(jsonString)
+            val imported = json.decodeFromString<List<Collection>>(jsonString).deduplicatedById()
             _collections.value = CollectionMobileSettingsRepository.applyToCollections(imported)
             persist()
             imported
@@ -186,13 +192,26 @@ object CollectionRepository {
 
     internal fun applyFromRemote(collections: List<Collection>, rawJson: JsonElement) {
         rawCollectionsJson = rawJson
-        _collections.value = CollectionMobileSettingsRepository.applyToCollections(collections)
+        val normalized = normalizeCollections(collections, source = "remote sync")
+        _collections.value = CollectionMobileSettingsRepository.applyToCollections(normalized)
         persist(sync = false)
     }
 
     internal fun onMobileSettingsChanged() {
         if (!hasLoaded) return
-        _collections.value = CollectionMobileSettingsRepository.applyToCollections(_collections.value)
+        _collections.value = CollectionMobileSettingsRepository.applyToCollections(
+            _collections.value.deduplicatedById(),
+        )
+    }
+
+    private fun normalizeCollections(collections: List<Collection>, source: String): List<Collection> {
+        val normalized = collections.deduplicatedById()
+        if (normalized.size != collections.size) {
+            log.w {
+                "Dropped ${collections.size - normalized.size} duplicate collection IDs from $source"
+            }
+        }
+        return normalized
     }
 
     private fun ensureLoaded() {
@@ -214,6 +233,28 @@ object CollectionRepository {
         CollectionJsonPreserver.merge(json, rawCollectionsJson, _collections.value).also {
             rawCollectionsJson = it
         }
+}
+
+// Fork: public (upstream: internal) — composeApp CollectionRepositoryTest consumes cross-module.
+fun List<Collection>.deduplicatedById(): List<Collection> {
+    if (size < 2) return this
+
+    val collectionsById = linkedMapOf<String, Collection>()
+    forEach { collection ->
+        collectionsById[collection.id] = collection
+    }
+    return if (collectionsById.size == size) this else collectionsById.values.toList()
+}
+
+// Fork: public (upstream: internal) — composeApp CollectionRepositoryTest consumes cross-module.
+fun List<Collection>.upsertCollectionById(collection: Collection): List<Collection> {
+    val normalized = deduplicatedById()
+    val existingIndex = normalized.indexOfFirst { existing -> existing.id == collection.id }
+    if (existingIndex == -1) return normalized + collection
+
+    return normalized.toMutableList().apply {
+        this[existingIndex] = collection
+    }
 }
 
 sealed interface CollectionImportModelError {

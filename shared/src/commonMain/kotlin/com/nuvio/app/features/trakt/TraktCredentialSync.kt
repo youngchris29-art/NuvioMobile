@@ -8,23 +8,17 @@ import com.nuvio.app.core.sync.putSyncOriginClientId
 import com.nuvio.app.features.profiles.ProfileRepository
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.addJsonObject
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 private const val TRAKT_PROVIDER = "trakt"
-private const val TRAKT_TOKEN_FALLBACK_LIFETIME_SECONDS = 86_400
 
 @Serializable
 private data class ProviderCredentialRow(
@@ -34,17 +28,14 @@ private data class ProviderCredentialRow(
 )
 
 /**
- * FORK NOTE (Trakt API-client ownership guards): Trakt tokens are bound to the OAuth client
- * (`TraktConfig.CLIENT_ID`) that minted them — a token synced from a build using a different
- * client id gets 401 on every API call and cannot be refreshed here (refresh needs that
- * client's secret). Upstream assumes all devices ship the same official client id; this fork's
- * tvOS build uses its own registration, so blindly adopting the phone's synced token bricked
- * Trakt on the TV (hit 2026-07-07: detail page comments 401).
- *
- * Guards: pushed credentials are tagged with `api_client_id`; pull only ADOPTS rows minted by
- * OUR client id; push/delete only touch the remote row when it's absent or ours — a foreign
- * row (e.g. the official phone app's) is never clobbered or deleted, since that client pulls
- * unconditionally and would break. Fork builds sharing one client id sync exactly as upstream.
+ * FORK NOTE (Trakt API-client ownership guard): Trakt tokens are bound to the OAuth client
+ * (`TraktConfig.CLIENT_ID`) that minted them; this fork's tvOS build uses its own registration
+ * while other devices may run the official client id. Upstream removed cross-device credential
+ * push/pull entirely (rejected-refresh invalidation instead), which also removes the historic
+ * fork failure mode of adopting a foreign token (2026-07-07: TV bricked by the phone's synced
+ * token). What remains is `deleteRemote`, called when OUR refresh token is rejected or the user
+ * disconnects — the guard below keeps it from deleting a leftover remote row minted by a
+ * DIFFERENT client (an old official-app push that an old phone build may still pull).
  */
 object TraktCredentialSync {
     private val log = Logger.withTag("TraktCredentialSync")
@@ -64,88 +55,13 @@ object TraktCredentialSync {
         return if (rowClientId == TraktConfig.CLIENT_ID) RemoteOwnership.Ours else RemoteOwnership.Foreign
     }
 
-    suspend fun pushCurrentToRemote(profileId: Int = ProfileRepository.activeProfileId): Boolean =
-        mutex.withLock {
-            val authState = AuthRepository.state.value
-            if (authState !is AuthState.Authenticated || authState.isAnonymous) return@withLock false
-
-            val state = TraktAuthRepository.currentStateForSync()
-            val credentialJson = state.toCredentialJson() ?: return@withLock false
-            runCatching {
-                if (remoteOwnership(profileId) == RemoteOwnership.Foreign) {
-                    log.i { "Skipping Trakt credential push; remote row belongs to another API client" }
-                    return@runCatching false
-                }
-                val params = buildJsonObject {
-                    put("p_profile_id", profileId)
-                    put("p_credentials", buildJsonArray {
-                        addJsonObject {
-                            put("provider", TRAKT_PROVIDER)
-                            put("credential_json", credentialJson)
-                        }
-                    })
-                    putSyncOriginClientId()
-                }
-                SupabaseProvider.client.postgrest.rpc("sync_push_provider_credentials", params)
-                true
-            }.getOrElse { error ->
-                log.e(error) { "pushCurrentToRemote(profileId=$profileId) failed" }
-                false
-            }
-        }
-
-    suspend fun pullFromRemote(profileId: Int = ProfileRepository.activeProfileId): Boolean =
-        try {
-            pullFromRemoteOrThrow(profileId)
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            log.e(error) { "pullFromRemote(profileId=$profileId) failed" }
-            false
-        }
-
-    internal suspend fun pullFromRemoteOrThrow(
-        profileId: Int = ProfileRepository.activeProfileId,
-    ): Boolean = mutex.withLock {
-            val authState = AuthRepository.state.value
-            if (authState !is AuthState.Authenticated || authState.isAnonymous) return@withLock false
-            val accountId = authState.userId
-            if (ProfileRepository.activeProfileId != profileId) return@withLock false
-
-            val params = buildJsonObject {
-                put("p_profile_id", profileId)
-            }
-            val result = SupabaseProvider.client.postgrest.rpc("sync_pull_provider_credentials", params)
-            val currentAuthState = AuthRepository.state.value
-            if (
-                currentAuthState !is AuthState.Authenticated ||
-                currentAuthState.isAnonymous ||
-                currentAuthState.userId != accountId ||
-                ProfileRepository.activeProfileId != profileId
-            ) {
-                throw CancellationException("Trakt credential pull target changed")
-            }
-            val rows = result.decodeList<ProviderCredentialRow>()
-            val row = rows.firstOrNull { it.provider.equals(TRAKT_PROVIDER, ignoreCase = true) }
-                ?: return@withLock false
-            // Fork guard: only adopt credentials minted by OUR Trakt API client — a foreign
-            // token 401s on every call here and can't be refreshed (tokens are client-id-bound).
-            val rowClientId = row.credentialJson.stringValue("api_client_id")
-            if (rowClientId != TraktConfig.CLIENT_ID) {
-                log.i { "Skipping Trakt credential pull; remote row belongs to another API client" }
-                return@withLock false
-            }
-            val remoteState = row.credentialJson.toTraktAuthState()
-                ?: error("Remote Trakt credential payload is invalid")
-            TraktAuthRepository.replaceStateFromSync(remoteState)
-        }
-
     suspend fun deleteRemote(profileId: Int = ProfileRepository.activeProfileId): Boolean =
         mutex.withLock {
             val authState = AuthRepository.state.value
             if (authState !is AuthState.Authenticated || authState.isAnonymous) return@withLock false
 
             runCatching {
+                // Fork guard: never delete a remote row minted by another Trakt API client.
                 if (remoteOwnership(profileId) == RemoteOwnership.Foreign) {
                     log.i { "Skipping Trakt credential delete; remote row belongs to another API client" }
                     return@runCatching false
@@ -164,47 +80,5 @@ object TraktCredentialSync {
         }
 }
 
-private fun TraktAuthState.toCredentialJson(): JsonObject? {
-    val accessTokenValue = accessToken?.takeIf { it.isNotBlank() } ?: return null
-    val refreshTokenValue = refreshToken?.takeIf { it.isNotBlank() } ?: return null
-    return buildJsonObject {
-        put("access_token", accessTokenValue)
-        put("refresh_token", refreshTokenValue)
-        // Fork addition: tag which Trakt OAuth client minted this token, so pulls can refuse
-        // credentials that would 401 under this build's TraktConfig.CLIENT_ID.
-        put("api_client_id", TraktConfig.CLIENT_ID)
-        put("token_type", tokenType ?: "bearer")
-        put("created_at", createdAt ?: (TraktPlatformClock.nowEpochMs() / 1_000L))
-        put("expires_in", normalizeTraktTokenLifetime(expiresIn ?: TRAKT_TOKEN_FALLBACK_LIFETIME_SECONDS))
-        username?.takeIf { it.isNotBlank() }?.let { put("username", it) }
-        userSlug?.takeIf { it.isNotBlank() }?.let { put("user_slug", it) }
-    }
-}
-
-private fun JsonObject.toTraktAuthState(): TraktAuthState? {
-    val accessTokenValue = stringValue("access_token")?.takeIf { it.isNotBlank() } ?: return null
-    val refreshTokenValue = stringValue("refresh_token")?.takeIf { it.isNotBlank() } ?: return null
-    return TraktAuthState(
-        accessToken = accessTokenValue,
-        refreshToken = refreshTokenValue,
-        tokenType = stringValue("token_type") ?: "bearer",
-        createdAt = longValue("created_at") ?: (TraktPlatformClock.nowEpochMs() / 1_000L),
-        expiresIn = normalizeTraktTokenLifetime(intValue("expires_in") ?: TRAKT_TOKEN_FALLBACK_LIFETIME_SECONDS),
-        username = stringValue("username"),
-        userSlug = stringValue("user_slug"),
-    )
-}
-
-private fun normalizeTraktTokenLifetime(expiresIn: Int): Int {
-    if (expiresIn <= 0) return TRAKT_TOKEN_FALLBACK_LIFETIME_SECONDS
-    return expiresIn.coerceAtMost(TRAKT_TOKEN_FALLBACK_LIFETIME_SECONDS)
-}
-
 private fun JsonObject.stringValue(key: String): String? =
     this[key]?.jsonPrimitive?.contentOrNull
-
-private fun JsonObject.longValue(key: String): Long? =
-    this[key]?.jsonPrimitive?.longOrNull
-
-private fun JsonObject.intValue(key: String): Int? =
-    this[key]?.jsonPrimitive?.intOrNull

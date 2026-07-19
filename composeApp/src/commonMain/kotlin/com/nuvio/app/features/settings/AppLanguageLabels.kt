@@ -7,6 +7,7 @@ import nuvio.composeapp.generated.resources.lang_english
 import nuvio.composeapp.generated.resources.lang_french
 import nuvio.composeapp.generated.resources.lang_german
 import nuvio.composeapp.generated.resources.lang_greek
+import nuvio.composeapp.generated.resources.lang_hebrew
 import nuvio.composeapp.generated.resources.lang_hungarian
 import nuvio.composeapp.generated.resources.lang_indonesian
 import nuvio.composeapp.generated.resources.lang_italian
@@ -33,6 +34,7 @@ val AppLanguage.labelRes: StringResource
         AppLanguage.FRENCH -> Res.string.lang_french
         AppLanguage.GERMAN -> Res.string.lang_german
         AppLanguage.GREEK -> Res.string.lang_greek
+        AppLanguage.HEBREW -> Res.string.lang_hebrew
         AppLanguage.HUNGARIAN -> Res.string.lang_hungarian
         AppLanguage.INDONESIAN -> Res.string.lang_indonesian
         AppLanguage.ITALIAN -> Res.string.lang_italian

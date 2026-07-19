@@ -28,10 +28,12 @@ object TvOsThemeSettingsStore : ThemeSettingsStore {
     private const val amoledEnabledKey = "amoled_enabled"
     private const val liquidGlassNativeTabBarEnabledKey = "liquid_glass_native_tab_bar_enabled"
     private const val selectedAppLanguageKey = "selected_app_language"
+    private const val navBarStyleKey = "nav_bar_style"
     private val profileScopedSyncKeys = listOf(
         selectedThemeKey,
         amoledEnabledKey,
         liquidGlassNativeTabBarEnabledKey,
+        navBarStyleKey,
     )
 
     override fun loadSelectedTheme(): String? =
@@ -72,6 +74,13 @@ object TvOsThemeSettingsStore : ThemeSettingsStore {
         NSUserDefaults.standardUserDefaults.setObject(languageCode, forKey = selectedAppLanguageKey)
     }
 
+    override fun loadNavBarStyle(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(navBarStyleKey))
+
+    override fun saveNavBarStyle(styleKey: String) {
+        NSUserDefaults.standardUserDefaults.setObject(styleKey, forKey = ProfileScopedKey.of(navBarStyleKey))
+    }
+
     override fun applySelectedAppLanguage(languageCode: String) {
         // English-only tvOS app — don't rewrite AppleLanguages.
     }
@@ -80,6 +89,7 @@ object TvOsThemeSettingsStore : ThemeSettingsStore {
         loadSelectedTheme()?.let { put(selectedThemeKey, encodeSyncString(it)) }
         loadAmoledEnabled()?.let { put(amoledEnabledKey, encodeSyncBoolean(it)) }
         loadLiquidGlassNativeTabBarEnabled()?.let { put(liquidGlassNativeTabBarEnabledKey, encodeSyncBoolean(it)) }
+        loadNavBarStyle()?.let { put(navBarStyleKey, encodeSyncString(it)) }
     }
 
     override fun replaceFromSyncPayload(payload: JsonObject) {
@@ -89,5 +99,6 @@ object TvOsThemeSettingsStore : ThemeSettingsStore {
         payload.decodeSyncString(selectedThemeKey)?.let(::saveSelectedTheme)
         payload.decodeSyncBoolean(amoledEnabledKey)?.let(::saveAmoledEnabled)
         payload.decodeSyncBoolean(liquidGlassNativeTabBarEnabledKey)?.let(::saveLiquidGlassNativeTabBarEnabled)
+        payload.decodeSyncString(navBarStyleKey)?.let(::saveNavBarStyle)
     }
 }

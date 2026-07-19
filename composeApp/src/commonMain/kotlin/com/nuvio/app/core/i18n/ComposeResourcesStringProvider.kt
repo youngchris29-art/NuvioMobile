@@ -154,6 +154,7 @@ import nuvio.composeapp.generated.resources.details_comments_trakt_load_failed_w
 import nuvio.composeapp.generated.resources.trakt_authorization_denied
 import nuvio.composeapp.generated.resources.trakt_complete_sign_in_browser
 import nuvio.composeapp.generated.resources.trakt_connected_status
+import nuvio.composeapp.generated.resources.trakt_authorization_expired_reconnect
 import nuvio.composeapp.generated.resources.trakt_disconnected_status
 import nuvio.composeapp.generated.resources.trakt_invalid_callback
 import nuvio.composeapp.generated.resources.trakt_invalid_callback_state
@@ -344,6 +345,7 @@ object ComposeResourcesStringProvider : StringProvider {
         StringKey.trakt_authorization_denied -> Res.string.trakt_authorization_denied
         StringKey.trakt_complete_sign_in_browser -> Res.string.trakt_complete_sign_in_browser
         StringKey.trakt_connected_status -> Res.string.trakt_connected_status
+        StringKey.trakt_authorization_expired_reconnect -> Res.string.trakt_authorization_expired_reconnect
         StringKey.trakt_disconnected_status -> Res.string.trakt_disconnected_status
         StringKey.trakt_invalid_callback -> Res.string.trakt_invalid_callback
         StringKey.trakt_invalid_callback_state -> Res.string.trakt_invalid_callback_state

@@ -10,6 +10,7 @@ enum class AppLanguage(
     FRENCH("fr"),
     GERMAN("de"),
     GREEK("el"),
+    HEBREW("he"),
     HUNGARIAN("hu"),
     INDONESIAN("id"),
     ITALIAN("it"),

@@ -50,6 +50,7 @@ object MetaDetailsParser {
             language = meta.string("language"),
             website = meta.string("website"),
             hasScheduledVideos = meta.behaviorHints().boolean("hasScheduledVideos") == true,
+            defaultVideoId = meta.behaviorHints().string("defaultVideoId"),
             trailers = meta.trailers(),
             links = links,
             videos = meta.videos(),

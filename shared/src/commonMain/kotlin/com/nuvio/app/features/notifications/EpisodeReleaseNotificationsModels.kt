@@ -2,6 +2,7 @@ package com.nuvio.app.features.notifications
 
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
+import com.nuvio.app.core.time.parseEpisodeReleaseLocalDate
 import kotlinx.serialization.Serializable
 import kotlin.math.abs
 
@@ -54,12 +55,8 @@ internal fun normalizeSeriesType(type: String): String = when (type.trim().lower
 
 internal fun isSeriesLibraryType(type: String): Boolean = normalizeSeriesType(type) == "series"
 
-fun releaseDateIso(rawValue: String?): String? {
-    val value = rawValue
-        ?.substringBefore('T')
-        ?.trim()
-        .orEmpty()
-    return value.takeIf { it.length == 10 }
+internal fun releaseDateIso(rawValue: String?): String? {
+    return parseEpisodeReleaseLocalDate(rawValue)
 }
 
 internal fun buildEpisodeReleaseNotificationId(

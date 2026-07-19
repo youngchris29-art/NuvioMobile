@@ -12,6 +12,7 @@ import com.nuvio.app.core.i18n.resourceString
 data class HomeCatalogDefinition(
     val key: String,
     val defaultTitle: String,
+    val catalogName: String,
     val addonName: String,
     val manifestUrl: String,
     val type: String,
@@ -21,6 +22,9 @@ data class HomeCatalogDefinition(
 ) {
     val cacheKey: String
         get() = "$key|$descriptorSignature"
+
+    fun titleFor(showCatalogType: Boolean): String =
+        if (showCatalogType) defaultTitle else catalogName
 }
 
 fun buildHomeCatalogRefreshSignature(addons: List<ManagedAddon>): List<String> =
@@ -49,6 +53,7 @@ fun buildHomeCatalogDefinitions(addons: List<ManagedAddon>): List<HomeCatalogDef
                         catalog.name,
                         localizedMediaTypeLabel(catalog.type),
                     ),
+                    catalogName = catalog.name,
                     addonName = addon.displayTitle,
                     manifestUrl = addon.manifestUrl,
                     type = catalog.type,

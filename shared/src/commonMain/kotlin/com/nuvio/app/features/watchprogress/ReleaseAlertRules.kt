@@ -1,17 +1,12 @@
 package com.nuvio.app.features.watchprogress
 
-import com.nuvio.app.features.watching.domain.isoCalendarDateOrNull
-import com.nuvio.app.features.trakt.parseTraktIsoDateTimeToEpochMs
+import com.nuvio.app.core.time.parseEpisodeReleaseEpochMs
 import co.touchlab.kermit.Logger
 
+// Fork placement: upstream keeps this in composeApp AirDateUtils; body matches upstream v0.3.0
+// (core.time epoch parser — date-only values are UTC midnight, zoned values exact instants).
 fun parseReleaseDateToEpochMs(raw: String?): Long? {
-    if (raw.isNullOrBlank()) return null
-    val trimmed = raw.trim()
-    val epochMs = parseTraktIsoDateTimeToEpochMs(trimmed)
-    if (epochMs != null) return epochMs
-
-    val datePart = isoCalendarDateOrNull(trimmed) ?: return null
-    return CurrentDateProvider.localStartOfDayEpochMs(datePart)
+    return parseEpisodeReleaseEpochMs(raw)
 }
 
 class ReleaseAlertState(

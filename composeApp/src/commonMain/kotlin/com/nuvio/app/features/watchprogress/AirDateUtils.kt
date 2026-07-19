@@ -2,8 +2,8 @@ package com.nuvio.app.features.watchprogress
 
 import androidx.compose.runtime.Composable
 import com.nuvio.app.core.format.formatReleaseDateWithoutYear
-import com.nuvio.app.features.watching.domain.daysUntilExplicitRelease
-import com.nuvio.app.features.trakt.parseTraktIsoDateTimeToEpochMs
+import com.nuvio.app.core.time.daysUntilEpisodeRelease
+import com.nuvio.app.core.time.parseEpisodeReleaseEpochMs
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
@@ -18,12 +18,12 @@ fun computeAirDateBadgeText(
         return null
     }
 
-    val releaseEpoch = parseTraktIsoDateTimeToEpochMs(releasedIso)
+    val releaseEpoch = parseEpisodeReleaseEpochMs(releasedIso)
     if (releaseEpoch != null && WatchProgressClock.nowEpochMs() >= releaseEpoch) {
         return null
     }
 
-    val daysUntil = daysUntilExplicitRelease(
+    val daysUntil = daysUntilEpisodeRelease(
         todayIsoDate = todayIsoDate,
         releasedDate = releasedIso,
     ) ?: return null

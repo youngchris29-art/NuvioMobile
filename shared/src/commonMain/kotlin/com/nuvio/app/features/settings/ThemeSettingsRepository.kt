@@ -20,6 +20,9 @@ object ThemeSettingsRepository {
     private val _selectedAppLanguage = MutableStateFlow(AppLanguage.DEVICE)
     val selectedAppLanguage: StateFlow<AppLanguage> = _selectedAppLanguage.asStateFlow()
 
+    private val _navBarStyle = MutableStateFlow(NavBarStyle.ADAPTIVE)
+    val navBarStyle: StateFlow<NavBarStyle> = _navBarStyle.asStateFlow()
+
     private var hasLoaded = false
 
     fun ensureLoaded() {
@@ -39,6 +42,7 @@ object ThemeSettingsRepository {
         NativeTabControllerProvider.controller.publishAccentColor(AppTheme.WHITE.nativeTabAccentHex())
         NativeTabControllerProvider.controller.publishLiquidGlassEnabled(false)
         _selectedAppLanguage.value = AppLanguage.DEVICE
+        _navBarStyle.value = NavBarStyle.ADAPTIVE
     }
 
     private fun loadFromDisk() {
@@ -62,6 +66,7 @@ object ThemeSettingsRepository {
         val appLanguage = AppLanguage.fromCode(ThemeSettingsStoreProvider.store.loadSelectedAppLanguage())
         ThemeSettingsStoreProvider.store.applySelectedAppLanguage(appLanguage.code)
         _selectedAppLanguage.value = appLanguage
+        _navBarStyle.value = NavBarStyle.fromKey(ThemeSettingsStoreProvider.store.loadNavBarStyle())
     }
 
     fun setTheme(theme: AppTheme) {
@@ -93,6 +98,13 @@ object ThemeSettingsRepository {
         ThemeSettingsStoreProvider.store.saveSelectedAppLanguage(language.code)
         ThemeSettingsStoreProvider.store.applySelectedAppLanguage(language.code)
         _selectedAppLanguage.value = language
+    }
+
+    fun setNavBarStyle(style: NavBarStyle) {
+        ensureLoaded()
+        if (_navBarStyle.value == style) return
+        _navBarStyle.value = style
+        ThemeSettingsStoreProvider.store.saveNavBarStyle(style.key)
     }
 }
 
