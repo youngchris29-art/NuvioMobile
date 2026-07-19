@@ -325,49 +325,100 @@ final class MPVTVPlayerViewController: UIViewController {
         autoSelectPreferredTracks()
     }
 
-    /// Once, on first load: pick the audio/subtitle track matching the user's preferred languages
-    /// (Settings > Audio & Subtitle Language) using the shared language matcher. Leaves mpv's own
-    /// defaults when nothing matches or no preference is set.
+    /// Once, on first load: pick the audio track matching the user's preferred languages, then run
+    /// the shared audio-aware subtitle auto-selection plan (upstream v0.3.0 parity). With "Use
+    /// forced subtitles" on and the audio already in your preferred language, only a FORCED track
+    /// in that language is selected (none -> subtitles off); otherwise non-forced tracks in the
+    /// preferred languages are considered. No plan (e.g. forced-subs on but audio language
+    /// undeterminable) -> leave mpv's own defaults untouched.
     private func autoSelectPreferredTracks() {
         guard !didAutoSelectTracks, let settings = playerSettings, mpv != nil else { return }
         let count = getInt("track-list/count")
         guard count > 0 else { return }
 
-        var audioTracks: [(id: Int, lang: String)] = []
-        var subTracks: [(id: Int, lang: String)] = []
+        struct TrackInfo { let id: Int; let lang: String; let title: String; let forced: Bool; let selected: Bool }
+        var audioInfos: [TrackInfo] = []
+        var subInfos: [TrackInfo] = []
         for i in 0..<count {
             let type = getString("track-list/\(i)/type") ?? ""
-            let id = getInt("track-list/\(i)/id")
-            let lang = getString("track-list/\(i)/lang") ?? ""
-            if type == "audio" { audioTracks.append((id, lang)) }
-            else if type == "sub" { subTracks.append((id, lang)) }
+            guard type == "audio" || type == "sub" else { continue }
+            let info = TrackInfo(
+                id: getInt("track-list/\(i)/id"),
+                lang: getString("track-list/\(i)/lang") ?? "",
+                title: getString("track-list/\(i)/title") ?? "",
+                forced: getFlag("track-list/\(i)/forced"),
+                selected: getFlag("track-list/\(i)/selected")
+            )
+            if type == "audio" { audioInfos.append(info) } else { subInfos.append(info) }
         }
-        guard !audioTracks.isEmpty || !subTracks.isEmpty else { return }
+        guard !audioInfos.isEmpty || !subInfos.isEmpty else { return }
         didAutoSelectTracks = true
 
         let deviceLanguages = DeviceLanguagePreferences.shared.preferredLanguageCodes()
+        let audioTargets = PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
+            preferredAudioLanguage: settings.preferredAudioLanguage,
+            secondaryPreferredAudioLanguage: settings.secondaryPreferredAudioLanguage,
+            deviceLanguages: deviceLanguages,
+            contentOriginalLanguage: nil
+        )
 
         // Audio: only worth switching when there's more than one option.
-        if audioTracks.count > 1 {
-            let targets = PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
-                preferredAudioLanguage: settings.preferredAudioLanguage,
-                secondaryPreferredAudioLanguage: settings.secondaryPreferredAudioLanguage,
-                deviceLanguages: deviceLanguages,
-                contentOriginalLanguage: nil
-            )
-            if let id = firstTrackId(matching: targets, in: audioTracks) {
-                setMpvInt("aid", Int64(id))
-            }
+        var pickedAudioId: Int?
+        if audioInfos.count > 1,
+           let id = firstTrackId(matching: audioTargets, in: audioInfos.map { (id: $0.id, lang: $0.lang) }) {
+            setMpvInt("aid", Int64(id))
+            pickedAudioId = id
         }
 
-        // Subtitles: enable the preferred-language track if one exists (targets empty for "Off").
+        // The audio the viewer will actually hear: picked above, else mpv's selection, else first.
+        let effectiveAudio = audioInfos.first { $0.id == pickedAudioId }
+            ?? audioInfos.first { $0.selected }
+            ?? audioInfos.first
+        let selectedAudioLanguage = effectiveAudio.flatMap { info -> String? in
+            PlayerTrackSelectionKt.resolveAudioTrackLanguageTarget(
+                track: AudioTrack(
+                    index: 0,
+                    id: String(info.id),
+                    label: info.title.isEmpty ? info.lang : info.title,
+                    language: info.lang.isEmpty ? nil : info.lang,
+                    isSelected: true
+                )
+            )
+        }
+
+        // Subtitles: shared plan decides targets + forced/normal mode.
         let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
             preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
             secondaryPreferredSubtitleLanguage: settings.secondaryPreferredSubtitleLanguage,
             deviceLanguages: deviceLanguages
         )
-        if !subTracks.isEmpty, let id = firstTrackId(matching: subTargets, in: subTracks) {
-            setMpvInt("sid", Int64(id))
+        guard !subInfos.isEmpty,
+              let plan = PlayerTrackSelectionKt.resolveSubtitleAutoSelectionPlan(
+                  selectedAudioLanguage: selectedAudioLanguage,
+                  preferredAudioTargets: audioTargets,
+                  preferredSubtitleTargets: subTargets,
+                  useForcedSubtitles: settings.subtitleStyle.useForcedSubtitles
+              )
+        else { return }
+
+        let sharedSubs = subInfos.enumerated().map { index, info in
+            SubtitleTrack(
+                index: Int32(index),
+                id: String(info.id),
+                label: info.title.isEmpty ? info.lang : info.title,
+                language: info.lang.isEmpty ? nil : info.lang,
+                isSelected: info.selected,
+                isForced: info.forced
+            )
+        }
+        let match = PlayerTrackSelectionKt.findPreferredSubtitleTrackIndex(
+            tracks: sharedSubs, targets: plan.targets, mode: plan.mode
+        )
+        if match >= 0 {
+            setMpvInt("sid", Int64(subInfos[Int(match)].id))
+        } else if plan.mode == .forcedOnly {
+            // Forced-only plan with no forced track in that language: keep subtitles off.
+            setMpvString("sid", "no")
         }
     }
 
