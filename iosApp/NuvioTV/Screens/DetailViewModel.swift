@@ -22,6 +22,9 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var comments: [TraktCommentReview] = []
     /// IMDb episode ratings keyed "season:episode" (api.imdbapi.dev, keyless).
     @Published private(set) var episodeRatings: [String: Double] = [:]
+    /// Episodes to badge as watched, keyed "season:episode" — explicit Watched marks OR
+    /// effectively-completed watch progress (mirrors mobile's player episode rows).
+    @Published private(set) var watchedEpisodeKeys: Set<String> = []
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
     /// Resolved full-screen trailer (from the Trailers row); drives a player cover with sound.
@@ -39,6 +42,7 @@ final class DetailViewModel: ObservableObject {
     private var detailWatcher: FlowWatcher?
     private var watchedWatcher: FlowWatcher?
     private var libraryWatcher: FlowWatcher?
+    private var progressWatcher: FlowWatcher?
     private var didRequestTrailer = false
     private var didRequestComments = false
     private var didRequestRatings = false
@@ -75,16 +79,24 @@ final class DetailViewModel: ObservableObject {
                 self.fetchEpisodeRatingsIfNeeded(m)
                 self.fetchParentalGuideIfNeeded(m)
             }
+            self.refreshFlags()
         }
 
-        // Live Watched / Library state for the action buttons.
+        // Live Watched / Library state for the action buttons + per-episode watched badges.
         WatchedRepository.shared.ensureLoaded()
         LibraryRepository.shared.ensureLoaded()
+        WatchProgressRepository.shared.ensureLoaded()
+        // Hydrate Trakt-sourced per-episode completion for this title (no-op/cached otherwise).
+        WatchProgressRepository.shared.refreshEpisodeProgress(contentId: id, forceRefresh: false)
         watchedWatcher = FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] _ in
             guard let self else { return }
             self.refreshFlags()
         }
         libraryWatcher = FlowWatcherKt.watch(LibraryRepository.shared.uiState) { [weak self] _ in
+            guard let self else { return }
+            self.refreshFlags()
+        }
+        progressWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] _ in
             guard let self else { return }
             self.refreshFlags()
         }
@@ -97,6 +109,7 @@ final class DetailViewModel: ObservableObject {
         detailWatcher?.cancel(); detailWatcher = nil
         watchedWatcher?.cancel(); watchedWatcher = nil
         libraryWatcher?.cancel(); libraryWatcher = nil
+        progressWatcher?.cancel(); progressWatcher = nil
         trailerVideoURL = nil
         didRequestTrailer = false
         // Only the current owner clears the shared repo — a source screen disappearing mid-push
@@ -255,12 +268,35 @@ final class DetailViewModel: ObservableObject {
     private func refreshFlags() {
         isWatched = WatchedRepository.shared.isWatched(id: id, type: type, season: nil, episode: nil)
         isSaved = LibraryRepository.shared.isSaved(id: id, type: type)
+        watchedEpisodeKeys = computeWatchedEpisodeKeys()
+    }
+
+    /// "season:episode" keys for every episode that is explicitly marked watched or whose watch
+    /// progress is effectively complete. Pure in-memory lookups against the shared repositories.
+    private func computeWatchedEpisodeKeys() -> Set<String> {
+        guard let meta, EpisodesSection.isSeriesLike(meta) else { return [] }
+        var keys: Set<String> = []
+        for episode in meta.videos {
+            guard let s = episode.season?.value, let e = episode.episode?.value else { continue }
+            let season = KotlinInt(int: Int32(s))
+            let number = KotlinInt(int: Int32(e))
+            let marked = WatchedRepository.shared.isWatched(id: id, type: type, season: season, episode: number)
+            let completed = WatchProgressRepository.shared.progressForVideo(
+                videoId: "\(id):\(s):\(e)",
+                parentMetaId: id,
+                seasonNumber: season,
+                episodeNumber: number
+            )?.isEffectivelyCompleted == true
+            if marked || completed { keys.insert("\(s):\(e)") }
+        }
+        return keys
     }
 
     deinit {
         detailWatcher?.cancel()
         watchedWatcher?.cancel()
         libraryWatcher?.cancel()
+        progressWatcher?.cancel()
     }
 }
 

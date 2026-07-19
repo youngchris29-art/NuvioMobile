@@ -52,7 +52,11 @@ struct DetailView: View {
                         parentalGuideSection
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
-                        EpisodesSection(meta: meta, episodeRatings: model.episodeRatings)
+                        EpisodesSection(
+                            meta: meta,
+                            episodeRatings: model.episodeRatings,
+                            watchedEpisodeKeys: model.watchedEpisodeKeys
+                        )
                     }
                     Group {
                         castRow

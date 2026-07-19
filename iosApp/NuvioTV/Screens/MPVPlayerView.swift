@@ -1525,7 +1525,8 @@ private struct TrackPickerView: View {
     // MARK: - Episodes (jump to any aired episode)
 
     private var episodesSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let watchedKeys = watchedEpisodeKeys
+        return VStack(alignment: .leading, spacing: 16) {
             Text("Episodes").font(.title2).bold().foregroundStyle(.white)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
@@ -1539,6 +1540,11 @@ private struct TrackPickerView: View {
                             HStack(spacing: 8) {
                                 if isCurrent {
                                     Image(systemName: "play.fill")
+                                } else if let s = episode.season?.value, let e = episode.episode?.value,
+                                          watchedKeys.contains("\(s):\(e)") {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(Color(red: 0.22, green: 0.78, blue: 0.36))
                                 }
                                 Text(episodeChipLabel(episode))
                             }
@@ -1552,6 +1558,30 @@ private struct TrackPickerView: View {
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.6))
         }
+    }
+
+    /// "season:episode" keys for episodes to mark watched in the jump list — explicit Watched
+    /// marks OR effectively-completed progress (same rule as the Detail screen's badges).
+    private var watchedEpisodeKeys: Set<String> {
+        WatchedRepository.shared.ensureLoaded()
+        WatchProgressRepository.shared.ensureLoaded()
+        var keys: Set<String> = []
+        for episode in sortedEpisodes {
+            guard let s = episode.season?.value, let e = episode.episode?.value else { continue }
+            let season = KotlinInt(int: Int32(s))
+            let number = KotlinInt(int: Int32(e))
+            let marked = WatchedRepository.shared.isWatched(
+                id: engine.parentMetaId, type: engine.contentType, season: season, episode: number
+            )
+            let completed = WatchProgressRepository.shared.progressForVideo(
+                videoId: "\(engine.parentMetaId):\(s):\(e)",
+                parentMetaId: engine.parentMetaId,
+                seasonNumber: season,
+                episodeNumber: number
+            )?.isEffectivelyCompleted == true
+            if marked || completed { keys.insert("\(s):\(e)") }
+        }
+        return keys
     }
 
     private var sortedEpisodes: [MetaVideo] {

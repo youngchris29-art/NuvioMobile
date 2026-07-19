@@ -14,9 +14,12 @@ final class SettingsViewModel: ObservableObject {
     /// the tvOS ThemeSettingsStore adapter; the root AppThemeModel applies it to the palette.
     @Published private(set) var themeName = "CRIMSON"
     @Published private(set) var catalogs: [HomeCatalogSettingsItem] = []
+    /// Home rows append the media type to catalog titles (synced; default on).
+    @Published private(set) var showCatalogType = true
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
     @Published private(set) var tmdbEnabled = false
     @Published private(set) var tmdbHasKey = false
+    @Published private(set) var tmdbUseReleaseDates = false
     /// MDBList external ratings (IMDb/RT/Metacritic/Trakt/Letterboxd on Detail). Gated on a user key;
     /// the shared MetaDetailsRepository applies the enrichment itself on every load.
     @Published private(set) var mdbListEnabled = false
@@ -67,6 +70,7 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? TmdbSettings else { return }
             self.tmdbEnabled = state.enabled
             self.tmdbHasKey = state.hasApiKey
+            self.tmdbUseReleaseDates = state.useReleaseDates
         }
 
         MdbListSettingsRepository.shared.ensureLoaded()
@@ -102,6 +106,7 @@ final class SettingsViewModel: ObservableObject {
         catalogWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
             self.catalogs = state.items
+            self.showCatalogType = state.showCatalogType
         }
     }
 
@@ -201,6 +206,19 @@ final class SettingsViewModel: ObservableObject {
 
     func setTmdbEnabled(_ enabled: Bool) {
         TmdbSettingsRepository.shared.setEnabled(value: enabled)
+    }
+
+    /// TMDB air dates override add-on release dates (upstream v0.3.0 moved this out of
+    /// `useDetails` behind its own default-off toggle; surfacing it restores the old behavior
+    /// for users who want it).
+    func setTmdbUseReleaseDates(_ enabled: Bool) {
+        TmdbSettingsRepository.shared.setUseReleaseDates(value: enabled)
+    }
+
+    /// Append the media type to catalog row titles ("Popular - Movies" vs just "Popular").
+    /// Cross-device synced; the shared HomeRepository composes the titles either way.
+    func setShowCatalogType(_ enabled: Bool) {
+        HomeCatalogSettingsRepository.shared.setShowCatalogType(enabled: enabled)
     }
 
     /// Clearing the key also disables enrichment (handled inside the repo).

@@ -51,6 +51,9 @@ final class NextEpisodeEngine: ObservableObject {
 
     /// Panel accessors (the playback-settings panel renders episode/source sections from these).
     var episodes: [MetaVideo] { context.episodes }
+    /// Exposed for the player's episode jump list (watched-badge lookups).
+    var parentMetaId: String { context.parentMetaId }
+    var contentType: String { context.contentType }
     var currentSeason: Int? { context.season }
     var currentEpisode: Int? { context.episode }
     var currentUrlString: String { context.url.absoluteString }
@@ -556,19 +559,13 @@ final class NextEpisodeEngine: ObservableObject {
         return hasAired(released) ? next : nil
     }
 
-    /// Treats missing/unparseable dates as aired (mobile behavior).
+    /// Treats missing/unparseable dates as aired (mobile behavior). Delegates to the shared
+    /// core/time parser so zoned timestamps compare as real instants and date-only values use
+    /// UTC midnight — the old Swift port compared local calendar dates and mis-gated episodes
+    /// around midnight/timezone boundaries (fixed upstream in v0.3.0; kept in sync here).
     static func hasAired(_ raw: String?) -> Bool {
-        guard let raw = raw?.trimmingCharacters(in: .whitespaces), raw.count >= 10 else { return true }
-        let parts = raw.prefix(10).split(separator: "-")
-        guard parts.count == 3,
-              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
-        else { return true }
-
-        let today = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-        guard let ty = today.year, let tm = today.month, let td = today.day else { return true }
-        if year != ty { return year < ty }
-        if month != tm { return month < tm }
-        return day <= td
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        return EpisodeReleaseDateParserKt.isEpisodeReleaseAired(raw: raw, nowEpochMs: nowMs)?.boolValue ?? true
     }
 
     // MARK: - Formatting (matches EpisodesSection so watch-progress keys stay consistent)

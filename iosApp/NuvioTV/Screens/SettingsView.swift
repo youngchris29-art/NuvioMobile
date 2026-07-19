@@ -203,6 +203,15 @@ struct SettingsView: View {
                                 ) {
                                     model.setTmdbEnabled(!model.tmdbEnabled)
                                 }
+                                SettingsToggleRow(
+                                    title: "TMDB Release Dates",
+                                    subtitle: model.tmdbUseReleaseDates
+                                        ? "On \u{00B7} TMDB air dates override add-on release dates"
+                                        : "Off \u{00B7} add-on release dates are used as-is",
+                                    isOn: model.tmdbUseReleaseDates
+                                ) {
+                                    model.setTmdbUseReleaseDates(!model.tmdbUseReleaseDates)
+                                }
                                 SettingsActionRow(
                                     title: "Remove API Key",
                                     subtitle: "Clears the saved TMDB key and turns enrichment off.",
@@ -257,6 +266,15 @@ struct SettingsView: View {
                                     .font(Theme.Font.body)
                                     .foregroundStyle(Theme.Palette.textSecondary)
                             } else {
+                                SettingsToggleRow(
+                                    title: "Show Catalog Type in Titles",
+                                    subtitle: model.showCatalogType
+                                        ? "On \u{00B7} rows read like \u{201C}Popular - Movies\u{201D}"
+                                        : "Off \u{00B7} rows use the add-on's catalog name",
+                                    isOn: model.showCatalogType
+                                ) {
+                                    model.setShowCatalogType(!model.showCatalogType)
+                                }
                                 ForEach(model.catalogs, id: \.key) { item in
                                     CatalogSettingRow(
                                         item: item,

@@ -8,6 +8,8 @@ struct EpisodesSection: View {
     let meta: MetaDetails
     /// IMDb ratings keyed "season:episode" (from `DetailViewModel.episodeRatings`); empty = no badges.
     var episodeRatings: [String: Double] = [:]
+    /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`).
+    var watchedEpisodeKeys: Set<String> = []
 
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
@@ -47,7 +49,8 @@ struct EpisodesSection: View {
                         EpisodeCard(
                             episode: episode,
                             fallbackImage: meta.background ?? meta.poster,
-                            rating: rating(for: episode)
+                            rating: rating(for: episode),
+                            isWatched: isWatched(episode)
                         )
                     }
                     .buttonStyle(.card)
@@ -127,6 +130,11 @@ struct EpisodesSection: View {
         guard let s = episode.season?.value, let e = episode.episode?.value else { return nil }
         return episodeRatings["\(s):\(e)"]
     }
+
+    private func isWatched(_ episode: MetaVideo) -> Bool {
+        guard let s = episode.season?.value, let e = episode.episode?.value else { return false }
+        return watchedEpisodeKeys.contains("\(s):\(e)")
+    }
 }
 
 /// `KotlinInt` is an `NSNumber` subclass, whose `.intValue` Swift accessor is `Int32`. This converts
@@ -147,6 +155,8 @@ private struct EpisodeCard: View {
     let fallbackImage: String?
     /// IMDb rating for this episode (badge hidden when nil).
     var rating: Double? = nil
+    /// Shows the green watched checkmark on the thumbnail (mirrors mobile's watched badge).
+    var isWatched: Bool = false
 
     var body: some View {
         // Widen the Kotlin String to an explicit optional (it surfaces as non-optional in Swift).
@@ -164,6 +174,9 @@ private struct EpisodeCard: View {
             }
             .frame(width: 300, height: 170)
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(alignment: .topTrailing) {
+                if isWatched { WatchedCheckBadge().padding(8) }
+            }
             .nuvioCardDepth(RoundedRectangle(cornerRadius: 10), surface: .episodeCards)
 
             VStack(alignment: .leading, spacing: 8) {
@@ -215,5 +228,17 @@ private struct EpisodeCard: View {
             return "\(e). \(episode.title)"
         }
         return episode.title
+    }
+}
+
+/// Green circular checkmark marking a watched episode (tvOS take on mobile's watched badge).
+struct WatchedCheckBadge: View {
+    var body: some View {
+        Image(systemName: "checkmark")
+            .font(.caption.bold())
+            .foregroundStyle(.white)
+            .padding(7)
+            .background(Color(red: 0.22, green: 0.78, blue: 0.36).opacity(0.95), in: Circle())
+            .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
     }
 }
