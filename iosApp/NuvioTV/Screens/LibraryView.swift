@@ -38,6 +38,7 @@ struct LibraryView: View {
                         } else if model.items.isEmpty {
                             emptyState
                         } else {
+                            sortChips
                             LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
                                 ForEach(model.items, id: \.id) { item in
                                     NavigationLink(value: TitleRoute(preview: item.toMetaPreview())) {
@@ -89,6 +90,30 @@ struct LibraryView: View {
                 .ignoresSafeArea()
                 .id(ctx.id)
         }
+    }
+
+    // MARK: - Sort (shared LibraryDisplaySettingsRepository — persisted + profile-scoped)
+
+    private var sortChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(model.availableSortOptions, id: \.name) { option in
+                    sourceChip(Self.sortLabel(option), isActive: option == model.sortOption) {
+                        model.setSort(option)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private static func sortLabel(_ option: LibrarySortOption) -> String {
+        if option == .default_ { return "Trakt Order" }
+        if option == .addedDesc { return "Recently Added" }
+        if option == .addedAsc { return "Oldest First" }
+        if option == .titleAsc { return "A\u{2013}Z" }
+        if option == .titleDesc { return "Z\u{2013}A" }
+        return option.name
     }
 
     // MARK: - Source switcher (Saved / Debrid Cloud)
