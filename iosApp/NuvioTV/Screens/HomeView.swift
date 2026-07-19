@@ -8,11 +8,22 @@ struct HomeView: View {
     @StateObject private var model = HomeViewModel()
     @State private var resume: ResumeTarget?
 
-    // Hero rotation state, hoisted here so the full-bleed backdrop (behind the scroll) and the
-    // focusable text overlay (inside the scroll) share the same index.
+    // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
+    // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
+    // TabView: D-pad left/right (and touch-surface swipes) page manually while the hero is
+    // focused — the same interaction as the Apple TV+ feature carousel — and a timer advances it
+    // while focus is elsewhere.
     @State private var heroIndex = 0
     @FocusState private var heroFocused: Bool
-    private let heroTimer = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
+    /// Last time the hero page changed (manual or automatic). The auto-advance timer skips its
+    /// tick unless the carousel has been still for most of its period, so a manual page never
+    /// gets yanked forward moments later.
+    @State private var lastHeroChange = Date.distantPast
+    /// Held in @State so ONE publisher instance (and one onReceive subscription) survives parent
+    /// re-evaluations. As a plain stored property, every ancestor emission re-created the
+    /// publisher and restarted its 8s countdown — frequent upstream churn (sync, top shelf,
+    /// profile publishers) starved it and the carousel silently stopped advancing.
+    @State private var heroTimer = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
 
     private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
@@ -40,15 +51,9 @@ struct HomeView: View {
 
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-                        if let hero = currentHero {
-                            HomeHeroForeground(
-                                item: hero,
-                                pageCount: heroItems.count,
-                                index: min(heroIndex, heroItems.count - 1)
-                            )
-                            .focused($heroFocused)
-                            .focusSection()
-                            .padding(.top, Theme.Size.heroForegroundTopPad)
+                        if !heroItems.isEmpty {
+                            heroCarousel
+                                .padding(.top, Theme.Size.heroForegroundTopPad)
                         }
 
                         if model.rows.isEmpty {
@@ -79,13 +84,23 @@ struct HomeView: View {
                 .scrollClipDisabled()
             }
             .onReceive(heroTimer) { _ in
-                guard heroItems.count > 1, !heroFocused else { return }
+                guard heroItems.count > 1, !heroFocused,
+                      Date().timeIntervalSince(lastHeroChange) >= 7 else { return }
+                // Plain animated selection write, including the wrap back to page 0 — programmatic
+                // non-animated selection rebasing desyncs tvOS's paged TabView (the visible page
+                // freezes while the binding keeps moving), so never get clever here.
                 withAnimation(.easeInOut(duration: 0.6)) {
                     heroIndex = (min(heroIndex, heroItems.count - 1) + 1) % heroItems.count
                 }
             }
+            .onChange(of: heroIndex) { _, _ in
+                lastHeroChange = Date()
+            }
             .onChange(of: heroItems.count) { _, newCount in
                 if heroIndex >= newCount { heroIndex = 0 }
+            }
+            .onChange(of: heroItems.map(\.id)) { _, _ in
+                prefetchHeroArt()
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -113,8 +128,48 @@ struct HomeView: View {
                 )
             }
         }
-        .onAppear { model.start() }
+        .onAppear {
+            model.start()
+            prefetchHeroArt()
+        }
         .onDisappear { model.stop() }
+    }
+
+    /// The paged hero carousel plus its (static) page dots. Fixed height everywhere: paging or
+    /// auto-advancing swaps content inside a constant frame, so the rows below never move.
+    private var heroCarousel: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            TabView(selection: $heroIndex) {
+                ForEach(Array(heroItems.enumerated()), id: \.offset) { index, item in
+                    HomeHeroForeground(item: item)
+                        .focused($heroFocused)
+                        .tag(index)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(height: Theme.Size.heroCarouselHeight)
+            .focusSection()
+
+            if heroItems.count > 1 {
+                HeroPageDots(count: heroItems.count, index: min(heroIndex, heroItems.count - 1))
+                    .padding(.leading, Theme.Spacing.lg)
+            }
+        }
+    }
+
+    /// Warm the artwork caches for every hero page (backdrop + logo) as soon as the items are
+    /// known, so manual paging and the auto-advance crossfade never flash a placeholder.
+    private func prefetchHeroArt() {
+        var urls: [URL] = []
+        for item in heroItems {
+            let banner: String? = item.banner
+            let poster: String? = item.poster
+            let logo: String? = item.logo
+            let backdrop = (banner?.isEmpty == false) ? banner : poster
+            if let backdrop, !backdrop.isEmpty, let url = URL(string: backdrop) { urls.append(url) }
+            if let logo, !logo.isEmpty, let url = URL(string: logo) { urls.append(url) }
+        }
+        ArtworkStore.prefetch(urls)
     }
 
     @ViewBuilder
@@ -265,80 +320,44 @@ struct HomeHeroScrim: View {
     }
 }
 
-/// The interactive hero: logo/title, metadata and a short synopsis, plus page dots — a single
-/// focusable target that opens the detail screen. Sits in the scroll content (pushed down onto the
-/// lower third of the backdrop by the parent's top padding), so it scrolls away with the rows.
+/// One page of the hero carousel: logo/title, metadata and a short synopsis — a single focusable
+/// target that opens the detail screen. Every slot has a FIXED height (logo box, one meta line,
+/// two synopsis lines), so all pages are layout-identical and advancing the carousel can never
+/// reflow anything around it.
 struct HomeHeroForeground: View {
     let item: MetaPreview
-    let pageCount: Int
-    let index: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            NavigationLink(value: TitleRoute(preview: item)) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                    logo
+        NavigationLink(value: TitleRoute(preview: item)) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                HeroLogo(item: item)
+                    .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if !metaLine.isEmpty {
-                        Text(metaLine)
-                            .font(Theme.Font.meta)
-                            .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
-                    }
+                Text(metaLine)
+                    .font(Theme.Font.meta)
+                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                    .lineLimit(1)
+                    .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
 
-                    if let synopsis, !synopsis.isEmpty {
-                        Text(synopsis)
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                            .lineLimit(2)
-                            .frame(maxWidth: 1000, alignment: .leading)
-                    }
-                }
-                .padding(Theme.Spacing.lg)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(synopsis)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
+                    .lineLimit(2)
+                    .frame(maxWidth: 1000, alignment: .leading)
+                    .frame(height: Theme.Size.heroSynopsisSlotHeight, alignment: .topLeading)
             }
-            .buttonStyle(.card)
-
-            if pageCount > 1 {
-                HStack(spacing: Theme.Spacing.xs) {
-                    ForEach(0..<pageCount, id: \.self) { i in
-                        Capsule()
-                            .fill(i == index
-                                  ? Theme.Palette.textPrimary
-                                  : Theme.Palette.textSecondary.opacity(0.45))
-                            .frame(width: i == index ? 34 : 10, height: 10)
-                    }
-                }
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xs)
-                .glassEffect(.regular, in: .capsule)
-                .padding(.leading, Theme.Spacing.lg)
-                .animation(.easeInOut(duration: 0.3), value: index)
-            }
+            .padding(Theme.Spacing.lg)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .buttonStyle(.card)
+        .accessibilityLabel(item.name)
     }
 
-    @ViewBuilder
-    private var logo: some View {
-        if let logoURL {
-            AsyncImage(url: URL(string: logoURL)) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().aspectRatio(contentMode: .fit)
-                } else {
-                    Text(item.name).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
-                }
-            }
-            .frame(maxWidth: 520, maxHeight: 150, alignment: .leading)
-        } else {
-            Text(item.name).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
-        }
+    private var synopsis: String {
+        let description: String? = item.description_
+        return description ?? ""
     }
-
-    private var logoURL: String? {
-        let logo: String? = item.logo
-        return (logo?.isEmpty == false) ? logo : nil
-    }
-
-    private var synopsis: String? { item.description_ }
 
     private var metaLine: String {
         var parts: [String] = []
@@ -347,5 +366,84 @@ struct HomeHeroForeground: View {
         let genres = item.genres.prefix(3)
         if !genres.isEmpty { parts.append(genres.joined(separator: " \u{00B7} ")) }
         return parts.joined(separator: "  \u{00B7}  ")
+    }
+}
+
+/// The hero page's logo artwork, with the title text as its stand-in (no logo URL, load failure,
+/// or not fetched yet). Seeds from the shared artwork memory cache synchronously, so a cached
+/// logo is on screen from the page's very first frame — no placeholder flash as pages cycle.
+struct HeroLogo: View {
+    let item: MetaPreview
+    private let url: URL?
+    @State private var image: UIImage?
+
+    init(item: MetaPreview) {
+        self.item = item
+        let logo: String? = item.logo
+        if let logo, !logo.isEmpty {
+            self.url = URL(string: logo)
+        } else {
+            self.url = nil
+        }
+        _image = State(initialValue: ArtworkStore.cached(url))
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(
+                        maxWidth: Theme.Size.heroLogoMaxWidth,
+                        maxHeight: Theme.Size.heroLogoSlotHeight,
+                        alignment: .bottomLeading
+                    )
+            } else {
+                Text(item.name)
+                    .font(Theme.Font.hero)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.6)
+            }
+        }
+        .task(id: url) {
+            guard let url else {
+                image = nil
+                return
+            }
+            if let hit = ArtworkStore.cached(url) {
+                image = hit
+                return
+            }
+            image = nil
+            if let fetched = try? await ArtworkStore.fetch(url) {
+                withAnimation(.easeIn(duration: 0.25)) { image = fetched }
+            }
+        }
+    }
+}
+
+/// Page-position dots for the hero carousel. Rendered once, outside the sliding pages, so they
+/// stay put while the carousel animates.
+struct HeroPageDots: View {
+    let count: Int
+    let index: Int
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            ForEach(0..<count, id: \.self) { i in
+                Capsule()
+                    .fill(i == index
+                          ? Theme.Palette.textPrimary
+                          : Theme.Palette.textSecondary.opacity(0.45))
+                    .frame(width: i == index ? 34 : 10, height: 10)
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.xs)
+        .glassEffect(.regular, in: .capsule)
+        .animation(.easeInOut(duration: 0.3), value: index)
+        .accessibilityHidden(true)
     }
 }

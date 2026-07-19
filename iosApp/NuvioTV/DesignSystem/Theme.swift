@@ -101,6 +101,18 @@ enum Theme {
         /// Top padding that pushes the hero's logo/synopsis overlay down onto the lower third of
         /// the backdrop (mirrors Detail's layout).
         static let heroForegroundTopPad: CGFloat = 340
+        /// Fixed height of the hero carousel viewport. Every page reserves identical slot heights
+        /// (logo + meta + synopsis), so advancing the hero can never reflow the rows below it —
+        /// that reflow was the visible "glitch" on every 8s auto-advance. Sized to the summed
+        /// slots + paddings with a little headroom for the focused card lift.
+        static let heroCarouselHeight: CGFloat = 344
+        /// Fixed logo/title slot inside a hero page (bottom-aligned; image fits within it).
+        static let heroLogoSlotHeight: CGFloat = 150
+        static let heroLogoMaxWidth: CGFloat = 520
+        /// Fixed single-line metadata slot inside a hero page.
+        static let heroMetaSlotHeight: CGFloat = 32
+        /// Fixed two-line synopsis slot inside a hero page.
+        static let heroSynopsisSlotHeight: CGFloat = 72
     }
 }
 

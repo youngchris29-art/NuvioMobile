@@ -55,20 +55,16 @@ struct CachedAsyncImage: View {
     }
 }
 
-/// Loads and caches a single image URL. Memory cache is shared process-wide; disk cache is backed
-/// by a dedicated `URLCache` so it never evicts the app's data responses.
-@MainActor
-private final class CachedImageLoader: ObservableObject {
-    @Published var image: UIImage?
-    @Published var failed = false
-
-    private var currentURL: URL?
-    private var task: Task<Void, Never>?
-
+/// Shared artwork pipeline behind `CachedAsyncImage` (and the Home hero's logo/backdrop
+/// prefetcher): a process-wide decoded-image memory cache, a dedicated disk-backed session,
+/// ImageIO downsampling, and in-flight request coalescing so concurrent views (or a prefetch
+/// plus a view) never download the same URL twice.
+enum ArtworkStore {
     /// Process-wide in-memory decoded-image cache. Bounded by decoded bytes, not just count —
     /// 400 unbounded images (a 4K RGBA backdrop is ~32 MB decoded) could exceed the Apple TV
-    /// process budget during long catalog browsing (HI-006).
-    private static let memory: NSCache<NSURL, UIImage> = {
+    /// process budget during long catalog browsing (HI-006). NSCache is thread-safe, hence the
+    /// `nonisolated(unsafe)` escape hatch for synchronous first-frame lookups from view inits.
+    nonisolated(unsafe) private static let memory: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 400
         cache.totalCostLimit = 128 * 1024 * 1024   // decoded bytes
@@ -89,61 +85,69 @@ private final class CachedImageLoader: ObservableObject {
         return URLSession(configuration: config)
     }()
 
-    func load(_ url: URL?) {
-        guard url != currentURL else { return }
-        currentURL = url
-        task?.cancel()
-        failed = false
-        image = nil
+    /// One shared task per URL currently downloading, so awaiters coalesce onto it.
+    @MainActor private static var inflight: [URL: Task<UIImage, Error>] = [:]
 
-        guard let url else { return }
+    /// Synchronous memory-cache lookup. Safe from any context (NSCache locks internally); lets
+    /// views seed their first frame without an async hop, avoiding a placeholder flash.
+    static func cached(_ url: URL?) -> UIImage? {
+        guard let url else { return nil }
+        return memory.object(forKey: url as NSURL)
+    }
 
-        if let cached = Self.memory.object(forKey: url as NSURL) {
-            image = cached
-            return
-        }
+    /// Fetch + validate + decode + cache one URL. Concurrent calls for the same URL share one
+    /// download. Cancelling an awaiting caller does NOT cancel the shared work — the image still
+    /// lands in the cache for whoever wants it next.
+    @MainActor
+    static func fetch(_ url: URL) async throws -> UIImage {
+        if let hit = cached(url) { return hit }
+        if let existing = inflight[url] { return try await existing.value }
 
-        task = Task { [weak self] in
-            do {
-                let (data, response) = try await Self.session.data(from: url)
+        let work = Task<UIImage, Error> {
+            let (data, response) = try await session.data(from: url)
 
-                // Reject unsuccessful responses, non-image payloads, and oversized downloads
-                // before spending any decode work on them (HI-006).
-                if let http = response as? HTTPURLResponse {
-                    guard (200...299).contains(http.statusCode) else {
-                        throw URLError(.badServerResponse)
-                    }
-                    if let mime = http.mimeType?.lowercased(), !mime.hasPrefix("image/") {
-                        throw URLError(.cannotDecodeContentData)
-                    }
+            // Reject unsuccessful responses, non-image payloads, and oversized downloads
+            // before spending any decode work on them (HI-006).
+            if let http = response as? HTTPURLResponse {
+                guard (200...299).contains(http.statusCode) else {
+                    throw URLError(.badServerResponse)
                 }
-                guard data.count <= Self.maxDownloadBytes else {
-                    throw URLError(.dataLengthExceedsMaximum)
+                if let mime = http.mimeType?.lowercased(), !mime.hasPrefix("image/") {
+                    throw URLError(.cannotDecodeContentData)
                 }
-
-                // Decode off the main actor, downsampled to at most the panel's own resolution —
-                // decoding artwork at source dimensions is what made the old cache balloon.
-                let decoded = try await Task.detached(priority: .userInitiated) {
-                    try Self.downsample(data: data)
-                }.value
-
-                let cost = decoded.cgImage.map { $0.bytesPerRow * $0.height } ?? 4 * 1024 * 1024
-                Self.memory.setObject(decoded, forKey: url as NSURL, cost: cost)
-                if Task.isCancelled { return }
-                guard let self, self.currentURL == url else { return }
-                withAnimation(.easeIn(duration: 0.25)) { self.image = decoded }
-            } catch {
-                if Task.isCancelled { return }
-                guard let self, self.currentURL == url else { return }
-                self.failed = true
             }
+            guard data.count <= maxDownloadBytes else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+
+            // Decode off the main actor, downsampled to at most the panel's own resolution —
+            // decoding artwork at source dimensions is what made the old cache balloon.
+            let decoded = try await Task.detached(priority: .userInitiated) {
+                try downsample(data: data)
+            }.value
+
+            let cost = decoded.cgImage.map { $0.bytesPerRow * $0.height } ?? 4 * 1024 * 1024
+            memory.setObject(decoded, forKey: url as NSURL, cost: cost)
+            return decoded
+        }
+        inflight[url] = work
+        defer { inflight[url] = nil }
+        return try await work.value
+    }
+
+    /// Fire-and-forget warm-up for a set of URLs (memory + disk). Home calls this the moment the
+    /// hero items arrive so carousel paging and the 8s auto-advance never hit a cold cache.
+    @MainActor
+    static func prefetch(_ urls: [URL]) {
+        for url in urls where cached(url) == nil {
+            Task { _ = try? await fetch(url) }
         }
     }
 
     /// ImageIO downsampling: decodes straight to a bounded thumbnail without ever materializing
     /// the full-size bitmap. 1920 px covers a full-screen 1080p-point layer; posters and cards
     /// render far smaller. Absurd source dimensions are rejected before any real decode work.
-    nonisolated private static func downsample(data: Data) throws -> UIImage {
+    nonisolated fileprivate static func downsample(data: Data) throws -> UIImage {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
             throw URLError(.cannotDecodeContentData)
@@ -165,6 +169,43 @@ private final class CachedImageLoader: ObservableObject {
             throw URLError(.cannotDecodeContentData)
         }
         return UIImage(cgImage: cgImage)
+    }
+}
+
+/// Loads and caches a single image URL for one `CachedAsyncImage`, delegating the shared cache,
+/// download, and decode machinery to `ArtworkStore`.
+@MainActor
+private final class CachedImageLoader: ObservableObject {
+    @Published var image: UIImage?
+    @Published var failed = false
+
+    private var currentURL: URL?
+    private var task: Task<Void, Never>?
+
+    func load(_ url: URL?) {
+        guard url != currentURL else { return }
+        currentURL = url
+        task?.cancel()
+        failed = false
+        image = nil
+
+        guard let url else { return }
+
+        if let cached = ArtworkStore.cached(url) {
+            image = cached
+            return
+        }
+
+        task = Task { [weak self] in
+            let fetched = try? await ArtworkStore.fetch(url)
+            if Task.isCancelled { return }
+            guard let self, self.currentURL == url else { return }
+            if let fetched {
+                withAnimation(.easeIn(duration: 0.25)) { self.image = fetched }
+            } else {
+                self.failed = true
+            }
+        }
     }
 
     deinit { task?.cancel() }
