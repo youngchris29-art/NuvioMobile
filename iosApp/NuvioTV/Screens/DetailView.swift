@@ -9,6 +9,7 @@ struct DetailView: View {
 
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
+    @State private var seriesPlay: SeriesPlayRoute?
     /// Trakt comment ids the user has expanded (reveals spoilers / full text).
     @State private var expandedComments: Set<Int64> = []
 
@@ -75,6 +76,17 @@ struct DetailView: View {
         .onDisappear { model.stop() }
         .fullScreenCover(isPresented: $showStreams) {
             StreamPickerView(type: preview.type, videoId: preview.id, title: title)
+        }
+        .fullScreenCover(item: $seriesPlay) { route in
+            StreamPickerView(
+                type: route.meta.type,
+                videoId: route.action.videoId,
+                title: route.pickerTitle,
+                parentMetaId: route.meta.id,
+                season: route.action.seasonNumber?.value,
+                episode: route.action.episodeNumber?.value,
+                episodes: route.meta.videos
+            )
         }
         .fullScreenCover(item: $model.trailerPlayback) { item in
             FullScreenTrailerPlayer(urlString: item.url)
@@ -188,6 +200,17 @@ struct DetailView: View {
                         showStreams = true
                     } label: {
                         Label("Play", systemImage: "play.fill")
+                            .font(Theme.Font.meta)
+                            .padding(.horizontal, Theme.Spacing.lg)
+                            .padding(.vertical, Theme.Spacing.xxs + 2)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.Palette.accent)
+                } else if let action = model.seriesAction, let meta = model.meta {
+                    Button {
+                        seriesPlay = SeriesPlayRoute(meta: meta, action: action)
+                    } label: {
+                        Label(action.label, systemImage: "play.fill")
                             .font(Theme.Font.meta)
                             .padding(.horizontal, Theme.Spacing.lg)
                             .padding(.vertical, Theme.Spacing.xxs + 2)
@@ -659,5 +682,22 @@ private struct CastCard: View {
                     .frame(width: Theme.Size.castAvatar + 10)
             }
         }
+    }
+}
+
+/// Identifiable wrapper so the series primary action can drive `.fullScreenCover(item:)`.
+private struct SeriesPlayRoute: Identifiable {
+    let meta: MetaDetails
+    let action: SeriesPrimaryAction
+    var id: String { action.videoId }
+
+    /// "S1E1 · Pilot"-style picker title (falls back to the action label).
+    var pickerTitle: String {
+        if let s = action.seasonNumber?.value, let e = action.episodeNumber?.value {
+            let name: String? = action.episodeTitle
+            if let name, !name.isEmpty { return "S\(s)E\(e) \u{00B7} \(name)" }
+            return "S\(s)E\(e)"
+        }
+        return action.label
     }
 }

@@ -148,6 +148,9 @@ struct ContinueWatchingRow: View {
     let entries: [WatchProgressEntry]
     let onSelect: (WatchProgressEntry) -> Void
     let onRemove: (WatchProgressEntry) -> Void
+    /// Focus inside the shelf disables the reorder snap-back (mirrors upstream's
+    /// hasUserScrolledContinueWatching guard in their CW scroll stabilization).
+    @FocusState private var focusedVideoId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -155,29 +158,43 @@ struct ContinueWatchingRow: View {
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: Theme.Spacing.rowGap) {
-                    ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                        Button { onSelect(entry) } label: {
-                            LandscapeCard(
-                                title: entry.title,
-                                imageURL: imageURL(entry),
-                                progress: fraction(entry)
-                            )
-                        }
-                        .buttonStyle(.poster)
-                        .contextMenu {
-                            Button(role: .destructive) {
-                                onRemove(entry)
-                            } label: {
-                                Label("Remove from Continue Watching", systemImage: "trash")
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: Theme.Spacing.rowGap) {
+                        // Keyed by videoId (NOT position): on reorder the cards move instead of
+                        // swapping contents under the focused position — upstream's jump bug.
+                        ForEach(entries, id: \.videoId) { entry in
+                            Button { onSelect(entry) } label: {
+                                LandscapeCard(
+                                    title: entry.title,
+                                    imageURL: imageURL(entry),
+                                    progress: fraction(entry)
+                                )
                             }
+                            .buttonStyle(.poster)
+                            .focused($focusedVideoId, equals: entry.videoId)
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    onRemove(entry)
+                                } label: {
+                                    Label("Remove from Continue Watching", systemImage: "trash")
+                                }
+                            }
+                            .id(entry.videoId)
                         }
                     }
+                    .padding(.vertical, Theme.Spacing.lg)
                 }
-                .padding(.vertical, Theme.Spacing.lg)
+                .scrollClipDisabled()
+                .onChange(of: entries.first?.videoId) { _, newFirst in
+                    // Content-driven reorder while the user is elsewhere: keep the shelf
+                    // anchored to the first card instead of drifting mid-list.
+                    guard focusedVideoId == nil, let newFirst else { return }
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { proxy.scrollTo(newFirst, anchor: .leading) }
+                }
             }
-            .scrollClipDisabled()
         }
         .focusSection()
     }

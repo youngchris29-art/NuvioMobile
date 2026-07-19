@@ -25,6 +25,9 @@ final class DetailViewModel: ObservableObject {
     /// Episodes to badge as watched, keyed "season:episode" — explicit Watched marks OR
     /// effectively-completed watch progress (mirrors mobile's player episode rows).
     @Published private(set) var watchedEpisodeKeys: Set<String> = []
+    /// Series-level primary play action (Resume SxEy / Play SxEy, honoring behaviorHints
+    /// defaultVideoId) from the shared resolver; nil for movies or while meta loads.
+    @Published private(set) var seriesAction: SeriesPrimaryAction?
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
     /// Resolved full-screen trailer (from the Trailers row); drives a player cover with sound.
@@ -43,6 +46,12 @@ final class DetailViewModel: ObservableObject {
     private var watchedWatcher: FlowWatcher?
     private var libraryWatcher: FlowWatcher?
     private var progressWatcher: FlowWatcher?
+    private var cwPrefsWatcher: FlowWatcher?
+    // Latest shared-state emissions (the exported StateFlow interface has no `value` accessor,
+    // so the watchers below capture what the series primary action needs).
+    private var latestProgressEntries: [WatchProgressEntry] = []
+    private var latestWatchedItems: [WatchedItem] = []
+    private var latestCwPrefs: ContinueWatchingPreferencesUiState?
     private var didRequestTrailer = false
     private var didRequestComments = false
     private var didRequestRatings = false
@@ -88,16 +97,23 @@ final class DetailViewModel: ObservableObject {
         WatchProgressRepository.shared.ensureLoaded()
         // Hydrate Trakt-sourced per-episode completion for this title (no-op/cached otherwise).
         WatchProgressRepository.shared.refreshEpisodeProgress(contentId: id, forceRefresh: false)
-        watchedWatcher = FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] _ in
+        watchedWatcher = FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] emitted in
             guard let self else { return }
+            if let state = emitted as? WatchedUiState { self.latestWatchedItems = state.items }
             self.refreshFlags()
         }
         libraryWatcher = FlowWatcherKt.watch(LibraryRepository.shared.uiState) { [weak self] _ in
             guard let self else { return }
             self.refreshFlags()
         }
-        progressWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] _ in
+        progressWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] emitted in
             guard let self else { return }
+            if let state = emitted as? WatchProgressUiState { self.latestProgressEntries = state.entries }
+            self.refreshFlags()
+        }
+        cwPrefsWatcher = FlowWatcherKt.watch(ContinueWatchingPreferencesRepository.shared.uiState) { [weak self] emitted in
+            guard let self else { return }
+            if let state = emitted as? ContinueWatchingPreferencesUiState { self.latestCwPrefs = state }
             self.refreshFlags()
         }
         refreshFlags()
@@ -110,6 +126,7 @@ final class DetailViewModel: ObservableObject {
         watchedWatcher?.cancel(); watchedWatcher = nil
         libraryWatcher?.cancel(); libraryWatcher = nil
         progressWatcher?.cancel(); progressWatcher = nil
+        cwPrefsWatcher?.cancel(); cwPrefsWatcher = nil
         trailerVideoURL = nil
         didRequestTrailer = false
         // Only the current owner clears the shared repo — a source screen disappearing mid-push
@@ -269,6 +286,21 @@ final class DetailViewModel: ObservableObject {
         isWatched = WatchedRepository.shared.isWatched(id: id, type: type, season: nil, episode: nil)
         isSaved = LibraryRepository.shared.isSaved(id: id, type: type)
         watchedEpisodeKeys = computeWatchedEpisodeKeys()
+        seriesAction = computeSeriesAction()
+    }
+
+    /// Mirrors mobile's Detail screen: shared `seriesPrimaryAction` over the full progress +
+    /// watched state (resume beats next-up; first released episode — or the addon's
+    /// behaviorHints.defaultVideoId — for a fresh series).
+    private func computeSeriesAction() -> SeriesPrimaryAction? {
+        guard let meta, EpisodesSection.isSeriesLike(meta) else { return nil }
+        return meta.seriesPrimaryAction(
+            entries: latestProgressEntries,
+            watchedItems: latestWatchedItems,
+            todayIsoDate: CurrentDateProvider.shared.todayIsoDate(),
+            preferFurthestEpisode: latestCwPrefs?.upNextFromFurthestEpisode ?? true,
+            showUnairedNextUp: latestCwPrefs?.showUnairedNextUp ?? false
+        )
     }
 
     /// "season:episode" keys for every episode that is explicitly marked watched or whose watch
@@ -297,6 +329,7 @@ final class DetailViewModel: ObservableObject {
         watchedWatcher?.cancel()
         libraryWatcher?.cancel()
         progressWatcher?.cancel()
+        cwPrefsWatcher?.cancel()
     }
 }
 
