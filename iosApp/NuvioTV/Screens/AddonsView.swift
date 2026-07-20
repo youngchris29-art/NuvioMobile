@@ -60,7 +60,7 @@ struct AddonsView: View {
                         Label("Quick install (from DebugConfig)", systemImage: "wrench.and.screwdriver")
                             .padding(.horizontal, 16).padding(.vertical, 6)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.chip)
                     .disabled(model.isInstalling)
                 }
                 #endif
@@ -120,7 +120,7 @@ private struct AddonRow: View {
             .padding(20)
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.card)
+        .buttonStyle(.settingsRow)
         .contextMenu {
             Button(role: .destructive, action: onRemove) {
                 Label("Remove Add-on", systemImage: "trash")

@@ -27,7 +27,7 @@ struct NetworkStatusView: View {
             Button("Re-check") {
                 NetworkStatusRepository.shared.requestRefresh(force: true, confirmFailures: false)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
         }
         .onAppear {
             NetworkStatusRepository.shared.ensureStarted()

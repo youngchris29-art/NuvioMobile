@@ -54,7 +54,7 @@ struct CollectionRowView: View {
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
                             FolderTile(folder: folder)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.poster)
                     }
                 }
                 .padding(.vertical, Theme.Spacing.sm)
@@ -288,6 +288,6 @@ private struct TabChip: View {
                     Capsule().fill(isSelected ? Theme.Palette.accent : Theme.Palette.surface)
                 )
         }
-        .buttonStyle(.card)
+        .buttonStyle(.chip)
     }
 }

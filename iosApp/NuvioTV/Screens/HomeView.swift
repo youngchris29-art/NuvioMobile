@@ -333,6 +333,7 @@ struct HomeHeroForeground: View {
                 HeroLogo(item: item)
                     .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(HeroFocusUnderline())
 
                 Text(metaLine)
                     .font(Theme.Font.meta)
@@ -349,8 +350,11 @@ struct HomeHeroForeground: View {
             }
             .padding(Theme.Spacing.lg)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Full-bleed carousel page: a ring or scale would clip at the page edges, so hero
+            // focus is just a soft glow + content brightening (see HeroFocusGlow).
+            .modifier(HeroFocusGlow())
         }
-        .buttonStyle(.card)
+        .buttonStyle(.poster)
         .accessibilityLabel(item.name)
     }
 
@@ -366,6 +370,37 @@ struct HomeHeroForeground: View {
         let genres = item.genres.prefix(3)
         if !genres.isEmpty { parts.append(genres.joined(separator: " \u{00B7} ")) }
         return parts.joined(separator: "  \u{00B7}  ")
+    }
+}
+
+/// Subtle focus treatment for the hero carousel page: brightens the content and adds a soft white
+/// glow when focused. Deliberately no ring, platter, or scale — the hero spans the full carousel
+/// page, so any of those would clip at its edges.
+private struct HeroFocusGlow: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isFocused ? 1 : 0.88)
+            .shadow(color: .white.opacity(isFocused ? 0.22 : 0), radius: 20)
+            .animation(.easeOut(duration: 0.2), value: isFocused)
+    }
+}
+
+/// Accent underline that slides in beneath the hero logo when the hero is focused. Drawn as an
+/// overlay hanging just below the fixed logo slot, so it never changes the carousel's layout.
+private struct HeroFocusUnderline: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .bottomLeading) {
+            Capsule()
+                .fill(Theme.Palette.accentFocus)
+                .frame(width: isFocused ? 160 : 0, height: 5)
+                .offset(y: 14)
+                .opacity(isFocused ? 1 : 0)
+                .animation(.easeOut(duration: 0.25), value: isFocused)
+        }
     }
 }
 

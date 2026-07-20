@@ -163,7 +163,7 @@ struct QrSignInView: View {
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.vertical, Theme.Spacing.xs)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
         }
         .frame(maxWidth: 800, alignment: .leading)
     }

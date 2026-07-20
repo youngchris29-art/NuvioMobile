@@ -48,7 +48,7 @@ struct WelcomeView: View {
                         Text("Sign In with Email")
                             .frame(maxWidth: 600)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.chip)
 
                     Button {
                         model.clearError()
@@ -57,7 +57,7 @@ struct WelcomeView: View {
                         Text("Create Account")
                             .frame(maxWidth: 600)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.chip)
 
                     Button {
                         model.continueAsGuest()
@@ -65,7 +65,7 @@ struct WelcomeView: View {
                         Text("Continue as Guest")
                             .frame(maxWidth: 600)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.chip)
                 }
             }
             .padding(Theme.Spacing.screen)

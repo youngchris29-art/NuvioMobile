@@ -92,6 +92,10 @@ enum Theme {
         static let posterHeight: CGFloat = 330      // 2:3
         static let landscapeWidth: CGFloat = 360
         static let landscapeHeight: CGFloat = 203   // 16:9
+        /// Episode thumbnail cards in the Detail episodes row (16:9, larger than landscape cards
+        /// so the still + badges stay readable at 10 feet).
+        static let episodeWidth: CGFloat = 420
+        static let episodeHeight: CGFloat = 236
         static let miniPosterWidth: CGFloat = 180
         static let miniPosterHeight: CGFloat = 270
         static let castAvatar: CGFloat = 140

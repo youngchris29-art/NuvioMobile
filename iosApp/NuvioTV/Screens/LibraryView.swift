@@ -137,8 +137,7 @@ struct LibraryView: View {
             .padding(.horizontal, Theme.Spacing.md)
             .padding(.vertical, Theme.Spacing.xs)
         }
-        .buttonStyle(.bordered)
-        .tint(isActive ? Theme.Palette.accent : nil)
+        .buttonStyle(.chip(selected: isActive))
     }
 
     // MARK: - Debrid cloud content
@@ -161,7 +160,7 @@ struct LibraryView: View {
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, Theme.Spacing.xs)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
             if cloud.isRefreshing {
                 ProgressView()
             }

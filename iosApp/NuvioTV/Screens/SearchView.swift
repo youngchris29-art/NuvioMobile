@@ -115,7 +115,7 @@ struct SearchView: View {
                                 .padding(.horizontal, Theme.Spacing.md)
                                 .padding(.vertical, Theme.Spacing.xs)
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.chip)
                             .contextMenu {
                                 Button(role: .destructive) {
                                     model.removeHistory(item)
@@ -267,8 +267,7 @@ struct SearchView: View {
             .padding(.horizontal, Theme.Spacing.md)
             .padding(.vertical, Theme.Spacing.xs)
         }
-        .buttonStyle(.bordered)
-        .tint(isSelected ? Theme.Palette.accent : nil)
+        .buttonStyle(.chip(selected: isSelected))
     }
 
     /// Kotlin `String?` properties can surface non-optional; force an explicit optional for ==.

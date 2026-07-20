@@ -82,7 +82,7 @@ struct AuthView: View {
                         model.clearError()
                         dismiss()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.chip)
                     .disabled(model.isBusy)
                 }
             }

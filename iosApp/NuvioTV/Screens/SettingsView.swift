@@ -410,7 +410,7 @@ struct SettingsView: View {
                             Image(systemName: "trash")
                                 .font(Theme.Font.caption)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.chip)
                     }
                     if let error = repo.errorMessage, !error.isEmpty {
                         Text(error)
@@ -497,7 +497,7 @@ struct SettingsView: View {
                             .foregroundStyle(Theme.Palette.accent)
                     } else {
                         Button("Set Active") { badges.setActive(pack.sourceUrl) }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.chip)
                             .font(Theme.Font.meta)
                     }
                     Button {
@@ -506,7 +506,7 @@ struct SettingsView: View {
                         Image(systemName: "trash")
                             .font(Theme.Font.caption)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.chip)
                 }
             }
         }
@@ -657,8 +657,7 @@ struct SettingsView: View {
                             .padding(.horizontal, Theme.Spacing.md)
                             .padding(.vertical, Theme.Spacing.xs)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(debrid.activeResolverId == provider.id ? Theme.Palette.accent : nil)
+                        .buttonStyle(.chip(selected: debrid.activeResolverId == provider.id))
                     }
                 }
             }
@@ -751,8 +750,7 @@ struct SettingsView: View {
                         .padding(.horizontal, Theme.Spacing.md)
                         .padding(.vertical, Theme.Spacing.xs)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(selected == option.value ? Theme.Palette.accent : nil)
+                    .buttonStyle(.chip(selected: selected == option.value))
                 }
             }
         }
@@ -811,7 +809,7 @@ struct SettingsView: View {
                     .padding(.vertical, Theme.Spacing.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.card)
+                .buttonStyle(.settingsRow)
                 .focused($focusedCategory, equals: category)
             }
             Spacer(minLength: 0)
@@ -878,33 +876,53 @@ private struct ThemePickerRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.Spacing.md) {
                 ForEach(Self.options, id: \.label) { option in
-                    let isSelected = option.theme.name == selectedName
                     Button {
                         onSelect(option.theme)
                     } label: {
-                        VStack(spacing: Theme.Spacing.xs) {
-                            Circle()
-                                .fill(option.color)
-                                .frame(width: 56, height: 56)
-                                .overlay(
-                                    Circle().strokeBorder(
-                                        isSelected ? Theme.Palette.textPrimary : .clear,
-                                        lineWidth: 4
-                                    )
-                                )
-                            Text(option.label)
-                                .font(Theme.Font.caption)
-                                .foregroundStyle(
-                                    isSelected ? Theme.Palette.textPrimary : Theme.Palette.textSecondary
-                                )
-                        }
-                        .padding(Theme.Spacing.sm)
+                        SwatchLabel(
+                            color: option.color,
+                            label: option.label,
+                            isSelected: option.theme.name == selectedName
+                        )
                     }
-                    .buttonStyle(.card)
+                    .buttonStyle(.poster)
                 }
             }
             .padding(.vertical, Theme.Spacing.sm)
         }
+    }
+}
+
+/// A single theme swatch: colored circle + name. Selection wears the white ring; focus scales the
+/// circle and brightens the label (platter-free, mirrors the poster-tile focus language).
+private struct SwatchLabel: View {
+    let color: Color
+    let label: String
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.xs) {
+            Circle()
+                .fill(color)
+                .frame(width: 56, height: 56)
+                .overlay(
+                    Circle().strokeBorder(
+                        isSelected ? Theme.Palette.textPrimary : .clear,
+                        lineWidth: 4
+                    )
+                )
+                .scaleEffect(isFocused ? 1.15 : 1)
+                .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 12, y: 6)
+            Text(label)
+                .font(Theme.Font.caption)
+                .foregroundStyle(
+                    isSelected || isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary
+                )
+        }
+        .padding(Theme.Spacing.sm)
+        .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
 
@@ -1138,7 +1156,7 @@ private struct SettingsActionRow: View {
             .padding(Theme.Spacing.lg)
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.card)
+        .buttonStyle(.settingsRow)
     }
 }
 
@@ -1168,7 +1186,7 @@ private struct SettingsToggleRow: View {
             .padding(Theme.Spacing.lg)
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.card)
+        .buttonStyle(.settingsRow)
     }
 }
 
@@ -1196,18 +1214,18 @@ private struct CatalogSettingRow: View {
             Button(action: onUp) {
                 Image(systemName: "chevron.up")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
 
             Button(action: onDown) {
                 Image(systemName: "chevron.down")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
 
             Button(action: onToggle) {
                 Image(systemName: item.enabled ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(item.enabled ? Theme.Palette.accent : Theme.Palette.textSecondary)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
         }
         .padding(.vertical, Theme.Spacing.xs)
         .frame(maxWidth: .infinity)
@@ -1275,17 +1293,12 @@ private struct SubtitleAppearanceControls: View {
             controlRow("Text Color") {
                 ForEach(textColors, id: \.argb) { entry in
                     Button { onTextColor(entry.argb) } label: {
-                        Circle()
-                            .fill(color(entry.argb))
-                            .frame(width: 46, height: 46)
-                            .overlay(
-                                Circle().stroke(
-                                    style.textColor == entry.argb ? Theme.Palette.accent : Theme.Palette.textSecondary.opacity(0.4),
-                                    lineWidth: style.textColor == entry.argb ? 4 : 1
-                                )
-                            )
+                        SubtitleColorSwatch(
+                            fill: color(entry.argb),
+                            isSelected: style.textColor == entry.argb
+                        )
                     }
-                    .buttonStyle(.card)
+                    .buttonStyle(.poster)
                 }
             }
 
@@ -1341,8 +1354,7 @@ private struct SubtitleAppearanceControls: View {
                 .padding(.horizontal, Theme.Spacing.md)
                 .padding(.vertical, Theme.Spacing.xxs + 2)
         }
-        .buttonStyle(.bordered)
-        .tint(selected ? Theme.Palette.accent : nil)
+        .buttonStyle(.chip(selected: selected))
     }
 
     private func color(_ argb: Int64) -> Color {
@@ -1353,6 +1365,31 @@ private struct SubtitleAppearanceControls: View {
             blue: Double(argb & 0xFF) / 255.0,
             opacity: Double((argb >> 24) & 0xFF) / 255.0
         )
+    }
+}
+
+/// A subtitle text-color swatch: selection wears the accent ring; focus scales + shadows the
+/// circle (platter-free, same focus language as the theme swatches).
+private struct SubtitleColorSwatch: View {
+    let fill: Color
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        Circle()
+            .fill(fill)
+            .frame(width: 46, height: 46)
+            .overlay(
+                Circle().stroke(
+                    isSelected ? Theme.Palette.accent : Theme.Palette.textSecondary.opacity(0.4),
+                    lineWidth: isSelected ? 4 : 1
+                )
+            )
+            .scaleEffect(isFocused ? 1.15 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 12, y: 6)
+            .padding(Theme.Spacing.xs)
+            .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
 
@@ -1394,8 +1431,7 @@ private struct LanguageSelectRow: View {
                                 .padding(.horizontal, Theme.Spacing.md)
                                 .padding(.vertical, Theme.Spacing.xxs + 2)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(selected == option.code ? Theme.Palette.accent : nil)
+                        .buttonStyle(.chip(selected: selected == option.code))
                     }
                 }
                 .padding(.vertical, Theme.Spacing.xs)
@@ -1443,10 +1479,11 @@ private struct PosterStyleControls: View {
             Button(role: .destructive, action: onReset) {
                 Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
                     .font(Theme.Font.meta)
+                    .foregroundStyle(.red)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, Theme.Spacing.xxs + 2)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
         }
     }
 
@@ -1467,8 +1504,7 @@ private struct PosterStyleControls: View {
                 .padding(.horizontal, Theme.Spacing.md)
                 .padding(.vertical, Theme.Spacing.xxs + 2)
         }
-        .buttonStyle(.bordered)
-        .tint(selected ? Theme.Palette.accent : nil)
+        .buttonStyle(.chip(selected: selected))
     }
 }
 
@@ -1535,10 +1571,11 @@ private struct CardDepthControls: View {
             Button(role: .destructive, action: onReset) {
                 Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
                     .font(Theme.Font.meta)
+                    .foregroundStyle(.red)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, Theme.Spacing.xxs + 2)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
         }
     }
 
@@ -1569,7 +1606,6 @@ private struct CardDepthControls: View {
                 .padding(.horizontal, Theme.Spacing.md)
                 .padding(.vertical, Theme.Spacing.xxs + 2)
         }
-        .buttonStyle(.bordered)
-        .tint(selected ? Theme.Palette.accent : nil)
+        .buttonStyle(.chip(selected: selected))
     }
 }

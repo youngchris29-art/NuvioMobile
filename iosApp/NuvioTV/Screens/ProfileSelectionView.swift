@@ -346,8 +346,9 @@ struct ProfileEditView: View {
                                             lineWidth: avatarId == nil ? 5 : 0
                                         )
                                     )
+                                    .modifier(FocusRingCircle())
                                 }
-                                .buttonStyle(.card)
+                                .buttonStyle(.poster)
 
                                 ForEach(model.avatars, id: \.id) { item in
                                     Button { avatarId = item.id } label: {
@@ -360,8 +361,9 @@ struct ProfileEditView: View {
                                                     lineWidth: avatarId == item.id ? 5 : 0
                                                 )
                                             )
+                                            .modifier(FocusRingCircle())
                                     }
-                                    .buttonStyle(.card)
+                                    .buttonStyle(.poster)
                                 }
                             }
                             .padding(.horizontal, Theme.Spacing.lg)
@@ -385,8 +387,9 @@ struct ProfileEditView: View {
                                             lineWidth: (hex == colorHex && avatarId == nil) ? 5 : 0
                                         )
                                     )
+                                    .modifier(FocusRingCircle())
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.poster)
                         }
                     }
 
@@ -400,15 +403,16 @@ struct ProfileEditView: View {
                                     Label("Change PIN", systemImage: "lock.rotation")
                                         .font(Theme.Font.body)
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(.chip)
 
                                 Button(role: .destructive) {
                                     pinFlow = .enterCurrent(remove: true)
                                 } label: {
                                     Label("Remove PIN", systemImage: "lock.slash")
                                         .font(Theme.Font.body)
+                                        .foregroundStyle(.red)
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(.chip)
                             } else {
                                 Button {
                                     pinFlow = .enterNew(current: nil)
@@ -416,7 +420,7 @@ struct ProfileEditView: View {
                                     Label("Set PIN Lock", systemImage: "lock")
                                         .font(Theme.Font.body)
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(.chip)
                             }
                         }
                     }
@@ -437,8 +441,9 @@ struct ProfileEditView: View {
                         } label: {
                             Label("Delete Profile", systemImage: "trash")
                                 .font(Theme.Font.body)
+                                .foregroundStyle(.red)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.chip)
                     }
                 }
                 .padding(Theme.Spacing.screen)
@@ -544,5 +549,19 @@ struct ProfileEditView: View {
                 avatarUrl: finalAvatarUrl
             ) { dismiss() }
         }
+    }
+}
+
+/// Platter-free focus visuals for the circular avatar/color tiles in the profile editor: brand
+/// focus ring + scale + shadow. Selection keeps its separate white ring.
+private struct FocusRingCircle: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(Circle().strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0))
+            .scaleEffect(isFocused ? 1.1 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 14, y: 6)
+            .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }

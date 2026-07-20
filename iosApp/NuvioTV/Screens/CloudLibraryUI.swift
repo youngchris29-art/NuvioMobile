@@ -192,7 +192,7 @@ struct CloudItemRow: View {
             .padding(Theme.Spacing.lg)
             .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.card)
+        .buttonStyle(.settingsRow)
         .disabled(item.playableFiles.isEmpty)
     }
 
@@ -266,7 +266,7 @@ struct CloudFilePickerView: View {
                             .padding(Theme.Spacing.lg)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.settingsRow)
                     }
                 }
             }

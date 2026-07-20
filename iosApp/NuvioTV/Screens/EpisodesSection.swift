@@ -1,9 +1,11 @@
 import SwiftUI
 import SharedCore
 
-/// Season selector + episode list for series titles. Mirrors the shared `SeriesSeasonSupport` rules:
-/// specials (season 0 / missing) normalize to 0 and sort last; episodes order by number, then release,
-/// then title. Tapping an episode opens the stream picker with that episode's playback videoId.
+/// Season selector + horizontal episode thumbnail shelf for series titles. Mirrors the shared
+/// `SeriesSeasonSupport` rules: specials (season 0 / missing) normalize to 0 and sort last;
+/// episodes order by number, then release, then title. Tapping an episode opens the stream picker
+/// with that episode's playback videoId. A fixed-height panel under the shelf shows the focused
+/// episode's synopsis, so browsing left/right never reflows the sections below.
 struct EpisodesSection: View {
     let meta: MetaDetails
     /// IMDb ratings keyed "season:episode" (from `DetailViewModel.episodeRatings`); empty = no badges.
@@ -13,6 +15,7 @@ struct EpisodesSection: View {
 
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
+    @FocusState private var focusedEpisodeId: String?
 
     var body: some View {
         let grouped = Self.groupedEpisodes(meta.videos)
@@ -33,29 +36,48 @@ struct EpisodesSection: View {
                                 Text(Self.seasonLabel(season))
                                     .padding(.horizontal, 20).padding(.vertical, 8)
                             }
-                            .buttonStyle(.bordered)
-                            .tint(season == current ? .accentColor : nil)
+                            .buttonStyle(.chip(selected: season == current))
                         }
                     }
                     .padding(.vertical, 4)
                 }
+                .focusSection()
             }
 
-            LazyVStack(spacing: 16) {
-                ForEach(Array(episodes.enumerated()), id: \.offset) { _, episode in
-                    Button {
-                        episodeForStreams = EpisodeRoute(meta: meta, episode: episode)
-                    } label: {
-                        EpisodeCard(
-                            episode: episode,
-                            fallbackImage: meta.background ?? meta.poster,
-                            rating: rating(for: episode),
-                            isWatched: isWatched(episode)
-                        )
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                        ForEach(episodes, id: \.id) { episode in
+                            Button {
+                                episodeForStreams = EpisodeRoute(meta: meta, episode: episode)
+                            } label: {
+                                EpisodeThumbCard(
+                                    episode: episode,
+                                    fallbackImage: meta.background ?? meta.poster,
+                                    rating: rating(for: episode),
+                                    isWatched: isWatched(episode)
+                                )
+                            }
+                            .buttonStyle(.poster)
+                            .focused($focusedEpisodeId, equals: episode.id)
+                            .id(episode.id)
+                        }
                     }
-                    .buttonStyle(.card)
+                    .padding(.vertical, Theme.Spacing.md)
+                }
+                .scrollClipDisabled()
+                .onChange(of: current) { _, _ in
+                    // A new season can be shorter than the old scroll offset; snap back to the
+                    // first episode without animating through the intermediate layout.
+                    guard let first = episodes.first?.id else { return }
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) { proxy.scrollTo(first, anchor: .leading) }
                 }
             }
+            .focusSection()
+
+            focusedOverviewPanel(episodes: episodes)
         }
         .fullScreenCover(item: $episodeForStreams) { route in
             StreamPickerView(
@@ -68,6 +90,49 @@ struct EpisodesSection: View {
                 episodes: route.meta.videos
             )
         }
+    }
+
+    /// Fixed-height synopsis for the focused episode (falls back to the season's first episode so
+    /// the panel is never blank). Fixed frame keeps the cast row below from reflowing as focus
+    /// moves along the shelf.
+    @ViewBuilder
+    private func focusedOverviewPanel(episodes: [MetaVideo]) -> some View {
+        let episode = episodes.first { $0.id == focusedEpisodeId } ?? episodes.first
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            if let episode {
+                if let caption = Self.episodeCaption(episode) {
+                    Text(caption)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+                let overview: String? = episode.overview
+                if let overview, !overview.isEmpty {
+                    Text(overview)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                        .lineLimit(3)
+                }
+            }
+        }
+        .frame(maxWidth: 1100, minHeight: 96, maxHeight: 96, alignment: .topLeading)
+        .contentTransition(.opacity)
+        .animation(.easeOut(duration: 0.15), value: focusedEpisodeId)
+    }
+
+    /// "S1E4 · Apr 12, 2024 · 52 min"-style caption line; nil when nothing is known.
+    private static func episodeCaption(_ episode: MetaVideo) -> String? {
+        var parts: [String] = []
+        if let s = episode.season?.value, let e = episode.episode?.value {
+            parts.append("S\(s)E\(e)")
+        }
+        let released: String? = episode.released
+        if let released, released.count >= 10 {
+            parts.append(String(released.prefix(10)))
+        }
+        if let runtime = episode.runtime?.value, runtime > 0 {
+            parts.append("\(runtime) min")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
     // MARK: - Grouping / sorting (mirrors shared SeriesSeasonSupport.kt)
@@ -150,7 +215,10 @@ private struct EpisodeRoute: Identifiable {
     var id: String { episode.id }
 }
 
-private struct EpisodeCard: View {
+/// One 16:9 episode thumbnail in the horizontal shelf: still + watched/rating badges over a bottom
+/// scrim, title below. Platter-free — used inside a `.poster` Button, so it carries the same focus
+/// ring/scale/shadow language as `LandscapeCard`.
+private struct EpisodeThumbCard: View {
     let episode: MetaVideo
     let fallbackImage: String?
     /// IMDb rating for this episode (badge hidden when nil).
@@ -158,41 +226,50 @@ private struct EpisodeCard: View {
     /// Shows the green watched checkmark on the thumbnail (mirrors mobile's watched badge).
     var isWatched: Bool = false
 
-    var body: some View {
-        // Widen the Kotlin String to an explicit optional (it surfaces as non-optional in Swift).
-        let overview: String? = episode.overview
-        return HStack(alignment: .top, spacing: 20) {
-            AsyncImage(url: URL(string: thumbnailURL)) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    ZStack {
-                        Color.gray.opacity(0.2)
-                        Image(systemName: "play.tv").font(.title).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .frame(width: 300, height: 170)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(alignment: .topTrailing) {
-                if isWatched { WatchedCheckBadge().padding(8) }
-            }
-            .nuvioCardDepth(RoundedRectangle(cornerRadius: 10), surface: .episodeCards)
+    @Environment(\.isFocused) private var isFocused
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 12) {
-                    Text(heading).font(.headline).lineLimit(2)
-                    if let rating {
-                        ratingBadge(rating)
-                    }
-                }
-                if let text = overview, !text.isEmpty {
-                    Text(text).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            ZStack(alignment: .bottom) {
+                CachedAsyncImage(string: thumbnailURL)
+                    .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+                    .nuvioCardDepth(RoundedRectangle(cornerRadius: Theme.Radius.card), surface: .episodeCards)
+
+                // Soft scrim so the rating badge reads over bright stills.
+                if rating != nil {
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.45)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                    .frame(height: 70)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+                    .allowsHitTesting(false)
                 }
             }
-            Spacer(minLength: 0)
+            .overlay(alignment: .topTrailing) {
+                if isWatched { WatchedCheckBadge().padding(10) }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if let rating { ratingBadge(rating).padding(10) }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
+            )
+            .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+            .scaleEffect(isFocused ? 1.07 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
+
+            Text(heading)
+                .font(Theme.Font.cardTitle)
+                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, Theme.Spacing.xs)
+                .frame(width: Theme.Size.episodeWidth, alignment: .leading)
         }
-        .padding(12)
+        .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 
     /// Heatmap-colored IMDb rating chip (green ≥ 8.5, lime ≥ 7, orange ≥ 5.5, red below).
@@ -225,7 +302,7 @@ private struct EpisodeCard: View {
 
     private var heading: String {
         if let e = episode.episode?.value {
-            return "\(e). \(episode.title)"
+            return "E\(e) \u{00B7} \(episode.title)"
         }
         return episode.title
     }

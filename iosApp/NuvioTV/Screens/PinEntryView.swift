@@ -91,7 +91,7 @@ struct PinEntryView: View {
                 Image(systemName: "delete.left")
                     .frame(width: 90, height: 60)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
             .disabled(isBusy)
         case "cancel":
             Button {
@@ -100,7 +100,7 @@ struct PinEntryView: View {
                 Image(systemName: "xmark")
                     .frame(width: 90, height: 60)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
             .disabled(isBusy)
         default:
             Button {
@@ -110,7 +110,7 @@ struct PinEntryView: View {
                     .font(Theme.Font.sectionTitle)
                     .frame(width: 90, height: 60)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.chip)
             .disabled(isBusy)
         }
     }

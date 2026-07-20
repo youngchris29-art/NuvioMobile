@@ -167,7 +167,7 @@ struct ProfileTabView: View {
                         .padding(.horizontal, Theme.Spacing.xl)
                         .padding(.vertical, Theme.Spacing.md)
                 }
-                .buttonStyle(.card)
+                .buttonStyle(.chip)
             }
             .padding(Theme.Spacing.screen)
         }

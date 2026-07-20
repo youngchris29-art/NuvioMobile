@@ -58,6 +58,9 @@ struct DetailView: View {
                             episodeRatings: model.episodeRatings,
                             watchedEpisodeKeys: model.watchedEpisodeKeys
                         )
+                        // A discrete focus region: vertical D-pad moves must land here instead of
+                        // geometrically skipping from the info/network chips down to the cast row.
+                        .focusSection()
                     }
                     Group {
                         castRow
@@ -248,6 +251,7 @@ struct DetailView: View {
                 .tint(model.isSaved ? Theme.Palette.accent : nil)
             }
         }
+        .focusSection()
     }
 
     @ViewBuilder
@@ -267,7 +271,7 @@ struct DetailView: View {
                                 NavigationLink(value: PersonRoute(id: personId, name: person.name)) {
                                     CastCard(person: person)
                                 }
-                                .buttonStyle(.card)
+                                .buttonStyle(.poster)
                             } else {
                                 CastCard(person: person)
                             }
@@ -275,7 +279,9 @@ struct DetailView: View {
                     }
                     .padding(.vertical, Theme.Spacing.xs)
                 }
+                .scrollClipDisabled()
             }
+            .focusSection()
         }
     }
 
@@ -305,6 +311,7 @@ struct DetailView: View {
                 }
                 .scrollClipDisabled()
             }
+            .focusSection()
         }
     }
 
@@ -394,6 +401,7 @@ struct DetailView: View {
                 }
                 .scrollClipDisabled()
             }
+            .focusSection()
         }
     }
 
@@ -423,30 +431,18 @@ struct DetailView: View {
                         )) {
                             companyChip(entry.company)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.poster)
                     } else {
                         companyChip(entry.company)
                     }
                 }
             }
+            .focusSection()
         }
     }
 
     private func companyChip(_ company: MetaCompany) -> some View {
-        AsyncImage(url: URL(string: company.logo ?? "")) { phase in
-            if case .success(let image) = phase {
-                image.resizable().aspectRatio(contentMode: .fit)
-            } else {
-                Text(company.name)
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(.black)
-            }
-        }
-        .frame(height: 36)
-        .frame(minWidth: 60, maxWidth: 180)
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.xs)
-        .background(Color.white.opacity(0.92), in: Capsule())
+        CompanyChip(company: company)
     }
 
     private var companyLogos: [(company: MetaCompany, isNetwork: Bool)] {
@@ -542,13 +538,14 @@ struct DetailView: View {
                                 // into a bordered/sheen card. No-op — and no visual change — when off.
                                 .nuvioCardDepth(RoundedRectangle(cornerRadius: Theme.Radius.card), surface: .trailers)
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.settingsRow)
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
                 }
                 .scrollClipDisabled()
             }
+            .focusSection()
         }
     }
 
@@ -572,6 +569,7 @@ struct DetailView: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
             .frame(maxWidth: 1100, alignment: .leading)
+            .focusSection()
         }
     }
 
@@ -632,7 +630,7 @@ struct DetailView: View {
             .padding(Theme.Spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.card)
+        .buttonStyle(.settingsRow)
     }
 
     private func commentDate(_ comment: TraktCommentReview) -> String? {
@@ -650,8 +648,14 @@ private struct InfoRow: Identifiable {
     var id: String { label }
 }
 
+/// Circular cast avatar + name/role. Platter-free: used inside a `.poster`-styled NavigationLink
+/// when tappable, so it supplies its own focus visuals (ring + scale + shadow); rendered bare for
+/// non-tappable cast, where `isFocused` simply never fires.
 private struct CastCard: View {
     let person: MetaPerson
+
+    @Environment(\.isFocused) private var isFocused
+
     var body: some View {
         VStack(spacing: Theme.Spacing.xs) {
             AsyncImage(url: URL(string: person.photo ?? "")) { phase in
@@ -669,9 +673,14 @@ private struct CastCard: View {
             .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
             .clipShape(Circle())
             .nuvioCardDepth(Circle(), surface: .cast)
+            .overlay(
+                Circle().strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
+            )
+            .scaleEffect(isFocused ? 1.07 : 1)
+            .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
             Text(person.name)
                 .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textPrimary)
+                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))
                 .lineLimit(1)
                 .frame(width: Theme.Size.castAvatar + 10)
             if let role = person.role, !role.isEmpty {
@@ -682,6 +691,36 @@ private struct CastCard: View {
                     .frame(width: Theme.Size.castAvatar + 10)
             }
         }
+        .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// Studio/network logo chip. Keeps the intentional white capsule (logo legibility); focus reads as
+/// scale + the brand focus ring, platter-free like every other tile.
+private struct CompanyChip: View {
+    let company: MetaCompany
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        AsyncImage(url: URL(string: company.logo ?? "")) { phase in
+            if case .success(let image) = phase {
+                image.resizable().aspectRatio(contentMode: .fit)
+            } else {
+                Text(company.name)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.black)
+            }
+        }
+        .frame(height: 36)
+        .frame(minWidth: 60, maxWidth: 180)
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.vertical, Theme.Spacing.xs)
+        .background(Color.white.opacity(0.92), in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 3 : 0))
+        .scaleEffect(isFocused ? 1.08 : 1)
+        .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 14, y: 6)
+        .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
 
