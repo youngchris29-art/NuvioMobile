@@ -128,7 +128,7 @@ object AddonRepository {
 
             val rowsByUrl = linkedMapOf<String, AddonRow>()
             rows.forEach { row ->
-                val manifestUrl = ensureManifestSuffix(row.url)
+                val manifestUrl = normalizeServerManifestUrl(row.url)
                 if (!rowsByUrl.containsKey(manifestUrl)) {
                     rowsByUrl[manifestUrl] = row.copy(url = manifestUrl)
                 }
@@ -506,6 +506,19 @@ private fun ensureManifestSuffix(url: String): String {
     val query = url.substringAfter("?", "")
     val withSuffix = if (path.endsWith("/manifest.json")) path else "$path/manifest.json"
     return if (query.isEmpty()) withSuffix else "$withSuffix?$query"
+}
+
+/// Server rows can carry `stremio://` deep-link URLs (the website stores what the user pasted) —
+/// unfetchable by the HTTP client, so the manifest never loads and the addon is silently inert.
+/// Map to https and ensure the manifest suffix so server rows dedupe with app-added ones.
+private fun normalizeServerManifestUrl(rawUrl: String): String {
+    val trimmed = rawUrl.trim()
+    val https = if (trimmed.startsWith("stremio://")) {
+        "https://${trimmed.removePrefix("stremio://")}"
+    } else {
+        trimmed
+    }
+    return ensureManifestSuffix(https)
 }
 
 private fun normalizeManifestUrl(rawUrl: String): String {
