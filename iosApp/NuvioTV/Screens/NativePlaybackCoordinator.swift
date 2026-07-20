@@ -262,9 +262,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         // audio-switch rebuild (same video stream — the full form would just fail again).
         var signaling = remux.videoSignaling ?? VideoSignaling(codecs: "")
         if signalingAttempt > 0 { signaling.supplementalCodecs = nil }
+        let selectedAudio = remux.audioTracks.first(where: \.selected)
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: signaling,
-                                    audioCodec: remux.audioCodecToken, bandwidth: remux.estimatedBandwidth,
+                                    audioCodec: remux.audioCodecToken,
+                                    audioName: selectedAudio.map(Self.audioTrackDisplayName),
+                                    audioLanguage: selectedAudio?.language,
+                                    bandwidth: remux.estimatedBandwidth,
                                     subtitles: subtitleRenditions,
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
@@ -519,6 +523,15 @@ final class NativePlaybackCoordinator: ObservableObject {
             add("Audio tracks", "1 (this file has no alternate audio)")
         } else if audioTracks.count > 1 {
             add("Audio tracks", "\(audioTracks.count) — switch via the Audio menu in the transport bar")
+        }
+        // Same self-explanation for subtitles: an empty system menu should read as "the addons
+        // had nothing for this title", not as a broken selector.
+        if subsFetchDone {
+            add("Addon subtitles", addonSubtitles.isEmpty
+                ? "none found for this title"
+                : "\(addonSubtitles.count) found")
+        } else {
+            add("Addon subtitles", "searching…")
         }
         if let map = remux?.segmentMap {
             add("Segments", "\(map.count) \u{00D7} \(map.targetDurationSec)s \u{00B7} \(Self.timeString(map.totalDurationSec))")

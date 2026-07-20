@@ -46,6 +46,9 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// strict AVPlayer rejects the full DV form at the master stage.
     private var _signaling: VideoSignaling
     private let audioCodec: String?
+    /// Display label for the muxed audio rendition (URI-less EXT-X-MEDIA in the master).
+    private let audioName: String?
+    private let audioLanguage: String?
     private let bandwidth: Int
     /// External-subtitle renditions (D5): each is an EXT-X-MEDIA SUBTITLES entry; the VTT payloads
     /// download + convert just-in-time on first request and are cached here for the session.
@@ -78,7 +81,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
 
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
-    init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling, audioCodec: String?, bandwidth: Int,
+    init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling, audioCodec: String?,
+         audioName: String? = nil, audioLanguage: String? = nil, bandwidth: Int,
          subtitles: [SubtitleRendition] = [],
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
          requestReposition: @escaping @Sendable (Int) -> Void) {
@@ -86,6 +90,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.map = map
         self._signaling = signaling
         self.audioCodec = audioCodec
+        self.audioName = audioName
+        self.audioLanguage = audioLanguage
         self.bandwidth = bandwidth
         self.subtitles = subtitles
         self.producingInfo = producingInfo
@@ -107,6 +113,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         case masterName:
             lock.lock(); let signaling = _signaling; lock.unlock()
             return map.masterPlaylist(signaling: signaling, audioCodec: audioCodec,
+                                      audioName: audioName, audioLanguage: audioLanguage,
                                       bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles)
         case mediaName:
             return map.mediaPlaylist()

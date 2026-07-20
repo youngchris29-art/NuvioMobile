@@ -118,10 +118,12 @@ nonisolated struct SegmentMap: Sendable {
     }
 
     /// The master playlist: one variant pointing at `mediaName`, carrying the full RFC 6381 CODECS and
-    /// (for DV) SUPPLEMENTAL-CODECS so Dolby Vision engages. Muxed A/V, so CODECS lists video + audio
-    /// and there is no separate EXT-X-MEDIA audio rendition to keep aligned.
+    /// (for DV) SUPPLEMENTAL-CODECS so Dolby Vision engages. Muxed A/V, so CODECS lists video + audio;
+    /// the only audio EXT-X-MEDIA entry is a URI-less label for the muxed track (name/language).
     func masterPlaylist(signaling: VideoSignaling,
                         audioCodec: String?,
+                        audioName: String? = nil,
+                        audioLanguage: String? = nil,
                         bandwidth: Int,
                         mediaName: String = "media.m3u8",
                         subtitles: [SubtitleRendition] = []) -> String {
@@ -147,6 +149,15 @@ nonisolated struct SegmentMap: Sendable {
         }
 
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
+        // Label the muxed audio (URI-less EXT-X-MEDIA = "this rendition lives inside the variant"),
+        // so the system audio panel shows the track's language/name instead of "unknown".
+        if let audioName, !audioName.isEmpty {
+            var media = "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"\(audioName.replacingOccurrences(of: "\"", with: ""))\""
+            media += ",DEFAULT=YES,AUTOSELECT=YES"
+            if let audioLanguage, !audioLanguage.isEmpty { media += ",LANGUAGE=\"\(audioLanguage)\"" }
+            lines.append(media)
+            streamInf += ",AUDIO=\"aud\""
+        }
         // External-subtitle renditions (D5): WebVTT sidecars served by LocalHLSServer. AUTOSELECT
         // lets tvOS pick per the user's language/accessibility preferences; nothing is DEFAULT.
         if !subtitles.isEmpty {

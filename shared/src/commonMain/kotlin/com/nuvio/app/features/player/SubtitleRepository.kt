@@ -33,7 +33,22 @@ import com.nuvio.app.core.i18n.resourceString
 object SubtitleRepository {
     private const val ADDON_READY_TIMEOUT_MS = 8_000L
 
-    private val log = Logger.withTag("SubtitleRepo")
+    private val kermit = Logger.withTag("SubtitleRepo")
+
+    // Kermit goes to os_log on Apple targets, which the tvOS device console pipe
+    // (devicectl --console) can't see — mirror to stdout so device runs are diagnosable.
+    private object log {
+        fun d(message: () -> String) {
+            val text = message()
+            kermit.d { text }
+            println("[SubtitleRepo] $text")
+        }
+        fun w(message: () -> String) {
+            val text = message()
+            kermit.w { text }
+            println("[SubtitleRepo] WARN $text")
+        }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val json = Json { ignoreUnknownKeys = true }
 
