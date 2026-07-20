@@ -71,11 +71,12 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// after it are invisible to AVPlayer. Streams rarely attach their own subtitles.
     private var addonSubtitles: [SubtitleFile] = []
     private var addonSubsWatcher: FlowWatcher?
-    private var subsLoadingWatcher: FlowWatcher?
-    /// Fetch lifecycle: done when the repo's isLoading flow has been observed true → false (or when
-    /// the flow publishes a non-empty list — completion and results are equivalent for gating).
-    private var subsFetchSawLoading = false
+    /// Fetch lifecycle: done when the repo's `completedRequest` state matches this content's
+    /// request key (state, not an edge — a fetch that finished before we looked, or was
+    /// deduplicated against the stream picker's prefetch, still reads as complete), or when a
+    /// non-empty list arrives (results and completion are equivalent for gating).
     private var subsFetchDone = false
+    private var subsRequestKey = ""
 
     init(context: PlaybackContext) {
         self.context = context
@@ -86,12 +87,10 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     func start() {
         guard remux == nil else { return }
-        // Addon-subtitle fetch. SUBSCRIBE FIRST, fetch second: a fetch with no subtitle-capable
-        // addons completes in microseconds, and its isLoading true→false transition must not slip
-        // between fetch() and watch() (observed: the gate then burns its full budget and the
-        // "fetch finished" log never fires). The repo publishes results BEFORE flipping isLoading
-        // off, so gating on the transition always sees the final list; the pre-fetch replay
-        // emission is absorbed by the sawLoading latch.
+        // Addon-subtitle results. The completion signal is polled from `completedRequest` in
+        // pollForFirstSegment — no watcher races; this watcher only mirrors the list (its
+        // StateFlow replay also delivers results prefetched before this coordinator existed).
+        subsRequestKey = SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId)
         addonSubsWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.addonSubtitles) { [weak self] emitted in
             guard let subs = emitted as? [AddonSubtitle] else { return }
             Task { @MainActor [weak self] in
@@ -105,19 +104,20 @@ final class NativePlaybackCoordinator: ObservableObject {
                 }
             }
         }
-        subsLoadingWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.isLoading) { [weak self] emitted in
-            guard let loading = (emitted as? NSNumber)?.boolValue else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if loading { self.subsFetchSawLoading = true }
-                if !loading, self.subsFetchSawLoading, !self.subsFetchDone {
-                    self.subsFetchDone = true
-                    print("[NativePlayer] addon subtitle fetch finished (\(self.addonSubtitles.count) found)")
-                }
-            }
-        }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
         launchRemux(audioStreamIndex: nil)
+    }
+
+    /// True once the repo has completed the fetch for THIS content (deduplicated prefetches
+    /// included). Read on the poll cadence; sticky via `subsFetchDone`.
+    private func subsFetchCompleted() -> Bool {
+        if subsFetchDone { return true }
+        if (SubtitleRepository.shared.completedRequest.value_ as? String) == subsRequestKey {
+            subsFetchDone = true
+            print("[NativePlayer] addon subtitle fetch finished (\(addonSubtitles.count) found)")
+            return true
+        }
+        return false
     }
 
     /// Spin up a remux session and the first-segment poll — the shared tail of `start()` and an
@@ -178,7 +178,6 @@ final class NativePlaybackCoordinator: ObservableObject {
         pollTask?.cancel(); pollTask = nil
         observeTask?.cancel(); observeTask = nil
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
-        subsLoadingWatcher?.cancel(); subsLoadingWatcher = nil
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1, flush: true)
         }
@@ -215,6 +214,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             // The VOD master is rendered exactly once — subtitle renditions must exist by then. Give
             // the addon fetch a bounded head start beyond remux readiness; never hold startup longer.
             let subsDeadline = Date().addingTimeInterval(8)
+            let pollStart = Date()
             for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
@@ -223,9 +223,12 @@ final class NativePlaybackCoordinator: ObservableObject {
                 // A finished remux (short clip that is a single segment) finalizes seg-00001 only at EOF.
                 let hasFirst = Self.fileSize(dir, RemuxSession.segmentName(1)) > 0 || remux.state == .ready
                 if hasMap && hasInit && hasFirst {
-                    if let self, !self.subsFetchDone, Date() < subsDeadline {
+                    if let self, !self.subsFetchCompleted(), Date() < subsDeadline {
                         try? await Task.sleep(nanoseconds: 250_000_000)   // waiting only on subtitles now
                         continue
+                    }
+                    if let self, !self.subsFetchDone {
+                        print("[NativePlayer] subs gate lapsed after \(String(format: "%.1f", Date().timeIntervalSince(pollStart)))s — starting without addon subtitles")
                     }
                     self?.beginPlayback(remux: remux)
                     return
@@ -510,6 +513,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
         let audioName = audioTracks.first(where: \.selected)?.name
         add("Audio", [audioName, remux?.audioCodecToken].compactMap { $0 }.joined(separator: " \u{00B7} "))
+        // The transport-bar Audio menu only exists with >1 track — say so here, so a single-track
+        // source doesn't read as a broken selector.
+        if audioTracks.count == 1 {
+            add("Audio tracks", "1 (this file has no alternate audio)")
+        } else if audioTracks.count > 1 {
+            add("Audio tracks", "\(audioTracks.count) — switch via the Audio menu in the transport bar")
+        }
         if let map = remux?.segmentMap {
             add("Segments", "\(map.count) \u{00D7} \(map.targetDurationSec)s \u{00B7} \(Self.timeString(map.totalDurationSec))")
         }

@@ -54,6 +54,11 @@ object AddonRepository {
     private var currentProfileId: Int = 1
     private val activeRefreshJobs = mutableMapOf<String, Job>()
 
+    // Observable mirror of `initialized` so consumers that can outrun bootstrap (the player's
+    // subtitle fetch) can wait for the local addon list instead of snapshotting an empty state.
+    private val _initializedState = MutableStateFlow(false)
+    val initializedState: StateFlow<Boolean> = _initializedState.asStateFlow()
+
     fun initialize() {
         val effectiveProfileId = resolveEffectiveProfileId(AddonProfileProvider.context.activeProfileId)
         if (initialized) return
@@ -64,7 +69,10 @@ object AddonRepository {
         val storedUrls = dedupeManifestUrls(AddonStorage.loadInstalledAddonUrls(currentProfileId))
         val enabledByUrl = loadLocalEnabledStates()
         log.d { "initialize() — local addon count: ${storedUrls.size}" }
-        if (storedUrls.isEmpty()) return
+        if (storedUrls.isEmpty()) {
+            _initializedState.value = true
+            return
+        }
 
         val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
         _uiState.value = AddonsUiState(
@@ -83,6 +91,7 @@ object AddonRepository {
                 refreshAddon(manifestUrl)
             }
         }
+        _initializedState.value = true
     }
 
     fun onProfileChanged(profileId: Int) {
@@ -91,6 +100,7 @@ object AddonRepository {
         cancelActiveRefreshes()
         currentProfileId = effectiveProfileId
         initialized = false
+        _initializedState.value = false
         pulledFromServer = false
         _uiState.value = AddonsUiState()
     }
@@ -100,6 +110,7 @@ object AddonRepository {
         currentProfileId = 1
         initialized = false
         pulledFromServer = false
+        _initializedState.value = false
         _uiState.value = AddonsUiState()
     }
 

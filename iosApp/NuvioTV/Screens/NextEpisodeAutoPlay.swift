@@ -314,6 +314,10 @@ final class NextEpisodeEngine: ObservableObject {
             episode: next.episode,
             forceRefresh: false
         )
+        // Prefetch the next episode's addon subtitles alongside the stream search — the current
+        // session already side-loaded/baked its own subs, and the rebuilt player's fetch call
+        // deduplicates against this one.
+        SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: videoId)
 
         streamsWatcher = FlowWatcherKt.watch(PlayerStreamsRepository.shared.episodeStreamsState) { [weak self] emitted in
             guard let self, let state = emitted as? StreamsUiState else { return }

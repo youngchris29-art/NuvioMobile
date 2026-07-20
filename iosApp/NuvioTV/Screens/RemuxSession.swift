@@ -280,6 +280,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             }
         }
         for i in foundAudio.indices { foundAudio[i].selected = foundAudio[i].streamIndex == audioIn }
+        print("[Remux] audio streams (\(foundAudio.count)): "
+              + foundAudio.map { "#\($0.streamIndex) \($0.codec) \($0.channels)ch"
+                  + ($0.language.map { " [\($0)]" } ?? "")
+                  + ($0.playable ? "" : " UNPLAYABLE")
+                  + ($0.selected ? " *selected" : "") }.joined(separator: ", "))
         guard videoIn >= 0, let videoPar = input.pointee.streams[videoIn]?.pointee.codecpar else {
             return fail("no video stream")
         }

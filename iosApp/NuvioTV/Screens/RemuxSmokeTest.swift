@@ -1,6 +1,7 @@
 #if DEBUG
 import AVFoundation
 import Foundation
+import SharedCore
 
 // DEBUG-only headless harness for the native playback path. When the UserDefaults key
 // `debug.remuxSmokeURL` holds a source URL, it drives a real `NativePlaybackCoordinator` (the exact
@@ -19,6 +20,18 @@ nonisolated enum RemuxSmokeTest {
         guard let raw = UserDefaults.standard.string(forKey: "debug.remuxSmokeURL"),
               let url = URL(string: raw) else { return }
         Task { @MainActor in
+            // debug.remuxSmokeDelaySec: hold the harness so app bootstrap (addon init/refresh)
+            // completes first — needed when the run should exercise the addon-subtitle fetch.
+            let delaySec = UserDefaults.standard.double(forKey: "debug.remuxSmokeDelaySec")
+            if delaySec > 0 {
+                print("[RemuxSmoke] delaying start by \(delaySec)s")
+                try? await Task.sleep(nanoseconds: UInt64(delaySec * 1_000_000_000))
+            }
+            // A real-videoId run exercises the addon-subtitle fetch; headless, nothing reaches the
+            // Home screen, so kick the addon bootstrap the UI would normally have done by now.
+            if UserDefaults.standard.string(forKey: "debug.remuxSmokeVideoId") != nil {
+                AddonRepository.shared.initialize()
+            }
             print("[RemuxSmoke] start — \(raw)")
             // Log what the probe + router would decide for this source (the harness itself drives
             // the coordinator directly, bypassing PlayerScreen's routing) — surfaces DV profile,
@@ -38,9 +51,14 @@ nonisolated enum RemuxSmokeTest {
             // WebVTT rendition path — master EXT-X-MEDIA, sub playlist, JIT download + conversion.
             let smokeSubs: [SubtitleFile] = UserDefaults.standard.string(forKey: "debug.remuxSmokeSubURL")
                 .map { [SubtitleFile(url: $0, language: "en", name: "Smoke Sub")] } ?? []
+            // debug.remuxSmokeVideoId / debug.remuxSmokeType: use a real catalog id ("tt0111161",
+            // "movie") so the run exercises the addon-subtitle fetch against installed addons.
+            let smokeVideoId = UserDefaults.standard.string(forKey: "debug.remuxSmokeVideoId")
+                ?? "smoke-\(Int(Date().timeIntervalSince1970))"
+            let smokeType = UserDefaults.standard.string(forKey: "debug.remuxSmokeType") ?? "movie"
             let context = PlaybackContext(
-                url: url, title: "Smoke Test", contentType: "movie",
-                parentMetaId: "smoke", videoId: "smoke-\(Int(Date().timeIntervalSince1970))",
+                url: url, title: "Smoke Test", contentType: smokeType,
+                parentMetaId: "smoke", videoId: smokeVideoId,
                 season: nil, episode: nil, poster: nil, background: nil,
                 providerName: nil, providerAddonId: nil,
                 streamTitle: nil, streamSubtitle: nil, externalSubtitles: smokeSubs

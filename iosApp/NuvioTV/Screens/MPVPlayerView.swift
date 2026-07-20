@@ -36,6 +36,8 @@ final class MPVPlaybackState: ObservableObject {
     @Published var audioTracks: [PlayerTrack] = []
     @Published var subtitleTracks: [PlayerTrack] = []
     @Published var showTracks: Bool = false
+    /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
+    @Published var subtitleSearchInFlight: Bool = false
 
     /// Active skip prompt ("Skip Intro"/"Skip Outro") when playback is inside a known segment.
     @Published var skipPrompt: SkipPrompt?
@@ -96,6 +98,7 @@ final class MPVTVPlayerViewController: UIViewController {
     private var seekDirection: Double = 0
     private var seekHoldCount = 0
     private var subtitleWatcher: FlowWatcher?
+    private var subtitleLoadingWatcher: FlowWatcher?
     private var playerSettingsWatcher: FlowWatcher?
     private var playerSettings: PlayerSettingsUiState?
     private var didAutoSelectTracks = false
@@ -167,6 +170,10 @@ final class MPVTVPlayerViewController: UIViewController {
             subtitleWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.addonSubtitles) { [weak self] emitted in
                 guard let self, let subs = emitted as? [AddonSubtitle] else { return }
                 self.addAddonSubtitles(subs)
+            }
+            subtitleLoadingWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.isLoading) { [weak self] emitted in
+                guard let self, let loading = (emitted as? NSNumber)?.boolValue else { return }
+                DispatchQueue.main.async { self.state.subtitleSearchInFlight = loading }
             }
 
             // Subtitle appearance from Settings (color/size/bold/outline/background). The watcher
@@ -457,6 +464,14 @@ final class MPVTVPlayerViewController: UIViewController {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language)
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
+        // A stream-picker prefetch may already have completed (the fetch call above then no-ops,
+        // and the flow watcher's replay fired before fileLoaded was set) — side-load what's there.
+        // Key check: never side-load a lingering list that belongs to a different title.
+        if (SubtitleRepository.shared.completedRequest.value_ as? String)
+            == SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId),
+           let prefetched = SubtitleRepository.shared.addonSubtitles.value_ as? [AddonSubtitle], !prefetched.isEmpty {
+            addAddonSubtitles(prefetched)
+        }
         applySubtitleStyle()
         applyDisplayCriteriaIfEnabled()
         fetchSkipSegments()
@@ -959,6 +974,7 @@ final class MPVTVPlayerViewController: UIViewController {
         pollTimer?.invalidate()
         seekTimer?.invalidate()
         subtitleWatcher?.cancel()
+        subtitleLoadingWatcher?.cancel()
         playerSettingsWatcher?.cancel()
         // Idempotent final scrobble stop — normally a no-op after viewDidDisappear, but covers
         // teardown paths where the disappearance callback never ran (ME-004).
@@ -1465,6 +1481,17 @@ private struct TrackPickerView: View {
                     menuLink(title: "Subtitles", value: currentSubtitleLabel) {
                         destination { subtitleDestination }
                     }
+                } else {
+                    // No tracks (yet): keep the row visible with the addon-fetch status so an
+                    // empty selector reads as "searching/none found", not as a missing feature.
+                    HStack(spacing: 16) {
+                        Text("Subtitles").foregroundStyle(.white.opacity(0.5))
+                        Spacer(minLength: 0)
+                        Text(state.subtitleSearchInFlight ? "Searching addon subtitles…" : "None found")
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    .font(.body)
+                    .padding(.vertical, 10)
                 }
                 menuLink(title: "Playback Speed", value: currentSpeedLabel) {
                     destination { speedSection }

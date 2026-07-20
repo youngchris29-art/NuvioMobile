@@ -182,6 +182,11 @@ struct StreamPickerView: View {
             .onAppear {
                 model.start()
                 fetchEpisodesIfNeeded()
+                // Head start for the player: addon subtitles for this title begin fetching while
+                // the user is still choosing a stream, so the native path's pre-master window
+                // (and the mpv side-load) see results instead of racing the network. The player's
+                // own fetch call deduplicates against this one.
+                SubtitleRepository.shared.fetchAddonSubtitles(type: type, videoId: videoId)
             }
             .onDisappear { model.stop() }
             .fullScreenCover(item: $selected) { ctx in
