@@ -25,26 +25,43 @@ prerelease tagged tvos-v<version>-beta.<n> (n auto-increments) on BOTH
 youngchris29-art/NuvioMobile and youngchris29-art/NuvioTV (the public
 download link points at NuvioTV's releases/latest).
 
+The release notes always include a "What's new" changelog: commit subjects
+(first-parent, so an upstream catch-up merge shows as one line) since the
+previous tvos-v* tag, plus a compare link. Pass --changelog to prepend
+hand-written highlights above the generated list.
+
 Options:
-  --tag <tag>       Use an explicit release tag instead of auto-incrementing
-  --skip-build      Reuse the existing build products (repackage + publish only)
-  --dry-run         Build and package, print what would be published, skip publish
-  -h, --help        Show this help
+  --tag <tag>        Use an explicit release tag instead of auto-incrementing
+  --changelog <file> Markdown file with hand-written highlights for the notes
+  --skip-build       Reuse the existing build products (repackage + publish only)
+  --dry-run          Build and package, print the notes + what would be published, skip publish
+  -h, --help         Show this help
 EOF
 }
 
 TAG=""
 SKIP_BUILD=0
 DRY_RUN=0
+CHANGELOG_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="$2"; shift 2 ;;
+    --changelog) CHANGELOG_FILE="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+if [[ -n "$CHANGELOG_FILE" ]]; then
+  if [[ ! -r "$CHANGELOG_FILE" ]]; then
+    echo "error: changelog file not readable: $CHANGELOG_FILE" >&2
+    exit 1
+  fi
+  # Resolve now — the script cd's to ROOT_DIR below, which would break a relative path.
+  CHANGELOG_FILE="$(cd "$(dirname "$CHANGELOG_FILE")" && pwd)/$(basename "$CHANGELOG_FILE")"
+fi
 
 cd "$ROOT_DIR"
 
@@ -96,6 +113,22 @@ fi
 
 echo "==> Release tag: $TAG (version $MARKETING_VERSION build $BUILD_NUMBER, commit ${HEAD_SHA:0:8} on $BRANCH)"
 
+# Changelog: commit subjects since the previous tvos-v* tag. --first-parent so an
+# upstream catch-up merge collapses to its single merge-commit line instead of
+# spraying hundreds of upstream subjects into the notes. gh-created tags only
+# exist on GitHub until fetched.
+git fetch --tags --quiet origin \
+  || echo "warning: could not fetch tags from origin; changelog range may be stale." >&2
+PREV_TAG="$(git tag --list 'tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
+CHANGELOG_BODY=""
+if [[ -n "$PREV_TAG" ]]; then
+  CHANGELOG_BODY="$(git log --first-parent --pretty='- %s' "$PREV_TAG..$HEAD_SHA" \
+    | grep -iv '^- bump version$' || true)"
+  echo "==> Changelog: $(printf '%s\n' "$CHANGELOG_BODY" | grep -c '^- ' || true) commit(s) since $PREV_TAG"
+else
+  echo "==> Changelog: no previous tvos-v* tag found — treating as first beta of v${MARKETING_VERSION}"
+fi
+
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   echo "==> Building $TVOS_SCHEME (Release, unsigned, tvOS device)"
   xcodebuild -project "$IOS_PROJECT" -scheme "$TVOS_SCHEME" -configuration Release \
@@ -124,6 +157,30 @@ cat > "$NOTES_FILE" <<EOF
 
 Unsigned tvOS IPA for beta testing. This is a **fresh build** — no account, no addons. Sign in with your own Nuvio account and install your own addons after installing.
 
+## What's new in this build
+
+EOF
+
+# Hand-written highlights first (if provided), then the generated commit list.
+# printf/cat, NOT an expanding heredoc: commit subjects and external markdown
+# must never go through shell expansion.
+if [[ -n "$CHANGELOG_FILE" ]]; then
+  cat "$CHANGELOG_FILE" >> "$NOTES_FILE"
+  printf '\n' >> "$NOTES_FILE"
+fi
+if [[ -n "$CHANGELOG_BODY" ]]; then
+  printf '%s\n' "$CHANGELOG_BODY" >> "$NOTES_FILE"
+  printf '\nFull diff: https://github.com/%s/compare/%s...%s\n' "$GH_REPO" "$PREV_TAG" "$TAG" >> "$NOTES_FILE"
+elif [[ -z "$CHANGELOG_FILE" ]]; then
+  if [[ -n "$PREV_TAG" ]]; then
+    printf 'No code changes since %s (rebuild of the same code).\n' "$PREV_TAG" >> "$NOTES_FILE"
+  else
+    printf 'First beta build of v%s.\n' "$MARKETING_VERSION" >> "$NOTES_FILE"
+  fi
+fi
+
+cat >> "$NOTES_FILE" <<EOF
+
 ## How to install (no paid Apple Developer account needed)
 
 You sideload this yourself with a **free Apple ID**. The signature is created on your machine at install time.
@@ -151,6 +208,8 @@ Trust the developer certificate on the Apple TV when prompted (Settings → Gene
 EOF
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "==> Dry run: release notes that would be published:"
+  sed 's/^/    /' "$NOTES_FILE"
   echo "==> Dry run: would publish $TAG to $GH_REPO targeting $HEAD_SHA with asset $PRODUCTS_DIR/$IPA_NAME"
   [[ -n "$MIRROR_SHA" ]] && echo "==> Dry run: would publish $TAG to $MIRROR_REPO targeting $MIRROR_SHA"
   exit 0
