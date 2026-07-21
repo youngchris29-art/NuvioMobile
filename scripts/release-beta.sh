@@ -11,6 +11,8 @@ PRODUCTS_DIR="$DERIVED_DATA/Build/Products/Release-appletvos"
 APP_NAME="NuvioTV.app"
 IPA_NAME="NuvioTV.ipa"
 GH_REPO="youngchris29-art/NuvioMobile"
+MIRROR_REPO="youngchris29-art/NuvioTV"   # public-facing fork repo; its releases/latest is the published download link
+MIRROR_DIR="$(cd "$ROOT_DIR/.." && pwd)"
 VERSION_XCCONFIG="$ROOT_DIR/iosApp/Configuration/Version.xcconfig"
 
 usage() {
@@ -19,7 +21,9 @@ Usage:
   ./scripts/release-beta.sh [options]
 
 Builds an unsigned tvOS IPA of NuvioTV and publishes it as a GitHub
-prerelease tagged tvos-v<version>-beta.<n> (n auto-increments).
+prerelease tagged tvos-v<version>-beta.<n> (n auto-increments) on BOTH
+youngchris29-art/NuvioMobile and youngchris29-art/NuvioTV (the public
+download link points at NuvioTV's releases/latest).
 
 Options:
   --tag <tag>       Use an explicit release tag instead of auto-incrementing
@@ -60,11 +64,32 @@ if ! git branch -r --contains "$HEAD_SHA" | grep -q 'origin/'; then
   exit 1
 fi
 
+# The mirror release targets the outer NuvioTV checkout's HEAD; verify it is
+# actually that repo (someone may have cloned NuvioMobile standalone).
+MIRROR_SHA=""
+if git -C "$MIRROR_DIR" remote get-url origin 2>/dev/null | grep -q "NuvioTV"; then
+  MIRROR_SHA="$(git -C "$MIRROR_DIR" rev-parse HEAD)"
+  if ! git -C "$MIRROR_DIR" branch -r --contains "$MIRROR_SHA" | grep -q 'origin/'; then
+    echo "error: NuvioTV repo HEAD ($MIRROR_SHA) is not pushed to origin — push it first (the public download link lives on that repo)." >&2
+    exit 1
+  fi
+else
+  echo "warning: no NuvioTV checkout at $MIRROR_DIR — publishing to $GH_REPO only. The public releases/latest link on $MIRROR_REPO will go stale!" >&2
+fi
+
+latest_beta_n() { # latest_beta_n <repo> <prefix>
+  gh release list --repo "$1" --limit 100 --json tagName -q '.[].tagName' \
+    | { grep -F "$2" || true; } \
+    | sed "s|^$2||" | sort -n | tail -1
+}
+
 if [[ -z "$TAG" ]]; then
   PREFIX="tvos-v${MARKETING_VERSION}-beta."
-  LAST_N="$(gh release list --repo "$GH_REPO" --limit 100 --json tagName -q '.[].tagName' \
-    | { grep -F "$PREFIX" || true; } \
-    | sed "s|^${PREFIX}||" | sort -n | tail -1)"
+  LAST_N="$(latest_beta_n "$GH_REPO" "$PREFIX")"
+  if [[ -n "$MIRROR_SHA" ]]; then
+    MIRROR_LAST_N="$(latest_beta_n "$MIRROR_REPO" "$PREFIX")"
+    [[ "${MIRROR_LAST_N:-0}" -gt "${LAST_N:-0}" ]] && LAST_N="$MIRROR_LAST_N"
+  fi
   NEXT_N=$(( ${LAST_N:-0} + 1 ))
   TAG="${PREFIX}${NEXT_N}"
 fi
@@ -127,14 +152,22 @@ EOF
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "==> Dry run: would publish $TAG to $GH_REPO targeting $HEAD_SHA with asset $PRODUCTS_DIR/$IPA_NAME"
+  [[ -n "$MIRROR_SHA" ]] && echo "==> Dry run: would publish $TAG to $MIRROR_REPO targeting $MIRROR_SHA"
   exit 0
 fi
 
-echo "==> Publishing prerelease $TAG to $GH_REPO"
-gh release create "$TAG" \
-  --repo "$GH_REPO" \
-  --target "$HEAD_SHA" \
-  --title "NuvioTV (Apple TV) v${MARKETING_VERSION} ${TAG##*-}" \
-  --notes-file "$NOTES_FILE" \
-  --prerelease \
-  "$PRODUCTS_DIR/$IPA_NAME#NuvioTV.ipa (unsigned tvOS IPA)"
+publish_release() { # publish_release <repo> <target_sha>
+  echo "==> Publishing prerelease $TAG to $1"
+  gh release create "$TAG" \
+    --repo "$1" \
+    --target "$2" \
+    --title "NuvioTV (Apple TV) v${MARKETING_VERSION} ${TAG##*-}" \
+    --notes-file "$NOTES_FILE" \
+    --prerelease \
+    "$PRODUCTS_DIR/$IPA_NAME#NuvioTV.ipa (unsigned tvOS IPA)"
+}
+
+publish_release "$GH_REPO" "$HEAD_SHA"
+if [[ -n "$MIRROR_SHA" ]]; then
+  publish_release "$MIRROR_REPO" "$MIRROR_SHA"
+fi
