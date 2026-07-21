@@ -3,6 +3,7 @@ package com.nuvio.app.features.watchprogress
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.trakt.DEFAULT_WATCH_PROGRESS_SOURCE
 import com.nuvio.app.features.trakt.TraktAuthRepository
@@ -197,7 +198,8 @@ class WatchProgressSourceTransitionRunner(
 
 object WatchProgressSourceCoordinator {
     private val log = Logger.withTag("ProgressSourceCoordinator")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("ProgressSourceCoordinator"))
     private val startLock = SynchronizedObject()
     private val transitionStateMutex = Mutex()
     private var observeJob: Job? = null
@@ -250,11 +252,19 @@ object WatchProgressSourceCoordinator {
                     .distinctUntilChanged()
                     .collectLatest { context ->
                         if (automaticTransitionPauseCount.value > 0) return@collectLatest
-                        runTransition(
-                            context = context,
-                            refreshIfUnchanged = false,
-                            forceSnapshot = true,
-                        )
+                        try {
+                            runTransition(
+                                context = context,
+                                refreshIfUnchanged = false,
+                                forceSnapshot = true,
+                            )
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Throwable) {
+                            // Mirrors resumeAutomaticTransitions: a failed automatic transition
+                            // must not take down the observe job (or, uncaught, the process).
+                            log.e(error) { "Automatic source transition failed" }
+                        }
                     }
             }
         }

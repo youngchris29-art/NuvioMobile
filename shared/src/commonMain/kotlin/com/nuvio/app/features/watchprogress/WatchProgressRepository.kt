@@ -3,6 +3,7 @@ package com.nuvio.app.features.watchprogress
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.AddonsUiState
@@ -209,10 +210,12 @@ fun WatchProgressEntry.needsRemoteMetadataEnrichment(): Boolean =
         background.isNullOrBlank()
 
 object WatchProgressRepository {
-    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val syncScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("WatchProgressRepository"))
     private val accountScopeLock = SynchronizedObject()
     private var accountScopeJob: Job = SupervisorJob()
-    private var accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default)
+    private var accountScope =
+        CoroutineScope(accountScopeJob + Dispatchers.Default + uncaughtCoroutineLogger("WatchProgressRepository"))
     private val log = Logger.withTag("WatchProgressRepository")
 
     private val _uiState = MutableStateFlow(WatchProgressUiState())
@@ -286,7 +289,9 @@ object WatchProgressRepository {
         val previousAccountJob = synchronized(accountScopeLock) {
             accountScopeJob.also {
                 accountScopeJob = SupervisorJob()
-                accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default)
+                accountScope = CoroutineScope(
+                    accountScopeJob + Dispatchers.Default + uncaughtCoroutineLogger("WatchProgressRepository"),
+                )
             }
         }
         previousAccountJob.cancel()
@@ -911,6 +916,20 @@ object WatchProgressRepository {
     }
 
     private fun resolveRemoteMetadata() {
+        // This prefix runs on the CALLER'S thread — during profile selection that is the Swift
+        // main thread, where an escaped Kotlin exception aborts at the KMP boundary. Metadata
+        // enrichment is best-effort, so degrade to a log instead (tester crash-loop 2026-07-21:
+        // account-add pull → persisted entries needing enrichment → crash on every profile select).
+        try {
+            resolveRemoteMetadataUnsafe()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            log.e(error) { "Failed to start remote metadata resolution" }
+        }
+    }
+
+    private fun resolveRemoteMetadataUnsafe() {
         val targetProfileId = currentProfileId
         val targetGeneration = profileGeneration
         val missingMetadataEntries = localEntriesSnapshot()
@@ -980,14 +999,25 @@ object WatchProgressRepository {
                 if (resolvedEntries > 0 && isActiveOperation(targetProfileId, targetGeneration)) {
                     persist()
                 }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                // Escaping here would reach the scope's uncaught handler; enrichment is
+                // best-effort, so log and let the retry coordinator decide in `finally`.
+                log.e(error) { "Remote metadata resolution failed" }
             } finally {
-                val currentReadiness = AddonRepository.uiState.value.metadataProviderReadiness()
-                val shouldRetry = metadataResolutionRetryCoordinator.finishResolution(
-                    resolutionGeneration = resolutionGeneration,
-                    currentProviderFingerprint = currentReadiness.fingerprint.takeIf { currentReadiness.isReady },
-                )
-                if (shouldRetry && hasLoaded && !shouldUseTraktProgress()) {
-                    resolveRemoteMetadata()
+                runCatching {
+                    val currentReadiness = AddonRepository.uiState.value.metadataProviderReadiness()
+                    val shouldRetry = metadataResolutionRetryCoordinator.finishResolution(
+                        resolutionGeneration = resolutionGeneration,
+                        currentProviderFingerprint = currentReadiness.fingerprint.takeIf { currentReadiness.isReady },
+                    )
+                    if (shouldRetry && hasLoaded && !shouldUseTraktProgress()) {
+                        resolveRemoteMetadata()
+                    }
+                }.onFailure { error ->
+                    if (error is CancellationException) return@onFailure
+                    log.e(error) { "Remote metadata resolution retry bookkeeping failed" }
                 }
             }
         }

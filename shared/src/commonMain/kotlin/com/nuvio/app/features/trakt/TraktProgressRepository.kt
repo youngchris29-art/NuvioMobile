@@ -37,6 +37,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import kotlinx.serialization.decodeFromString
@@ -82,7 +83,7 @@ object TraktProgressRepository {
 
     private val log = Logger.withTag("TraktProgress")
     private val json = Json { ignoreUnknownKeys = true }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TraktProgress"))
 
 
     private val _uiState = MutableStateFlow(TraktProgressUiState())
@@ -179,7 +180,13 @@ object TraktProgressRepository {
 
     fun refreshAsync() {
         scope.launch {
-            refreshNow()
+            try {
+                refreshNow()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log.w { "Async Trakt progress refresh failed: ${error.message}" }
+            }
         }
     }
 

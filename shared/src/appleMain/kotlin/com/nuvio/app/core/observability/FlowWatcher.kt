@@ -1,5 +1,7 @@
 package com.nuvio.app.core.observability
 
+import co.touchlab.kermit.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,7 +37,16 @@ class FlowWatcher internal constructor(
 
     init {
         scope.launch {
-            flow.collect { value -> onEach(value) }
+            // An exception escaping this collector (a throwing upstream flow, or a Kotlin
+            // exception out of the Swift callback) would be an uncaught coroutine failure —
+            // process death on iOS. Observation is UI plumbing; log and stop watching instead.
+            try {
+                flow.collect { value -> onEach(value) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Logger.withTag("FlowWatcher").e(error) { "Flow collection failed; watcher stopped" }
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 package com.nuvio.app.core.sync
 
 import co.touchlab.kermit.Logger
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.network.SupabaseProvider
 import io.github.jan.supabase.postgrest.query.filter.FilterOperator
 import io.github.jan.supabase.realtime.PostgresAction
@@ -13,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.TimeoutCancellationException
@@ -32,7 +34,8 @@ private const val REALTIME_INVALIDATION_COALESCE_MS = 500L
 private const val REALTIME_SUBSCRIBE_TIMEOUT_MS = 15_000L
 
 object RealtimeSyncInvalidationService {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("RealtimeSyncInvalidation"))
     private val log = Logger.withTag("RealtimeSyncInvalidation")
     private val pendingMutex = Mutex()
     private val pendingSurfaces = mutableSetOf<String>()
@@ -81,56 +84,62 @@ object RealtimeSyncInvalidationService {
                     continue
                 }
 
-                val channel = SupabaseProvider.client.channel(channelName)
-                val realtime = channel.realtime
-                val realtimeStatusJob = launch {
-                    realtime.status
-                        .collect { status ->
-                            log.i { "Realtime client status=$status channel=$channelName" }
-                        }
-                }
-                val channelStatusJob = launch {
-                    channel.status
-                        .collect { status ->
-                            log.i { "Realtime channel status=$status channel=$channelName" }
-                        }
-                }
-                val changesJob = channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
-                    table = "sync_invalidations"
-                    filter("user_id", FilterOperator.EQ, userId)
-                }.onEach { action ->
-                    handleInsert(profileId, action.record)
-                }.launchIn(this)
-
                 var failure: Throwable? = null
                 try {
-                    log.i { "Subscribing to sync invalidations channel=$channelName user=$userId profile=$profileId" }
-                    withTimeout(REALTIME_SUBSCRIBE_TIMEOUT_MS) {
-                        channel.subscribe(blockUntilSubscribed = true)
+                    // coroutineScope so a failure in ANY of the pieces below — channel
+                    // construction, the status collectors, the changes flow (handleInsert), or
+                    // subscribe itself — surfaces here as a catchable exception and feeds the
+                    // retry loop. Channel setup used to sit outside the try, where a throw
+                    // escaped the loop and killed the process.
+                    coroutineScope {
+                        val channel = SupabaseProvider.client.channel(channelName)
+                        val realtime = channel.realtime
+                        launch {
+                            realtime.status
+                                .collect { status ->
+                                    log.i { "Realtime client status=$status channel=$channelName" }
+                                }
+                        }
+                        launch {
+                            channel.status
+                                .collect { status ->
+                                    log.i { "Realtime channel status=$status channel=$channelName" }
+                                }
+                        }
+                        channel.postgresChangeFlow<PostgresAction.Insert>(schema = "public") {
+                            table = "sync_invalidations"
+                            filter("user_id", FilterOperator.EQ, userId)
+                        }.onEach { action ->
+                            handleInsert(profileId, action.record)
+                        }.launchIn(this)
+
+                        try {
+                            log.i { "Subscribing to sync invalidations channel=$channelName user=$userId profile=$profileId" }
+                            withTimeout(REALTIME_SUBSCRIBE_TIMEOUT_MS) {
+                                channel.subscribe(blockUntilSubscribed = true)
+                            }
+                            consecutiveFailures = 0
+                            log.i { "Subscribed to sync invalidations channel=$channelName profile=$profileId" }
+                            awaitCancellation()
+                        } finally {
+                            // Evict the channel from the client's registry — a bare unsubscribe()
+                            // would leave it cached there and every later reconnect would try to
+                            // rejoin it. With no subscriptions left the client also closes the
+                            // websocket instead of holding an idle connection between retries.
+                            withContext(NonCancellable) {
+                                runCatching { realtime.removeChannel(channel) }
+                                    .onFailure { error ->
+                                        log.d { "Failed to remove realtime channel $channelName: ${error.message}" }
+                                    }
+                            }
+                        }
                     }
-                    consecutiveFailures = 0
-                    log.i { "Subscribed to sync invalidations channel=$channelName profile=$profileId" }
-                    awaitCancellation()
                 } catch (error: TimeoutCancellationException) {
                     failure = error
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
                     failure = error
-                } finally {
-                    changesJob.cancel()
-                    realtimeStatusJob.cancel()
-                    channelStatusJob.cancel()
-                    // Evict the channel from the client's registry — a bare unsubscribe() would
-                    // leave it cached there and every later reconnect would try to rejoin it.
-                    // With no subscriptions left the client also closes the websocket instead of
-                    // holding an idle connection between retries.
-                    withContext(NonCancellable) {
-                        runCatching { realtime.removeChannel(channel) }
-                            .onFailure { error ->
-                                log.d { "Failed to remove realtime channel $channelName: ${error.message}" }
-                            }
-                    }
                 }
 
                 if (failure != null && isActive) {
@@ -177,6 +186,18 @@ object RealtimeSyncInvalidationService {
     }
 
     private fun handleInsert(profileId: Int, record: JsonObject) {
+        // Runs inside the changes-flow collector: a throw (e.g. `jsonPrimitive` on a non-primitive
+        // field) would fail the flow and tear down the subscription, so parse defensively.
+        try {
+            handleInsertUnsafe(profileId, record)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            log.w { "Failed to handle sync invalidation record: ${error.message} keys=${record.keys}" }
+        }
+    }
+
+    private fun handleInsertUnsafe(profileId: Int, record: JsonObject) {
         val eventId = record["id"]?.jsonPrimitive?.contentOrNull
         val createdAt = record["created_at"]?.jsonPrimitive?.contentOrNull
         val originClientId = record["origin_client_id"]?.jsonPrimitive?.contentOrNull
