@@ -1186,10 +1186,11 @@ private struct SettingsActionRow: View {
 }
 
 /// A focusable settings row that toggles a boolean on select.
-/// "Default Player" chooser (FEAT-5 follow-up): built-in vs. an installed external player
-/// (Infuse today). When an external player is the default, plain Select on a stream row hands
-/// off to it instead of the in-app player, and the row's long-press menu gains a
-/// "Play in NuvioTV Player" escape hatch (StreamPickerView reads the same key).
+/// "Default Player" chooser (FEAT-5 follow-up): built-in vs. any installed external player
+/// (Infuse / VLC / Outplayer — whichever the Info.plist allowlist probe finds). When an
+/// external player is the default, plain Select on a stream row hands off to it instead of the
+/// in-app player, and the row's long-press menu gains a "Play in NuvioTV Player" escape hatch
+/// (StreamPickerView reads the same key).
 ///
 /// Self-contained on purpose: owns its own `availablePlayers()` probe and @AppStorage binding so
 /// SettingsView doesn't grow more state. Renders NOTHING when no external player is installed —

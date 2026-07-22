@@ -11,12 +11,18 @@
 	</dict>
 	<!-- External-player handoff (FEAT-5): canOpenURL() silently returns false for any scheme
 	     not declared here, and the shared ExternalPlayerPlatform gates its player list on that
-	     probe — so this list IS the tvOS player allowlist. Infuse only for now: its
-	     x-callback-url API is documented on Apple TV (Infuse 7.6.2+); VLC/Outplayer/VidHub
-	     schemes are iOS-verified only, so they stay off until tested on tvOS hardware. -->
+	     probe — so this list IS the tvOS player allowlist. Every declared player automatically
+	     appears in the stream-row long-press menu AND as a Default Player chip in Settings →
+	     Playback (the Swift side iterates availablePlayers(), no per-player code).
+	     Infuse's x-callback-url API is documented on Apple TV (Infuse 7.6.2+). VLC and
+	     Outplayer use their iOS-documented schemes — unverified on tvOS hardware, but a failed
+	     handoff on the default-player route falls back to the built-in player, so the worst
+	     case is a toast, not stranded playback. VidHub stays off (no known tvOS build). -->
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>infuse</string>
+		<string>vlc-x-callback</string>
+		<string>outplayer</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

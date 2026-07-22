@@ -55,8 +55,8 @@ struct StreamPickerView: View {
     @State private var didAutoExpand = false
     /// External players installed on this Apple TV (FEAT-5). Probed once per appearance via the
     /// shared `ExternalPlayerPlatform` — `canOpenURL` only returns true for schemes declared in
-    /// Info.plist's `LSApplicationQueriesSchemes` (currently Infuse only), so testers without
-    /// Infuse installed never see the handoff option at all. Empty ⇒ no context menu is attached.
+    /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer), so testers without
+    /// any of them installed never see the handoff option at all. Empty ⇒ no menu is attached.
     @State private var externalPlayers: [ExternalPlayerApp] = []
     /// User-chosen default player (Settings → Playback → Default Player). Empty = built-in.
     /// Same device-local key `DefaultPlayerRow` writes; validated against the live probe below
