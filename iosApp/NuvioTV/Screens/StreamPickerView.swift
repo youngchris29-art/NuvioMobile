@@ -58,6 +58,10 @@ struct StreamPickerView: View {
     /// Info.plist's `LSApplicationQueriesSchemes` (currently Infuse only), so testers without
     /// Infuse installed never see the handoff option at all. Empty ⇒ no context menu is attached.
     @State private var externalPlayers: [ExternalPlayerApp] = []
+    /// User-chosen default player (Settings → Playback → Default Player). Empty = built-in.
+    /// Same device-local key `DefaultPlayerRow` writes; validated against the live probe below
+    /// so an uninstalled default silently reverts to built-in instead of dead-ending playback.
+    @AppStorage("default_external_player_id") private var defaultExternalPlayerId = ""
     @Environment(\.dismiss) private var dismiss
 
     private static let testRowKey = "test-stream"
@@ -370,14 +374,21 @@ struct StreamPickerView: View {
         // title text (statically `textPrimary`, near-white) unreadable on focus.
         .buttonStyle(.settingsRow)
         .focused($focusedRow, equals: key)
-        // FEAT-5: long-press → external-player handoff. A context menu (the same "hold" gesture
-        // the profile tiles use) keeps plain Select = internal player, and adds zero visual
-        // noise for the majority without Infuse — the modifier itself is skipped when no
-        // supported player is installed, so the long-press stays inert rather than opening an
-        // empty menu.
-        .modifier(ExternalPlayMenu(players: externalPlayers) { player in
-            externalPlay(stream, rowKey: key, playerId: player.id)
-        })
+        // FEAT-5: long-press → the OTHER player(s). With the built-in default, the menu offers
+        // the installed external players; with an external default (plain Select already hands
+        // off) it inverts to offer "Play in NuvioTV Player" plus any non-default externals. The
+        // modifier is skipped entirely when no external player is installed, so the long-press
+        // stays inert rather than opening an empty menu.
+        .modifier(ExternalPlayMenu(
+            players: externalPlayers,
+            defaultPlayerId: activeDefaultExternalPlayer?.id,
+            onExternal: { player in
+                externalPlay(stream, rowKey: key, playerId: player.id)
+            },
+            onBuiltIn: {
+                internalPlay(stream, rowKey: key)
+            }
+        ))
     }
 
     @ViewBuilder
@@ -432,7 +443,26 @@ struct StreamPickerView: View {
 
     // MARK: - Playback / debrid resolve
 
+    /// The validated default external player, or nil for built-in. Membership in the probed
+    /// `externalPlayers` list is required — a stale stored id (player uninstalled since it was
+    /// chosen) must not hijack every Select into a failed handoff.
+    private var activeDefaultExternalPlayer: ExternalPlayerApp? {
+        guard !defaultExternalPlayerId.isEmpty else { return nil }
+        return externalPlayers.first { $0.id == defaultExternalPlayerId }
+    }
+
+    /// Select on a stream row. Routes to the user's default player (Settings → Playback):
+    /// external default ⇒ hand off (with automatic fallback to the built-in player if the
+    /// handoff fails), otherwise the built-in pipeline.
     private func play(_ stream: StreamItem, rowKey: String) {
+        if let defaultPlayer = activeDefaultExternalPlayer {
+            externalPlay(stream, rowKey: rowKey, playerId: defaultPlayer.id, fallbackToInternal: true)
+            return
+        }
+        internalPlay(stream, rowKey: rowKey)
+    }
+
+    private func internalPlay(_ stream: StreamItem, rowKey: String) {
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty, let url = URL(string: direct) {
             // A manual stream pick is user interaction — reset the Still Watching run.
@@ -476,15 +506,21 @@ struct StreamPickerView: View {
 
     // MARK: - External player handoff (FEAT-5)
 
-    /// Long-press path: hand the stream to an installed external player (Infuse today) instead
-    /// of the in-app player. Mirrors `play(_:rowKey:)`'s two branches — direct URLs open
+    /// Hands the stream to an installed external player (Infuse today) instead of the in-app
+    /// player — reached from a row long-press, or from plain Select when that player is the
+    /// user's default. Mirrors `internalPlay(_:rowKey:)`'s two branches — direct URLs open
     /// immediately; torrent/clientResolve results go through the same debrid resolve first,
     /// reusing `resolvingKey` so the row spinner and the one-at-a-time guard behave identically
     /// for both destinations.
-    private func externalPlay(_ stream: StreamItem, rowKey: String, playerId: String) {
+    ///
+    /// `fallbackToInternal` is set on the default-player route only: a failed handoff there
+    /// would strand a user whose Select no longer plays anything, so it degrades to the built-in
+    /// player. The explicit long-press route keeps the honest failure toast instead — the user
+    /// asked for Infuse specifically, silently playing elsewhere would be surprising.
+    private func externalPlay(_ stream: StreamItem, rowKey: String, playerId: String, fallbackToInternal: Bool = false) {
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty {
-            openExternally(urlString: direct, playerId: playerId)
+            openExternally(urlString: direct, stream: stream, playerId: playerId, fallbackToInternal: fallbackToInternal)
             return
         }
 
@@ -504,7 +540,12 @@ struct StreamPickerView: View {
                 if let success = result as? DirectDebridPlayableResult.Success {
                     let resolvedUrl: String? = success.stream.playableDirectUrl
                     if let resolvedUrl, !resolvedUrl.isEmpty {
-                        openExternally(urlString: resolvedUrl, playerId: playerId)
+                        openExternally(
+                            urlString: resolvedUrl,
+                            stream: success.stream,
+                            playerId: playerId,
+                            fallbackToInternal: fallbackToInternal
+                        )
                         return
                     }
                 }
@@ -521,7 +562,7 @@ struct StreamPickerView: View {
     /// "Show — S02E05" instead of a bare debrid CDN filename. Subtitles are omitted for now:
     /// the addon-subtitle URLs live player-side and Infuse fetches its own — revisit if
     /// testers ask. Must run on the main thread (UIApplication.open under the hood).
-    private func openExternally(urlString: String, playerId: String) {
+    private func openExternally(urlString: String, stream: StreamItem, playerId: String, fallbackToInternal: Bool = false) {
         let request = ExternalPlayerPlaybackRequest(
             sourceUrl: urlString,
             title: title,
@@ -536,7 +577,12 @@ struct StreamPickerView: View {
         )
         let result = ExternalPlayerPlatform.shared.open(request: request, playerId: playerId)
         // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).
-        if result != ExternalPlayerOpenResult.opened {
+        guard result != ExternalPlayerOpenResult.opened else { return }
+        if fallbackToInternal, let url = URL(string: urlString) {
+            showToast("Couldn\u{2019}t open the external player \u{2014} playing in NuvioTV.")
+            NextEpisodeEngine.consecutiveAutoPlays = 0
+            selected = context(url: url, stream: stream)
+        } else {
             showToast("Couldn\u{2019}t open the external player.")
         }
     }
@@ -567,22 +613,38 @@ struct StreamPickerView: View {
     }
 }
 
-/// Attaches the external-player context menu only when at least one supported player is
-/// installed (FEAT-5). A conditional modifier rather than an inline `.contextMenu` so the
-/// no-players case adds NOTHING to the row — an empty context menu would still swallow the
+/// Attaches the "play somewhere else" context menu only when at least one supported external
+/// player is installed (FEAT-5). A conditional modifier rather than an inline `.contextMenu` so
+/// the no-players case adds NOTHING to the row — an empty context menu would still swallow the
 /// long-press and show a blank platter, which reads as broken.
+///
+/// The menu always offers the destinations plain Select does NOT: with the built-in player as
+/// default it lists the external players; with an external default it lists "Play in NuvioTV
+/// Player" first (the escape hatch back) plus any other installed externals. The default player
+/// itself is omitted — Select already goes there, and a menu entry duplicating Select reads as
+/// two different actions.
 private struct ExternalPlayMenu: ViewModifier {
     let players: [ExternalPlayerApp]
-    let action: (ExternalPlayerApp) -> Void
+    /// The validated default external player id, or nil when the built-in player is default.
+    let defaultPlayerId: String?
+    let onExternal: (ExternalPlayerApp) -> Void
+    let onBuiltIn: () -> Void
 
     func body(content: Content) -> some View {
         if players.isEmpty {
             content
         } else {
             content.contextMenu {
-                ForEach(players, id: \.id) { player in
+                if defaultPlayerId != nil {
                     Button {
-                        action(player)
+                        onBuiltIn()
+                    } label: {
+                        Label("Play in NuvioTV Player", systemImage: "play.tv")
+                    }
+                }
+                ForEach(players.filter { $0.id != defaultPlayerId }, id: \.id) { player in
+                    Button {
+                        onExternal(player)
                     } label: {
                         Label("Open in \(player.name)", systemImage: "arrow.up.forward.app")
                     }

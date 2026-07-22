@@ -76,6 +76,9 @@ struct SettingsView: View {
                         }
 
                         section("Playback", .playback) {
+                            // Hidden entirely unless an external player (Infuse) is installed —
+                            // see DefaultPlayerRow.
+                            DefaultPlayerRow()
                             SettingsToggleRow(
                                 title: "Skip Intro",
                                 subtitle: "Show a Skip button during intros and outros",
@@ -1183,6 +1186,75 @@ private struct SettingsActionRow: View {
 }
 
 /// A focusable settings row that toggles a boolean on select.
+/// "Default Player" chooser (FEAT-5 follow-up): built-in vs. an installed external player
+/// (Infuse today). When an external player is the default, plain Select on a stream row hands
+/// off to it instead of the in-app player, and the row's long-press menu gains a
+/// "Play in NuvioTV Player" escape hatch (StreamPickerView reads the same key).
+///
+/// Self-contained on purpose: owns its own `availablePlayers()` probe and @AppStorage binding so
+/// SettingsView doesn't grow more state. Renders NOTHING when no external player is installed —
+/// a "Default Player" row whose only option is the built-in player is dead UI, and hiding it
+/// matches the picker's own behavior (no Infuse ⇒ no handoff affordances anywhere).
+///
+/// The stored id is deliberately device-local (@AppStorage, not synced): which apps are
+/// installed differs per Apple TV, so a synced default would dangle on every other device.
+private struct DefaultPlayerRow: View {
+    @AppStorage("default_external_player_id") private var defaultExternalPlayerId = ""
+    @State private var externalPlayers: [ExternalPlayerApp] = []
+
+    var body: some View {
+        Group {
+            if !externalPlayers.isEmpty {
+                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                    Text("Default Player")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                    HStack(spacing: Theme.Spacing.md) {
+                        chip(label: "NuvioTV (Built-in)", id: "")
+                        ForEach(externalPlayers, id: \.id) { player in
+                            chip(label: player.name, id: player.id)
+                        }
+                    }
+                    Text(defaultExternalPlayerId.isEmpty
+                        ? "Streams play in the built-in player. Hold a stream to open it in an external player instead."
+                        : "Streams open in the external player. Hold a stream to play it in NuvioTV instead. If the external player can\u{2019}t open, playback falls back to the built-in player.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .frame(maxWidth: 1100, alignment: .leading)
+                }
+            }
+        }
+        .onAppear {
+            // Main-thread canOpenURL probe (same as the stream picker's). Re-runs per appearance
+            // so installing/removing Infuse is reflected the next time Settings opens.
+            externalPlayers = ExternalPlayerPlatform.shared.availablePlayers()
+            // A stored default whose app was uninstalled silently reverts to built-in — the
+            // picker independently guards against this too, but clearing here keeps the UI honest.
+            if !defaultExternalPlayerId.isEmpty,
+               !externalPlayers.contains(where: { $0.id == defaultExternalPlayerId }) {
+                defaultExternalPlayerId = ""
+            }
+        }
+    }
+
+    private func chip(label: String, id: String) -> some View {
+        Button {
+            defaultExternalPlayerId = id
+        } label: {
+            HStack(spacing: Theme.Spacing.xs) {
+                if defaultExternalPlayerId == id {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                Text(label)
+            }
+            .font(Theme.Font.meta)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+        }
+        .buttonStyle(.chip(selected: defaultExternalPlayerId == id))
+    }
+}
+
 private struct SettingsToggleRow: View {
     let title: String
     let subtitle: String
