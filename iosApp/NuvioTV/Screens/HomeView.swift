@@ -8,6 +8,14 @@ struct HomeView: View {
     @StateObject private var model = HomeViewModel()
     @State private var resume: ResumeTarget?
 
+    /// Whether the hero backdrop artwork only renders while the hero carousel is focused (the
+    /// original behavior). A beta tester read the focus-gated fade as a bug ("hero posts don't
+    /// work") since the artwork is invisible until you navigate down to it, so the default is now
+    /// false — artwork always visible — with this Settings toggle to restore the old fade for
+    /// anyone who preferred it. UserDefaults-backed and local-only (not synced): it's a per-device
+    /// display preference, not account state, so no shared/Kotlin settings plumbing is needed.
+    @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
+
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
     // TabView: D-pad left/right (and touch-surface swipes) page manually while the hero is
@@ -38,14 +46,17 @@ struct HomeView: View {
 
                 // Full-bleed hero backdrop runs to every edge (and under the floating glass tab
                 // bar); the rows scroll over it, Detail-style.
-                // Only show the artwork while the hero itself is highlighted; once focus moves
-                // down into Continue Watching / the catalogs, fade to the flat dark background.
+                // Default: always show the artwork, so it's visible the moment Home appears
+                // (see heroPosterFocusOnly doc comment above). With the Settings toggle on,
+                // fall back to the original behavior — only show it while the hero itself is
+                // highlighted, fading to the flat dark background once focus moves down into
+                // Continue Watching / the catalogs.
                 if let hero = currentHero {
                     Group {
                         HomeHeroBackdrop(item: hero)
                         HomeHeroScrim()
                     }
-                    .opacity(heroFocused ? 1 : 0)
+                    .opacity(heroPosterFocusOnly ? (heroFocused ? 1 : 0) : 1)
                     .animation(.easeInOut(duration: 0.4), value: heroFocused)
                 }
 

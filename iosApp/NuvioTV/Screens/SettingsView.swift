@@ -18,6 +18,10 @@ struct SettingsView: View {
     /// Which category's sections are shown in the detail pane (split-view, tvOS-Settings style).
     @State private var selectedCategory: SettingsCategory = .accountServices
     @FocusState private var focusedCategory: SettingsCategory?
+    /// Mirrors HomeView's `hero_poster_focus_only` @AppStorage key (same UserDefaults key, read
+    /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
+    /// on for testers who preferred the original behavior. Local-only, not synced.
+    @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
 
     var body: some View {
         NavigationStack {
@@ -171,6 +175,18 @@ struct SettingsView: View {
                                 onLandscape: { model.setPosterLandscapeRows($0) },
                                 onReset: { model.resetPosterStyle() }
                             )
+                            // Default (off) always shows the Home hero's backdrop artwork — a beta
+                            // tester read the old focus-only fade as a bug ("hero posts don't
+                            // work"). This restores that original fade for anyone who preferred it.
+                            SettingsToggleRow(
+                                title: "Hero Poster Only When Focused",
+                                subtitle: heroPosterFocusOnly
+                                    ? "On \u{00B7} Home hero artwork fades in only while the hero carousel is focused"
+                                    : "Off \u{00B7} Home hero artwork is always visible",
+                                isOn: heroPosterFocusOnly
+                            ) {
+                                heroPosterFocusOnly.toggle()
+                            }
                         }
 
                         section("Card Depth", .appearance) {

@@ -110,7 +110,18 @@ struct DetailView: View {
                 episodes: route.meta.videos
             )
         }
-        .fullScreenCover(item: $model.trailerPlayback) { item in
+        .fullScreenCover(item: $model.trailerPlayback, onDismiss: {
+            // Returning from ANY full-screen trailer (the hero "Watch Trailer" button above, or a
+            // "Trailers & Extras" row item) to the muted background loop — force the shared audio
+            // preference back to muted so the sound the user just heard doesn't carry over into the
+            // background player once it reappears (it seeds `isMuted` from this same shared state on
+            // re-attach; see `TrailerHeroPlayerView.Coordinator.attach`). `HeroTrailerAudioState` only
+            // exposes `toggleMuted()` (no direct setter), so only flip it when it's currently unmuted.
+            if let isCurrentlyMuted = (HeroTrailerAudioState.shared.muted.value_ as? KotlinBoolean)?.boolValue,
+               !isCurrentlyMuted {
+                HeroTrailerAudioState.shared.toggleMuted()
+            }
+        }) { item in
             FullScreenTrailerPlayer(urlString: item.url)
                 .ignoresSafeArea()
         }
@@ -239,6 +250,29 @@ struct DetailView: View {
                     }
                     .buttonStyle(.glassProminent)
                     .tint(Theme.Palette.accent)
+                }
+
+                if model.trailerVideoURL != nil {
+                    // Explicit, focusable "watch it full screen" entry point (tester request — the
+                    // background hero loop below is muted and deliberately NON-focusable, since a
+                    // floating control over the hero area would be unreachable once the focus engine
+                    // routes Up-navigation to the tab bar; see `TrailerHeroPlayerView.swift`). Living
+                    // in the ordinary action-row focus flow instead, this just hands the already-
+                    // resolved hero trailer URL to the same `trailerPlayback` full-screen-cover
+                    // machinery the "Trailers & Extras" row uses below, which also takes care of
+                    // pausing/tearing down the background player for free (both are gated on
+                    // `trailerPlayback == nil`).
+                    Button {
+                        if let trailer = model.trailerVideoURL {
+                            model.trailerPlayback = TrailerPlaybackItem(id: "hero-trailer", url: trailer, title: title)
+                        }
+                    } label: {
+                        Label("Watch Trailer", systemImage: "play.rectangle.fill")
+                            .font(Theme.Font.meta)
+                            .padding(.horizontal, Theme.Spacing.md)
+                            .padding(.vertical, Theme.Spacing.xxs + 2)
+                    }
+                    .buttonStyle(.glass)
                 }
 
                 Button {

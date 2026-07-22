@@ -134,9 +134,13 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     }
 }
 
-/// Full-screen trailer playback with sound and transport controls (from the Detail "Trailers &
-/// Extras" row). `AVPlayerViewController` supplies the standard tvOS player UI; the presenting
-/// `fullScreenCover` handles Menu-to-dismiss.
+/// Full-screen trailer playback with sound and transport controls — presented from either the
+/// Detail action row's "Watch Trailer" button (the hero trailer, already resolved for the muted
+/// background loop) or a "Trailers & Extras" row item (resolved on demand). `AVPlayerViewController`
+/// supplies the standard tvOS player UI; the presenting `fullScreenCover` handles Menu-to-dismiss.
+/// Deliberately a separate `AVPlayer` instance from `TrailerHeroPlayer` above — the two never run
+/// concurrently (Detail hides/dismantles the background player while `trailerPlayback` is non-nil),
+/// so there's no doubled decode/audio, and each keeps its own simple, single-purpose lifecycle.
 struct FullScreenTrailerPlayer: UIViewControllerRepresentable {
     let urlString: String
 

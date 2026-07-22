@@ -9,6 +9,15 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!-- External-player handoff (FEAT-5): canOpenURL() silently returns false for any scheme
+	     not declared here, and the shared ExternalPlayerPlatform gates its player list on that
+	     probe — so this list IS the tvOS player allowlist. Infuse only for now: its
+	     x-callback-url API is documented on Apple TV (Infuse 7.6.2+); VLC/Outplayer/VidHub
+	     schemes are iOS-verified only, so they stay off until tested on tvOS hardware. -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>infuse</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

@@ -53,6 +53,11 @@ struct StreamPickerView: View {
     /// Guards the one-time auto-expand check so a second addon streaming in later never
     /// collapses/re-expands anything under the user (no layout shifts under focus).
     @State private var didAutoExpand = false
+    /// External players installed on this Apple TV (FEAT-5). Probed once per appearance via the
+    /// shared `ExternalPlayerPlatform` — `canOpenURL` only returns true for schemes declared in
+    /// Info.plist's `LSApplicationQueriesSchemes` (currently Infuse only), so testers without
+    /// Infuse installed never see the handoff option at all. Empty ⇒ no context menu is attached.
+    @State private var externalPlayers: [ExternalPlayerApp] = []
     @Environment(\.dismiss) private var dismiss
 
     private static let testRowKey = "test-stream"
@@ -236,6 +241,10 @@ struct StreamPickerView: View {
             .onAppear {
                 model.start()
                 fetchEpisodesIfNeeded()
+                // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
+                // appearance so an Infuse install mid-session is picked up next time the picker
+                // opens instead of requiring an app relaunch.
+                externalPlayers = ExternalPlayerPlatform.shared.availablePlayers()
                 // Head start for the player: addon subtitles for this title begin fetching while
                 // the user is still choosing a stream, so the native path's pre-master window
                 // (and the mpv side-load) see results instead of racing the network. The player's
@@ -361,6 +370,14 @@ struct StreamPickerView: View {
         // title text (statically `textPrimary`, near-white) unreadable on focus.
         .buttonStyle(.settingsRow)
         .focused($focusedRow, equals: key)
+        // FEAT-5: long-press → external-player handoff. A context menu (the same "hold" gesture
+        // the profile tiles use) keeps plain Select = internal player, and adds zero visual
+        // noise for the majority without Infuse — the modifier itself is skipped when no
+        // supported player is installed, so the long-press stays inert rather than opening an
+        // empty menu.
+        .modifier(ExternalPlayMenu(players: externalPlayers) { player in
+            externalPlay(stream, rowKey: key, playerId: player.id)
+        })
     }
 
     @ViewBuilder
@@ -457,6 +474,73 @@ struct StreamPickerView: View {
         }
     }
 
+    // MARK: - External player handoff (FEAT-5)
+
+    /// Long-press path: hand the stream to an installed external player (Infuse today) instead
+    /// of the in-app player. Mirrors `play(_:rowKey:)`'s two branches — direct URLs open
+    /// immediately; torrent/clientResolve results go through the same debrid resolve first,
+    /// reusing `resolvingKey` so the row spinner and the one-at-a-time guard behave identically
+    /// for both destinations.
+    private func externalPlay(_ stream: StreamItem, rowKey: String, playerId: String) {
+        let direct: String? = stream.playableDirectUrl
+        if let direct, !direct.isEmpty {
+            openExternally(urlString: direct, playerId: playerId)
+            return
+        }
+
+        guard resolvingKey == nil else { return }
+        guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
+            showToast("This stream needs a debrid account. Connect one in Settings \u{2192} Debrid.")
+            return
+        }
+        resolvingKey = rowKey
+        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
+            stream: stream,
+            season: season.map { KotlinInt(int: Int32($0)) },
+            episode: episode.map { KotlinInt(int: Int32($0)) }
+        ) { result, _ in
+            DispatchQueue.main.async {
+                resolvingKey = nil
+                if let success = result as? DirectDebridPlayableResult.Success {
+                    let resolvedUrl: String? = success.stream.playableDirectUrl
+                    if let resolvedUrl, !resolvedUrl.isEmpty {
+                        openExternally(urlString: resolvedUrl, playerId: playerId)
+                        return
+                    }
+                }
+                showToast(Self.resolveFailureMessage(result))
+                if result is DirectDebridPlayableResult.Stale {
+                    model.reload()
+                }
+            }
+        }
+    }
+
+    /// Builds the shared playback request and opens the target player via its x-callback-url
+    /// scheme. Title/season/episode feed `buildPlayerTitle()` so Infuse shows
+    /// "Show — S02E05" instead of a bare debrid CDN filename. Subtitles are omitted for now:
+    /// the addon-subtitle URLs live player-side and Infuse fetches its own — revisit if
+    /// testers ask. Must run on the main thread (UIApplication.open under the hood).
+    private func openExternally(urlString: String, playerId: String) {
+        let request = ExternalPlayerPlaybackRequest(
+            sourceUrl: urlString,
+            title: title,
+            streamTitle: nil,
+            sourceHeaders: [:],
+            resumePositionMs: 0,
+            subtitles: nil,
+            season: season.map { KotlinInt(int: Int32($0)) },
+            episode: episode.map { KotlinInt(int: Int32($0)) },
+            episodeTitle: nil,
+            skipSegmentsJson: nil
+        )
+        let result = ExternalPlayerPlatform.shared.open(request: request, playerId: playerId)
+        // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).
+        if result != ExternalPlayerOpenResult.opened {
+            showToast("Couldn\u{2019}t open the external player.")
+        }
+    }
+
     /// Mirrors the shared `DirectDebridPlayableResult.toastMessage()` wording (tvOS renders the
     /// English fallbacks; matching locally avoids depending on the ext-fun's bridged name).
     private static func resolveFailureMessage(_ result: DirectDebridPlayableResult?) -> String {
@@ -478,6 +562,31 @@ struct StreamPickerView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             if toast == shown {
                 withAnimation { toast = nil }
+            }
+        }
+    }
+}
+
+/// Attaches the external-player context menu only when at least one supported player is
+/// installed (FEAT-5). A conditional modifier rather than an inline `.contextMenu` so the
+/// no-players case adds NOTHING to the row — an empty context menu would still swallow the
+/// long-press and show a blank platter, which reads as broken.
+private struct ExternalPlayMenu: ViewModifier {
+    let players: [ExternalPlayerApp]
+    let action: (ExternalPlayerApp) -> Void
+
+    func body(content: Content) -> some View {
+        if players.isEmpty {
+            content
+        } else {
+            content.contextMenu {
+                ForEach(players, id: \.id) { player in
+                    Button {
+                        action(player)
+                    } label: {
+                        Label("Open in \(player.name)", systemImage: "arrow.up.forward.app")
+                    }
+                }
             }
         }
     }

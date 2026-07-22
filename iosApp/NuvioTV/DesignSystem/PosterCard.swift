@@ -78,7 +78,10 @@ struct PosterCard: View {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
                         .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
                 )
-                .scaleEffect(isFocused ? 1.07 : 1)
+                // Tester feedback asked to "enlarge the selected poster" — bumped from 1.07 to
+                // 1.12 for a more noticeable focus lift. Pure scaleEffect (not layout), so rows
+                // don't need extra spacing to accommodate it.
+                .scaleEffect(isFocused ? 1.12 : 1)
                 .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
                 .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
@@ -141,7 +144,8 @@ struct LandscapeCard: View {
                 }
             }
             .frame(width: width, height: height)
-            .scaleEffect(isFocused ? 1.07 : 1)
+            // Same 1.12 focus scale as PosterCard — see comment there.
+            .scaleEffect(isFocused ? 1.12 : 1)
             .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
             .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
