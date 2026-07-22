@@ -56,7 +56,7 @@ struct SubtitleFile {
 }
 
 /// One selectable audio or subtitle track.
-struct PlayerTrack: Identifiable {
+struct PlayerTrack: Identifiable, Equatable {
     let id: Int          // mpv track id; -1 means "off" (subtitles)
     let label: String
     let isSelected: Bool

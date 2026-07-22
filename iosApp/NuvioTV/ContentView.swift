@@ -106,6 +106,11 @@ struct ContentView: View {
                 force: true
             )
         }
+        #if DEBUG
+        // `debug.mpvSmokeURL`: present the real player over the root for sim validation of the
+        // libmpv path (see MPVSmokeTest.swift).
+        .modifier(MPVSmokeModifier())
+        #endif
     }
 }
 
