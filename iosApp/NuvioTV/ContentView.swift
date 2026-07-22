@@ -54,6 +54,20 @@ struct ContentView: View {
             posterStyle.start()
             cardDepth.start()
             appTheme.start()
+            #if DEBUG
+            // FEAT-5 device diagnostic: prints what the external-player probe sees. A scheme
+            // missing from LSApplicationQueriesSchemes logs a "not allowed to query" console
+            // error and returns false; a declared scheme with no installed handler returns
+            // false silently — so this output distinguishes plist problems from the target
+            // player simply not registering its URL scheme on tvOS.
+            for scheme in ["infuse", "vlc-x-callback", "outplayer"] {
+                if let url = URL(string: "\(scheme)://") {
+                    print("[ExtPlayerProbe] canOpenURL(\(scheme)://) = \(UIApplication.shared.canOpenURL(url))")
+                }
+            }
+            let players = ExternalPlayerPlatform.shared.availablePlayers()
+            print("[ExtPlayerProbe] availablePlayers = \(players.map { "\($0.id):\($0.name)" })")
+            #endif
         }
         .onChange(of: auth.gate) { _, newGate in
             // Signing out (or a remote session invalidation) tears the shell down to the gate.

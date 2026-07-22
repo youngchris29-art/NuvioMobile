@@ -1201,39 +1201,45 @@ private struct SettingsActionRow: View {
 /// installed differs per Apple TV, so a synced default would dangle on every other device.
 private struct DefaultPlayerRow: View {
     @AppStorage("default_external_player_id") private var defaultExternalPlayerId = ""
-    @State private var externalPlayers: [ExternalPlayerApp] = []
+    /// Probed at init, NOT in `.onAppear`: with no players this row renders nothing, and
+    /// SwiftUI never fires `onAppear` for a view that renders empty — an onAppear probe
+    /// therefore deadlocks the row into permanent invisibility (found on a real Apple TV with
+    /// Infuse installed: the probe returned Infuse fine, but never got the chance to run).
+    /// Init runs on the main thread (canOpenURL requirement) every time SettingsView rebuilds,
+    /// so install/remove of a player is picked up at least as often as the old per-appearance
+    /// probe — and the calls are a few cheap registry lookups.
+    private let externalPlayers: [ExternalPlayerApp] = ExternalPlayerPlatform.shared.availablePlayers()
 
     var body: some View {
-        Group {
-            if !externalPlayers.isEmpty {
-                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    Text("Default Player")
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                    HStack(spacing: Theme.Spacing.md) {
-                        chip(label: "NuvioTV (Built-in)", id: "")
-                        ForEach(externalPlayers, id: \.id) { player in
-                            chip(label: player.name, id: player.id)
-                        }
+        if !externalPlayers.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                Text("Default Player")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                HStack(spacing: Theme.Spacing.md) {
+                    chip(label: "NuvioTV (Built-in)", id: "")
+                    ForEach(externalPlayers, id: \.id) { player in
+                        chip(label: player.name, id: player.id)
                     }
-                    Text(defaultExternalPlayerId.isEmpty
-                        ? "Streams play in the built-in player. Hold a stream to open it in an external player instead."
-                        : "Streams open in the external player. Hold a stream to play it in NuvioTV instead. If the external player can\u{2019}t open, playback falls back to the built-in player.")
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .frame(maxWidth: 1100, alignment: .leading)
                 }
+                Text(defaultExternalPlayerId.isEmpty
+                    ? "Streams play in the built-in player. Hold a stream to open it in an external player instead."
+                    : "Streams open in the external player. Hold a stream to play it in NuvioTV instead. If the external player can\u{2019}t open, playback falls back to the built-in player.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .frame(maxWidth: 1100, alignment: .leading)
             }
-        }
-        .onAppear {
-            // Main-thread canOpenURL probe (same as the stream picker's). Re-runs per appearance
-            // so installing/removing Infuse is reflected the next time Settings opens.
-            externalPlayers = ExternalPlayerPlatform.shared.availablePlayers()
-            // A stored default whose app was uninstalled silently reverts to built-in — the
-            // picker independently guards against this too, but clearing here keeps the UI honest.
-            if !defaultExternalPlayerId.isEmpty,
-               !externalPlayers.contains(where: { $0.id == defaultExternalPlayerId }) {
-                defaultExternalPlayerId = ""
+            .onAppear {
+                // Safe here: this onAppear is on the VISIBLE content, so it actually fires.
+                // A stored default whose app was uninstalled silently reverts to built-in —
+                // the picker independently guards against this too, but clearing here keeps
+                // the chips honest (otherwise no chip would show as selected). When NO player
+                // is installed the row is hidden and a stale id survives harmlessly; the
+                // picker's membership check already ignores it.
+                if !defaultExternalPlayerId.isEmpty,
+                   !externalPlayers.contains(where: { $0.id == defaultExternalPlayerId }) {
+                    defaultExternalPlayerId = ""
+                }
             }
         }
     }
