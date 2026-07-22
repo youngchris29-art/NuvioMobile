@@ -1,5 +1,6 @@
 package com.nuvio.app.features.library
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.ui.ToastControllerProvider
@@ -70,7 +71,7 @@ private data class LibrarySyncItem(
 object LibraryRepository {
     private const val PULL_PAGE_SIZE = 500
 
-    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("LibraryRepository"))
     private val log = Logger.withTag("LibraryRepository")
     private val json = Json {
         ignoreUnknownKeys = true

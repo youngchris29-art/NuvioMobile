@@ -1,5 +1,6 @@
 package com.nuvio.app.features.notifications
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.deeplink.buildMetaDeepLinkUrl
 import com.nuvio.app.core.i18n.StringKey
@@ -37,7 +38,7 @@ object EpisodeReleaseNotificationsRepository {
     private const val testNotificationDelaySeconds = 1L
 
     private val log = Logger.withTag("EpisodeReleaseNotifications")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("EpisodeReleaseNotifications"))
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true

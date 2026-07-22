@@ -142,10 +142,15 @@ struct QrSignInView: View {
                         Text("Or go to nuvio.tv/tv-login and enter:")
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
-                        Text(code)
-                            .font(.system(size: 56, weight: .bold, design: .monospaced))
-                            .kerning(10)
+                        // The backend's pairing code is a long hex string (not a short human
+                        // code); chunk it into groups of 4 so it's readable/typeable on a phone
+                        // instead of one unbroken 32-character run.
+                        Text(Self.groupedForDisplay(code))
+                            .font(.system(size: 32, weight: .bold, design: .monospaced))
+                            .kerning(4)
                             .foregroundStyle(Theme.Palette.accent)
+                            .frame(maxWidth: 700, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -177,6 +182,17 @@ struct QrSignInView: View {
     private var shortCode: String? {
         let code: String? = model.state?.code
         return code
+    }
+
+    /// Groups a long pairing code into 4-character chunks (e.g. `AB12 CD34 EF56 ...`) so it's
+    /// readable and easier to type on a phone. A no-op for codes already short enough to display
+    /// as-is (kept simple rather than guessing at a length threshold).
+    private static func groupedForDisplay(_ code: String) -> String {
+        stride(from: 0, to: code.count, by: 4).map { offset -> String in
+            let start = code.index(code.startIndex, offsetBy: offset)
+            let end = code.index(start, offsetBy: 4, limitedBy: code.endIndex) ?? code.endIndex
+            return String(code[start..<end])
+        }.joined(separator: " ")
     }
 
     private var statusLine: String {

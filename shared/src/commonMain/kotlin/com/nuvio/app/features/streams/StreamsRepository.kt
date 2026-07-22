@@ -1,5 +1,6 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.features.addons.AddonRepository
@@ -31,7 +32,7 @@ import kotlinx.coroutines.launch
 
 object StreamsRepository {
     private val log = Logger.withTag("StreamsRepo")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("StreamsRepository"))
     private val _uiState = MutableStateFlow(StreamsUiState())
     val uiState: StateFlow<StreamsUiState> = _uiState.asStateFlow()
 

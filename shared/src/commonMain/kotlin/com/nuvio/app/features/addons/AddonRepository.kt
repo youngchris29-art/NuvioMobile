@@ -1,5 +1,6 @@
 package com.nuvio.app.features.addons
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
@@ -43,7 +44,7 @@ private data class AddonPushItem(
 )
 
 object AddonRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("AddonRepository"))
     private val log = Logger.withTag("AddonRepository")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val _uiState = MutableStateFlow(AddonsUiState())

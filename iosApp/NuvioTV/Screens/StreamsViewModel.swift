@@ -13,6 +13,11 @@ import SharedCore
 /// `StreamsScreen.kt` / `App.kt` click paths). Also observes the shared badge + debrid settings
 /// so the picker can render badge packs, file-size chips, placement, addon logos and the
 /// "Instant" cached suffix exactly like mobile's `StreamCard`.
+///
+/// Empty state: `emptyReason` also covers the case where the shared repository found streams
+/// but the local playability filter above dropped every one of them (torrent-only results with
+/// debrid resolution off) — a different, actionable message from the shared "no streams found
+/// at all" reasons, with `emptyReasonHint` pointing at the fix.
 @MainActor
 final class StreamsViewModel: ObservableObject {
     /// One playable, addon-grouped section for the picker UI.
@@ -28,6 +33,9 @@ final class StreamsViewModel: ObservableObject {
     @Published private(set) var groups: [Group] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var emptyReason: String?
+    /// Secondary guidance line for `emptyReason` — where to go fix it (e.g. which Settings
+    /// section). Nil for the plain "nothing found" reasons, which have nothing actionable to add.
+    @Published private(set) var emptyReasonHint: String?
     /// Focus key of the first stream row; the picker moves initial focus here when rows arrive.
     @Published private(set) var firstRowKey: String?
     /// Shared badge settings (imported packs, file-size toggle, placement, addon logo).
@@ -148,10 +156,37 @@ final class StreamsViewModel: ObservableObject {
         firstRowKey = groups.first.map { Self.rowKey(groupId: $0.id, index: 0) }
 
         if groups.isEmpty && !isLoading {
-            emptyReason = Self.describe(state.emptyStateReason)
+            // The shared repository's `emptyStateReason` only covers "we truly found nothing"
+            // (no addons, fetch failed, etc.) — it has no concept of the local playability
+            // filter above, so a title with plenty of raw torrent results but no debrid
+            // connection still reports `NoStreamsFound`-adjacent nils here. Detect that case
+            // ourselves: shared handed us streams, but every one of them got filtered out.
+            let rawCount = state.groups.reduce(0) { $0 + $1.streams.count }
+            if rawCount > 0 {
+                (emptyReason, emptyReasonHint) = Self.describeFiltered(rawCount: rawCount, debridEnabled: debridEnabled)
+            } else {
+                emptyReason = Self.describe(state.emptyStateReason)
+                emptyReasonHint = nil
+            }
         } else {
             emptyReason = nil
+            emptyReasonHint = nil
         }
+    }
+
+    /// Builds the reason/hint pair for the "shared found streams, but our playability filter
+    /// dropped all of them" case. Distinguishes the common cause (debrid off, torrent-only
+    /// results) from the rarer one (debrid already on, but nothing still resolved) so the hint
+    /// never tells someone to do something they've already done.
+    private static func describeFiltered(rawCount: Int, debridEnabled: Bool) -> (String, String?) {
+        let sourceWord = rawCount == 1 ? "source" : "sources"
+        if !debridEnabled {
+            let reason = "Found \(rawCount) torrent \(sourceWord), but no debrid service is connected."
+            let hint = "Connect one in Settings \u{2192} Account & Services \u{2192} Debrid, or turn on \u{201C}Resolve Streams with Debrid\u{201D}."
+            return (reason, hint)
+        }
+        let reason = "Found \(rawCount) \(rawCount == 1 ? "stream" : "streams"), but none could be resolved to a playable link."
+        return (reason, nil)
     }
 
     private static func describe(_ reason: StreamsEmptyStateReason?) -> String {

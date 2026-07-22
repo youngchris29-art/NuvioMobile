@@ -48,6 +48,9 @@ import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.sync.RealtimeSyncConfig
 import com.nuvio.app.core.sync.RealtimeSyncInvalidationService
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
+import co.touchlab.kermit.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -137,7 +140,8 @@ fun installTvOsSharedProviders() {
     startRealtimeInvalidationObserver()
 }
 
-private val realtimeObserverScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+private val realtimeObserverScope =
+    CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TvOsRealtimeObserver"))
 private var realtimeObserverStarted = false
 
 private fun startRealtimeInvalidationObserver() {
@@ -312,24 +316,52 @@ object TvOsExtraLifecycleHooks {
 }
 
 private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
+    private val log = Logger.withTag("TvOsProfileLifecycle")
+
+    /**
+     * Runs one fan-out step so a throw degrades that repository instead of killing the app.
+     *
+     * This whole fan-out runs on the CALLER'S thread, which for a profile tap is the Swift main
+     * thread (`ProfilesViewModel.select` → `ProfileRepository.selectProfile`). A Kotlin exception
+     * escaping into Swift there is not catchable on the Swift side — it reaches the Kotlin/Native
+     * unhandled-exception hook and aborts the process. Because the fan-out is the same every time,
+     * any one throwing repository turns into "the app force-closes every time I pick my profile"
+     * (beta.1 tester report, and again after beta.3's QR sign-in put far more testers on the
+     * signed-in path where the profile-scoped stores actually have content to load).
+     *
+     * The step name is logged before the call so a crash report or console log names the culprit
+     * even if a step fails in a way this cannot contain.
+     */
+    private inline fun step(name: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            log.e(error) { "Profile-select step '$name' failed; continuing with the remaining steps" }
+        }
+    }
+
     override fun onProfileSelected(profileIndex: Int) {
-        TvOsExtraLifecycleHooks.onProfileChanged(profileIndex)
-        WatchedRepository.onProfileChanged(profileIndex)
-        LibraryRepository.onProfileChanged(profileIndex)
-        LibraryDisplaySettingsRepository.onProfileChanged()
-        WatchProgressRepository.onProfileChanged(profileIndex)
-        ContinueWatchingEnrichmentCache.onProfileChanged()
-        AddonRepository.onProfileChanged(profileIndex)
-        SearchHistoryRepository.onProfileChanged()
+        log.i { "Profile selected: $profileIndex — running fan-out" }
+        step("tvOsExtras") { TvOsExtraLifecycleHooks.onProfileChanged(profileIndex) }
+        step("watched") { WatchedRepository.onProfileChanged(profileIndex) }
+        step("library") { LibraryRepository.onProfileChanged(profileIndex) }
+        step("libraryDisplaySettings") { LibraryDisplaySettingsRepository.onProfileChanged() }
+        step("watchProgress") { WatchProgressRepository.onProfileChanged(profileIndex) }
+        step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
+        step("addons") { AddonRepository.onProfileChanged(profileIndex) }
+        step("searchHistory") { SearchHistoryRepository.onProfileChanged() }
         // Theme is profile-scoped (ProfileScopedKey) — reload it for the new profile.
-        ThemeSettingsRepository.onProfileChanged()
+        step("theme") { ThemeSettingsRepository.onProfileChanged() }
         // Card-depth poster styling is profile-scoped too; reload so a local (guest) profile switch
         // doesn't leave the previous profile's setting live on the tvOS card surfaces.
-        CardDepthStyleRepository.onProfileChanged()
+        step("cardDepthStyle") { CardDepthStyleRepository.onProfileChanged() }
         // Debrid keys/settings are profile-scoped too; without this a guest profile switch
         // (no cloud pull) would keep the previous profile's keys in memory.
-        DebridSettingsRepository.onProfileChanged()
-        HomeRepository.clear()
+        step("debridSettings") { DebridSettingsRepository.onProfileChanged() }
+        step("home") { HomeRepository.clear() }
+        log.i { "Profile-select fan-out complete for profile $profileIndex" }
     }
 
     override fun onProfilesCached() {}

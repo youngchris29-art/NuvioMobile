@@ -1,5 +1,6 @@
 package com.nuvio.app.core.sync
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
@@ -62,7 +63,7 @@ import kotlinx.serialization.json.put
 private const val PUSH_DEBOUNCE_MS = 1500L
 
 object ProfileSettingsSync {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("ProfileSettingsSync"))
     private val log = Logger.withTag("ProfileSettingsSync")
     private val syncMutex = Mutex()
     private val json = Json {

@@ -1,5 +1,6 @@
 package com.nuvio.app.features.catalog
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import com.nuvio.app.features.collection.CollectionRepository
@@ -22,7 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 object CatalogRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CatalogRepository"))
     private val _uiState = MutableStateFlow(CatalogUiState())
     val uiState: StateFlow<CatalogUiState> = _uiState.asStateFlow()
 

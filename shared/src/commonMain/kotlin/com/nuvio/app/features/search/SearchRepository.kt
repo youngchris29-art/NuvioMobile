@@ -1,5 +1,6 @@
 package com.nuvio.app.features.search
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.localizedMediaTypeLabel
 import com.nuvio.app.features.addons.AddonCatalog
@@ -35,7 +36,7 @@ import com.nuvio.app.core.i18n.resourceString
 
 object SearchRepository {
     private val log = Logger.withTag("SearchRepository")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("SearchRepository"))
     private val _uiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
     private val _discoverUiState = MutableStateFlow(DiscoverUiState())

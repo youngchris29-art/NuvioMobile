@@ -104,17 +104,31 @@ enum ArtworkStore {
         if let existing = inflight[url] { return try await existing.value }
 
         let work = Task<UIImage, Error> {
-            let (data, response) = try await session.data(from: url)
+            let data: Data
+            if url.scheme == "data" {
+                // Inline `data:image/...;base64,...` avatars (custom pictures imported from
+                // other Nuvio clients) decode locally — there's no network response to
+                // validate, and routing a multi-megabyte URL string through the disk-backed
+                // URLCache would waste space on a payload that's already fully in memory.
+                // Base64-decoding a ~MB payload is synchronous, so hop off the main actor
+                // (this Task inherits @MainActor from `fetch`) like the decode below does.
+                data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url)
+                }.value
+            } else {
+                let (fetchedData, response) = try await session.data(from: url)
 
-            // Reject unsuccessful responses, non-image payloads, and oversized downloads
-            // before spending any decode work on them (HI-006).
-            if let http = response as? HTTPURLResponse {
-                guard (200...299).contains(http.statusCode) else {
-                    throw URLError(.badServerResponse)
+                // Reject unsuccessful responses, non-image payloads, and oversized downloads
+                // before spending any decode work on them (HI-006).
+                if let http = response as? HTTPURLResponse {
+                    guard (200...299).contains(http.statusCode) else {
+                        throw URLError(.badServerResponse)
+                    }
+                    if let mime = http.mimeType?.lowercased(), !mime.hasPrefix("image/") {
+                        throw URLError(.cannotDecodeContentData)
+                    }
                 }
-                if let mime = http.mimeType?.lowercased(), !mime.hasPrefix("image/") {
-                    throw URLError(.cannotDecodeContentData)
-                }
+                data = fetchedData
             }
             guard data.count <= maxDownloadBytes else {
                 throw URLError(.dataLengthExceedsMaximum)

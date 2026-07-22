@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.features.addons.AddonRepository
@@ -48,7 +49,7 @@ import com.nuvio.app.core.i18n.resourceString
  */
 object PlayerStreamsRepository {
     private val log = Logger.withTag("PlayerStreamsRepo")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("PlayerStreamsRepository"))
 
     // source panel
     private val _sourceState = MutableStateFlow(StreamsUiState())

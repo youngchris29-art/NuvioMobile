@@ -1,5 +1,6 @@
 package com.nuvio.app.core.sync
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
@@ -206,7 +207,7 @@ object SyncManager {
     private val fullSyncRequestGate = ProfileSyncRequestGate()
     private val accountScopeLock = SynchronizedObject()
     private var accountScopeJob: Job = SupervisorJob()
-    private var accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default)
+    private var accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default + uncaughtCoroutineLogger("SyncManager"))
     private val pullStateLock = SynchronizedObject()
     private var foregroundPullJob: Job? = null
     private var foregroundPullProfileId: Int? = null
@@ -247,7 +248,7 @@ object SyncManager {
         val previousAccountJob = synchronized(accountScopeLock) {
             accountScopeJob.also {
                 accountScopeJob = SupervisorJob()
-                accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default)
+                accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default + uncaughtCoroutineLogger("SyncManager"))
             }
         }
         previousAccountJob.cancel()

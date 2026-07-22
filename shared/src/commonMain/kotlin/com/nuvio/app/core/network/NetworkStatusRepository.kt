@@ -1,5 +1,6 @@
 package com.nuvio.app.core.network
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.addons.httpRequestRaw
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +38,7 @@ object NetworkStatusRepository {
     private const val PUBLIC_PROBE_PRIMARY = "https://www.gstatic.com/generate_204"
     private const val PUBLIC_PROBE_FALLBACK = "https://cloudflare.com/cdn-cgi/trace"
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("NetworkStatus"))
     private val _uiState = MutableStateFlow(NetworkStatusUiState())
     val uiState: StateFlow<NetworkStatusUiState> = _uiState.asStateFlow()
 

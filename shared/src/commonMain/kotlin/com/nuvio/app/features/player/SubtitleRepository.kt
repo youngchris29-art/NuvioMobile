@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.AddonResource
@@ -49,7 +50,7 @@ object SubtitleRepository {
             println("[SubtitleRepo] WARN $text")
         }
     }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("SubtitleRepository"))
     private val json = Json { ignoreUnknownKeys = true }
 
     private val _addonSubtitles = MutableStateFlow<List<AddonSubtitle>>(emptyList())

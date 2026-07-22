@@ -1,5 +1,6 @@
 package com.nuvio.app.features.details
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
@@ -41,7 +42,7 @@ object MetaDetailsRepository {
     )
 
     private val log = Logger.withTag("MetaDetailsRepo")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + uncaughtCoroutineLogger("MetaDetailsRepository"))
     private val _uiState = MutableStateFlow(MetaDetailsUiState())
     val uiState: StateFlow<MetaDetailsUiState> = _uiState.asStateFlow()
     private var activeRequestKey: String? = null
@@ -49,7 +50,7 @@ object MetaDetailsRepository {
 
     fun load(type: String, id: String) {
         log.d { "load() called — type=$type id=$id" }
-        val requestKey = "$type:$id"
+        val requestKey = MetaRequestResolution.requestKey(type, id)
         val currentState = _uiState.value
         val mdbListSettings = MdbListSettingsRepository.snapshot()
         val metaScreenSettingsFingerprint = buildMetaScreenSettingsFingerprint(mdbListSettings)
@@ -70,7 +71,7 @@ object MetaDetailsRepository {
                 return
             }
 
-            if (currentState.isLoading && activeRequestKey == requestKey) {
+            if (currentState.isLoading && MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
                 log.d { "Meta screen enrichment already in flight — type=$type id=$id" }
                 return
             }
@@ -94,7 +95,7 @@ object MetaDetailsRepository {
                     )
                 }
                 // Skip if a newer load() has taken over the shared repo.
-                if (activeRequestKey == requestKey) {
+                if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
                     _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter(), requestKey = requestKey)
                 }
             }
@@ -107,7 +108,7 @@ object MetaDetailsRepository {
             return
         }
 
-        if (currentState.isLoading && activeRequestKey == requestKey) {
+        if (currentState.isLoading && MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
             log.d { "Request already in flight — type=$type id=$id" }
             return
         }
@@ -135,7 +136,7 @@ object MetaDetailsRepository {
 
                 log.w { "No addon provides meta for type=$type id=$id" }
                 // Skip if a newer load() has taken over the shared repo.
-                if (activeRequestKey == requestKey) {
+                if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
                     _uiState.value = MetaDetailsUiState(
                         errorMessage = resourceString(
                             "No addon provides meta for this content.",
@@ -183,7 +184,7 @@ object MetaDetailsRepository {
             }
 
             // Skip if a newer load() has taken over the shared repo.
-            if (activeRequestKey == requestKey) {
+            if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
                 _uiState.value = MetaDetailsUiState(
                     errorMessage = resourceString(
                         "Could not load details from any addon.",
@@ -197,7 +198,7 @@ object MetaDetailsRepository {
     }
 
     fun peek(type: String, id: String): MetaDetails? {
-        val requestKey = "$type:$id"
+        val requestKey = MetaRequestResolution.requestKey(type, id)
         val currentMeta = _uiState.value.meta?.takeIf { it.type == type && it.id == id }
         if (currentMeta != null) return currentMeta
 
@@ -215,7 +216,7 @@ object MetaDetailsRepository {
     }
 
     suspend fun fetch(type: String, id: String): MetaDetails? {
-        val requestKey = "$type:$id"
+        val requestKey = MetaRequestResolution.requestKey(type, id)
         cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
 
         val metaLookupId = resolveMetaLookupId(itemId = id, itemType = type)
@@ -327,12 +328,7 @@ object MetaDetailsRepository {
         addons.enabledAddons().any { addon -> addon.manifest == null && addon.isRefreshing }
 
     private suspend fun resolveMetaLookupId(itemId: String, itemType: String): String {
-        val tmdbId = itemId
-            .takeIf { it.startsWith("tmdb:", ignoreCase = true) }
-            ?.substringAfter(':')
-            ?.substringBefore(':')
-            ?.toIntOrNull()
-            ?: return itemId
+        val tmdbId = MetaRequestResolution.parseTmdbId(itemId) ?: return itemId
 
         return withTimeoutOrNull(FETCH_TIMEOUT_MS) {
             TmdbService.tmdbToImdb(tmdbId = tmdbId, mediaType = itemType)
@@ -363,13 +359,13 @@ object MetaDetailsRepository {
 
         if (!shouldEnrichForMetaScreen(meta, fallbackItemId, mdbListSettings)) {
             // Skip if a newer load() has taken over the shared repo (caching above still stands).
-            if (activeRequestKey == requestKey) {
+            if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
                 _uiState.value = MetaDetailsUiState(meta = meta.withUnreleasedFilter(), requestKey = requestKey)
             }
             return
         }
 
-        if (activeRequestKey == requestKey) {
+        if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
             _uiState.value = MetaDetailsUiState(
                 isLoading = true,
                 meta = meta,
@@ -390,7 +386,7 @@ object MetaDetailsRepository {
             metaScreenMeta = enrichedMeta,
             metaScreenSettingsFingerprint = metaScreenSettingsFingerprint,
         )
-        if (activeRequestKey == requestKey) {
+        if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
             _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter(), requestKey = requestKey)
         }
     }

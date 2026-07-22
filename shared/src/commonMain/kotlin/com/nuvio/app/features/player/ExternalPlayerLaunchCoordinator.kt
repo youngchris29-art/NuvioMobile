@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.player.skip.SkipInterval
 import com.nuvio.app.features.player.skip.SkipIntroRepository
 import kotlinx.coroutines.CoroutineScope
@@ -17,7 +18,7 @@ private const val SkipSegmentResolveTimeoutMs = 4_000L
 // Skip resolution runs on an app-lifetime scope rather than the caller's (often
 // composition-bound) scope, so navigating to the external player cannot cancel an
 // in-flight network lookup partway through.
-private val skipResolveScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+private val skipResolveScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("ExternalPlayerLaunch"))
 
 /**
  * Orchestrates the full external player launch flow:

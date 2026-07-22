@@ -1,5 +1,6 @@
 package com.nuvio.app.core.auth
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 
@@ -23,7 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 object AuthRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("AuthRepository"))
     private val log = Logger.withTag("AuthRepository")
 
     private val _state = MutableStateFlow<AuthState>(AuthState.Loading)

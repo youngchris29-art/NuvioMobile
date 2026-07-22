@@ -1,5 +1,6 @@
 package com.nuvio.app.features.home
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.enabledAddons
@@ -28,7 +29,7 @@ import kotlin.math.absoluteValue
 import kotlin.random.Random
 
 object HomeRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("HomeRepository"))
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 

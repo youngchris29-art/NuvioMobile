@@ -1,5 +1,6 @@
 package com.nuvio.app.features.trakt
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 
@@ -39,7 +40,7 @@ object TraktAuthRepository {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TraktAuthRepository"))
     private val refreshMutex = Mutex()
 
     private val _uiState = MutableStateFlow(TraktAuthUiState())

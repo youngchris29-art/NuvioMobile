@@ -1,5 +1,6 @@
 package com.nuvio.app.core.auth
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.SupabaseProvider
 import io.github.jan.supabase.auth.auth
@@ -81,7 +82,7 @@ data class TvLoginUiState(
  * anonymous sessions, so the UI never mistakes it for a real account).
  */
 object TvLoginRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TvLoginRepository"))
     private val log = Logger.withTag("TvLoginRepository")
     private val json = Json { ignoreUnknownKeys = true }
 

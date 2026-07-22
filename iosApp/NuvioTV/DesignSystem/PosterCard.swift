@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// Platter-free replacement for the system `.card` button style: no background platter, no grey
-/// border around the label. Focus motion (scale + shadow/glow) is added by the tile views
-/// themselves via `@Environment(\.isFocused)` — the `Button` stays the focusable element, so that
-/// environment keeps working exactly as it did under `.card`.
+/// border around the label. Focus motion (scale + tilt/parallax + shadow/glow) is added by the tile
+/// views themselves via `@Environment(\.isFocused)` — the `Button` stays the focusable element, so
+/// that environment keeps working exactly as it did under `.card`.
 struct PosterButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -15,6 +15,30 @@ struct PosterButtonStyle: ButtonStyle {
 extension ButtonStyle where Self == PosterButtonStyle {
     /// Platter-free tile style for poster/landscape/profile tiles.
     static var poster: PosterButtonStyle { .init() }
+}
+
+extension View {
+    /// The parallax half of the focus lift: the system `.card` style tilts artwork toward the Siri
+    /// Remote's touch point as your thumb moves; SwiftUI on tvOS has no API to read that touch-surface
+    /// delta directly, so this is a focus-driven approximation — a fixed micro-tilt + slight upward
+    /// nudge that animates in with the existing scale/shadow instead of tracking touch position live.
+    /// Kept to a couple of degrees so it reads as "lean toward the viewer", not a wobble, and gated on
+    /// Reduce Motion since it's a 3D rotation rather than a plain size/opacity change.
+    ///
+    /// Purely a visual transform (`rotation3DEffect`/`offset` don't affect layout), so it composes with
+    /// the existing `scaleEffect`/`shadow` focus chain and never reflows the row it sits in.
+    func posterFocusTilt(isFocused: Bool, reduceMotion: Bool) -> some View {
+        let active = isFocused && !reduceMotion
+        return self
+            .rotation3DEffect(
+                .degrees(active ? 5 : 0),
+                axis: (x: 1, y: -0.35, z: 0),
+                anchor: .center,
+                anchorZ: 0,
+                perspective: 0.35
+            )
+            .offset(y: active ? -4 : 0)
+    }
 }
 
 /// The standard portrait poster tile used across catalog rows, search results, and "more like this".
@@ -38,6 +62,7 @@ struct PosterCard: View {
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var resolvedWidth: CGFloat { width ?? style.width }
     private var resolvedHeight: CGFloat { height ?? style.height }
@@ -54,6 +79,7 @@ struct PosterCard: View {
                         .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
                 )
                 .scaleEffect(isFocused ? 1.07 : 1)
+                .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
                 .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
             if titleVisible {
@@ -86,6 +112,7 @@ struct LandscapeCard: View {
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var titleVisible: Bool { showTitle ?? style.showTitle }
 
@@ -115,6 +142,7 @@ struct LandscapeCard: View {
             }
             .frame(width: width, height: height)
             .scaleEffect(isFocused ? 1.07 : 1)
+            .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
             .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
             if titleVisible {

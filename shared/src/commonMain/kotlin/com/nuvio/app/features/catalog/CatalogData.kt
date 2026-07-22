@@ -1,5 +1,6 @@
 package com.nuvio.app.features.catalog
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.addons.AddonCatalog
 import com.nuvio.app.features.addons.buildAddonResourceUrl
 import com.nuvio.app.features.addons.httpGetText
@@ -29,7 +30,7 @@ data class CatalogPaginationState(
 )
 
 private val inflightMutex = Mutex()
-private val inflightRequestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+private val inflightRequestScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CatalogData"))
 private val inflightRequests = mutableMapOf<String, CompletableDeferred<String>>()
 
 private suspend fun deduplicatedHttpGetText(url: String): String {

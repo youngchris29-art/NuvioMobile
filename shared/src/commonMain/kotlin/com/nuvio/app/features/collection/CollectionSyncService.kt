@@ -1,5 +1,6 @@
 package com.nuvio.app.features.collection
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
@@ -24,7 +25,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 object CollectionSyncService {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CollectionSyncService"))
     private val log = Logger.withTag("CollectionSyncService")
     private val json = Json {
         ignoreUnknownKeys = true

@@ -339,5 +339,12 @@ kotlin {
             // AddonPlatform.android uses okhttp + IPv4FirstDns directly (matches composeApp).
             implementation("com.squareup.okhttp3:okhttp:4.12.0")
         }
+        // Mirrors composeApp's commonTest dependency declaration — kotlin-test only, no other
+        // targets' test source sets added. Runs via the native test tasks (e.g.
+        // :shared:iosSimulatorArm64Test / :shared:tvosSimulatorArm64Test) and/or
+        // :shared:allTests since this module has no jvm target.
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
+        }
     }
 }

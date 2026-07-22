@@ -1,5 +1,6 @@
 package com.nuvio.app.features.plugins
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.features.addons.httpGetText
@@ -48,7 +49,7 @@ private data class PluginPushItem(
 )
 
 object PluginRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TvOsPluginRepository"))
     private val log = Logger.withTag("PluginRepository")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 

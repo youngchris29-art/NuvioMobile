@@ -1,5 +1,6 @@
 package com.nuvio.app.features.cloud
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.debrid.DebridProviderCapability
 import com.nuvio.app.features.debrid.DebridProviders
 import com.nuvio.app.features.debrid.DebridServiceCredential
@@ -86,7 +87,7 @@ class CloudLibraryStore(
 }
 
 object CloudLibraryRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CloudLibraryRepository"))
     private val store = CloudLibraryStore(
         credentialsProvider = {
             DebridSettingsRepository.ensureLoaded()

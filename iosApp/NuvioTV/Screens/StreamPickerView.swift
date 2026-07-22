@@ -156,10 +156,21 @@ struct StreamPickerView: View {
                     }
 
                     if let reason = model.emptyReason {
-                        Text(reason)
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .padding(.top, Theme.Spacing.xs)
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                            // Primary reason renders at full text-primary weight — prominent,
+                            // not the muted secondary tone the plain "nothing found" empty
+                            // states get elsewhere on tvOS — since the debrid/filtered case is
+                            // actionable rather than a dead end.
+                            Text(reason)
+                                .font(Theme.Font.body)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+                            if let hint = model.emptyReasonHint {
+                                Text(hint)
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                            }
+                        }
+                        .padding(.top, Theme.Spacing.xs)
                     }
 
                     // Dev/diagnostics affordance — only when there is nothing real to play, so it

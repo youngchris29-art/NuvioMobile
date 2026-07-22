@@ -1,5 +1,6 @@
 package com.nuvio.app.features.collection
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 
@@ -71,7 +72,7 @@ enum class TmdbBuilderMode {
 
 object CollectionEditorRepository {
     private val log = Logger.withTag("CollectionEditorRepository")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("CollectionEditorRepository"))
 
     private val _uiState = MutableStateFlow(CollectionEditorUiState())
     val uiState: StateFlow<CollectionEditorUiState> = _uiState.asStateFlow()

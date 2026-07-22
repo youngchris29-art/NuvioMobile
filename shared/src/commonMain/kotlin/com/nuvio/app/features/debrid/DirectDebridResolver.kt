@@ -1,5 +1,6 @@
 package com.nuvio.app.features.debrid
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.streams.StreamBehaviorHints
 import com.nuvio.app.features.streams.StreamClientResolve
 import com.nuvio.app.features.streams.StreamDebridCacheState
@@ -19,7 +20,7 @@ import com.nuvio.app.core.i18n.resourceString
 
 object DirectDebridPlaybackResolver {
     private val localAddonStreamResolver = LocalDebridAddonStreamResolver()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("DirectDebridResolver"))
     private val mutex = Mutex()
     private val resolvedCache = mutableMapOf<String, CachedDirectDebridResolve>()
     private val inFlightResolves = mutableMapOf<String, Deferred<DirectDebridResolveResult>>()

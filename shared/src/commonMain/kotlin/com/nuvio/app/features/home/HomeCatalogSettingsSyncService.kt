@@ -1,5 +1,6 @@
 package com.nuvio.app.features.home
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
@@ -68,7 +69,7 @@ private data class PullToken(
 )
 
 object HomeCatalogSettingsSyncService {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("HomeCatalogSettingsSync"))
     private val log = Logger.withTag("HomeCatalogSettingsSyncService")
     private val json = Json {
         ignoreUnknownKeys = true

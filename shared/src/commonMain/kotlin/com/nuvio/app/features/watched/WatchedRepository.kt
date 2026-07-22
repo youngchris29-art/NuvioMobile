@@ -1,5 +1,6 @@
 package com.nuvio.app.features.watched
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
@@ -102,7 +103,7 @@ object WatchedRepository {
 
     private val accountScopeLock = SynchronizedObject()
     private var accountScopeJob: Job = SupervisorJob()
-    private var accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default)
+    private var accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default + uncaughtCoroutineLogger("WatchedRepository"))
     private val log = Logger.withTag("WatchedRepository")
     private val json = Json {
         ignoreUnknownKeys = true
@@ -157,7 +158,7 @@ object WatchedRepository {
         val previousAccountJob = synchronized(accountScopeLock) {
             accountScopeJob.also {
                 accountScopeJob = SupervisorJob()
-                accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default)
+                accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default + uncaughtCoroutineLogger("WatchedRepository"))
             }
         }
         previousAccountJob.cancel()

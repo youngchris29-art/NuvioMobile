@@ -1,5 +1,6 @@
 package com.nuvio.app.features.profiles
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
@@ -35,7 +36,7 @@ private data class StoredProfilePayload(
 )
 
 object ProfileRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("ProfileRepository"))
     private val log = Logger.withTag("ProfileRepository")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -124,8 +125,15 @@ object ProfileRepository {
             activeProfile = selectedProfile,
             hasEverSelectedProfile = selectedProfile != null || _state.value.hasEverSelectedProfile,
         )
-        persist()
-        ProfileLifecycleProvider.coordinator.onProfileSelected(profileIndex)
+        // Persistence and the repository fan-out are best-effort side effects of a selection that
+        // has already happened. Both run on the caller's thread — on tvOS that is the Swift main
+        // thread, where an escaped Kotlin exception aborts the process instead of surfacing as a
+        // catchable Swift error, so a single failing repository would make every profile tap a
+        // force-close. Degrade to a log and let the user into the app.
+        runCatching { persist() }
+            .onFailure { log.e(it) { "Failed to persist profile selection $profileIndex" } }
+        runCatching { ProfileLifecycleProvider.coordinator.onProfileSelected(profileIndex) }
+            .onFailure { log.e(it) { "Profile-select fan-out failed for profile $profileIndex" } }
     }
 
     suspend fun pushProfiles(profiles: List<ProfilePushPayload>) {

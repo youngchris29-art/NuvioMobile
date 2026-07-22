@@ -1,5 +1,6 @@
 package com.nuvio.app.features.watching.application
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaVideo
@@ -20,7 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 object WatchingActions {
-    private val actionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val actionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("WatchingActions"))
 
     suspend fun togglePosterWatched(preview: MetaPreview) {
         if (!preview.type.isSeriesLikeType()) {

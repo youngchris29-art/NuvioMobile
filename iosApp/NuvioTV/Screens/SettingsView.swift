@@ -1302,6 +1302,7 @@ private struct SubtitleAppearanceControls: View {
                     Button { onTextColor(entry.argb) } label: {
                         SubtitleColorSwatch(
                             fill: color(entry.argb),
+                            colorHex: UInt32(entry.argb & 0xFFFFFF),
                             isSelected: style.textColor == entry.argb
                         )
                     }
@@ -1375,10 +1376,15 @@ private struct SubtitleAppearanceControls: View {
     }
 }
 
-/// A subtitle text-color swatch: selection wears the accent ring; focus scales + shadows the
-/// circle (platter-free, same focus language as the theme swatches).
+/// A subtitle text-color swatch: selection wears a ring that contrasts with the swatch's own
+/// fill; focus scales + shadows the circle (platter-free, same focus language as the theme
+/// swatches).
 private struct SubtitleColorSwatch: View {
     let fill: Color
+    /// Raw RGB backing `fill`, so the selection ring can pick a shade that stays visible against
+    /// it — a static accent ring nearly disappeared on the White swatch when the app theme was
+    /// also White (same problem `SwatchLabel` fixes for the theme picker).
+    let colorHex: UInt32
     let isSelected: Bool
 
     @Environment(\.isFocused) private var isFocused
@@ -1389,7 +1395,7 @@ private struct SubtitleColorSwatch: View {
             .frame(width: 46, height: 46)
             .overlay(
                 Circle().stroke(
-                    isSelected ? Theme.Palette.accent : Theme.Palette.textSecondary.opacity(0.4),
+                    isSelected ? Theme.Palette.onColor(forFillHex: colorHex) : Theme.Palette.textSecondary.opacity(0.4),
                     lineWidth: isSelected ? 4 : 1
                 )
             )

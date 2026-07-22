@@ -1,5 +1,6 @@
 package com.nuvio.app.features.collection
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.catalog.CATALOG_PAGE_SIZE
@@ -84,7 +85,7 @@ data class FolderDetailUiState(
 }
 
 object FolderDetailRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("FolderDetailRepository"))
     private val log = Logger.withTag("FolderDetailRepository")
 
     private val _uiState = MutableStateFlow(FolderDetailUiState())

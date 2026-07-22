@@ -65,11 +65,21 @@ fun avatarStorageUrl(storagePath: String): String =
 fun normalizedAvatarUrl(url: String?): String? =
     url?.trim()?.takeIf { it.isValidAvatarUrl() }
 
+/// Sanity bound for inline `data:image/...;base64,...` avatars (e.g. custom pictures imported
+/// from other Nuvio clients such as the mobile "Xperence" app, which write the encoded image
+/// straight into `avatar_url` rather than a Supabase storage URL). Generous enough for a decent
+/// profile-photo-sized JPEG/PNG once base64-inflated, but bounded so a malformed/huge value can't
+/// bloat sync payloads or the on-device cache indefinitely.
+private const val MAX_DATA_URI_AVATAR_LENGTH = 2 * 1024 * 1024
+
 fun String.isValidAvatarUrl(): Boolean {
     val value = trim()
-    return value.length <= 2048 &&
-        !value.any { it.isWhitespace() } &&
-        (value.startsWith("https://") || value.startsWith("http://"))
+    if (value.any { it.isWhitespace() }) return false
+    return when {
+        value.startsWith("https://") || value.startsWith("http://") -> value.length <= 2048
+        value.startsWith("data:image/") -> value.length <= MAX_DATA_URI_AVATAR_LENGTH
+        else -> false
+    }
 }
 
 fun profileAvatarImageUrl(profile: NuvioProfile, avatar: AvatarCatalogItem?): String? =

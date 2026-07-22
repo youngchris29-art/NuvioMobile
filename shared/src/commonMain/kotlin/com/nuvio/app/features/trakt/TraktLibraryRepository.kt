@@ -1,5 +1,6 @@
 package com.nuvio.app.features.trakt
 
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.RawHttpResponse
 import com.nuvio.app.features.addons.httpRequestRaw
@@ -54,7 +55,7 @@ object TraktLibraryRepository {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TraktLibraryRepository"))
 
     private val _uiState = MutableStateFlow(TraktLibraryUiState())
     val uiState: StateFlow<TraktLibraryUiState> = _uiState.asStateFlow()
