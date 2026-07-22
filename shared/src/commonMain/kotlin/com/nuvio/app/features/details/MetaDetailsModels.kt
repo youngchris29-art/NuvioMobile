@@ -100,4 +100,8 @@ data class MetaDetailsUiState(
     val isLoading: Boolean = false,
     val meta: MetaDetails? = null,
     val errorMessage: String? = null,
+    // Original "$type:$id" request key the emission belongs to (the catalog-preview id we were
+    // asked to load, NOT the remapped/canonical meta id). Lets the UI match emissions to the
+    // title it requested. Null for the initial/cleared empty state.
+    val requestKey: String? = null,
 )

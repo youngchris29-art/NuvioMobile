@@ -72,10 +72,12 @@ final class DetailViewModel: ObservableObject {
         detailWatcher = FlowWatcherKt.watch(MetaDetailsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MetaDetailsUiState else { return }
             // The shared repo holds one in-flight detail at a time — only adopt emissions for ours.
-            // Emissions carrying a meta are matched by id; loading/error emissions carry no id, so
-            // only the current owner may adopt them.
-            if let m = state.meta {
-                if m.type != self.type || m.id != self.id { return }
+            // The repo tags every publish with the ORIGINAL request key ("type:id" from the catalog
+            // preview we passed to load()); the resolved meta's own id can differ (the repo remaps
+            // tmdb: → tt… and the addon returns its canonical id), so we must NOT match on meta.id.
+            // The initial/cleared empty state carries no key — fall back to repo ownership for it.
+            if let key = state.requestKey {
+                if key != "\(self.type):\(self.id)" { return }
             } else if Self.currentOwner != self.ownerToken {
                 return
             }

@@ -58,14 +58,14 @@ object MetaDetailsRepository {
             cachedEntry.metaScreenMeta
                 ?.takeIf { cachedEntry.metaScreenSettingsFingerprint == metaScreenSettingsFingerprint }
                 ?.let { cachedMeta ->
-                    _uiState.value = MetaDetailsUiState(meta = cachedMeta.withUnreleasedFilter())
+                    _uiState.value = MetaDetailsUiState(meta = cachedMeta.withUnreleasedFilter(), requestKey = requestKey)
                     activeRequestKey = requestKey
                     return
                 }
 
             val cachedBaseMeta = cachedEntry.baseMeta
             if (!shouldEnrichForMetaScreen(cachedBaseMeta, id, mdbListSettings)) {
-                _uiState.value = MetaDetailsUiState(meta = cachedBaseMeta.withUnreleasedFilter())
+                _uiState.value = MetaDetailsUiState(meta = cachedBaseMeta.withUnreleasedFilter(), requestKey = requestKey)
                 activeRequestKey = requestKey
                 return
             }
@@ -79,6 +79,7 @@ object MetaDetailsRepository {
             _uiState.value = MetaDetailsUiState(
                 isLoading = true,
                 meta = cachedBaseMeta,
+                requestKey = requestKey,
             )
 
             scope.launch {
@@ -92,8 +93,10 @@ object MetaDetailsRepository {
                         settingsFingerprint = metaScreenSettingsFingerprint,
                     )
                 }
-                _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter())
-                activeRequestKey = requestKey
+                // Skip if a newer load() has taken over the shared repo.
+                if (activeRequestKey == requestKey) {
+                    _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter(), requestKey = requestKey)
+                }
             }
             return
         }
@@ -110,7 +113,7 @@ object MetaDetailsRepository {
         }
 
         activeRequestKey = requestKey
-        _uiState.value = MetaDetailsUiState(isLoading = true)
+        _uiState.value = MetaDetailsUiState(isLoading = true, requestKey = requestKey)
 
         scope.launch {
             val metaLookupId = resolveMetaLookupId(itemId = id, itemType = type)
@@ -131,19 +134,27 @@ object MetaDetailsRepository {
                 }
 
                 log.w { "No addon provides meta for type=$type id=$id" }
-                _uiState.value = MetaDetailsUiState(
-                    errorMessage = resourceString(
-                        "No addon provides meta for this content.",
-                        StringKey.details_no_addon_meta,
-                    ),
-                )
-                activeRequestKey = null
+                // Skip if a newer load() has taken over the shared repo.
+                if (activeRequestKey == requestKey) {
+                    _uiState.value = MetaDetailsUiState(
+                        errorMessage = resourceString(
+                            "No addon provides meta for this content.",
+                            StringKey.details_no_addon_meta,
+                        ),
+                        requestKey = requestKey,
+                    )
+                    activeRequestKey = null
+                }
                 return@launch
             }
 
             for (manifest in manifests) {
-                val result = withContext(Dispatchers.Default) {
-                    tryFetchMeta(manifest, type, metaLookupId, includeMdbList = false)
+                // Bound each addon's meta fetch (mirrors fetch()); without this a slow addon can
+                // hang the sequential loop for minutes (only ktor's 60s per-request timeout applies).
+                val result = withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+                    withContext(Dispatchers.Default) {
+                        tryFetchMeta(manifest, type, metaLookupId, includeMdbList = false)
+                    }
                 }
                 if (result != null) {
                     publishLoadedMeta(
@@ -171,13 +182,17 @@ object MetaDetailsRepository {
                 return@launch
             }
 
-            _uiState.value = MetaDetailsUiState(
-                errorMessage = resourceString(
-                    "Could not load details from any addon.",
-                    StringKey.details_load_failed_all_addons,
-                ),
-            )
-            activeRequestKey = null
+            // Skip if a newer load() has taken over the shared repo.
+            if (activeRequestKey == requestKey) {
+                _uiState.value = MetaDetailsUiState(
+                    errorMessage = resourceString(
+                        "Could not load details from any addon.",
+                        StringKey.details_load_failed_all_addons,
+                    ),
+                    requestKey = requestKey,
+                )
+                activeRequestKey = null
+            }
         }
     }
 
@@ -347,15 +362,20 @@ object MetaDetailsRepository {
         cachedMetaByRequestKey[requestKey] = cachedEntry
 
         if (!shouldEnrichForMetaScreen(meta, fallbackItemId, mdbListSettings)) {
-            _uiState.value = MetaDetailsUiState(meta = meta.withUnreleasedFilter())
-            activeRequestKey = requestKey
+            // Skip if a newer load() has taken over the shared repo (caching above still stands).
+            if (activeRequestKey == requestKey) {
+                _uiState.value = MetaDetailsUiState(meta = meta.withUnreleasedFilter(), requestKey = requestKey)
+            }
             return
         }
 
-        _uiState.value = MetaDetailsUiState(
-            isLoading = true,
-            meta = meta,
-        )
+        if (activeRequestKey == requestKey) {
+            _uiState.value = MetaDetailsUiState(
+                isLoading = true,
+                meta = meta,
+                requestKey = requestKey,
+            )
+        }
         val enrichedMeta = withContext(Dispatchers.Default) {
             enrichForMetaScreen(
                 requestKey = requestKey,
@@ -370,8 +390,9 @@ object MetaDetailsRepository {
             metaScreenMeta = enrichedMeta,
             metaScreenSettingsFingerprint = metaScreenSettingsFingerprint,
         )
-        _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter())
-        activeRequestKey = requestKey
+        if (activeRequestKey == requestKey) {
+            _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter(), requestKey = requestKey)
+        }
     }
 
     private suspend fun enrichForMetaScreen(
@@ -427,11 +448,14 @@ object MetaDetailsRepository {
 
         if (shouldUseTrakt) {
             val items = runCatching {
-                TraktRelatedRepository.getRelated(
-                    meta = meta,
-                    fallbackItemId = fallbackItemId,
-                    fallbackItemType = fallbackItemType,
-                )
+                // Bound the related-titles call so a slow Trakt response can't stall enrichment.
+                withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+                    TraktRelatedRepository.getRelated(
+                        meta = meta,
+                        fallbackItemId = fallbackItemId,
+                        fallbackItemType = fallbackItemType,
+                    )
+                } ?: emptyList()
             }.onFailure { error ->
                 log.w { "Failed to load Trakt related titles for ${meta.id}: ${error.message}" }
             }.getOrDefault(emptyList())
