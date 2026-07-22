@@ -71,6 +71,7 @@ struct AuthView: View {
                             ProgressView()
                         } else {
                             Text(isSignUp ? "Create Account" : "Sign In")
+                                .prominentAccentLabel()
                                 .padding(.horizontal, Theme.Spacing.xl)
                         }
                     }

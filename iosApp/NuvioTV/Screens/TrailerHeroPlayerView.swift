@@ -1,8 +1,13 @@
 import SwiftUI
+import Combine
 import AVFoundation
 import AVKit
+import SharedCore
 
-/// A muted, looping, controls-free trailer surface behind the Detail hero, backed by **AVPlayer**.
+/// A looping, controls-free trailer surface behind the Detail hero, backed by **AVPlayer**. Starts
+/// muted and follows the shared `HeroTrailerAudioState` (same singleton the mobile app's hero
+/// trailer uses) from then on, so the user's mute/unmute choice persists across titles for the
+/// session. `HeroTrailerMuteButton` below is the affordance that flips it.
 ///
 /// This replaced an earlier libmpv/Vulkan implementation: a second Vulkan (MoltenVK) context running
 /// alongside an interactive SwiftUI screen asserts on the tvOS simulator whenever Detail re-renders
@@ -49,6 +54,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         private var statusObservation: NSKeyValueObservation?
         private var failureObserver: NSObjectProtocol?
         private var watchdog: Timer?
+        private var audioWatcher: FlowWatcher?
         private var started = false
         private var failed = false
 
@@ -61,8 +67,17 @@ struct TrailerHeroPlayer: UIViewRepresentable {
 
             let item = AVPlayerItem(url: url)
             let queue = AVQueuePlayer()
-            queue.isMuted = true
             queue.allowsExternalPlayback = false
+
+            // Seed with the shared preference's current value (rather than always hardcoding muted)
+            // so re-attaching (e.g. returning to a title after unmuting) doesn't flash muted first.
+            let audioState = HeroTrailerAudioState.shared
+            queue.isMuted = (audioState.muted.value_ as? KotlinBoolean)?.boolValue ?? true
+            audioWatcher = FlowWatcherKt.watch(audioState.muted) { [weak self] emitted in
+                guard let self, let boxed = emitted as? KotlinBoolean else { return }
+                self.player?.isMuted = boxed.boolValue
+            }
+
             looper = AVPlayerLooper(player: queue, templateItem: item)
             view.playerLayer.player = queue
             player = queue
@@ -108,6 +123,8 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 NotificationCenter.default.removeObserver(failureObserver)
                 self.failureObserver = nil
             }
+            audioWatcher?.cancel()
+            audioWatcher = nil
             player?.pause()
             player = nil
             looper = nil
@@ -134,4 +151,49 @@ struct FullScreenTrailerPlayer: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {}
+}
+
+/// Bridges `HeroTrailerAudioState.muted` (Kotlin `StateFlow<Boolean>`) to SwiftUI, the same way
+/// `StateFlowObserver` bridges the UiState repositories — but scoped to a bare `Boolean`, which KMP
+/// boxes as `KotlinBoolean` rather than a data-class UiState, so it doesn't fit that generic type.
+@MainActor
+private final class HeroTrailerAudioObserver: ObservableObject {
+    @Published private(set) var isMuted: Bool
+
+    private var watcher: FlowWatcher?
+
+    init() {
+        let flow = HeroTrailerAudioState.shared.muted
+        self.isMuted = (flow.value_ as? KotlinBoolean)?.boolValue ?? true
+        self.watcher = FlowWatcherKt.watch(flow) { [weak self] emitted in
+            guard let self, let boxed = emitted as? KotlinBoolean else { return }
+            self.isMuted = boxed.boolValue
+        }
+    }
+
+    deinit { watcher?.cancel() }
+}
+
+/// Mute-state indicator for the hero trailer. Not focusable: the overlay sits above the detail
+/// ScrollView where the focus engine routes Up presses to the tab bar, so the actual toggle is the
+/// Siri Remote's play/pause button (`.onPlayPauseCommand` in `DetailView`) — this just shows the
+/// current state plus the ⏯ hint. Toggling flips the shared `HeroTrailerAudioState` preference the
+/// mobile app also reads, so the choice persists across titles for the session.
+struct HeroTrailerMuteButton: View {
+    @StateObject private var audio = HeroTrailerAudioObserver()
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "playpause.fill")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Image(systemName: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(Theme.Font.meta)
+                .foregroundStyle(Theme.Palette.textPrimary)
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 56)
+        .background(Capsule().fill(Color.black.opacity(0.35)))
+        .accessibilityLabel(audio.isMuted ? "Trailer muted — press play/pause to unmute" : "Trailer sound on — press play/pause to mute")
+    }
 }

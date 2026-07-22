@@ -74,7 +74,26 @@ struct DetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .overlay(alignment: .topTrailing) {
+            // Topmost so it stays reachable over both the scrim (hit-testing disabled there) and
+            // the ScrollView's full-bleed frame; shown only while the hero trailer is actually
+            // playing (same gating as the player itself, just re-checked without `trailer` unwrapped
+            // since we don't need the URL here).
+            if model.trailerVideoURL != nil, !showStreams, model.trailerPlayback == nil {
+                HeroTrailerMuteButton()
+                    .padding(Theme.Spacing.screen)
+                    .transition(.opacity)
+            }
+        }
         .animation(.easeInOut(duration: 0.8), value: model.trailerVideoURL != nil)
+        // The speaker overlay sits above the ScrollView, where the tvOS focus engine routes Up
+        // presses to the tab bar instead — so the reachable control is the Siri Remote's
+        // play/pause button, and the overlay acts as the state indicator.
+        .onPlayPauseCommand {
+            if model.trailerVideoURL != nil, !showStreams, model.trailerPlayback == nil {
+                HeroTrailerAudioState.shared.toggleMuted()
+            }
+        }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
         .fullScreenCover(isPresented: $showStreams) {

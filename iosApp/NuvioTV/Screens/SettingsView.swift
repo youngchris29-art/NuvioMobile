@@ -862,14 +862,14 @@ private struct ThemePickerRow: View {
     let selectedName: String
     let onSelect: (AppTheme) -> Void
 
-    private static let options: [(theme: AppTheme, label: String, color: Color)] = [
-        (.crimson, "Crimson", Color(hex: 0xE53935)),
-        (.ocean, "Ocean", Color(hex: 0x1E88E5)),
-        (.violet, "Violet", Color(hex: 0x8E24AA)),
-        (.emerald, "Emerald", Color(hex: 0x43A047)),
-        (.amber, "Amber", Color(hex: 0xFB8C00)),
-        (.rose, "Rose", Color(hex: 0xD81B60)),
-        (.white, "White", Color(hex: 0xF5F5F5)),
+    private static let options: [(theme: AppTheme, label: String, colorHex: UInt32)] = [
+        (.crimson, "Crimson", 0xE53935),
+        (.ocean, "Ocean", 0x1E88E5),
+        (.violet, "Violet", 0x8E24AA),
+        (.emerald, "Emerald", 0x43A047),
+        (.amber, "Amber", 0xFB8C00),
+        (.rose, "Rose", 0xD81B60),
+        (.white, "White", 0xF5F5F5),
     ]
 
     var body: some View {
@@ -880,7 +880,8 @@ private struct ThemePickerRow: View {
                         onSelect(option.theme)
                     } label: {
                         SwatchLabel(
-                            color: option.color,
+                            color: Color(hex: option.colorHex),
+                            colorHex: option.colorHex,
                             label: option.label,
                             isSelected: option.theme.name == selectedName
                         )
@@ -893,10 +894,14 @@ private struct ThemePickerRow: View {
     }
 }
 
-/// A single theme swatch: colored circle + name. Selection wears the white ring; focus scales the
-/// circle and brightens the label (platter-free, mirrors the poster-tile focus language).
+/// A single theme swatch: colored circle + name. Selection wears a ring; focus scales the circle
+/// and brightens the label (platter-free, mirrors the poster-tile focus language).
 private struct SwatchLabel: View {
     let color: Color
+    /// Raw hex backing `color`, so the selection ring can pick a shade that stays visible against
+    /// it — the White swatch's fill (0xF5F5F5) is close enough to `textPrimary` that a static
+    /// near-white ring all but disappeared on it.
+    let colorHex: UInt32
     let label: String
     let isSelected: Bool
 
@@ -909,7 +914,7 @@ private struct SwatchLabel: View {
                 .frame(width: 56, height: 56)
                 .overlay(
                     Circle().strokeBorder(
-                        isSelected ? Theme.Palette.textPrimary : .clear,
+                        isSelected ? Theme.Palette.onColor(forFillHex: colorHex) : .clear,
                         lineWidth: 4
                     )
                 )
@@ -1117,6 +1122,7 @@ private struct DebridKeyEntryRow: View {
             } label: {
                 Label("Save Key", systemImage: "checkmark")
                     .font(Theme.Font.meta)
+                    .prominentAccentLabel()
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.vertical, Theme.Spacing.xxs + 2)
             }
@@ -1256,6 +1262,7 @@ private struct TmdbKeyEntryRow: View {
             } label: {
                 Label("Save & Enable", systemImage: "checkmark")
                     .font(Theme.Font.meta)
+                    .prominentAccentLabel()
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.vertical, Theme.Spacing.xxs + 2)
             }

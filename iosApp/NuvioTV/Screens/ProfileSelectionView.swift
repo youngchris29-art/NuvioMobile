@@ -428,6 +428,7 @@ struct ProfileEditView: View {
                     Button { save() } label: {
                         Text("Save")
                             .font(Theme.Font.meta)
+                            .prominentAccentLabel()
                             .padding(.horizontal, Theme.Spacing.xl)
                             .padding(.vertical, Theme.Spacing.xs)
                     }

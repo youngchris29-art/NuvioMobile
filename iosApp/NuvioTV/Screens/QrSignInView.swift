@@ -125,6 +125,7 @@ struct QrSignInView: View {
                     model.retry()
                 } label: {
                     Label("Try Again", systemImage: "arrow.clockwise")
+                        .prominentAccentLabel()
                         .padding(.horizontal, Theme.Spacing.lg)
                         .padding(.vertical, Theme.Spacing.xs)
                 }

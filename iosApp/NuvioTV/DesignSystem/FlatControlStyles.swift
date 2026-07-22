@@ -52,12 +52,20 @@ struct ChipButtonStyle: ButtonStyle {
         @Environment(\.isFocused) private var isFocused
 
         private var strokeColor: Color {
-            if isFocused { return selected ? .white : Theme.Palette.accentFocus }
+            // Focused+selected used a hardcoded white ring to stand out against the accent fill —
+            // on the White theme that fill IS white, so the ring vanished exactly like the label
+            // text did. `accentText` contrasts with the fill on every theme (dark ring on the
+            // White theme's near-white fill, the previous light ring everywhere else).
+            if isFocused { return selected ? Theme.Palette.accentText : Theme.Palette.accentFocus }
             return selected ? .clear : Theme.Palette.textSecondary.opacity(0.35)
         }
 
         var body: some View {
             configuration.label
+                // Selected chips fill with the theme accent — on the White theme that fill is
+                // near-white, so pin the text/icon color to the accent-aware `accentText` rather
+                // than letting it fall through to the caller's (often unset, default-light) color.
+                .foregroundStyle(selected ? Theme.Palette.accentText : Theme.Palette.textPrimary)
                 .frame(minWidth: 40, minHeight: 40)
                 .background(Capsule().fill(selected ? Theme.Palette.accent : .clear))
                 .overlay(Capsule().strokeBorder(strokeColor, lineWidth: isFocused ? 3 : 1))
@@ -74,4 +82,21 @@ extension ButtonStyle where Self == ChipButtonStyle {
     static var chip: ChipButtonStyle { .init() }
     /// Chip that fills with the theme accent when selected.
     static func chip(selected: Bool) -> ChipButtonStyle { .init(selected: selected) }
+}
+
+/// Label color for accent-tinted `.borderedProminent` buttons. tvOS swaps the prominent platter to
+/// a near-white "lifted" fill on focus regardless of tint, so no fixed label color works: focused
+/// needs dark text, unfocused needs the accent's contrast color (`Theme.Palette.accentText`). An
+/// explicit `foregroundStyle` would disable the system's automatic label flip — this restores it.
+struct ProminentAccentLabel: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(isFocused ? Color(hex: 0x0D0D0D) : Theme.Palette.accentText)
+    }
+}
+
+extension View {
+    /// Apply to the label of an accent-tinted `.borderedProminent` button.
+    func prominentAccentLabel() -> some View { modifier(ProminentAccentLabel()) }
 }

@@ -22,19 +22,42 @@ enum Theme {
         nonisolated(unsafe) static var accent = Color(hex: 0xE53935)
         /// Focus ring / highlight (brighter accent). Mutable — follows the theme with `accent`.
         nonisolated(unsafe) static var accentFocus = Color(hex: 0xFF5252)
+        /// Text/icon color for content drawn ON an `accent`/`accentFocus` fill (selected chips,
+        /// filled badges, etc). Mutable — recomputed by `applyTheme` from the accent's luminance so
+        /// the near-white White theme gets dark text/icons while every other (darker/saturated)
+        /// theme keeps the existing light `textPrimary`. Only use this where text sits on a solid
+        /// accent fill — accent borders/rings don't need it.
+        nonisolated(unsafe) static var accentText = Color(hex: 0x0D0D0D)
 
         /// Retints the palette for a shared `AppTheme` (by enum name). Accents mirror mobile's
         /// `ThemeColors.kt` (`AppTheme.nativeAccentHex`), with a brighter focus variant per theme.
         static func applyTheme(named name: String) {
+            let accentHex: UInt32
             switch name {
-            case "OCEAN":   accent = Color(hex: 0x1E88E5); accentFocus = Color(hex: 0x42A5F5)
-            case "VIOLET":  accent = Color(hex: 0x8E24AA); accentFocus = Color(hex: 0xAB47BC)
-            case "EMERALD": accent = Color(hex: 0x43A047); accentFocus = Color(hex: 0x66BB6A)
-            case "AMBER":   accent = Color(hex: 0xFB8C00); accentFocus = Color(hex: 0xFFA726)
-            case "ROSE":    accent = Color(hex: 0xD81B60); accentFocus = Color(hex: 0xEC407A)
-            case "WHITE":   accent = Color(hex: 0xF5F5F5); accentFocus = Color(hex: 0xFFFFFF)
-            default:        accent = Color(hex: 0xE53935); accentFocus = Color(hex: 0xFF5252) // CRIMSON
+            case "OCEAN":   accentHex = 0x1E88E5; accentFocus = Color(hex: 0x42A5F5)
+            case "VIOLET":  accentHex = 0x8E24AA; accentFocus = Color(hex: 0xAB47BC)
+            case "EMERALD": accentHex = 0x43A047; accentFocus = Color(hex: 0x66BB6A)
+            case "AMBER":   accentHex = 0xFB8C00; accentFocus = Color(hex: 0xFFA726)
+            case "ROSE":    accentHex = 0xD81B60; accentFocus = Color(hex: 0xEC407A)
+            case "WHITE":   accentHex = 0xF5F5F5; accentFocus = Color(hex: 0xFFFFFF)
+            default:        accentHex = 0xE53935; accentFocus = Color(hex: 0xFF5252) // CRIMSON
             }
+            accent = Color(hex: accentHex)
+            accentText = onColor(forFillHex: accentHex)
+        }
+
+        /// Picks a legible text/icon color for a solid fill, by simple relative-luminance
+        /// threshold: dark text for light fills (e.g. the White theme's near-white accent), the
+        /// app's light `textPrimary` otherwise. Not full WCAG contrast math — just enough to keep
+        /// text readable against any of the app's accent colors. Threshold sits well above the
+        /// brightest saturated accent (Amber, ~0.6) so every existing theme keeps its current
+        /// light text; only near-white fills (the White theme, ~0.96) cross it.
+        static func onColor(forFillHex hex: UInt32) -> Color {
+            let r = Double((hex >> 16) & 0xFF) / 255.0
+            let g = Double((hex >> 8) & 0xFF) / 255.0
+            let b = Double(hex & 0xFF) / 255.0
+            let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            return luminance > 0.75 ? Color(hex: 0x0D0D0D) : textPrimary
         }
         /// Primary text on dark backgrounds.
         static let textPrimary = Color(hex: 0xF5F7F8)

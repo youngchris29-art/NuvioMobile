@@ -20,6 +20,9 @@ final class StreamsViewModel: ObservableObject {
         let id: String           // addonId
         let addonName: String
         let streams: [StreamItem]
+        /// Mirrors the shared `AddonStreamGroup.isLoading` — this addon hasn't finished
+        /// responding yet (more streams may still arrive). Drives the per-group header spinner.
+        let isLoading: Bool
     }
 
     @Published private(set) var groups: [Group] = []
@@ -140,7 +143,7 @@ final class StreamsViewModel: ObservableObject {
                 return debridEnabled && stream.isAddonDebridCandidate
             }
             guard !playable.isEmpty else { return nil }
-            return Group(id: group.addonId, addonName: group.addonName, streams: playable)
+            return Group(id: group.addonId, addonName: group.addonName, streams: playable, isLoading: group.isLoading)
         }
         firstRowKey = groups.first.map { Self.rowKey(groupId: $0.id, index: 0) }
 

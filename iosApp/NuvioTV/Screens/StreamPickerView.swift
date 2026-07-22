@@ -12,9 +12,18 @@ import SharedCore
 /// Badges: rows render imported badge-pack chips, the file-size chip, TOP/BOTTOM placement, the
 /// optional addon logo and the "- <Provider> Instant" cached suffix (mobile `StreamCard` parity).
 ///
-/// Focus: rows carry stable focus keys and initial focus is moved to the FIRST stream row when
-/// rows first arrive. (Previously the dev test-stream button at the bottom was the only
-/// focusable view while loading, so focus landed — and stayed — at the bottom of the list.)
+/// Grouping: each addon's streams sit under a collapsed-by-default, focusable header (name,
+/// stream count, per-addon loading spinner). Rows only build while their group is expanded — a
+/// `LazyVStack` throughout — so the picker no longer lags while addons are still resolving
+/// (previously every addon's rows were built eagerly in one long always-expanded list). A lone
+/// addon auto-expands; anything past that stays collapsed until picked, and never
+/// auto-collapses/re-expands as later addons stream in.
+///
+/// Focus: rows and group headers carry stable focus keys. Initial focus lands on the first
+/// stream row when there's a single, auto-expanded group, otherwise on the first group's header.
+/// Collapsing a group that holds focus retargets focus to that group's header first. (Previously
+/// the dev test-stream button at the bottom was the only focusable view while loading, so focus
+/// landed — and stayed — at the bottom of the list.)
 struct StreamPickerView: View {
     let type: String
     let videoId: String
@@ -38,6 +47,12 @@ struct StreamPickerView: View {
     /// Transient failure message (debrid resolve errors), auto-dismissed after a few seconds.
     @State private var toast: String?
     @FocusState private var focusedRow: String?
+    /// Addon ids whose group is currently expanded. Collapsed (absent) by default; see
+    /// `body`'s auto-expand-single-group handling and `toggleExpansion(_:)`.
+    @State private var expandedGroups: Set<String> = []
+    /// Guards the one-time auto-expand check so a second addon streaming in later never
+    /// collapses/re-expands anything under the user (no layout shifts under focus).
+    @State private var didAutoExpand = false
     @Environment(\.dismiss) private var dismiss
 
     private static let testRowKey = "test-stream"
@@ -104,7 +119,10 @@ struct StreamPickerView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
+                // Lazy so collapsed groups' rows (the overwhelming majority while addons are
+                // still streaming in) are never built at all — this was the lag source (BUG-5):
+                // a non-lazy VStack built every row of every addon up front.
+                LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
                     Text(title)
                         .font(Theme.Font.screenTitle)
                         .foregroundStyle(Theme.Palette.textPrimary)
@@ -118,13 +136,23 @@ struct StreamPickerView: View {
 
                     ForEach(model.groups) { group in
                         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                            Text(group.addonName)
-                                .font(Theme.Font.sectionTitle)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-                            ForEach(Array(group.streams.enumerated()), id: \.offset) { index, stream in
-                                streamRow(stream, key: StreamsViewModel.rowKey(groupId: group.id, index: index))
+                            groupHeader(group)
+                            // Collapsed groups render nothing at all (not just off-screen —
+                            // absent from the hierarchy), which is what actually kills the lag:
+                            // the old always-expanded list built every row of every addon.
+                            if expandedGroups.contains(group.id) {
+                                LazyVStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                                    ForEach(Array(group.streams.enumerated()), id: \.offset) { index, stream in
+                                        streamRow(stream, key: StreamsViewModel.rowKey(groupId: group.id, index: index))
+                                    }
+                                }
+                                .padding(.top, Theme.Spacing.xs)
                             }
                         }
+                        // Each addon group is its own focus section: D-pad up/down navigates
+                        // between group headers and (when expanded) that group's rows without
+                        // leaking focus into a sibling group's rows.
+                        .focusSection()
                     }
 
                     if let reason = model.emptyReason {
@@ -172,12 +200,27 @@ struct StreamPickerView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .onChange(of: model.firstRowKey) { _, newKey in
-                // Move initial focus to the first stream row when rows (first) arrive. Never
-                // steals focus after the user has moved it to a real row: only fires while focus
-                // is nowhere or on the (now hidden) test button.
-                guard let newKey, focusedRow == nil || focusedRow == Self.testRowKey else { return }
-                DispatchQueue.main.async { focusedRow = newKey }
+            .onChange(of: model.groups.map(\.id)) { _, ids in
+                guard !ids.isEmpty else { return }
+                // Auto-expand exactly once, only when the very first batch of groups turns out
+                // to be a single addon. Never re-evaluated afterward, so a second addon
+                // streaming in later doesn't retroactively collapse or expand anything.
+                if !didAutoExpand {
+                    didAutoExpand = true
+                    if ids.count == 1 { expandedGroups = [ids[0]] }
+                }
+
+                // Move initial focus once groups (first) arrive: to the first stream row when
+                // there's a single, auto-expanded group (unchanged from before collapsing was
+                // added), otherwise to the first group's header. Never steals focus after the
+                // user has moved it to a real row/header: only fires while focus is nowhere or
+                // on the (now hidden) test button.
+                guard focusedRow == nil || focusedRow == Self.testRowKey else { return }
+                if ids.count == 1, let firstKey = model.firstRowKey {
+                    DispatchQueue.main.async { focusedRow = firstKey }
+                } else if let firstId = ids.first {
+                    DispatchQueue.main.async { focusedRow = Self.headerKey(groupId: firstId) }
+                }
             }
             .onAppear {
                 model.start()
@@ -197,6 +240,62 @@ struct StreamPickerView: View {
                     .ignoresSafeArea()
                     .id(ctx.id)
             }
+        }
+    }
+
+    // MARK: - Group headers
+
+    private static func headerKey(groupId: String) -> String { "header:\(groupId)" }
+
+    /// Collapsed by default: a focusable header row per addon (name, stream count, chevron, and
+    /// a per-addon spinner while that addon is still loading — the shared `AddonStreamGroup`
+    /// carries `isLoading` per addon already, so this reflects real per-addon state rather than
+    /// the global "any addon still loading" flag). Deliberately a plain `Button`, not
+    /// `DisclosureGroup` — tvOS focus/highlight on `DisclosureGroup` is poor and inconsistent
+    /// with the rest of this screen's rows.
+    private func groupHeader(_ group: StreamsViewModel.Group) -> some View {
+        let key = Self.headerKey(groupId: group.id)
+        let isExpanded = expandedGroups.contains(group.id)
+
+        return Button {
+            toggleExpansion(group)
+        } label: {
+            HStack(spacing: Theme.Spacing.sm) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .frame(width: 20, alignment: .center)
+                Text(group.addonName)
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                Text(group.streams.count == 1 ? "1 stream" : "\(group.streams.count) streams")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                if group.isLoading {
+                    ProgressView().scaleEffect(0.7)
+                }
+                Spacer()
+            }
+            .padding(.vertical, Theme.Spacing.xs + 2)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.settingsRow)
+        .focused($focusedRow, equals: key)
+    }
+
+    private func toggleExpansion(_ group: StreamsViewModel.Group) {
+        if expandedGroups.contains(group.id) {
+            // Collapsing a group that currently holds focus would otherwise leave focus on a
+            // row that's about to disappear from the hierarchy — retarget to the header first.
+            if let focusedRow, focusedRow.hasPrefix("\(group.id)#") {
+                self.focusedRow = Self.headerKey(groupId: group.id)
+            }
+            expandedGroups.remove(group.id)
+        } else {
+            expandedGroups.insert(group.id)
+            // Expanding keeps focus on the header (SwiftUI doesn't move it on select), matching
+            // the requirement that expand never steals focus.
         }
     }
 
@@ -244,8 +343,12 @@ struct StreamPickerView: View {
                 }
             }
             .padding(.vertical, Theme.Spacing.xs + 2)
+            .padding(.horizontal, Theme.Spacing.sm)
         }
-        .buttonStyle(.glass)
+        // `.settingsRow` (platter-free, soft white highlight + accent ring) replaces the system
+        // `.glass` style: Liquid Glass's focus platter goes near-white, which made this row's
+        // title text (statically `textPrimary`, near-white) unreadable on focus.
+        .buttonStyle(.settingsRow)
         .focused($focusedRow, equals: key)
     }
 
