@@ -1210,55 +1210,64 @@ private struct DefaultPlayerRow: View {
     /// probe — and the calls are a few cheap registry lookups.
     private let externalPlayers: [ExternalPlayerApp] = ExternalPlayerPlatform.shared.availablePlayers()
 
+    /// Display name for the current selection (row trailing value).
+    private var selectedName: String {
+        externalPlayers.first { $0.id == defaultExternalPlayerId }?.name ?? "NuvioTV (Built-in)"
+    }
+
     var body: some View {
         if !externalPlayers.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                Text("Default Player")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                HStack(spacing: Theme.Spacing.md) {
-                    chip(label: "NuvioTV (Built-in)", id: "")
+            // Dropdown rather than inline chips: renders as a normal settings row showing the
+            // current choice; Select pops the native tvOS menu. The embedded Picker gets
+            // radio-style checkmarks in the menu for free, bound straight to the stored id.
+            Menu {
+                Picker("Default Player", selection: $defaultExternalPlayerId) {
+                    Text("NuvioTV (Built-in)").tag("")
                     ForEach(externalPlayers, id: \.id) { player in
-                        chip(label: player.name, id: player.id)
+                        Text(player.name).tag(player.id)
                     }
                 }
-                Text(defaultExternalPlayerId.isEmpty
-                    ? "Streams play in the built-in player. Hold a stream to open it in an external player instead."
-                    : "Streams open in the external player. Hold a stream to play it in NuvioTV instead. If the external player can\u{2019}t open, playback falls back to the built-in player.")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .frame(maxWidth: 1100, alignment: .leading)
+            } label: {
+                HStack(spacing: Theme.Spacing.lg) {
+                    Image(systemName: "play.rectangle.on.rectangle")
+                        .font(.system(size: 34))
+                        .foregroundStyle(Theme.Palette.accent)
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                        Text("Default Player")
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                        Text(defaultExternalPlayerId.isEmpty
+                            ? "Streams play in the built-in player. Hold a stream to open it in an external player instead."
+                            : "Streams open in \(selectedName). Hold a stream to play it in NuvioTV instead; if \(selectedName) can\u{2019}t open, playback falls back to the built-in player.")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                    Spacer()
+                    Text(selectedName)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 28))
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+                .padding(Theme.Spacing.lg)
+                .frame(maxWidth: .infinity)
             }
+            .menuStyle(.button)
+            .buttonStyle(.settingsRow)
             .onAppear {
                 // Safe here: this onAppear is on the VISIBLE content, so it actually fires.
                 // A stored default whose app was uninstalled silently reverts to built-in —
                 // the picker independently guards against this too, but clearing here keeps
-                // the chips honest (otherwise no chip would show as selected). When NO player
-                // is installed the row is hidden and a stale id survives harmlessly; the
-                // picker's membership check already ignores it.
+                // the row's displayed value honest. When NO player is installed the row is
+                // hidden and a stale id survives harmlessly; the stream picker's membership
+                // check already ignores it.
                 if !defaultExternalPlayerId.isEmpty,
                    !externalPlayers.contains(where: { $0.id == defaultExternalPlayerId }) {
                     defaultExternalPlayerId = ""
                 }
             }
         }
-    }
-
-    private func chip(label: String, id: String) -> some View {
-        Button {
-            defaultExternalPlayerId = id
-        } label: {
-            HStack(spacing: Theme.Spacing.xs) {
-                if defaultExternalPlayerId == id {
-                    Image(systemName: "checkmark.circle.fill")
-                }
-                Text(label)
-            }
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-        }
-        .buttonStyle(.chip(selected: defaultExternalPlayerId == id))
     }
 }
 
