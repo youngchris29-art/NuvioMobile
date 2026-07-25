@@ -21,7 +21,7 @@ final class TraktViewModel: ObservableObject {
 
     func start() {
         guard watcher == nil else { return }
-        TraktAuthRepository.shared.ensureLoaded()
+        TraktAuthRepository.shared.ensureLoaded(profileId: ProfileRepository.shared.activeProfileId)
         watcher = FlowWatcherKt.watch(TraktAuthRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? TraktAuthUiState else { return }
             self.credentialsConfigured = state.credentialsConfigured
@@ -43,14 +43,14 @@ final class TraktViewModel: ObservableObject {
     }
 
     func connect() {
-        TraktAuthRepository.shared.onStartDeviceFlow()
+        TraktAuthRepository.shared.onStartDeviceFlow(profileId: ProfileRepository.shared.activeProfileId)
     }
 
     func cancelActivation() {
-        TraktAuthRepository.shared.onCancelDeviceFlow()
+        TraktAuthRepository.shared.onCancelDeviceFlow(profileId: ProfileRepository.shared.activeProfileId)
     }
 
     func disconnect() {
-        TraktAuthRepository.shared.onDisconnectRequested()
+        TraktAuthRepository.shared.onDisconnectRequested(profileId: ProfileRepository.shared.activeProfileId)
     }
 }

@@ -410,6 +410,7 @@ object WatchProgressRepository {
         sourceChanged: Boolean,
         force: Boolean,
     ): Boolean {
+        TraktAuthRepository.ensureLoaded(profileId)
         ensureLoaded()
         if (currentProfileId != profileId) {
             loadFromDisk(profileId)

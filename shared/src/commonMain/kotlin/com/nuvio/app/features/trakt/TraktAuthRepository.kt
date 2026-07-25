@@ -50,6 +50,8 @@ object TraktAuthRepository {
     val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
 
     private var hasLoaded = false
+    private var currentProfileId: Int = 1
+    private var profileGeneration: Long = 0L
     private var authState = TraktAuthState()
 
     private var deviceFlowJob: Job? = null
@@ -57,32 +59,34 @@ object TraktAuthRepository {
     private var deviceVerificationUrl: String? = null
     private var deviceExpiresAtMillis: Long? = null
 
-    fun ensureLoaded() {
-        if (hasLoaded) return
-        loadFromDisk()
+    fun ensureLoaded(profileId: Int = ProfileRepository.activeProfileId) {
+        if (hasLoaded && currentProfileId == profileId) return
+        loadFromDisk(profileId)
     }
 
-    fun onProfileChanged() {
-        loadFromDisk()
+    fun onProfileChanged(profileId: Int) {
+        loadFromDisk(profileId)
     }
 
     fun clearLocalState() {
         cancelDeviceFlowInternal()
         hasLoaded = false
+        currentProfileId = 1
+        profileGeneration += 1L
         authState = TraktAuthState()
         publish()
     }
 
-    fun snapshot(): TraktAuthUiState {
-        ensureLoaded()
+    fun snapshot(profileId: Int = ProfileRepository.activeProfileId): TraktAuthUiState {
+        ensureLoaded(profileId)
         return _uiState.value
     }
 
     fun hasRequiredCredentials(): Boolean =
         TraktConfig.CLIENT_ID.isNotBlank() && TraktConfig.CLIENT_SECRET.isNotBlank()
 
-    fun onConnectRequested(): String? {
-        ensureLoaded()
+    fun onConnectRequested(profileId: Int = ProfileRepository.activeProfileId): String? {
+        ensureLoaded(profileId)
         if (!hasRequiredCredentials()) {
             publish(errorMessage = resourceString("Missing Trakt credentials", StringKey.trakt_missing_credentials))
             return null
@@ -93,7 +97,7 @@ object TraktAuthRepository {
             pendingAuthorizationState = oauthState,
             pendingAuthorizationStartedAtMillis = TraktPlatformClock.nowEpochMs(),
         )
-        persist()
+        persist(profileId)
         publish(
             statusMessage = resourceString("Complete Trakt sign in in your browser", StringKey.trakt_complete_sign_in_browser),
             errorMessage = null,
@@ -102,22 +106,22 @@ object TraktAuthRepository {
         return buildAuthorizationUrl(oauthState)
     }
 
-    fun pendingAuthorizationUrl(): String? {
-        ensureLoaded()
+    fun pendingAuthorizationUrl(profileId: Int = ProfileRepository.activeProfileId): String? {
+        ensureLoaded(profileId)
         val oauthState = authState.pendingAuthorizationState ?: return null
         return buildAuthorizationUrl(oauthState)
     }
 
-    fun onCancelAuthorization() {
-        ensureLoaded()
+    fun onCancelAuthorization(profileId: Int = ProfileRepository.activeProfileId) {
+        ensureLoaded(profileId)
         clearPendingAuthorization()
-        persist()
+        persist(profileId)
         publish(statusMessage = null, errorMessage = null)
     }
 
-    fun onCancelDeviceFlow() {
+    fun onCancelDeviceFlow(profileId: Int = ProfileRepository.activeProfileId) {
         cancelDeviceFlowInternal()
-        onCancelAuthorization()
+        onCancelAuthorization(profileId)
     }
 
     /**
@@ -126,19 +130,19 @@ object TraktAuthRepository {
      * [TraktAuthUiState.deviceVerificationUrl], then polls `/oauth/device/token`
      * until approved, denied, or expired.
      */
-    fun onStartDeviceFlow() {
-        ensureLoaded()
+    fun onStartDeviceFlow(profileId: Int = ProfileRepository.activeProfileId) {
+        ensureLoaded(profileId)
         if (!hasRequiredCredentials()) {
             publish(errorMessage = resourceString("Missing Trakt credentials", StringKey.trakt_missing_credentials))
             return
         }
         if (deviceFlowJob?.isActive == true) return
         deviceFlowJob = scope.launch {
-            runDeviceFlow()
+            runDeviceFlow(profileId)
         }
     }
 
-    private suspend fun runDeviceFlow() {
+    private suspend fun runDeviceFlow(profileId: Int = currentProfileId) {
         publish(isLoading = true, errorMessage = null)
 
         val jsonHeaders = mapOf(
@@ -216,7 +220,7 @@ object TraktAuthRepository {
                         )
                         return
                     }
-                    applyTokenResponse(token)
+                    applyTokenResponse(token, profileId)
                     return
                 }
                 400 -> Unit // Pending — user hasn't approved yet; keep polling.
@@ -254,7 +258,7 @@ object TraktAuthRepository {
         deviceExpiresAtMillis = null
     }
 
-    private suspend fun applyTokenResponse(parsed: TraktTokenResponse) {
+    private suspend fun applyTokenResponse(parsed: TraktTokenResponse, profileId: Int = currentProfileId) {
         authState = authState.copy(
             accessToken = parsed.accessToken,
             refreshToken = parsed.refreshToken,
@@ -264,8 +268,8 @@ object TraktAuthRepository {
             pendingAuthorizationState = null,
             pendingAuthorizationStartedAtMillis = null,
         )
-        persist()
-        refreshUserSettings()
+        persist(profileId)
+        refreshUserSettings(profileId)
         publish(
             isLoading = false,
             statusMessage = resourceString("Connected to Trakt", StringKey.trakt_connected_status),
@@ -278,7 +282,8 @@ object TraktAuthRepository {
     }
 
     fun onAuthCallbackReceived(callbackUrl: String) {
-        ensureLoaded()
+        val profileId = ProfileRepository.activeProfileId
+        ensureLoaded(profileId)
         if (!callbackUrl.startsWith("${TraktConfig.REDIRECT_URI}?", ignoreCase = true) &&
             !callbackUrl.equals(TraktConfig.REDIRECT_URI, ignoreCase = true)
         ) {
@@ -286,15 +291,15 @@ object TraktAuthRepository {
         }
 
         scope.launch {
-            completeAuthorizationFromCallback(callbackUrl)
+            completeAuthorizationFromCallback(callbackUrl, profileId)
         }
     }
 
-    suspend fun authorizedHeaders(): Map<String, String>? {
-        ensureLoaded()
+    suspend fun authorizedHeaders(profileId: Int = currentProfileId): Map<String, String>? {
+        ensureLoaded(profileId)
         if (!authState.isAuthenticated) return null
 
-        val hasValidToken = refreshTokenIfNeeded(force = false)
+        val hasValidToken = refreshTokenIfNeeded(force = false, profileId = profileId)
         if (!hasValidToken) return null
 
         val accessToken = authState.accessToken?.trim().orEmpty()
@@ -307,9 +312,9 @@ object TraktAuthRepository {
         )
     }
 
-    suspend fun refreshUserSettings(): String? {
-        ensureLoaded()
-        val headers = authorizedHeaders() ?: return null
+    suspend fun refreshUserSettings(profileId: Int = currentProfileId): String? {
+        ensureLoaded(profileId)
+        val headers = authorizedHeaders(profileId) ?: return null
         val response = runCatching {
             httpGetTextWithHeaders(
                 url = "$BASE_URL/users/settings",
@@ -328,19 +333,19 @@ object TraktAuthRepository {
             username = parsed.user?.username,
             userSlug = parsed.user?.ids?.slug,
         )
-        persist()
+        persist(profileId)
         publish()
         return authState.username
     }
 
-    fun onDisconnectRequested() {
-        ensureLoaded()
+    fun onDisconnectRequested(profileId: Int = currentProfileId) {
+        ensureLoaded(profileId)
         scope.launch {
-            disconnect()
+            disconnect(profileId)
         }
     }
 
-    private suspend fun completeAuthorizationFromCallback(callbackUrl: String) {
+    private suspend fun completeAuthorizationFromCallback(callbackUrl: String, profileId: Int = currentProfileId) {
         publish(isLoading = true, errorMessage = null)
 
         val parsedUrl = runCatching { Url(callbackUrl) }
@@ -351,7 +356,7 @@ object TraktAuthRepository {
 
         if (parsedUrl == null) {
             clearPendingAuthorization()
-            persist()
+            persist(profileId)
             publish(
                 isLoading = false,
                 errorMessage = resourceString("Invalid Trakt callback", StringKey.trakt_invalid_callback),
@@ -364,7 +369,7 @@ object TraktAuthRepository {
             val errorDescription = parsedUrl.parameters["error_description"]
                 ?: resourceString("Authorization denied", StringKey.trakt_authorization_denied)
             clearPendingAuthorization()
-            persist()
+            persist(profileId)
             publish(
                 isLoading = false,
                 errorMessage = errorDescription,
@@ -375,7 +380,7 @@ object TraktAuthRepository {
         val code = parsedUrl.parameters["code"].orEmpty().trim()
         if (code.isBlank()) {
             clearPendingAuthorization()
-            persist()
+            persist(profileId)
             publish(
                 isLoading = false,
                 errorMessage = resourceString("Trakt did not return an authorization code", StringKey.trakt_missing_auth_code),
@@ -387,7 +392,7 @@ object TraktAuthRepository {
         val callbackState = parsedUrl.parameters["state"].orEmpty().trim()
         if (!expectedState.isNullOrBlank() && callbackState != expectedState) {
             clearPendingAuthorization()
-            persist()
+            persist(profileId)
             publish(
                 isLoading = false,
                 errorMessage = resourceString("Invalid Trakt callback state", StringKey.trakt_invalid_callback_state),
@@ -395,10 +400,10 @@ object TraktAuthRepository {
             return
         }
 
-        exchangeAuthorizationCode(code)
+        exchangeAuthorizationCode(code, profileId)
     }
 
-    private suspend fun exchangeAuthorizationCode(code: String) {
+    private suspend fun exchangeAuthorizationCode(code: String, profileId: Int = currentProfileId) {
         val body = json.encodeToString(
             TraktAuthorizationCodeRequest(
                 code = code,
@@ -421,7 +426,7 @@ object TraktAuthRepository {
 
         if (response == null) {
             clearPendingAuthorization()
-            persist()
+            persist(profileId)
             publish(isLoading = false, errorMessage = resourceString("Failed to complete Trakt sign in", StringKey.trakt_sign_in_complete_failed))
             return
         }
@@ -432,7 +437,7 @@ object TraktAuthRepository {
 
         if (parsed == null) {
             clearPendingAuthorization()
-            persist()
+            persist(profileId)
             publish(isLoading = false, errorMessage = resourceString("Invalid Trakt token response", StringKey.trakt_invalid_token_response))
             return
         }
@@ -446,8 +451,8 @@ object TraktAuthRepository {
             pendingAuthorizationState = null,
             pendingAuthorizationStartedAtMillis = null,
         )
-        persist()
-        refreshUserSettings()
+        persist(profileId)
+        refreshUserSettings(profileId)
         publish(
             isLoading = false,
             statusMessage = resourceString("Connected to Trakt", StringKey.trakt_connected_status),
@@ -455,7 +460,7 @@ object TraktAuthRepository {
         )
     }
 
-    private suspend fun disconnect() {
+    private suspend fun disconnect(profileId: Int = currentProfileId) {
         publish(isLoading = true, errorMessage = null)
 
         val token = authState.accessToken?.takeIf { it.isNotBlank() }
@@ -479,9 +484,9 @@ object TraktAuthRepository {
             }
         }
 
-        TraktCredentialSync.deleteRemote()
+        TraktCredentialSync.deleteRemote(profileId)
         authState = TraktAuthState()
-        persist()
+        persist(profileId)
         publish(
             isLoading = false,
             statusMessage = resourceString("Disconnected from Trakt", StringKey.trakt_disconnected_status),
@@ -489,9 +494,8 @@ object TraktAuthRepository {
         )
     }
 
-    private suspend fun refreshTokenIfNeeded(force: Boolean): Boolean = refreshMutex.withLock {
+    private suspend fun refreshTokenIfNeeded(force: Boolean, profileId: Int = currentProfileId): Boolean = refreshMutex.withLock {
         if (!hasRequiredCredentials()) return@withLock false
-        val profileId = ProfileRepository.activeProfileId
         val refreshToken = authState.refreshToken?.takeIf { it.isNotBlank() }
             ?: return@withLock false
 
@@ -553,14 +557,14 @@ object TraktAuthRepository {
             createdAt = parsed.createdAt,
             expiresIn = parsed.expiresIn,
         )
-        persist()
+        persist(profileId)
         publish()
         true
     }
 
     private suspend fun invalidateCredentials(profileId: Int) {
         authState = TraktAuthState()
-        persist()
+        persist(profileId)
         publish(
             isLoading = false,
             statusMessage = null,
@@ -572,10 +576,12 @@ object TraktAuthRepository {
         TraktCredentialSync.deleteRemote(profileId)
     }
 
-    private fun loadFromDisk() {
+    private fun loadFromDisk(profileId: Int) {
         cancelDeviceFlowInternal()
+        currentProfileId = profileId
+        profileGeneration += 1L
         hasLoaded = true
-        val payload = TraktAuthStorage.loadPayload().orEmpty().trim()
+        val payload = TraktAuthStorage.loadPayload(profileId).orEmpty().trim()
         authState = if (payload.isBlank()) {
             TraktAuthState()
         } else {
@@ -630,8 +636,8 @@ object TraktAuthRepository {
         )
     }
 
-    private fun persist() {
-        TraktAuthStorage.savePayload(json.encodeToString(authState))
+    private fun persist(profileId: Int = currentProfileId) {
+        TraktAuthStorage.savePayload(profileId, json.encodeToString(authState))
     }
 
     private fun buildAuthorizationUrl(state: String): String {

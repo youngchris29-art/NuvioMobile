@@ -439,7 +439,7 @@ object SyncManager {
                     continue
                 }
 
-                TraktAuthRepository.ensureLoaded()
+                TraktAuthRepository.ensureLoaded(profileId)
                 TraktSettingsRepository.ensureLoaded()
 
                 val traktAuthenticated = TraktAuthRepository.isAuthenticated.value

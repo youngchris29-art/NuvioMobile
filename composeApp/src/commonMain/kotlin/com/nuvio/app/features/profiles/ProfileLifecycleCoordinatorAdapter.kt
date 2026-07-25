@@ -37,7 +37,7 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
     override fun onProfileSelected(profileIndex: Int) {
         WatchedRepository.onProfileChanged(profileIndex)
         TraktSettingsRepository.onProfileChanged()
-        TraktAuthRepository.onProfileChanged()
+        TraktAuthRepository.onProfileChanged(profileIndex)
         LibraryRepository.onProfileChanged(profileIndex)
         LibraryDisplaySettingsRepository.onProfileChanged()
         WatchProgressRepository.onProfileChanged(profileIndex)
