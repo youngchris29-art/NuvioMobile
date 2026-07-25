@@ -238,8 +238,31 @@ object SyncManager {
         pullHomeCatalogSettings = { profileId -> HomeCatalogSettingsSyncService.pullFromServer(profileId) },
     )
 
+    /**
+     * "A profile was just picked — pull everything for it."
+     *
+     * tvOS calls this from `ProfilesViewModel.select`, immediately after
+     * `ProfileRepository.selectProfile()` and on the same Swift main thread. A Kotlin exception
+     * escaping here is not catchable on the Swift side — it reaches the Kotlin/Native
+     * unhandled-exception hook and aborts the process, so a single failure turns into "the app
+     * force-closes every time I pick my profile". `selectProfile` guards its own persistence and
+     * fan-out for exactly this reason; this call sat outside those guards.
+     *
+     * Note this is the only part of a profile tap that does nothing when signed out, which is why
+     * a failure here would look like a crash that only signed-in testers can hit. The sync itself
+     * runs on `accountScope` (already covered by `uncaughtCoroutineLogger`) — what is guarded here
+     * is the synchronous scheduling that happens on the caller's thread.
+     */
     fun pullAllForProfile(profileId: Int) {
-        startFullProfilePull(profileId = profileId, reason = "requested")
+        log.i { "Full profile pull requested for profile $profileId" }
+        try {
+            startFullProfilePull(profileId = profileId, reason = "requested")
+        } catch (error: CancellationException) {
+            // composeApp calls this from coroutines — never swallow their cancellation.
+            throw error
+        } catch (error: Throwable) {
+            log.e(error) { "Full profile pull request failed for profile $profileId" }
+        }
     }
 
     // Fork: public — composeApp LocalAccountDataCleaner calls this cross-module.

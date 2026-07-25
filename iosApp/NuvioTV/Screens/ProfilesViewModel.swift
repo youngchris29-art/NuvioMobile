@@ -56,11 +56,18 @@ final class ProfilesViewModel: ObservableObject {
 
     // MARK: - Actions
 
+    /// Breadcrumbs bracket every Kotlin call: a throw crossing back into Swift here aborts the
+    /// process rather than surfacing as a catchable error, so the last line printed names the stage
+    /// that took the app down. Kept out of `#if DEBUG` on purpose — testers run release builds, and
+    /// their console log is the only diagnostic we get for a crash we cannot reproduce locally.
     func select(_ profile: NuvioProfile) {
+        print("[ProfileSelect] selecting profile \(profile.profileIndex)")
         ProfileRepository.shared.selectProfile(profileIndex: profile.profileIndex)
+        print("[ProfileSelect] selectProfile returned — requesting full pull")
         // Full cloud pull for the selected profile (addons first, then the rest in parallel).
         // Self-guarding: no-op in guest mode / signed out, so the local-only flow is unchanged.
         SyncManager.shared.pullAllForProfile(profileId: profile.profileIndex)
+        print("[ProfileSelect] full pull requested — tap complete")
     }
 
     func createProfile(
