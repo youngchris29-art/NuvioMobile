@@ -72,9 +72,11 @@ def main():
     for path in glob.glob(os.path.join(build_dir, "**/*.stringsdata"), recursive=True):
         with open(path) as f:
             data = json.load(f)
-        for entries in data.get("tables", {}).values():
-            for entry in entries:
-                keys.add(entry["key"])
+        # Only the Localizable table: Xcode's generated symbol file for
+        # Shared.xcstrings emits stringsdata for table "Shared" too, which must
+        # not leak into this catalog.
+        for entry in data.get("tables", {}).get("Localizable", []):
+            keys.add(entry["key"])
     if not keys:
         sys.exit(f"no .stringsdata keys found under {build_dir}")
 
