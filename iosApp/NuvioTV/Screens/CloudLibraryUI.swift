@@ -58,14 +58,14 @@ final class CloudLibraryViewModel: ObservableObject {
                 if let success = result as? CloudLibraryPlaybackResultSuccess {
                     self.startPlayback(item: item, file: file, success: success)
                 } else if result is CloudLibraryPlaybackResultMissingCredentials {
-                    self.errorMessage = "Missing provider credentials \u{2014} reconnect in Settings \u{2192} Debrid."
+                    self.errorMessage = String(localized: "Missing provider credentials \u{2014} reconnect in Settings \u{2192} Debrid.")
                 } else if result is CloudLibraryPlaybackResultNotPlayable {
-                    self.errorMessage = "This file isn't playable."
+                    self.errorMessage = String(localized: "This file isn't playable.")
                 } else if let failed = result as? CloudLibraryPlaybackResultFailed {
                     let message: String? = failed.message
-                    self.errorMessage = message ?? "Couldn't resolve a playback link."
+                    self.errorMessage = message ?? String(localized: "Couldn't resolve a playback link.")
                 } else {
-                    self.errorMessage = error?.localizedDescription ?? "Couldn't resolve a playback link."
+                    self.errorMessage = error?.localizedDescription ?? String(localized: "Couldn't resolve a playback link.")
                 }
             }
         }
@@ -73,7 +73,7 @@ final class CloudLibraryViewModel: ObservableObject {
 
     private func startPlayback(item: CloudLibraryItem, file: CloudLibraryFile, success: CloudLibraryPlaybackResultSuccess) {
         guard let url = URL(string: success.url) else {
-            errorMessage = "The provider returned an unplayable link."
+            errorMessage = String(localized: "The provider returned an unplayable link.")
             return
         }
         let filename: String? = success.filename
@@ -211,9 +211,9 @@ struct CloudItemRow: View {
         }
         let playableCount = item.playableFiles.count
         if playableCount > 1 {
-            parts.append("\(playableCount) playable files")
+            parts.append(String(localized: "\(playableCount) playable files"))
         } else if playableCount == 0 {
-            parts.append("No playable files")
+            parts.append(String(localized: "No playable files"))
         }
         let status: String? = item.status
         if let status, !status.isEmpty {

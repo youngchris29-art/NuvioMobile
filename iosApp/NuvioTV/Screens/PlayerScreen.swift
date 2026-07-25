@@ -36,7 +36,7 @@ struct PlayerScreen: View {
                                    routingNote: decision?.displayNote)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
-                                routingNote: forcedMPV ? "mpv \u{00B7} fallback" : decision?.displayNote)
+                                routingNote: forcedMPV ? String(localized: "mpv \u{00B7} fallback") : decision?.displayNote)
             case .deciding:
                 ZStack {
                     Color.black.ignoresSafeArea()

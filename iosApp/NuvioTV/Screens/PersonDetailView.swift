@@ -34,8 +34,8 @@ struct PersonDetailView: View {
                             .frame(maxWidth: 1100, alignment: .leading)
                     }
 
-                    creditsRow(title: "Movies", items: model.person?.movieCredits ?? [])
-                    creditsRow(title: "TV Shows", items: model.person?.tvCredits ?? [])
+                    creditsRow(title: String(localized: "Movies"), items: model.person?.movieCredits ?? [])
+                    creditsRow(title: String(localized: "TV Shows"), items: model.person?.tvCredits ?? [])
 
                     if model.isLoading {
                         ProgressView()
@@ -130,8 +130,8 @@ struct PersonDetailView: View {
 
     private var lifeLine: String {
         var parts: [String] = []
-        if let born = model.person?.birthday, !born.isEmpty { parts.append("Born \(born)") }
-        if let died = model.person?.deathday, !died.isEmpty { parts.append("Died \(died)") }
+        if let born = model.person?.birthday, !born.isEmpty { parts.append(String(localized: "Born \(born)")) }
+        if let died = model.person?.deathday, !died.isEmpty { parts.append(String(localized: "Died \(died)")) }
         if let place = model.person?.placeOfBirth, !place.isEmpty { parts.append(place) }
         return parts.joined(separator: "  \u{00B7}  ")
     }

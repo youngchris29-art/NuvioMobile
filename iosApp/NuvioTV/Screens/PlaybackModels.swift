@@ -88,8 +88,9 @@ struct StreamInfoSnapshot: Equatable {
     var cache = ""
 
     var rows: [(String, String)] {
-        [("Engine", engine), ("Video", videoCodec), ("Resolution", resolution), ("Frame rate", fps),
-         ("Hardware decode", hwdec), ("Video bitrate", videoBitrate),
-         ("Audio", audio), ("Cache", cache)].filter { !$0.1.isEmpty }
+        [(String(localized: "Engine"), engine), (String(localized: "Video"), videoCodec),
+         (String(localized: "Resolution"), resolution), (String(localized: "Frame rate"), fps),
+         (String(localized: "Hardware decode"), hwdec), (String(localized: "Video bitrate"), videoBitrate),
+         (String(localized: "Audio"), audio), (String(localized: "Cache"), cache)].filter { !$0.1.isEmpty }
     }
 }

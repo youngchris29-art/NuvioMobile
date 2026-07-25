@@ -39,19 +39,19 @@ struct SettingsView: View {
                                 .font(Theme.Font.screenTitle)
                                 .foregroundStyle(Theme.Palette.textPrimary)
 
-                        section("Account", .accountServices) {
+                        section(String(localized: "Account"), .accountServices) {
                             if auth.isAnonymous {
                                 SettingsActionRow(
-                                    title: "Sign In to Nuvio",
-                                    subtitle: "Sync your library, watch progress, and profiles across devices. Local guest data on this Apple TV will be cleared.",
+                                    title: String(localized: "Sign In to Nuvio"),
+                                    subtitle: String(localized: "Sync your library, watch progress, and profiles across devices. Local guest data on this Apple TV will be cleared."),
                                     systemImage: "person.crop.circle.badge.plus"
                                 ) {
                                     confirmingSignOut = true
                                 }
                             } else {
                                 SettingsActionRow(
-                                    title: "Sign Out",
-                                    subtitle: "Signed in as \(auth.accountEmail ?? "your Nuvio account"). Local data on this Apple TV will be cleared.",
+                                    title: String(localized: "Sign Out"),
+                                    subtitle: String(localized: "Signed in as \(auth.accountEmail ?? "your Nuvio account"). Local data on this Apple TV will be cleared."),
                                     systemImage: "rectangle.portrait.and.arrow.right"
                                 ) {
                                     confirmingSignOut = true
@@ -59,7 +59,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        section("Theme", .appearance) {
+                        section(String(localized: "Theme"), .appearance) {
                             Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -67,63 +67,73 @@ struct SettingsView: View {
                             ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
                         }
 
-                        section("Trakt", .accountServices) {
+                        section(String(localized: "Trakt"), .accountServices) {
                             traktSection
                         }
 
-                        section("Debrid", .accountServices) {
+                        section(String(localized: "Debrid"), .accountServices) {
                             debridSection
                         }
 
-                        section("Playback", .playback) {
+                        section(String(localized: "Playback"), .playback) {
                             // Hidden entirely unless an external player (Infuse) is installed —
                             // see DefaultPlayerRow.
                             DefaultPlayerRow()
                             SettingsToggleRow(
-                                title: "Skip Intro",
-                                subtitle: "Show a Skip button during intros and outros",
+                                title: String(localized: "Skip Intro"),
+                                subtitle: String(localized: "Show a Skip button during intros and outros"),
                                 isOn: model.skipIntroEnabled
                             ) {
                                 model.setSkipIntro(!model.skipIntroEnabled)
                             }
                             SettingsToggleRow(
-                                title: "Match Content Frame Rate",
-                                subtitle: "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings \u{2192} Video and Audio.",
+                                title: String(localized: "Match Content Frame Rate"),
+                                subtitle: String(localized: "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings \u{2192} Video and Audio."),
                                 isOn: model.matchFrameRate
                             ) {
                                 model.setMatchFrameRate(!model.matchFrameRate)
                             }
                             SettingsToggleRow(
-                                title: "Enhanced Video Renderer",
-                                subtitle: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video.",
+                                title: String(localized: "Enhanced Video Renderer"),
+                                subtitle: String(localized: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video."),
                                 isOn: model.enhancedRenderer
                             ) {
                                 model.setEnhancedRenderer(!model.enhancedRenderer)
                             }
                             SettingsToggleRow(
-                                title: "Native player for Dolby Vision (beta)",
-                                subtitle: "Play Dolby Vision, HDR10 and other compatible MKVs through the native AVPlayer engine for true DV output on Apple TV 4K; everything else stays on the mpv player. Profile 7 discs convert to 8.1 on the fly, and TrueHD/DTS-only audio plays as AAC 5.1.",
+                                title: String(localized: "Native player for Dolby Vision (beta)"),
+                                subtitle: String(localized: "Play Dolby Vision, HDR10 and other compatible MKVs through the native AVPlayer engine for true DV output on Apple TV 4K; everything else stays on the mpv player. Profile 7 discs convert to 8.1 on the fly, and TrueHD/DTS-only audio plays as AAC 5.1."),
                                 isOn: model.nativeDolbyVision
                             ) {
                                 model.setNativeDolbyVision(!model.nativeDolbyVision)
                             }
                             if model.nativeDolbyVision {
                                 SettingsToggleRow(
-                                    title: "Keep Profile 7 FEL on mpv",
-                                    subtitle: "Profile 7 FEL releases carry enhancement data the 8.1 conversion must discard. Turn on to keep those files on the mpv player (plays as HDR10, nothing discarded) instead of native Dolby Vision. MEL releases convert losslessly and always play native.",
+                                    title: String(localized: "Keep Profile 7 FEL on mpv"),
+                                    subtitle: String(localized: "Profile 7 FEL releases carry enhancement data the 8.1 conversion must discard. Turn on to keep those files on the mpv player (plays as HDR10, nothing discarded) instead of native Dolby Vision. MEL releases convert losslessly and always play native."),
                                     isOn: model.dvP7FelMpv
                                 ) {
                                     model.setDvP7FelMpv(!model.dvP7FelMpv)
                                 }
                             }
                             tuningChipRow(
-                                title: "Streaming Buffer",
-                                options: [(0, "Default"), (64, "64 MB"), (150, "150 MB"), (512, "512 MB")],
+                                title: String(localized: "Streaming Buffer"),
+                                options: [
+                                    (0, String(localized: "Default")),
+                                    (64, String(localized: "64 MB")),
+                                    (150, String(localized: "150 MB")),
+                                    (512, String(localized: "512 MB")),
+                                ],
                                 selected: model.bufferMB
                             ) { model.setBufferMB($0) }
                             tuningChipRow(
-                                title: "Network Readahead",
-                                options: [(0, "Default"), (30, "30 s"), (60, "60 s"), (120, "120 s")],
+                                title: String(localized: "Network Readahead"),
+                                options: [
+                                    (0, String(localized: "Default")),
+                                    (30, String(localized: "30 s")),
+                                    (60, String(localized: "60 s")),
+                                    (120, String(localized: "120 s")),
+                                ],
                                 selected: model.readaheadSec
                             ) { model.setReadaheadSec($0) }
                             Text("Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.")
@@ -132,7 +142,7 @@ struct SettingsView: View {
                                 .frame(maxWidth: 1100, alignment: .leading)
                         }
 
-                        section("Subtitles", .playback) {
+                        section(String(localized: "Subtitles"), .playback) {
                             if let style = model.subtitleStyle {
                                 SubtitleAppearanceControls(
                                     style: style,
@@ -149,24 +159,24 @@ struct SettingsView: View {
                             }
                         }
 
-                        section("Audio & Subtitle Language", .playback) {
+                        section(String(localized: "Audio & Subtitle Language"), .playback) {
                             Text("When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
                                 .frame(maxWidth: 1100, alignment: .leading)
                             LanguageSelectRow(
-                                title: "Audio",
+                                title: String(localized: "Audio"),
                                 options: LanguageOptions.audio,
                                 selected: model.preferredAudioLanguage
                             ) { model.setPreferredAudioLanguage($0) }
                             LanguageSelectRow(
-                                title: "Subtitles",
+                                title: String(localized: "Subtitles"),
                                 options: LanguageOptions.subtitle,
                                 selected: model.preferredSubtitleLanguage
                             ) { model.setPreferredSubtitleLanguage($0) }
                         }
 
-                        section("Poster Style", .appearance) {
+                        section(String(localized: "Poster Style"), .appearance) {
                             PosterStyleControls(
                                 widthDp: model.posterWidthDp,
                                 cornerDp: model.posterCornerRadiusDp,
@@ -182,17 +192,17 @@ struct SettingsView: View {
                             // tester read the old focus-only fade as a bug ("hero posts don't
                             // work"). This restores that original fade for anyone who preferred it.
                             SettingsToggleRow(
-                                title: "Hero Poster Only When Focused",
+                                title: String(localized: "Hero Poster Only When Focused"),
                                 subtitle: heroPosterFocusOnly
-                                    ? "On \u{00B7} Home hero artwork fades in only while the hero carousel is focused"
-                                    : "Off \u{00B7} Home hero artwork is always visible",
+                                    ? String(localized: "On \u{00B7} Home hero artwork fades in only while the hero carousel is focused")
+                                    : String(localized: "Off \u{00B7} Home hero artwork is always visible"),
                                 isOn: heroPosterFocusOnly
                             ) {
                                 heroPosterFocusOnly.toggle()
                             }
                         }
 
-                        section("Card Depth", .appearance) {
+                        section(String(localized: "Card Depth"), .appearance) {
                             CardDepthControls(
                                 style: model.cardDepth,
                                 onEnabled: { model.setCardDepthEnabled($0) },
@@ -204,11 +214,11 @@ struct SettingsView: View {
                             )
                         }
 
-                        section("Stream Badges", .appearance) {
+                        section(String(localized: "Stream Badges"), .appearance) {
                             streamBadgesSection
                         }
 
-                        section("Metadata (TMDB)", .contentSources) {
+                        section(String(localized: "Metadata (TMDB)"), .contentSources) {
                             Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -216,24 +226,24 @@ struct SettingsView: View {
 
                             if model.tmdbHasKey {
                                 SettingsToggleRow(
-                                    title: "TMDB Enrichment",
-                                    subtitle: model.tmdbEnabled ? "On \u{00B7} API key saved" : "Off \u{00B7} API key saved",
+                                    title: String(localized: "TMDB Enrichment"),
+                                    subtitle: model.tmdbEnabled ? String(localized: "On \u{00B7} API key saved") : String(localized: "Off \u{00B7} API key saved"),
                                     isOn: model.tmdbEnabled
                                 ) {
                                     model.setTmdbEnabled(!model.tmdbEnabled)
                                 }
                                 SettingsToggleRow(
-                                    title: "TMDB Release Dates",
+                                    title: String(localized: "TMDB Release Dates"),
                                     subtitle: model.tmdbUseReleaseDates
-                                        ? "On \u{00B7} TMDB air dates override add-on release dates"
-                                        : "Off \u{00B7} add-on release dates are used as-is",
+                                        ? String(localized: "On \u{00B7} TMDB air dates override add-on release dates")
+                                        : String(localized: "Off \u{00B7} add-on release dates are used as-is"),
                                     isOn: model.tmdbUseReleaseDates
                                 ) {
                                     model.setTmdbUseReleaseDates(!model.tmdbUseReleaseDates)
                                 }
                                 SettingsActionRow(
-                                    title: "Remove API Key",
-                                    subtitle: "Clears the saved TMDB key and turns enrichment off.",
+                                    title: String(localized: "Remove API Key"),
+                                    subtitle: String(localized: "Clears the saved TMDB key and turns enrichment off."),
                                     systemImage: "trash"
                                 ) {
                                     model.clearTmdbKey()
@@ -243,7 +253,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        section("Ratings (MDBList)", .contentSources) {
+                        section(String(localized: "Ratings (MDBList)"), .contentSources) {
                             Text("Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open after enabling will show the ratings.")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -251,45 +261,45 @@ struct SettingsView: View {
 
                             if model.mdbListHasKey {
                                 SettingsToggleRow(
-                                    title: "MDBList Ratings",
-                                    subtitle: model.mdbListEnabled ? "On \u{00B7} API key saved" : "Off \u{00B7} API key saved",
+                                    title: String(localized: "MDBList Ratings"),
+                                    subtitle: model.mdbListEnabled ? String(localized: "On \u{00B7} API key saved") : String(localized: "Off \u{00B7} API key saved"),
                                     isOn: model.mdbListEnabled
                                 ) {
                                     model.setMdbListEnabled(!model.mdbListEnabled)
                                 }
                                 SettingsActionRow(
-                                    title: "Remove API Key",
-                                    subtitle: "Clears the saved MDBList key and turns ratings off.",
+                                    title: String(localized: "Remove API Key"),
+                                    subtitle: String(localized: "Clears the saved MDBList key and turns ratings off."),
                                     systemImage: "trash"
                                 ) {
                                     model.clearMdbListKey()
                                 }
                             } else {
-                                DebridKeyEntryRow(providerName: "MDBList", placeholder: "MDBList API key") {
+                                DebridKeyEntryRow(providerName: "MDBList", placeholder: String(localized: "MDBList API key")) {
                                     model.saveMdbListKey($0)
                                 }
                             }
                         }
 
-                        section("Plugins", .contentSources) {
+                        section(String(localized: "Plugins"), .contentSources) {
                             pluginsSection
                         }
 
-                        section("Remote Setup", .advanced) {
+                        section(String(localized: "Remote Setup"), .advanced) {
                             remoteSetupSection
                         }
 
-                        section("Home Rows", .homeScreen) {
+                        section(String(localized: "Home Rows"), .homeScreen) {
                             if model.catalogs.isEmpty {
                                 Text("Install add-ons to customize your Home rows.")
                                     .font(Theme.Font.body)
                                     .foregroundStyle(Theme.Palette.textSecondary)
                             } else {
                                 SettingsToggleRow(
-                                    title: "Show Catalog Type in Titles",
+                                    title: String(localized: "Show Catalog Type in Titles"),
                                     subtitle: model.showCatalogType
-                                        ? "On \u{00B7} rows read like \u{201C}Popular - Movies\u{201D}"
-                                        : "Off \u{00B7} rows use the add-on's catalog name",
+                                        ? String(localized: "On \u{00B7} rows read like \u{201C}Popular - Movies\u{201D}")
+                                        : String(localized: "Off \u{00B7} rows use the add-on's catalog name"),
                                     isOn: model.showCatalogType
                                 ) {
                                     model.setShowCatalogType(!model.showCatalogType)
@@ -364,7 +374,7 @@ struct SettingsView: View {
             auth.isAnonymous ? "Switch to a Nuvio account?" : "Sign out?",
             isPresented: $confirmingSignOut
         ) {
-            Button(auth.isAnonymous ? "Continue" : "Sign Out", role: .destructive) {
+            Button(auth.isAnonymous ? String(localized: "Continue") : String(localized: "Sign Out"), role: .destructive) {
                 // Clears the session AND wipes local data (AccountDataCleaner seam), then the root
                 // gate drops to the Welcome screen where an account can be signed in.
                 auth.signOut()
@@ -391,8 +401,8 @@ struct SettingsView: View {
             .frame(maxWidth: 1100, alignment: .leading)
 
         SettingsToggleRow(
-            title: "Enable Plugins",
-            subtitle: "Run enabled plugin providers when loading streams.",
+            title: String(localized: "Enable Plugins"),
+            subtitle: String(localized: "Run enabled plugin providers when loading streams."),
             isOn: plugins.pluginsEnabled
         ) {
             plugins.setPluginsEnabled(!plugins.pluginsEnabled)
@@ -420,7 +430,7 @@ struct SettingsView: View {
                         if repo.isRefreshing {
                             ProgressView().scaleEffect(0.6)
                         }
-                        Text("\(repo.scraperCount) provider\(repo.scraperCount == 1 ? "" : "s")")
+                        Text(repo.scraperCount == 1 ? String(localized: "1 provider") : String(localized: "\(repo.scraperCount) providers"))
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
                         Button {
@@ -440,8 +450,8 @@ struct SettingsView: View {
                         SettingsToggleRow(
                             title: scraper.name,
                             subtitle: scraper.description_.isEmpty
-                                ? "v\(scraper.version)"
-                                : "\(scraper.description_) \u{00B7} v\(scraper.version)",
+                                ? String(localized: "v\(scraper.version)")
+                                : String(localized: "\(scraper.description_) \u{00B7} v\(scraper.version)"),
                             isOn: scraper.enabled
                         ) {
                             plugins.toggleScraper(scraper, !scraper.enabled)
@@ -450,8 +460,8 @@ struct SettingsView: View {
                 }
             }
             SettingsActionRow(
-                title: "Refresh Plugins",
-                subtitle: "Re-download provider code from every repository.",
+                title: String(localized: "Refresh Plugins"),
+                subtitle: String(localized: "Re-download provider code from every repository."),
                 systemImage: "arrow.clockwise"
             ) {
                 plugins.refreshAll()
@@ -469,24 +479,24 @@ struct SettingsView: View {
             .frame(maxWidth: 1100, alignment: .leading)
 
         SettingsToggleRow(
-            title: "File Size Badges",
-            subtitle: "Show the video size (GB/MB) as a chip on stream results.",
+            title: String(localized: "File Size Badges"),
+            subtitle: String(localized: "Show the video size (GB/MB) as a chip on stream results."),
             isOn: badges.showFileSizeBadges
         ) {
             badges.setShowFileSizeBadges(!badges.showFileSizeBadges)
         }
         SettingsToggleRow(
-            title: "Show Add-on Logo",
-            subtitle: "Show each result's add-on logo and name on the right of the row.",
+            title: String(localized: "Show Add-on Logo"),
+            subtitle: String(localized: "Show each result's add-on logo and name on the right of the row."),
             isOn: badges.showAddonLogo
         ) {
             badges.setShowAddonLogo(!badges.showAddonLogo)
         }
         SettingsToggleRow(
-            title: "Badges Above Title",
+            title: String(localized: "Badges Above Title"),
             subtitle: badges.badgesOnTop
-                ? "Badge chips render above the stream name."
-                : "Badge chips render below the stream description.",
+                ? String(localized: "Badge chips render above the stream name.")
+                : String(localized: "Badge chips render below the stream description."),
             isOn: badges.badgesOnTop
         ) {
             badges.setBadgesOnTop(!badges.badgesOnTop)
@@ -504,7 +514,7 @@ struct SettingsView: View {
                             .font(Theme.Font.body.weight(.semibold))
                             .foregroundStyle(Theme.Palette.textPrimary)
                             .lineLimit(1)
-                        Text("\(pack.enabledFilterCount) filter\(pack.enabledFilterCount == 1 ? "" : "s") \u{00B7} \(pack.sourceUrl)")
+                        Text(pack.enabledFilterCount == 1 ? String(localized: "1 filter \u{00B7} \(pack.sourceUrl)") : String(localized: "\(pack.enabledFilterCount) filters \u{00B7} \(pack.sourceUrl)"))
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
                             .lineLimit(1)
@@ -572,18 +582,18 @@ struct SettingsView: View {
                 }
             }
             SettingsActionRow(
-                title: "Stop Remote Setup",
-                subtitle: "Closes the local config page.",
+                title: String(localized: "Stop Remote Setup"),
+                subtitle: String(localized: "Closes the local config page."),
                 systemImage: "stop.circle"
             ) {
                 remote.stop()
             }
         } else {
             SettingsActionRow(
-                title: "Start Remote Setup",
+                title: String(localized: "Start Remote Setup"),
                 subtitle: remote.startFailed
-                    ? "Couldn't start the local server. Check the network connection and try again."
-                    : "Starts a local config page on your network.",
+                    ? String(localized: "Couldn't start the local server. Check the network connection and try again.")
+                    : String(localized: "Starts a local config page on your network."),
                 systemImage: "network"
             ) {
                 remote.start()
@@ -600,8 +610,8 @@ struct SettingsView: View {
                 .frame(maxWidth: 1100, alignment: .leading)
         } else if trakt.isConnected {
             SettingsActionRow(
-                title: "Disconnect Trakt",
-                subtitle: "Connected as \(trakt.username ?? "your Trakt account") \u{00B7} watched history is scrobbled automatically as you play.",
+                title: String(localized: "Disconnect Trakt"),
+                subtitle: String(localized: "Connected as \(trakt.username ?? "your Trakt account") \u{00B7} watched history is scrobbled automatically as you play."),
                 systemImage: "checkmark.circle.fill"
             ) {
                 confirmingTraktDisconnect = true
@@ -619,8 +629,8 @@ struct SettingsView: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
             SettingsActionRow(
-                title: trakt.isLoading ? "Requesting code\u{2026}" : "Connect Trakt",
-                subtitle: "Shows a short code to enter at trakt.tv/activate on your phone or computer.",
+                title: trakt.isLoading ? String(localized: "Requesting code\u{2026}") : String(localized: "Connect Trakt"),
+                subtitle: String(localized: "Shows a short code to enter at trakt.tv/activate on your phone or computer."),
                 systemImage: "antenna.radiowaves.left.and.right"
             ) {
                 trakt.connect()
@@ -648,8 +658,8 @@ struct SettingsView: View {
 
         if debrid.hasAnyKey {
             SettingsToggleRow(
-                title: "Resolve Streams with Debrid",
-                subtitle: "Turn cached torrent results into direct links automatically",
+                title: String(localized: "Resolve Streams with Debrid"),
+                subtitle: String(localized: "Turn cached torrent results into direct links automatically"),
                 isOn: debrid.resolverEnabled
             ) {
                 debrid.setResolverEnabled(!debrid.resolverEnabled)
@@ -687,10 +697,10 @@ struct SettingsView: View {
     private func debridProviderRows(_ provider: DebridProvider) -> some View {
         if debrid.isConnected(provider.id) {
             SettingsActionRow(
-                title: "\(provider.displayName) \u{00B7} Connected",
+                title: String(localized: "\(provider.displayName) \u{00B7} Connected"),
                 subtitle: debrid.activeResolverId == provider.id
-                    ? "Active resolver \u{00B7} press to disconnect"
-                    : "Press to disconnect",
+                    ? String(localized: "Active resolver \u{00B7} press to disconnect")
+                    : String(localized: "Press to disconnect"),
                 systemImage: "checkmark.circle.fill"
             ) {
                 debridDisconnectId = provider.id
@@ -720,8 +730,8 @@ struct SettingsView: View {
                     .foregroundStyle(.red)
                     .frame(maxWidth: 1100, alignment: .leading)
                 SettingsActionRow(
-                    title: "Dismiss",
-                    subtitle: "Back to the connect options for \(provider.displayName).",
+                    title: String(localized: "Dismiss"),
+                    subtitle: String(localized: "Back to the connect options for \(provider.displayName)."),
                     systemImage: "xmark.circle"
                 ) {
                     debrid.cancelActivation()
@@ -731,8 +741,8 @@ struct SettingsView: View {
             }
         } else {
             SettingsActionRow(
-                title: "Connect \(provider.displayName)",
-                subtitle: "Shows a short code to enter on your phone (device sign-in).",
+                title: String(localized: "Connect \(provider.displayName)"),
+                subtitle: String(localized: "Shows a short code to enter on your phone (device sign-in)."),
                 systemImage: "antenna.radiowaves.left.and.right"
             ) {
                 debrid.connect(provider)
@@ -854,12 +864,12 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .accountServices: return "Account & Services"
-        case .playback: return "Playback"
-        case .appearance: return "Appearance"
-        case .homeScreen: return "Home Screen"
-        case .contentSources: return "Content Sources"
-        case .advanced: return "Advanced"
+        case .accountServices: return String(localized: "Account & Services")
+        case .playback: return String(localized: "Playback")
+        case .appearance: return String(localized: "Appearance")
+        case .homeScreen: return String(localized: "Home Screen")
+        case .contentSources: return String(localized: "Content Sources")
+        case .advanced: return String(localized: "Advanced")
         }
     }
 
@@ -882,13 +892,13 @@ private struct ThemePickerRow: View {
     let onSelect: (AppTheme) -> Void
 
     private static let options: [(theme: AppTheme, label: String, colorHex: UInt32)] = [
-        (.crimson, "Crimson", 0xE53935),
-        (.ocean, "Ocean", 0x1E88E5),
-        (.violet, "Violet", 0x8E24AA),
-        (.emerald, "Emerald", 0x43A047),
-        (.amber, "Amber", 0xFB8C00),
-        (.rose, "Rose", 0xD81B60),
-        (.white, "White", 0xF5F5F5),
+        (.crimson, String(localized: "Crimson"), 0xE53935),
+        (.ocean, String(localized: "Ocean"), 0x1E88E5),
+        (.violet, String(localized: "Violet"), 0x8E24AA),
+        (.emerald, String(localized: "Emerald"), 0x43A047),
+        (.amber, String(localized: "Amber"), 0xFB8C00),
+        (.rose, String(localized: "Rose"), 0xD81B60),
+        (.white, String(localized: "White"), 0xF5F5F5),
     ]
 
     var body: some View {
@@ -980,8 +990,8 @@ private struct TraktActivationCard: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
             SettingsActionRow(
-                title: "Cancel",
-                subtitle: "Stop waiting and dismiss the code.",
+                title: String(localized: "Cancel"),
+                subtitle: String(localized: "Stop waiting and dismiss the code."),
                 systemImage: "xmark.circle"
             ) {
                 onCancel()
@@ -1021,8 +1031,8 @@ private struct DebridActivationCard: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
             SettingsActionRow(
-                title: "Cancel",
-                subtitle: "Stop waiting and dismiss the code.",
+                title: String(localized: "Cancel"),
+                subtitle: String(localized: "Stop waiting and dismiss the code."),
                 systemImage: "xmark.circle"
             ) {
                 onCancel()
@@ -1125,7 +1135,7 @@ private struct DebridKeyEntryRow: View {
             HStack(spacing: Theme.Spacing.md) {
                 Image(systemName: "key")
                     .foregroundStyle(Theme.Palette.textSecondary)
-                TextField(placeholder ?? "Or paste a \(providerName) API key", text: $key)
+                TextField(placeholder ?? String(localized: "Or paste your \(providerName) API key"), text: $key)
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textPrimary)
@@ -1212,7 +1222,7 @@ private struct DefaultPlayerRow: View {
 
     /// Display name for the current selection (row trailing value).
     private var selectedName: String {
-        externalPlayers.first { $0.id == defaultExternalPlayerId }?.name ?? "NuvioTV (Built-in)"
+        externalPlayers.first { $0.id == defaultExternalPlayerId }?.name ?? String(localized: "NuvioTV (Built-in)")
     }
 
     var body: some View {
@@ -1391,17 +1401,18 @@ private struct SubtitleAppearanceControls: View {
         ("White", 0xFFFFFFFF), ("Yellow", 0xFFFFFF00), ("Cyan", 0xFF00FFFF), ("Green", 0xFF00FF00)
     ]
     private let sizes: [(name: String, sp: Int32)] = [
-        ("Small", 14), ("Medium", 18), ("Large", 24), ("X-Large", 30)
+        (String(localized: "Small"), 14), (String(localized: "Medium"), 18),
+        (String(localized: "Large"), 24), (String(localized: "X-Large"), 30)
     ]
     private let backgrounds: [(name: String, argb: Int64)] = [
-        ("Off", 0x00000000), ("Semi", 0x80000000), ("Solid", 0xFF000000)
+        (String(localized: "Off"), 0x00000000), (String(localized: "Semi"), 0x80000000), (String(localized: "Solid"), 0xFF000000)
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             preview
 
-            controlRow("Text Color") {
+            controlRow(String(localized: "Text Color")) {
                 ForEach(textColors, id: \.argb) { entry in
                     Button { onTextColor(entry.argb) } label: {
                         SubtitleColorSwatch(
@@ -1414,22 +1425,22 @@ private struct SubtitleAppearanceControls: View {
                 }
             }
 
-            controlRow("Size") {
+            controlRow(String(localized: "Size")) {
                 ForEach(sizes, id: \.sp) { entry in
                     chip(entry.name, selected: style.fontSizeSp == entry.sp) { onSize(entry.sp) }
                 }
             }
 
-            controlRow("Background") {
+            controlRow(String(localized: "Background")) {
                 ForEach(backgrounds, id: \.argb) { entry in
                     chip(entry.name, selected: style.backgroundColor == entry.argb) { onBackground(entry.argb) }
                 }
             }
 
-            SettingsToggleRow(title: "Bold", subtitle: "Use a heavier subtitle font", isOn: style.bold) {
+            SettingsToggleRow(title: String(localized: "Bold"), subtitle: String(localized: "Use a heavier subtitle font"), isOn: style.bold) {
                 onBold(!style.bold)
             }
-            SettingsToggleRow(title: "Outline", subtitle: "Draw an outline around text for readability", isOn: style.outlineEnabled) {
+            SettingsToggleRow(title: String(localized: "Outline"), subtitle: String(localized: "Draw an outline around text for readability"), isOn: style.outlineEnabled) {
                 onOutline(!style.outlineEnabled)
             }
         }
@@ -1515,15 +1526,18 @@ private struct SubtitleColorSwatch: View {
 /// labels are local since the shared label table lives in the mobile module.
 private enum LanguageOptions {
     static let languages: [(name: String, code: String)] = [
-        ("English", "en"), ("Spanish", "es"), ("French", "fr"), ("German", "de"),
-        ("Italian", "it"), ("Portuguese", "pt"), ("Japanese", "ja"), ("Korean", "ko"),
-        ("Chinese", "zh"), ("Russian", "ru"), ("Hindi", "hi"), ("Arabic", "ar")
+        (String(localized: "English"), "en"), (String(localized: "Spanish"), "es"),
+        (String(localized: "French"), "fr"), (String(localized: "German"), "de"),
+        (String(localized: "Italian"), "it"), (String(localized: "Portuguese"), "pt"),
+        (String(localized: "Japanese"), "ja"), (String(localized: "Korean"), "ko"),
+        (String(localized: "Chinese"), "zh"), (String(localized: "Russian"), "ru"),
+        (String(localized: "Hindi"), "hi"), (String(localized: "Arabic"), "ar")
     ]
     static var audio: [(name: String, code: String)] {
-        [("Device", "device"), ("Original", "original")] + languages
+        [(String(localized: "Device"), "device"), (String(localized: "Original"), "original")] + languages
     }
     static var subtitle: [(name: String, code: String)] {
-        [("Off", "none"), ("Device", "device")] + languages
+        [(String(localized: "Off"), "none"), (String(localized: "Device"), "device")] + languages
     }
 }
 
@@ -1570,26 +1584,30 @@ private struct PosterStyleControls: View {
     let onLandscape: (Bool) -> Void
     let onReset: () -> Void
 
-    private let sizes: [(name: String, dp: Int32)] = [("Small", 105), ("Medium", 126), ("Large", 154)]
-    private let corners: [(name: String, dp: Int32)] = [("Square", 0), ("Rounded", 12), ("Round", 28)]
+    private let sizes: [(name: String, dp: Int32)] = [
+        (String(localized: "Small"), 105), (String(localized: "Medium"), 126), (String(localized: "Large"), 154)
+    ]
+    private let corners: [(name: String, dp: Int32)] = [
+        (String(localized: "Square"), 0), (String(localized: "Rounded"), 12), (String(localized: "Round"), 28)
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            controlRow("Size") {
+            controlRow(String(localized: "Size")) {
                 ForEach(sizes, id: \.dp) { size in
                     chip(size.name, selected: widthDp == size.dp) { onSize(size.dp) }
                 }
             }
-            controlRow("Corners") {
+            controlRow(String(localized: "Corners")) {
                 ForEach(corners, id: \.dp) { corner in
                     chip(corner.name, selected: cornerDp == corner.dp) { onCorner(corner.dp) }
                 }
             }
 
-            SettingsToggleRow(title: "Hide Titles", subtitle: "Show posters without a title label", isOn: hideLabels) {
+            SettingsToggleRow(title: String(localized: "Hide Titles"), subtitle: String(localized: "Show posters without a title label"), isOn: hideLabels) {
                 onHideLabels(!hideLabels)
             }
-            SettingsToggleRow(title: "Landscape Rows", subtitle: "Show Home & Search catalog rows as wide 16:9 cards", isOn: landscapeRows) {
+            SettingsToggleRow(title: String(localized: "Landscape Rows"), subtitle: String(localized: "Show Home & Search catalog rows as wide 16:9 cards"), isOn: landscapeRows) {
                 onLandscape(!landscapeRows)
             }
 
@@ -1637,15 +1655,21 @@ private struct CardDepthControls: View {
     let onSurface: (CardDepthSurface, Bool) -> Void
     let onReset: () -> Void
 
-    private let edgeOptions: [(name: String, value: Int32)] = [("Subtle", 28), ("Balanced", 42), ("Bold", 56)]
-    private let sheenOptions: [(name: String, value: Int32)] = [("Off", 0), ("Soft", 10), ("Bright", 16)]
-    private let coverageOptions: [(name: String, value: Int32)] = [("Top", 0), ("Half", 50), ("Full", 100)]
+    private let edgeOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Subtle"), 28), (String(localized: "Balanced"), 42), (String(localized: "Bold"), 56)
+    ]
+    private let sheenOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Off"), 0), (String(localized: "Soft"), 10), (String(localized: "Bright"), 16)
+    ]
+    private let coverageOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Top"), 0), (String(localized: "Half"), 50), (String(localized: "Full"), 100)
+    ]
     private let surfaces: [(name: String, subtitle: String, surface: CardDepthSurface)] = [
-        ("Posters", "Catalog & search posters", .posters),
-        ("Continue Watching", "Home Continue Watching cards", .continueWatching),
-        ("Episodes", "Episode thumbnails", .episodeCards),
-        ("Cast", "Cast avatars", .cast),
-        ("Trailers", "Trailer rows", .trailers),
+        (String(localized: "Posters"), String(localized: "Catalog & search posters"), .posters),
+        (String(localized: "Continue Watching"), String(localized: "Home Continue Watching cards"), .continueWatching),
+        (String(localized: "Episodes"), String(localized: "Episode thumbnails"), .episodeCards),
+        (String(localized: "Cast"), String(localized: "Cast avatars"), .cast),
+        (String(localized: "Trailers"), String(localized: "Trailer rows"), .trailers),
     ]
 
     var body: some View {
@@ -1654,22 +1678,22 @@ private struct CardDepthControls: View {
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)
 
-            SettingsToggleRow(title: "Card Depth", subtitle: "Enable the edge highlight and top sheen", isOn: style.enabled) {
+            SettingsToggleRow(title: String(localized: "Card Depth"), subtitle: String(localized: "Enable the edge highlight and top sheen"), isOn: style.enabled) {
                 onEnabled(!style.enabled)
             }
 
             if style.enabled {
-                controlRow("Edge") {
+                controlRow(String(localized: "Edge")) {
                     ForEach(edgeOptions, id: \.value) { opt in
                         chip(opt.name, selected: Int32(style.edgeStrength) == opt.value) { onEdge(opt.value) }
                     }
                 }
-                controlRow("Sheen") {
+                controlRow(String(localized: "Sheen")) {
                     ForEach(sheenOptions, id: \.value) { opt in
                         chip(opt.name, selected: Int32(style.sheenStrength) == opt.value) { onSheen(opt.value) }
                     }
                 }
-                controlRow("Edge Coverage") {
+                controlRow(String(localized: "Edge Coverage")) {
                     ForEach(coverageOptions, id: \.value) { opt in
                         chip(opt.name, selected: Int32(style.edgeCoverage) == opt.value) { onCoverage(opt.value) }
                     }

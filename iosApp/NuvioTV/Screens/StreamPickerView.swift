@@ -292,7 +292,7 @@ struct StreamPickerView: View {
                 Text(group.addonName)
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
-                Text(group.streams.count == 1 ? "1 stream" : "\(group.streams.count) streams")
+                Text(group.streams.count == 1 ? String(localized: "1 stream") : String(localized: "\(group.streams.count) streams"))
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
                 if group.isLoading {
@@ -438,7 +438,7 @@ struct StreamPickerView: View {
         if provider.isEmpty {
             provider = DebridProviders.shared.displayName(id: status.providerId)
         }
-        return provider.isEmpty ? base : "\(base) - \(provider) Instant"
+        return provider.isEmpty ? base : String(localized: "\(base) - \(provider) Instant")
     }
 
     // MARK: - Playback / debrid resolve
@@ -474,7 +474,7 @@ struct StreamPickerView: View {
         // Torrent / clientResolve result → resolve through the in-app debrid connection.
         guard resolvingKey == nil else { return }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
-            showToast("This stream needs a debrid account. Connect one in Settings \u{2192} Debrid.")
+            showToast(String(localized: "This stream needs a debrid account. Connect one in Settings \u{2192} Debrid."))
             return
         }
         resolvingKey = rowKey
@@ -526,7 +526,7 @@ struct StreamPickerView: View {
 
         guard resolvingKey == nil else { return }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
-            showToast("This stream needs a debrid account. Connect one in Settings \u{2192} Debrid.")
+            showToast(String(localized: "This stream needs a debrid account. Connect one in Settings \u{2192} Debrid."))
             return
         }
         resolvingKey = rowKey
@@ -579,11 +579,11 @@ struct StreamPickerView: View {
         // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).
         guard result != ExternalPlayerOpenResult.opened else { return }
         if fallbackToInternal, let url = URL(string: urlString) {
-            showToast("Couldn\u{2019}t open the external player \u{2014} playing in NuvioTV.")
+            showToast(String(localized: "Couldn\u{2019}t open the external player \u{2014} playing in NuvioTV."))
             NextEpisodeEngine.consecutiveAutoPlays = 0
             selected = context(url: url, stream: stream)
         } else {
-            showToast("Couldn\u{2019}t open the external player.")
+            showToast(String(localized: "Couldn\u{2019}t open the external player."))
         }
     }
 
@@ -592,13 +592,13 @@ struct StreamPickerView: View {
     private static func resolveFailureMessage(_ result: DirectDebridPlayableResult?) -> String {
         switch result {
         case is DirectDebridPlayableResult.MissingApiKey:
-            return "Connect an account in Settings."
+            return String(localized: "Connect an account in Settings.")
         case is DirectDebridPlayableResult.NotCached:
-            return "Not cached on your debrid service."
+            return String(localized: "Not cached on your debrid service.")
         case is DirectDebridPlayableResult.Stale:
-            return "This link expired. Refreshing results."
+            return String(localized: "This link expired. Refreshing results.")
         default:
-            return "Could not open this link."
+            return String(localized: "Could not open this link.")
         }
     }
 

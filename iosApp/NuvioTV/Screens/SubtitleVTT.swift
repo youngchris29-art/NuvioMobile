@@ -64,7 +64,7 @@ nonisolated enum SubtitleVTT {
             return localized.prefix(1).uppercased() + localized.dropFirst()
         }
         let lang = language.trimmingCharacters(in: .whitespaces)
-        return lang.isEmpty ? "Subtitles" : String(lang.prefix(48))
+        return lang.isEmpty ? String(localized: "Subtitles") : String(lang.prefix(48))
     }
 
     // MARK: - Conversion

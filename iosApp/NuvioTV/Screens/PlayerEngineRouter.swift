@@ -19,7 +19,7 @@ nonisolated struct EngineDecision: Equatable, Sendable {
 
     /// Short label for the Stream Info overlay, e.g. "Native · DV P8.1" or "mpv · audio truehd".
     var displayNote: String {
-        "\(engine == .native ? "Native" : "mpv") \u{00B7} \(reason)"
+        "\(engine == .native ? String(localized: "Native") : "mpv") \u{00B7} \(reason)"
     }
 }
 

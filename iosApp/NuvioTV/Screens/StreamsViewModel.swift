@@ -181,21 +181,21 @@ final class StreamsViewModel: ObservableObject {
     private static func describeFiltered(rawCount: Int, debridEnabled: Bool) -> (String, String?) {
         let sourceWord = rawCount == 1 ? "source" : "sources"
         if !debridEnabled {
-            let reason = "Found \(rawCount) torrent \(sourceWord), but no debrid service is connected."
-            let hint = "Connect one in Settings \u{2192} Account & Services \u{2192} Debrid, or turn on \u{201C}Resolve Streams with Debrid\u{201D}."
+            let reason = String(localized: "Found \(rawCount) torrent \(sourceWord), but no debrid service is connected.")
+            let hint = String(localized: "Connect one in Settings \u{2192} Account & Services \u{2192} Debrid, or turn on \u{201C}Resolve Streams with Debrid\u{201D}.")
             return (reason, hint)
         }
-        let reason = "Found \(rawCount) \(rawCount == 1 ? "stream" : "streams"), but none could be resolved to a playable link."
+        let reason = String(localized: "Found \(rawCount) \(rawCount == 1 ? "stream" : "streams"), but none could be resolved to a playable link.")
         return (reason, nil)
     }
 
     private static func describe(_ reason: StreamsEmptyStateReason?) -> String {
         switch reason?.name {
-        case "NoAddonsInstalled":  return "No addons installed."
-        case "NoCompatibleAddons": return "No streaming addons installed \u{2014} only a metadata catalog (Cinemeta) is set up."
-        case "NoStreamsFound":     return "No streams found for this title."
-        case "StreamFetchFailed":  return "Stream lookup failed."
-        default:                   return "No playable streams. Install a streaming addon, or connect a debrid account in Settings to play torrent results."
+        case "NoAddonsInstalled":  return String(localized: "No addons installed.")
+        case "NoCompatibleAddons": return String(localized: "No streaming addons installed \u{2014} only a metadata catalog (Cinemeta) is set up.")
+        case "NoStreamsFound":     return String(localized: "No streams found for this title.")
+        case "StreamFetchFailed":  return String(localized: "Stream lookup failed.")
+        default:                   return String(localized: "No playable streams. Install a streaming addon, or connect a debrid account in Settings to play torrent results.")
         }
     }
 

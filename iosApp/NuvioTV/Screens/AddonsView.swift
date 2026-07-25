@@ -113,7 +113,7 @@ private struct AddonRow: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                Text(enabled ? "Enabled" : "Disabled")
+                Text(enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

@@ -37,11 +37,11 @@ struct NetworkStatusView: View {
     private func label(for condition: NetworkCondition) -> String {
         // Match on the Kotlin enum's `.name` string — version-proof against ObjC-export case naming.
         switch condition.name {
-        case "ONLINE": return "Online"
-        case "CHECKING": return "Checking\u{2026}"
-        case "NO_INTERNET": return "No internet connection"
-        case "SERVERS_UNREACHABLE": return "Servers unreachable"
-        default: return "Unknown"
+        case "ONLINE": return String(localized: "Online")
+        case "CHECKING": return String(localized: "Checking\u{2026}")
+        case "NO_INTERNET": return String(localized: "No internet connection")
+        case "SERVERS_UNREACHABLE": return String(localized: "Servers unreachable")
+        default: return String(localized: "Unknown")
         }
     }
 

@@ -198,6 +198,6 @@ struct HeroTrailerMuteButton: View {
         .padding(.horizontal, 18)
         .frame(height: 56)
         .background(Capsule().fill(Color.black.opacity(0.35)))
-        .accessibilityLabel(audio.isMuted ? "Trailer muted — press play/pause to unmute" : "Trailer sound on — press play/pause to mute")
+        .accessibilityLabel(audio.isMuted ? String(localized: "Trailer muted — press play/pause to unmute") : String(localized: "Trailer sound on — press play/pause to mute"))
     }
 }

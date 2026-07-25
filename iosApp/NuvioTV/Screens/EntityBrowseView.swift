@@ -27,16 +27,15 @@ final class EntityBrowseViewModel: ObservableObject {
 
         var title: String {
             // Kotlin enums are ObjC classes — compare with ==, don't switch-pattern-match.
-            let kind: String
+            // Full phrases (not kind + media fragments) so word order can differ per locale.
+            let isMovie = mediaType == .movie
             if railType == .popular {
-                kind = "Popular"
+                return isMovie ? String(localized: "Popular Movies") : String(localized: "Popular TV Shows")
             } else if railType == .topRated {
-                kind = "Top Rated"
+                return isMovie ? String(localized: "Top Rated Movies") : String(localized: "Top Rated TV Shows")
             } else {
-                kind = "Recent"
+                return isMovie ? String(localized: "Recent Movies") : String(localized: "Recent TV Shows")
             }
-            let media = mediaType == .movie ? "Movies" : "TV Shows"
-            return "\(kind) \(media)"
         }
     }
 
@@ -227,7 +226,7 @@ struct EntityBrowseView: View {
         var parts: [String] = []
         if let secondary = model.header?.secondaryLabel, !secondary.isEmpty { parts.append(secondary) }
         if let country = model.header?.originCountry, !country.isEmpty { parts.append(country) }
-        parts.append(route.isNetwork ? "Network" : "Studio")
+        parts.append(route.isNetwork ? String(localized: "Network") : String(localized: "Studio"))
         return parts.joined(separator: "  \u{00B7}  ")
     }
 

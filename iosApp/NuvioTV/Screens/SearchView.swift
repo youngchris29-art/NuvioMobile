@@ -170,7 +170,7 @@ struct SearchView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Theme.Spacing.md) {
                             if discover.selectedCatalog?.genreRequired != true {
-                                discoverChip(title: "All", subtitle: nil, isSelected: widen(discover.selectedGenre) == nil) {
+                                discoverChip(title: String(localized: "All"), subtitle: nil, isSelected: widen(discover.selectedGenre) == nil) {
                                     model.selectDiscoverGenre(nil)
                                 }
                             }
@@ -275,10 +275,10 @@ struct SearchView: View {
 
     private func typeLabel(_ type: String) -> String {
         switch type.lowercased() {
-        case "movie": return "Movies"
-        case "series": return "Series"
-        case "tv": return "TV"
-        case "anime": return "Anime"
+        case "movie": return String(localized: "Movies")
+        case "series": return String(localized: "Series")
+        case "tv": return String(localized: "TV")
+        case "anime": return String(localized: "Anime")
         default: return type.capitalized
         }
     }
@@ -286,14 +286,14 @@ struct SearchView: View {
     private func discoverEmptyMessage(_ reason: DiscoverEmptyStateReason) -> String {
         // KMP exports these enum entries all-lowercase (like CloudLibraryItemType.webdownload).
         if reason == DiscoverEmptyStateReason.noactiveaddons {
-            return "Install and enable an add-on to browse its catalogs."
+            return String(localized: "Install and enable an add-on to browse its catalogs.")
         }
         if reason == DiscoverEmptyStateReason.nodiscovercatalogs {
-            return "Your add-ons don't expose browsable catalogs."
+            return String(localized: "Your add-ons don't expose browsable catalogs.")
         }
         if reason == DiscoverEmptyStateReason.requestfailed {
-            return "Couldn't load this catalog. Try another genre or catalog."
+            return String(localized: "Couldn't load this catalog. Try another genre or catalog.")
         }
-        return "Nothing here yet \u{2014} try another genre or catalog."
+        return String(localized: "Nothing here yet \u{2014} try another genre or catalog.")
     }
 }

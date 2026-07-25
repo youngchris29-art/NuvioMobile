@@ -52,11 +52,11 @@ final class BadgeSettingsViewModel: ObservableObject {
                 self.isImporting = false
                 if let success = result as? StreamBadgeImportResultSuccess {
                     let count = Int(success.rules.enabledFilterCount)
-                    self.statusMessage = "Imported \(count) badge filter\(count == 1 ? "" : "s")."
+                    self.statusMessage = count == 1 ? String(localized: "Imported 1 badge filter.") : String(localized: "Imported \(count) badge filters.")
                 } else if let failure = result as? StreamBadgeImportResultError {
                     self.statusMessage = failure.message
                 } else {
-                    self.statusMessage = error?.localizedDescription ?? "Badge import failed."
+                    self.statusMessage = error?.localizedDescription ?? String(localized: "Badge import failed.")
                 }
             }
         }

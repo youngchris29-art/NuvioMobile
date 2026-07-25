@@ -384,7 +384,7 @@ final class MPVTVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         let count = getInt("track-list/count")
         var audio: [PlayerTrack] = []
-        var subs: [PlayerTrack] = [PlayerTrack(id: -1, label: "Off", isSelected: getString("sid") == "no")]
+        var subs: [PlayerTrack] = [PlayerTrack(id: -1, label: String(localized: "Off"), isSelected: getString("sid") == "no")]
         var audioInfos: [TrackInfo] = []
         var subInfos: [TrackInfo] = []
 
@@ -519,7 +519,7 @@ final class MPVTVPlayerViewController: UIViewController {
         let title = (getString("track-list/\(index)/title") ?? "").trimmingCharacters(in: .whitespaces)
         let codec = (getString("track-list/\(index)/codec") ?? "").trimmingCharacters(in: .whitespaces)
         var parts = [lang, title].filter { !$0.isEmpty }
-        var label = parts.isEmpty ? "Track \(fallbackId)" : parts.joined(separator: " \u{00B7} ")
+        var label = parts.isEmpty ? String(localized: "Track \(fallbackId)") : parts.joined(separator: " \u{00B7} ")
         if !codec.isEmpty { label += " (\(codec))" }
         return label
     }
@@ -984,9 +984,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func skipLabel(for type: String) -> String {
         switch type.lowercased() {
-        case "outro", "ed", "credits": return "Skip Outro"
-        case "recap": return "Skip Recap"
-        default: return "Skip Intro"
+        case "outro", "ed", "credits": return String(localized: "Skip Outro")
+        case "recap": return String(localized: "Skip Recap")
+        default: return String(localized: "Skip Intro")
         }
     }
 
@@ -1661,12 +1661,12 @@ private struct TrackPickerView: View {
                     .padding(.bottom, 16)
 
                 if !state.audioTracks.isEmpty {
-                    menuLink(title: "Audio", value: currentAudioLabel) {
+                    menuLink(title: String(localized: "Audio"), value: currentAudioLabel) {
                         destination { audioDestination }
                     }
                 }
                 if !state.subtitleTracks.isEmpty {
-                    menuLink(title: "Subtitles", value: currentSubtitleLabel) {
+                    menuLink(title: String(localized: "Subtitles"), value: currentSubtitleLabel) {
                         destination { subtitleDestination }
                     }
                 } else {
@@ -1675,29 +1675,29 @@ private struct TrackPickerView: View {
                     HStack(spacing: 16) {
                         Text("Subtitles").foregroundStyle(.white.opacity(0.5))
                         Spacer(minLength: 0)
-                        Text(state.subtitleSearchInFlight ? "Searching addon subtitles…" : "None found")
+                        Text(state.subtitleSearchInFlight ? String(localized: "Searching addon subtitles…") : String(localized: "None found"))
                             .foregroundStyle(.white.opacity(0.5))
                     }
                     .font(.body)
                     .padding(.vertical, 10)
                 }
-                menuLink(title: "Playback Speed", value: currentSpeedLabel) {
+                menuLink(title: String(localized: "Playback Speed"), value: currentSpeedLabel) {
                     destination { speedSection }
                 }
-                menuLink(title: "Timing", value: currentTimingLabel) {
+                menuLink(title: String(localized: "Timing"), value: currentTimingLabel) {
                     destination { timingSection }
                 }
                 if canSwitchStreams, !engine.episodes.isEmpty {
-                    menuLink(title: "Episodes", value: currentEpisodeLabel) {
+                    menuLink(title: String(localized: "Episodes"), value: currentEpisodeLabel) {
                         destination { episodesSection }
                     }
                 }
                 if canSwitchStreams {
-                    menuLink(title: "Sources", value: "") {
+                    menuLink(title: String(localized: "Sources"), value: "") {
                         destination { sourcesSection }
                     }
                 }
-                menuLink(title: "Diagnostics", value: state.showStreamInfo ? "On" : "Off") {
+                menuLink(title: String(localized: "Diagnostics"), value: state.showStreamInfo ? String(localized: "On") : String(localized: "Off")) {
                     destination { diagnosticsSection }
                 }
             }
@@ -1751,14 +1751,14 @@ private struct TrackPickerView: View {
     // MARK: - Track destinations + current-value summaries
 
     private var audioDestination: some View {
-        section(title: "Audio", tracks: state.audioTracks) { id in
+        section(title: String(localized: "Audio"), tracks: state.audioTracks) { id in
             state.selectAudio?(id)
             dismiss()
         }
     }
 
     private var subtitleDestination: some View {
-        section(title: "Subtitles", tracks: state.subtitleTracks) { id in
+        section(title: String(localized: "Subtitles"), tracks: state.subtitleTracks) { id in
             state.selectSubtitle?(id)
             dismiss()
         }
@@ -1769,7 +1769,7 @@ private struct TrackPickerView: View {
     }
 
     private var currentSubtitleLabel: String {
-        state.subtitleTracks.first(where: { $0.isSelected })?.label ?? "Off"
+        state.subtitleTracks.first(where: { $0.isSelected })?.label ?? String(localized: "Off")
     }
 
     private var currentSpeedLabel: String {
@@ -1778,7 +1778,7 @@ private struct TrackPickerView: View {
 
     private var currentTimingLabel: String {
         func fmt(_ v: Double) -> String { v == 0 ? "0s" : String(format: "%+.2gs", v) }
-        return "Sub \(fmt(state.subtitleDelaySec)) \u{00B7} Audio \(fmt(state.audioDelaySec))"
+        return String(localized: "Sub \(fmt(state.subtitleDelaySec)) \u{00B7} Audio \(fmt(state.audioDelaySec))")
     }
 
     private var currentEpisodeLabel: String {
@@ -1964,10 +1964,10 @@ private struct TrackPickerView: View {
     private var timingSection: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Timing").font(.title2).bold().foregroundStyle(.white)
-            delayRow(title: "Subtitle Delay", value: state.subtitleDelaySec, step: 0.5, limit: 30) {
+            delayRow(title: String(localized: "Subtitle Delay"), value: state.subtitleDelaySec, step: 0.5, limit: 30) {
                 state.setSubtitleDelay?($0)
             }
-            delayRow(title: "Audio Delay", value: state.audioDelaySec, step: 0.25, limit: 10) {
+            delayRow(title: String(localized: "Audio Delay"), value: state.audioDelaySec, step: 0.25, limit: 10) {
                 state.setAudioDelay?($0)
             }
             Text("Positive values delay the track; negative values play it earlier.")
@@ -2007,7 +2007,7 @@ private struct TrackPickerView: View {
             } label: {
                 HStack(spacing: 16) {
                     Image(systemName: state.showStreamInfo ? "checkmark.circle.fill" : "info.circle")
-                    Text(state.showStreamInfo ? "Hide Stream Info" : "Show Stream Info")
+                    Text(state.showStreamInfo ? String(localized: "Hide Stream Info") : String(localized: "Show Stream Info"))
                     Spacer(minLength: 0)
                 }
                 .padding(.vertical, 8)

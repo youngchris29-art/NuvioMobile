@@ -306,8 +306,8 @@ final class RemoteSetupViewModel: ObservableObject {
             let proposedUrls = Set(proposed.map(\.url))
             let added = proposedUrls.subtracting(currentUrls).count
             let removed = currentUrls.subtracting(proposedUrls).count
-            if added > 0 { parts.append("\(added) add-on\(added == 1 ? "" : "s") installed") }
-            if removed > 0 { parts.append("\(removed) add-on\(removed == 1 ? "" : "s") removed") }
+            if added > 0 { parts.append(String(localized: "\(added) add-on\(added == 1 ? "" : "s") installed")) }
+            if removed > 0 { parts.append(String(localized: "\(removed) add-on\(removed == 1 ? "" : "s") removed")) }
             let orderChanged = proposed.map(\.url).filter { currentUrls.contains($0) }
                 != addons.map(\.manifestUrl).filter { proposedUrls.contains($0) }
             let togglesChanged = proposed.contains { entry in
@@ -316,7 +316,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 else { return false }
                 return existing.enabled != enabled
             }
-            if orderChanged || togglesChanged { parts.append("add-on settings changed") }
+            if orderChanged || togglesChanged { parts.append(String(localized: "add-on settings changed")) }
         }
 
         if let order = proposal.rowOrder {
@@ -324,16 +324,16 @@ final class RemoteSetupViewModel: ObservableObject {
             let disabled = Set(proposal.disabledRowKeys ?? [])
             let orderChanged = order.filter { known.contains($0) } != known.filter { order.contains($0) }
             let togglesChanged = rows.contains { $0.enabled == disabled.contains($0.key) }
-            if orderChanged || togglesChanged { parts.append("Home rows updated") }
+            if orderChanged || togglesChanged { parts.append(String(localized: "Home rows updated")) }
         }
 
-        if proposal.tmdbKey?.isEmpty == false { parts.append("TMDB key set") }
-        if proposal.mdblistKey?.isEmpty == false { parts.append("MDBList key set") }
+        if proposal.tmdbKey?.isEmpty == false { parts.append(String(localized: "TMDB key set")) }
+        if proposal.mdblistKey?.isEmpty == false { parts.append(String(localized: "MDBList key set")) }
         if let badgeCount = proposal.badgeUrls?.count, badgeCount > 0 {
-            parts.append("\(badgeCount) badge pack\(badgeCount == 1 ? "" : "s") imported")
+            parts.append(String(localized: "\(badgeCount) badge pack\(badgeCount == 1 ? "" : "s") imported"))
         }
 
-        return parts.isEmpty ? "No changes detected." : parts.joined(separator: " \u{00B7} ") + "."
+        return parts.isEmpty ? String(localized: "No changes detected.") : parts.joined(separator: " \u{00B7} ") + "."
     }
 
     // MARK: - QR

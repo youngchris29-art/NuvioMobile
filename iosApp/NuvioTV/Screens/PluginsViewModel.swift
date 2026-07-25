@@ -57,13 +57,13 @@ final class PluginsViewModel: ObservableObject {
                 guard let self else { return }
                 self.isInstalling = false
                 if let error {
-                    self.statusMessage = "Couldn't install: \(error.localizedDescription)"
+                    self.statusMessage = String(localized: "Couldn't install: \(error.localizedDescription)")
                 } else if let failure = result as? AddPluginRepositoryResultError {
-                    self.statusMessage = "Couldn't install: \(failure.message)"
+                    self.statusMessage = String(localized: "Couldn't install: \(failure.message)")
                 } else if let success = result as? AddPluginRepositoryResultSuccess {
-                    self.statusMessage = "Installed \(success.repository.name)."
+                    self.statusMessage = String(localized: "Installed \(success.repository.name).")
                 } else {
-                    self.statusMessage = "Couldn't install that URL."
+                    self.statusMessage = String(localized: "Couldn't install that URL.")
                 }
             }
         }

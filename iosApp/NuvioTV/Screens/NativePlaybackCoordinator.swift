@@ -33,7 +33,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// streams, emptied during an audio-switch rebuild.
     @Published private(set) var audioTracks: [NativeAudioTrack] = []
     /// Caption under the preparing spinner — first spin-up vs an audio-switch rebuild.
-    @Published private(set) var preparingLabel = "Preparing Dolby Vision\u{2026}"
+    @Published private(set) var preparingLabel = String(localized: "Preparing Dolby Vision\u{2026}")
     private(set) var player: AVPlayer?
 
     /// Fired ~every few seconds with (position, duration) while playing — the screen forwards it to
@@ -169,7 +169,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         // signalingAttempt intentionally survives: if this device already proved it needs the
         // reduced (no SUPPLEMENTAL-CODECS) master form, the rebuilt server starts there directly.
         audioTracks = []
-        preparingLabel = "Switching Audio\u{2026}"
+        preparingLabel = String(localized: "Switching Audio\u{2026}")
         phase = .preparing
         launchRemux(audioStreamIndex: streamIndex)
     }
@@ -467,7 +467,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         let codec = Self.audioCodecDisplay[track.codec] ?? track.codec.uppercased()
         parts.append("\(codec) \(Self.channelText(track.channels))")
         if let title = track.title, !title.isEmpty, title.count <= 42 { parts.append(title) }
-        return parts.isEmpty ? "Track \(track.streamIndex)" : parts.joined(separator: " \u{00B7} ")
+        return parts.isEmpty ? String(localized: "Track \(track.streamIndex)") : parts.joined(separator: " \u{00B7} ")
     }
 
     /// MKV language tags are usually ISO 639-2/B; Locale wants /T for the codes where they differ.
@@ -486,8 +486,8 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     private static func channelText(_ channels: Int) -> String {
         switch channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
+        case 1: return String(localized: "Mono")
+        case 2: return String(localized: "Stereo")
         case 3: return "2.1"
         case 6: return "5.1"
         case 7: return "6.1"
@@ -505,48 +505,48 @@ final class NativePlaybackCoordinator: ObservableObject {
         func add(_ label: String, _ value: String?) {
             if let value, !value.isEmpty { rows.append(NativeInfoRow(label: label, value: value)) }
         }
-        add("Engine", routingNote ?? "Native")
+        add(String(localized: "Engine"), routingNote ?? String(localized: "Native"))
         if let s = remux?.videoSignaling {
-            add("Video", s.codecs)
+            add(String(localized: "Video"), s.codecs)
             add("Dolby Vision", s.supplementalCodecs)
-            add("Dynamic range", s.videoRange)
+            add(String(localized: "Dynamic range"), s.videoRange)
             if s.width > 0, s.height > 0 {
                 let fps = s.frameRate > 0 ? String(format: " · %.6g fps", s.frameRate) : ""
-                add("Resolution", "\(s.width)\u{00D7}\(s.height)\(fps)")
+                add(String(localized: "Resolution"), "\(s.width)\u{00D7}\(s.height)\(fps)")
             }
         }
         let audioName = audioTracks.first(where: \.selected)?.name
-        add("Audio", [audioName, remux?.audioCodecToken].compactMap { $0 }.joined(separator: " \u{00B7} "))
+        add(String(localized: "Audio"), [audioName, remux?.audioCodecToken].compactMap { $0 }.joined(separator: " \u{00B7} "))
         // The transport-bar Audio menu only exists with >1 track — say so here, so a single-track
         // source doesn't read as a broken selector.
         if audioTracks.count == 1 {
-            add("Audio tracks", "1 (this file has no alternate audio)")
+            add(String(localized: "Audio tracks"), String(localized: "1 (this file has no alternate audio)"))
         } else if audioTracks.count > 1 {
-            add("Audio tracks", "\(audioTracks.count) — switch via the Audio menu in the transport bar")
+            add(String(localized: "Audio tracks"), String(localized: "\(audioTracks.count) — switch via the Audio menu in the transport bar"))
         }
         // Same self-explanation for subtitles: an empty system menu should read as "the addons
         // had nothing for this title", not as a broken selector.
         if subsFetchDone {
-            add("Addon subtitles", addonSubtitles.isEmpty
-                ? "none found for this title"
-                : "\(addonSubtitles.count) found")
+            add(String(localized: "Addon subtitles"), addonSubtitles.isEmpty
+                ? String(localized: "none found for this title")
+                : String(localized: "\(addonSubtitles.count) found"))
         } else {
-            add("Addon subtitles", "searching…")
+            add(String(localized: "Addon subtitles"), String(localized: "searching…"))
         }
         if let map = remux?.segmentMap {
-            add("Segments", "\(map.count) \u{00D7} \(map.targetDurationSec)s \u{00B7} \(Self.timeString(map.totalDurationSec))")
+            add(String(localized: "Segments"), "\(map.count) \u{00D7} \(map.targetDurationSec)s \u{00B7} \(Self.timeString(map.totalDurationSec))")
         }
         if let bandwidth = remux?.estimatedBandwidth, bandwidth > 0 {
-            add("Declared bandwidth", String(format: "%.1f Mb/s", Double(bandwidth) / 1_000_000))
+            add(String(localized: "Declared bandwidth"), String(format: "%.1f Mb/s", Double(bandwidth) / 1_000_000))
         }
         if let event = playerItem?.accessLog()?.events.last {
             if event.indicatedBitrate > 0 {
-                add("Indicated bitrate", String(format: "%.1f Mb/s", event.indicatedBitrate / 1_000_000))
+                add(String(localized: "Indicated bitrate"), String(format: "%.1f Mb/s", event.indicatedBitrate / 1_000_000))
             }
             if event.numberOfBytesTransferred > 0 {
-                add("Transferred", String(format: "%.0f MB", Double(event.numberOfBytesTransferred) / 1_048_576))
+                add(String(localized: "Transferred"), String(format: "%.0f MB", Double(event.numberOfBytesTransferred) / 1_048_576))
             }
-            if event.numberOfStalls > 0 { add("Stalls", "\(event.numberOfStalls)") }
+            if event.numberOfStalls > 0 { add(String(localized: "Stalls"), "\(event.numberOfStalls)") }
         }
         return rows
     }

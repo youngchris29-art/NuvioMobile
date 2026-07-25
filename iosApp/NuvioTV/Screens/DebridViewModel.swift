@@ -102,7 +102,7 @@ final class DebridViewModel: ObservableObject {
         guard authProviderId == nil else { return }
         guard let api = DebridProviderApis.shared.apiFor(providerId: provider.id) else {
             authProviderId = provider.id
-            authPhase = .failed("Device sign-in isn't available for \(provider.displayName). Use manual API key entry below.")
+            authPhase = .failed(String(localized: "Device sign-in isn't available for \(provider.displayName). Use manual API key entry below."))
             return
         }
         authProviderId = provider.id
@@ -116,8 +116,8 @@ final class DebridViewModel: ObservableObject {
                     let message = error?.localizedDescription ?? ""
                     self.authPhase = .failed(
                         message.contains("PREMIUMIZE_CLIENT_ID")
-                            ? "Device sign-in isn't configured in this build (missing PREMIUMIZE_CLIENT_ID). Paste an API key from your Premiumize account instead."
-                            : "Couldn't start device sign-in. Try again, or paste an API key manually below."
+                            ? String(localized: "Device sign-in isn't configured in this build (missing PREMIUMIZE_CLIENT_ID). Paste an API key from your Premiumize account instead.")
+                            : String(localized: "Couldn't start device sign-in. Try again, or paste an API key manually below.")
                     )
                     return
                 }
@@ -162,16 +162,16 @@ final class DebridViewModel: ObservableObject {
                     return
                 case .pending:
                     if Date() > deadline {
-                        self.authPhase = .failed("Timed out waiting for approval. Try again.")
+                        self.authPhase = .failed(String(localized: "Timed out waiting for approval. Try again."))
                         self.activeSession = nil
                         return
                     }
                 case .expired:
-                    self.authPhase = .failed("The code expired before it was approved. Try again.")
+                    self.authPhase = .failed(String(localized: "The code expired before it was approved. Try again."))
                     self.activeSession = nil
                     return
                 case .failed(let message):
-                    self.authPhase = .failed(message ?? "Sign-in failed. Try again, or paste an API key manually below.")
+                    self.authPhase = .failed(message ?? String(localized: "Sign-in failed. Try again, or paste an API key manually below."))
                     self.activeSession = nil
                     return
                 }
@@ -197,7 +197,7 @@ final class DebridViewModel: ObservableObject {
                     let message: String? = failed.message
                     outcome = .failed(message)
                 } else if result is DebridDeviceAuthorizationTokenResultUnsupported {
-                    outcome = .failed("Device sign-in isn't supported for this provider.")
+                    outcome = .failed(String(localized: "Device sign-in isn't supported for this provider."))
                 } else {
                     outcome = .pending
                 }

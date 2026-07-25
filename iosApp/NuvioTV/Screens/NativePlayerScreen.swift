@@ -153,9 +153,9 @@ struct NativePlayerScreen: View {
 
     private static func skipLabel(for type: String) -> String {
         switch type.lowercased() {
-        case "outro", "ed", "credits": return "Skip Outro"
-        case "recap": return "Skip Recap"
-        default: return "Skip Intro"
+        case "outro", "ed", "credits": return String(localized: "Skip Outro")
+        case "recap": return String(localized: "Skip Recap")
+        default: return String(localized: "Skip Intro")
         }
     }
 }
@@ -192,7 +192,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         controller.player = player
         // The info tab is installed once — its SwiftUI content observes `infoModel` and stays live.
         let host = UIHostingController(rootView: NativeStreamInfoView(model: infoModel))
-        host.title = "Stream Info"
+        host.title = String(localized: "Stream Info")
         controller.customInfoViewControllers = [host]
         return controller
     }
@@ -219,7 +219,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         }
         if upNextReady {
             let playNow = onPlayNow
-            actions.append(UIAction(title: "Play Next Episode",
+            actions.append(UIAction(title: String(localized: "Play Next Episode"),
                                     image: UIImage(systemName: "forward.end.fill")) { _ in playNow() })
         }
         controller.contextualActions = actions
@@ -236,7 +236,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
                          state: track.selected ? .on : .off) { _ in select(track.streamIndex) }
             }
             controller.transportBarCustomMenuItems = [
-                UIMenu(title: "Audio", image: UIImage(systemName: "waveform"), children: items),
+                UIMenu(title: String(localized: "Audio"), image: UIImage(systemName: "waveform"), children: items),
             ]
         } else if !controller.transportBarCustomMenuItems.isEmpty {
             controller.transportBarCustomMenuItems = []

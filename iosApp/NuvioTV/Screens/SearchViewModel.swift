@@ -36,7 +36,7 @@ final class SearchViewModel: ObservableObject {
             self.isLoading = state.isLoading
             self.sections = state.sections
             self.emptyMessage = state.sections.isEmpty && !state.isLoading && state.emptyStateReason != nil
-                ? "No results."
+                ? String(localized: "No results.")
                 : nil
         }
 

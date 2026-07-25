@@ -198,9 +198,9 @@ struct QrSignInView: View {
     private var statusLine: String {
         let status: String? = model.state?.status
         switch status {
-        case "approved": return "Approved \u{2014} finishing sign-in\u{2026}"
-        case "pending": return "Waiting for approval\u{2026} this screen updates automatically."
-        default: return "Preparing sign-in\u{2026}"
+        case "approved": return String(localized: "Approved \u{2014} finishing sign-in\u{2026}")
+        case "pending": return String(localized: "Waiting for approval\u{2026} this screen updates automatically.")
+        default: return String(localized: "Preparing sign-in\u{2026}")
         }
     }
 }

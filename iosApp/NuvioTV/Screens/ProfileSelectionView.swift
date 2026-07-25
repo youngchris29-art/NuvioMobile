@@ -110,7 +110,7 @@ struct ProfileSelectionView: View {
                             Button {
                                 editing = ProfileEditTarget(profile: nil)
                             } label: {
-                                profileTile(name: "Add Profile") {
+                                profileTile(name: String(localized: "Add Profile")) {
                                     ZStack {
                                         Circle().strokeBorder(Theme.Palette.textSecondary, lineWidth: 3)
                                         Image(systemName: "plus")
@@ -142,8 +142,8 @@ struct ProfileSelectionView: View {
         }
         .fullScreenCover(item: $pinPrompt) { prompt in
             PinEntryView(
-                title: "Enter PIN for \(prompt.profile.name)",
-                subtitle: prompt.action == .select ? nil : "This profile is locked.",
+                title: String(localized: "Enter PIN for \(prompt.profile.name)"),
+                subtitle: prompt.action == .select ? nil : String(localized: "This profile is locked."),
                 onCancel: { pinPrompt = nil },
                 onSubmit: { pin, done in
                     model.verifyPin(prompt.profile, pin: pin) { result in
@@ -241,9 +241,9 @@ private struct ProfileTileLabel<Content: View>: View {
 func pinErrorMessage(_ result: PinVerifyResult?) -> String {
     if let message = result?.message, !message.isEmpty { return message }
     if let retry = result?.retryAfterSeconds, retry > 0 {
-        return "Too many attempts. Try again in \(retry)s."
+        return String(localized: "Too many attempts. Try again in \(retry)s.")
     }
-    return "Incorrect PIN. Try again."
+    return String(localized: "Incorrect PIN. Try again.")
 }
 
 /// Identifiable wrapper so add (nil) / edit (existing) can drive `.fullScreenCover(item:)`.
@@ -298,7 +298,7 @@ struct ProfileEditView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: Theme.Spacing.xl) {
-                    Text(target.profile == nil ? "Add Profile" : "Edit Profile")
+                    Text(target.profile == nil ? String(localized: "Add Profile") : String(localized: "Edit Profile"))
                         .font(Theme.Font.screenTitle)
                         .foregroundStyle(Theme.Palette.textPrimary)
 
@@ -476,8 +476,8 @@ struct ProfileEditView: View {
         switch flow {
         case .enterCurrent(let remove):
             PinEntryView(
-                title: "Enter current PIN",
-                subtitle: remove ? "Confirm the PIN to remove the lock." : "Confirm the PIN before choosing a new one.",
+                title: String(localized: "Enter current PIN"),
+                subtitle: remove ? String(localized: "Confirm the PIN to remove the lock.") : String(localized: "Confirm the PIN before choosing a new one."),
                 onCancel: { pinFlow = nil },
                 onSubmit: { pin, done in
                     guard let profile = liveProfile else { pinFlow = nil; return }
@@ -502,8 +502,8 @@ struct ProfileEditView: View {
             )
         case .enterNew(let current):
             PinEntryView(
-                title: "Choose a 4-digit PIN",
-                subtitle: "This profile will require the PIN to open.",
+                title: String(localized: "Choose a 4-digit PIN"),
+                subtitle: String(localized: "This profile will require the PIN to open."),
                 onCancel: { pinFlow = nil },
                 onSubmit: { pin, done in
                     guard let profile = liveProfile else { pinFlow = nil; return }
@@ -523,7 +523,7 @@ struct ProfileEditView: View {
 
     private func save() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        let finalName = trimmed.isEmpty ? "Profile" : trimmed
+        let finalName = trimmed.isEmpty ? String(localized: "Profile") : trimmed
 
         // Catalog avatar → store BOTH id and resolved URL (cross-device renderable without a
         // catalog lookup). Color tile → clear both. Untouched custom URL → preserve it.

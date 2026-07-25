@@ -174,7 +174,7 @@ struct EpisodesSection: View {
     }
 
     private static func seasonLabel(_ season: Int) -> String {
-        season <= 0 ? "Specials" : "Season \(season)"
+        season <= 0 ? String(localized: "Specials") : String(localized: "Season \(season)")
     }
 
     private static func episodeVideoId(metaId: String, episode: MetaVideo) -> String {
@@ -186,7 +186,7 @@ struct EpisodesSection: View {
 
     private static func episodeTitle(_ episode: MetaVideo) -> String {
         if let s = episode.season?.value, let e = episode.episode?.value {
-            return "S\(s)E\(e) \u{00B7} \(episode.title)"
+            return String(localized: "S\(s)E\(e) \u{00B7} \(episode.title)")
         }
         return episode.title
     }
@@ -302,7 +302,7 @@ private struct EpisodeThumbCard: View {
 
     private var heading: String {
         if let e = episode.episode?.value {
-            return "E\(e) \u{00B7} \(episode.title)"
+            return String(localized: "E\(e) \u{00B7} \(episode.title)")
         }
         return episode.title
     }

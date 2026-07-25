@@ -108,11 +108,11 @@ struct LibraryView: View {
     }
 
     private static func sortLabel(_ option: LibrarySortOption) -> String {
-        if option == .default_ { return "Trakt Order" }
-        if option == .addedDesc { return "Recently Added" }
-        if option == .addedAsc { return "Oldest First" }
-        if option == .titleAsc { return "A\u{2013}Z" }
-        if option == .titleDesc { return "Z\u{2013}A" }
+        if option == .default_ { return String(localized: "Trakt Order") }
+        if option == .addedDesc { return String(localized: "Recently Added") }
+        if option == .addedAsc { return String(localized: "Oldest First") }
+        if option == .titleAsc { return String(localized: "A\u{2013}Z") }
+        if option == .titleDesc { return String(localized: "Z\u{2013}A") }
         return option.name
     }
 
@@ -120,8 +120,8 @@ struct LibraryView: View {
 
     private var sourceChips: some View {
         HStack(spacing: Theme.Spacing.md) {
-            sourceChip("Saved", isActive: !showingCloud) { showingCloud = false }
-            sourceChip("Debrid Cloud", isActive: showingCloud) { showingCloud = true }
+            sourceChip(String(localized: "Saved"), isActive: !showingCloud) { showingCloud = false }
+            sourceChip(String(localized: "Debrid Cloud"), isActive: showingCloud) { showingCloud = true }
         }
     }
 

@@ -166,9 +166,10 @@ struct StreamFileSizeChip: View {
     static func label(for bytes: Int64) -> String {
         let gib = Double(bytes) / (1024.0 * 1024.0 * 1024.0)
         if gib >= 1.0 {
-            return String(format: "%.1f GB", (gib * 10.0).rounded() / 10.0)
+            // Localized format so locales can rename units (French: "Go"/"Mo").
+            return String(format: String(localized: "%.1f GB"), (gib * 10.0).rounded() / 10.0)
         }
         let mib = Double(bytes) / (1024.0 * 1024.0)
-        return "\(Int(mib.rounded())) MB"
+        return String(format: String(localized: "%d MB"), Int(mib.rounded()))
     }
 }

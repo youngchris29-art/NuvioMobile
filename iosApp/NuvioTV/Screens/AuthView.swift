@@ -22,7 +22,7 @@ struct AuthView: View {
             Theme.Palette.background.ignoresSafeArea()
 
             VStack(spacing: Theme.Spacing.xl) {
-                Text(isSignUp ? "Create your Nuvio account" : "Sign in to Nuvio")
+                Text(isSignUp ? String(localized: "Create your Nuvio account") : String(localized: "Sign in to Nuvio"))
                     .font(Theme.Font.screenTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
 
@@ -70,7 +70,7 @@ struct AuthView: View {
                         if model.isBusy {
                             ProgressView()
                         } else {
-                            Text(isSignUp ? "Create Account" : "Sign In")
+                            Text(isSignUp ? String(localized: "Create Account") : String(localized: "Sign In"))
                                 .prominentAccentLabel()
                                 .padding(.horizontal, Theme.Spacing.xl)
                         }

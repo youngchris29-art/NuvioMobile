@@ -403,18 +403,18 @@ struct DetailView: View {
         func add(_ label: String, _ value: String) {
             if !value.isEmpty { rows.append(InfoRow(label: label, value: value)) }
         }
-        add("Director", meta.director.joined(separator: ", "))
-        add("Writers", meta.writer.joined(separator: ", "))
-        add("Studios", meta.productionCompanies.map { $0.name }.joined(separator: ", "))
-        add("Network", meta.networks.map { $0.name }.joined(separator: ", "))
+        add(String(localized: "Director"), meta.director.joined(separator: ", "))
+        add(String(localized: "Writers"), meta.writer.joined(separator: ", "))
+        add(String(localized: "Studios"), meta.productionCompanies.map { $0.name }.joined(separator: ", "))
+        add(String(localized: "Network"), meta.networks.map { $0.name }.joined(separator: ", "))
         // Bare Kotlin `String?` reads can bridge as non-optional in this framework — widen before use.
-        let country: String? = meta.country;   add("Country", country ?? "")
-        let language: String? = meta.language;  add("Language", language ?? "")
-        let status: String? = meta.status;      add("Status", status ?? "")
-        let awards: String? = meta.awards;      add("Awards", awards ?? "")
+        let country: String? = meta.country;   add(String(localized: "Country"), country ?? "")
+        let language: String? = meta.language;  add(String(localized: "Language"), language ?? "")
+        let status: String? = meta.status;      add(String(localized: "Status"), status ?? "")
+        let awards: String? = meta.awards;      add(String(localized: "Awards"), awards ?? "")
         let ratings = meta.externalRatings
         if !ratings.isEmpty {
-            add("Ratings", ratings.map { "\($0.source) \(formatRating($0.value))" }.joined(separator: "   "))
+            add(String(localized: "Ratings"), ratings.map { "\($0.source) \(formatRating($0.value))" }.joined(separator: "   "))
         }
         return rows
     }
@@ -461,7 +461,7 @@ struct DetailView: View {
     private var collectionTitle: String {
         let name: String? = model.meta?.collectionName
         if let name, !name.isEmpty { return name }
-        return "Collection"
+        return String(localized: "Collection")
     }
 
     // MARK: - Company logos (studios & networks with TMDB logo art)

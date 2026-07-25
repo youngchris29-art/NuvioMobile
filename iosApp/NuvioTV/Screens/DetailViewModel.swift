@@ -256,14 +256,14 @@ final class DetailViewModel: ObservableObject {
     }
 
     static let parentalGuideLabels = ParentalGuideLabels(
-        nudity: "Nudity",
-        violence: "Violence",
-        profanity: "Profanity",
-        alcohol: "Alcohol & Drugs",
-        frightening: "Frightening Scenes",
-        severe: "Severe",
-        moderate: "Moderate",
-        mild: "Mild"
+        nudity: String(localized: "Nudity"),
+        violence: String(localized: "Violence"),
+        profanity: String(localized: "Profanity"),
+        alcohol: String(localized: "Alcohol & Drugs"),
+        frightening: String(localized: "Frightening Scenes"),
+        severe: String(localized: "Severe"),
+        moderate: String(localized: "Moderate"),
+        mild: String(localized: "Mild")
     )
 
     // MARK: - Actions
