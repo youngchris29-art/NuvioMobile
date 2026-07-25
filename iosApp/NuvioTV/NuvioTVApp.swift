@@ -17,6 +17,10 @@ struct NuvioTVApp: App {
         // never runs). Runs once, before any repository is accessed.
         TvOsProviderInstallerKt.installTvOsSharedProviders()
 
+        // Localize shared-module strings (toasts, month names, error messages…) through the
+        // Shared string catalog. Without this, shared code uses its inline English fallbacks.
+        LocalizedStrings.shared.provider = SharedStringProvider()
+
         // Wire the JS plugin stack (QuickJS runtime, tvosMain-only): scraper host for
         // StreamsRepository, cloud sync controller (plugin repos sync from mobile), and
         // profile-change/sign-out lifecycle hooks.

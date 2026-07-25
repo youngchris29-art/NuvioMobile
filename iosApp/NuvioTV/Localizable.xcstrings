@@ -1,0 +1,3775 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "%.1f GB": {},
+    "%@ - %@ Instant": {},
+    "%@ remaining": {},
+    "%@ · Connected": {},
+    "%@ · v%@": {},
+    "%d": {},
+    "%d MB": {},
+    "%d filter%@ · %@": {},
+    "%d filters · %@": {},
+    "%d provider%@": {},
+    "%d providers": {},
+    "%lld add-on%@ installed": {},
+    "%lld add-on%@ removed": {},
+    "%lld badge pack%@ imported": {},
+    "%lld found": {},
+    "%lld playable files": {},
+    "%lld streams": {},
+    "%lld — switch via the Audio menu in the transport bar": {},
+    "%lld/10": {},
+    "-%@": {},
+    "1 (this file has no alternate audio)": {},
+    "1 filter · %@": {},
+    "1 provider": {},
+    "1 stream": {},
+    "120 s": {},
+    "150 MB": {},
+    "30 s": {},
+    "512 MB": {},
+    "60 s": {},
+    "64 MB": {},
+    "Account": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compte"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuenta"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konto"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account"
+          }
+        }
+      }
+    },
+    "Account & Services": {},
+    "Active": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actif"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activo"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktiv"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivo"
+          }
+        }
+      }
+    },
+    "Active resolver · press to disconnect": {},
+    "Add Profile": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter un profil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir perfil"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil hinzufügen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiungi profilo"
+          }
+        }
+      }
+    },
+    "Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com → Preferences → API Access. Titles you open after enabling will show the ratings.": {},
+    "Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org → Settings → API (v3 auth). Titles you open after enabling will be enriched.": {},
+    "Add a raised edge highlight and a glossy top sheen to cards for a little more depth.": {},
+    "Add movies and shows with the + button on a title’s page.": {},
+    "Add to Library": {},
+    "Add-ons": {},
+    "Addon subtitles": {},
+    "Advanced": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avancé"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avanzado"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avanzate"
+          }
+        }
+      }
+    },
+    "Alcohol & Drugs": {},
+    "All": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tout"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todo"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tutto"
+          }
+        }
+      }
+    },
+    "Amber": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ambre"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ámbar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bernstein"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Amber"
+          }
+        }
+      }
+    },
+    "Anime": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anime"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anime"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anime"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anime"
+          }
+        }
+      }
+    },
+    "Appearance": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apparence"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apariencia"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erscheinungsbild"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aspetto"
+          }
+        }
+      }
+    },
+    "Apply": {},
+    "Apply To": {},
+    "Apply changes from browser?": {},
+    "Approved — finishing sign-in…": {},
+    "Arabic": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arabe"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Árabe"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arabisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arabo"
+          }
+        }
+      }
+    },
+    "Audio": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio"
+          }
+        }
+      }
+    },
+    "Audio & Subtitle Language": {},
+    "Audio Delay": {},
+    "Audio tracks": {},
+    "Awards": {},
+    "A–Z": {},
+    "Back to Details": {},
+    "Back to the connect options for %@.": {},
+    "Background": {},
+    "Badge chips render above the stream name.": {},
+    "Badge chips render below the stream description.": {},
+    "Badge import failed.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Échec de l’import du badge."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Error al importar la insignia."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importazione dei badge non riuscita."
+          }
+        }
+      }
+    },
+    "Badge pack JSON URL": {},
+    "Badge packs add quality / HDR / audio-channel chips to stream results. Import a pack by its JSON URL — packs imported on the Nuvio mobile app sync here automatically. Tip: Remote Setup (Advanced) lets you paste the URL from a phone browser.": {},
+    "Badges Above Title": {},
+    "Balanced": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Équilibré"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Equilibrado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ausgewogen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bilanciato"
+          }
+        }
+      }
+    },
+    "Bold": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gras"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Atrevido"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bold"
+          }
+        }
+      }
+    },
+    "Born %@": {},
+    "Bright": {},
+    "Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.": {},
+    "Cache": {},
+    "Cancel": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annuler"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abbrechen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annulla"
+          }
+        }
+      }
+    },
+    "Card Depth": {},
+    "Cast": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Casting"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reparto"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Besetzung"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cast"
+          }
+        }
+      }
+    },
+    "Cast avatars": {},
+    "Catalog & search posters": {},
+    "Change PIN": {},
+    "Checking…": {},
+    "Chinese": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chinois"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chino"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chinesisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cinese"
+          }
+        }
+      }
+    },
+    "Choose a 4-digit PIN": {},
+    "Choose a file to play": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez un fichier à lire"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige un archivo para reproducir"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli un file da riprodurre"
+          }
+        }
+      }
+    },
+    "Clears the saved MDBList key and turns ratings off.": {},
+    "Clears the saved TMDB key and turns enrichment off.": {},
+    "Closes the local config page.": {},
+    "Collection": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collection"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colección"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sammlung"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collezione"
+          }
+        }
+      }
+    },
+    "Comments": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Commentaires"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comentarios"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kommentare"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Commenti"
+          }
+        }
+      }
+    },
+    "Confirm the PIN before choosing a new one.": {},
+    "Confirm the PIN to remove the lock.": {},
+    "Connect %@": {},
+    "Connect Trakt": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecter Trakt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectar Trakt"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt verbinden"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connetti Trakt"
+          }
+        }
+      }
+    },
+    "Connect a debrid service to resolve cached torrent results into direct streaming links on this Apple TV — no pre-configured addon URL needed. Keys are per profile and sync between Apple TVs.": {},
+    "Connect an account in Settings.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connectez un compte dans les paramètres."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecte una cuenta en Configuración."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connetti un account nelle Impostazioni."
+          }
+        }
+      }
+    },
+    "Connect one in Settings → Account & Services → Debrid, or turn on “Resolve Streams with Debrid”.": {},
+    "Connected as %@ · watched history is scrobbled automatically as you play.": {},
+    "Contains spoilers — press to reveal": {},
+    "Content Sources": {},
+    "Continue": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fortfahren"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continua"
+          }
+        }
+      }
+    },
+    "Continue Watching": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuer à regarder"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seguir viendo"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weiterschauen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continua a guardare"
+          }
+        }
+      }
+    },
+    "Continue as Guest": {},
+    "Corners": {},
+    "Could not open this link.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible d’ouvrir ce lien."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo abrir este enlace."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile aprire questo link."
+          }
+        }
+      }
+    },
+    "Couldn't install that URL.": {},
+    "Couldn't install: %@": {},
+    "Couldn't load this catalog. Try another genre or catalog.": {},
+    "Couldn't resolve a playback link.": {},
+    "Couldn't start device sign-in. Try again, or paste an API key manually below.": {},
+    "Couldn't start the local server. Check the network connection and try again.": {},
+    "Couldn’t load details for %@. A TMDB API key is required for cast profiles.": {},
+    "Couldn’t load titles for %@. A TMDB API key is required for studio and network pages.": {},
+    "Couldn’t open the external player — playing in NuvioTV.": {},
+    "Couldn’t open the external player.": {},
+    "Country": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pays"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paese"
+          }
+        }
+      }
+    },
+    "Create Account": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Créer un compte"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crear cuenta"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konto erstellen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crea account"
+          }
+        }
+      }
+    },
+    "Create your Nuvio account": {},
+    "Crimson": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cramoisi"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Carmesí"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Karminrot"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crimson"
+          }
+        }
+      }
+    },
+    "Debrid": {},
+    "Debrid Cloud": {},
+    "Declared bandwidth": {},
+    "Decline": {},
+    "Default": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Par défaut"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Por defecto"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Predefinito"
+          }
+        }
+      }
+    },
+    "Default Player": {},
+    "Delete Profile": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supprimer le profil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eliminar perfil"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil löschen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elimina profilo"
+          }
+        }
+      }
+    },
+    "Details": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Détails"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detalles"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Details"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dettagli"
+          }
+        }
+      }
+    },
+    "Device": {},
+    "Device sign-in isn't available for %@. Use manual API key entry below.": {},
+    "Device sign-in isn't configured in this build (missing PREMIUMIZE_CLIENT_ID). Paste an API key from your Premiumize account instead.": {},
+    "Device sign-in isn't supported for this provider.": {},
+    "Diagnostics": {},
+    "Died %@": {},
+    "Director": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réalisateur"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Director"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regisseur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regista"
+          }
+        }
+      }
+    },
+    "Disabled": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivato"
+          }
+        }
+      }
+    },
+    "Disconnect": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déconnecter"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desconectar"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disconnetti"
+          }
+        }
+      }
+    },
+    "Disconnect Trakt": {},
+    "Disconnect Trakt?": {},
+    "Disconnect debrid provider?": {},
+    "Discover": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Découvrir"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descubrir"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entdecken"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scopri"
+          }
+        }
+      }
+    },
+    "Dismiss": {},
+    "Draw an outline around text for readability": {},
+    "Dynamic range": {},
+    "E%lld · %@": {},
+    "Edge": {},
+    "Edge Coverage": {},
+    "Edit Profile": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifier le profil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editar perfil"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil bearbeiten"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifica profilo"
+          }
+        }
+      }
+    },
+    "Email": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adresse e-mail"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Correo electrónico"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E-Mail"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Email"
+          }
+        }
+      }
+    },
+    "Emerald": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Émeraude"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esmeralda"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smaragd"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Emerald"
+          }
+        }
+      }
+    },
+    "Enable Plugins": {},
+    "Enable the edge highlight and top sheen": {},
+    "Enabled": {},
+    "Engine": {},
+    "English": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anglais"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inglés"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Englisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inglese"
+          }
+        }
+      }
+    },
+    "Enhanced Video Renderer": {},
+    "Enter PIN for %@": {},
+    "Enter current PIN": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saisir le code PIN actuel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Introducir PIN actual"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktuelle PIN eingeben"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inserisci il PIN attuale"
+          }
+        }
+      }
+    },
+    "Episode thumbnails": {},
+    "Episodes": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Épisodes"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Episodios"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Episoden"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Episodi"
+          }
+        }
+      }
+    },
+    "File Size Badges": {},
+    "Finding streams…": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherche des streams…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscando streams…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Streams werden gesucht…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricerca flussi…"
+          }
+        }
+      }
+    },
+    "Finding stream…": {},
+    "Found %lld %@, but none could be resolved to a playable link.": {},
+    "Found %lld torrent %@, but no debrid service is connected.": {},
+    "Frame rate": {},
+    "French": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Français"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Francés"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Französisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Francese"
+          }
+        }
+      }
+    },
+    "Frightening Scenes": {},
+    "From Trakt": {},
+    "Full": {},
+    "German": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allemand"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alemán"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deutsch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tedesco"
+          }
+        }
+      }
+    },
+    "Guest data on this Apple TV (profiles, library, watch progress) will be cleared. You can then sign in on the welcome screen.": {},
+    "Half": {},
+    "Hardware decode": {},
+    "Hero Poster Only When Focused": {},
+    "Hide Stream Info": {},
+    "Hide Titles": {},
+    "Hindi": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hindi"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hindi"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hindi"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hindi"
+          }
+        }
+      }
+    },
+    "Hold to manage profile": {},
+    "Home": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accueil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inicio"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home"
+          }
+        }
+      }
+    },
+    "Home Continue Watching cards": {},
+    "Home Rows": {},
+    "Home Screen": {},
+    "Home rows updated": {},
+    "Import Badge Pack": {},
+    "Imported %lld badge filters.": {},
+    "Imported 1 badge filter.": {},
+    "In Library": {},
+    "Incorrect PIN. Try again.": {},
+    "Indicated bitrate": {},
+    "Install": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instalar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installieren"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installa"
+          }
+        }
+      }
+    },
+    "Install Repository": {},
+    "Install add-ons to customize your Home rows.": {},
+    "Install and enable an add-on to browse its catalogs.": {},
+    "Install from manifest URL": {},
+    "Installed": {},
+    "Installed %@.": {},
+    "Italian": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Italien"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Italiano"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Italienisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Italiano"
+          }
+        }
+      }
+    },
+    "JS plugin providers add extra stream sources. Install a repository by its manifest URL — it syncs to your other Nuvio devices automatically.": {},
+    "Japanese": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Japonais"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Japonés"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Japanisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giapponese"
+          }
+        }
+      }
+    },
+    "Jumping finds a stream automatically and switches playback.": {},
+    "Keep Profile 7 FEL on mpv": {},
+    "Keep this Settings screen open while you make changes.": {},
+    "Known for: %@": {},
+    "Korean": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coréen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coreano"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Koreanisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coreano"
+          }
+        }
+      }
+    },
+    "Landscape Rows": {},
+    "Language": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue préférée"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma preferido"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bevorzugte Sprache"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua preferita"
+          }
+        }
+      }
+    },
+    "Large": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grand"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grande"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Groß"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grande"
+          }
+        }
+      }
+    },
+    "Library": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bibliothèque"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biblioteca"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bibliothek"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Libreria"
+          }
+        }
+      }
+    },
+    "Loading catalogs…": {},
+    "Loading subtitle settings…": {},
+    "Loading…": {},
+    "Local data on this Apple TV will be cleared. Your synced data stays in your Nuvio account.": {},
+    "MDBList API key": {},
+    "MDBList Ratings": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notes MDBList"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calificaciones de MDBList"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList-Bewertungen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valutazioni MDBList"
+          }
+        }
+      }
+    },
+    "MDBList key set": {},
+    "Manage add-ons, Home rows, API keys, and stream badge packs from a phone or laptop browser on the same network — no on-screen keyboard. Changes only apply after you confirm them here.": {},
+    "Mark Watched": {},
+    "Match Content Frame Rate": {},
+    "Medium": {},
+    "Metadata (TMDB)": {},
+    "Mild": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Léger"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leve"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lieve"
+          }
+        }
+      }
+    },
+    "Missing provider credentials — reconnect in Settings → Debrid.": {},
+    "Moderate": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modéré"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moderado"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Moderata"
+          }
+        }
+      }
+    },
+    "Mono": {},
+    "More Like This": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À voir aussi"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más como esto"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mehr davon"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altri titoli simili"
+          }
+        }
+      }
+    },
+    "Movies": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Films"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Películas"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filme"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Film"
+          }
+        }
+      }
+    },
+    "Name": {},
+    "Native": {},
+    "Native player for Dolby Vision (beta)": {},
+    "Network": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chaîne"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cadena"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sender"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network"
+          }
+        }
+      }
+    },
+    "Network Readahead": {},
+    "No addons installed yet.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun addon installé."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no hay complementos instalados."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch keine Addons installiert."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun addon installato ancora."
+          }
+        }
+      }
+    },
+    "No addons installed.": {},
+    "No alternate sources found yet.": {},
+    "No badge packs imported yet.": {},
+    "No changes detected.": {},
+    "No files in your %@ cloud.": {},
+    "No internet connection": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pas de connexion Internet"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin conexión a internet"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Internetverbindung"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessuna connessione internet"
+          }
+        }
+      }
+    },
+    "No playable files": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun fichier lisible"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay archivos reproducibles"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun file riproducibile"
+          }
+        }
+      }
+    },
+    "No playable streams. Install a streaming addon, or connect a debrid account in Settings to play torrent results.": {},
+    "No plugin repositories installed yet.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun dépôt de plugin installé pour l’instant."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no hay repositorios de complementos instalados."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun repository di plugin ancora installato."
+          }
+        }
+      }
+    },
+    "No results.": {},
+    "No stream details yet.": {},
+    "No stream found for the next episode.": {},
+    "No streaming addons installed — only a metadata catalog (Cinemeta) is set up.": {},
+    "No streams found for this title.": {},
+    "No titles here yet.": {},
+    "None found": {},
+    "Not cached on your debrid service.": {},
+    "Nothing here yet — try another genre or catalog.": {},
+    "Nothing here yet.": {},
+    "Nudity": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nudité"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desnudez"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nudità"
+          }
+        }
+      }
+    },
+    "Nuvio": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuvio"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuvio"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuvio"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuvio"
+          }
+        }
+      }
+    },
+    "NuvioTV (Built-in)": {},
+    "Ocean": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Océan"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Océano"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ozean"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocean"
+          }
+        }
+      }
+    },
+    "Off": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off"
+          }
+        }
+      }
+    },
+    "Off · API key saved": {},
+    "Off · Home hero artwork is always visible": {},
+    "Off · add-on release dates are used as-is": {},
+    "Off · rows use the add-on's catalog name": {},
+    "Oldest First": {},
+    "On": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On"
+          }
+        }
+      }
+    },
+    "On your phone or computer, go to": {},
+    "On · API key saved": {},
+    "On · Home hero artwork fades in only while the hero carousel is focused": {},
+    "On · TMDB air dates override add-on release dates": {},
+    "On · rows read like “Popular - Movies”": {},
+    "Online": {},
+    "Open in %@": {},
+    "Or continue another way": {},
+    "Or go to nuvio.tv/tv-login and enter:": {},
+    "Or paste your %@ API key": {},
+    "Original": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ordre original"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Originale"
+          }
+        }
+      }
+    },
+    "Outline": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contour"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contorno"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Umriss"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bordo"
+          }
+        }
+      }
+    },
+    "PRIMARY": {},
+    "Parental Guide": {},
+    "Password": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mot de passe"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contraseña"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passwort"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Password"
+          }
+        }
+      }
+    },
+    "Password must be at least 6 characters.": {},
+    "Paste the manifest URL from your streaming addon's config page (e.g. your TorBox or Torrentio URL with your API key). It ends in /manifest.json.": {},
+    "Paused": {},
+    "Play": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lire"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproducir"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abspielen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduci"
+          }
+        }
+      }
+    },
+    "Play Again": {},
+    "Play Dolby Vision, HDR10 and other compatible MKVs through the native AVPlayer engine for true DV output on Apple TV 4K; everything else stays on the mpv player. Profile 7 discs convert to 8.1 on the fly, and TrueHD/DTS-only audio plays as AAC 5.1.": {},
+    "Play Next Episode": {},
+    "Play in NuvioTV Player": {},
+    "Play test stream (Apple HLS sample)": {},
+    "Playback": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecture"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproducción"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wiedergabe"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduzione"
+          }
+        }
+      }
+    },
+    "Playback Settings": {},
+    "Playback Speed": {},
+    "Playing": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecture en cours"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproduciendo"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird abgespielt"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In riproduzione"
+          }
+        }
+      }
+    },
+    "Playing in %lld… press ↓ to play now": {},
+    "Plugins": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plugins"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plugins"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plugins"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plugin"
+          }
+        }
+      }
+    },
+    "Popular Movies": {},
+    "Popular TV Shows": {},
+    "Portuguese": {},
+    "Positive values delay the track; negative values play it earlier.": {},
+    "Poster Style": {},
+    "Posters": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiches"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pósteres"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poster"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Locandine"
+          }
+        }
+      }
+    },
+    "Preferred resolver": {},
+    "Preparing Dolby Vision…": {},
+    "Preparing sign-in…": {},
+    "Press to disconnect": {},
+    "Profanity": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grossièretés"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blasfemia"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volgarità"
+          }
+        }
+      }
+    },
+    "Profile": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Perfil"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profilo"
+          }
+        }
+      }
+    },
+    "Profile 7 FEL releases carry enhancement data the 8.1 conversion must discard. Turn on to keep those files on the mpv player (plays as HDR10, nothing discarded) instead of native Dolby Vision. MEL releases convert losslessly and always play native.": {},
+    "Quick install (from DebugConfig)": {},
+    "Ratings": {},
+    "Ratings (MDBList)": {},
+    "Re-check": {},
+    "Re-download provider code from every repository.": {},
+    "Recent Movies": {},
+    "Recent Searches": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherches récentes"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Búsquedas recientes"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letzte Suchen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricerche recenti"
+          }
+        }
+      }
+    },
+    "Recent TV Shows": {},
+    "Recently Added": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajoutés récemment"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agregado recientemente"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kürzlich hinzugefügt"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiunti di recente"
+          }
+        }
+      }
+    },
+    "Refresh": {},
+    "Refresh Plugins": {},
+    "Remote Setup": {},
+    "Remove API Key": {},
+    "Remove Add-on": {},
+    "Remove PIN": {},
+    "Remove from Continue Watching": {},
+    "Remove from Library": {},
+    "Remove from history": {},
+    "Removes this provider's key from this profile. Streams will no longer resolve through it.": {},
+    "Repository manifest URL": {},
+    "Requesting a sign-in code from %@…": {},
+    "Requesting code…": {},
+    "Reset": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réinitialiser"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reiniciar"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset"
+          }
+        }
+      }
+    },
+    "Reset to Defaults": {},
+    "Resolution": {},
+    "Resolve Streams with Debrid": {},
+    "Review": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avis"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reseña"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rezension"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recensione"
+          }
+        }
+      }
+    },
+    "Rose": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rose"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rosa"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rose"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rose"
+          }
+        }
+      }
+    },
+    "Round": {},
+    "Rounded": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrondi"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Redondeado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abgerundet"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrotondato"
+          }
+        }
+      }
+    },
+    "Run enabled plugin providers when loading streams.": {},
+    "Russian": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Russe"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ruso"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Russisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Russo"
+          }
+        }
+      }
+    },
+    "S%lldE%lld · %@": {},
+    "Save": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enregistrer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speichern"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salva"
+          }
+        }
+      }
+    },
+    "Save & Enable": {},
+    "Save Key": {},
+    "Saved": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enregistré"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gespeichert"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salvato"
+          }
+        }
+      }
+    },
+    "Scan a QR code to sign in — no typing required": {},
+    "Scan the QR code with your phone's camera and approve the sign-in — no typing on the TV.": {},
+    "Scan the code, or open in any browser:": {},
+    "Scrobble what you watch on this Apple TV to your Trakt profile (movies and episodes are marked watched automatically).": {},
+    "Scrobbling stops and this Apple TV's Trakt access token is revoked. Your Trakt history is untouched.": {},
+    "Search": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rechercher"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suchen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerca"
+          }
+        }
+      }
+    },
+    "Search movies & shows": {},
+    "Searching addon subtitles…": {},
+    "Searching…": {},
+    "Season %lld": {},
+    "Season %lld · Episode %lld": {},
+    "See All": {},
+    "Segments": {},
+    "Select a profile to continue": {},
+    "Semi": {},
+    "Series": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Séries"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Series"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Serien"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Serie TV"
+          }
+        }
+      }
+    },
+    "Servers unreachable": {},
+    "Set Active": {},
+    "Set PIN Lock": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurer le verrouillage PIN"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurar bloqueo PIN"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PIN-Sperre einrichten"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imposta blocco PIN"
+          }
+        }
+      }
+    },
+    "Setting up your catalogs…": {},
+    "Settings": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paramètres"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuración"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einstellungen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impostazioni"
+          }
+        }
+      }
+    },
+    "Severe": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sévère"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Severo"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grave"
+          }
+        }
+      }
+    },
+    "SharedCore is live": {},
+    "Sheen": {},
+    "Show Add-on Logo": {},
+    "Show Catalog Type in Titles": {},
+    "Show Home & Search catalog rows as wide 16:9 cards": {},
+    "Show Stream Info": {},
+    "Show a Skip button during intros and outros": {},
+    "Show each result's add-on logo and name on the right of the row.": {},
+    "Show posters without a title label": {},
+    "Show the video size (GB/MB) as a chip on stream results.": {},
+    "Shows a short code to enter at trakt.tv/activate on your phone or computer.": {},
+    "Shows a short code to enter on your phone (device sign-in).": {},
+    "Sign In": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se connecter"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Iniciar sesión"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anmelden"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accedi"
+          }
+        }
+      }
+    },
+    "Sign In to Nuvio": {},
+    "Sign In with Email": {},
+    "Sign In with Phone": {},
+    "Sign In with Your Phone": {},
+    "Sign Out": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se déconnecter"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerrar sesión"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abmelden"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disconnetti"
+          }
+        }
+      }
+    },
+    "Sign in to Nuvio": {},
+    "Sign in to sync your library, watch progress, and profiles across devices — or continue as a guest on this Apple TV only.": {},
+    "Sign in with your phone — scan a QR code, no typing on the remote.": {},
+    "Sign out?": {},
+    "Sign-in failed. Try again, or paste an API key manually below.": {},
+    "Signed in as %@. Local data on this Apple TV will be cleared.": {},
+    "Size": {},
+    "Skip Intro": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer l’intro/outro/récap"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar intro/outro/resumen"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intro/Outro/Rückblick überspringen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta Intro/Outro/Recap"
+          }
+        }
+      }
+    },
+    "Skip Outro": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer l’outro"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar outro"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outro überspringen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta Finale"
+          }
+        }
+      }
+    },
+    "Skip Recap": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer le récap"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar resumen"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rückblick überspringen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta Riassunto"
+          }
+        }
+      }
+    },
+    "Small": {},
+    "Soft": {},
+    "Solid": {},
+    "Sources": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sources"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fuentes"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sorgenti"
+          }
+        }
+      }
+    },
+    "Spanish": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Espagnol"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Español"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spanisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spagnolo"
+          }
+        }
+      }
+    },
+    "Specials": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spéciaux"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Especiales"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Specials"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speciali"
+          }
+        }
+      }
+    },
+    "Square": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Carré"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuadrado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quadratisch"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quadrato"
+          }
+        }
+      }
+    },
+    "Stalls": {},
+    "Start Remote Setup": {},
+    "Starts a local config page on your network.": {},
+    "Status": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Statut"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stato"
+          }
+        }
+      }
+    },
+    "Stereo": {},
+    "Still watching? Press ↓ to continue": {},
+    "Stop Remote Setup": {},
+    "Stop waiting and dismiss the code.": {},
+    "Stream Badges": {},
+    "Stream Info": {},
+    "Stream lookup failed.": {},
+    "Streaming Buffer": {},
+    "Streams open in %@. Hold a stream to play it in NuvioTV instead; if %@ can’t open, playback falls back to the built-in player.": {},
+    "Streams play in the built-in player. Hold a stream to open it in an external player instead.": {},
+    "Studio": {},
+    "Studios": {},
+    "Sub %@ · Audio %@": {},
+    "Subtitle Delay": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Délai des sous-titres"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retraso de subtítulos"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ritardo sottotitoli"
+          }
+        }
+      }
+    },
+    "Subtitles": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sous-titres"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtítulos"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untertitel"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sottotitoli"
+          }
+        }
+      }
+    },
+    "Subtle": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sutil"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dezent"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lieve"
+          }
+        }
+      }
+    },
+    "Swipe up for audio, subtitles & playback settings": {},
+    "Switch Profile": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changer de profil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambiar perfil"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil wechseln"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambia profilo"
+          }
+        }
+      }
+    },
+    "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings → Video and Audio.": {},
+    "Switch to a Nuvio account?": {},
+    "Switching Audio…": {},
+    "Switching resumes from your last saved position.": {},
+    "Sync your library, watch progress, and profiles across devices. Local guest data on this Apple TV will be cleared.": {},
+    "TMDB API Key (v3 auth)": {},
+    "TMDB Enrichment": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enrichissement TMDB"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enriquecimiento TMDB"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Anreicherung"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arricchimento TMDB"
+          }
+        }
+      }
+    },
+    "TMDB Release Dates": {},
+    "TMDB key set": {},
+    "TV": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TV"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TV"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TV"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TV"
+          }
+        }
+      }
+    },
+    "TV Shows": {},
+    "Test": {},
+    "Text Color": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couleur du texte"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Color del texto"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colore del Testo"
+          }
+        }
+      }
+    },
+    "That's the end of": {},
+    "The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.": {},
+    "The code expired before it was approved. Try again.": {},
+    "The provider returned an unplayable link.": {},
+    "The quick brown fox": {},
+    "Theme": {},
+    "This file isn't playable.": {},
+    "This link expired. Refreshing results.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce lien a expiré. Actualisation des résultats."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este enlace expiró. Resultados refrescantes."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questo link è scaduto. Aggiornamento dei risultati in corso."
+          }
+        }
+      }
+    },
+    "This profile is locked.": {},
+    "This profile will require the PIN to open.": {},
+    "This stream needs a debrid account. Connect one in Settings → Debrid.": {},
+    "Timed out waiting for approval. Try again.": {},
+    "Timing": {},
+    "Too many attempts. Try again in %ds.": {},
+    "Top": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En haut"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arriba"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In Alto"
+          }
+        }
+      }
+    },
+    "Top Rated Movies": {},
+    "Top Rated TV Shows": {},
+    "Track %lld": {},
+    "Trailer muted — press play/pause to unmute": {},
+    "Trailer rows": {},
+    "Trailer sound on — press play/pause to mute": {},
+    "Trailers": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bandes-annonces"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tráilers"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer"
+          }
+        }
+      }
+    },
+    "Trailers & Extras": {},
+    "Trakt": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt"
+          }
+        }
+      }
+    },
+    "Trakt Order": {},
+    "Trakt isn't configured in this build. Add TRAKT_CLIENT_ID and TRAKT_CLIENT_SECRET to local.properties, then rebuild the shared framework.": {},
+    "Transferred": {},
+    "Try Again": {},
+    "Turn cached torrent results into direct links automatically": {},
+    "Unknown": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inconnu"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desconocido"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unbekannt"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sconosciuta"
+          }
+        }
+      }
+    },
+    "Up Next": {},
+    "Use a heavier subtitle font": {},
+    "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental — Apple TV hardware only (ignored on the Simulator). Applies to the next video.": {},
+    "Video": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vidéo"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video"
+          }
+        }
+      }
+    },
+    "Video bitrate": {},
+    "Violence": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violence"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violencia"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violenza"
+          }
+        }
+      }
+    },
+    "Violet": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violet"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violeta"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violett"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violet"
+          }
+        }
+      }
+    },
+    "Waiting for %@ approval… this screen updates automatically.": {},
+    "Waiting for approval… this screen updates automatically.": {},
+    "Watch Trailer": {},
+    "Watched": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vu"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Visto"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gesehen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Visto"
+          }
+        }
+      }
+    },
+    "When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).": {},
+    "White": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blanc"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blanco"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weiß"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "White"
+          }
+        }
+      }
+    },
+    "Who’s watching?": {},
+    "Writers": {},
+    "X-Large": {},
+    "Your add-ons don't expose browsable catalogs.": {},
+    "Your library is empty": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Votre bibliothèque est vide"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu biblioteca está vacía"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine Bibliothek ist leer"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La tua libreria è vuota"
+          }
+        }
+      }
+    },
+    "Z–A": {},
+    "action_play": {},
+    "action_play_episode": {},
+    "action_resume": {},
+    "action_resume_episode": {},
+    "add-on settings changed": {},
+    "addon_already_installed": {},
+    "addon_invalid_url": {},
+    "addon_load_manifest_failed": {},
+    "addons_error_enter_url": {},
+    "addons_manifest_missing_field": {},
+    "and enter this code:": {},
+    "auth_account_deletion_failed": {},
+    "auth_sign_in_failed": {},
+    "auth_sign_out_failed": {},
+    "auth_sign_up_failed": {},
+    "catalog_load_failed": {},
+    "cloud_library_playback_disabled": {},
+    "cloud_library_provider_unavailable": {},
+    "collections_editor_media_movies_suffix": {},
+    "collections_editor_media_series_suffix": {},
+    "collections_editor_resolved_trakt_list": {},
+    "collections_editor_tmdb_collection_title_format": {},
+    "collections_editor_tmdb_director_title_format": {},
+    "collections_editor_tmdb_discover": {},
+    "collections_editor_tmdb_invalid_id_error": {},
+    "collections_editor_tmdb_list_title_format": {},
+    "collections_editor_tmdb_load_error": {},
+    "collections_editor_tmdb_network_title_format": {},
+    "collections_editor_tmdb_person_title_format": {},
+    "collections_editor_tmdb_production_title_format": {},
+    "collections_editor_trakt_fallback_title": {},
+    "collections_editor_trakt_id_url_required": {},
+    "collections_editor_trakt_input_required": {},
+    "collections_editor_trakt_list_title_format": {},
+    "collections_editor_trakt_load_error": {},
+    "collections_editor_trakt_load_failed": {},
+    "collections_editor_trakt_no_lists_found": {},
+    "collections_folder_addon_not_found": {},
+    "collections_folder_count": {},
+    "collections_folder_trakt_movie_list": {},
+    "collections_folder_trakt_series_list": {},
+    "collections_import_error_collection_blank_id": {},
+    "collections_import_error_collection_blank_title": {},
+    "collections_import_error_collection_duplicate_id": {},
+    "collections_import_error_empty_json": {},
+    "collections_import_error_folder_blank_id": {},
+    "collections_import_error_folder_blank_title": {},
+    "collections_import_error_folder_duplicate_id": {},
+    "collections_import_error_invalid_json": {},
+    "collections_import_error_source_blank_fields": {},
+    "collections_import_error_trakt_list_id": {},
+    "collections_tab_all": {},
+    "collections_tmdb_api_key_required": {},
+    "collections_tmdb_collection_not_found": {},
+    "collections_tmdb_company_not_found": {},
+    "collections_tmdb_discover_no_data": {},
+    "collections_tmdb_list_not_found": {},
+    "collections_tmdb_missing_collection_id": {},
+    "collections_tmdb_missing_list_id": {},
+    "collections_tmdb_missing_person_id": {},
+    "collections_tmdb_network_not_found": {},
+    "collections_tmdb_person_credits_not_found": {},
+    "collections_tmdb_person_not_found": {},
+    "collections_trakt_credentials_missing": {},
+    "collections_trakt_error_with_code": {},
+    "collections_trakt_invalid_list_id_or_url": {},
+    "collections_trakt_list_items_count": {},
+    "collections_trakt_list_likes_count": {},
+    "collections_trakt_list_not_found_or_private": {},
+    "collections_trakt_missing_list_id": {},
+    "collections_trakt_missing_numeric_id": {},
+    "collections_trakt_public_list": {},
+    "collections_trakt_rate_limit_reached": {},
+    "collections_trakt_request_failed": {},
+    "compose_player_episode_code_episode_only": {},
+    "compose_player_episode_code_full": {},
+    "compose_player_no_subtitle_lines_found": {},
+    "compose_player_no_subtitles_found": {},
+    "compose_player_subtitle_lines_load_error": {},
+    "continue_watching_up_next": {},
+    "continue_watching_up_next_episode": {},
+    "date_month_april": {},
+    "date_month_august": {},
+    "date_month_december": {},
+    "date_month_february": {},
+    "date_month_january": {},
+    "date_month_july": {},
+    "date_month_june": {},
+    "date_month_march": {},
+    "date_month_may": {},
+    "date_month_november": {},
+    "date_month_october": {},
+    "date_month_september": {},
+    "date_month_short_apr": {},
+    "date_month_short_aug": {},
+    "date_month_short_dec": {},
+    "date_month_short_feb": {},
+    "date_month_short_jan": {},
+    "date_month_short_jul": {},
+    "date_month_short_jun": {},
+    "date_month_short_mar": {},
+    "date_month_short_may": {},
+    "date_month_short_nov": {},
+    "date_month_short_oct": {},
+    "date_month_short_sep": {},
+    "debrid_missing_api_key": {},
+    "debrid_not_cached": {},
+    "debrid_resolve_failed": {},
+    "debrid_stream_stale": {},
+    "details_comments_trakt_load_failed_with_code": {},
+    "details_load_failed_all_addons": {},
+    "details_no_addon_meta": {},
+    "details_runtime_hours_minutes": {},
+    "details_runtime_hours_only": {},
+    "details_runtime_minutes_only": {},
+    "discover_catalog_context": {},
+    "discover_empty_load_failed_message": {},
+    "download_failed": {},
+    "downloads_enqueue_missing_url": {},
+    "downloads_enqueue_replaced": {},
+    "downloads_enqueue_started": {},
+    "downloads_enqueue_unsupported_format": {},
+    "external_player_android_system": {},
+    "generic_addon": {},
+    "generic_trailer": {},
+    "generic_unknown": {},
+    "home_catalog_default_title": {},
+    "https://…/manifest.json": {},
+    "library_local_tab_title": {},
+    "library_other": {},
+    "media_anime": {},
+    "media_channels": {},
+    "media_movie": {},
+    "media_movies": {},
+    "media_series": {},
+    "media_tv": {},
+    "meta_section_actions_description": {},
+    "meta_section_actions_title": {},
+    "meta_section_cast_description": {},
+    "meta_section_collection_description": {},
+    "meta_section_collection_title": {},
+    "meta_section_comments_description": {},
+    "meta_section_details_description": {},
+    "meta_section_details_title": {},
+    "meta_section_episodes_description": {},
+    "meta_section_more_like_this_description": {},
+    "meta_section_more_like_this_title": {},
+    "meta_section_overview_description": {},
+    "meta_section_overview_title": {},
+    "meta_section_production_description": {},
+    "meta_section_production_title": {},
+    "meta_section_trailers_description": {},
+    "mpv · fallback": {},
+    "network_empty_response_body": {},
+    "network_request_failed_http": {},
+    "none found for this title": {},
+    "notifications_episode_release_body_code": {},
+    "notifications_episode_release_body_code_title": {},
+    "notifications_episode_release_body_generic": {},
+    "notifications_episode_release_body_title": {},
+    "notifications_test_preview_body": {},
+    "notifications_test_send_failed": {},
+    "notifications_test_sent_for": {},
+    "p2p_error_unknown": {},
+    "person_role_creator": {},
+    "person_role_director": {},
+    "person_role_writer": {},
+    "pin_incorrect": {},
+    "player_addon_subtitle_display_format": {},
+    "profile_pin_changed_requires_refresh": {},
+    "profile_pin_clear_failed": {},
+    "profile_pin_clear_requires_internet": {},
+    "profile_pin_offline_verification_requires_online": {},
+    "profile_pin_set_failed": {},
+    "profile_pin_set_requires_internet": {},
+    "profile_primary_addons_required": {},
+    "search_error_no_results_for_catalog": {},
+    "searching…": {},
+    "settings_meta_cast": {},
+    "settings_meta_comments": {},
+    "settings_meta_episodes": {},
+    "settings_meta_trailers": {},
+    "settings_notifications_permission_disabled": {},
+    "settings_notifications_test_requires_saved_show": {},
+    "settings_stream_badge_enter_url": {},
+    "settings_stream_badge_import_failed": {},
+    "settings_stream_badge_import_limit": {},
+    "settings_stream_badge_url_scheme_invalid": {},
+    "source_embedded": {},
+    "stream_default_name": {},
+    "streams_failed_to_load_scraper": {},
+    "streams_plugin_repository_fallback": {},
+    "trailer_season_label": {},
+    "trakt_authorization_denied": {},
+    "trakt_authorization_expired_reconnect": {},
+    "trakt_complete_sign_in_browser": {},
+    "trakt_connected_status": {},
+    "trakt_disconnected_status": {},
+    "trakt_error_add_list_failed": {},
+    "trakt_error_add_watchlist_failed": {},
+    "trakt_error_authorization_expired": {},
+    "trakt_error_empty_response": {},
+    "trakt_error_list_limit_reached": {},
+    "trakt_error_list_not_found": {},
+    "trakt_error_missing_ids": {},
+    "trakt_error_rate_limit_reached": {},
+    "trakt_error_request_failed": {},
+    "trakt_invalid_callback": {},
+    "trakt_invalid_callback_state": {},
+    "trakt_invalid_token_response": {},
+    "trakt_library_load_failed": {},
+    "trakt_list_fallback_title": {},
+    "trakt_lists_update_failed": {},
+    "trakt_missing_auth_code": {},
+    "trakt_missing_credentials": {},
+    "trakt_progress_load_failed": {},
+    "trakt_sign_in_complete_failed": {},
+    "trakt_user_fallback": {},
+    "trakt_watchlist": {},
+    "unit_bytes_b": {},
+    "unit_bytes_gb": {},
+    "unit_bytes_kb": {},
+    "unit_bytes_mb": {},
+    "v%@": {}
+  },
+  "version": "1.0"
+}
