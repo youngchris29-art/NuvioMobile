@@ -20,6 +20,7 @@ actual object DebridSettingsStorage {
     private const val preferredResolverProviderIdKey = "debrid_preferred_resolver_provider_id"
     private const val torboxApiKeyKey = "debrid_torbox_api_key"
     private const val realDebridApiKeyKey = "debrid_real_debrid_api_key"
+    private const val allDebridApiKeyKey = "debrid_alldebrid_api_key"
     private const val instantPlaybackPreparationLimitKey = "debrid_instant_playback_preparation_limit"
     private const val streamMaxResultsKey = "debrid_stream_max_results"
     private const val streamSortModeKey = "debrid_stream_sort_mode"
@@ -261,6 +262,7 @@ actual object DebridSettingsStorage {
         return when (normalized) {
             DebridProviders.TORBOX_ID -> torboxApiKeyKey
             DebridProviders.REAL_DEBRID_ID -> realDebridApiKeyKey
+            DebridProviders.ALLDEBRID_ID -> allDebridApiKeyKey
             else -> "debrid_${normalized}_api_key"
         }
     }

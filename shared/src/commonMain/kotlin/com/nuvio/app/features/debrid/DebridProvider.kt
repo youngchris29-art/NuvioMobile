@@ -30,6 +30,7 @@ object DebridProviders {
     const val TORBOX_ID = "torbox"
     const val PREMIUMIZE_ID = "premiumize"
     const val REAL_DEBRID_ID = "realdebrid"
+    const val ALLDEBRID_ID = "alldebrid"
 
     val Torbox = DebridProvider(
         id = TORBOX_ID,
@@ -65,7 +66,18 @@ object DebridProviders {
         capabilities = setOf(DebridProviderCapability.ClientResolve),
     )
 
-    private val registered = listOf(Torbox, Premiumize, RealDebrid)
+    val AllDebrid = DebridProvider(
+        id = ALLDEBRID_ID,
+        displayName = "AllDebrid",
+        shortName = "AD",
+        authMethod = DebridProviderAuthMethod.DeviceCode,
+        capabilities = setOf(
+            DebridProviderCapability.ClientResolve,
+            DebridProviderCapability.LocalTorrentResolve,
+        ),
+    )
+
+    private val registered = listOf(Torbox, Premiumize, RealDebrid, AllDebrid)
 
     fun all(): List<DebridProvider> = registered
 

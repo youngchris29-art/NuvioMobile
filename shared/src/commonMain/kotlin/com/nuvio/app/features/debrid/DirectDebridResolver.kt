@@ -201,6 +201,7 @@ fun DirectDebridPlayableResult.toastMessage(): String? =
 private class LocalDebridAddonStreamResolver(
     private val fileSelector: TorboxFileSelector = TorboxFileSelector(),
     private val premiumizeFileSelector: PremiumizeDirectDownloadFileSelector = PremiumizeDirectDownloadFileSelector(),
+    private val allDebridFileSelector: AllDebridFileSelector = AllDebridFileSelector(),
 ) {
     suspend fun resolve(stream: StreamItem, season: Int?, episode: Int?): DirectDebridResolveResult {
         val account = localTorrentResolveCredential() ?: return DirectDebridResolveResult.MissingApiKey
@@ -236,6 +237,16 @@ private class LocalDebridAddonStreamResolver(
                 fallbackFilename = stream.behaviorHints.filename,
                 fallbackSize = stream.behaviorHints.videoSize,
                 fileSelector = premiumizeFileSelector,
+            )
+            DebridProviders.ALLDEBRID_ID -> resolveAllDebridMagnet(
+                apiKey = apiKey,
+                magnet = magnet,
+                resolve = resolve,
+                season = season,
+                episode = episode,
+                fallbackFilename = stream.behaviorHints.filename,
+                fallbackSize = stream.behaviorHints.videoSize,
+                fileSelector = allDebridFileSelector,
             )
             else -> DirectDebridResolveResult.Error
         }

@@ -3,6 +3,7 @@ package com.nuvio.app.features.debrid
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
 data class TorboxEnvelopeDto<T>(
@@ -250,3 +251,100 @@ internal data class PremiumizeItemDetailsDto(
     @SerialName("mime_type") val mimeType: String? = null,
     val link: String? = null,
 )
+
+// AllDebrid: every response is `{"status": "success"|"error", "data": {...}}`, with an `error`
+// object (code + message) present when status is "error". See https://docs.alldebrid.com/.
+@Serializable
+internal data class AllDebridEnvelopeDto<T>(
+    val status: String? = null,
+    val data: T? = null,
+    val error: AllDebridErrorDto? = null,
+) {
+    val isSuccess: Boolean
+        get() = status.equals("success", ignoreCase = true)
+}
+
+@Serializable
+internal data class AllDebridErrorDto(
+    val code: String? = null,
+    val message: String? = null,
+)
+
+@Serializable
+internal data class AllDebridPinGetDataDto(
+    val pin: String? = null,
+    val check: String? = null,
+    @SerialName("expires_in") val expiresIn: Int? = null,
+    @SerialName("user_url") val userUrl: String? = null,
+    @SerialName("base_url") val baseUrl: String? = null,
+)
+
+@Serializable
+internal data class AllDebridPinCheckDataDto(
+    val activated: Boolean? = null,
+    @SerialName("expires_in") val expiresIn: Int? = null,
+    val apikey: String? = null,
+)
+
+@Serializable
+internal data class AllDebridMagnetUploadDataDto(
+    val magnets: List<AllDebridMagnetUploadItemDto>? = null,
+)
+
+@Serializable
+internal data class AllDebridMagnetUploadItemDto(
+    val magnet: String? = null,
+    val hash: String? = null,
+    val name: String? = null,
+    val size: Long? = null,
+    val ready: Boolean? = null,
+    // Numeric in practice, but modeled loosely since AllDebrid's own docs show this id as a
+    // string elsewhere (magnet/files) — decode defensively via JsonElement.
+    val id: JsonElement? = null,
+    val error: AllDebridErrorDto? = null,
+)
+
+@Serializable
+internal data class AllDebridMagnetFilesDataDto(
+    val magnets: List<AllDebridMagnetFilesItemDto>? = null,
+)
+
+@Serializable
+internal data class AllDebridMagnetFilesItemDto(
+    val id: JsonElement? = null,
+    val files: List<AllDebridFileNodeDto>? = null,
+    val error: AllDebridErrorDto? = null,
+)
+
+/**
+ * A node in AllDebrid's `magnet/files` response tree. Files carry a name (`n`), size (`s`) and
+ * direct link (`l`); folders carry a name (`n`) and child nodes (`e`) instead of `s`/`l`.
+ */
+@Serializable
+internal data class AllDebridFileNodeDto(
+    val n: String? = null,
+    val s: Long? = null,
+    val l: String? = null,
+    val e: List<AllDebridFileNodeDto>? = null,
+)
+
+@Serializable
+internal data class AllDebridLinkUnlockDataDto(
+    val link: String? = null,
+    val filename: String? = null,
+    val host: String? = null,
+    val filesize: Long? = null,
+    val id: String? = null,
+    val hostDomain: String? = null,
+    val delayed: Int? = null,
+)
+
+@Serializable
+internal data class AllDebridMagnetDeleteDataDto(
+    val message: String? = null,
+)
+
+internal fun JsonElement?.asAllDebridId(): String? {
+    val primitive = this as? JsonPrimitive ?: return null
+    return primitive.content.trim().takeIf { it.isNotBlank() }
+}

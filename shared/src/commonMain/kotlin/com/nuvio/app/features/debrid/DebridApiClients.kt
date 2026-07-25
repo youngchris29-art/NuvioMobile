@@ -8,6 +8,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 
 data class DebridApiResponse<T>(
     val status: Int,
@@ -543,6 +544,140 @@ internal object PremiumizeApiClient {
 
     private val PremiumizeAccountInfoDto.isSuccess: Boolean
         get() = status.equals("success", ignoreCase = true)
+}
+
+internal object AllDebridApiClient {
+    // Most endpoints are v4; pin/get is v4.1. Version is included per-call below.
+    private const val BASE_URL = "https://api.alldebrid.com"
+
+    suspend fun getPin(): DebridApiResponse<AllDebridEnvelopeDto<AllDebridPinGetDataDto>> =
+        requestWithoutAuth(
+            method = "GET",
+            url = "$BASE_URL/v4.1/pin/get",
+        )
+
+    suspend fun checkPin(pin: String, check: String): DebridApiResponse<AllDebridEnvelopeDto<AllDebridPinCheckDataDto>> =
+        requestWithoutAuth(
+            method = "POST",
+            url = "$BASE_URL/v4/pin/check",
+            body = formBody(listOf("pin" to pin, "check" to check)),
+            contentType = "application/x-www-form-urlencoded",
+        )
+
+    suspend fun validateApiKey(apiKey: String): Boolean {
+        val response = getUser(apiKey.trim())
+        return response.isSuccessful && response.body?.isSuccess == true
+    }
+
+    private suspend fun getUser(apiKey: String): DebridApiResponse<AllDebridEnvelopeDto<JsonElement>> =
+        request(
+            method = "GET",
+            url = "$BASE_URL/v4/user",
+            apiKey = apiKey,
+        )
+
+    suspend fun uploadMagnet(
+        apiKey: String,
+        magnet: String,
+    ): DebridApiResponse<AllDebridEnvelopeDto<AllDebridMagnetUploadDataDto>> =
+        request(
+            method = "POST",
+            url = "$BASE_URL/v4/magnet/upload",
+            apiKey = apiKey,
+            body = formBody(listOf("magnets[]" to magnet)),
+            contentType = "application/x-www-form-urlencoded",
+        )
+
+    suspend fun magnetFiles(
+        apiKey: String,
+        magnetId: String,
+    ): DebridApiResponse<AllDebridEnvelopeDto<AllDebridMagnetFilesDataDto>> =
+        request(
+            method = "POST",
+            url = "$BASE_URL/v4/magnet/files",
+            apiKey = apiKey,
+            body = formBody(listOf("id[]" to magnetId)),
+            contentType = "application/x-www-form-urlencoded",
+        )
+
+    suspend fun unlockLink(
+        apiKey: String,
+        link: String,
+    ): DebridApiResponse<AllDebridEnvelopeDto<AllDebridLinkUnlockDataDto>> =
+        request(
+            method = "POST",
+            url = "$BASE_URL/v4/link/unlock",
+            apiKey = apiKey,
+            body = formBody(listOf("link" to link)),
+            contentType = "application/x-www-form-urlencoded",
+        )
+
+    suspend fun deleteMagnet(
+        apiKey: String,
+        magnetId: String,
+    ): DebridApiResponse<AllDebridEnvelopeDto<AllDebridMagnetDeleteDataDto>> =
+        request(
+            method = "POST",
+            url = "$BASE_URL/v4/magnet/delete",
+            apiKey = apiKey,
+            body = formBody(listOf("id" to magnetId)),
+            contentType = "application/x-www-form-urlencoded",
+        )
+
+    private suspend inline fun <reified T> request(
+        method: String,
+        url: String,
+        apiKey: String,
+        body: String = "",
+        contentType: String? = null,
+    ): DebridApiResponse<T> {
+        val headers = authHeaders(apiKey) + listOfNotNull(
+            contentType?.let { "Content-Type" to it },
+            "Accept" to "application/json",
+        )
+        val response = httpRequestRaw(
+            method = method,
+            url = url,
+            headers = headers,
+            body = body,
+        )
+        return DebridApiResponse(
+            status = response.status,
+            body = response.decodeBody<T>(),
+            rawBody = response.body,
+        )
+    }
+
+    private suspend inline fun <reified T> requestWithoutAuth(
+        method: String,
+        url: String,
+        body: String = "",
+        contentType: String? = null,
+    ): DebridApiResponse<T> {
+        val headers = listOfNotNull(
+            contentType?.let { "Content-Type" to it },
+            "Accept" to "application/json",
+        ).toMap()
+        val response = httpRequestRaw(
+            method = method,
+            url = url,
+            headers = headers,
+            body = body,
+        )
+        return DebridApiResponse(
+            status = response.status,
+            body = response.decodeBody<T>(),
+            rawBody = response.body,
+        )
+    }
+
+    private fun formBody(fields: List<Pair<String, String>>): String =
+        fields.joinToString("&") { (key, value) ->
+            "${encodeFormValue(key)}=${encodeFormValue(value)}"
+        }
+
+    private fun authHeaders(apiKey: String): Map<String, String> =
+        mapOf("Authorization" to "Bearer $apiKey")
 }
 
 object DebridCredentialValidator {

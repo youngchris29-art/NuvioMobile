@@ -28,6 +28,7 @@ object DebridProviderApis {
         TorboxDebridProviderApi(),
         PremiumizeDebridProviderApi(),
         RealDebridProviderApi(),
+        AllDebridDebridProviderApi(),
     )
 
     fun apiFor(providerId: String?): DebridProviderApi? {
@@ -264,6 +265,81 @@ private class RealDebridProviderApi(
     }
 }
 
+private class AllDebridDebridProviderApi(
+    private val fileSelector: AllDebridFileSelector = AllDebridFileSelector(),
+) : DebridProviderApi {
+    override val provider: DebridProvider = DebridProviders.AllDebrid
+
+    override suspend fun validateApiKey(apiKey: String): Boolean =
+        AllDebridApiClient.validateApiKey(apiKey)
+
+    override suspend fun startDeviceAuthorization(appName: String): DebridDeviceAuthorization? {
+        val response = AllDebridApiClient.getPin()
+        val data = response.body
+            ?.takeIf { response.isSuccessful && it.isSuccess }
+            ?.data
+            ?: return null
+        val pin = data.pin?.takeIf { it.isNotBlank() } ?: return null
+        val check = data.check?.takeIf { it.isNotBlank() } ?: return null
+        val verificationUrl = data.userUrl?.takeIf { it.isNotBlank() }
+            ?: data.baseUrl?.takeIf { it.isNotBlank() }
+            ?: return null
+        return DebridDeviceAuthorization(
+            providerId = provider.id,
+            // The deviceCode passed back to redeemDeviceAuthorization is opaque to callers — it
+            // encodes both the pin and its check token, since AllDebrid's pin/check needs both.
+            deviceCode = encodeAllDebridDeviceCode(pin = pin, check = check),
+            userCode = pin,
+            verificationUrl = verificationUrl,
+            friendlyVerificationUrl = verificationUrl,
+            intervalSeconds = 5,
+            expiresAt = data.expiresIn?.takeIf { it > 0 }?.let { "${it}s" },
+        )
+    }
+
+    override suspend fun redeemDeviceAuthorization(deviceCode: String): DebridDeviceAuthorizationTokenResult {
+        val (pin, check) = decodeAllDebridDeviceCode(deviceCode)
+            ?: return DebridDeviceAuthorizationTokenResult.Failed(null)
+        val response = AllDebridApiClient.checkPin(pin = pin, check = check)
+        return allDebridDeviceAuthorizationTokenResult(response)
+    }
+
+    override suspend fun resolveClientStream(
+        stream: StreamItem,
+        apiKey: String,
+        season: Int?,
+        episode: Int?,
+    ): DirectDebridResolveResult {
+        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error
+        val magnet = resolve.magnetUri?.takeIf { it.isNotBlank() }
+            ?: buildMagnetUri(resolve)
+            ?: return DirectDebridResolveResult.Stale
+        return resolveAllDebridMagnet(
+            apiKey = apiKey,
+            magnet = magnet,
+            resolve = resolve,
+            season = season,
+            episode = episode,
+            fallbackFilename = stream.behaviorHints.filename,
+            fallbackSize = stream.behaviorHints.videoSize,
+            fileSelector = fileSelector,
+        )
+    }
+}
+
+private const val ALLDEBRID_DEVICE_CODE_DELIMITER = "|"
+
+private fun encodeAllDebridDeviceCode(pin: String, check: String): String =
+    "$pin$ALLDEBRID_DEVICE_CODE_DELIMITER$check"
+
+private fun decodeAllDebridDeviceCode(deviceCode: String): Pair<String, String>? {
+    val parts = deviceCode.trim().split(ALLDEBRID_DEVICE_CODE_DELIMITER, limit = 2)
+    if (parts.size != 2) return null
+    val pin = parts[0].trim().takeIf { it.isNotBlank() } ?: return null
+    val check = parts[1].trim().takeIf { it.isNotBlank() } ?: return null
+    return pin to check
+}
+
 private fun buildMagnetUri(resolve: StreamClientResolve): String? {
     val hash = resolve.infoHash?.takeIf { it.isNotBlank() } ?: return null
     return buildString {
@@ -352,6 +428,110 @@ fun premiumizeDeviceAuthorizationTokenResult(
         }
     }
 }
+
+internal fun allDebridDeviceAuthorizationTokenResult(
+    response: DebridApiResponse<AllDebridEnvelopeDto<AllDebridPinCheckDataDto>>,
+): DebridDeviceAuthorizationTokenResult {
+    val envelope = response.body
+    val activatedData = envelope
+        ?.takeIf { response.isSuccessful && it.isSuccess }
+        ?.data
+    val apiKey = activatedData
+        ?.takeIf { it.activated == true }
+        ?.apikey
+        ?.takeIf { it.isNotBlank() }
+    if (apiKey != null) {
+        return DebridDeviceAuthorizationTokenResult.Authorized(apiKey)
+    }
+    if (activatedData?.activated == false) {
+        return DebridDeviceAuthorizationTokenResult.Pending
+    }
+    val errorCode = envelope?.error?.code.orEmpty()
+    return when {
+        errorCode.equals("PIN_EXPIRED", ignoreCase = true) ->
+            DebridDeviceAuthorizationTokenResult.Expired
+        errorCode.equals("PIN_INVALID", ignoreCase = true) ->
+            DebridDeviceAuthorizationTokenResult.Failed(envelope?.error?.message)
+        response.status == 404 || response.status == 409 || response.status == 425 ->
+            DebridDeviceAuthorizationTokenResult.Pending
+        response.status == 410 ->
+            DebridDeviceAuthorizationTokenResult.Expired
+        else ->
+            DebridDeviceAuthorizationTokenResult.Failed(envelope?.error?.message ?: response.rawBody)
+    }
+}
+
+/**
+ * AllDebrid has no bulk cache-check endpoint — `ready` on `magnet/upload` is the only cache
+ * signal. This mirrors the shape of both TorBox's resolveClientStream (magnet -> resolve -> link)
+ * and the local-torrent-resolve path in DirectDebridResolver.kt, since AllDebrid's ClientResolve
+ * and LocalTorrentResolve capabilities both bottom out in the same upload -> files -> link/unlock
+ * sequence. If the magnet isn't ready, the just-created magnet is deleted (so it doesn't sit as a
+ * queued download on the user's account) and NotCached is returned; magnets are left alone after
+ * a successful resolve.
+ */
+internal suspend fun resolveAllDebridMagnet(
+    apiKey: String,
+    magnet: String,
+    resolve: StreamClientResolve,
+    season: Int?,
+    episode: Int?,
+    fallbackFilename: String? = null,
+    fallbackSize: Long? = null,
+    fileSelector: AllDebridFileSelector = AllDebridFileSelector(),
+): DirectDebridResolveResult {
+    val normalizedMagnet = magnet.trim().takeIf { it.isNotBlank() } ?: return DirectDebridResolveResult.Stale
+    return try {
+        val upload = AllDebridApiClient.uploadMagnet(apiKey = apiKey, magnet = normalizedMagnet)
+        if (!upload.isSuccessful || upload.body?.isSuccess != true) {
+            return upload.toFailureForUpload()
+        }
+        val item = upload.body.data?.magnets?.firstOrNull() ?: return DirectDebridResolveResult.Stale
+        if (item.error != null) {
+            return DirectDebridResolveResult.Stale
+        }
+        val magnetId = item.id.asAllDebridId() ?: return DirectDebridResolveResult.Stale
+        if (item.ready != true) {
+            runCatching { AllDebridApiClient.deleteMagnet(apiKey = apiKey, magnetId = magnetId) }
+            return DirectDebridResolveResult.NotCached
+        }
+
+        val filesResponse = AllDebridApiClient.magnetFiles(apiKey = apiKey, magnetId = magnetId)
+        if (!filesResponse.isSuccessful || filesResponse.body?.isSuccess != true) {
+            return DirectDebridResolveResult.Stale
+        }
+        val nodeFiles = filesResponse.body.data?.magnets
+            ?.firstOrNull { it.id.asAllDebridId() == magnetId }
+            ?.files
+            .orEmpty()
+        val file = fileSelector.selectFile(nodeFiles.flattenAllDebridFiles(), resolve, season, episode)
+            ?: return DirectDebridResolveResult.Stale
+
+        val unlock = AllDebridApiClient.unlockLink(apiKey = apiKey, link = file.link)
+        if (!unlock.isSuccessful || unlock.body?.isSuccess != true) {
+            return DirectDebridResolveResult.Stale
+        }
+        val unlockData = unlock.body.data ?: return DirectDebridResolveResult.Stale
+        val url = unlockData.link?.takeIf { it.isNotBlank() } ?: return DirectDebridResolveResult.Stale
+
+        DirectDebridResolveResult.Success(
+            url = url,
+            filename = unlockData.filename?.takeIf { it.isNotBlank() }
+                ?: file.displayName().takeIf { it.isNotBlank() }
+                ?: fallbackFilename,
+            videoSize = unlockData.filesize ?: file.size ?: fallbackSize,
+        )
+    } catch (error: Exception) {
+        if (error is CancellationException) throw error
+        DirectDebridResolveResult.Error
+    }
+}
+
+private fun DebridApiResponse<AllDebridEnvelopeDto<AllDebridMagnetUploadDataDto>>.toFailureForUpload(): DirectDebridResolveResult =
+    when (status) {
+        401, 403 -> DirectDebridResolveResult.Error
+        else -> DirectDebridResolveResult.Stale
+    }
 
 internal suspend fun resolvePremiumizeDirectDownload(
     apiKey: String,
