@@ -30,17 +30,25 @@ The release notes always include a "What's new" changelog: commit subjects
 previous tvos-v* tag, plus a compare link. Pass --changelog to prepend
 hand-written highlights above the generated list.
 
+Before building, the script checks that the public repo's README.md (or
+design/screenshots/) has been touched since the previous tvos-v* release —
+every beta must update the README's feature list + screenshots for whatever
+it ships. Update the README first, or pass --skip-readme-check for a
+hotfix/rebuild that genuinely adds nothing user-facing.
+
 Options:
-  --tag <tag>        Use an explicit release tag instead of auto-incrementing
-  --changelog <file> Markdown file with hand-written highlights for the notes
-  --skip-build       Reuse the existing build products (repackage + publish only)
-  --dry-run          Build and package, print the notes + what would be published, skip publish
-  -h, --help         Show this help
+  --tag <tag>          Use an explicit release tag instead of auto-incrementing
+  --changelog <file>   Markdown file with hand-written highlights for the notes
+  --skip-build         Reuse the existing build products (repackage + publish only)
+  --skip-readme-check  Allow releasing without a README update (hotfixes/rebuilds)
+  --dry-run            Build and package, print the notes + what would be published, skip publish
+  -h, --help           Show this help
 EOF
 }
 
 TAG=""
 SKIP_BUILD=0
+SKIP_README_CHECK=0
 DRY_RUN=0
 CHANGELOG_FILE=""
 while [[ $# -gt 0 ]]; do
@@ -48,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --tag) TAG="$2"; shift 2 ;;
     --changelog) CHANGELOG_FILE="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --skip-readme-check) SKIP_README_CHECK=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -127,6 +136,24 @@ if [[ -n "$PREV_TAG" ]]; then
   echo "==> Changelog: $(printf '%s\n' "$CHANGELOG_BODY" | grep -c '^- ' || true) commit(s) since $PREV_TAG"
 else
   echo "==> Changelog: no previous tvos-v* tag found — treating as first beta of v${MARKETING_VERSION}"
+fi
+
+# Release step: every beta must refresh the public README's feature list and
+# screenshots for whatever it ships. Enforced cheaply by timestamp — README.md or
+# design/screenshots/ in the outer NuvioTV repo needs a commit newer than the
+# previous tvos-v* release's tagged commit. Runs before the build so a miss fails
+# in seconds, not after a 10-minute xcodebuild.
+if [[ "$SKIP_README_CHECK" -eq 0 && -n "$PREV_TAG" && -n "$MIRROR_SHA" ]]; then
+  PREV_TAG_TIME="$(git log -1 --format=%ct "$PREV_TAG" 2>/dev/null || echo 0)"
+  README_TIME="$(git -C "$MIRROR_DIR" log -1 --format=%ct -- README.md design/screenshots 2>/dev/null || echo 0)"
+  if [[ "${README_TIME:-0}" -le "${PREV_TAG_TIME:-0}" ]]; then
+    echo "error: README.md / design/screenshots in $MIRROR_DIR have not been touched since $PREV_TAG." >&2
+    echo "       Every beta updates the public README's feature list + screenshots before publishing." >&2
+    echo "       Update and commit the README (and screenshots for new features), or pass" >&2
+    echo "       --skip-readme-check for a hotfix/rebuild with nothing user-facing." >&2
+    exit 1
+  fi
+  echo "==> README check: README/screenshots updated since $PREV_TAG"
 fi
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
