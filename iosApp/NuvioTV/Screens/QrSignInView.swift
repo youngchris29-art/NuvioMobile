@@ -125,11 +125,11 @@ struct QrSignInView: View {
                     model.retry()
                 } label: {
                     Label("Try Again", systemImage: "arrow.clockwise")
-                        .prominentAccentLabel()
+                        .font(Theme.Font.meta)
                         .padding(.horizontal, Theme.Spacing.lg)
                         .padding(.vertical, Theme.Spacing.xs)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .tint(Theme.Palette.accent)
             } else {
                 Text("Scan the QR code with your phone's camera and approve the sign-in — no typing on the TV.")
@@ -166,10 +166,11 @@ struct QrSignInView: View {
                 dismiss()
             } label: {
                 Label("Cancel", systemImage: "xmark.circle")
+                    .font(Theme.Font.meta)
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.vertical, Theme.Spacing.xs)
             }
-            .buttonStyle(.chip)
+            .buttonStyle(.glass)
         }
         .frame(maxWidth: 800, alignment: .leading)
     }

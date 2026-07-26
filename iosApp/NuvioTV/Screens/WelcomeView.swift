@@ -24,10 +24,15 @@ struct WelcomeView: View {
             Theme.Palette.background.ignoresSafeArea()
 
             VStack(spacing: Theme.Spacing.sectionGap) {
-                VStack(spacing: Theme.Spacing.md) {
-                    Text("Nuvio")
-                        .font(Theme.Font.hero)
-                        .foregroundStyle(Theme.Palette.accent)
+                VStack(spacing: Theme.Spacing.lg) {
+                    // Brand mark (the app icon's gradient triangle) instead of a text wordmark —
+                    // same asset family as the icon/top-shelf art, so Welcome reads as the brand
+                    // regardless of which accent theme the user later picks.
+                    Image("LogoMark")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 130)
+                        .accessibilityLabel("Nuvio")
                     Text("Sign in with your phone — scan a QR code, no typing on the remote.")
                         .font(Theme.Font.body)
                         .foregroundStyle(Theme.Palette.textSecondary)
@@ -36,6 +41,9 @@ struct WelcomeView: View {
                 }
 
                 VStack(spacing: Theme.Spacing.xl) {
+                    // Liquid Glass, same as the Detail action row: prominent accent glass for the
+                    // primary action, plain glass for the secondary ones. No fixed label colors —
+                    // glass flips label contrast itself on focus (see StreamPicker's `.glass` note).
                     Button {
                         model.clearError()
                         sheet = .qr
@@ -49,42 +57,52 @@ struct WelcomeView: View {
                                 .font(Theme.Font.caption)
                                 .opacity(0.85)
                         }
-                        .prominentAccentLabel()
                         .frame(maxWidth: 640)
                         .padding(.vertical, Theme.Spacing.xl)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .tint(Theme.Palette.accent)
                     .prefersDefaultFocus(true, in: focusNamespace)
 
-                    VStack(spacing: Theme.Spacing.sm) {
+                    VStack(spacing: Theme.Spacing.md) {
                         Text("Or continue another way")
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
 
-                        HStack(spacing: Theme.Spacing.md) {
-                            Button {
-                                model.clearError()
-                                sheet = .signIn
-                            } label: {
-                                Text("Sign In with Email")
-                            }
-                            .buttonStyle(.chip)
+                        GlassEffectContainer(spacing: Theme.Spacing.md) {
+                            HStack(spacing: Theme.Spacing.md) {
+                                Button {
+                                    model.clearError()
+                                    sheet = .signIn
+                                } label: {
+                                    Text("Sign In with Email")
+                                        .font(Theme.Font.meta)
+                                        .padding(.horizontal, Theme.Spacing.lg)
+                                        .padding(.vertical, Theme.Spacing.xs)
+                                }
+                                .buttonStyle(.glass)
 
-                            Button {
-                                model.clearError()
-                                sheet = .signUp
-                            } label: {
-                                Text("Create Account")
-                            }
-                            .buttonStyle(.chip)
+                                Button {
+                                    model.clearError()
+                                    sheet = .signUp
+                                } label: {
+                                    Text("Create Account")
+                                        .font(Theme.Font.meta)
+                                        .padding(.horizontal, Theme.Spacing.lg)
+                                        .padding(.vertical, Theme.Spacing.xs)
+                                }
+                                .buttonStyle(.glass)
 
-                            Button {
-                                model.continueAsGuest()
-                            } label: {
-                                Text("Continue as Guest")
+                                Button {
+                                    model.continueAsGuest()
+                                } label: {
+                                    Text("Continue as Guest")
+                                        .font(Theme.Font.meta)
+                                        .padding(.horizontal, Theme.Spacing.lg)
+                                        .padding(.vertical, Theme.Spacing.xs)
+                                }
+                                .buttonStyle(.glass)
                             }
-                            .buttonStyle(.chip)
                         }
                     }
                 }

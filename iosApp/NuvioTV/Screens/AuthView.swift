@@ -71,19 +71,25 @@ struct AuthView: View {
                             ProgressView()
                         } else {
                             Text(isSignUp ? String(localized: "Create Account") : String(localized: "Sign In"))
-                                .prominentAccentLabel()
+                                .font(Theme.Font.meta)
                                 .padding(.horizontal, Theme.Spacing.xl)
+                                .padding(.vertical, Theme.Spacing.xs)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .tint(Theme.Palette.accent)
                     .disabled(!canSubmit)
 
-                    Button("Cancel") {
+                    Button {
                         model.clearError()
                         dismiss()
+                    } label: {
+                        Text("Cancel")
+                            .font(Theme.Font.meta)
+                            .padding(.horizontal, Theme.Spacing.lg)
+                            .padding(.vertical, Theme.Spacing.xs)
                     }
-                    .buttonStyle(.chip)
+                    .buttonStyle(.glass)
                     .disabled(model.isBusy)
                 }
             }
