@@ -74,10 +74,27 @@ struct EntityRoute: Hashable {
 /// `onSelect` to instead handle taps manually — Search uses this to dismiss the keyboard before
 /// navigating.
 struct CatalogRowView: View {
+    /// BUG-13: the Home fetch trims each row to `HOME_CATALOG_PREVIEW_FETCH_LIMIT` items
+    /// (HomeRepository.kt) while `availableItemCount` keeps the addon's real first-page count. Rows
+    /// built that way must pass this limit so the "See All" gate can spot a truncated catalog.
+    static let homePreviewLimit = 18
+
     let section: HomeCatalogSection
+    /// Number of items the producing repository kept for this row, or `nil` when the row already
+    /// renders everything it fetched (Search) — then only `hasMore` can open the full grid.
+    var previewLimit: Int? = nil
     var onSelect: ((MetaPreview) -> Void)? = nil
 
     @Environment(\.posterStyle) private var posterStyle
+
+    /// BUG-13: an addon whose manifest declares no `skip` extra always reports `hasMore == false`,
+    /// even when its single response carried far more titles than the row kept — gating on `hasMore`
+    /// alone made those catalogs a dead end. Mirrors composeApp's Home gate, which uses the same
+    /// shared `canOpenCatalog(previewLimit:)` (HomeModels.kt: availableItemCount > previewLimit || hasMore).
+    private var canOpenFullCatalog: Bool {
+        guard let previewLimit else { return section.hasMore }
+        return section.canOpenCatalog(previewLimit: Int32(previewLimit))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -88,8 +105,8 @@ struct CatalogRowView: View {
 
                 Spacer()
 
-                // Only when the catalog can actually page further (hasMore = supportsPagination && nextSkip != nil).
-                if section.hasMore {
+                // Only when the full catalog holds more than this row shows (see `canOpenFullCatalog`).
+                if canOpenFullCatalog {
                     NavigationLink(value: CatalogRoute(section: section)) {
                         HStack(spacing: Theme.Spacing.xs) {
                             Text("See All")

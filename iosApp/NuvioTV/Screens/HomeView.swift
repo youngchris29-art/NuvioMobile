@@ -84,7 +84,7 @@ struct HomeView: View {
                         ForEach(model.rows) { row in
                             switch row {
                             case .catalog(let section):
-                                CatalogRowView(section: section)
+                                CatalogRowView(section: section, previewLimit: CatalogRowView.homePreviewLimit)
                             case .collection(let collection):
                                 CollectionRowView(collection: collection)
                             }

@@ -42,8 +42,15 @@ struct WelcomeView: View {
 
                 VStack(spacing: Theme.Spacing.xl) {
                     // Liquid Glass, same as the Detail action row: prominent accent glass for the
-                    // primary action, plain glass for the secondary ones. No fixed label colors —
-                    // glass flips label contrast itself on focus (see StreamPicker's `.glass` note).
+                    // primary action, plain glass for the secondary ones. Plain `.glass` pills
+                    // below are left to the system (see StreamPicker's `.glass` note) — but this
+                    // one is `.glassProminent` + an accent tint, and the "verified on a sim" claim
+                    // this comment used to make only held for the *focused* state (glass's focus
+                    // lift auto-picks dark text regardless of tint). Unfocused, the fill is the
+                    // raw accent tint with no auto contrast, so on the White theme — reachable by
+                    // arrowing down to "Sign In with Email" and back — this label went invisible
+                    // white-on-near-white, same failure as BUG-14's Detail Play button.
+                    // `prominentAccentLabel()` handles both states.
                     Button {
                         model.clearError()
                         sheet = .qr
@@ -57,6 +64,7 @@ struct WelcomeView: View {
                                 .font(Theme.Font.caption)
                                 .opacity(0.85)
                         }
+                        .prominentAccentLabel()
                         .frame(maxWidth: 640)
                         .padding(.vertical, Theme.Spacing.xl)
                     }

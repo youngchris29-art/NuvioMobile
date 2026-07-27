@@ -173,3 +173,24 @@ struct StreamFileSizeChip: View {
         return String(format: String(localized: "%d MB"), Int(mib.rounded()))
     }
 }
+
+/// BUG-16: "+N" overflow indicator shown by `StreamPickerView.badgeRow`'s `ViewThatFits` ladder
+/// when the row doesn't have room for every badge. Deliberately plain text in a muted capsule
+/// (not a button) — it's a static count, not a focusable element — and shares
+/// `StreamBadgeMetrics.containerHeight` with the other chips so swapping candidates in/out never
+/// changes the badge row's height.
+struct BadgeOverflowChip: View {
+    let count: Int
+
+    var body: some View {
+        let shape = Capsule()
+        Text("+\(count)")
+            .font(Theme.Font.caption.weight(.semibold))
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .frame(height: StreamBadgeMetrics.containerHeight)
+            .background(Theme.Palette.surfaceElevated.opacity(0.6), in: shape)
+            .overlay(shape.stroke(Color.white.opacity(0.1), lineWidth: 1))
+    }
+}

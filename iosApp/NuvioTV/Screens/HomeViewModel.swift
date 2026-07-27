@@ -118,8 +118,11 @@ final class HomeViewModel: ObservableObject {
         var built: [HomeRow] = []
         var usedSectionKeys = Set<String>()
         var usedCollectionIds = Set<String>()
-        let sectionsByKey = Dictionary(uniqueKeysWithValues: sections.map { ($0.key, $0) })
-        let collectionsById = Dictionary(uniqueKeysWithValues: collections.map { ($0.id, $0) })
+        // First-wins dedup instead of `uniqueKeysWithValues`, which TRAPS on duplicates — the
+        // shared module tolerates duplicate ids/keys in the wild (see
+        // `visibleCollectionsWithUniqueIds` in HomeCatalogSettingsRepository.kt), so tvOS must too.
+        let sectionsByKey = Dictionary(sections.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let collectionsById = Dictionary(collections.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
         for item in settingsItems {
             if item.isCollection {
@@ -164,6 +167,12 @@ final class HomeViewModel: ObservableObject {
         guard signature != lastRefreshSignature else { return }
         lastRefreshSignature = signature
 
+        // BUG-12: register the catalog definitions with the Home Rows settings BEFORE refreshing,
+        // mirroring mobile (HomeScreen.kt:538-541). Without this, `settingsItems` only ever knows
+        // collections on the Home path (tvOS previously synced catalogs solely from Settings'
+        // onAppear), so rebuildRows() forced every collection row above every catalog row until
+        // the user happened to open Settings — the "collections are scrambled" report.
+        HomeCatalogSettingsRepository.shared.syncCatalogs(addons: ready)
         HomeRepository.shared.refresh(addons: ready, force: true)
     }
 

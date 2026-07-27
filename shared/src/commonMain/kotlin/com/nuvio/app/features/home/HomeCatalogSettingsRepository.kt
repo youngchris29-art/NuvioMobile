@@ -363,7 +363,9 @@ object HomeCatalogSettingsRepository {
                     customTitle = preference?.customTitle.orEmpty(),
                     enabled = preference?.enabled ?: true,
                     heroSourceEnabled = preference?.heroSourceEnabled ?: true,
-                    order = preference?.order ?: 0,
+                    // BUG-12: unknown keys sort to the BACK, matching allOrderedKeys() — the two
+                    // orderings must agree or moveByIndex() applies UI indices to the wrong rows.
+                    order = preference?.order ?: Int.MAX_VALUE,
                 )
             }
 
@@ -376,7 +378,7 @@ object HomeCatalogSettingsRepository {
                 customTitle = preference?.customTitle.orEmpty(),
                 enabled = preference?.enabled ?: true,
                 heroSourceEnabled = false,
-                order = preference?.order ?: 0,
+                order = preference?.order ?: Int.MAX_VALUE, // BUG-12: keep in sync with allOrderedKeys()
                 isCollection = true,
                 collectionId = colDef.collectionId,
                 isPinnedToTop = colDef.isPinnedToTop,
@@ -543,6 +545,12 @@ object HomeCatalogSettingsRepository {
     }
 
     private fun enforcePinnedCollectionsAtTop() {
+        // BUG-12: never rewrite the GLOBAL order while the catalog half of the key space is
+        // unknown (syncCatalogs not yet called this session — e.g. a client that reaches Home
+        // before Settings). Reindexing from collections alone assigns them order 0..n, colliding
+        // with the catalog preferences' existing 0..n, and persist() then makes the scramble
+        // permanent (and pushes it to the account on the next preference write).
+        if (definitions.isEmpty()) return
         val orderedKeys = allOrderedKeys()
         if (orderedKeys.isEmpty()) return
 

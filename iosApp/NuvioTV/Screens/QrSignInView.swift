@@ -124,8 +124,12 @@ struct QrSignInView: View {
                 Button {
                     model.retry()
                 } label: {
+                    // BUG-14: unfocused `.glassProminent` fill is the raw accent tint with no
+                    // auto contrast, so this went invisible white-on-near-white on the White theme
+                    // (same failure as the Detail Play button).
                     Label("Try Again", systemImage: "arrow.clockwise")
                         .font(Theme.Font.meta)
+                        .prominentAccentLabel()
                         .padding(.horizontal, Theme.Spacing.lg)
                         .padding(.vertical, Theme.Spacing.xs)
                 }

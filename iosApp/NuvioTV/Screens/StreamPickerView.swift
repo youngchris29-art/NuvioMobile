@@ -393,12 +393,57 @@ struct StreamPickerView: View {
 
     @ViewBuilder
     private func badgeRow(badges: [StreamBadge], sizeBytes: Int64?) -> some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            ForEach(Array(badges.prefix(8).enumerated()), id: \.offset) { _, badge in
-                StreamBadgeChipView(badge: badge)
+        // BUG-16: this used to be one plain HStack with up to 8 badge chips (each up to
+        // `StreamBadgeMetrics.maxImageWidth` = 180pt for image-based community badge packs) plus
+        // the size chip — none of them width-flexible. An HStack whose children are all
+        // non-shrinking ignores the width it's offered and reports the full sum of its children
+        // back to its parent instead. That inflated "ideal" width bubbled up through the
+        // title/description VStack and the row's outer HStack, widening the *whole row* — and
+        // since every row shares one LazyVStack, effectively the whole list — past the screen.
+        // The addon-logo column and the tail end of the badges/size chip then rendered off the
+        // trailing edge, which is what testers saw as "no space left" for title/size/seeders.
+        //
+        // Fix: hand `ViewThatFits` a ladder of candidates from "every badge" down to "just an
+        // overflow count", widest first. It measures each against the width actually left over
+        // once title/description and the addon-logo column have claimed theirs, and renders the
+        // first one that fits — so this row can never again demand more width than it's given.
+        // The size chip is pinned first in every candidate since it's core metadata (like
+        // seeders), not decoration, and every candidate shares the same fixed container height,
+        // so switching between them never changes the row's height class.
+        let displayBadges = Array(badges.prefix(8))
+        let hiddenBeyondCap = max(0, badges.count - 8)
+        ViewThatFits(in: .horizontal) {
+            ForEach(Array(stride(from: displayBadges.count, through: 0, by: -1)), id: \.self) { visible in
+                badgeRowVariant(
+                    displayBadges: displayBadges,
+                    visibleCount: visible,
+                    hiddenCount: (displayBadges.count - visible) + hiddenBeyondCap,
+                    sizeBytes: sizeBytes
+                )
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// One `ViewThatFits` candidate for `badgeRow`: the size chip (if any) + the first
+    /// `visibleCount` badges + a non-focusable "+N" overflow chip for everything else.
+    /// `hiddenCount` folds in both badges dropped by this candidate and any beyond the 8-badge
+    /// display cap, so the count the user sees is always accurate.
+    private func badgeRowVariant(
+        displayBadges: [StreamBadge],
+        visibleCount: Int,
+        hiddenCount: Int,
+        sizeBytes: Int64?
+    ) -> some View {
+        HStack(spacing: Theme.Spacing.xs) {
             if let sizeBytes {
                 StreamFileSizeChip(bytes: sizeBytes)
+            }
+            ForEach(Array(displayBadges.prefix(visibleCount).enumerated()), id: \.offset) { _, badge in
+                StreamBadgeChipView(badge: badge)
+            }
+            if hiddenCount > 0 {
+                BadgeOverflowChip(count: hiddenCount)
             }
         }
     }

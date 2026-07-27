@@ -232,8 +232,15 @@ struct DetailView: View {
                     Button {
                         showStreams = true
                     } label: {
+                        // BUG-14: `.glassProminent`'s unfocused fill is the raw accent tint (not
+                        // lifted/inverted the way focus is), so on the White theme that fill is
+                        // near-white and an unmanaged label defaults to unreadable white-on-white.
+                        // `prominentAccentLabel()` (already proven for `.borderedProminent` sites,
+                        // BUG-4) covers both states: accent-contrasting text unfocused, dark text
+                        // on the near-white focus lift.
                         Label("Play", systemImage: "play.fill")
                             .font(Theme.Font.meta)
+                            .prominentAccentLabel()
                             .padding(.horizontal, Theme.Spacing.lg)
                             .padding(.vertical, Theme.Spacing.xxs + 2)
                     }
@@ -243,8 +250,10 @@ struct DetailView: View {
                     Button {
                         seriesPlay = SeriesPlayRoute(meta: meta, action: action)
                     } label: {
+                        // BUG-14: see the non-series Play button above.
                         Label(action.label, systemImage: "play.fill")
                             .font(Theme.Font.meta)
+                            .prominentAccentLabel()
                             .padding(.horizontal, Theme.Spacing.lg)
                             .padding(.vertical, Theme.Spacing.xxs + 2)
                     }

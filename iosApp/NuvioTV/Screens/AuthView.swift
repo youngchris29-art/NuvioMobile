@@ -67,11 +67,16 @@ struct AuthView: View {
                     Button {
                         submit()
                     } label: {
+                        // BUG-14: unfocused `.glassProminent` fill is the raw accent tint (no auto
+                        // contrast — only the focus lift gets that), so on the White theme this
+                        // went invisible white-on-near-white like the Detail Play button.
                         if model.isBusy {
                             ProgressView()
+                                .prominentAccentLabel()
                         } else {
                             Text(isSignUp ? String(localized: "Create Account") : String(localized: "Sign In"))
                                 .font(Theme.Font.meta)
+                                .prominentAccentLabel()
                                 .padding(.horizontal, Theme.Spacing.xl)
                                 .padding(.vertical, Theme.Spacing.xs)
                         }
