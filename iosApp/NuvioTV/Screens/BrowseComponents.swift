@@ -88,8 +88,8 @@ struct CatalogRowView: View {
 
     /// Inline trailer previews on focus dwell (see `InlineTrailerCard`). Device-local on purpose —
     /// whether a living-room Apple TV should autoplay trailers is a per-device call, not a synced
-    /// account preference. On by default; Settings owns the toggle UI.
-    @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = true
+    /// account preference. Off by default (opt-in); Settings → Home Screen owns the toggle UI.
+    @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
 
     /// Which card holds focus. Needed here (rather than inside the card) because tvOS delivers
     /// remote commands to the *focused view chain* — the `Button`/`NavigationLink` below, never its

@@ -24,7 +24,7 @@ struct SettingsView: View {
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
     /// Mirrors the poster-card's `inline_trailers_enabled` key (BrowseComponents.swift) so this
     /// toggle can turn off the muted trailer-on-focus preview. Local-only, not synced.
-    @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = true
+    @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
     /// Mirrors DetailView's `detail_trailer_autoplay` key. Local-only, not synced.
     @AppStorage("detail_trailer_autoplay") private var detailTrailerAutoplay = true
     /// Mirrors DetailView's `detail_poster_backdrop` key. Local-only, not synced.
@@ -208,15 +208,6 @@ struct SettingsView: View {
                                 heroPosterFocusOnly.toggle()
                             }
                             SettingsToggleRow(
-                                title: String(localized: "Trailers on Focus"),
-                                subtitle: inlineTrailersEnabled
-                                    ? String(localized: "On \u{00B7} Posters play a muted trailer preview after a moment of focus")
-                                    : String(localized: "Off \u{00B7} Posters show artwork only"),
-                                isOn: inlineTrailersEnabled
-                            ) {
-                                inlineTrailersEnabled.toggle()
-                            }
-                            SettingsToggleRow(
                                 title: String(localized: "Auto-Play Trailer on Detail"),
                                 subtitle: detailTrailerAutoplay
                                     ? String(localized: "On \u{00B7} Play the trailer full screen shortly after opening a title")
@@ -359,6 +350,16 @@ struct SettingsView: View {
                                             onToggle: { key, enabled in model.setHeroSource(key: key, enabled: enabled) }
                                         )
                                     }
+                                }
+
+                                SettingsToggleRow(
+                                    title: String(localized: "Trailers on Focus"),
+                                    subtitle: inlineTrailersEnabled
+                                        ? String(localized: "On \u{00B7} Posters play a muted trailer preview after a moment of focus")
+                                        : String(localized: "Off \u{00B7} Posters show artwork only"),
+                                    isOn: inlineTrailersEnabled
+                                ) {
+                                    inlineTrailersEnabled.toggle()
                                 }
 
                                 SettingsToggleRow(
