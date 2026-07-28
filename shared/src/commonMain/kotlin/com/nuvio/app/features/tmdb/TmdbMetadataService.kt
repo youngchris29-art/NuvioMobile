@@ -35,6 +35,7 @@ object TmdbMetadataService {
     private val entityBrowseCache = mutableMapOf<String, TmdbEntityBrowseData>()
     private val entityHeaderCache = mutableMapOf<String, TmdbEntityHeader>()
     private val entityRailCache = mutableMapOf<String, List<MetaPreview>>()
+    private val previewCache = mutableMapOf<String, TmdbPreviewEnrichment>()
 
     suspend fun fetchPersonDetail(
         personId: Int,
@@ -755,6 +756,70 @@ object TmdbMetadataService {
         return updated
     }
 
+    /**
+     * Lightweight enrichment for home hero carousel previews: title/description/genres/logo/backdrop only.
+     * Consults [enrichmentCache] first so a full detail fetch is never duplicated, but never writes back
+     * into it — a partial preview entry there would poison later full-detail cache hits.
+     */
+    suspend fun fetchPreviewEnrichment(
+        type: String,
+        id: String,
+        settings: TmdbSettings,
+    ): TmdbPreviewEnrichment? {
+        if (!settings.enabled || !settings.hasApiKey) return null
+
+        val tmdbType = normalizeMetaType(type)
+        val tmdbId = TmdbService.ensureTmdbId(id, tmdbType) ?: return null
+        val normalizedLanguage = normalizeTmdbLanguage(settings.language)
+        val cacheKey = "$tmdbId:$tmdbType:$normalizedLanguage"
+
+        previewCache[cacheKey]?.let { return it }
+        enrichmentCache[cacheKey]?.let { enrichment ->
+            val preview = enrichment.toPreviewEnrichment()
+            previewCache[cacheKey] = preview
+            return preview
+        }
+
+        return withContext(Dispatchers.Default) {
+            val numericId = tmdbId.toIntOrNull() ?: return@withContext null
+            val includeImageLanguage = buildString {
+                append(normalizedLanguage.substringBefore("-"))
+                append(",")
+                append(normalizedLanguage)
+                append(",en,null")
+            }
+
+            val (details, images) = coroutineScope {
+                val detailsDeferred = async {
+                    fetch<TmdbDetailsResponse>(
+                        endpoint = "$tmdbType/$numericId",
+                        query = mapOf("language" to normalizedLanguage),
+                    )
+                }
+                val imagesDeferred = async {
+                    fetch<TmdbImagesResponse>(
+                        endpoint = "$tmdbType/$numericId/images",
+                        query = mapOf("include_image_language" to includeImageLanguage),
+                    )
+                }
+                detailsDeferred.await() to imagesDeferred.await()
+            }
+
+            if (details == null) return@withContext null
+
+            val preview = TmdbPreviewEnrichment(
+                localizedTitle = listOf(details.title, details.name)
+                    .firstNotNullOfOrNull { it?.trim()?.takeIf(String::isNotBlank) },
+                description = details.overview?.trim()?.takeIf(String::isNotBlank),
+                genres = details.genres.mapNotNull { it.name?.trim()?.takeIf(String::isNotBlank) },
+                logo = buildImageUrl(images?.logos.orEmpty().selectBestLocalizedImagePath(normalizedLanguage), "w500"),
+                backdrop = buildImageUrl(details.backdropPath, "w1280"),
+            )
+            previewCache[cacheKey] = preview
+            preview.takeIf { it.hasContent() }
+        }
+    }
+
     private suspend fun fetchEnrichment(
         tmdbId: String,
         mediaType: String,
@@ -1193,6 +1258,25 @@ data class TmdbEnrichment(
             moreLikeThis.isNotEmpty() ||
             trailers.isNotEmpty()
 }
+
+data class TmdbPreviewEnrichment(
+    val localizedTitle: String?,
+    val description: String?,
+    val genres: List<String>,
+    val logo: String?,
+    val backdrop: String?,
+) {
+    fun hasContent(): Boolean =
+        localizedTitle != null || description != null || genres.isNotEmpty() || logo != null || backdrop != null
+}
+
+private fun TmdbEnrichment.toPreviewEnrichment(): TmdbPreviewEnrichment = TmdbPreviewEnrichment(
+    localizedTitle = localizedTitle,
+    description = description,
+    genres = genres,
+    logo = logo,
+    backdrop = backdrop,
+)
 
 private data class EnrichmentPayload(
     val ageRating: String?,

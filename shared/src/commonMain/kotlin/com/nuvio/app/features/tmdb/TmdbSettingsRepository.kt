@@ -1,6 +1,8 @@
 package com.nuvio.app.features.tmdb
 
 import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.home.HomeRepository
+import com.nuvio.app.features.player.DeviceLanguagePreferences
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +52,7 @@ object TmdbSettingsRepository {
         enabled = value
         publish()
         TmdbSettingsStorage.saveEnabled(value)
+        invalidateHeroEnrichment()
     }
 
     fun setApiKey(value: String) {
@@ -63,6 +66,7 @@ object TmdbSettingsRepository {
         }
         publish()
         TmdbSettingsStorage.saveApiKey(normalized)
+        invalidateHeroEnrichment()
     }
 
     fun setLanguage(value: String) {
@@ -72,6 +76,7 @@ object TmdbSettingsRepository {
         language = normalized
         publish()
         TmdbSettingsStorage.saveLanguage(normalized)
+        invalidateHeroEnrichment()
     }
 
     fun setUseTrailers(value: Boolean) = setBoolean(
@@ -175,12 +180,19 @@ object TmdbSettingsRepository {
 
     private fun loadFromDisk() {
         val wasLoaded = hasLoaded
+        val previousEnabled = enabled
+        val previousApiKey = apiKey
+        val previousLanguage = language
         val previousUseReleaseDates = useReleaseDates
         hasLoaded = true
         apiKey = TmdbSettingsStorage.loadApiKey()?.trim().orEmpty()
         enabled = (TmdbSettingsStorage.loadEnabled() ?: false) && apiKey.isNotBlank()
         val storedLanguage = TmdbSettingsStorage.loadLanguage()
-        language = if (storedLanguage == null) "en" else normalizeLanguage(storedLanguage)
+        language = if (storedLanguage == null) {
+            normalizeLanguage(DeviceLanguagePreferences.preferredLanguageCodes().firstOrNull() ?: "en")
+        } else {
+            normalizeLanguage(storedLanguage)
+        }
         useTrailers = TmdbSettingsStorage.loadUseTrailers() ?: true
         useArtwork = TmdbSettingsStorage.loadUseArtwork() ?: true
         useBasicInfo = TmdbSettingsStorage.loadUseBasicInfo() ?: true
@@ -196,6 +208,9 @@ object TmdbSettingsRepository {
         publish()
         if (wasLoaded && previousUseReleaseDates != useReleaseDates) {
             invalidateReleaseDateMetadata()
+        }
+        if (wasLoaded && (previousEnabled != enabled || previousApiKey != apiKey || previousLanguage != language)) {
+            invalidateHeroEnrichment()
         }
     }
 
@@ -222,6 +237,10 @@ object TmdbSettingsRepository {
     private fun invalidateReleaseDateMetadata() {
         MetaDetailsRepository.clear()
         ContinueWatchingEnrichmentCache.clearAll(ProfileRepository.activeProfileId)
+    }
+
+    private fun invalidateHeroEnrichment() {
+        HomeRepository.onTmdbSettingsChanged()
     }
 }
 

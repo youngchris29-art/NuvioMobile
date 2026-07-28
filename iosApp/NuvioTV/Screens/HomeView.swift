@@ -175,10 +175,9 @@ struct HomeView: View {
         for item in heroItems {
             let banner: String? = item.banner
             let poster: String? = item.poster
-            let logo: String? = item.logo
             let backdrop = (banner?.isEmpty == false) ? banner : poster
             if let backdrop, !backdrop.isEmpty, let url = URL(string: backdrop) { urls.append(url) }
-            if let logo, !logo.isEmpty, let url = URL(string: logo) { urls.append(url) }
+            if let url = heroLogoURL(for: item) { urls.append(url) }
         }
         ArtworkStore.prefetch(urls)
     }
@@ -415,6 +414,18 @@ private struct HeroFocusUnderline: ViewModifier {
     }
 }
 
+/// Resolves the logo artwork URL for a hero item. Catalog previews (Cinemeta rows especially)
+/// usually omit `logo` even when logo art exists, so for IMDb-id items fall back to metahub —
+/// the same CDN Cinemeta's own full meta points at. A miss there just 404s and `HeroLogo`
+/// shows its text wordmark, so the synthesized URL is strictly additive (BUG-17).
+func heroLogoURL(for item: MetaPreview) -> URL? {
+    let logo: String? = item.logo
+    if let logo, !logo.isEmpty { return URL(string: logo) }
+    let imdbId = item.id.split(separator: ":").first.map(String.init) ?? item.id
+    guard imdbId.hasPrefix("tt") else { return nil }
+    return URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img")
+}
+
 /// The hero page's logo artwork, with the title text as its stand-in (no logo URL, load failure,
 /// or not fetched yet). Seeds from the shared artwork memory cache synchronously, so a cached
 /// logo is on screen from the page's very first frame — no placeholder flash as pages cycle.
@@ -425,12 +436,7 @@ struct HeroLogo: View {
 
     init(item: MetaPreview) {
         self.item = item
-        let logo: String? = item.logo
-        if let logo, !logo.isEmpty {
-            self.url = URL(string: logo)
-        } else {
-            self.url = nil
-        }
+        self.url = heroLogoURL(for: item)
         _image = State(initialValue: ArtworkStore.cached(url))
     }
 

@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,6 +30,16 @@ STRING_PROVIDER_KT = (
 )
 STRINGS_XML_DIR = ROOT / "composeApp/src/commonMain/composeResources"
 OUTPUT_PATH = ROOT / "iosApp/NuvioTV/Shared.xcstrings"
+
+# Fork-local translations for StringKey entries that upstream's values-<lang>
+# strings.xml doesn't (yet) cover. Regenerating this file from upstream wipes
+# any hand-edits made directly to Shared.xcstrings, so gaps get patched here
+# instead: one `<lang>.json` per locale, `{StringKey name: translated value}`
+# in FINAL iOS placeholder syntax (%1$@, not Android's %1$s). Applied only
+# where the harvest produced no value for that key/lang -- harvest always
+# wins on conflict, so an override becomes a no-op (and gets flagged as
+# "superseded") the moment upstream catches up.
+OVERRIDES_DIR = ROOT / "scripts/shared-xcstrings-overrides"
 
 # locale code -> composeResources values directory name. "en" is the
 # source language (plain `values/`); the rest are `values-<lang>/`.
@@ -191,6 +202,100 @@ def load_strings_xml(path: Path) -> tuple[dict[str, str], set[str]]:
 
 
 # --------------------------------------------------------------------------
+# Fork-local overlay merging
+# --------------------------------------------------------------------------
+
+# Same specifier-matching approach as
+# scripts/merge-translations-into-xcstrings.py (lines 21-26): used to check
+# an override's placeholders line up with the English source's before
+# trusting it.
+SPEC_RE = re.compile(r"%(?:\d+\$)?[@a-zA-Z]|%\.\d+f|%%")
+
+
+def specifiers(text: str) -> Counter:
+    return Counter(SPEC_RE.findall(text))
+
+
+def load_overrides() -> dict[str, dict[str, str]]:
+    """Load scripts/shared-xcstrings-overrides/<lang>.json overlay files.
+
+    Each file is a flat `{StringKey name: translated value}` object; the
+    filename stem is the language code and must be one of LOCALES. Returns
+    `{lang: {key: value}}` for every overlay file found (today just `de`).
+    """
+    overrides: dict[str, dict[str, str]] = {}
+    if not OVERRIDES_DIR.exists():
+        return overrides
+    for path in sorted(OVERRIDES_DIR.glob("*.json")):
+        lang = path.stem
+        if lang not in LOCALES:
+            raise SystemExit(
+                f"Overlay file {path} has language code {lang!r}, which is "
+                f"not one of the supported LOCALES: {sorted(LOCALES)}"
+            )
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+        ):
+            raise SystemExit(f"Overlay file {path} must be a flat {{str: str}} JSON object")
+        overrides[lang] = data
+    return overrides
+
+
+def apply_overrides(
+    result_strings: dict[str, dict],
+    overrides: dict[str, dict[str, str]],
+) -> dict[str, dict[str, list[str]]]:
+    """Merge overlay translations into result_strings, in place.
+
+    Harvest always wins: an overlay entry is applied only when the harvest
+    produced no localization for that key/lang. Format specifiers in the
+    override value must match the EN value's specifiers exactly, or this
+    raises SystemExit.
+
+    Returns `{lang: {"applied": [...], "superseded": [...], "stale": [...]}}`.
+    `superseded` entries are overlay keys the harvest already covers for that
+    language (the override is a no-op); `stale` entries are overlay keys that
+    no longer name a StringKey entry at all. Both are candidates for deletion
+    from the overlay file as upstream catches up.
+    """
+    report: dict[str, dict[str, list[str]]] = {}
+    for lang, translations in overrides.items():
+        applied: list[str] = []
+        superseded: list[str] = []
+        stale: list[str] = []
+        for key, value in translations.items():
+            entry = result_strings.get(key)
+            if entry is None:
+                stale.append(key)
+                continue
+
+            locs = entry["localizations"]
+            if lang in locs:
+                superseded.append(key)
+                continue
+
+            en_value = locs.get("en", {}).get("stringUnit", {}).get("value")
+            if en_value is not None and specifiers(en_value) != specifiers(value):
+                raise SystemExit(
+                    f"Overlay format-specifier mismatch for {key!r} ({lang}): "
+                    f"en specifiers={specifiers(en_value)} vs override "
+                    f"specifiers={specifiers(value)} (override value: {value!r})"
+                )
+
+            locs[lang] = {"stringUnit": {"state": "translated", "value": value}}
+            applied.append(key)
+
+        report[lang] = {
+            "applied": sorted(applied),
+            "superseded": sorted(superseded),
+            "stale": sorted(stale),
+        }
+    return report
+
+
+# --------------------------------------------------------------------------
 # Validation
 # --------------------------------------------------------------------------
 
@@ -293,6 +398,10 @@ def main() -> None:
             "localizations": localizations,
         }
 
+    # ---- fork-local overlay merge ---------------------------------------
+    overrides = load_overrides()
+    overlay_report = apply_overrides(result_strings, overrides)
+
     output = {
         "sourceLanguage": "en",
         "strings": result_strings,
@@ -349,6 +458,32 @@ def main() -> None:
             print(f"  - {k}")
     else:
         print("No entries mixed bare and explicit-index placeholders.")
+    print()
+
+    print(f"Overlay report ({OVERRIDES_DIR.relative_to(ROOT)}/<lang>.json):")
+    if overlay_report:
+        for lang in sorted(overlay_report):
+            r = overlay_report[lang]
+            print(
+                f"  {lang}: {len(r['applied'])} applied, "
+                f"{len(r['superseded'])} superseded by harvest, "
+                f"{len(r['stale'])} stale"
+            )
+            if r["superseded"]:
+                print(
+                    "    superseded (harvest now covers these; overlay entry "
+                    "is a no-op -- candidate for deletion):"
+                )
+                for k in r["superseded"]:
+                    print(f"      - {k}")
+            if r["stale"]:
+                print(
+                    "    stale (not a StringKey entry -- candidate for deletion):"
+                )
+                for k in r["stale"]:
+                    print(f"      - {k}")
+    else:
+        print("  No overlay files found.")
     print()
 
     print("Spot-check:")

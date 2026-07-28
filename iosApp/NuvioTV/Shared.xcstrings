@@ -284,6 +284,12 @@
     "addons_manifest_missing_field": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Im Manifest fehlt \"%1$@\""
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -488,6 +494,12 @@
     "cloud_library_playback_disabled": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloud-Bibliothek ist deaktiviert."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -517,6 +529,12 @@
     "cloud_library_provider_unavailable": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloud-Bibliothek ist für %1$@ nicht verfügbar."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -546,6 +564,12 @@
     "collections_editor_media_movies_suffix": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filme"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -575,6 +599,12 @@
     "collections_editor_media_series_suffix": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Serien"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -604,6 +634,12 @@
     "collections_editor_resolved_trakt_list": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aufgelöste Trakt-Liste"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -633,6 +669,12 @@
     "collections_editor_tmdb_collection_title_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Sammlung %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -662,6 +704,12 @@
     "collections_editor_tmdb_director_title_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Regisseur %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -691,6 +739,12 @@
     "collections_editor_tmdb_discover": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB Discover"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -720,6 +774,12 @@
     "collections_editor_tmdb_invalid_id_error": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gib eine gültige TMDB-ID oder -URL ein."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -749,6 +809,12 @@
     "collections_editor_tmdb_list_title_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Liste %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -778,6 +844,12 @@
     "collections_editor_tmdb_load_error": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Quelle konnte nicht geladen werden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -807,6 +879,12 @@
     "collections_editor_tmdb_network_title_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Sender %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -836,6 +914,12 @@
     "collections_editor_tmdb_person_title_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Person %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -865,6 +949,12 @@
     "collections_editor_tmdb_production_title_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Produktion %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -894,6 +984,12 @@
     "collections_editor_trakt_fallback_title": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Liste %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -923,6 +1019,12 @@
     "collections_editor_trakt_id_url_required": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gib eine Trakt-Listen-ID oder -URL ein"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -952,6 +1054,12 @@
     "collections_editor_trakt_input_required": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gib einen Trakt-Listennamen, eine URL oder eine ID ein"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -981,6 +1089,12 @@
     "collections_editor_trakt_list_title_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Liste %1$@"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1010,6 +1124,12 @@
     "collections_editor_trakt_load_error": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Liste konnte nicht geladen werden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1039,6 +1159,12 @@
     "collections_editor_trakt_load_failed": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Liste konnte nicht geladen werden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1068,6 +1194,12 @@
     "collections_editor_trakt_no_lists_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Trakt-Listen gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1167,6 +1299,12 @@
     "collections_folder_trakt_movie_list": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Filmliste"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1196,6 +1334,12 @@
     "collections_folder_trakt_series_list": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Serienliste"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1295,6 +1439,12 @@
     "collections_import_error_collection_duplicate_id": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sammlungs-ID '%1$@' wird mehr als einmal verwendet."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1429,6 +1579,12 @@
     "collections_import_error_folder_duplicate_id": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ordner-ID '%1$@' wird in '%2$@' mehr als einmal verwendet."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1598,6 +1754,12 @@
     "collections_tmdb_api_key_required": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Füge einen TMDB-API-Schlüssel in den Einstellungen hinzu, um TMDB-Quellen zu verwenden."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1627,6 +1789,12 @@
     "collections_tmdb_collection_not_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Sammlung nicht gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1656,6 +1824,12 @@
     "collections_tmdb_company_not_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Firma nicht gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1685,6 +1859,12 @@
     "collections_tmdb_discover_no_data": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB Discover hat keine Daten zurückgegeben"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1714,6 +1894,12 @@
     "collections_tmdb_list_not_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Liste nicht gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1743,6 +1929,12 @@
     "collections_tmdb_missing_collection_id": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehlende TMDB-Sammlungs-ID"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1772,6 +1964,12 @@
     "collections_tmdb_missing_list_id": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehlende TMDB-Listen-ID"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1801,6 +1999,12 @@
     "collections_tmdb_missing_person_id": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehlende TMDB-Personen-ID"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1830,6 +2034,12 @@
     "collections_tmdb_network_not_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Sender nicht gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1859,6 +2069,12 @@
     "collections_tmdb_person_credits_not_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Personen-Credits nicht gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1888,6 +2104,12 @@
     "collections_tmdb_person_not_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB-Person nicht gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1917,6 +2139,12 @@
     "collections_trakt_credentials_missing": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehlende Trakt-Anmeldedaten."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1946,6 +2174,12 @@
     "collections_trakt_error_with_code": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (%2$@)"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -1975,6 +2209,12 @@
     "collections_trakt_invalid_list_id_or_url": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gib eine gültige Trakt-Listen-ID oder -URL ein"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2004,6 +2244,12 @@
     "collections_trakt_list_items_count": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ Einträge"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2033,6 +2279,12 @@
     "collections_trakt_list_likes_count": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ Likes"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2062,6 +2314,12 @@
     "collections_trakt_list_not_found_or_private": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Liste nicht gefunden oder nicht öffentlich"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2091,6 +2349,12 @@
     "collections_trakt_missing_list_id": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehlende Trakt-Listen-ID"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2120,6 +2384,12 @@
     "collections_trakt_missing_numeric_id": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Trakt-Liste enthielt keine numerische ID"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2149,6 +2419,12 @@
     "collections_trakt_public_list": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Öffentliche Trakt-Liste"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2178,6 +2454,12 @@
     "collections_trakt_rate_limit_reached": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Ratenlimit erreicht"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2207,6 +2489,12 @@
     "collections_trakt_request_failed": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Anfrage fehlgeschlagen"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2306,6 +2594,12 @@
     "compose_player_no_subtitle_lines_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Untertitelzeilen gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -2370,6 +2664,12 @@
     "compose_player_subtitle_lines_load_error": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untertitelzeilen konnten nicht geladen werden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3309,6 +3609,12 @@
     "debrid_missing_api_key": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbinde ein Konto in den Einstellungen."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3338,6 +3644,12 @@
     "debrid_not_cached": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht im Torbox-Cache."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3367,6 +3679,12 @@
     "debrid_resolve_failed": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieser Link konnte nicht geöffnet werden."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3396,6 +3714,12 @@
     "debrid_stream_stale": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieser Link ist abgelaufen. Ergebnisse werden aktualisiert."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3425,6 +3749,12 @@
     "details_comments_trakt_load_failed_with_code": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Kommentare konnten nicht geladen werden (%1$@)"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3524,6 +3854,12 @@
     "details_runtime_hours_minutes": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@h %2$@m"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3553,6 +3889,12 @@
     "details_runtime_hours_only": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@h"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3582,6 +3924,12 @@
     "details_runtime_minutes_only": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@m"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -3856,6 +4204,12 @@
     "external_player_android_system": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Android-Systemplayer"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -4025,6 +4379,12 @@
     "library_local_tab_title": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuvio Library"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -4859,6 +5219,12 @@
     "network_empty_response_body": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leerer Antwortinhalt"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -4888,6 +5254,12 @@
     "network_request_failed_http": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anfrage mit HTTP %1$@ fehlgeschlagen"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -5162,6 +5534,12 @@
     "p2p_error_unknown": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unbekannter Torrent-Fehler"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -5331,6 +5709,12 @@
     "player_addon_subtitle_display_format": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (%2$@)"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -5605,6 +5989,12 @@
     "search_error_no_results_for_catalog": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ hat keine Suchergebnisse zurückgegeben."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -5844,6 +6234,12 @@
     "settings_stream_badge_enter_url": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gib eine Badge-JSON-URL ein."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -5873,6 +6269,12 @@
     "settings_stream_badge_import_failed": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Badge-Import fehlgeschlagen."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -5902,6 +6304,12 @@
     "settings_stream_badge_import_limit": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Du kannst bis zu %1$@ Badge-URLs importieren."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -5931,6 +6339,12 @@
     "settings_stream_badge_url_scheme_invalid": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Badge-URL muss mit http:// oder https:// beginnen."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6065,6 +6479,12 @@
     "streams_plugin_repository_fallback": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plugin-Repository"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6164,6 +6584,12 @@
     "trakt_authorization_expired_reconnect": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deine Trakt-Autorisierung ist nicht mehr gültig. Verbinde dein Trakt-Konto erneut."
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6210,6 +6636,12 @@
     "trakt_connected_status": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mit Trakt verbunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6239,6 +6671,12 @@
     "trakt_disconnected_status": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Von Trakt getrennt"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6268,6 +6706,12 @@
     "trakt_error_add_list_failed": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hinzufügen zur Trakt-Liste fehlgeschlagen"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6297,6 +6741,12 @@
     "trakt_error_add_watchlist_failed": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hinzufügen zur Trakt-Watchlist fehlgeschlagen"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6326,6 +6776,12 @@
     "trakt_error_authorization_expired": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Autorisierung abgelaufen"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6355,6 +6811,12 @@
     "trakt_error_empty_response": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leerer Antwortinhalt"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6384,6 +6846,12 @@
     "trakt_error_list_limit_reached": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Listenlimit erreicht"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6413,6 +6881,12 @@
     "trakt_error_list_not_found": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Liste nicht gefunden"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6442,6 +6916,12 @@
     "trakt_error_missing_ids": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fehlende kompatible Trakt-IDs"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6471,6 +6951,12 @@
     "trakt_error_rate_limit_reached": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Ratenlimit erreicht"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",
@@ -6500,6 +6986,12 @@
     "trakt_error_request_failed": {
       "extractionState": "manual",
       "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trakt-Anfrage fehlgeschlagen"
+          }
+        },
         "en": {
           "stringUnit": {
             "state": "translated",

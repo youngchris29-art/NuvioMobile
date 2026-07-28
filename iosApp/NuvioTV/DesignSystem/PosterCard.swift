@@ -27,17 +27,21 @@ extension View {
     ///
     /// Purely a visual transform (`rotation3DEffect`/`offset` don't affect layout), so it composes with
     /// the existing `scaleEffect`/`shadow` focus chain and never reflows the row it sits in.
+    ///
+    /// Bottom-anchored: rotating around the card's bottom edge makes the top lean toward the viewer —
+    /// a "stands up" read that stays visible even on wide 16:9 cards, where a center-anchored tilt
+    /// projected too weakly to notice (BUG-10, reported twice on the wide-poster layout).
     func posterFocusTilt(isFocused: Bool, reduceMotion: Bool) -> some View {
         let active = isFocused && !reduceMotion
         return self
             .rotation3DEffect(
-                .degrees(active ? 5 : 0),
+                .degrees(active ? 8 : 0),
                 axis: (x: 1, y: -0.35, z: 0),
-                anchor: .center,
+                anchor: .bottom,
                 anchorZ: 0,
                 perspective: 0.35
             )
-            .offset(y: active ? -4 : 0)
+            .offset(y: active ? -10 : 0)
     }
 }
 
@@ -78,11 +82,6 @@ struct PosterCard: View {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
                         .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
                 )
-                // Tester feedback asked to "enlarge the selected poster" — bumped from 1.07 to
-                // 1.12 for a more noticeable focus lift. Pure scaleEffect (not layout), so rows
-                // don't need extra spacing to accommodate it.
-                .scaleEffect(isFocused ? 1.12 : 1)
-                .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
                 .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
             if titleVisible {
@@ -95,6 +94,13 @@ struct PosterCard: View {
                     .frame(width: resolvedWidth, alignment: .leading)
             }
         }
+        // Tester feedback asked to "enlarge the selected poster" — bumped from 1.07 to 1.12 for a
+        // more noticeable focus lift. Pure scaleEffect (not layout), so rows don't need extra
+        // spacing to accommodate it. Scale + tilt wrap the WHOLE card (artwork + title) so the
+        // grown artwork can never extend into its own title's frame (BUG-15); the shadow stays on
+        // the artwork above, or it would give every title glyph a drop shadow.
+        .scaleEffect(isFocused ? 1.12 : 1)
+        .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
         .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
@@ -144,9 +150,6 @@ struct LandscapeCard: View {
                 }
             }
             .frame(width: width, height: height)
-            // Same 1.12 focus scale as PosterCard — see comment there.
-            .scaleEffect(isFocused ? 1.12 : 1)
-            .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
             .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
 
             if titleVisible {
@@ -159,6 +162,9 @@ struct LandscapeCard: View {
                     .frame(width: width, alignment: .leading)
             }
         }
+        // Same whole-card focus scale/tilt as PosterCard — see comment there (BUG-15).
+        .scaleEffect(isFocused ? 1.12 : 1)
+        .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
         .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }

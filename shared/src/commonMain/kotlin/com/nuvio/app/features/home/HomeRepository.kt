@@ -12,6 +12,10 @@ import com.nuvio.app.features.collection.CollectionSource
 import com.nuvio.app.features.collection.TmdbCollectionSourceResolver
 import com.nuvio.app.features.collection.catalogRouteKey
 import com.nuvio.app.features.collection.findCollectionCatalog
+import com.nuvio.app.features.tmdb.TmdbMetadataService
+import com.nuvio.app.features.tmdb.TmdbPreviewEnrichment
+import com.nuvio.app.features.tmdb.TmdbSettings
+import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktPublicListSourceResolver
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +47,10 @@ object HomeRepository {
     private var collectionHeroRequestKey: String? = null
     private var lastPublishedCatalogHeroEmpty: Boolean = true
     private var lastErrorMessage: String? = null
+    private var heroEnrichmentOverlay: Map<String, TmdbPreviewEnrichment> = emptyMap()
+    private var heroEnrichmentAttempted: Set<String> = emptySet()
+    private var heroEnrichmentJob: Job? = null
+    private var heroEnrichmentFetchKey: String? = null
 
     fun refresh(addons: List<ManagedAddon>, force: Boolean = false) {
         val activeAddons = addons.enabledAddons()
@@ -170,6 +178,19 @@ object HomeRepository {
         )
     }
 
+    /**
+     * Called when TMDB settings (enabled/apiKey/language) change so the hero overlay is rebuilt
+     * under the new settings instead of continuing to show enrichment fetched under the old ones.
+     */
+    fun onTmdbSettingsChanged() {
+        heroEnrichmentJob?.cancel()
+        heroEnrichmentJob = null
+        heroEnrichmentOverlay = emptyMap()
+        heroEnrichmentAttempted = emptySet()
+        heroEnrichmentFetchKey = null
+        applyCurrentSettings()
+    }
+
     fun clear() {
         activeJob?.cancel()
         activeJob = null
@@ -181,6 +202,11 @@ object HomeRepository {
         collectionHeroJob?.cancel()
         collectionHeroJob = null
         collectionHeroRequestKey = null
+        heroEnrichmentJob?.cancel()
+        heroEnrichmentJob = null
+        heroEnrichmentOverlay = emptyMap()
+        heroEnrichmentAttempted = emptySet()
+        heroEnrichmentFetchKey = null
         lastPublishedCatalogHeroEmpty = true
         lastErrorMessage = null
         _uiState.value = HomeUiState()
@@ -233,12 +259,92 @@ object HomeRepository {
             emptyList()
         }
 
+        val tmdbSettings = TmdbSettingsRepository.snapshot()
+        val enrichedHeroItems = heroItems.map { it.withHeroEnrichment(tmdbSettings) }
+
         _uiState.value = HomeUiState(
             isLoading = isLoading,
-            heroItems = heroItems,
+            heroItems = enrichedHeroItems,
             sections = sections,
             errorMessage = if (sections.isEmpty()) lastErrorMessage else null,
         )
+
+        if (!isLoading && heroItems.isNotEmpty()) {
+            scheduleHeroEnrichment(heroItems)
+        }
+    }
+
+    private fun MetaPreview.heroEnrichmentKey(): String = "$type:$id"
+
+    /**
+     * Applies cached TMDB preview enrichment for the hero carousel. Gated on [settings] so a
+     * disabled/removed TMDB config stops showing stale enrichment on the very next publish, and
+     * never touches id/type/poster — those identify and route the card.
+     */
+    private fun MetaPreview.withHeroEnrichment(settings: TmdbSettings): MetaPreview {
+        if (!settings.enabled || !settings.hasApiKey) return this
+        val enrichment = heroEnrichmentOverlay[heroEnrichmentKey()] ?: return this
+
+        var updated = this
+        if (settings.useBasicInfo) {
+            updated = updated.copy(
+                name = enrichment.localizedTitle ?: updated.name,
+                description = enrichment.description ?: updated.description,
+                genres = enrichment.genres.ifEmpty { updated.genres },
+            )
+        }
+        if (settings.useArtwork) {
+            updated = updated.copy(
+                logo = enrichment.logo ?: updated.logo,
+                banner = enrichment.backdrop ?: updated.banner,
+            )
+        }
+        return updated
+    }
+
+    /**
+     * Fetches TMDB preview enrichment for hero items missing it, keyed by item so a removed/failed
+     * item never gets retried on every publish. The completion republish sources its requestKey the
+     * same way the settings-driven republishes do, so the seeded hero shuffle always matches whatever
+     * request is currently live — a job that outlives its request can't resurrect an old seed.
+     */
+    private fun scheduleHeroEnrichment(items: List<MetaPreview>) {
+        val settings = TmdbSettingsRepository.snapshot()
+        if (!settings.enabled || !settings.hasApiKey) return
+
+        val missing = items.filter { item ->
+            val key = item.heroEnrichmentKey()
+            key !in heroEnrichmentOverlay && key !in heroEnrichmentAttempted
+        }
+        if (missing.isEmpty()) return
+
+        val fetchKey = missing.joinToString("|") { it.heroEnrichmentKey() } + ":" + settings.language
+        if (fetchKey == heroEnrichmentFetchKey && heroEnrichmentJob?.isActive == true) return
+
+        heroEnrichmentJob?.cancel()
+        heroEnrichmentFetchKey = fetchKey
+        heroEnrichmentJob = scope.launch {
+            val results = missing.map { item ->
+                async {
+                    item.heroEnrichmentKey() to runCatching {
+                        TmdbMetadataService.fetchPreviewEnrichment(item.type, item.id, settings)
+                    }.getOrNull()
+                }
+            }.awaitAll()
+
+            val additions = results.mapNotNull { (key, enrichment) -> enrichment?.let { key to it } }.toMap()
+            val nullKeys = results.filter { (_, enrichment) -> enrichment == null }.map { (key, _) -> key }.toSet()
+
+            heroEnrichmentOverlay = heroEnrichmentOverlay + additions
+            heroEnrichmentAttempted = heroEnrichmentAttempted + nullKeys
+
+            if (additions.isNotEmpty()) {
+                publishCurrentState(
+                    isLoading = _uiState.value.isLoading,
+                    requestKey = activeRequestKey ?: completedRequestKey,
+                )
+            }
+        }
     }
 
     private suspend fun HomeCatalogDefinition.toSection(): HomeCatalogSection {
