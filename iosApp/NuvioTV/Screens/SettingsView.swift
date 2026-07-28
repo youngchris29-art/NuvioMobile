@@ -1476,7 +1476,7 @@ private struct HeroSourcesGroup: View {
                     }
                 }
                 .padding(.leading, Theme.Spacing.md)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isExpanded)
@@ -1520,7 +1520,7 @@ private struct HomeCatalogsGroup: View {
                     }
                 }
                 .padding(.leading, Theme.Spacing.md)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isExpanded)
