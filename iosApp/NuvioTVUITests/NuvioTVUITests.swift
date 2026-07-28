@@ -37,13 +37,58 @@ final class NuvioTVUITests: XCTestCase {
 
     /// Launch and pass the profile gate (profile "Chris", no PIN, first in the row and focused by
     /// default). Lands on Home.
+    ///
+    /// 2026-07-28: a cold `launch()` from XCTest reproducibly sits on **AuthView** — the Supabase
+    /// session restore doesn't complete for it (a plain `xcrun simctl launch` of the same build
+    /// reaches the profile picker in ~20s). So when the app is already running and no launch
+    /// arguments are needed, `activate()` it instead: pre-warm the sim with
+    /// `xcrun simctl launch <udid> com.nuvio.media.NuvioTV` before the run and the suite attaches to
+    /// that signed-in instance.
     @discardableResult
     private func launchToHome(extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += extraArguments
+        let alreadyRunning = app.state == .runningForeground || app.state == .runningBackground
+        if extraArguments.isEmpty && alreadyRunning {
+            app.activate()
+            pause(2)
+            let chris = app.buttons["Chris"]
+            if chris.waitForExistence(timeout: 8) {
+                if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
+                remote.press(.select)
+                pause(10)
+                return app
+            }
+            // Already past the profile gate, somewhere inside the app (a prior test's end state —
+            // e.g. test01 deliberately ends on a pushed DetailView). Pop back out with Menu,
+            // re-front if a root-level Menu press exited to the springboard, then reselect the
+            // Home tab so every test starts from the same top-of-Home state a fresh launch gives.
+            for _ in 0..<4 {
+                remote.press(.menu)
+                pause(1.2)
+                if app.state != .runningForeground {
+                    app.activate()
+                    pause(2)
+                    break
+                }
+            }
+            press(.up, times: 8, gap: 0.5)
+            let homeTab = app.buttons["Home"]
+            if !moveFocus(.left, until: homeTab, max: 8) {
+                _ = moveFocus(.right, until: homeTab, max: 8)
+            }
+            remote.press(.select)
+            pause(3)
+            press(.down, times: 1)
+            pause(1)
+            return app
+        }
         app.launch()
+        // Session restore + profile fetch can take well past 15s on a cold sim launch; a short wait
+        // silently dropped the suite onto the sign-in screen and every screenshot was of AuthView.
         let chris = app.buttons["Chris"]
-        if chris.waitForExistence(timeout: 15) {
+        XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
+        if chris.exists {
             if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
             remote.press(.select)
         }
@@ -80,36 +125,58 @@ final class NuvioTVUITests: XCTestCase {
         let app = launchToHome()
         shot(app, "01a_home")
 
-        // Hero → (Continue Watching) → first catalog row.
-        press(.down, times: 3)
-        shot(app, "01b_row_focused")
+        // Hero → Continue Watching → Streaming → first *movies* catalog row (portrait cards, the
+        // row where the portrait ⇄ landscape morph is visible at all).
+        press(.down, times: 4)
+        shot(app, "01b_row_focused") // baseline: all portrait, evenly spaced
 
-        // Dwell: 1s debounce + resolution; give it time to expand and start playback.
-        pause(7)
-        shot(app, "01c_after_dwell_expanded")
+        // The morph fires at the 1s dwell and runs ~0.35s. Sample tightly through it so the
+        // exported PNGs show the focused card mid-widen AND the trailing posters sliding right
+        // rather than being overlapped.
+        pause(0.9)
+        shot(app, "01c_morph_t0_90")
+        pause(0.25)
+        shot(app, "01d_morph_t1_15")
+        pause(0.25)
+        shot(app, "01e_morph_t1_40")
+        pause(0.6)
+        shot(app, "01f_morph_settled_landscape") // landscape tile, neighbours pushed right
+
+        // Resolution + playback (or, when nothing resolves, the new collapse-back-to-portrait).
+        pause(5)
+        shot(app, "01g_after_resolve")
+        pause(3)
+        shot(app, "01h_playing_or_collapsed") // diff vs 01g ⇒ video actually renders
+
+        // Mute toggle while playing: the glyph in the tile's bottom-trailing corner must flip
+        // between speaker.slash.fill and speaker.wave.2.fill. (Audio itself is device-only.)
+        remote.press(.playPause)
         pause(2)
-        shot(app, "01d_after_dwell_playing") // diff vs 01c ⇒ video actually renders
+        shot(app, "01i_after_playpause")
+
+        // Focus must survive the resize: Right has to move to the next card, and the row has to
+        // collapse the card we left back to portrait.
+        remote.press(.right)
+        pause(0.3)
+        shot(app, "01j_collapse_immediate")
+        pause(1)
+        shot(app, "01k_collapsed_portrait") // previous card portrait again, spacing restored
 
         // Rapid scrub must not expand anything mid-flight.
         press(.right, times: 4, gap: 0.25)
-        shot(app, "01e_scrub_immediate")
+        shot(app, "01l_scrub_immediate")
         pause(7)
-        shot(app, "01f_scrub_settled_expanded")
+        shot(app, "01m_scrub_settled_expanded")
 
         // Back to the first card: cache hit should re-expand fast.
-        press(.left, times: 4, gap: 0.25)
+        press(.left, times: 5, gap: 0.25)
         pause(3.5)
-        shot(app, "01g_refocus_cache_hit")
+        shot(app, "01n_refocus_cache_hit")
 
-        // Mute toggle while playing.
-        remote.press(.playPause)
-        pause(1.5)
-        shot(app, "01h_after_playpause")
-
-        // Select → Detail: inline player must tear down, Detail loads.
+        // Select → Detail: inline player must tear down, Detail loads (⇒ focus was never lost).
         remote.press(.select)
         pause(4)
-        shot(app, "01i_detail_from_card")
+        shot(app, "01o_detail_from_card")
         XCTAssertTrue(app.state == .runningForeground, "app should survive card → detail push")
     }
 

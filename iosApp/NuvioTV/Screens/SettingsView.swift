@@ -370,14 +370,13 @@ struct SettingsView: View {
                                 ) {
                                     model.setShowCatalogType(!model.showCatalogType)
                                 }
-                                ForEach(model.catalogs, id: \.key) { item in
-                                    CatalogSettingRow(
-                                        item: item,
-                                        onToggle: { model.toggleCatalog(item) },
-                                        onUp: { model.moveUp(item) },
-                                        onDown: { model.moveDown(item) }
-                                    )
-                                }
+
+                                HomeCatalogsGroup(
+                                    items: model.catalogs,
+                                    onToggle: { model.toggleCatalog($0) },
+                                    onUp: { model.moveUp($0) },
+                                    onDown: { model.moveDown($0) }
+                                )
                             }
                         }
                         }
@@ -1418,12 +1417,23 @@ private struct CatalogSettingRow: View {
     }
 }
 
-/// The "Hero Sources" sub-list under Show Hero: a "N of 2 selected" caption plus one toggle row per
-/// non-collection catalog. Mirrors the Compose `HeroSourcesDropdown` (HomescreenSettingsPage.kt)
-/// logic — an OFF row goes non-interactive once the limit is reached; ON rows can always toggle off.
+/// The "Hero Sources" sub-list under Show Hero: collapsed by default behind a single focusable
+/// header row (title + live "N of 2 selected" summary + chevron); pressing Select reveals the
+/// per-catalog toggle rows inline. Mirrors the Compose `HeroSourcesDropdown`
+/// (HomescreenSettingsPage.kt) logic — an OFF row goes non-interactive once the limit is reached;
+/// ON rows can always toggle off.
+///
+/// tvOS has no usable `DisclosureGroup` (poor/inconsistent focus highlighting — see the identical
+/// note on `StreamPickerView.groupHeader`), so this is a plain `Button` header + conditional
+/// content, not a DisclosureGroup. `isExpanded` is plain `@State` (no persistence): the section
+/// starts collapsed every time this view is (re)built, i.e. on every visit to Settings. Collapsing
+/// only ever happens from the header row's own Button action, so focus is already on the header
+/// at that moment — no separate FocusState retargeting is needed the way StreamPickerView's
+/// multi-trigger expansion needs it.
 private struct HeroSourcesGroup: View {
     let items: [HomeCatalogSettingsItem]
     let onToggle: (_ key: String, _ enabled: Bool) -> Void
+    @State private var isExpanded = false
 
     private var selectedCount: Int {
         items.filter { $0.heroSourceEnabled }.count
@@ -1433,24 +1443,122 @@ private struct HeroSourcesGroup: View {
         Int(HomeCatalogSettingsRepository.shared.HERO_SOURCE_SELECTION_LIMIT)
     }
 
+    /// "N of 2 selected", plus the selected catalogs' display titles once at least one is on —
+    /// gives the collapsed header a useful preview instead of just a count.
+    private var summary: String {
+        let selectedNames = items.filter { $0.heroSourceEnabled }.map(\.displayTitle)
+        guard !selectedNames.isEmpty else {
+            return String(localized: "\(selectedCount) of \(limit) selected")
+        }
+        let joined = selectedNames.joined(separator: ", ")
+        return String(localized: "\(selectedCount) of \(limit) selected \u{00B7} \(joined)")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text("Hero Sources")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text("\(selectedCount) of \(limit) selected")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
+            SettingsDisclosureRow(
+                title: String(localized: "Hero Sources"),
+                subtitle: summary,
+                isExpanded: isExpanded
+            ) {
+                isExpanded.toggle()
+            }
 
-            ForEach(items, id: \.key) { item in
-                HeroSourceRow(
-                    item: item,
-                    interactive: item.heroSourceEnabled || selectedCount < limit
-                ) { enabled in
-                    onToggle(item.key, enabled)
+            if isExpanded {
+                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                    ForEach(items, id: \.key) { item in
+                        HeroSourceRow(
+                            item: item,
+                            interactive: item.heroSourceEnabled || selectedCount < limit
+                        ) { enabled in
+                            onToggle(item.key, enabled)
+                        }
+                    }
                 }
+                .padding(.leading, Theme.Spacing.md)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: isExpanded)
+    }
+}
+
+/// The per-catalog enable/reorder list under "Show Catalog Type in Titles": collapsed by default
+/// behind a header row ("Catalogs" + "N of M enabled" summary + chevron), matching the Hero
+/// Sources treatment above per the same device feedback. Expanding reveals the existing
+/// `CatalogSettingRow` list unchanged — enable/move up/move down behave exactly as before.
+private struct HomeCatalogsGroup: View {
+    let items: [HomeCatalogSettingsItem]
+    let onToggle: (HomeCatalogSettingsItem) -> Void
+    let onUp: (HomeCatalogSettingsItem) -> Void
+    let onDown: (HomeCatalogSettingsItem) -> Void
+    @State private var isExpanded = false
+
+    private var enabledCount: Int {
+        items.filter { $0.enabled }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            SettingsDisclosureRow(
+                title: String(localized: "Catalogs"),
+                subtitle: String(localized: "\(enabledCount) of \(items.count) enabled"),
+                isExpanded: isExpanded
+            ) {
+                isExpanded.toggle()
+            }
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    ForEach(items, id: \.key) { item in
+                        CatalogSettingRow(
+                            item: item,
+                            onToggle: { onToggle(item) },
+                            onUp: { onUp(item) },
+                            onDown: { onDown(item) }
+                        )
+                    }
+                }
+                .padding(.leading, Theme.Spacing.md)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isExpanded)
+    }
+}
+
+/// Shared collapsed/expanded header row for the two collapsible Home Screen groups above: title +
+/// a live summary subtitle + a chevron that rotates 180° between collapsed (pointing down) and
+/// expanded (pointing up). Styled like the section's other top-level rows (`SettingsToggleRow`,
+/// `DefaultPlayerRow`) so it reads as a peer row, not a nested control.
+private struct SettingsDisclosureRow: View {
+    let title: String
+    let subtitle: String
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.lg) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    Text(title)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                    Text(subtitle)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+            }
+            .padding(Theme.Spacing.lg)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.settingsRow)
     }
 }
 

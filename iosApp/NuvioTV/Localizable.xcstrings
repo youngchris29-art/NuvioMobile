@@ -421,6 +421,34 @@
         }
       }
     },
+    "%lld of %lld enabled": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld aktiviert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld activados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld activés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld di %lld attivati"
+          }
+        }
+      }
+    },
     "%lld of %lld selected": {
       "localizations": {
         "de": {
@@ -445,6 +473,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld di %lld selezionate"
+          }
+        }
+      }
+    },
+    "%lld of %lld selected · %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld ausgewählt · %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld seleccionadas · %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld sélectionnées · %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld di %lld selezionate · %@"
           }
         }
       }
@@ -899,10 +955,10 @@
     },
     "Account": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Compte"
+            "value": "Konto"
           }
         },
         "es": {
@@ -911,10 +967,10 @@
             "value": "Cuenta"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Konto"
+            "value": "Compte"
           }
         },
         "it": {
@@ -955,10 +1011,10 @@
     },
     "Active": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Actif"
+            "value": "Aktiv"
           }
         },
         "es": {
@@ -967,10 +1023,10 @@
             "value": "Activo"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aktiv"
+            "value": "Actif"
           }
         },
         "it": {
@@ -1011,10 +1067,10 @@
     },
     "Add Profile": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ajouter un profil"
+            "value": "Profil hinzufügen"
           }
         },
         "es": {
@@ -1023,10 +1079,10 @@
             "value": "Añadir perfil"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Profil hinzufügen"
+            "value": "Ajouter un profil"
           }
         },
         "it": {
@@ -1235,10 +1291,10 @@
     },
     "Advanced": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Avancé"
+            "value": "Erweitert"
           }
         },
         "es": {
@@ -1247,16 +1303,16 @@
             "value": "Avanzado"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avancé"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Avanzate"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Erweitert"
           }
         }
       }
@@ -1291,10 +1347,10 @@
     },
     "All": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tout"
+            "value": "Alle"
           }
         },
         "es": {
@@ -1303,10 +1359,10 @@
             "value": "Todo"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alle"
+            "value": "Tout"
           }
         },
         "it": {
@@ -1319,10 +1375,10 @@
     },
     "Amber": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ambre"
+            "value": "Bernstein"
           }
         },
         "es": {
@@ -1331,10 +1387,10 @@
             "value": "Ámbar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bernstein"
+            "value": "Ambre"
           }
         },
         "it": {
@@ -1347,7 +1403,7 @@
     },
     "Anime": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Anime"
@@ -1359,7 +1415,7 @@
             "value": "Anime"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Anime"
@@ -1375,10 +1431,10 @@
     },
     "Appearance": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Apparence"
+            "value": "Erscheinungsbild"
           }
         },
         "es": {
@@ -1387,10 +1443,10 @@
             "value": "Apariencia"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erscheinungsbild"
+            "value": "Apparence"
           }
         },
         "it": {
@@ -1515,10 +1571,10 @@
     },
     "Arabic": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Arabe"
+            "value": "Arabisch"
           }
         },
         "es": {
@@ -1527,10 +1583,10 @@
             "value": "Árabe"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Arabisch"
+            "value": "Arabe"
           }
         },
         "it": {
@@ -1543,7 +1599,7 @@
     },
     "Audio": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Audio"
@@ -1555,7 +1611,7 @@
             "value": "Audio"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Audio"
@@ -1879,10 +1935,10 @@
     },
     "Badge import failed.": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Échec de l’import du badge."
+            "value": "Badge-Import fehlgeschlagen."
           }
         },
         "es": {
@@ -1891,16 +1947,16 @@
             "value": "Error al importar la insignia."
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Échec de l’import du badge."
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Importazione dei badge non riuscita."
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Badge-Import fehlgeschlagen."
           }
         }
       }
@@ -1991,10 +2047,10 @@
     },
     "Balanced": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Équilibré"
+            "value": "Ausgewogen"
           }
         },
         "es": {
@@ -2003,10 +2059,10 @@
             "value": "Equilibrado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ausgewogen"
+            "value": "Équilibré"
           }
         },
         "it": {
@@ -2019,10 +2075,10 @@
     },
     "Bold": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Gras"
+            "value": "Fett"
           }
         },
         "es": {
@@ -2031,16 +2087,16 @@
             "value": "Atrevido"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gras"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Bold"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fett"
           }
         }
       }
@@ -2159,10 +2215,10 @@
     },
     "Cancel": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Annuler"
+            "value": "Abbrechen"
           }
         },
         "es": {
@@ -2171,10 +2227,10 @@
             "value": "Cancelar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Abbrechen"
+            "value": "Annuler"
           }
         },
         "it": {
@@ -2215,10 +2271,10 @@
     },
     "Cast": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Casting"
+            "value": "Besetzung"
           }
         },
         "es": {
@@ -2227,10 +2283,10 @@
             "value": "Reparto"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Besetzung"
+            "value": "Casting"
           }
         },
         "it": {
@@ -2297,6 +2353,34 @@
         }
       }
     },
+    "Catalogs": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kataloge"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catálogos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Catalogues"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cataloghi"
+          }
+        }
+      }
+    },
     "Change PIN": {
       "localizations": {
         "de": {
@@ -2355,10 +2439,10 @@
     },
     "Chinese": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Chinois"
+            "value": "Chinesisch"
           }
         },
         "es": {
@@ -2367,10 +2451,10 @@
             "value": "Chino"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Chinesisch"
+            "value": "Chinois"
           }
         },
         "it": {
@@ -2411,10 +2495,10 @@
     },
     "Choose a file to play": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choisissez un fichier à lire"
+            "value": "Wähle eine Datei zum Abspielen"
           }
         },
         "es": {
@@ -2423,16 +2507,16 @@
             "value": "Elige un archivo para reproducir"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez un fichier à lire"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Scegli un file da riprodurre"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wähle eine Datei zum Abspielen"
           }
         }
       }
@@ -2523,10 +2607,10 @@
     },
     "Collection": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Collection"
+            "value": "Sammlung"
           }
         },
         "es": {
@@ -2535,10 +2619,10 @@
             "value": "Colección"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sammlung"
+            "value": "Collection"
           }
         },
         "it": {
@@ -2551,10 +2635,10 @@
     },
     "Comments": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Commentaires"
+            "value": "Kommentare"
           }
         },
         "es": {
@@ -2563,10 +2647,10 @@
             "value": "Comentarios"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Kommentare"
+            "value": "Commentaires"
           }
         },
         "it": {
@@ -2663,10 +2747,10 @@
     },
     "Connect Trakt": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Connecter Trakt"
+            "value": "Trakt verbinden"
           }
         },
         "es": {
@@ -2675,10 +2759,10 @@
             "value": "Conectar Trakt"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Trakt verbinden"
+            "value": "Connecter Trakt"
           }
         },
         "it": {
@@ -2719,10 +2803,10 @@
     },
     "Connect an account in Settings.": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Connectez un compte dans les paramètres."
+            "value": "Verbinde ein Konto in den Einstellungen."
           }
         },
         "es": {
@@ -2731,16 +2815,16 @@
             "value": "Conecte una cuenta en Configuración."
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connectez un compte dans les paramètres."
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Connetti un account nelle Impostazioni."
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verbinde ein Konto in den Einstellungen."
           }
         }
       }
@@ -2859,10 +2943,10 @@
     },
     "Continue": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Continuer"
+            "value": "Fortfahren"
           }
         },
         "es": {
@@ -2871,10 +2955,10 @@
             "value": "Continuar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fortfahren"
+            "value": "Continuer"
           }
         },
         "it": {
@@ -2887,10 +2971,10 @@
     },
     "Continue Watching": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Continuer à regarder"
+            "value": "Weiterschauen"
           }
         },
         "es": {
@@ -2899,10 +2983,10 @@
             "value": "Seguir viendo"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Weiterschauen"
+            "value": "Continuer à regarder"
           }
         },
         "it": {
@@ -2971,10 +3055,10 @@
     },
     "Could not open this link.": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Impossible d’ouvrir ce lien."
+            "value": "Konnte diesen Link nicht öffnen."
           }
         },
         "es": {
@@ -2983,16 +3067,16 @@
             "value": "No se pudo abrir este enlace."
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible d’ouvrir ce lien."
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile aprire questo link."
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Konnte diesen Link nicht öffnen."
           }
         }
       }
@@ -3279,18 +3363,6 @@
     },
     "Country": {
       "localizations": {
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pays"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Paese"
-          }
-        },
         "de": {
           "stringUnit": {
             "state": "translated",
@@ -3302,15 +3374,27 @@
             "state": "translated",
             "value": "País"
           }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pays"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paese"
+          }
         }
       }
     },
     "Create Account": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Créer un compte"
+            "value": "Konto erstellen"
           }
         },
         "es": {
@@ -3319,10 +3403,10 @@
             "value": "Crear cuenta"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Konto erstellen"
+            "value": "Créer un compte"
           }
         },
         "it": {
@@ -3363,10 +3447,10 @@
     },
     "Crimson": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cramoisi"
+            "value": "Karminrot"
           }
         },
         "es": {
@@ -3375,10 +3459,10 @@
             "value": "Carmesí"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Karminrot"
+            "value": "Cramoisi"
           }
         },
         "it": {
@@ -3503,10 +3587,10 @@
     },
     "Default": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Par défaut"
+            "value": "Standard"
           }
         },
         "es": {
@@ -3515,16 +3599,16 @@
             "value": "Por defecto"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Par défaut"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Predefinito"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Standard"
           }
         }
       }
@@ -3559,10 +3643,10 @@
     },
     "Delete Profile": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Supprimer le profil"
+            "value": "Profil löschen"
           }
         },
         "es": {
@@ -3571,10 +3655,10 @@
             "value": "Eliminar perfil"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Profil löschen"
+            "value": "Supprimer le profil"
           }
         },
         "it": {
@@ -3587,10 +3671,10 @@
     },
     "Details": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Détails"
+            "value": "Details"
           }
         },
         "es": {
@@ -3599,10 +3683,10 @@
             "value": "Detalles"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Details"
+            "value": "Détails"
           }
         },
         "it": {
@@ -3783,10 +3867,10 @@
     },
     "Director": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Réalisateur"
+            "value": "Regisseur"
           }
         },
         "es": {
@@ -3795,10 +3879,10 @@
             "value": "Director"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Regisseur"
+            "value": "Réalisateur"
           }
         },
         "it": {
@@ -3811,10 +3895,10 @@
     },
     "Disabled": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Désactivé"
+            "value": "Deaktiviert"
           }
         },
         "es": {
@@ -3823,26 +3907,26 @@
             "value": "Desactivado"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Disattivato"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Deaktiviert"
           }
         }
       }
     },
     "Disconnect": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Déconnecter"
+            "value": "Trennen"
           }
         },
         "es": {
@@ -3851,16 +3935,16 @@
             "value": "Desconectar"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déconnecter"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Disconnetti"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Trennen"
           }
         }
       }
@@ -3951,10 +4035,10 @@
     },
     "Discover": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Découvrir"
+            "value": "Entdecken"
           }
         },
         "es": {
@@ -3963,10 +4047,10 @@
             "value": "Descubrir"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Entdecken"
+            "value": "Découvrir"
           }
         },
         "it": {
@@ -4147,10 +4231,10 @@
     },
     "Edit Profile": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Modifier le profil"
+            "value": "Profil bearbeiten"
           }
         },
         "es": {
@@ -4159,10 +4243,10 @@
             "value": "Editar perfil"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Profil bearbeiten"
+            "value": "Modifier le profil"
           }
         },
         "it": {
@@ -4175,10 +4259,10 @@
     },
     "Email": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Adresse e-mail"
+            "value": "E-Mail"
           }
         },
         "es": {
@@ -4187,10 +4271,10 @@
             "value": "Correo electrónico"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "E-Mail"
+            "value": "Adresse e-mail"
           }
         },
         "it": {
@@ -4203,10 +4287,10 @@
     },
     "Emerald": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Émeraude"
+            "value": "Smaragd"
           }
         },
         "es": {
@@ -4215,10 +4299,10 @@
             "value": "Esmeralda"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Smaragd"
+            "value": "Émeraude"
           }
         },
         "it": {
@@ -4343,10 +4427,10 @@
     },
     "English": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Anglais"
+            "value": "Englisch"
           }
         },
         "es": {
@@ -4355,10 +4439,10 @@
             "value": "Inglés"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Englisch"
+            "value": "Anglais"
           }
         },
         "it": {
@@ -4427,10 +4511,10 @@
     },
     "Enter current PIN": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Saisir le code PIN actuel"
+            "value": "Aktuelle PIN eingeben"
           }
         },
         "es": {
@@ -4439,10 +4523,10 @@
             "value": "Introducir PIN actual"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aktuelle PIN eingeben"
+            "value": "Saisir le code PIN actuel"
           }
         },
         "it": {
@@ -4483,10 +4567,10 @@
     },
     "Episodes": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Épisodes"
+            "value": "Episoden"
           }
         },
         "es": {
@@ -4495,10 +4579,10 @@
             "value": "Episodios"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Episoden"
+            "value": "Épisodes"
           }
         },
         "it": {
@@ -4539,10 +4623,10 @@
     },
     "Finding streams…": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Recherche des streams…"
+            "value": "Streams werden gesucht…"
           }
         },
         "es": {
@@ -4551,10 +4635,10 @@
             "value": "Buscando streams…"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Streams werden gesucht…"
+            "value": "Recherche des streams…"
           }
         },
         "it": {
@@ -4679,10 +4763,10 @@
     },
     "French": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Français"
+            "value": "Französisch"
           }
         },
         "es": {
@@ -4691,10 +4775,10 @@
             "value": "Francés"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Französisch"
+            "value": "Français"
           }
         },
         "it": {
@@ -4791,10 +4875,10 @@
     },
     "German": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Allemand"
+            "value": "Deutsch"
           }
         },
         "es": {
@@ -4803,10 +4887,10 @@
             "value": "Alemán"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Deutsch"
+            "value": "Allemand"
           }
         },
         "it": {
@@ -5015,7 +5099,7 @@
     },
     "Hindi": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Hindi"
@@ -5027,7 +5111,7 @@
             "value": "Hindi"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Hindi"
@@ -5071,10 +5155,10 @@
     },
     "Home": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Accueil"
+            "value": "Start"
           }
         },
         "es": {
@@ -5083,10 +5167,10 @@
             "value": "Inicio"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start"
+            "value": "Accueil"
           }
         },
         "it": {
@@ -5379,10 +5463,10 @@
     },
     "Install": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Installer"
+            "value": "Installieren"
           }
         },
         "es": {
@@ -5391,10 +5475,10 @@
             "value": "Instalar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Installieren"
+            "value": "Installer"
           }
         },
         "it": {
@@ -5575,10 +5659,10 @@
     },
     "Italian": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Italien"
+            "value": "Italienisch"
           }
         },
         "es": {
@@ -5587,10 +5671,10 @@
             "value": "Italiano"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Italienisch"
+            "value": "Italien"
           }
         },
         "it": {
@@ -5631,10 +5715,10 @@
     },
     "Japanese": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Japonais"
+            "value": "Japanisch"
           }
         },
         "es": {
@@ -5643,10 +5727,10 @@
             "value": "Japonés"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Japanisch"
+            "value": "Japonais"
           }
         },
         "it": {
@@ -5771,10 +5855,10 @@
     },
     "Korean": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Coréen"
+            "value": "Koreanisch"
           }
         },
         "es": {
@@ -5783,10 +5867,10 @@
             "value": "Coreano"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Koreanisch"
+            "value": "Coréen"
           }
         },
         "it": {
@@ -5827,10 +5911,10 @@
     },
     "Language": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Langue préférée"
+            "value": "Bevorzugte Sprache"
           }
         },
         "es": {
@@ -5839,10 +5923,10 @@
             "value": "Idioma preferido"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bevorzugte Sprache"
+            "value": "Langue préférée"
           }
         },
         "it": {
@@ -5883,10 +5967,10 @@
     },
     "Large": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Grand"
+            "value": "Groß"
           }
         },
         "es": {
@@ -5895,10 +5979,10 @@
             "value": "Grande"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Groß"
+            "value": "Grand"
           }
         },
         "it": {
@@ -5911,10 +5995,10 @@
     },
     "Library": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bibliothèque"
+            "value": "Bibliothek"
           }
         },
         "es": {
@@ -5923,10 +6007,10 @@
             "value": "Biblioteca"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bibliothek"
+            "value": "Bibliothèque"
           }
         },
         "it": {
@@ -6079,10 +6163,10 @@
     },
     "MDBList Ratings": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Notes MDBList"
+            "value": "MDBList-Bewertungen"
           }
         },
         "es": {
@@ -6091,10 +6175,10 @@
             "value": "Calificaciones de MDBList"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "MDBList-Bewertungen"
+            "value": "Notes MDBList"
           }
         },
         "it": {
@@ -6303,10 +6387,10 @@
     },
     "Mild": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Léger"
+            "value": "Mild"
           }
         },
         "es": {
@@ -6315,16 +6399,16 @@
             "value": "Leve"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Léger"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Lieve"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mild"
           }
         }
       }
@@ -6359,10 +6443,10 @@
     },
     "Moderate": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Modéré"
+            "value": "Moderat"
           }
         },
         "es": {
@@ -6371,16 +6455,16 @@
             "value": "Moderado"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modéré"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Moderata"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Moderat"
           }
         }
       }
@@ -6415,10 +6499,10 @@
     },
     "More Like This": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "À voir aussi"
+            "value": "Mehr davon"
           }
         },
         "es": {
@@ -6427,10 +6511,10 @@
             "value": "Más como esto"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mehr davon"
+            "value": "À voir aussi"
           }
         },
         "it": {
@@ -6443,10 +6527,10 @@
     },
     "Movies": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Films"
+            "value": "Filme"
           }
         },
         "es": {
@@ -6455,10 +6539,10 @@
             "value": "Películas"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Filme"
+            "value": "Films"
           }
         },
         "it": {
@@ -6555,10 +6639,10 @@
     },
     "Network": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Chaîne"
+            "value": "Sender"
           }
         },
         "es": {
@@ -6567,10 +6651,10 @@
             "value": "Cadena"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sender"
+            "value": "Chaîne"
           }
         },
         "it": {
@@ -6611,10 +6695,10 @@
     },
     "No addons installed yet.": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aucun addon installé."
+            "value": "Noch keine Addons installiert."
           }
         },
         "es": {
@@ -6623,10 +6707,10 @@
             "value": "Aún no hay complementos instalados."
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Noch keine Addons installiert."
+            "value": "Aucun addon installé."
           }
         },
         "it": {
@@ -6779,10 +6863,10 @@
     },
     "No internet connection": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pas de connexion Internet"
+            "value": "Keine Internetverbindung"
           }
         },
         "es": {
@@ -6791,10 +6875,10 @@
             "value": "Sin conexión a internet"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Keine Internetverbindung"
+            "value": "Pas de connexion Internet"
           }
         },
         "it": {
@@ -6807,10 +6891,10 @@
     },
     "No playable files": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aucun fichier lisible"
+            "value": "Keine abspielbar Dateien"
           }
         },
         "es": {
@@ -6819,16 +6903,16 @@
             "value": "No hay archivos reproducibles"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun fichier lisible"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Nessun file riproducibile"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keine abspielbar Dateien"
           }
         }
       }
@@ -6863,10 +6947,10 @@
     },
     "No plugin repositories installed yet.": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aucun dépôt de plugin installé pour l’instant."
+            "value": "Noch keine Plugin-Repositories installiert."
           }
         },
         "es": {
@@ -6875,16 +6959,16 @@
             "value": "Aún no hay repositorios de complementos instalados."
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun dépôt de plugin installé pour l’instant."
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Nessun repository di plugin ancora installato."
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Noch keine Plugin-Repositories installiert."
           }
         }
       }
@@ -7171,10 +7255,10 @@
     },
     "Nudity": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Nudité"
+            "value": "Nacktheit"
           }
         },
         "es": {
@@ -7183,23 +7267,23 @@
             "value": "Desnudez"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nudité"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Nudità"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nacktheit"
           }
         }
       }
     },
     "Nuvio": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Nuvio"
@@ -7211,7 +7295,7 @@
             "value": "Nuvio"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Nuvio"
@@ -7255,10 +7339,10 @@
     },
     "Ocean": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Océan"
+            "value": "Ozean"
           }
         },
         "es": {
@@ -7267,10 +7351,10 @@
             "value": "Océano"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ozean"
+            "value": "Océan"
           }
         },
         "it": {
@@ -7283,10 +7367,10 @@
     },
     "Off": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Désactivé"
+            "value": "Aus"
           }
         },
         "es": {
@@ -7295,10 +7379,10 @@
             "value": "Desactivado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aus"
+            "value": "Désactivé"
           }
         },
         "it": {
@@ -7563,10 +7647,10 @@
     },
     "On": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Activé"
+            "value": "Ein"
           }
         },
         "es": {
@@ -7575,10 +7659,10 @@
             "value": "Activado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ein"
+            "value": "Activé"
           }
         },
         "it": {
@@ -7983,10 +8067,10 @@
     },
     "Original": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ordre original"
+            "value": "Original"
           }
         },
         "es": {
@@ -7995,10 +8079,10 @@
             "value": "Original"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Original"
+            "value": "Ordre original"
           }
         },
         "it": {
@@ -8011,10 +8095,10 @@
     },
     "Outline": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Contour"
+            "value": "Umriss"
           }
         },
         "es": {
@@ -8023,10 +8107,10 @@
             "value": "Contorno"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Umriss"
+            "value": "Contour"
           }
         },
         "it": {
@@ -8095,10 +8179,10 @@
     },
     "Password": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mot de passe"
+            "value": "Passwort"
           }
         },
         "es": {
@@ -8107,10 +8191,10 @@
             "value": "Contraseña"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passwort"
+            "value": "Mot de passe"
           }
         },
         "it": {
@@ -8207,10 +8291,10 @@
     },
     "Play": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lire"
+            "value": "Abspielen"
           }
         },
         "es": {
@@ -8219,10 +8303,10 @@
             "value": "Reproducir"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Abspielen"
+            "value": "Lire"
           }
         },
         "it": {
@@ -8375,10 +8459,10 @@
     },
     "Playback": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lecture"
+            "value": "Wiedergabe"
           }
         },
         "es": {
@@ -8387,10 +8471,10 @@
             "value": "Reproducción"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Wiedergabe"
+            "value": "Lecture"
           }
         },
         "it": {
@@ -8459,10 +8543,10 @@
     },
     "Playing": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lecture en cours"
+            "value": "Wird abgespielt"
           }
         },
         "es": {
@@ -8471,10 +8555,10 @@
             "value": "Reproduciendo"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Wird abgespielt"
+            "value": "Lecture en cours"
           }
         },
         "it": {
@@ -8515,7 +8599,7 @@
     },
     "Plugins": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Plugins"
@@ -8527,7 +8611,7 @@
             "value": "Plugins"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Plugins"
@@ -8711,10 +8795,10 @@
     },
     "Posters": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Affiches"
+            "value": "Poster"
           }
         },
         "es": {
@@ -8723,10 +8807,10 @@
             "value": "Pósteres"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Poster"
+            "value": "Affiches"
           }
         },
         "it": {
@@ -8879,10 +8963,10 @@
     },
     "Profanity": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Grossièretés"
+            "value": "Schimpfwörter"
           }
         },
         "es": {
@@ -8891,23 +8975,23 @@
             "value": "Blasfemia"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grossièretés"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Volgarità"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Schimpfwörter"
           }
         }
       }
     },
     "Profile": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Profil"
@@ -8919,7 +9003,7 @@
             "value": "Perfil"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Profil"
@@ -9131,10 +9215,10 @@
     },
     "Recent Searches": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Recherches récentes"
+            "value": "Letzte Suchen"
           }
         },
         "es": {
@@ -9143,10 +9227,10 @@
             "value": "Búsquedas recientes"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Letzte Suchen"
+            "value": "Recherches récentes"
           }
         },
         "it": {
@@ -9187,10 +9271,10 @@
     },
     "Recently Added": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ajoutés récemment"
+            "value": "Kürzlich hinzugefügt"
           }
         },
         "es": {
@@ -9199,10 +9283,10 @@
             "value": "Agregado recientemente"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Kürzlich hinzugefügt"
+            "value": "Ajoutés récemment"
           }
         },
         "it": {
@@ -9579,10 +9663,10 @@
     },
     "Reset": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Réinitialiser"
+            "value": "Zurücksetzen"
           }
         },
         "es": {
@@ -9591,16 +9675,16 @@
             "value": "Reiniciar"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réinitialiser"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Reset"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zurücksetzen"
           }
         }
       }
@@ -9691,10 +9775,10 @@
     },
     "Review": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Avis"
+            "value": "Rezension"
           }
         },
         "es": {
@@ -9703,10 +9787,10 @@
             "value": "Reseña"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Rezension"
+            "value": "Avis"
           }
         },
         "it": {
@@ -9719,7 +9803,7 @@
     },
     "Rose": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Rose"
@@ -9731,7 +9815,7 @@
             "value": "Rosa"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Rose"
@@ -9775,10 +9859,10 @@
     },
     "Rounded": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Arrondi"
+            "value": "Abgerundet"
           }
         },
         "es": {
@@ -9787,10 +9871,10 @@
             "value": "Redondeado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Abgerundet"
+            "value": "Arrondi"
           }
         },
         "it": {
@@ -9831,10 +9915,10 @@
     },
     "Russian": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Russe"
+            "value": "Russisch"
           }
         },
         "es": {
@@ -9843,10 +9927,10 @@
             "value": "Ruso"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Russisch"
+            "value": "Russe"
           }
         },
         "it": {
@@ -9887,10 +9971,10 @@
     },
     "Save": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enregistrer"
+            "value": "Speichern"
           }
         },
         "es": {
@@ -9899,10 +9983,10 @@
             "value": "Guardar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Speichern"
+            "value": "Enregistrer"
           }
         },
         "it": {
@@ -9971,10 +10055,10 @@
     },
     "Saved": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enregistré"
+            "value": "Gespeichert"
           }
         },
         "es": {
@@ -9983,10 +10067,10 @@
             "value": "Guardado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Gespeichert"
+            "value": "Enregistré"
           }
         },
         "it": {
@@ -10139,10 +10223,10 @@
     },
     "Search": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Rechercher"
+            "value": "Suchen"
           }
         },
         "es": {
@@ -10151,10 +10235,10 @@
             "value": "Buscar"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Suchen"
+            "value": "Rechercher"
           }
         },
         "it": {
@@ -10419,10 +10503,10 @@
     },
     "Series": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Séries"
+            "value": "Serien"
           }
         },
         "es": {
@@ -10431,10 +10515,10 @@
             "value": "Series"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Serien"
+            "value": "Séries"
           }
         },
         "it": {
@@ -10503,10 +10587,10 @@
     },
     "Set PIN Lock": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Configurer le verrouillage PIN"
+            "value": "PIN-Sperre einrichten"
           }
         },
         "es": {
@@ -10515,10 +10599,10 @@
             "value": "Configurar bloqueo PIN"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "PIN-Sperre einrichten"
+            "value": "Configurer le verrouillage PIN"
           }
         },
         "it": {
@@ -10559,10 +10643,10 @@
     },
     "Settings": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Paramètres"
+            "value": "Einstellungen"
           }
         },
         "es": {
@@ -10571,10 +10655,10 @@
             "value": "Configuración"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Einstellungen"
+            "value": "Paramètres"
           }
         },
         "it": {
@@ -10587,10 +10671,10 @@
     },
     "Severe": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sévère"
+            "value": "Schwerwiegend"
           }
         },
         "es": {
@@ -10599,16 +10683,16 @@
             "value": "Severo"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sévère"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Grave"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Schwerwiegend"
           }
         }
       }
@@ -10979,10 +11063,10 @@
     },
     "Sign In": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Se connecter"
+            "value": "Anmelden"
           }
         },
         "es": {
@@ -10991,10 +11075,10 @@
             "value": "Iniciar sesión"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Anmelden"
+            "value": "Se connecter"
           }
         },
         "it": {
@@ -11119,10 +11203,10 @@
     },
     "Sign Out": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Se déconnecter"
+            "value": "Abmelden"
           }
         },
         "es": {
@@ -11131,10 +11215,10 @@
             "value": "Cerrar sesión"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Abmelden"
+            "value": "Se déconnecter"
           }
         },
         "it": {
@@ -11343,10 +11427,10 @@
     },
     "Skip Intro": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passer l’intro/outro/récap"
+            "value": "Intro/Outro/Rückblick überspringen"
           }
         },
         "es": {
@@ -11355,10 +11439,10 @@
             "value": "Saltar intro/outro/resumen"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Intro/Outro/Rückblick überspringen"
+            "value": "Passer l’intro/outro/récap"
           }
         },
         "it": {
@@ -11371,10 +11455,10 @@
     },
     "Skip Outro": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passer l’outro"
+            "value": "Outro überspringen"
           }
         },
         "es": {
@@ -11383,10 +11467,10 @@
             "value": "Saltar outro"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Outro überspringen"
+            "value": "Passer l’outro"
           }
         },
         "it": {
@@ -11399,10 +11483,10 @@
     },
     "Skip Recap": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passer le récap"
+            "value": "Rückblick überspringen"
           }
         },
         "es": {
@@ -11411,10 +11495,10 @@
             "value": "Saltar resumen"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Rückblick überspringen"
+            "value": "Passer le récap"
           }
         },
         "it": {
@@ -11511,10 +11595,10 @@
     },
     "Sources": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sources"
+            "value": "Quellen"
           }
         },
         "es": {
@@ -11523,10 +11607,10 @@
             "value": "Fuentes"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Quellen"
+            "value": "Sources"
           }
         },
         "it": {
@@ -11539,10 +11623,10 @@
     },
     "Spanish": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Espagnol"
+            "value": "Spanisch"
           }
         },
         "es": {
@@ -11551,10 +11635,10 @@
             "value": "Español"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Spanisch"
+            "value": "Espagnol"
           }
         },
         "it": {
@@ -11567,10 +11651,10 @@
     },
     "Specials": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Spéciaux"
+            "value": "Specials"
           }
         },
         "es": {
@@ -11579,10 +11663,10 @@
             "value": "Especiales"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Specials"
+            "value": "Spéciaux"
           }
         },
         "it": {
@@ -11595,10 +11679,10 @@
     },
     "Square": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Carré"
+            "value": "Quadratisch"
           }
         },
         "es": {
@@ -11607,10 +11691,10 @@
             "value": "Cuadrado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Quadratisch"
+            "value": "Carré"
           }
         },
         "it": {
@@ -11707,10 +11791,10 @@
     },
     "Status": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Statut"
+            "value": "Status"
           }
         },
         "es": {
@@ -11719,10 +11803,10 @@
             "value": "Estado"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Status"
+            "value": "Statut"
           }
         },
         "it": {
@@ -12099,10 +12183,10 @@
     },
     "Subtitle Delay": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Délai des sous-titres"
+            "value": "Untertitel-Verzögerung"
           }
         },
         "es": {
@@ -12111,26 +12195,26 @@
             "value": "Retraso de subtítulos"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Délai des sous-titres"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Ritardo sottotitoli"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Untertitel-Verzögerung"
           }
         }
       }
     },
     "Subtitles": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sous-titres"
+            "value": "Untertitel"
           }
         },
         "es": {
@@ -12139,10 +12223,10 @@
             "value": "Subtítulos"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Untertitel"
+            "value": "Sous-titres"
           }
         },
         "it": {
@@ -12155,10 +12239,10 @@
     },
     "Subtle": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Subtil"
+            "value": "Dezent"
           }
         },
         "es": {
@@ -12167,10 +12251,10 @@
             "value": "Sutil"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dezent"
+            "value": "Subtil"
           }
         },
         "it": {
@@ -12211,10 +12295,10 @@
     },
     "Switch Profile": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Changer de profil"
+            "value": "Profil wechseln"
           }
         },
         "es": {
@@ -12223,10 +12307,10 @@
             "value": "Cambiar perfil"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Profil wechseln"
+            "value": "Changer de profil"
           }
         },
         "it": {
@@ -12407,10 +12491,10 @@
     },
     "TMDB Enrichment": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enrichissement TMDB"
+            "value": "TMDB-Anreicherung"
           }
         },
         "es": {
@@ -12419,10 +12503,10 @@
             "value": "Enriquecimiento TMDB"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "TMDB-Anreicherung"
+            "value": "Enrichissement TMDB"
           }
         },
         "it": {
@@ -12491,7 +12575,7 @@
     },
     "TV": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "TV"
@@ -12503,7 +12587,7 @@
             "value": "TV"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "TV"
@@ -12575,10 +12659,10 @@
     },
     "Text Color": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couleur du texte"
+            "value": "Textfarbe"
           }
         },
         "es": {
@@ -12587,16 +12671,16 @@
             "value": "Color del texto"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couleur du texte"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Colore del Testo"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Textfarbe"
           }
         }
       }
@@ -12799,10 +12883,10 @@
     },
     "This link expired. Refreshing results.": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ce lien a expiré. Actualisation des résultats."
+            "value": "Dieser Link ist abgelaufen. Aktualisiere Ergebnisse."
           }
         },
         "es": {
@@ -12811,16 +12895,16 @@
             "value": "Este enlace expiró. Resultados refrescantes."
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce lien a expiré. Actualisation des résultats."
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Questo link è scaduto. Aggiornamento dei risultati in corso."
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dieser Link ist abgelaufen. Aktualisiere Ergebnisse."
           }
         }
       }
@@ -12995,10 +13079,10 @@
     },
     "Top": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "En haut"
+            "value": "Oben"
           }
         },
         "es": {
@@ -13007,16 +13091,16 @@
             "value": "Arriba"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En haut"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "In Alto"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Oben"
           }
         }
       }
@@ -13191,10 +13275,10 @@
     },
     "Trailers": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bandes-annonces"
+            "value": "Trailer"
           }
         },
         "es": {
@@ -13203,10 +13287,10 @@
             "value": "Tráilers"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Trailer"
+            "value": "Bandes-annonces"
           }
         },
         "it": {
@@ -13275,7 +13359,7 @@
     },
     "Trakt": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
             "value": "Trakt"
@@ -13287,7 +13371,7 @@
             "value": "Trakt"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
             "value": "Trakt"
@@ -13443,10 +13527,10 @@
     },
     "Unknown": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Inconnu"
+            "value": "Unbekannt"
           }
         },
         "es": {
@@ -13455,10 +13539,10 @@
             "value": "Desconocido"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Unbekannt"
+            "value": "Inconnu"
           }
         },
         "it": {
@@ -13555,10 +13639,10 @@
     },
     "Video": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Vidéo"
+            "value": "Video"
           }
         },
         "es": {
@@ -13567,13 +13651,13 @@
             "value": "Video"
           }
         },
-        "it": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Video"
+            "value": "Vidéo"
           }
         },
-        "de": {
+        "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Video"
@@ -13611,10 +13695,10 @@
     },
     "Violence": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Violence"
+            "value": "Gewalt"
           }
         },
         "es": {
@@ -13623,26 +13707,26 @@
             "value": "Violencia"
           }
         },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Violence"
+          }
+        },
         "it": {
           "stringUnit": {
             "state": "translated",
             "value": "Violenza"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Gewalt"
           }
         }
       }
     },
     "Violet": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Violet"
+            "value": "Violett"
           }
         },
         "es": {
@@ -13651,10 +13735,10 @@
             "value": "Violeta"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Violett"
+            "value": "Violet"
           }
         },
         "it": {
@@ -13751,10 +13835,10 @@
     },
     "Watched": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Vu"
+            "value": "Gesehen"
           }
         },
         "es": {
@@ -13763,10 +13847,10 @@
             "value": "Visto"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Gesehen"
+            "value": "Vu"
           }
         },
         "it": {
@@ -13807,10 +13891,10 @@
     },
     "White": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Blanc"
+            "value": "Weiß"
           }
         },
         "es": {
@@ -13819,10 +13903,10 @@
             "value": "Blanco"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Weiß"
+            "value": "Blanc"
           }
         },
         "it": {
@@ -13947,10 +14031,10 @@
     },
     "Your library is empty": {
       "localizations": {
-        "fr": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Votre bibliothèque est vide"
+            "value": "Deine Bibliothek ist leer"
           }
         },
         "es": {
@@ -13959,10 +14043,10 @@
             "value": "Tu biblioteca está vacía"
           }
         },
-        "de": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Deine Bibliothek ist leer"
+            "value": "Votre bibliothèque est vide"
           }
         },
         "it": {

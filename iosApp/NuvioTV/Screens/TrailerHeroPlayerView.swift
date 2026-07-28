@@ -26,13 +26,20 @@ final class TrailerPlayerUIView: UIView {
 struct TrailerHeroPlayer: UIViewRepresentable {
     let urlString: String
     var onFailure: () -> Void = {}
+    /// `true` (the default, and what the Detail hero uses) keeps the endless `AVPlayerLooper` this
+    /// view was written for. `false` plays the item exactly once and reports the end through
+    /// `onPlaybackEnded` — the inline catalog card uses that to collapse itself back to a poster
+    /// instead of looping a trailer under the user's focus forever.
+    var loops: Bool = true
+    /// Only ever fires when `loops == false`; main-queue.
+    var onPlaybackEnded: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> TrailerPlayerUIView {
         let view = TrailerPlayerUIView()
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
         view.playerLayer.videoGravity = .resizeAspectFill
-        context.coordinator.attach(to: view, urlString: urlString)
+        context.coordinator.attach(to: view, urlString: urlString, loops: loops)
         return view
     }
 
@@ -43,26 +50,30 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onFailure: onFailure)
+        Coordinator(onFailure: onFailure, onPlaybackEnded: onPlaybackEnded)
     }
 
     /// Owns the AVPlayer, looping, and failure detection.
     final class Coordinator {
         private let onFailure: () -> Void
+        private let onPlaybackEnded: (() -> Void)?
         private var player: AVQueuePlayer?
         private var looper: AVPlayerLooper?
         private var statusObservation: NSKeyValueObservation?
         private var failureObserver: NSObjectProtocol?
+        private var endObserver: NSObjectProtocol?
         private var watchdog: Timer?
         private var audioWatcher: FlowWatcher?
         private var started = false
         private var failed = false
+        private var ended = false
 
-        init(onFailure: @escaping () -> Void) {
+        init(onFailure: @escaping () -> Void, onPlaybackEnded: (() -> Void)? = nil) {
             self.onFailure = onFailure
+            self.onPlaybackEnded = onPlaybackEnded
         }
 
-        func attach(to view: TrailerPlayerUIView, urlString: String) {
+        func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true) {
             guard let url = URL(string: urlString) else { fail(); return }
 
             let item = AVPlayerItem(url: url)
@@ -78,7 +89,19 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 self.player?.isMuted = boxed.boolValue
             }
 
-            looper = AVPlayerLooper(player: queue, templateItem: item)
+            if loops {
+                looper = AVPlayerLooper(player: queue, templateItem: item)
+            } else {
+                // Single pass: no looper, and the end-of-item notification is the signal the host
+                // waits on. (`AVPlayerLooper` swallows this notification by design, which is why
+                // the two paths can't share an install.)
+                queue.insert(item, after: nil)
+                endObserver = NotificationCenter.default.addObserver(
+                    forName: .AVPlayerItemDidPlayToEndTime,
+                    object: item,
+                    queue: .main
+                ) { [weak self] _ in self?.finish() }
+            }
             view.playerLayer.player = queue
             player = queue
 
@@ -109,9 +132,17 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         }
 
         private func fail() {
-            guard !failed else { return }
+            guard !failed, !ended else { return }
             failed = true
             DispatchQueue.main.async { self.onFailure() }
+        }
+
+        /// Non-looping playback reached the end of the item — once only, and never after a failure.
+        private func finish() {
+            guard !failed, !ended else { return }
+            ended = true
+            guard let onPlaybackEnded else { return }
+            DispatchQueue.main.async { onPlaybackEnded() }
         }
 
         func teardown() {
@@ -122,6 +153,10 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             if let failureObserver {
                 NotificationCenter.default.removeObserver(failureObserver)
                 self.failureObserver = nil
+            }
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+                self.endObserver = nil
             }
             audioWatcher?.cancel()
             audioWatcher = nil

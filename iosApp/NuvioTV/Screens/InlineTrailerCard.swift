@@ -6,11 +6,12 @@ import SharedCore
 /// "Trailers in thumbnails": hold focus on a catalog card for a beat and it blooms into a 16:9
 /// landscape tile that plays the title's trailer, muted, in place.
 ///
-/// The whole feature is layered *on top of* the existing card — `InlineTrailerCard` renders the
-/// unchanged `PosterCardView`/`LandscapeCard` at rest and only adds an overlay once the dwell
-/// elapses, so nothing about the row's layout, focus chain, or scroll behaviour changes. The
-/// expansion is purely visual (overlay + `scaleEffect`), never a layout change, or every focus
-/// move would reflow the row.
+/// At rest `InlineTrailerCard` renders the unchanged `PosterCardView`/`LandscapeCard`, so a row of
+/// unfocused cards is byte-for-byte what it always was. The expansion is a real **in-row layout
+/// morph**: the card's layout width animates from the portrait poster's to `LandscapeCard`'s exact
+/// geometry (`Theme.Size.landscapeWidth × landscapeHeight`), so the `LazyHStack` slides the trailing
+/// posters aside and the wide tile never overlaps a neighbour. It morphs back when the trailer ends,
+/// when nothing resolves, or when focus leaves.
 ///
 /// Three collaborators live here:
 /// * `TrailerResolutionCache` — process-wide memo of "does this title have a playable trailer".
@@ -49,7 +50,9 @@ final class TrailerResolutionCache {
 
     private init() {}
 
-    static func key(type: String, id: String) -> String { "\(type):\(id)" }
+    /// `nonisolated` so view bodies (e.g. `CatalogRowView`'s play/pause gate) can build a key without
+    /// hopping actors — it's pure string interpolation and touches no state.
+    nonisolated static func key(type: String, id: String) -> String { "\(type):\(id)" }
 
     /// Non-expired entry for `key`, evicting it if its TTL has passed.
     func entry(for key: String) -> Entry? {
@@ -92,22 +95,33 @@ final class TrailerResolutionCache {
 /// flight (a second card that dwells while one is running simply skips — it is *not* queued, or the
 /// user would get trailers for cards they left long ago).
 @MainActor
-final class InlineTrailerCoordinator {
+final class InlineTrailerCoordinator: ObservableObject {
     static let shared = InlineTrailerCoordinator()
+
+    /// Cache key (`"type:id"`) of the card currently playing a trailer, or `nil` when nothing is.
+    ///
+    /// Published because the *row* — not the card — has to answer "is this focused item the one
+    /// playing?": tvOS delivers `.onPlayPauseCommand` to the focused view chain, which is the
+    /// `Button`/`NavigationLink` in `CatalogRowView`, never the card that is its label.
+    @Published private(set) var playingKey: String?
 
     private weak var activePlayer: InlineTrailerCardModel?
     private var extracting = false
 
     private init() {}
 
-    /// Hands the single player slot to `owner`, dropping whoever held it back to its static tile.
-    func claimPlayback(_ owner: InlineTrailerCardModel) {
+    /// Hands the single player slot to `owner`, dropping whoever held it back to a plain poster.
+    func claimPlayback(_ owner: InlineTrailerCardModel, key: String) {
         if let activePlayer, activePlayer !== owner { activePlayer.relinquishPlayback() }
         activePlayer = owner
+        playingKey = key
     }
 
     func releasePlayback(_ owner: InlineTrailerCardModel) {
-        if activePlayer === owner { activePlayer = nil }
+        if activePlayer === owner {
+            activePlayer = nil
+            playingKey = nil
+        }
     }
 
     /// `true` when this caller may extract; balance every `true` with `endExtraction()`.
@@ -122,11 +136,18 @@ final class InlineTrailerCoordinator {
 
 // MARK: - Per-card state machine
 
-/// idle → dwelling (1s of held focus) → expandedStatic (landscape art, immediately) → playing.
+/// idle → dwelling (1s of held focus) → expandedStatic (landscape art, immediately) → playing, and
+/// back to idle the moment the reason to be expanded goes away.
 ///
 /// Every step fails soft and *silently*: there is never a spinner or a black tile, because the
-/// static landscape art is already on screen from the moment the card expands. If anything doesn't
-/// resolve, the card simply stays expanded on that artwork.
+/// static landscape art is already on screen from the moment the card expands. Anything that ends
+/// the preview — no trailer, extraction failure, playback failure, or the trailer simply finishing —
+/// collapses the card back to its poster rather than parking it on static artwork.
+///
+/// The phase drives *layout* now (portrait poster ⇄ landscape tile in the row), so every transition
+/// goes through `setPhase`, which wraps the mutation in a `withAnimation` transaction. That single
+/// transaction is what lets the enclosing `LazyHStack` slide the trailing neighbours aside in step
+/// with the card instead of snapping them.
 @MainActor
 final class InlineTrailerCardModel: ObservableObject {
     enum Phase: Equatable {
@@ -137,6 +158,14 @@ final class InlineTrailerCardModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
+
+    /// Mirrors `accessibilityReduceMotion` from the hosting card. When set, the morph is an instant
+    /// swap instead of an animated one.
+    var prefersReducedMotion = false
+
+    /// The morph curve. Slow enough to read as one object changing shape, short enough that a fast
+    /// D-pad hand never feels held up by it.
+    static let morphAnimation: Animation = .easeInOut(duration: 0.35)
 
     /// Expanded covers both "showing static landscape art" and "playing" — the tile is the same one.
     var isExpanded: Bool {
@@ -169,6 +198,9 @@ final class InlineTrailerCardModel: ObservableObject {
     /// Key of the resolution currently in flight for this card, so a re-focus mid-resolve doesn't
     /// start a second pipeline (the in-flight one attaches itself when it lands).
     private var resolvingKey: String?
+    /// Title whose trailer already played through on *this* dwell. Blocks an immediate re-expansion
+    /// while focus stays put; cleared by `reset()`, so leaving and coming back plays it again.
+    private var didFinishForKey: String?
 
     // MARK: Focus
 
@@ -180,11 +212,24 @@ final class InlineTrailerCardModel: ObservableObject {
         }
     }
 
+    /// Single funnel for phase changes so the layout morph always animates in one transaction (see
+    /// the type comment). Reduce Motion swaps it for an instant change.
+    private func setPhase(_ next: Phase) {
+        guard phase != next else { return }
+        if prefersReducedMotion {
+            phase = next
+        } else {
+            withAnimation(Self.morphAnimation) { phase = next }
+        }
+    }
+
     private func startDwell(_ item: MetaPreview) {
         generation &+= 1
         let generationAtStart = generation
         dwellTask?.cancel()
-        phase = .dwelling
+        // Normally a no-op transition from `.idle`; routed through `setPhase` so the rare arrival on
+        // an already-expanded card (a re-render that re-runs `onAppear`) still collapses smoothly.
+        setPhase(.dwelling)
         dwellTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.dwellSeconds * 1_000_000_000))
             guard !Task.isCancelled, let self, self.generation == generationAtStart else { return }
@@ -200,43 +245,76 @@ final class InlineTrailerCardModel: ObservableObject {
         dwellTask?.cancel()
         dwellTask = nil
         activeKey = nil
+        didFinishForKey = nil
         InlineTrailerCoordinator.shared.releasePlayback(self)
-        phase = .idle
+        setPhase(.idle)
     }
 
-    /// Another card took the single player slot — keep the static tile, drop the video.
+    /// Another card took the single player slot. Defensive only — the card that loses focus resets
+    /// itself first — so collapse rather than park a now-landscape tile in a row nobody is looking at.
     func relinquishPlayback() {
         guard playingURL != nil else { return }
-        phase = .expandedStatic
+        activeKey = nil
+        setPhase(.idle)
     }
 
-    /// The player couldn't start (undecodable/stalled). Negative-cache it and fall back to the
-    /// static landscape tile; not retried for this title until the short TTL lapses.
+    /// The player couldn't start (undecodable/stalled). Negative-cache it and collapse; not retried
+    /// for this title until the short TTL lapses.
     func playbackFailed() {
         if let activeKey {
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: activeKey)
         }
+        collapse()
+    }
+
+    /// The trailer played through. Collapse, and remember the title so sitting on the card doesn't
+    /// immediately bloom it again — only leaving and coming back does (`reset()` clears the flag).
+    func playbackFinished() {
+        guard case .playing = phase else { return }
+        didFinishForKey = activeKey
+        collapse()
+    }
+
+    /// Drops everything this card owns and animates back to the resting poster, *without* arming a
+    /// new dwell — focus hasn't moved, so re-blooming here would be a loop, not a feature.
+    private func collapse() {
+        generation &+= 1
+        dwellTask?.cancel()
+        dwellTask = nil
+        activeKey = nil
         InlineTrailerCoordinator.shared.releasePlayback(self)
-        if case .playing = phase { phase = .expandedStatic }
+        setPhase(.idle)
     }
 
     // MARK: Expansion + resolution
 
     private func expand(_ item: MetaPreview) {
         let key = TrailerResolutionCache.key(type: item.type, id: item.id)
-        activeKey = key
-        phase = .expandedStatic
+        guard didFinishForKey != key else { return }
 
         switch TrailerResolutionCache.shared.entry(for: key) {
         case let .resolved(url, _):
+            activeKey = key
+            setPhase(.expandedStatic)
             startPlayback(url, key: key)
         case .unavailable:
+            // Already known to have nothing to play: never morph at all, so a row full of
+            // trailer-less titles never twitches under a browsing thumb.
             return
         case nil:
+            activeKey = key
+            setPhase(.expandedStatic)
             guard resolvingKey != key else { return }
             resolvingKey = key
             Task { [weak self] in await self?.resolve(item, key: key) }
         }
+    }
+
+    /// Resolution concluded that there is nothing to play: collapse instead of sitting on static
+    /// landscape art (device feedback — an expanded card that never plays reads as a stuck card).
+    private func abandonExpansion(key: String) {
+        guard activeKey == key else { return }
+        collapse()
     }
 
     /// cache miss → meta (peek, else fetch) → best trailer → extraction → playable URL. Mirrors
@@ -253,26 +331,34 @@ final class InlineTrailerCardModel: ObservableObject {
             meta = await fetchMeta(type: type, id: id)
         }
         // No meta at all is a transport failure, not "this title has no trailer" — don't poison the
-        // cache with it.
-        guard let meta else { return }
+        // cache with it. The card still collapses: nothing is coming.
+        guard let meta else {
+            abandonExpansion(key: key)
+            return
+        }
 
         let trailers = meta.trailers
         guard !trailers.isEmpty,
               let trailer = HeroTrailerSelectorKt.selectHeroTrailer(trailers: trailers) else {
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: key)
+            abandonExpansion(key: key)
             return
         }
 
         // Busy: skip rather than queue, and stay neutral on the cache — being second in line says
         // nothing about whether this title has a trailer.
-        guard InlineTrailerCoordinator.shared.beginExtraction() else { return }
+        guard InlineTrailerCoordinator.shared.beginExtraction() else {
+            abandonExpansion(key: key)
+            return
+        }
         let source = await resolveYouTube(trailer.youtubePlaybackUrl())
         InlineTrailerCoordinator.shared.endExtraction()
 
-        // AVPlayer-friendly progressive/HLS only — adaptive-VP9/AV1-only results stay on the art.
+        // AVPlayer-friendly progressive/HLS only — adaptive-VP9/AV1-only results collapse the card.
         let progressive: String? = source?.progressiveUrl
         guard let progressive, !progressive.isEmpty else {
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: key)
+            abandonExpansion(key: key)
             return
         }
         TrailerResolutionCache.shared.store(.resolved(progressive, Date()), for: key)
@@ -283,8 +369,8 @@ final class InlineTrailerCardModel: ObservableObject {
     /// late results from a card the user has already left write the cache and nothing else.
     private func startPlayback(_ url: String, key: String) {
         guard phase == .expandedStatic, activeKey == key else { return }
-        InlineTrailerCoordinator.shared.claimPlayback(self)
-        phase = .playing(url)
+        InlineTrailerCoordinator.shared.claimPlayback(self, key: key)
+        setPhase(.playing(url))
     }
 
     // MARK: Kotlin bridges (with Swift-side deadlines)
@@ -386,35 +472,45 @@ struct InlineTrailerCard: View {
         }
     }
 
+    /// The morph. The card's *layout* width is `artworkWidth`, which swings from the portrait poster
+    /// width to `Theme.Size.landscapeWidth` when the card expands — so the enclosing `LazyHStack`
+    /// pushes the trailing posters aside and the wide tile sits **in** the row rather than over it.
+    /// (That's why `CatalogRowView` no longer needs a `zIndex` lift: nothing overhangs any more.)
+    ///
+    /// The resting poster and the landscape tile are stacked and crossfaded, top-leading aligned so
+    /// the tile grows out of the poster's top-left corner instead of drifting. The tile is *always*
+    /// in the hierarchy (at opacity 0 when idle) purely so its frame has a "from" value to animate
+    /// out of — an inserted view would pop in at full landscape size and overlap its neighbour for
+    /// the length of the transition. Its artwork/player are still gated on the phase, so an idle
+    /// card loads nothing.
     private var expandingCard: some View {
-        baseCard
-            // Only the portrait card is crossfaded out — in landscape rows the tile is the same
-            // shape and size as the artwork underneath, so there's nothing to morph and fading
-            // would just blink the row.
-            .opacity(fadesBaseCard && model.isExpanded ? 0 : 1)
-            .overlay(alignment: .top) {
-                if model.isExpanded { expandedTile }
-            }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.isExpanded)
-            .onChange(of: isFocused) { _, focused in model.focusChanged(focused, item: item) }
-            // A recycled cell can come back already focused (returning from Detail), which produces
-            // no `onChange`.
-            .onAppear { if isFocused { model.focusChanged(true, item: item) } }
-            .onDisappear { model.reset() }
-            // Mirrors Detail's hero trailer: the overlay glyph isn't reachable by the focus engine,
-            // so play/pause is the toggle — and only while something is actually playing, or the
-            // row would swallow the button.
-            .onPlayPauseCommand(perform: model.playingURL == nil ? nil : {
-                HeroTrailerAudioState.shared.toggleMuted()
-            })
+        ZStack(alignment: .topLeading) {
+            baseCard
+                // Only the portrait card is crossfaded out — in landscape rows the tile is the same
+                // shape and size as the artwork underneath, so there's nothing to morph and fading
+                // would just blink the row.
+                .opacity(fadesBaseCard && model.isExpanded ? 0 : 1)
+
+            expandedTile
+        }
+        .frame(width: artworkWidth, alignment: .leading)
+        .animation(reduceMotion ? nil : InlineTrailerCardModel.morphAnimation, value: model.isExpanded)
+        .onChange(of: isFocused) { _, focused in model.focusChanged(focused, item: item) }
+        // A recycled cell can come back already focused (returning from Detail), which produces
+        // no `onChange`.
+        .onAppear {
+            model.prefersReducedMotion = reduceMotion
+            if isFocused { model.focusChanged(true, item: item) }
+        }
+        .onChange(of: reduceMotion) { _, motion in model.prefersReducedMotion = motion }
+        .onDisappear { model.reset() }
     }
 
-    /// The whole card's-worth of expanded content, laid out over the resting card's slot so the
-    /// (faded) title keeps its place. Sized/positioned only — never inserted into the layout.
+    /// The expanded card: landscape tile plus the title in the same slot the poster's title occupies,
+    /// both following the animated artwork width.
     private var expandedTile: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             trailerSurface
-                .frame(width: artworkWidth, height: artworkHeight)
 
             if showsOverlayTitle {
                 Text(item.name)
@@ -426,27 +522,38 @@ struct InlineTrailerCard: View {
                     .frame(width: artworkWidth, alignment: .leading)
             }
         }
+        .opacity(model.isExpanded ? 1 : 0)
         // The card's own scale/tilt lives inside PosterCard/LandscapeCard and is untouched; the
-        // overlay repeats it so the two move as one object.
+        // tile repeats it so the two move as one object.
         .scaleEffect(isFocused ? 1.12 : 1)
         .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
         .animation(.easeOut(duration: 0.15), value: isFocused)
         .allowsHitTesting(false)
     }
 
-    /// The 16:9 tile itself: landscape art immediately, trailer fading in over it once resolved.
+    /// The tile itself: landscape art as soon as the card expands, trailer fading in over it once
+    /// resolved. The frame is the animated one, so this *is* the morphing artwork region.
     private var trailerSurface: some View {
         ZStack {
-            CachedAsyncImage(string: Self.landscapeArtworkURL(item))
+            if model.isExpanded {
+                CachedAsyncImage(string: Self.landscapeArtworkURL(item))
+            }
 
             if let url = model.playingURL {
                 // Removal is deliberately un-animated: focus loss must tear the player down at once
                 // (`dismantleUIView`), not linger through a crossfade.
-                TrailerHeroPlayer(urlString: url, onFailure: { model.playbackFailed() })
-                    .transition(.asymmetric(insertion: .opacity, removal: .identity))
+                // `loops: false` — the preview plays once and then the card collapses itself, rather
+                // than looping under a resting thumb forever.
+                TrailerHeroPlayer(
+                    urlString: url,
+                    onFailure: { model.playbackFailed() },
+                    loops: false,
+                    onPlaybackEnded: { model.playbackFinished() }
+                )
+                .transition(.asymmetric(insertion: .opacity, removal: .identity))
             }
         }
-        .frame(width: Theme.Size.landscapeWidth, height: Theme.Size.landscapeHeight)
+        .frame(width: artworkWidth, height: artworkHeight)
         .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
         .overlay(
             RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
@@ -463,16 +570,19 @@ struct InlineTrailerCard: View {
 
     private var fadesBaseCard: Bool { !posterStyle.landscapeCatalogRows }
 
-    /// The faded portrait card takes its title with it, so the overlay carries a replacement in the
+    /// The faded portrait card takes its title with it, so the tile carries a replacement in the
     /// same slot. Landscape rows keep their own title (nothing is faded there).
     private var showsOverlayTitle: Bool { fadesBaseCard && posterStyle.showTitle }
 
+    /// Landscape rows are already the target geometry — no morph there, the trailer just fades in.
     private var artworkWidth: CGFloat {
-        posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+        if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeWidth }
+        return model.isExpanded ? Theme.Size.landscapeWidth : posterStyle.width
     }
 
     private var artworkHeight: CGFloat {
-        posterStyle.landscapeCatalogRows ? Theme.Size.landscapeHeight : posterStyle.height
+        if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeHeight }
+        return model.isExpanded ? Theme.Size.landscapeHeight : posterStyle.height
     }
 }
 

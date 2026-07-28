@@ -91,9 +91,14 @@ struct CatalogRowView: View {
     /// account preference. On by default; Settings owns the toggle UI.
     @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = true
 
-    /// Which card holds focus, purely so the expanded tile — which is wider than the poster it grows
-    /// out of — draws over its neighbours instead of under them.
+    /// Which card holds focus. Needed here (rather than inside the card) because tvOS delivers
+    /// remote commands to the *focused view chain* — the `Button`/`NavigationLink` below, never its
+    /// label — so the play/pause mute toggle has to be attached at this level and gated on "this is
+    /// the focused item, and it is the one playing".
     @FocusState private var focusedItemId: String?
+
+    /// Which card currently owns the single inline `AVPlayer`, published by the shared coordinator.
+    @ObservedObject private var trailerCoordinator = InlineTrailerCoordinator.shared
 
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
@@ -150,9 +155,11 @@ struct CatalogRowView: View {
                             }
                         }
                         .focused($focusedItemId, equals: item.id)
-                        // The focused card can expand past its own slot; lift it above the rest of
-                        // the row so the wide tile isn't drawn under the next poster.
-                        .zIndex(focusedItemId == item.id ? 2 : 1)
+                        // Mirrors Detail's hero trailer: the card's mute glyph isn't reachable by
+                        // the focus engine, so play/pause is the toggle. Nil unless *this* focused
+                        // card is the one playing — an unconditional handler would swallow
+                        // play/pause from everything else that wants it (Home's hero).
+                        .onPlayPauseCommand(perform: muteToggle(for: item))
                     }
                 }
                 .padding(.vertical, Theme.Spacing.lg)
@@ -168,6 +175,16 @@ struct CatalogRowView: View {
     /// two cards, so the row is unchanged.
     private func card(for item: MetaPreview) -> some View {
         InlineTrailerCard(item: item, enabled: inlineTrailersActive)
+    }
+
+    /// Play/pause handler for `item`'s focusable button, or `nil` when this card isn't the focused,
+    /// currently-playing one — `.onPlayPauseCommand(perform: nil)` leaves the command to whoever
+    /// else is listening instead of consuming it.
+    private func muteToggle(for item: MetaPreview) -> (() -> Void)? {
+        guard focusedItemId == item.id,
+              trailerCoordinator.playingKey == TrailerResolutionCache.key(type: item.type, id: item.id)
+        else { return nil }
+        return { HeroTrailerAudioState.shared.toggleMuted() }
     }
 }
 
