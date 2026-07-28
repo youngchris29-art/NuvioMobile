@@ -93,6 +93,7 @@ struct HomeView: View {
                     .padding(Theme.Spacing.screen)
                 }
                 .scrollClipDisabled()
+                .reportsScrollToTabBar()
             }
             .onReceive(heroTimer) { _ in
                 guard heroItems.count > 1, !heroFocused,

@@ -49,6 +49,7 @@ struct SearchView: View {
                     .padding(Theme.Spacing.screen)
                 }
                 .scrollClipDisabled()
+                .reportsScrollToTabBar()
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)

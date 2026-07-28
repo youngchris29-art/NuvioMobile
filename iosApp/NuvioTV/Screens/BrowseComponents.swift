@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import SharedCore
 
 /// Swift-side navigation value. Kotlin data classes don't conform to Swift `Hashable`, so we wrap the
@@ -85,7 +86,20 @@ struct CatalogRowView: View {
     var previewLimit: Int? = nil
     var onSelect: ((MetaPreview) -> Void)? = nil
 
-    @Environment(\.posterStyle) private var posterStyle
+    /// Inline trailer previews on focus dwell (see `InlineTrailerCard`). Device-local on purpose —
+    /// whether a living-room Apple TV should autoplay trailers is a per-device call, not a synced
+    /// account preference. On by default; Settings owns the toggle UI.
+    @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = true
+
+    /// Which card holds focus, purely so the expanded tile — which is wider than the poster it grows
+    /// out of — draws over its neighbours instead of under them.
+    @FocusState private var focusedItemId: String?
+
+    /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
+    /// system-wide, the row must render exactly as it did before this feature existed.
+    private var inlineTrailersActive: Bool {
+        inlineTrailersEnabled && UIAccessibility.isVideoAutoplayEnabled
+    }
 
     /// BUG-13: an addon whose manifest declares no `skip` extra always reports `hasMore == false`,
     /// even when its single response carried far more titles than the row kept — gating on `hasMore`
@@ -124,15 +138,21 @@ struct CatalogRowView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: Theme.Spacing.rowGap) {
                     ForEach(section.items, id: \.id) { item in
-                        if let onSelect {
-                            Button { onSelect(item) } label: { card(for: item) }
+                        Group {
+                            if let onSelect {
+                                Button { onSelect(item) } label: { card(for: item) }
+                                    .buttonStyle(.poster)
+                            } else {
+                                NavigationLink(value: TitleRoute(preview: item)) {
+                                    card(for: item)
+                                }
                                 .buttonStyle(.poster)
-                        } else {
-                            NavigationLink(value: TitleRoute(preview: item)) {
-                                card(for: item)
                             }
-                            .buttonStyle(.poster)
                         }
+                        .focused($focusedItemId, equals: item.id)
+                        // The focused card can expand past its own slot; lift it above the rest of
+                        // the row so the wide tile isn't drawn under the next poster.
+                        .zIndex(focusedItemId == item.id ? 2 : 1)
                     }
                 }
                 .padding(.vertical, Theme.Spacing.lg)
@@ -142,21 +162,12 @@ struct CatalogRowView: View {
         .focusSection()
     }
 
-    /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog rows.
-    @ViewBuilder
+    /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog
+    /// rows — both rendered by `InlineTrailerCard`, which also grows the muted trailer preview once
+    /// focus rests on the card. With inline trailers off it is a straight pass-through to the same
+    /// two cards, so the row is unchanged.
     private func card(for item: MetaPreview) -> some View {
-        if posterStyle.landscapeCatalogRows {
-            LandscapeCard(title: item.name, imageURL: landscapeImageURL(item), depthSurface: .posters)
-        } else {
-            PosterCardView(item: item)
-        }
-    }
-
-    private func landscapeImageURL(_ item: MetaPreview) -> String? {
-        let banner: String? = item.banner
-        if let banner, !banner.isEmpty { return banner }
-        let poster: String? = item.poster
-        return poster
+        InlineTrailerCard(item: item, enabled: inlineTrailersActive)
     }
 }
 

@@ -7,11 +7,36 @@ import SharedCore
 struct DetailView: View {
     let preview: MetaPreview
 
+    /// Not `@EnvironmentObject`: DetailView can be reached outside the tab shell entirely (a Top
+    /// Shelf deep link presents it inside `DeepLinkTitleView`'s own standalone `NavigationStack`,
+    /// with no tab bar at all), where an `@EnvironmentObject` would crash for want of an ancestor
+    /// that injected one. The custom environment key falls back to a harmless, unconnected default
+    /// instance in that case — `pushImmersive`/`popImmersive` still balance correctly, they just
+    /// don't affect anything since there's no tab bar to hide.
+    @Environment(\.tabBarVisibility) private var tabBarVisibility
+
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
     @State private var seriesPlay: SeriesPlayRoute?
     /// Trakt comment ids the user has expanded (reveals spoilers / full text).
     @State private var expandedComments: Set<Int64> = []
+
+    /// Tester ask: auto full-screen the hero trailer a few seconds after opening a title.
+    @AppStorage("detail_trailer_autoplay") private var trailerAutoplayEnabled: Bool = true
+    /// Tester ask: keep the poster visible on the right, backdrop-style, behind the description.
+    @AppStorage("detail_poster_backdrop") private var posterBackdropEnabled: Bool = true
+
+    /// One-shot per detail visit — never re-fires after the auto-played trailer is dismissed.
+    @State private var didAutoPlayTrailer = false
+    /// Set the moment the user swipes/moves focus at all (see `onMoveCommand` below); cancels the
+    /// pending auto-play so it never yanks focus away from someone who's already exploring the page.
+    @State private var userInteracted = false
+    @State private var autoPlayTrailerTask: Task<Void, Never>?
+    /// True only while the CURRENT `trailerPlayback` presentation was kicked off by the auto-play
+    /// timer (not the explicit "Watch Trailer" button or a "Trailers & Extras" row item) — gates the
+    /// "Press Back to exit" hint so it only shows for the surprise entry, not a deliberate tap.
+    @State private var trailerPlaybackIsAutoPlay = false
+    @State private var trailerHintVisible = false
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -21,6 +46,10 @@ struct DetailView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             backdropImage
+            if showPosterBackdrop {
+                posterBackdropLayer
+                    .transition(.opacity)
+            }
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             // Also pause it while a full-screen trailer plays (no doubled decode/audio).
@@ -29,7 +58,7 @@ struct DetailView: View {
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
-            scrimOverlay
+            scrimOverlay(posterBackdropVisible: showPosterBackdrop)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     header
@@ -94,8 +123,28 @@ struct DetailView: View {
                 HeroTrailerAudioState.shared.toggleMuted()
             }
         }
+        // Any D-pad swipe means the user is actively navigating the page rather than just reading
+        // the description — treat it as "started interacting" and cancel the pending auto-play.
+        // This only adds an observer alongside the focus engine's own directional handling (like
+        // `onPlayPauseCommand` above), so ordinary focus movement between buttons/rows is unaffected.
+        .onMoveCommand { _ in userInteracted = true }
         .onAppear { model.start() }
-        .onDisappear { model.stop() }
+        .onDisappear {
+            model.stop()
+            cancelAutoPlayTrailer()
+        }
+        .onChange(of: model.trailerVideoURL) { _, newValue in
+            if newValue != nil { scheduleAutoPlayTrailerIfNeeded() }
+        }
+        .onChange(of: showStreams) { _, isShowing in
+            if isShowing { cancelAutoPlayTrailer() }
+        }
+        .onChange(of: seriesPlay?.id) { _, routeId in
+            if routeId != nil { cancelAutoPlayTrailer() }
+        }
+        .onChange(of: userInteracted) { _, interacted in
+            if interacted { cancelAutoPlayTrailer() }
+        }
         .fullScreenCover(isPresented: $showStreams) {
             StreamPickerView(type: preview.type, videoId: preview.id, title: title)
         }
@@ -121,10 +170,21 @@ struct DetailView: View {
                !isCurrentlyMuted {
                 HeroTrailerAudioState.shared.toggleMuted()
             }
+            trailerPlaybackIsAutoPlay = false
         }) { item in
             FullScreenTrailerPlayer(urlString: item.url)
                 .ignoresSafeArea()
+                .overlay(alignment: .bottom) {
+                    if trailerPlaybackIsAutoPlay {
+                        autoPlayHintOverlay
+                    }
+                }
         }
+        // Detail is an "immersive" screen: the floating tab bar hides for as long as one is on
+        // screen, at any nesting depth (Detail → More Like This → Detail pushes are common, hence
+        // a depth counter on the shared TabBarVisibility rather than a plain flag here).
+        .onAppear { tabBarVisibility.pushImmersive() }
+        .onDisappear { tabBarVisibility.popImmersive() }
     }
 
     // MARK: - Derived values (prefer enriched meta, fall back to the preview card)
@@ -139,6 +199,21 @@ struct DetailView: View {
     private var genres: [String] { model.meta?.genres ?? preview.genres }
     private var backgroundUrl: String? { model.meta?.background ?? preview.banner ?? preview.poster }
     private var logoUrl: String? { model.meta?.logo ?? preview.logo }
+    /// Poster art for the right-hand backdrop layer — independent of `backgroundUrl`'s
+    /// banner/backdrop preference (tester ask: mirror mobile's "poster stays on the right" layout).
+    private var posterUrl: String? { model.meta?.poster ?? preview.poster }
+
+    /// Same gate the muted background hero player (and its mute button/play-pause toggle) use.
+    private var isTrailerActive: Bool {
+        model.trailerVideoURL != nil && !showStreams && model.trailerPlayback == nil
+    }
+
+    /// The poster-backdrop layer only earns its keep when it would show something the plain
+    /// backdrop doesn't already — skip when they're the same URL (`backgroundUrl` already falls
+    /// back to poster art itself) — and only while the hero trailer isn't occupying that same area.
+    private var showPosterBackdrop: Bool {
+        posterBackdropEnabled && posterUrl != nil && posterUrl != backgroundUrl && !isTrailerActive
+    }
 
     // MARK: - Sections
 
@@ -151,11 +226,42 @@ struct DetailView: View {
         .ignoresSafeArea()
     }
 
+    /// The poster pinned to the right 40% of the screen, behind the description (tester ask, mirrors
+    /// mobile's Detail layout). Its own leading edge fades to transparent so it blends into the plain
+    /// backdrop underneath instead of showing a hard seam.
+    private var posterBackdropLayer: some View {
+        GeometryReader { geo in
+            CachedAsyncImage(string: posterUrl)
+                .frame(width: geo.size.width * 0.4, height: geo.size.height, alignment: .trailing)
+                .clipped()
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black, location: 0.3),
+                            .init(color: .black, location: 1)
+                        ],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        }
+        .ignoresSafeArea()
+    }
+
     /// Gradient scrims for text legibility, drawn over the backdrop (and the trailer, when present).
-    private var scrimOverlay: some View {
+    /// `posterBackdropVisible` softens the trailing (right-edge) stop so the poster-backdrop layer
+    /// behind it (pinned to the right 40%) reads through instead of going nearly opaque black; the
+    /// leading 0.95 stop (left-text readability invariant) and the bottom vertical gradient are
+    /// unchanged either way.
+    private func scrimOverlay(posterBackdropVisible: Bool) -> some View {
         ZStack {
             LinearGradient(
-                colors: [.black.opacity(0.95), .black.opacity(0.4), .black.opacity(0.85)],
+                colors: [
+                    .black.opacity(0.95),
+                    .black.opacity(0.4),
+                    .black.opacity(posterBackdropVisible ? 0.45 : 0.85)
+                ],
                 startPoint: .leading, endPoint: .trailing
             )
             LinearGradient(
@@ -699,6 +805,60 @@ struct DetailView: View {
         let raw: String? = comment.createdAt
         guard let raw, raw.count >= 10 else { return nil }
         return String(raw.prefix(10))
+    }
+
+    // MARK: - Auto-play hero trailer
+
+    /// (Re)starts the ~4s countdown once `model.trailerVideoURL` resolves. Every cancellation
+    /// condition is re-checked once the timer actually fires, since a lot can change in 4 seconds.
+    private func scheduleAutoPlayTrailerIfNeeded() {
+        guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
+              !showStreams, seriesPlay == nil, model.trailerPlayback == nil else { return }
+        autoPlayTrailerTask?.cancel()
+        autoPlayTrailerTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { fireAutoPlayTrailer() }
+        }
+    }
+
+    private func fireAutoPlayTrailer() {
+        guard trailerAutoplayEnabled, !didAutoPlayTrailer, !userInteracted,
+              !showStreams, seriesPlay == nil, model.trailerPlayback == nil,
+              let trailer = model.trailerVideoURL else { return }
+        didAutoPlayTrailer = true
+        trailerPlaybackIsAutoPlay = true
+        // The exact same assignment the "Watch Trailer" button makes (see the action row above) —
+        // reuses its whole `fullScreenCover` path (background-player teardown, the
+        // mute-reset-on-dismiss dance) for free. Neither this nor the button touches
+        // `HeroTrailerAudioState`: `FullScreenTrailerPlayer` is a brand-new `AVPlayer` instance that
+        // is never muted, so both entries already play with sound without any extra unmuting.
+        model.trailerPlayback = TrailerPlaybackItem(id: "hero-trailer", url: trailer, title: title)
+    }
+
+    private func cancelAutoPlayTrailer() {
+        autoPlayTrailerTask?.cancel()
+        autoPlayTrailerTask = nil
+    }
+
+    /// "Press Back to exit the trailer" — shown only for the auto-play entry (not the explicit
+    /// "Watch Trailer" button or a "Trailers & Extras" item), fading out on its own after ~4s.
+    private var autoPlayHintOverlay: some View {
+        Text("Press Back to exit the trailer")
+            .font(Theme.Font.meta)
+            .foregroundStyle(Theme.Palette.textPrimary)
+            .padding(.horizontal, Theme.Spacing.lg)
+            .padding(.vertical, Theme.Spacing.sm)
+            .glassEffect(.regular, in: .capsule)
+            .padding(.bottom, Theme.Spacing.xl)
+            .opacity(trailerHintVisible ? 1 : 0)
+            .animation(.easeOut(duration: 0.6), value: trailerHintVisible)
+            .onAppear {
+                trailerHintVisible = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                    trailerHintVisible = false
+                }
+            }
     }
 
 }

@@ -88,8 +88,15 @@ struct FolderTile: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack {
                 let cover: String? = folder.coverImageUrl
-                if let cover, !cover.isEmpty {
+                let gifUrl: String? = folder.focusGifUrl
+                if folder.focusGifEnabled, let gifUrl, !gifUrl.isEmpty, isFocused {
+                    // Focused + has a focus GIF: animate. Falls back to the static cover
+                    // internally while the GIF loads/decodes, so this never shows blank.
+                    AnimatedGifImage(string: gifUrl, fallback: cover)
+                        .transition(.opacity)
+                } else if let cover, !cover.isEmpty {
                     CachedAsyncImage(string: cover)
+                        .transition(.opacity)
                 } else {
                     LinearGradient(
                         colors: [Theme.Palette.accent.opacity(0.55), Theme.Palette.background],

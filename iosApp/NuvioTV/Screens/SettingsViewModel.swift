@@ -14,6 +14,8 @@ final class SettingsViewModel: ObservableObject {
     /// the tvOS ThemeSettingsStore adapter; the root AppThemeModel applies it to the palette.
     @Published private(set) var themeName = "CRIMSON"
     @Published private(set) var catalogs: [HomeCatalogSettingsItem] = []
+    /// Whether the Home hero (rotating banner built from up to 2 catalog sources) shows at all.
+    @Published private(set) var heroEnabled = true
     /// Home rows append the media type to catalog titles (synced; default on).
     @Published private(set) var showCatalogType = true
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
@@ -115,6 +117,7 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
             self.catalogs = state.items
             self.showCatalogType = state.showCatalogType
+            self.heroEnabled = state.heroEnabled
         }
     }
 
@@ -352,6 +355,21 @@ final class SettingsViewModel: ObservableObject {
 
     func resetCardDepth() {
         CardDepthStyleRepository.shared.resetToDefaults()
+    }
+
+    /// Show/hide the Home hero entirely. The shared repo republishes `HomeUiState` from already
+    /// -fetched catalog data (`HomeRepository.applyCurrentSettings()`), so no `refreshHome()` call
+    /// is needed here — unlike `toggleCatalog`/`moveUp`/`moveDown`, which can add/remove rows.
+    func setHeroEnabled(_ enabled: Bool) {
+        HomeCatalogSettingsRepository.shared.setHeroEnabled(enabled: enabled)
+    }
+
+    /// Enable/disable a catalog as one of the (max 2) sources the Home hero aggregates from.
+    /// Deliberately local-only on the Kotlin side (`pushRemote = false` in
+    /// `HomeCatalogSettingsRepository.setHeroSourceEnabled`) — do not add sync here. Pass the
+    /// item's exact `key`; never construct or split it (BUG-12 class of bug).
+    func setHeroSource(key: String, enabled: Bool) {
+        HomeCatalogSettingsRepository.shared.setHeroSourceEnabled(key: key, enabled: enabled)
     }
 
     func toggleCatalog(_ item: HomeCatalogSettingsItem) {

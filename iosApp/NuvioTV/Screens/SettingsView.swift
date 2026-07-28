@@ -22,6 +22,13 @@ struct SettingsView: View {
     /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
     /// on for testers who preferred the original behavior. Local-only, not synced.
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
+    /// Mirrors the poster-card's `inline_trailers_enabled` key (BrowseComponents.swift) so this
+    /// toggle can turn off the muted trailer-on-focus preview. Local-only, not synced.
+    @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = true
+    /// Mirrors DetailView's `detail_trailer_autoplay` key. Local-only, not synced.
+    @AppStorage("detail_trailer_autoplay") private var detailTrailerAutoplay = true
+    /// Mirrors DetailView's `detail_poster_backdrop` key. Local-only, not synced.
+    @AppStorage("detail_poster_backdrop") private var detailPosterBackdrop = true
 
     var body: some View {
         NavigationStack {
@@ -200,6 +207,33 @@ struct SettingsView: View {
                             ) {
                                 heroPosterFocusOnly.toggle()
                             }
+                            SettingsToggleRow(
+                                title: String(localized: "Trailers on Focus"),
+                                subtitle: inlineTrailersEnabled
+                                    ? String(localized: "On \u{00B7} Posters play a muted trailer preview after a moment of focus")
+                                    : String(localized: "Off \u{00B7} Posters show artwork only"),
+                                isOn: inlineTrailersEnabled
+                            ) {
+                                inlineTrailersEnabled.toggle()
+                            }
+                            SettingsToggleRow(
+                                title: String(localized: "Auto-Play Trailer on Detail"),
+                                subtitle: detailTrailerAutoplay
+                                    ? String(localized: "On \u{00B7} Play the trailer full screen shortly after opening a title")
+                                    : String(localized: "Off \u{00B7} Trailers only play when selected"),
+                                isOn: detailTrailerAutoplay
+                            ) {
+                                detailTrailerAutoplay.toggle()
+                            }
+                            SettingsToggleRow(
+                                title: String(localized: "Poster in Detail Background"),
+                                subtitle: detailPosterBackdrop
+                                    ? String(localized: "On \u{00B7} Show the title's poster on the right side of detail pages")
+                                    : String(localized: "Off \u{00B7} Detail pages show only the backdrop"),
+                                isOn: detailPosterBackdrop
+                            ) {
+                                detailPosterBackdrop.toggle()
+                            }
                         }
 
                         section(String(localized: "Card Depth"), .appearance) {
@@ -304,6 +338,29 @@ struct SettingsView: View {
                                     .font(Theme.Font.body)
                                     .foregroundStyle(Theme.Palette.textSecondary)
                             } else {
+                                SettingsToggleRow(
+                                    title: String(localized: "Show Hero"),
+                                    subtitle: model.heroEnabled
+                                        ? String(localized: "On \u{00B7} Home opens with a rotating banner built from up to 2 of your catalogs")
+                                        : String(localized: "Off \u{00B7} Home starts directly with catalog rows"),
+                                    isOn: model.heroEnabled
+                                ) {
+                                    model.setHeroEnabled(!model.heroEnabled)
+                                }
+
+                                // Collections are hard-forced to heroSourceEnabled = false on the
+                                // Kotlin side (HomeCatalogSettingsRepository.normalizePreferences),
+                                // so they never appear as a hero source — filter defensively here too.
+                                if model.heroEnabled {
+                                    let heroSourceCatalogs = model.catalogs.filter { !$0.isCollection }
+                                    if !heroSourceCatalogs.isEmpty {
+                                        HeroSourcesGroup(
+                                            items: heroSourceCatalogs,
+                                            onToggle: { key, enabled in model.setHeroSource(key: key, enabled: enabled) }
+                                        )
+                                    }
+                                }
+
                                 SettingsToggleRow(
                                     title: String(localized: "Show Catalog Type in Titles"),
                                     subtitle: model.showCatalogType
@@ -1358,6 +1415,79 @@ private struct CatalogSettingRow: View {
         }
         .padding(.vertical, Theme.Spacing.xs)
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// The "Hero Sources" sub-list under Show Hero: a "N of 2 selected" caption plus one toggle row per
+/// non-collection catalog. Mirrors the Compose `HeroSourcesDropdown` (HomescreenSettingsPage.kt)
+/// logic — an OFF row goes non-interactive once the limit is reached; ON rows can always toggle off.
+private struct HeroSourcesGroup: View {
+    let items: [HomeCatalogSettingsItem]
+    let onToggle: (_ key: String, _ enabled: Bool) -> Void
+
+    private var selectedCount: Int {
+        items.filter { $0.heroSourceEnabled }.count
+    }
+
+    private var limit: Int {
+        Int(HomeCatalogSettingsRepository.shared.HERO_SOURCE_SELECTION_LIMIT)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Text("Hero Sources")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text("\(selectedCount) of \(limit) selected")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+
+            ForEach(items, id: \.key) { item in
+                HeroSourceRow(
+                    item: item,
+                    interactive: item.heroSourceEnabled || selectedCount < limit
+                ) { enabled in
+                    onToggle(item.key, enabled)
+                }
+            }
+        }
+    }
+}
+
+/// A single Hero Sources row: catalog title + add-on, with an on/off indicator. Non-interactive
+/// (dimmed, ignores input) when the 2-source limit is reached and this row is currently off.
+private struct HeroSourceRow: View {
+    let item: HomeCatalogSettingsItem
+    let interactive: Bool
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        Button {
+            onToggle(!item.heroSourceEnabled)
+        } label: {
+            HStack(spacing: Theme.Spacing.md) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    Text(item.displayTitle)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .lineLimit(1)
+                    Text(item.addonName)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: item.heroSourceEnabled ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 30))
+                    .foregroundStyle(item.heroSourceEnabled ? Theme.Palette.accent : Theme.Palette.textSecondary)
+            }
+            .padding(.vertical, Theme.Spacing.xs)
+            .padding(.horizontal, Theme.Spacing.md)
+            .frame(maxWidth: .infinity)
+            .opacity(interactive ? 1 : 0.4)
+        }
+        .buttonStyle(.settingsRow)
+        .disabled(!interactive)
     }
 }
 

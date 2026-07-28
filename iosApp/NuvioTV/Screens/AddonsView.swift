@@ -19,6 +19,7 @@ struct AddonsView: View {
                 .padding(60)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .reportsScrollToTabBar()
             .navigationTitle("Add-ons")
         }
         .onAppear { model.start() }

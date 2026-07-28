@@ -136,21 +136,30 @@ struct MainTabView: View {
     /// Settings doesn't dump the user back onto the Home tab.
     @Binding var selectedTab: Int
 
+    /// Single shared instance for the whole tab shell — provided to every tab root (and anything
+    /// they push, like `DetailView`) via `.environment(\.tabBarVisibility,)` below. `@StateObject`
+    /// here (not further up in `ContentView`) so it lives and dies with the tab shell itself.
+    @StateObject private var tabBarVisibility = TabBarVisibility()
+
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
         // `.tabItem` API renders the older chrome).
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: 0) {
                 HomeView()
+                    .tabBarAutoHide(tabBarVisibility)
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
                 SearchView()
+                    .tabBarAutoHide(tabBarVisibility)
             }
             Tab("Library", systemImage: "books.vertical", value: 2) {
                 LibraryView()
+                    .tabBarAutoHide(tabBarVisibility)
             }
             Tab("Add-ons", systemImage: "puzzlepiece.extension", value: 3) {
                 AddonsView()
+                    .tabBarAutoHide(tabBarVisibility)
             }
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView()
@@ -159,6 +168,29 @@ struct MainTabView: View {
                 ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
             }
         }
+        .environment(\.tabBarVisibility, tabBarVisibility)
+        .onChange(of: selectedTab) { _, _ in
+            // A newly-selected tab starts with its bar visible from the scroll perspective — but
+            // NOT via a blanket reset of `detailDepth` too: each tab keeps its own NavigationStack
+            // alive across a tab switch, so a still-pushed DetailView elsewhere must keep counting
+            // toward `hidden` (see TabBarVisibility's doc comment). In practice this is also the
+            // only safe choice: the spike found the hidden bar safely absorbs the Up press needed
+            // to reach it, so a tab switch literally can't happen while a push is keeping the bar
+            // hidden — you have to pop back out (running `popImmersive()`) first.
+            tabBarVisibility.setScrolled(false)
+        }
+    }
+}
+
+/// Applies the scroll-driven / detail-driven tab-bar auto-hide to one tab's root content. Kept as
+/// a modifier (rather than inlined per `Tab`) since the same `.toolbarVisibility` + `.animation`
+/// pair is identical across every scrolling tab root — only the shared `TabBarVisibility` instance
+/// varies (there is exactly one, but this keeps each `Tab` closure above short and consistent).
+private extension View {
+    func tabBarAutoHide(_ vis: TabBarVisibility) -> some View {
+        self
+            .toolbarVisibility(vis.hidden ? .hidden : .automatic, for: .tabBar)
+            .animation(.easeInOut(duration: 0.25), value: vis.hidden)
     }
 }
 

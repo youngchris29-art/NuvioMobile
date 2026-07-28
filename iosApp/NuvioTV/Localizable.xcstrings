@@ -421,6 +421,34 @@
         }
       }
     },
+    "%lld of %lld selected": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld ausgewählt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld seleccionadas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld sélectionnées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld di %lld selezionate"
+          }
+        }
+      }
+    },
     "%lld playable files": {
       "localizations": {
         "de": {
@@ -529,6 +557,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld/10"
+          }
+        }
+      }
+    },
+    "+%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%lld"
           }
         }
       }
@@ -1593,6 +1649,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tracce audio"
+          }
+        }
+      }
+    },
+    "Auto-Play Trailer on Detail": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatische Trailer-Wiedergabe auf der Detailseite"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproducción automática del tráiler en la página de detalles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecture automatique de la bande-annonce sur la page de détail"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduzione automatica del trailer nella pagina dei dettagli"
           }
         }
       }
@@ -4845,6 +4929,34 @@
         }
       }
     },
+    "Hero Sources": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero-Quellen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fuentes de hero"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sources Hero"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sorgenti hero"
+          }
+        }
+      }
+    },
     "Hide Stream Info": {
       "localizations": {
         "de": {
@@ -5741,6 +5853,34 @@
         }
       }
     },
+    "Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sprache für TMDB-Titel, Beschreibungen, Logos und den Start-Hero. „Gerät“ folgt der Sprache dieses Apple TV."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma de los títulos, descripciones y logos de TMDB y del héroe de inicio. «Dispositivo» sigue el idioma de este Apple TV."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue des titres, descriptions et logos TMDB ainsi que du héros de l'accueil. « Appareil » suit la langue de cette Apple TV."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua di titoli, descrizioni e loghi TMDB e dell'hero della Home. «Dispositivo» segue la lingua di questa Apple TV."
+          }
+        }
+      }
+    },
     "Large": {
       "localizations": {
         "fr": {
@@ -6129,6 +6269,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Metadati (TMDB)"
+          }
+        }
+      }
+    },
+    "Metadata Language": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metadaten-Sprache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma de los metadatos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue des métadonnées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua dei metadati"
           }
         }
       }
@@ -7169,6 +7337,34 @@
         }
       }
     },
+    "Off · Detail pages show only the backdrop": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Detailseiten zeigen nur den Hintergrund"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · las páginas de detalles muestran solo el fondo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · les pages de détail n'affichent que l'arrière-plan"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · le pagine dei dettagli mostrano solo lo sfondo"
+          }
+        }
+      }
+    },
     "Off · Home hero artwork is always visible": {
       "localizations": {
         "de": {
@@ -7193,6 +7389,90 @@
           "stringUnit": {
             "state": "translated",
             "value": "Off · l'illustrazione hero home è sempre visibile"
+          }
+        }
+      }
+    },
+    "Off · Home starts directly with catalog rows": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Start beginnt direkt mit Katalog-Reihen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · Inicio empieza directamente con filas de catálogo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · l'accueil commence directement par les lignes de catalogue"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · Home inizia direttamente con le righe del catalogo"
+          }
+        }
+      }
+    },
+    "Off · Posters show artwork only": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Poster zeigen nur die Grafik"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · los pósters muestran solo el arte"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · les affiches n'affichent que le visuel"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · i poster mostrano solo l'illustrazione"
+          }
+        }
+      }
+    },
+    "Off · Trailers only play when selected": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Trailer werden nur bei Auswahl abgespielt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · los tráilers solo se reproducen cuando se seleccionan"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · les bandes-annonces ne se lisent que si elles sont sélectionnées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · i trailer vengono riprodotti solo se selezionati"
           }
         }
       }
@@ -7389,6 +7669,118 @@
           "stringUnit": {
             "state": "translated",
             "value": "On · l'illustrazione hero home si attenua solo quando il carosello hero ha fuoco"
+          }
+        }
+      }
+    },
+    "On · Home opens with a rotating banner built from up to 2 of your catalogs": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Start öffnet mit einem rotierenden Banner aus bis zu 2 deiner Kataloge"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · Inicio se abre con un banner rotativo creado a partir de hasta 2 de tus catálogos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · l'accueil s'ouvre avec une bannière rotative composée d'un maximum de 2 de vos catalogues"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · Home si apre con un banner rotante creato da un massimo di 2 dei tuoi cataloghi"
+          }
+        }
+      }
+    },
+    "On · Play the trailer full screen shortly after opening a title": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Spielt den Trailer kurz nach dem Öffnen eines Titels im Vollbild ab"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · reproduce el tráiler a pantalla completa poco después de abrir un título"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · lit la bande-annonce en plein écran peu après l'ouverture d'un titre"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · riproduce il trailer a schermo intero poco dopo l'apertura di un titolo"
+          }
+        }
+      }
+    },
+    "On · Posters play a muted trailer preview after a moment of focus": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Poster spielen nach kurzem Fokus eine stumme Trailer-Vorschau ab"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · los pósters reproducen una vista previa silenciada del tráiler tras un momento de enfoque"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · les affiches lancent un aperçu muet de la bande-annonce après un instant de focus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · i poster riproducono un'anteprima muta del trailer dopo un momento di focus"
+          }
+        }
+      }
+    },
+    "On · Show the title's poster on the right side of detail pages": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Zeigt das Poster des Titels auf der rechten Seite der Detailseite"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · muestra el póster del título en el lado derecho de la página de detalles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · montre l'affiche du titre sur le côté droit de la page de détail"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · mostra il poster del titolo sul lato destro della pagina dei dettagli"
           }
         }
       }
@@ -8289,6 +8681,34 @@
         }
       }
     },
+    "Poster in Detail Background": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poster im Detailhintergrund"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Póster en el fondo de detalles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche dans l'arrière-plan de la fiche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poster nello sfondo dei dettagli"
+          }
+        }
+      }
+    },
     "Posters": {
       "localizations": {
         "fr": {
@@ -8397,6 +8817,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Preparazione accesso…"
+          }
+        }
+      }
+    },
+    "Press Back to exit the trailer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drücke Zurück, um den Trailer zu verlassen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pulsa Atrás para salir del tráiler"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appuyez sur Retour pour quitter la bande-annonce"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Premi Indietro per uscire dal trailer"
           }
         }
       }
@@ -10273,6 +10721,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Mostra tipo catalogo nei titoli"
+          }
+        }
+      }
+    },
+    "Show Hero": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero anzeigen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar hero"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le Hero"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra hero"
           }
         }
       }
@@ -12769,6 +13245,34 @@
         }
       }
     },
+    "Trailers on Focus": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer bei Fokus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tráilers al enfocar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bandes-annonces au focus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer al focus"
+          }
+        }
+      }
+    },
     "Trakt": {
       "localizations": {
         "fr": {
@@ -13689,62 +14193,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "v%@"
-          }
-        }
-      }
-    },
-    "Metadata Language": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metadaten-Sprache"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Idioma de los metadatos"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Langue des métadonnées"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lingua dei metadati"
-          }
-        }
-      }
-    },
-    "Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sprache für TMDB-Titel, Beschreibungen, Logos und den Start-Hero. „Gerät“ folgt der Sprache dieses Apple TV."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Idioma de los títulos, descripciones y logos de TMDB y del héroe de inicio. «Dispositivo» sigue el idioma de este Apple TV."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Langue des titres, descriptions et logos TMDB ainsi que du héros de l'accueil. « Appareil » suit la langue de cette Apple TV."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lingua di titoli, descrizioni e loghi TMDB e dell'hero della Home. «Dispositivo» segue la lingua di questa Apple TV."
           }
         }
       }
