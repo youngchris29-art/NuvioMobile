@@ -13692,6 +13692,62 @@
           }
         }
       }
+    },
+    "Metadata Language": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metadaten-Sprache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma de los metadatos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue des métadonnées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua dei metadati"
+          }
+        }
+      }
+    },
+    "Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sprache für TMDB-Titel, Beschreibungen, Logos und den Start-Hero. „Gerät“ folgt der Sprache dieses Apple TV."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Idioma de los títulos, descripciones y logos de TMDB y del héroe de inicio. «Dispositivo» sigue el idioma de este Apple TV."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Langue des titres, descriptions et logos TMDB ainsi que du héros de l'accueil. « Appareil » suit la langue de cette Apple TV."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lingua di titoli, descrizioni e loghi TMDB e dell'hero della Home. «Dispositivo» segue la lingua di questa Apple TV."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -20,6 +20,9 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var tmdbEnabled = false
     @Published private(set) var tmdbHasKey = false
     @Published private(set) var tmdbUseReleaseDates = false
+    /// Chip code for the metadata-language row: "device" while no language is stored (the shared
+    /// repo derives it from the device language), else the stored code's primary subtag.
+    @Published private(set) var tmdbLanguageSelection = "device"
     /// MDBList external ratings (IMDb/RT/Metacritic/Trakt/Letterboxd on Detail). Gated on a user key;
     /// the shared MetaDetailsRepository applies the enrichment itself on every load.
     @Published private(set) var mdbListEnabled = false
@@ -71,6 +74,11 @@ final class SettingsViewModel: ObservableObject {
             self.tmdbEnabled = state.enabled
             self.tmdbHasKey = state.hasApiKey
             self.tmdbUseReleaseDates = state.useReleaseDates
+            // Stored languages may carry a region ("de-DE" from the phone's field); the chip row
+            // keys on the primary subtag.
+            self.tmdbLanguageSelection = TmdbSettingsRepository.shared.hasExplicitLanguage()
+                ? String(state.language.split(separator: "-").first ?? Substring(state.language))
+                : "device"
         }
 
         MdbListSettingsRepository.shared.ensureLoaded()
@@ -213,6 +221,19 @@ final class SettingsViewModel: ObservableObject {
     /// for users who want it).
     func setTmdbUseReleaseDates(_ enabled: Bool) {
         TmdbSettingsRepository.shared.setUseReleaseDates(value: enabled)
+    }
+
+    /// "device" clears the stored metadata language (the shared repo then follows this Apple TV's
+    /// language); any other code stores it explicitly. Either way the Home hero's TMDB enrichment
+    /// refetches. Assigned directly too because clearing to an identical derived language doesn't
+    /// re-emit the settings flow.
+    func setTmdbLanguage(_ code: String) {
+        if code == "device" {
+            TmdbSettingsRepository.shared.clearLanguage()
+        } else {
+            TmdbSettingsRepository.shared.setLanguage(value: code)
+        }
+        tmdbLanguageSelection = code
     }
 
     /// Append the media type to catalog row titles ("Popular - Movies" vs just "Popular").

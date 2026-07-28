@@ -78,6 +78,13 @@ actual object TmdbSettingsStorage {
             ?.apply()
     }
 
+    actual fun clearLanguage() {
+        preferences
+            ?.edit()
+            ?.remove(ProfileScopedKey.of(languageKey))
+            ?.apply()
+    }
+
     actual fun loadUseTrailers(): Boolean? = loadBoolean(useTrailersKey)
 
     actual fun saveUseTrailers(enabled: Boolean) {

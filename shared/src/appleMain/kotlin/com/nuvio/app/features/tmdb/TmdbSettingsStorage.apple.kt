@@ -64,6 +64,10 @@ actual object TmdbSettingsStorage {
         NSUserDefaults.standardUserDefaults.setObject(language, forKey = ProfileScopedKey.of(languageKey))
     }
 
+    actual fun clearLanguage() {
+        NSUserDefaults.standardUserDefaults.removeObjectForKey(ProfileScopedKey.of(languageKey))
+    }
+
     actual fun loadUseTrailers(): Boolean? = loadBoolean(useTrailersKey)
 
     actual fun saveUseTrailers(enabled: Boolean) {

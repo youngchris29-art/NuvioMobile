@@ -79,6 +79,27 @@ object TmdbSettingsRepository {
         invalidateHeroEnrichment()
     }
 
+    /**
+     * Removes the stored metadata language so [TmdbSettings.language] falls back to the
+     * device-derived default. The cleared state syncs as "no language key", so another device's
+     * explicit choice (e.g. the phone's language field) can still re-apply one later.
+     */
+    fun clearLanguage() {
+        ensureLoaded()
+        TmdbSettingsStorage.clearLanguage()
+        val derived = normalizeLanguage(DeviceLanguagePreferences.preferredLanguageCodes().firstOrNull() ?: "en")
+        if (language == derived) return
+        language = derived
+        publish()
+        invalidateHeroEnrichment()
+    }
+
+    /** True when a metadata language is explicitly stored (vs derived from the device language). */
+    fun hasExplicitLanguage(): Boolean {
+        ensureLoaded()
+        return TmdbSettingsStorage.loadLanguage() != null
+    }
+
     fun setUseTrailers(value: Boolean) = setBoolean(
         current = useTrailers,
         next = value,

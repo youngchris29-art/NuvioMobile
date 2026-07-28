@@ -241,6 +241,15 @@ struct SettingsView: View {
                                 ) {
                                     model.setTmdbUseReleaseDates(!model.tmdbUseReleaseDates)
                                 }
+                                Text("Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.")
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                    .frame(maxWidth: 1100, alignment: .leading)
+                                LanguageSelectRow(
+                                    title: String(localized: "Metadata Language"),
+                                    options: LanguageOptions.tmdbMetadata,
+                                    selected: model.tmdbLanguageSelection
+                                ) { model.setTmdbLanguage($0) }
                                 SettingsActionRow(
                                     title: String(localized: "Remove API Key"),
                                     subtitle: String(localized: "Clears the saved TMDB key and turns enrichment off."),
@@ -1538,6 +1547,11 @@ private enum LanguageOptions {
     }
     static var subtitle: [(name: String, code: String)] {
         [(String(localized: "Off"), "none"), (String(localized: "Device"), "device")] + languages
+    }
+    /// TMDB metadata language: Device = no stored language (the shared repo derives it from the
+    /// Apple TV's language). TMDB accepts the same bare ISO 639-1 codes the track pickers use.
+    static var tmdbMetadata: [(name: String, code: String)] {
+        [(String(localized: "Device"), "device")] + languages
     }
 }
 

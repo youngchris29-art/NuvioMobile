@@ -9,6 +9,7 @@ expect object TmdbSettingsStorage {
     fun saveApiKey(apiKey: String)
     fun loadLanguage(): String?
     fun saveLanguage(language: String)
+    fun clearLanguage()
     fun loadUseTrailers(): Boolean?
     fun saveUseTrailers(enabled: Boolean)
     fun loadUseArtwork(): Boolean?
