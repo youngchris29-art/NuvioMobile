@@ -293,6 +293,8 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
                 defaults.removeObjectForKey(keyString)
             }
         }
+
+        com.nuvio.app.features.plugins.PluginStateFiles.deleteAll()
     }
 }
 
