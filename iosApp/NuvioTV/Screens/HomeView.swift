@@ -61,7 +61,11 @@ struct HomeView: View {
                 }
 
                 ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
+                    // Lazy so row construction (and each row's poster loads) is deferred to
+                    // scroll position — an eager VStack builds every catalog row up front,
+                    // which on catalog-heavy accounts stalls the main thread past the
+                    // watchdog and bursts artwork decodes past jetsam (BUG-11).
+                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
                         if !heroItems.isEmpty {
                             heroCarousel
                                 .padding(.top, Theme.Size.heroForegroundTopPad)

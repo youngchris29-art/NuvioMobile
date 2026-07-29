@@ -354,7 +354,9 @@ struct StreamPickerView: View {
                         Text(desc)
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
-                            .lineLimit(2)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if hasBadgeRow && !model.badgesOnTop {
                         badgeRow(badges: badges, sizeBytes: showSize ? sizeBytes : nil)

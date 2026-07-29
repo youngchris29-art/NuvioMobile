@@ -173,6 +173,9 @@ cd "$PRODUCTS_DIR"
 rm -rf Payload "$IPA_NAME"
 mkdir Payload
 cp -R "$APP_NAME" Payload/
+# Free-Apple-ID re-signers (Sideloadly/atvloadly) mangle the appex signature —
+# tvOS 27's code-signing monitor then kills it on launch (CODESIGNING Invalid Page).
+rm -rf "Payload/$APP_NAME/PlugIns"
 zip -qry "$IPA_NAME" Payload
 rm -rf Payload
 echo "    $(du -h "$IPA_NAME" | cut -f1 | tr -d ' ') $PRODUCTS_DIR/$IPA_NAME"
@@ -217,7 +220,6 @@ You sideload this yourself with a **free Apple ID**. The signature is created on
 2. Install [Sideloadly](https://sideloadly.io/).
 3. Make sure your computer and Apple TV are on the same network. Pair the Apple TV if prompted (on the Apple TV: Settings → Remotes and Devices → Remote App and Devices shows the pairing code).
 4. Select your Apple TV as the target device in Sideloadly, drag \`NuvioTV.ipa\` in, enter your Apple ID, and hit **Start**.
-5. If you get an "App ID limit" error, open Sideloadly's **Advanced** options and enable **Remove app extensions** (you only lose the home-screen Top Shelf row).
 
 ### Option B — atvloadly (self-hosted / Docker)
 See [atvloadly](https://github.com/bitxeno/atvloadly) — a web UI for sideloading to Apple TV over the network, with automatic re-signing.
@@ -231,7 +233,7 @@ Trust the developer certificate on the Apple TV when prompted (Settings → Gene
 
 ## Build info
 - Version ${MARKETING_VERSION} (build ${BUILD_NUMBER}), built from \`${HEAD_SHA:0:8}\` on \`${BRANCH}\`
-- Includes MPV-based player (MPVKit) and Top Shelf extension
+- Includes MPV-based player (MPVKit). The Top Shelf extension is not bundled in the sideload IPA — free-Apple-ID re-signing breaks extension signatures (crashes on tvOS 27), so it ships only in from-source builds.
 EOF
 
 if [[ "$DRY_RUN" -eq 1 ]]; then

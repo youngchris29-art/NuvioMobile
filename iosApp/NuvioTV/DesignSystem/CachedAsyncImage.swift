@@ -88,6 +88,34 @@ enum ArtworkStore {
     /// One shared task per URL currently downloading, so awaiters coalesce onto it.
     @MainActor private static var inflight: [URL: Task<UIImage, Error>] = [:]
 
+    /// Caps simultaneous download+decode pipelines. Bounds the *transient* peak of in-flight
+    /// decoded bitmaps that the memory cache's limits can't see — dozens of rows appearing at
+    /// once (catalog-heavy Home load) would otherwise stack unbounded concurrent decodes
+    /// (BUG-11). Slots are held only by the shared work tasks, never by coalesced awaiters,
+    /// so the gate cannot deadlock.
+    private static let maxConcurrentFetches = 6
+    @MainActor private static var activeFetches = 0
+    @MainActor private static var fetchWaiters: [CheckedContinuation<Void, Never>] = []
+
+    @MainActor
+    private static func acquireFetchSlot() async {
+        if activeFetches < maxConcurrentFetches {
+            activeFetches += 1
+            return
+        }
+        await withCheckedContinuation { fetchWaiters.append($0) }
+    }
+
+    @MainActor
+    private static func releaseFetchSlot() {
+        if fetchWaiters.isEmpty {
+            activeFetches -= 1
+        } else {
+            // Hand the slot straight to the next waiter; activeFetches stays constant.
+            fetchWaiters.removeFirst().resume()
+        }
+    }
+
     /// Synchronous memory-cache lookup. Safe from any context (NSCache locks internally); lets
     /// views seed their first frame without an async hop, avoiding a placeholder flash.
     static func cached(_ url: URL?) -> UIImage? {
@@ -104,6 +132,8 @@ enum ArtworkStore {
         if let existing = inflight[url] { return try await existing.value }
 
         let work = Task<UIImage, Error> {
+            await acquireFetchSlot()
+            defer { releaseFetchSlot() }
             let data: Data
             if url.scheme == "data" {
                 // Inline `data:image/...;base64,...` avatars (custom pictures imported from
