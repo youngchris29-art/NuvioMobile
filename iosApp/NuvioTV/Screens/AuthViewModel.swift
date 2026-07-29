@@ -40,12 +40,22 @@ final class AuthViewModel: ObservableObject {
             guard let self else { return }
             switch emitted {
             case let authed as AuthStateAuthenticated:
+                // "Already a real account" must consider anonymity, or a guest→account
+                // upgrade (gate already .main) would skip registration.
+                let wasRealAccount = self.gate == .main && !self.isAnonymous
                 self.isAnonymous = authed.isAnonymous
                 self.accountEmail = authed.email
                 if !authed.isAnonymous {
                     // Real account: key the profile cache to this user and refresh from the cloud.
                     ProfileRepository.shared.ensureLoaded(userId: authed.userId)
                     ProfileRepository.shared.pullProfiles { _ in }
+                    if !wasRealAccount {
+                        // Register this device/session with the account (once per sign-in
+                        // transition, not on every state emission).
+                        Task {
+                            _ = try? await DeviceSessionRegistration.shared.registerIfAuthenticated(force: true)
+                        }
+                    }
                 }
                 self.gate = .main
             case is AuthStateUnauthenticated:

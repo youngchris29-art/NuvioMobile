@@ -119,6 +119,11 @@ struct ContentView: View {
                 profileId: ProfileRepository.shared.activeProfileId,
                 force: true
             )
+            // Re-register this device/session on foreground (self-throttled to once per
+            // 15 min inside DeviceSessionRegistration unless force is passed).
+            Task {
+                _ = try? await DeviceSessionRegistration.shared.registerIfAuthenticated(force: false)
+            }
         }
         #if DEBUG
         // `debug.mpvSmokeURL`: present the real player over the root for sim validation of the
