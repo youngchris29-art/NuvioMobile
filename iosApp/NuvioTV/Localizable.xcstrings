@@ -1737,6 +1737,34 @@
         }
       }
     },
+    "Avatar": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatar"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatar"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatar"
+          }
+        }
+      }
+    },
     "Awards": {
       "localizations": {
         "de": {
@@ -1873,6 +1901,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sfondo"
+          }
+        }
+      }
+    },
+    "Background Trailer on Detail": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hintergrund-Trailer auf der Detailseite"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tráiler de fondo en la página de detalles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bande-annonce en fond sur la page de détail"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer di sottofondo nella pagina dei dettagli"
           }
         }
       }
@@ -4985,6 +5041,34 @@
         }
       }
     },
+    "Hero Info on the Right": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero-Infos rechts"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Información del hero a la derecha"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Infos du Hero à droite"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Info dell'hero a destra"
+          }
+        }
+      }
+    },
     "Hero Poster Only When Focused": {
       "localizations": {
         "de": {
@@ -6525,6 +6609,62 @@
         }
       }
     },
+    "Move Down": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach unten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bajar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descendre"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sposta giù"
+          }
+        }
+      }
+    },
+    "Move Up": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach oben"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subir"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Monter"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sposta su"
+          }
+        }
+      }
+    },
     "Movies": {
       "localizations": {
         "de": {
@@ -7421,6 +7561,34 @@
         }
       }
     },
+    "Off · Classic layout with the logo on the lower left": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Klassisches Layout mit dem Logo unten links"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · diseño clásico con el logo abajo a la izquierda"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · disposition classique avec le logo en bas à gauche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · layout classico con il logo in basso a sinistra"
+          }
+        }
+      }
+    },
     "Off · Detail pages show only the backdrop": {
       "localizations": {
         "de": {
@@ -7445,6 +7613,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Off · le pagine dei dettagli mostrano solo lo sfondo"
+          }
+        }
+      }
+    },
+    "Off · Detail pages stay on the still artwork": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Detailseiten zeigen nur das Standbild"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · las páginas de detalles se quedan con la imagen fija"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · les pages de détail restent sur l'image fixe"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · le pagine dei dettagli mostrano solo l'immagine fissa"
           }
         }
       }
@@ -7701,6 +7897,34 @@
         }
       }
     },
+    "On · A muted trailer plays behind the description on detail pages": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Ein stummer Trailer läuft hinter der Beschreibung auf Detailseiten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · un tráiler silenciado se reproduce detrás de la descripción en las páginas de detalles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · une bande-annonce muette est lue derrière la description des pages de détail"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · un trailer muto viene riprodotto dietro la descrizione nelle pagine dei dettagli"
+          }
+        }
+      }
+    },
     "On · API key saved": {
       "localizations": {
         "de": {
@@ -7809,6 +8033,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "On · riproduce il trailer a schermo intero poco dopo l'apertura di un titolo"
+          }
+        }
+      }
+    },
+    "On · Poster and description sit in the top right, Nuvio-style": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Poster und Beschreibung sitzen oben rechts, wie bei Nuvio"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · el póster y la descripción aparecen arriba a la derecha, al estilo Nuvio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · l'affiche et la description s'affichent en haut à droite, comme sur Nuvio"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · poster e descrizione compaiono in alto a destra, in stile Nuvio"
           }
         }
       }
@@ -13605,6 +13857,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Usa un carattere più pesante per i sottotitoli"
+          }
+        }
+      }
+    },
+    "Use color avatar": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Farbigen Avatar verwenden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar avatar de color"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utiliser un avatar coloré"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usa avatar colorato"
           }
         }
       }

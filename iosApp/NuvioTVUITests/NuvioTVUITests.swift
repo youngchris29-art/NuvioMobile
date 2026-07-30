@@ -283,4 +283,23 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "05c_settings_de_scrolled")
         XCTAssertTrue(app.state == .runningForeground)
     }
+
+    // MARK: - UX-2 hero redesign (info panel + poster on the right)
+
+    func test06HeroRedesign() throws {
+        let app = launchToHome()
+        // Home lands with the hero at the top; give the backdrop/poster art a beat to load.
+        pause(4)
+        shot(app, "06a_hero_info_right")
+        // Focus the hero itself (first focusable from the top) so the glow state is captured too.
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(2)
+        shot(app, "06b_hero_focused")
+        // Page once so the fixed-slot swap (logo/meta/synopsis/poster all swap in place) shows.
+        press(.right, times: 1)
+        pause(3)
+        shot(app, "06c_hero_paged")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
 }

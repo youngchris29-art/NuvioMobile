@@ -12,6 +12,10 @@ struct HomeScreenSettingsPane: View {
     /// toggle can turn off the muted trailer-on-focus preview. Local-only, not synced.
     @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
 
+    /// Mirrors HomeHeroForeground's `hero_info_right` key (UX-2 hero redesign, opt-in —
+    /// classic layout is the default). Local-only.
+    @AppStorage("hero_info_right") private var heroInfoRight = false
+
     var body: some View {
         settingsSection(String(localized: "Home Rows")) {
             if model.catalogs.isEmpty {
@@ -33,6 +37,18 @@ struct HomeScreenSettingsPane: View {
                 // Kotlin side (HomeCatalogSettingsRepository.normalizePreferences),
                 // so they never appear as a hero source — filter defensively here too.
                 if model.heroEnabled {
+                    // UX-2 hero redesign: info panel + poster top-right (Nuvio-style, OPT-IN)
+                    // vs the classic lower-left logo layout (default).
+                    SettingsToggleRow(
+                        title: String(localized: "Hero Info on the Right"),
+                        subtitle: heroInfoRight
+                            ? String(localized: "On \u{00B7} Poster and description sit in the top right, Nuvio-style")
+                            : String(localized: "Off \u{00B7} Classic layout with the logo on the lower left"),
+                        isOn: heroInfoRight
+                    ) {
+                        heroInfoRight.toggle()
+                    }
+
                     let heroSourceCatalogs = model.catalogs.filter { !$0.isCollection }
                     if !heroSourceCatalogs.isEmpty {
                         HeroSourcesGroup(

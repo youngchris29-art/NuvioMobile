@@ -16,6 +16,11 @@ struct HomeView: View {
     /// anyone who preferred it. UserDefaults-backed and local-only (not synced): it's a per-device
     /// display preference, not account state, so no shared/Kotlin settings plumbing is needed.
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
+    /// UX-2 hero redesign: info panel + poster on the trailing edge (opt-in) vs the classic
+    /// lower-left layout (default — Christian's call 2026-07-30: the right-aligned panel
+    /// clashes with the backdrop art on some titles). Mirrored by HomeHeroForeground and the
+    /// Home Screen settings pane.
+    @AppStorage("hero_info_right") private var heroInfoRight = false
 
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
@@ -177,8 +182,10 @@ struct HomeView: View {
             .focusSection()
 
             if heroItems.count > 1 {
+                // Dots follow the info panel's side (UX-2 redesign: trailing; classic: leading).
                 HeroPageDots(count: heroItems.count, index: min(heroIndex, heroItems.count - 1))
-                    .padding(.leading, Theme.Spacing.lg)
+                    .padding(.horizontal, Theme.Spacing.lg)
+                    .frame(maxWidth: .infinity, alignment: heroInfoRight ? .trailing : .leading)
             }
         }
     }
@@ -193,6 +200,8 @@ struct HomeView: View {
             let backdrop = (banner?.isEmpty == false) ? banner : poster
             if let backdrop, !backdrop.isEmpty, let url = URL(string: backdrop) { urls.append(url) }
             if let url = heroLogoURL(for: item) { urls.append(url) }
+            // UX-2 redesign: the info-right layout shows the portrait poster as its own slot.
+            if heroInfoRight, let poster, !poster.isEmpty, let url = URL(string: poster) { urls.append(url) }
         }
         ArtworkStore.prefetch(urls)
     }
@@ -345,41 +354,90 @@ struct HomeHeroScrim: View {
     }
 }
 
-/// One page of the hero carousel: logo/title, metadata and a short synopsis — a single focusable
-/// target that opens the detail screen. Every slot has a FIXED height (logo box, one meta line,
-/// two synopsis lines), so all pages are layout-identical and advancing the carousel can never
-/// reflow anything around it.
+/// One page of the hero carousel — a single focusable target that opens the detail screen.
+/// Two layouts (UX-2 hero redesign, asked for twice as "poster + description in the top right,
+/// just like Nuvio"):
+/// - **Classic** (default): logo/meta/synopsis on the lower left — the original layout.
+///   Christian's call 2026-07-30: the right-aligned panel clashes with the backdrop art on
+///   some titles, so the redesign is opt-in rather than the default.
+/// - **Info Right** (Settings → Home Screen → "Hero Info on the Right"): text panel + portrait
+///   poster anchored to the trailing edge, backdrop art unobstructed on the left — the Nuvio
+///   modern-home look the reporter asked for.
+/// Both obey the fixed-slot rule: every slot has a FIXED height/width, so all pages are
+/// layout-identical and advancing the carousel can never reflow anything around it.
 struct HomeHeroForeground: View {
     let item: MetaPreview
+    @AppStorage("hero_info_right") private var heroInfoRight = false
 
     var body: some View {
         NavigationLink(value: TitleRoute(preview: item)) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                HeroLogo(item: item)
-                    .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Text(metaLine)
-                    .font(Theme.Font.meta)
-                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
-                    .lineLimit(1)
-                    .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
-
-                Text(synopsis)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                    .lineLimit(2)
-                    .frame(maxWidth: 1000, alignment: .leading)
-                    .frame(height: Theme.Size.heroSynopsisSlotHeight, alignment: .topLeading)
+            Group {
+                if heroInfoRight {
+                    infoRightLayout
+                } else {
+                    classicLayout
+                }
             }
             .padding(Theme.Spacing.lg)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: heroInfoRight ? .trailing : .leading)
             // Full-bleed carousel page: a ring or scale would clip at the page edges, so hero
             // focus is just a soft glow + content brightening (see HeroFocusGlow).
             .modifier(HeroFocusGlow())
         }
         .buttonStyle(.borderless)
         .accessibilityLabel(item.name)
+    }
+
+    /// Nuvio-style: fixed-width text column + portrait poster, top-right. The synopsis gets a
+    /// third line (the column is narrower than the classic full-width slot).
+    private var infoRightLayout: some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.lg) {
+            VStack(alignment: .trailing, spacing: Theme.Spacing.md) {
+                HeroLogo(item: item)
+                    .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomTrailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+
+                Text(metaLine)
+                    .font(Theme.Font.meta)
+                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                    .lineLimit(1)
+                    .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .trailing)
+
+                Text(synopsis)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
+                    .lineLimit(3)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .frame(height: Theme.Size.heroSynopsisSlotHeightRight, alignment: .topTrailing)
+            }
+            .frame(width: Theme.Size.heroInfoPanelWidth)
+
+            HeroPoster(item: item)
+        }
+    }
+
+    /// The original bottom-left layout, unchanged.
+    private var classicLayout: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            HeroLogo(item: item)
+                .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(metaLine)
+                .font(Theme.Font.meta)
+                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                .lineLimit(1)
+                .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
+
+            Text(synopsis)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
+                .lineLimit(2)
+                .frame(maxWidth: 1000, alignment: .leading)
+                .frame(height: Theme.Size.heroSynopsisSlotHeight, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var synopsis: String {
@@ -394,6 +452,27 @@ struct HomeHeroForeground: View {
         let genres = item.genres.prefix(3)
         if !genres.isEmpty { parts.append(genres.joined(separator: " \u{00B7} ")) }
         return parts.joined(separator: "  \u{00B7}  ")
+    }
+}
+
+/// The portrait poster beside the right-anchored hero info panel. Fixed frame whether or not
+/// the artwork has loaded (fixed-slot rule), rounded to the shared card radius with a soft
+/// drop shadow so it reads as a card floating over the backdrop.
+private struct HeroPoster: View {
+    let item: MetaPreview
+
+    var body: some View {
+        CachedAsyncImage(string: posterURL)
+            .frame(width: Theme.Size.heroPosterWidth, height: Theme.Size.heroPosterHeight)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+            .id(item.id)
+            .transition(.opacity)
+    }
+
+    private var posterURL: String? {
+        let poster: String? = item.poster
+        return poster
     }
 }
 
