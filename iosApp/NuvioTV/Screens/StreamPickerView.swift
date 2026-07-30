@@ -351,10 +351,16 @@ struct StreamPickerView: View {
                         }
                     }
                     if let desc, !desc.isEmpty {
+                        // BUG-16 (final form): 3 lines while browsing, unlimited on the FOCUSED
+                        // row. Release names are dot/underscore-separated with no break points,
+                        // so no fixed cap fits all of them ("works for some links but not all"
+                        // — the reporter, on the 3-line beta.7 fix); expanding the row under
+                        // focus guarantees the name you're actually reading is never truncated,
+                        // without a marquee and without inflating every row in the list.
                         Text(desc)
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
-                            .lineLimit(3)
+                            .lineLimit(focusedRow == key ? nil : 3)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                     }
