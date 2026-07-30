@@ -1398,13 +1398,24 @@ struct MPVPlayerScreen: View {
             if onPlayNext != nil {
                 upNext.start(state: state)
             }
+            // libmpv renders into a bare Metal layer, so tvOS doesn't know video is playing and
+            // its idle timer fires the screensaver mid-movie (device report). Hold the idle timer
+            // while playback is active — mirroring AVPlayerViewController, which does this
+            // automatically — and release it on pause (screen protection) and on dismiss.
+            UIApplication.shared.isIdleTimerDisabled = !state.isPaused
         }
         .onChange(of: routingNote) { _, note in state.routingNote = note ?? "" }
-        .onDisappear { upNext.stop() }
+        .onDisappear {
+            upNext.stop()
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
         .onChange(of: state.positionSec) { _, position in
             upNext.onProgress(positionSec: position, durationSec: state.durationSec)
         }
         .onChange(of: state.isPaused) { _, paused in
+            // Paused → let the idle timer run again (a long-paused frame should be allowed to
+            // hand off to the screensaver, same as the native player); playing → hold it.
+            UIApplication.shared.isIdleTimerDisabled = !paused
             pauseInfoTask?.cancel()
             if paused {
                 pauseInfoTask = Task {
