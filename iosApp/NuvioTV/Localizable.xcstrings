@@ -7449,6 +7449,34 @@
         }
       }
     },
+    "Nuvio-Style Hero": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero im Nuvio-Stil"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero estilo Nuvio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero style Nuvio"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero in stile Nuvio"
+          }
+        }
+      }
+    },
     "NuvioTV (Built-in)": {
       "localizations": {
         "de": {
@@ -8145,6 +8173,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "On · le date di trasmissione TMDB sostituiscono le date di rilascio dei componenti aggiuntivi"
+          }
+        }
+      }
+    },
+    "On · Title and description on the left, artwork on the right": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Titel und Beschreibung links, Artwork rechts"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · título y descripción a la izquierda, imagen a la derecha"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · titre et description à gauche, visuel à droite"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · titolo e descrizione a sinistra, artwork a destra"
           }
         }
       }

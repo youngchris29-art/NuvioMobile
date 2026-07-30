@@ -8,8 +8,8 @@ import SharedCore
 ///
 /// At rest `InlineTrailerCard` renders the unchanged `PosterCardView`/`LandscapeCard`, so a row of
 /// unfocused cards is byte-for-byte what it always was. The expansion is a real **in-row layout
-/// morph**: the card's layout width animates from the portrait poster's to `LandscapeCard`'s exact
-/// geometry (`Theme.Size.landscapeWidth × landscapeHeight`), so the `LazyHStack` slides the trailing
+/// morph**: the card's layout width animates from the portrait poster's to a 16:9 tile at the
+/// POSTER'S OWN HEIGHT (height never changes — UX-4a), so the `LazyHStack` slides the trailing
 /// posters aside and the wide tile never overlaps a neighbour. It morphs back when the trailer ends,
 /// when nothing resolves, or when focus leaves.
 ///
@@ -473,7 +473,7 @@ struct InlineTrailerCard: View {
     }
 
     /// The morph. The card's *layout* width is `artworkWidth`, which swings from the portrait poster
-    /// width to `Theme.Size.landscapeWidth` when the card expands — so the enclosing `LazyHStack`
+    /// width to a 16:9 tile at the poster's height when the card expands — so the enclosing `LazyHStack`
     /// pushes the trailing posters aside and the wide tile sits **in** the row rather than over it.
     /// (That's why `CatalogRowView` no longer needs a `zIndex` lift: nothing overhangs any more.)
     ///
@@ -567,22 +567,22 @@ struct InlineTrailerCard: View {
     /// same slot. Landscape rows keep their own title (nothing is faded there).
     private var showsOverlayTitle: Bool { fadesBaseCard && posterStyle.showTitle }
 
-    /// UX-4a: the morph target scales with the user's Poster Size setting. The fixed 360×203
-    /// tile was designed against the default 220pt poster — next to enlarged posters it read
-    /// as "too small, looks weird" (tester photo). Scaling by the same factor keeps the
-    /// trailer tile's presence relative to its neighbours at every poster size; at the
-    /// default width the factor is 1 and nothing changes.
-    private var posterScaleFactor: CGFloat { posterStyle.width / Theme.Size.posterWidth }
-
-    /// Landscape rows are already the target geometry — no morph there, the trailer just fades in.
+    /// UX-4a (Christian's spec, 2026-07-30): the poster KEEPS ITS HEIGHT and only grows
+    /// WIDER when the trailer starts — a 16:9 tile at the poster's full height. The old
+    /// morph shrank the card to a short 360×203 landscape tile, which read as "too small"
+    /// next to its portrait neighbours (tester photo); matching upstream Nuvio's behavior,
+    /// the height never changes so the row never breathes vertically, and the width follows
+    /// whatever Poster Size the user runs.
     private var artworkWidth: CGFloat {
         if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeWidth }
-        return model.isExpanded ? Theme.Size.landscapeWidth * posterScaleFactor : posterStyle.width
+        return model.isExpanded ? posterStyle.height * (16.0 / 9.0) : posterStyle.width
     }
 
+    /// Landscape rows are already the target geometry — no morph there, the trailer just
+    /// fades in. Portrait rows: constant height in BOTH states (see artworkWidth).
     private var artworkHeight: CGFloat {
         if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeHeight }
-        return model.isExpanded ? Theme.Size.landscapeHeight * posterScaleFactor : posterStyle.height
+        return posterStyle.height
     }
 }
 

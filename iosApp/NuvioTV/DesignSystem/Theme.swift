@@ -169,17 +169,18 @@ enum Theme {
         static let heroMetaSlotHeight: CGFloat = 32
         /// Fixed two-line synopsis slot inside a hero page.
         static let heroSynopsisSlotHeight: CGFloat = 72
-        // UX-2 hero redesign ("info on the right", Nuvio-style). Same fixed-slot rule as the
-        // classic layout: every dimension constant so pages stay layout-identical and the
-        // carousel never reflows the rows below. Panel + poster sum stays inside
-        // `heroCarouselHeight` (150 + 32 + 108 + spacings ≈ 320 < 344).
-        /// Fixed three-line synopsis slot for the narrower right-panel layout.
-        static let heroSynopsisSlotHeightRight: CGFloat = 108
-        /// Fixed width of the right-anchored hero info panel (text column).
-        static let heroInfoPanelWidth: CGFloat = 560
-        /// Portrait poster beside the right-anchored info panel (2:3).
-        static let heroPosterWidth: CGFloat = 190
-        static let heroPosterHeight: CGFloat = 285
+        // UX-2 hero redesign, v2: "Nuvio-style" — info panel top-LEFT, artwork reading on the
+        // right behind a leading scrim. Same fixed-slot rule as the classic layout: every
+        // dimension constant so pages stay layout-identical and the carousel never reflows
+        // the rows below. Panel sum stays inside `heroCarouselHeight`
+        // (150 + 32 + 108 + spacings ≈ 320 < 344).
+        /// Fixed three-line synopsis slot for the fixed-width Nuvio-style panel.
+        static let heroSynopsisSlotHeightNuvio: CGFloat = 108
+        /// Fixed width of the leading hero info panel (text column) in the Nuvio-style layout.
+        static let heroInfoPanelWidth: CGFloat = 680
+        /// Nuvio-style raises the info panel toward the top of the backdrop (classic uses
+        /// `heroForegroundTopPad`'s lower-third placement).
+        static let heroForegroundTopPadNuvio: CGFloat = 120
     }
 }
 

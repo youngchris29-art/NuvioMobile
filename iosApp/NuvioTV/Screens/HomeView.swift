@@ -16,11 +16,11 @@ struct HomeView: View {
     /// anyone who preferred it. UserDefaults-backed and local-only (not synced): it's a per-device
     /// display preference, not account state, so no shared/Kotlin settings plumbing is needed.
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
-    /// UX-2 hero redesign: info panel + poster on the trailing edge (opt-in) vs the classic
-    /// lower-left layout (default — Christian's call 2026-07-30: the right-aligned panel
-    /// clashes with the backdrop art on some titles). Mirrored by HomeHeroForeground and the
-    /// Home Screen settings pane.
-    @AppStorage("hero_info_right") private var heroInfoRight = false
+    /// UX-2 hero redesign, v2 (opt-in): Nuvio-style hero — title/description on the LEFT,
+    /// the backdrop artwork reading on the RIGHT behind a leading scrim, info panel raised
+    /// toward the top (Christian's reference photos, 2026-07-30). Default stays the classic
+    /// lower-left layout. Mirrored by HomeHeroForeground and the Home Screen settings pane.
+    @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
@@ -61,6 +61,11 @@ struct HomeView: View {
                     Group {
                         HomeHeroBackdrop(item: hero)
                         HomeHeroScrim()
+                        // Nuvio-style hero: the artwork reads on the RIGHT, so darken the
+                        // leading side for the info panel that now sits top-left over it.
+                        if heroNuvioStyle {
+                            HomeHeroLeadingScrim()
+                        }
                     }
                     .opacity(heroPosterFocusOnly ? (heroFocused ? 1 : 0) : 1)
                     .animation(.easeInOut(duration: 0.4), value: heroFocused)
@@ -77,8 +82,13 @@ struct HomeView: View {
                     // watchdog and bursts artwork decodes past jetsam (BUG-11).
                     LazyVStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
                         if !heroItems.isEmpty {
+                            // Nuvio-style raises the info panel toward the top of the backdrop
+                            // (reference: upstream's modern home) — classic keeps it on the
+                            // lower third, Detail-style.
                             heroCarousel
-                                .padding(.top, Theme.Size.heroForegroundTopPad)
+                                .padding(.top, heroNuvioStyle
+                                    ? Theme.Size.heroForegroundTopPadNuvio
+                                    : Theme.Size.heroForegroundTopPad)
                         }
 
                         if model.rows.isEmpty {
@@ -182,10 +192,9 @@ struct HomeView: View {
             .focusSection()
 
             if heroItems.count > 1 {
-                // Dots follow the info panel's side (UX-2 redesign: trailing; classic: leading).
+                // Both layouts keep the info panel on the left, so the dots stay leading.
                 HeroPageDots(count: heroItems.count, index: min(heroIndex, heroItems.count - 1))
-                    .padding(.horizontal, Theme.Spacing.lg)
-                    .frame(maxWidth: .infinity, alignment: heroInfoRight ? .trailing : .leading)
+                    .padding(.leading, Theme.Spacing.lg)
             }
         }
     }
@@ -200,8 +209,6 @@ struct HomeView: View {
             let backdrop = (banner?.isEmpty == false) ? banner : poster
             if let backdrop, !backdrop.isEmpty, let url = URL(string: backdrop) { urls.append(url) }
             if let url = heroLogoURL(for: item) { urls.append(url) }
-            // UX-2 redesign: the info-right layout shows the portrait poster as its own slot.
-            if heroInfoRight, let poster, !poster.isEmpty, let url = URL(string: poster) { urls.append(url) }
         }
         ArtworkStore.prefetch(urls)
     }
@@ -355,31 +362,29 @@ struct HomeHeroScrim: View {
 }
 
 /// One page of the hero carousel — a single focusable target that opens the detail screen.
-/// Two layouts (UX-2 hero redesign, asked for twice as "poster + description in the top right,
-/// just like Nuvio"):
+/// Two layouts (UX-2 hero redesign — the tester's "hero info on the right" meant the ARTWORK
+/// on the right, clarified by Christian's reference photos 2026-07-30):
 /// - **Classic** (default): logo/meta/synopsis on the lower left — the original layout.
-///   Christian's call 2026-07-30: the right-aligned panel clashes with the backdrop art on
-///   some titles, so the redesign is opt-in rather than the default.
-/// - **Info Right** (Settings → Home Screen → "Hero Info on the Right"): text panel + portrait
-///   poster anchored to the trailing edge, backdrop art unobstructed on the left — the Nuvio
-///   modern-home look the reporter asked for.
+/// - **Nuvio-style** (Settings → Home Screen → "Nuvio-Style Hero"): title/description in a
+///   fixed-width panel on the LEFT, raised toward the top of the backdrop, while the artwork
+///   reads on the right behind `HomeHeroLeadingScrim` — upstream's modern-home look.
 /// Both obey the fixed-slot rule: every slot has a FIXED height/width, so all pages are
 /// layout-identical and advancing the carousel can never reflow anything around it.
 struct HomeHeroForeground: View {
     let item: MetaPreview
-    @AppStorage("hero_info_right") private var heroInfoRight = false
+    @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
     var body: some View {
         NavigationLink(value: TitleRoute(preview: item)) {
             Group {
-                if heroInfoRight {
-                    infoRightLayout
+                if heroNuvioStyle {
+                    nuvioLayout
                 } else {
                     classicLayout
                 }
             }
             .padding(Theme.Spacing.lg)
-            .frame(maxWidth: .infinity, alignment: heroInfoRight ? .trailing : .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             // Full-bleed carousel page: a ring or scale would clip at the page edges, so hero
             // focus is just a soft glow + content brightening (see HeroFocusGlow).
             .modifier(HeroFocusGlow())
@@ -388,33 +393,29 @@ struct HomeHeroForeground: View {
         .accessibilityLabel(item.name)
     }
 
-    /// Nuvio-style: fixed-width text column + portrait poster, top-right. The synopsis gets a
-    /// third line (the column is narrower than the classic full-width slot).
-    private var infoRightLayout: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.lg) {
-            VStack(alignment: .trailing, spacing: Theme.Spacing.md) {
-                HeroLogo(item: item)
-                    .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomTrailing)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+    /// Nuvio-style: fixed-width text column on the left (logo, meta, 3-line synopsis) — the
+    /// artwork owns the rest of the frame to the right.
+    private var nuvioLayout: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            HeroLogo(item: item)
+                .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(metaLine)
-                    .font(Theme.Font.meta)
-                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
-                    .lineLimit(1)
-                    .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .trailing)
+            Text(metaLine)
+                .font(Theme.Font.meta)
+                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                .lineLimit(1)
+                .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
 
-                Text(synopsis)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                    .lineLimit(3)
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .frame(height: Theme.Size.heroSynopsisSlotHeightRight, alignment: .topTrailing)
-            }
-            .frame(width: Theme.Size.heroInfoPanelWidth)
-
-            HeroPoster(item: item)
+            Text(synopsis)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: Theme.Size.heroSynopsisSlotHeightNuvio, alignment: .topLeading)
         }
+        .frame(width: Theme.Size.heroInfoPanelWidth, alignment: .leading)
     }
 
     /// The original bottom-left layout, unchanged.
@@ -455,24 +456,24 @@ struct HomeHeroForeground: View {
     }
 }
 
-/// The portrait poster beside the right-anchored hero info panel. Fixed frame whether or not
-/// the artwork has loaded (fixed-slot rule), rounded to the shared card radius with a soft
-/// drop shadow so it reads as a card floating over the backdrop.
-private struct HeroPoster: View {
-    let item: MetaPreview
-
+/// Nuvio-style hero only: darkens the LEADING side of the backdrop so the top-left info panel
+/// reads over any artwork, leaving the right side — where the art's subject usually sits —
+/// untouched. Complements the vertical `HomeHeroScrim`, which stays in both layouts.
+struct HomeHeroLeadingScrim: View {
     var body: some View {
-        CachedAsyncImage(string: posterURL)
-            .frame(width: Theme.Size.heroPosterWidth, height: Theme.Size.heroPosterHeight)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-            .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
-            .id(item.id)
-            .transition(.opacity)
-    }
-
-    private var posterURL: String? {
-        let poster: String? = item.poster
-        return poster
+        LinearGradient(
+            stops: [
+                .init(color: Theme.Palette.background.opacity(0.88), location: 0.0),
+                .init(color: Theme.Palette.background.opacity(0.55), location: 0.30),
+                .init(color: .clear, location: 0.62),
+            ],
+            startPoint: .leading, endPoint: .trailing
+        )
+        .frame(height: Theme.Size.heroBackdropHeight)
+        .frame(maxWidth: .infinity)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }
 

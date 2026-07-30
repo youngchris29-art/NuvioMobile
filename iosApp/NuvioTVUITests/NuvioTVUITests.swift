@@ -122,7 +122,9 @@ final class NuvioTVUITests: XCTestCase {
     // MARK: - UX-2: trailers in thumbnails
 
     func test01InlineTrailerDwell() throws {
-        let app = launchToHome()
+        // Trailers on Focus is opt-in (default OFF since 05dd8ecd) — force it via the argument
+        // domain so this test never depends on the sim's stored settings.
+        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES"])
         shot(app, "01a_home")
 
         // Hero → Continue Watching → Streaming → first *movies* catalog row (portrait cards, the
@@ -284,22 +286,22 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
-    // MARK: - UX-2 hero redesign (info panel + poster on the right)
+    // MARK: - UX-2 hero redesign v2 (Nuvio-style: info left, artwork right)
 
     func test06HeroRedesign() throws {
-        let app = launchToHome()
-        // Home lands with the hero at the top; give the backdrop/poster art a beat to load.
+        // The toggle defaults OFF (classic); force the opt-in layout via the argument domain
+        // so this test captures the redesign without touching the sim's stored settings.
+        let app = launchToHome(extraArguments: ["-hero_nuvio_style", "YES"])
+        // Home lands with the hero at the top; give the backdrop art a beat to load.
         pause(4)
-        shot(app, "06a_hero_info_right")
-        // Focus the hero itself (first focusable from the top) so the glow state is captured too.
+        shot(app, "06a_hero_nuvio")
+        // Page once so the fixed-slot swap (logo/meta/synopsis swap in place) shows.
         press(.up, times: 6, gap: 0.5)
         press(.down, times: 1)
-        pause(2)
-        shot(app, "06b_hero_focused")
-        // Page once so the fixed-slot swap (logo/meta/synopsis/poster all swap in place) shows.
+        pause(1)
         press(.right, times: 1)
         pause(3)
-        shot(app, "06c_hero_paged")
+        shot(app, "06b_hero_nuvio_paged")
         XCTAssertTrue(app.state == .runningForeground)
     }
 }

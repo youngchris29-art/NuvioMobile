@@ -12,9 +12,9 @@ struct HomeScreenSettingsPane: View {
     /// toggle can turn off the muted trailer-on-focus preview. Local-only, not synced.
     @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
 
-    /// Mirrors HomeHeroForeground's `hero_info_right` key (UX-2 hero redesign, opt-in —
+    /// Mirrors HomeHeroForeground's `hero_nuvio_style` key (UX-2 hero redesign v2, opt-in —
     /// classic layout is the default). Local-only.
-    @AppStorage("hero_info_right") private var heroInfoRight = false
+    @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
     var body: some View {
         settingsSection(String(localized: "Home Rows")) {
@@ -37,16 +37,17 @@ struct HomeScreenSettingsPane: View {
                 // Kotlin side (HomeCatalogSettingsRepository.normalizePreferences),
                 // so they never appear as a hero source — filter defensively here too.
                 if model.heroEnabled {
-                    // UX-2 hero redesign: info panel + poster top-right (Nuvio-style, OPT-IN)
-                    // vs the classic lower-left logo layout (default).
+                    // UX-2 hero redesign v2: title/description on the left with the artwork
+                    // reading on the right (Nuvio-style, OPT-IN) vs the classic lower-left
+                    // logo layout (default).
                     SettingsToggleRow(
-                        title: String(localized: "Hero Info on the Right"),
-                        subtitle: heroInfoRight
-                            ? String(localized: "On \u{00B7} Poster and description sit in the top right, Nuvio-style")
+                        title: String(localized: "Nuvio-Style Hero"),
+                        subtitle: heroNuvioStyle
+                            ? String(localized: "On \u{00B7} Title and description on the left, artwork on the right")
                             : String(localized: "Off \u{00B7} Classic layout with the logo on the lower left"),
-                        isOn: heroInfoRight
+                        isOn: heroNuvioStyle
                     ) {
-                        heroInfoRight.toggle()
+                        heroNuvioStyle.toggle()
                     }
 
                     let heroSourceCatalogs = model.catalogs.filter { !$0.isCollection }
