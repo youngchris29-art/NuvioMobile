@@ -56,6 +56,11 @@ struct NuvioTVApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                // The app is a dark-canvas streaming UI (HIG: TV apps default dark). Pinning the
+                // scheme makes every semantic color (.primary, .secondary, materials) resolve to
+                // its dark variant regardless of the system appearance, so the semantic token
+                // layer in Theme.swift can never land light-mode text on the dark backdrop.
+                .preferredColorScheme(.dark)
         }
     }
 }

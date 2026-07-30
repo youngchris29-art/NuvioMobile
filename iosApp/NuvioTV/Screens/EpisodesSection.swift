@@ -58,7 +58,7 @@ struct EpisodesSection: View {
                                     isWatched: isWatched(episode)
                                 )
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                             .focused($focusedEpisodeId, equals: episode.id)
                             .id(episode.id)
                         }
@@ -253,13 +253,9 @@ private struct EpisodeThumbCard: View {
             .overlay(alignment: .bottomTrailing) {
                 if let rating { ratingBadge(rating).padding(10) }
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.Radius.card)
-                    .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
-            )
             .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
-            .scaleEffect(isFocused ? 1.07 : 1)
-            .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
+            // Whole-card system lift — see PosterCard: still, scrim, and badges move as one.
+            .hoverEffect(.highlight)
 
             Text(heading)
                 .font(Theme.Font.cardTitle)

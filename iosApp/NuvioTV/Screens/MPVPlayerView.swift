@@ -1424,6 +1424,9 @@ private struct PlayerControlsOverlay: View {
     @ObservedObject var state: MPVPlaybackState
 
     var body: some View {
+        // Floating glass transport bar (HIG revamp): mirrors the native AVPlayerViewController
+        // tvOS 26 chrome — an inset Liquid Glass panel over the video instead of the old
+        // full-width black gradient.
         VStack(alignment: .leading, spacing: 16) {
             Text(state.title)
                 .font(.title3).bold()
@@ -1437,7 +1440,7 @@ private struct PlayerControlsOverlay: View {
                     .font(.callout).monospacedDigit()
 
                 ProgressBar(fraction: state.fraction)
-                    .frame(height: 8)
+                    .frame(height: 10)
 
                 Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
                     .font(.callout).monospacedDigit()
@@ -1447,12 +1450,12 @@ private struct PlayerControlsOverlay: View {
                 .font(.caption).foregroundStyle(.white.opacity(0.7))
         }
         .foregroundStyle(.white)
-        .padding(40)
+        .padding(28)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.85)],
-                           startPoint: .top, endPoint: .bottom)
-        )
+        .glassEffect(.regular.tint(.black.opacity(0.35)), in: RoundedRectangle(cornerRadius: 24))
+        .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+        .padding(.horizontal, Theme.Spacing.screen)
+        .padding(.bottom, Theme.Spacing.xl)
     }
 
     private func timeString(_ seconds: Double) -> String {
@@ -1490,8 +1493,9 @@ private struct SkipPromptPill: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 30)
         .padding(.vertical, 16)
-        // Accent-tinted Liquid Glass over the video (matches the up-next card treatment).
-        .glassEffect(.regular.tint(Theme.Palette.accent.opacity(0.75)), in: .capsule)
+        // Neutral Liquid Glass (HIG revamp): a skip prompt is an action, not a selection, so it
+        // doesn't wear the brand accent — matches the pause card / stream info treatment.
+        .glassEffect(.regular.tint(.black.opacity(0.45)), in: .capsule)
         .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
     }
 }
@@ -1647,7 +1651,9 @@ private struct TrackPickerView: View {
         NavigationStack {
             menuList
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black.opacity(0.92).ignoresSafeArea())
+                // Thick material instead of flat black (HIG revamp): the paused frame reads
+                // through the blur, like the native player's swipe-down panel.
+                .background(Theme.Surface.panel, ignoresSafeAreaEdges: .all)
         }
     }
 
@@ -1745,7 +1751,7 @@ private struct TrackPickerView: View {
             .frame(maxWidth: 1000, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.92).ignoresSafeArea())
+        .background(Theme.Surface.panel, ignoresSafeAreaEdges: .all)
     }
 
     // MARK: - Track destinations + current-value summaries

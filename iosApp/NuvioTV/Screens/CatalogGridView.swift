@@ -42,7 +42,7 @@ struct CatalogGridView: View {
                                 NavigationLink(value: TitleRoute(preview: item)) {
                                     PosterCard(title: item.name, imageURL: item.poster)
                                 }
-                                .buttonStyle(.poster)
+                                .buttonStyle(.borderless)
                                 .onAppear { model.itemAppeared(at: index) }
                             }
                         }

@@ -146,12 +146,12 @@ struct CatalogRowView: View {
                         Group {
                             if let onSelect {
                                 Button { onSelect(item) } label: { card(for: item) }
-                                    .buttonStyle(.poster)
+                                    .buttonStyle(.borderless)
                             } else {
                                 NavigationLink(value: TitleRoute(preview: item)) {
                                     card(for: item)
                                 }
-                                .buttonStyle(.poster)
+                                .buttonStyle(.borderless)
                             }
                         }
                         .focused($focusedItemId, equals: item.id)

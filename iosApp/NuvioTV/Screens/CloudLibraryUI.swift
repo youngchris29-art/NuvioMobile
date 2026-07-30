@@ -168,7 +168,7 @@ struct CloudItemRow: View {
         Button(action: action) {
             HStack(spacing: Theme.Spacing.lg) {
                 Image(systemName: iconName)
-                    .font(.system(size: 34))
+                    .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.accent)
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(item.name)
@@ -185,7 +185,7 @@ struct CloudItemRow: View {
                     ProgressView()
                 } else if !item.playableFiles.isEmpty {
                     Image(systemName: "play.circle")
-                        .font(.system(size: 30))
+                        .font(Theme.Font.body)
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
             }

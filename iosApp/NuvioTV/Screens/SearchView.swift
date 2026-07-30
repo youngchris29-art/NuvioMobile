@@ -82,7 +82,9 @@ struct SearchView: View {
         if model.isLoading {
             HStack(spacing: Theme.Spacing.md) {
                 ProgressView()
-                Text("Searching\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                Text("Searching\u{2026}")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
             }
         } else if let message = model.emptyMessage {
             Text(message).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
@@ -196,7 +198,9 @@ struct SearchView: View {
             if discover.isLoading {
                 HStack(spacing: Theme.Spacing.md) {
                     ProgressView()
-                    Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                    Text("Loading\u{2026}")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
                 }
             } else if let reason = discover.emptyStateReason {
                 Text(discoverEmptyMessage(reason))
@@ -209,7 +213,7 @@ struct SearchView: View {
                     NavigationLink(value: TitleRoute(preview: item)) {
                         PosterCard(title: item.name, imageURL: item.poster)
                     }
-                    .buttonStyle(.poster)
+                    .buttonStyle(.borderless)
                     .onAppear { model.discoverItemAppeared(at: index) }
                 }
             }

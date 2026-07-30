@@ -1,9 +1,28 @@
 import SwiftUI
 
-/// Platter-free replacement for `.card` on full-width text rows (settings rows, sidebar
-/// categories, trailer/comment rows). Transparent at rest; while focused it draws a soft white
-/// highlight plus the brand focus ring, so the row stays legible at 10 feet without the system
-/// grey platter. The `Button` remains the focusable element, same as `PosterButtonStyle`.
+/// Focus treatment shared by the custom control styles below (HIG revamp, see
+/// docs/design/hig-hybrid-contract.md): these mimic the SYSTEM tvOS focus language — the platter
+/// turns near-white and the label flips dark, with a small lift — rather than the old brand
+/// accent rings. Custom `ButtonStyle`s are kept only where a system style can't express the
+/// shape (capsule chips with a selected fill; full-width transparent rows pending the Settings
+/// List conversion). Everything else should use `.borderless` / `.card` / `.glass` /
+/// `.bordered` directly.
+private enum FocusLook {
+    /// System focus platter color (near-white, as `.bordered`/`.card` render it).
+    static let platter = Color.white
+    /// Label color on the focused platter.
+    static let onPlatter = Color.black.opacity(0.85)
+    static let liftScale: CGFloat = 1.05
+    static let pressScale: CGFloat = 0.97
+    static let anim = Animation.easeOut(duration: 0.15)
+    static let pressAnim = Animation.easeOut(duration: 0.12)
+    /// Soft shadow under a lifted (focused) control — reads as elevation, not glow.
+    static func liftShadow(_ isFocused: Bool) -> Color { .black.opacity(isFocused ? 0.45 : 0) }
+}
+
+/// Full-width text row style used by Settings (pending the native List conversion) and a few
+/// content rows. Transparent at rest; focused it renders the system look: near-white platter,
+/// dark label, slight lift.
 struct SettingsRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         RowBody(configuration: configuration)
@@ -15,30 +34,34 @@ struct SettingsRowButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
+                .foregroundStyle(isFocused ? FocusLook.onPlatter : Theme.Palette.textPrimary)
+                // The label's own semantic colors (.primary/.secondary — e.g. subtitles, stream
+                // metadata) don't inherit the foregroundStyle above; flipping the scheme makes
+                // them resolve dark on the white focus platter (device feedback: light-on-white
+                // text in the stream picker / settings rows was illegible).
+                .environment(\.colorScheme, isFocused ? .light : .dark)
                 .background(
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
-                        .fill(Color.white.opacity(isFocused ? 0.1 : 0))
+                        .fill(isFocused ? FocusLook.platter : .clear)
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.card)
-                        .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 2 : 0)
-                )
+                .shadow(color: FocusLook.liftShadow(isFocused), radius: 16, y: 8)
                 .scaleEffect(isFocused ? 1.02 : 1)
-                .scaleEffect(configuration.isPressed ? 0.97 : 1)
-                .animation(.easeOut(duration: 0.15), value: isFocused)
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+                .scaleEffect(configuration.isPressed ? FocusLook.pressScale : 1)
+                .animation(FocusLook.anim, value: isFocused)
+                .animation(FocusLook.pressAnim, value: configuration.isPressed)
         }
     }
 }
 
 extension ButtonStyle where Self == SettingsRowButtonStyle {
-    /// Platter-free style for full-width text rows.
+    /// Platter-free-at-rest style for full-width text rows (system-look focus).
     static var settingsRow: SettingsRowButtonStyle { .init() }
 }
 
-/// Platter-free replacement for `.bordered` chips. Unselected chips are outline-only; selected
-/// chips fill with the theme accent. Focus reads as scale + the brand focus ring (white on
-/// selected chips so it stands out against the accent fill).
+/// Capsule chip. System focus language: grey platter at rest, near-white platter + dark label
+/// while focused, small lift. Selection (the one place the brand accent is allowed) shows as an
+/// accent fill at rest; focus always overrides it with the system white platter — exactly how
+/// native tvOS pickers treat a focused selected item.
 struct ChipButtonStyle: ButtonStyle {
     var selected = false
 
@@ -51,36 +74,39 @@ struct ChipButtonStyle: ButtonStyle {
         let selected: Bool
         @Environment(\.isFocused) private var isFocused
 
-        private var strokeColor: Color {
-            // Focused+selected used a hardcoded white ring to stand out against the accent fill —
-            // on the White theme that fill IS white, so the ring vanished exactly like the label
-            // text did. `accentText` contrasts with the fill on every theme (dark ring on the
-            // White theme's near-white fill, the previous light ring everywhere else).
-            if isFocused { return selected ? Theme.Palette.accentText : Theme.Palette.accentFocus }
-            return selected ? .clear : Theme.Palette.textSecondary.opacity(0.35)
+        private var fill: Color {
+            if isFocused { return FocusLook.platter }
+            if selected { return Theme.Palette.accent }
+            return Color.white.opacity(0.1)
+        }
+
+        private var labelColor: Color {
+            if isFocused { return FocusLook.onPlatter }
+            if selected { return Theme.Palette.accentText }
+            return Theme.Palette.textPrimary
         }
 
         var body: some View {
             configuration.label
-                // Selected chips fill with the theme accent — on the White theme that fill is
-                // near-white, so pin the text/icon color to the accent-aware `accentText` rather
-                // than letting it fall through to the caller's (often unset, default-light) color.
-                .foregroundStyle(selected ? Theme.Palette.accentText : Theme.Palette.textPrimary)
+                .foregroundStyle(labelColor)
+                // Same semantic-color flip as SettingsRowButtonStyle — chip labels with their own
+                // .secondary text stay legible on the white focus platter.
+                .environment(\.colorScheme, isFocused ? .light : .dark)
                 .frame(minWidth: 40, minHeight: 40)
-                .background(Capsule().fill(selected ? Theme.Palette.accent : .clear))
-                .overlay(Capsule().strokeBorder(strokeColor, lineWidth: isFocused ? 3 : 1))
-                .scaleEffect(isFocused ? 1.05 : 1)
-                .scaleEffect(configuration.isPressed ? 0.97 : 1)
-                .animation(.easeOut(duration: 0.15), value: isFocused)
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+                .background(Capsule().fill(fill))
+                .shadow(color: FocusLook.liftShadow(isFocused), radius: 16, y: 8)
+                .scaleEffect(isFocused ? FocusLook.liftScale : 1)
+                .scaleEffect(configuration.isPressed ? FocusLook.pressScale : 1)
+                .animation(FocusLook.anim, value: isFocused)
+                .animation(FocusLook.pressAnim, value: configuration.isPressed)
         }
     }
 }
 
 extension ButtonStyle where Self == ChipButtonStyle {
-    /// Outline chip with no selection state.
+    /// Capsule chip with no selection state.
     static var chip: ChipButtonStyle { .init() }
-    /// Chip that fills with the theme accent when selected.
+    /// Chip that fills with the theme accent when selected (at rest; focus overrides).
     static func chip(selected: Bool) -> ChipButtonStyle { .init(selected: selected) }
 }
 

@@ -59,10 +59,11 @@ enum Theme {
             let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
             return luminance > 0.75 ? Color(hex: 0x0D0D0D) : textPrimary
         }
-        /// Primary text on dark backgrounds.
-        static let textPrimary = Color(hex: 0xF5F7F8)
-        /// Secondary / muted text.
-        static let textSecondary = Color(hex: 0x969CA3)
+        /// Primary text — semantic, resolves against the pinned dark scheme (near-white) and
+        /// tracks Increase Contrast automatically. (Was hard-coded 0xF5F7F8.)
+        static let textPrimary = Color.primary
+        /// Secondary / muted text — semantic. (Was hard-coded 0x969CA3.)
+        static let textSecondary = Color.secondary
         /// Hairline / outline color.
         static let outline = Color(hex: 0x252A2A)
         /// Rating star.
@@ -71,16 +72,44 @@ enum Theme {
         static let progress = Color(hex: 0xFF5252)
     }
 
-    // MARK: - Typography (sized for the 10-foot "lean-back" UI)
+    // MARK: - Surfaces (materials / Liquid Glass)
+
+    /// System materials for floating chrome. Prefer these over the opaque `Palette.surface*`
+    /// hexes for anything that OVERLAYS content (modals, pickers, pause cards, chrome over
+    /// artwork) — HIG: glass/materials belong to the floating layer, opaque surfaces to the
+    /// content layer. `Palette.surface*` remains correct for in-content fills (card shimmer
+    /// bases, list row fills) where translucency would just add noise.
+    enum Surface {
+        /// Large panels presented over content (stream picker, track picker, profile sheets).
+        static let panel: Material = .thick
+        /// Standard floating overlays (pause info card, confirmation panels).
+        static let overlay: Material = .regular
+        /// Light-touch chrome riding on media (badges over artwork, transport bar).
+        static let chrome: Material = .thin
+    }
+
+    // MARK: - Typography (semantic tvOS text styles)
+    //
+    // Every token maps to a `Font.TextStyle` rather than a fixed point size, so text scales with
+    // the user's Larger Text / Bold Text accessibility settings for free (HIG ACCESS-07). The
+    // tvOS defaults already sit on the 10-foot size table (body 29, title3 48, title2 57…), so
+    // each mapping below is the closest style to the old fixed size — call sites are unchanged.
 
     enum Font {
-        static let hero = SwiftUI.Font.system(size: 52, weight: .bold)
-        static let screenTitle = SwiftUI.Font.system(size: 48, weight: .bold)
-        static let sectionTitle = SwiftUI.Font.system(size: 30, weight: .semibold)
-        static let cardTitle = SwiftUI.Font.system(size: 24, weight: .regular)
-        static let body = SwiftUI.Font.system(size: 28, weight: .regular)
-        static let meta = SwiftUI.Font.system(size: 26, weight: .semibold)
-        static let caption = SwiftUI.Font.system(size: 22, weight: .regular)
+        /// Hero display text (was fixed 52pt bold → title2, 57pt): clearer step above screenTitle.
+        static let hero = SwiftUI.Font.title2.weight(.bold)
+        /// Screen titles (was fixed 48pt bold → title3, 48pt — exact match).
+        static let screenTitle = SwiftUI.Font.title3.weight(.bold)
+        /// Section/row headers (was fixed 30pt semibold → callout, 31pt).
+        static let sectionTitle = SwiftUI.Font.callout.weight(.semibold)
+        /// Card titles under posters (was fixed 24pt → caption, 25pt).
+        static let cardTitle = SwiftUI.Font.caption
+        /// Body copy (was fixed 28pt → body, 29pt — the HIG minimum for body text).
+        static let body = SwiftUI.Font.body
+        /// Metadata lines — year/runtime/rating (was fixed 26pt semibold → caption, 25pt).
+        static let meta = SwiftUI.Font.caption.weight(.semibold)
+        /// Fine print (was fixed 22pt → caption2, 23pt).
+        static let caption = SwiftUI.Font.caption2
     }
 
     // MARK: - Spacing

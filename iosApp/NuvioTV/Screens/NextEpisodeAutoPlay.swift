@@ -621,7 +621,7 @@ struct UpNextCard: View {
                 if let source = engine.sourceName {
                     Text(source)
                         .font(.caption)
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(.white.opacity(0.7))
                         .lineLimit(1)
                 }
             case .stillWatching:

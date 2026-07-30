@@ -40,7 +40,7 @@ struct CachedAsyncImage: View {
                 ZStack {
                     Theme.Palette.surface
                     Image(systemName: "film")
-                        .font(.system(size: 44))
+                        .font(Theme.Font.screenTitle)
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
             } else if url == nil {
@@ -257,6 +257,7 @@ private final class CachedImageLoader: ObservableObject {
 
 /// Animated shimmer placeholder shown while an image loads.
 struct ShimmerView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var animate = false
 
     var body: some View {
@@ -274,9 +275,15 @@ struct ShimmerView: View {
             )
             .clipped()
             .onAppear {
+                // Reduce Motion: leave the placeholder static instead of an endlessly sweeping
+                // gradient — the loading state is still conveyed by the flat surface fill.
+                guard !reduceMotion else { return }
                 withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) {
                     animate = true
                 }
             }
+            // A loading placeholder, never real content — any accessibility label for the
+            // artwork itself is applied by the caller (e.g. the poster's title), separately.
+            .accessibilityHidden(true)
     }
 }

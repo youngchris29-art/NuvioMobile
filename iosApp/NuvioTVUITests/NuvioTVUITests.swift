@@ -243,14 +243,14 @@ final class NuvioTVUITests: XCTestCase {
         openTab(app, named: "Settings")
         shot(app, "04a_settings")
 
-        // Appearance category → the three new toggle rows.
+        // Appearance category → the two Detail-page toggle rows. ("Trailers on Focus" lives in
+        // the Home Screen category, not here — asserted in the 04c step below.)
         let appearance = app.buttons["Appearance"]
         _ = moveFocus(.down, until: appearance, max: 10)
         remote.press(.select)
         pause(1.5)
         shot(app, "04b_appearance")
-        XCTAssertTrue(app.staticTexts["Trailers on Focus"].waitForExistence(timeout: 4), "Trailers on Focus row missing")
-        XCTAssertTrue(app.staticTexts["Auto-Play Trailer on Detail"].exists, "Auto-Play Trailer row missing")
+        XCTAssertTrue(app.staticTexts["Auto-Play Trailer on Detail"].waitForExistence(timeout: 4), "Auto-Play Trailer row missing")
         XCTAssertTrue(app.staticTexts["Poster in Detail Background"].exists, "Poster in Detail Background row missing")
 
         // "Home Screen" category (the Home Rows *section* lives inside it) sits directly below
@@ -262,6 +262,7 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "04c_home_rows")
         XCTAssertTrue(app.staticTexts["Show Hero"].waitForExistence(timeout: 4), "Show Hero row missing")
         XCTAssertTrue(app.staticTexts["Hero Sources"].exists, "Hero Sources group missing")
+        XCTAssertTrue(app.staticTexts["Trailers on Focus"].exists, "Trailers on Focus row missing")
         // Scroll down through the section so the sources list + caption land in a screenshot.
         press(.down, times: 4)
         shot(app, "04d_hero_sources_list")

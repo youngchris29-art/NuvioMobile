@@ -107,7 +107,7 @@ private struct AddonRow: View {
         Button(action: onToggle) {
             HStack(spacing: 24) {
                 Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 34))
+                    .font(Theme.Font.body)
                     .foregroundStyle(enabled ? Theme.Palette.accent : Theme.Palette.textSecondary)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.headline).lineLimit(1)

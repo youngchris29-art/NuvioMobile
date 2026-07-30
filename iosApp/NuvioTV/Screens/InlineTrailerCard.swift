@@ -523,11 +523,8 @@ struct InlineTrailerCard: View {
             }
         }
         .opacity(model.isExpanded ? 1 : 0)
-        // The card's own scale/tilt lives inside PosterCard/LandscapeCard and is untouched; the
-        // tile repeats it so the two move as one object.
-        .scaleEffect(isFocused ? 1.12 : 1)
-        .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+        // No focus scale of its own: the system `.borderless` lift moves the whole button label
+        // (base card + this tile) as one object (HIG revamp).
         .allowsHitTesting(false)
     }
 
@@ -555,10 +552,6 @@ struct InlineTrailerCard: View {
         }
         .frame(width: artworkWidth, height: artworkHeight)
         .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-        .overlay(
-            RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
-                .strokeBorder(Theme.Palette.accentFocus, lineWidth: 4)
-        )
         .overlay(alignment: .bottomTrailing) {
             if model.playingURL != nil {
                 InlineTrailerMuteGlyph().padding(Theme.Spacing.sm)

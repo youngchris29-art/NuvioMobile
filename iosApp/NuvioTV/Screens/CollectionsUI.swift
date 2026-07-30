@@ -54,7 +54,7 @@ struct CollectionRowView: View {
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
                             FolderTile(folder: folder)
                         }
-                        .buttonStyle(.poster)
+                        .buttonStyle(.borderless)
                     }
                 }
                 .padding(.vertical, Theme.Spacing.sm)
@@ -105,15 +105,11 @@ struct FolderTile: View {
                     )
                     let emoji: String? = folder.coverEmoji
                     Text(emoji?.isEmpty == false ? emoji! : String(folder.title.prefix(1)))
-                        .font(.system(size: 64))
+                        .font(Theme.Font.hero)
                 }
             }
             .frame(width: tileWidth, height: tileHeight)
             .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: style.cornerRadius)
-                    .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
-            )
 
             if !folder.hideTitle {
                 Text(folder.title)
@@ -253,7 +249,7 @@ struct FolderDetailView: View {
                                 NavigationLink(value: TitleRoute(preview: item)) {
                                     PosterCard(title: item.name, imageURL: item.poster)
                                 }
-                                .buttonStyle(.poster)
+                                .buttonStyle(.borderless)
                                 .onAppear { model.itemAppeared(at: index) }
                             }
                         }

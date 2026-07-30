@@ -78,14 +78,14 @@ struct ProfileSelectionView: View {
                                         ProfileAvatar(profile: profile, avatars: model.avatars)
                                         if profile.pinEnabled {
                                             Image(systemName: "lock.fill")
-                                                .font(.system(size: 28))
+                                                .font(Theme.Font.body)
                                                 .foregroundStyle(Theme.Palette.textPrimary)
                                                 .padding(10)
                                                 .glassEffect(.regular, in: Circle())
                                         } else if profile.profileIndex == 1 {
                                             // Primary-profile star badge (mobile reference).
                                             Image(systemName: "star.fill")
-                                                .font(.system(size: 22))
+                                                .font(Theme.Font.caption)
                                                 .foregroundStyle(.black)
                                                 .padding(8)
                                                 .background(Theme.Palette.star, in: Circle())
@@ -93,7 +93,7 @@ struct ProfileSelectionView: View {
                                     }
                                 }
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                             .contextMenu {
                                 Button {
                                     requirePin(for: profile, action: .edit)
@@ -114,13 +114,13 @@ struct ProfileSelectionView: View {
                                     ZStack {
                                         Circle().strokeBorder(Theme.Palette.textSecondary, lineWidth: 3)
                                         Image(systemName: "plus")
-                                            .font(.system(size: 64, weight: .semibold))
+                                            .font(Theme.Font.hero)
                                             .foregroundStyle(Theme.Palette.textSecondary)
                                     }
                                     .frame(width: 170, height: 170)
                                 }
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -215,17 +215,16 @@ private struct ProfileTileLabel<Content: View>: View {
 
     var body: some View {
         VStack(spacing: Theme.Spacing.md) {
+            // Focus motion comes from the system `.borderless` lift (HIG revamp) — no custom
+            // scale or glow on top of it.
             avatar
-                .scaleEffect(isFocused ? 1.12 : 1)
-                .shadow(color: .white.opacity(isFocused ? 0.4 : 0), radius: 26)
-                .shadow(color: Theme.Palette.accent.opacity(isFocused ? 0.35 : 0), radius: 44)
             Text(name)
                 .font(Theme.Font.sectionTitle)
                 .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                 .lineLimit(1)
             if isPrimary {
                 Text("PRIMARY")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(Theme.Font.caption)
                     .tracking(2)
                     .foregroundStyle(Theme.Palette.star)
                     .padding(.horizontal, Theme.Spacing.md)
@@ -313,7 +312,7 @@ struct ProfileEditView: View {
                         } else {
                             Circle().fill(Color(hexString: colorHex) ?? Theme.Palette.accent)
                             Text(name.trimmingCharacters(in: .whitespaces).prefix(1).uppercased())
-                                .font(.system(size: 64, weight: .semibold))
+                                .font(Theme.Font.hero)
                                 .foregroundStyle(.white)
                         }
                     }
@@ -336,7 +335,7 @@ struct ProfileEditView: View {
                                     ZStack {
                                         Circle().fill(Color(hexString: colorHex) ?? Theme.Palette.accent)
                                         Image(systemName: "paintpalette")
-                                            .font(.system(size: 32))
+                                            .font(Theme.Font.body)
                                             .foregroundStyle(.white)
                                     }
                                     .frame(width: 100, height: 100)
@@ -348,7 +347,8 @@ struct ProfileEditView: View {
                                     )
                                     .modifier(FocusRingCircle())
                                 }
-                                .buttonStyle(.poster)
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel(String(localized: "Use color avatar"))
 
                                 ForEach(model.avatars, id: \.id) { item in
                                     Button { avatarId = item.id } label: {
@@ -363,7 +363,12 @@ struct ProfileEditView: View {
                                             )
                                             .modifier(FocusRingCircle())
                                     }
-                                    .buttonStyle(.poster)
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel(
+                                        item.displayName.isEmpty
+                                            ? String(localized: "Avatar")
+                                            : item.displayName
+                                    )
                                 }
                             }
                             .padding(.horizontal, Theme.Spacing.lg)
@@ -389,7 +394,7 @@ struct ProfileEditView: View {
                                     )
                                     .modifier(FocusRingCircle())
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                         }
                     }
 
@@ -553,16 +558,11 @@ struct ProfileEditView: View {
     }
 }
 
-/// Platter-free focus visuals for the circular avatar/color tiles in the profile editor: brand
-/// focus ring + scale + shadow. Selection keeps its separate white ring.
+/// Focus visuals for the circular avatar/color tiles in the profile editor: the system
+/// `.borderless` lift carries the focus read (HIG revamp — no accent ring, no custom scale).
+/// Selection keeps its separate white ring.
 private struct FocusRingCircle: ViewModifier {
-    @Environment(\.isFocused) private var isFocused
-
     func body(content: Content) -> some View {
         content
-            .overlay(Circle().strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0))
-            .scaleEffect(isFocused ? 1.1 : 1)
-            .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 14, y: 6)
-            .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }

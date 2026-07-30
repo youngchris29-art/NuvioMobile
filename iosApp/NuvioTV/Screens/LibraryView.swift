@@ -44,7 +44,7 @@ struct LibraryView: View {
                                     NavigationLink(value: TitleRoute(preview: item.toMetaPreview())) {
                                         PosterCard(title: item.name, imageURL: item.poster)
                                     }
-                                    .buttonStyle(.poster)
+                                    .buttonStyle(.borderless)
                                     .contextMenu {
                                         Button(role: .destructive) {
                                             model.remove(item)
@@ -189,7 +189,7 @@ struct LibraryView: View {
     private var emptyState: some View {
         VStack(spacing: Theme.Spacing.md) {
             Image(systemName: "books.vertical")
-                .font(.system(size: 80))
+                .font(Theme.Font.hero)
                 .foregroundStyle(Theme.Palette.textSecondary)
             Text("Your library is empty")
                 .font(Theme.Font.sectionTitle)

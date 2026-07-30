@@ -57,7 +57,7 @@ struct WelcomeView: View {
                     } label: {
                         VStack(spacing: Theme.Spacing.sm) {
                             Image(systemName: "qrcode")
-                                .font(.system(size: 64, weight: .semibold))
+                                .font(Theme.Font.hero)
                             Text("Sign In with Your Phone")
                                 .font(Theme.Font.sectionTitle)
                             Text("Scan a QR code to sign in — no typing required")

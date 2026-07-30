@@ -247,7 +247,7 @@ struct EntityBrowseView: View {
                                 height: Theme.Size.miniPosterHeight
                             )
                         }
-                        .buttonStyle(.poster)
+                        .buttonStyle(.borderless)
                         .onAppear { model.itemAppeared(railId: rail.id, index: index) }
                     }
                     if rail.isLoadingMore {

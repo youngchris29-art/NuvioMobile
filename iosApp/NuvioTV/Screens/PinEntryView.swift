@@ -65,7 +65,8 @@ struct PinEntryView: View {
                         .tint(Theme.Palette.accent)
                 }
 
-                // Digit pad
+                // Digit pad — sits on a glass panel (HIG revamp: floating chrome uses materials,
+                // not an opaque fill).
                 VStack(spacing: Theme.Spacing.md) {
                     ForEach(padRows, id: \.self) { row in
                         HStack(spacing: Theme.Spacing.md) {
@@ -75,6 +76,8 @@ struct PinEntryView: View {
                         }
                     }
                 }
+                .padding(Theme.Spacing.lg)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
             }
             .padding(Theme.Spacing.screen)
         }

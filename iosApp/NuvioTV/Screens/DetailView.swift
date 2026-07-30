@@ -224,6 +224,9 @@ struct DetailView: View {
                 .clipped()
         }
         .ignoresSafeArea()
+        // Purely decorative full-bleed background — the title/overview text drawn over it
+        // already carries the same information for VoiceOver.
+        .accessibilityHidden(true)
     }
 
     /// The poster pinned to the right 40% of the screen, behind the description (tester ask, mirrors
@@ -247,6 +250,8 @@ struct DetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
         .ignoresSafeArea()
+        // Same reasoning as backdropImage — decorative right-edge poster art, not a control.
+        .accessibilityHidden(true)
     }
 
     /// Gradient scrims for text legibility, drawn over the backdrop (and the trailer, when present).
@@ -439,7 +444,7 @@ struct DetailView: View {
                                 NavigationLink(value: PersonRoute(id: personId, name: person.name)) {
                                     CastCard(person: person)
                                 }
-                                .buttonStyle(.poster)
+                                .buttonStyle(.borderless)
                             } else {
                                 CastCard(person: person)
                             }
@@ -472,7 +477,7 @@ struct DetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
@@ -562,7 +567,7 @@ struct DetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
@@ -599,7 +604,7 @@ struct DetailView: View {
                         )) {
                             companyChip(entry.company)
                         }
-                        .buttonStyle(.poster)
+                        .buttonStyle(.borderless)
                     } else {
                         companyChip(entry.company)
                     }
@@ -887,7 +892,7 @@ private struct CastCard: View {
                     ZStack {
                         Theme.Palette.surface
                         Image(systemName: "person.fill")
-                            .font(.system(size: 44))
+                            .font(Theme.Font.screenTitle)
                             .foregroundStyle(Theme.Palette.textSecondary)
                     }
                 }
@@ -895,11 +900,6 @@ private struct CastCard: View {
             .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
             .clipShape(Circle())
             .nuvioCardDepth(Circle(), surface: .cast)
-            .overlay(
-                Circle().strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
-            )
-            .scaleEffect(isFocused ? 1.07 : 1)
-            .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
             Text(person.name)
                 .font(Theme.Font.caption)
                 .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))
@@ -939,10 +939,6 @@ private struct CompanyChip: View {
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.xs)
         .background(Color.white.opacity(0.92), in: Capsule())
-        .overlay(Capsule().strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 3 : 0))
-        .scaleEffect(isFocused ? 1.08 : 1)
-        .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: 14, y: 6)
-        .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
 

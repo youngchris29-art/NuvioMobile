@@ -215,7 +215,7 @@ struct StreamPickerView: View {
                         .foregroundStyle(Theme.Palette.textPrimary)
                         .padding(.horizontal, Theme.Spacing.lg)
                         .padding(.vertical, Theme.Spacing.md)
-                        .background(Theme.Palette.surfaceElevated, in: Capsule())
+                        .background(Theme.Surface.overlay, in: Capsule())
                         .padding(.bottom, Theme.Spacing.xl)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }

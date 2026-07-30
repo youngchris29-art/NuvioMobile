@@ -1,59 +1,17 @@
 import SwiftUI
 
-/// Platter-free replacement for the system `.card` button style: no background platter, no grey
-/// border around the label. Focus motion (scale + tilt/parallax + shadow/glow) is added by the tile
-/// views themselves via `@Environment(\.isFocused)` — the `Button` stays the focusable element, so
-/// that environment keeps working exactly as it did under `.card`.
-struct PosterButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-extension ButtonStyle where Self == PosterButtonStyle {
-    /// Platter-free tile style for poster/landscape/profile tiles.
-    static var poster: PosterButtonStyle { .init() }
-}
-
-extension View {
-    /// The parallax half of the focus lift: the system `.card` style tilts artwork toward the Siri
-    /// Remote's touch point as your thumb moves; SwiftUI on tvOS has no API to read that touch-surface
-    /// delta directly, so this is a focus-driven approximation — a fixed micro-tilt + slight upward
-    /// nudge that animates in with the existing scale/shadow instead of tracking touch position live.
-    /// Kept to a couple of degrees so it reads as "lean toward the viewer", not a wobble, and gated on
-    /// Reduce Motion since it's a 3D rotation rather than a plain size/opacity change.
-    ///
-    /// Purely a visual transform (`rotation3DEffect`/`offset` don't affect layout), so it composes with
-    /// the existing `scaleEffect`/`shadow` focus chain and never reflows the row it sits in.
-    ///
-    /// Bottom-anchored: rotating around the card's bottom edge makes the top lean toward the viewer —
-    /// a "stands up" read that stays visible even on wide 16:9 cards, where a center-anchored tilt
-    /// projected too weakly to notice (BUG-10, reported twice on the wide-poster layout).
-    func posterFocusTilt(isFocused: Bool, reduceMotion: Bool) -> some View {
-        let active = isFocused && !reduceMotion
-        return self
-            .rotation3DEffect(
-                .degrees(active ? 8 : 0),
-                axis: (x: 1, y: -0.35, z: 0),
-                anchor: .bottom,
-                anchorZ: 0,
-                perspective: 0.35
-            )
-            .offset(y: active ? -10 : 0)
-    }
-}
-
-/// The standard portrait poster tile used across catalog rows, search results, and "more like this".
+/// The standard portrait poster lockup used across catalog rows, search results, and "more like
+/// this".
 ///
-/// Designed to be used as the label of a `Button` / `NavigationLink` with `.buttonStyle(.card)` —
-/// the system `.card` style provides tvOS's focus lift/parallax, and this view adds the brand focus
-/// ring plus a title that brightens on focus, so every poster in the app focuses the same way.
+/// HIG revamp (see docs/design/hig-hybrid-contract.md): focus motion is the SYSTEM's job now.
+/// Use this view as the label of a `Button`/`NavigationLink` with `.buttonStyle(.borderless)` —
+/// on tvOS the borderless style gives the artwork the native lockup treatment (lift, real
+/// Siri-Remote-tracking parallax, specular highlight, shadow) while the title below rides along
+/// unscaled, exactly like the system TV app. No accent rings, no custom scale/tilt.
 ///
 /// ```swift
 /// NavigationLink(value: route) { PosterCard(title: item.name, imageURL: item.poster) }
-///     .buttonStyle(.card)
+///     .buttonStyle(.borderless)
 /// ```
 struct PosterCard: View {
     let title: String
@@ -66,7 +24,6 @@ struct PosterCard: View {
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var resolvedWidth: CGFloat { width ?? style.width }
     private var resolvedHeight: CGFloat { height ?? style.height }
@@ -78,11 +35,11 @@ struct PosterCard: View {
                 .frame(width: resolvedWidth, height: resolvedHeight)
                 .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
                 .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
-                .overlay(
-                    RoundedRectangle(cornerRadius: style.cornerRadius)
-                        .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
-                )
-                .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
+                // Whole-card system lift: without this the borderless hover effect lands on the
+                // inner Image, so the artwork parallaxes INSIDE a static clipped edge (device
+                // feedback). Tagging the clipped container makes the entire card — edge included —
+                // lift and track the remote as one object.
+                .hoverEffect(.highlight)
 
             if titleVisible {
                 Text(title)
@@ -94,19 +51,12 @@ struct PosterCard: View {
                     .frame(width: resolvedWidth, alignment: .leading)
             }
         }
-        // Tester feedback asked to "enlarge the selected poster" — bumped from 1.07 to 1.12 for a
-        // more noticeable focus lift. Pure scaleEffect (not layout), so rows don't need extra
-        // spacing to accommodate it. Scale + tilt wrap the WHOLE card (artwork + title) so the
-        // grown artwork can never extend into its own title's frame (BUG-15); the shadow stays on
-        // the artwork above, or it would give every title glyph a drop shadow.
-        .scaleEffect(isFocused ? 1.12 : 1)
-        .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
-        .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }
 
-/// Landscape (16:9) card used for the Continue Watching row: artwork with a progress bar and a
-/// title that brightens on focus. Same focus language as `PosterCard`.
+/// Landscape (16:9) lockup used for the Continue Watching row: artwork with a progress bar and a
+/// title that brightens on focus. Same system focus language as `PosterCard` — use with
+/// `.buttonStyle(.borderless)`.
 struct LandscapeCard: View {
     let title: String
     let imageURL: String?
@@ -121,7 +71,6 @@ struct LandscapeCard: View {
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var titleVisible: Bool { showTitle ?? style.showTitle }
 
@@ -132,10 +81,6 @@ struct LandscapeCard: View {
                     .frame(width: width, height: height)
                     .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: depthSurface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: style.cornerRadius)
-                            .strokeBorder(Theme.Palette.accentFocus, lineWidth: isFocused ? 4 : 0)
-                    )
 
                 if let progress {
                     GeometryReader { geo in
@@ -150,7 +95,8 @@ struct LandscapeCard: View {
                 }
             }
             .frame(width: width, height: height)
-            .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: 22, y: 10)
+            // Whole-card system lift — see PosterCard: the progress bar and artwork move as one.
+            .hoverEffect(.highlight)
 
             if titleVisible {
                 Text(title)
@@ -162,9 +108,5 @@ struct LandscapeCard: View {
                     .frame(width: width, alignment: .leading)
             }
         }
-        // Same whole-card focus scale/tilt as PosterCard — see comment there (BUG-15).
-        .scaleEffect(isFocused ? 1.12 : 1)
-        .posterFocusTilt(isFocused: isFocused, reduceMotion: reduceMotion)
-        .animation(.easeOut(duration: 0.15), value: isFocused)
     }
 }

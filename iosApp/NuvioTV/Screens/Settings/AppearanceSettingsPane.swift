@@ -1,0 +1,344 @@
+import SwiftUI
+import SharedCore
+
+/// "Appearance" category content: accent theme, poster card style, card depth effect, and stream
+/// badges. Extracted from SettingsView.swift (Phase 2 HIG revamp file split) — logic and wiring
+/// preserved verbatim, only regrouped into a per-category pane.
+struct AppearanceSettingsPane: View {
+    @ObservedObject var model: SettingsViewModel
+    @ObservedObject var badges: BadgeSettingsViewModel
+
+    /// Mirrors HomeView's `hero_poster_focus_only` @AppStorage key (same UserDefaults key, read
+    /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
+    /// on for testers who preferred the original behavior. Local-only, not synced.
+    @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
+    /// Mirrors DetailView's `detail_trailer_autoplay` key. Local-only, not synced.
+    @AppStorage("detail_trailer_autoplay") private var detailTrailerAutoplay = true
+    /// Mirrors DetailView's `detail_poster_backdrop` key. Local-only, not synced.
+    @AppStorage("detail_poster_backdrop") private var detailPosterBackdrop = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
+            settingsSection(String(localized: "Theme")) {
+                Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
+            }
+
+            settingsSection(String(localized: "Poster Style")) {
+                PosterStyleControls(
+                    widthDp: model.posterWidthDp,
+                    cornerDp: model.posterCornerRadiusDp,
+                    hideLabels: model.posterHideLabels,
+                    landscapeRows: model.posterLandscapeRows,
+                    onSize: { model.setPosterWidth($0) },
+                    onCorner: { model.setPosterCorner($0) },
+                    onHideLabels: { model.setPosterHideLabels($0) },
+                    onLandscape: { model.setPosterLandscapeRows($0) },
+                    onReset: { model.resetPosterStyle() }
+                )
+                // Default (off) always shows the Home hero's backdrop artwork — a beta
+                // tester read the old focus-only fade as a bug ("hero posts don't
+                // work"). This restores that original fade for anyone who preferred it.
+                SettingsToggleRow(
+                    title: String(localized: "Hero Poster Only When Focused"),
+                    subtitle: heroPosterFocusOnly
+                        ? String(localized: "On \u{00B7} Home hero artwork fades in only while the hero carousel is focused")
+                        : String(localized: "Off \u{00B7} Home hero artwork is always visible"),
+                    isOn: heroPosterFocusOnly
+                ) {
+                    heroPosterFocusOnly.toggle()
+                }
+                SettingsToggleRow(
+                    title: String(localized: "Auto-Play Trailer on Detail"),
+                    subtitle: detailTrailerAutoplay
+                        ? String(localized: "On \u{00B7} Play the trailer full screen shortly after opening a title")
+                        : String(localized: "Off \u{00B7} Trailers only play when selected"),
+                    isOn: detailTrailerAutoplay
+                ) {
+                    detailTrailerAutoplay.toggle()
+                }
+                SettingsToggleRow(
+                    title: String(localized: "Poster in Detail Background"),
+                    subtitle: detailPosterBackdrop
+                        ? String(localized: "On \u{00B7} Show the title's poster on the right side of detail pages")
+                        : String(localized: "Off \u{00B7} Detail pages show only the backdrop"),
+                    isOn: detailPosterBackdrop
+                ) {
+                    detailPosterBackdrop.toggle()
+                }
+            }
+
+            settingsSection(String(localized: "Card Depth")) {
+                CardDepthControls(
+                    style: model.cardDepth,
+                    onEnabled: { model.setCardDepthEnabled($0) },
+                    onEdge: { model.setCardDepthEdge($0) },
+                    onSheen: { model.setCardDepthSheen($0) },
+                    onCoverage: { model.setCardDepthCoverage($0) },
+                    onSurface: { model.setCardDepthSurface($0, $1) },
+                    onReset: { model.resetCardDepth() }
+                )
+            }
+
+            settingsSection(String(localized: "Stream Badges")) {
+                StreamBadgesSection(badges: badges)
+            }
+        }
+    }
+}
+
+/// A row of theme swatches (one per shared `AppTheme`); the selected one wears a ring. Swatch
+/// colors mirror `AppTheme.nativeAccentHex` (and Theme.Palette.applyTheme's table).
+private struct ThemePickerRow: View {
+    let selectedName: String
+    let onSelect: (AppTheme) -> Void
+
+    private static let options: [(theme: AppTheme, label: String, colorHex: UInt32)] = [
+        (.crimson, String(localized: "Crimson"), 0xE53935),
+        (.ocean, String(localized: "Ocean"), 0x1E88E5),
+        (.violet, String(localized: "Violet"), 0x8E24AA),
+        (.emerald, String(localized: "Emerald"), 0x43A047),
+        (.amber, String(localized: "Amber"), 0xFB8C00),
+        (.rose, String(localized: "Rose"), 0xD81B60),
+        (.white, String(localized: "White"), 0xF5F5F5),
+    ]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(Self.options, id: \.label) { option in
+                    Button {
+                        onSelect(option.theme)
+                    } label: {
+                        SwatchLabel(
+                            color: Color(hex: option.colorHex),
+                            colorHex: option.colorHex,
+                            label: option.label,
+                            isSelected: option.theme.name == selectedName
+                        )
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding(.vertical, Theme.Spacing.sm)
+        }
+    }
+}
+
+/// A single theme swatch: colored circle + name. Selection wears a ring; focus scales the circle
+/// and brightens the label (platter-free, mirrors the poster-tile focus language).
+private struct SwatchLabel: View {
+    let color: Color
+    /// Raw hex backing `color`, so the selection ring can pick a shade that stays visible against
+    /// it — the White swatch's fill (0xF5F5F5) is close enough to `textPrimary` that a static
+    /// near-white ring all but disappeared on it.
+    let colorHex: UInt32
+    let label: String
+    let isSelected: Bool
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.xs) {
+            Circle()
+                .fill(color)
+                .frame(width: 56, height: 56)
+                .overlay(
+                    Circle().strokeBorder(
+                        isSelected ? Theme.Palette.onColor(forFillHex: colorHex) : .clear,
+                        lineWidth: 4
+                    )
+                )
+            Text(label)
+                .font(Theme.Font.caption)
+                .foregroundStyle(
+                    isSelected || isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary
+                )
+        }
+        .padding(Theme.Spacing.sm)
+        .animation(.easeOut(duration: 0.15), value: isFocused)
+    }
+}
+
+/// Poster card style controls: size, corner radius, hide-titles and landscape-rows toggles, and a
+/// reset. Values are the shared dp presets (scaled to tvOS points by `PosterStyle`).
+private struct PosterStyleControls: View {
+    let widthDp: Int32
+    let cornerDp: Int32
+    let hideLabels: Bool
+    let landscapeRows: Bool
+    let onSize: (Int32) -> Void
+    let onCorner: (Int32) -> Void
+    let onHideLabels: (Bool) -> Void
+    let onLandscape: (Bool) -> Void
+    let onReset: () -> Void
+
+    private let sizes: [(name: String, dp: Int32)] = [
+        (String(localized: "Small"), 105), (String(localized: "Medium"), 126), (String(localized: "Large"), 154)
+    ]
+    private let corners: [(name: String, dp: Int32)] = [
+        (String(localized: "Square"), 0), (String(localized: "Rounded"), 12), (String(localized: "Round"), 28)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            controlRow(String(localized: "Size")) {
+                ForEach(sizes, id: \.dp) { size in
+                    chip(size.name, selected: widthDp == size.dp) { onSize(size.dp) }
+                }
+            }
+            controlRow(String(localized: "Corners")) {
+                ForEach(corners, id: \.dp) { corner in
+                    chip(corner.name, selected: cornerDp == corner.dp) { onCorner(corner.dp) }
+                }
+            }
+
+            SettingsToggleRow(title: String(localized: "Hide Titles"), subtitle: String(localized: "Show posters without a title label"), isOn: hideLabels) {
+                onHideLabels(!hideLabels)
+            }
+            SettingsToggleRow(title: String(localized: "Landscape Rows"), subtitle: String(localized: "Show Home & Search catalog rows as wide 16:9 cards"), isOn: landscapeRows) {
+                onLandscape(!landscapeRows)
+            }
+
+            Button(role: .destructive, action: onReset) {
+                Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
+                    .font(Theme.Font.meta)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
+            .buttonStyle(.chip)
+        }
+    }
+
+    @ViewBuilder
+    private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Text(title)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            HStack(spacing: Theme.Spacing.md) { content() }
+        }
+    }
+
+    private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(Theme.Font.meta)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xxs + 2)
+        }
+        .buttonStyle(.chip(selected: selected))
+    }
+}
+
+/// Card-depth controls: a master toggle, then edge/sheen/coverage strength presets and per-surface
+/// enables (progressively revealed once on), plus a reset. Mirrors composeApp's card-depth section;
+/// the effect itself is rendered by `View.nuvioCardDepth`. Preset values match the Compose page.
+private struct CardDepthControls: View {
+    let style: CardDepthStyle
+    let onEnabled: (Bool) -> Void
+    let onEdge: (Int32) -> Void
+    let onSheen: (Int32) -> Void
+    let onCoverage: (Int32) -> Void
+    let onSurface: (CardDepthSurface, Bool) -> Void
+    let onReset: () -> Void
+
+    private let edgeOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Subtle"), 28), (String(localized: "Balanced"), 42), (String(localized: "Bold"), 56)
+    ]
+    private let sheenOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Off"), 0), (String(localized: "Soft"), 10), (String(localized: "Bright"), 16)
+    ]
+    private let coverageOptions: [(name: String, value: Int32)] = [
+        (String(localized: "Top"), 0), (String(localized: "Half"), 50), (String(localized: "Full"), 100)
+    ]
+    private let surfaces: [(name: String, subtitle: String, surface: CardDepthSurface)] = [
+        (String(localized: "Posters"), String(localized: "Catalog & search posters"), .posters),
+        (String(localized: "Continue Watching"), String(localized: "Home Continue Watching cards"), .continueWatching),
+        (String(localized: "Episodes"), String(localized: "Episode thumbnails"), .episodeCards),
+        (String(localized: "Cast"), String(localized: "Cast avatars"), .cast),
+        (String(localized: "Trailers"), String(localized: "Trailer rows"), .trailers),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            Text("Add a raised edge highlight and a glossy top sheen to cards for a little more depth.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+
+            SettingsToggleRow(title: String(localized: "Card Depth"), subtitle: String(localized: "Enable the edge highlight and top sheen"), isOn: style.enabled) {
+                onEnabled(!style.enabled)
+            }
+
+            if style.enabled {
+                controlRow(String(localized: "Edge")) {
+                    ForEach(edgeOptions, id: \.value) { opt in
+                        chip(opt.name, selected: Int32(style.edgeStrength) == opt.value) { onEdge(opt.value) }
+                    }
+                }
+                controlRow(String(localized: "Sheen")) {
+                    ForEach(sheenOptions, id: \.value) { opt in
+                        chip(opt.name, selected: Int32(style.sheenStrength) == opt.value) { onSheen(opt.value) }
+                    }
+                }
+                controlRow(String(localized: "Edge Coverage")) {
+                    ForEach(coverageOptions, id: \.value) { opt in
+                        chip(opt.name, selected: Int32(style.edgeCoverage) == opt.value) { onCoverage(opt.value) }
+                    }
+                }
+
+                Text("Apply To")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                ForEach(surfaces, id: \.name) { entry in
+                    SettingsToggleRow(title: entry.name, subtitle: entry.subtitle, isOn: isOn(entry.surface)) {
+                        onSurface(entry.surface, !isOn(entry.surface))
+                    }
+                }
+            }
+
+            Button(role: .destructive, action: onReset) {
+                Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
+                    .font(Theme.Font.meta)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xxs + 2)
+            }
+            .buttonStyle(.chip)
+        }
+    }
+
+    private func isOn(_ surface: CardDepthSurface) -> Bool {
+        switch surface {
+        case .posters: return style.postersEnabled
+        case .continueWatching: return style.continueWatchingEnabled
+        case .episodeCards: return style.episodeCardsEnabled
+        case .cast: return style.castEnabled
+        case .trailers: return style.trailersEnabled
+        }
+    }
+
+    @ViewBuilder
+    private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Text(title)
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            HStack(spacing: Theme.Spacing.md) { content() }
+        }
+    }
+
+    private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(Theme.Font.meta)
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xxs + 2)
+        }
+        .buttonStyle(.chip(selected: selected))
+    }
+}

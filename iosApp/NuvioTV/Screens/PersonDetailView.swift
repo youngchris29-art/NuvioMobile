@@ -89,7 +89,7 @@ struct PersonDetailView: View {
                 ZStack {
                     Theme.Palette.surface
                     Image(systemName: "person.fill")
-                        .font(.system(size: 80))
+                        .font(Theme.Font.hero)
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
             }
@@ -116,7 +116,7 @@ struct PersonDetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)

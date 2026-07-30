@@ -101,7 +101,7 @@ struct QrSignInView: View {
             } else {
                 ZStack {
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
-                        .fill(Theme.Palette.surface)
+                        .fill(Theme.Surface.panel)
                         .frame(width: 460, height: 460)
                     ProgressView()
                 }
@@ -150,7 +150,7 @@ struct QrSignInView: View {
                         // code); chunk it into groups of 4 so it's readable/typeable on a phone
                         // instead of one unbroken 32-character run.
                         Text(Self.groupedForDisplay(code))
-                            .font(.system(size: 32, weight: .bold, design: .monospaced))
+                            .font(Theme.Font.sectionTitle.monospaced())
                             .kerning(4)
                             .foregroundStyle(Theme.Palette.accent)
                             .frame(maxWidth: 700, alignment: .leading)

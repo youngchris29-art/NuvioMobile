@@ -7,6 +7,7 @@ import SharedCore
 struct HomeView: View {
     @StateObject private var model = HomeViewModel()
     @State private var resume: ResumeTarget?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Whether the hero backdrop artwork only renders while the hero carousel is focused (the
     /// original behavior). A beta tester read the focus-gated fade as a bug ("hero posts don't
@@ -58,6 +59,10 @@ struct HomeView: View {
                     }
                     .opacity(heroPosterFocusOnly ? (heroFocused ? 1 : 0) : 1)
                     .animation(.easeInOut(duration: 0.4), value: heroFocused)
+                    // Purely decorative background art — the same title/synopsis is exposed by
+                    // the focusable HomeHeroForeground button in front of it, so VoiceOver
+                    // shouldn't stop on this layer too.
+                    .accessibilityHidden(true)
                 }
 
                 ScrollView(.vertical) {
@@ -100,6 +105,11 @@ struct HomeView: View {
                 .reportsScrollToTabBar()
             }
             .onReceive(heroTimer) { _ in
+                // Reduce Motion: pause auto-advance entirely rather than rebasing the TabView
+                // selection without animation — that desyncs tvOS's paged TabView (see the
+                // comment below), so the only safe accommodation is to stop advancing and let
+                // the carousel sit still until the user pages manually (still animated).
+                guard !reduceMotion else { return }
                 guard heroItems.count > 1, !heroFocused,
                       Date().timeIntervalSince(lastHeroChange) >= 7 else { return }
                 // Plain animated selection write, including the wrap back to page 0 — programmatic
@@ -241,7 +251,7 @@ struct ContinueWatchingRow: View {
                                     progress: fraction(entry)
                                 )
                             }
-                            .buttonStyle(.poster)
+                            .buttonStyle(.borderless)
                             .focused($focusedVideoId, equals: entry.videoId)
                             .contextMenu {
                                 Button(role: .destructive) {
@@ -348,7 +358,6 @@ struct HomeHeroForeground: View {
                 HeroLogo(item: item)
                     .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .modifier(HeroFocusUnderline())
 
                 Text(metaLine)
                     .font(Theme.Font.meta)
@@ -369,7 +378,7 @@ struct HomeHeroForeground: View {
             // focus is just a soft glow + content brightening (see HeroFocusGlow).
             .modifier(HeroFocusGlow())
         }
-        .buttonStyle(.poster)
+        .buttonStyle(.borderless)
         .accessibilityLabel(item.name)
     }
 
@@ -390,7 +399,9 @@ struct HomeHeroForeground: View {
 
 /// Subtle focus treatment for the hero carousel page: brightens the content and adds a soft white
 /// glow when focused. Deliberately no ring, platter, or scale — the hero spans the full carousel
-/// page, so any of those would clip at its edges.
+/// page, so any of those would clip at its edges. Documented exception to the HIG hybrid
+/// contract's "system focus only" rule: the system has no treatment for a full-bleed page, and
+/// this reads as brightness (system focus language), never brand color.
 private struct HeroFocusGlow: ViewModifier {
     @Environment(\.isFocused) private var isFocused
 
@@ -399,23 +410,6 @@ private struct HeroFocusGlow: ViewModifier {
             .opacity(isFocused ? 1 : 0.88)
             .shadow(color: .white.opacity(isFocused ? 0.22 : 0), radius: 20)
             .animation(.easeOut(duration: 0.2), value: isFocused)
-    }
-}
-
-/// Accent underline that slides in beneath the hero logo when the hero is focused. Drawn as an
-/// overlay hanging just below the fixed logo slot, so it never changes the carousel's layout.
-private struct HeroFocusUnderline: ViewModifier {
-    @Environment(\.isFocused) private var isFocused
-
-    func body(content: Content) -> some View {
-        content.overlay(alignment: .bottomLeading) {
-            Capsule()
-                .fill(Theme.Palette.accentFocus)
-                .frame(width: isFocused ? 160 : 0, height: 5)
-                .offset(y: 14)
-                .opacity(isFocused ? 1 : 0)
-                .animation(.easeOut(duration: 0.25), value: isFocused)
-        }
     }
 }
 
