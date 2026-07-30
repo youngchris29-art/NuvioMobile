@@ -179,8 +179,9 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             TabView(selection: $heroIndex) {
                 ForEach(Array(heroItems.enumerated()), id: \.offset) { index, item in
-                    HomeHeroForeground(item: item)
-                        .focused($heroFocused)
+                    // The page's only focusable element is the CTA button inside the
+                    // foreground, which carries the heroFocused binding directly.
+                    HomeHeroForeground(item: item, heroFocused: $heroFocused)
                         .tag(index)
                 }
             }
@@ -395,10 +396,14 @@ struct HomeHeroScrim: View {
 /// layout-identical and advancing the carousel can never reflow anything around it.
 struct HomeHeroForeground: View {
     let item: MetaPreview
+    /// Bound to the CTA button — the hero page's ONLY focusable element. The info block above
+    /// it is static content (Christian's spec 2026-07-30: the title is no longer selectable;
+    /// a "Go to Movie"/"Go to Show" button below the description carries focus instead).
+    var heroFocused: FocusState<Bool>.Binding
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
     var body: some View {
-        NavigationLink(value: TitleRoute(preview: item)) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Group {
                 if heroNuvioStyle {
                     nuvioLayout
@@ -406,14 +411,29 @@ struct HomeHeroForeground: View {
                     classicLayout
                 }
             }
-            .padding(Theme.Spacing.lg)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // Full-bleed carousel page: a ring or scale would clip at the page edges, so hero
-            // focus is just a soft glow + content brightening (see HeroFocusGlow).
-            .modifier(HeroFocusGlow())
+            .accessibilityElement(children: .combine)
+
+            // The CTA sits below the description and above the page dots (which render
+            // outside the TabView). D-pad left/right still pages the carousel while this
+            // button holds focus — it is the page's focus anchor.
+            NavigationLink(value: TitleRoute(preview: item)) {
+                Text(ctaTitle)
+                    .font(Theme.Font.body)
+            }
+            .buttonStyle(.glass)
+            .focused(heroFocused)
+            .frame(height: Theme.Size.heroButtonSlotHeight, alignment: .center)
+            .accessibilityLabel("\(ctaTitle): \(item.name)")
         }
-        .buttonStyle(.borderless)
-        .accessibilityLabel(item.name)
+        .padding(Theme.Spacing.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// "movie" is the only meta type that reads as a film; series/tv both read as shows.
+    private var ctaTitle: String {
+        item.type == "movie"
+            ? String(localized: "Go to Movie")
+            : String(localized: "Go to Show")
     }
 
     /// Nuvio-style: fixed-width text column on the left (logo, meta, 3-line synopsis) — the
@@ -480,21 +500,6 @@ struct HomeHeroForeground: View {
 }
 
 
-/// Subtle focus treatment for the hero carousel page: brightens the content and adds a soft white
-/// glow when focused. Deliberately no ring, platter, or scale — the hero spans the full carousel
-/// page, so any of those would clip at its edges. Documented exception to the HIG hybrid
-/// contract's "system focus only" rule: the system has no treatment for a full-bleed page, and
-/// this reads as brightness (system focus language), never brand color.
-private struct HeroFocusGlow: ViewModifier {
-    @Environment(\.isFocused) private var isFocused
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(isFocused ? 1 : 0.88)
-            .shadow(color: .white.opacity(isFocused ? 0.22 : 0), radius: 20)
-            .animation(.easeOut(duration: 0.2), value: isFocused)
-    }
-}
 
 /// Resolves the logo artwork URL for a hero item. Catalog previews (Cinemeta rows especially)
 /// usually omit `logo` even when logo art exists, so for IMDb-id items fall back to metahub —

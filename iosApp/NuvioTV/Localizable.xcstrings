@@ -141,6 +141,9 @@
         }
       }
     },
+    "%@: %@": {
+      "shouldTranslate": false
+    },
     "%d": {
       "localizations": {
         "de": {
@@ -4953,6 +4956,62 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tedesco"
+          }
+        }
+      }
+    },
+    "Go to Movie": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zum Film"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ir a la película"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voir le film"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vai al film"
+          }
+        }
+      }
+    },
+    "Go to Show": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zur Serie"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ir a la serie"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Voir la série"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vai alla serie"
           }
         }
       }

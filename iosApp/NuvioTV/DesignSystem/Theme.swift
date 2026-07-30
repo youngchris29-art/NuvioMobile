@@ -158,10 +158,14 @@ enum Theme {
         /// the backdrop (mirrors Detail's layout).
         static let heroForegroundTopPad: CGFloat = 340
         /// Fixed height of the hero carousel viewport. Every page reserves identical slot heights
-        /// (logo + meta + synopsis), so advancing the hero can never reflow the rows below it —
-        /// that reflow was the visible "glitch" on every 8s auto-advance. Sized to the summed
-        /// slots + paddings with a little headroom for the focused card lift.
-        static let heroCarouselHeight: CGFloat = 344
+        /// (logo + meta + synopsis + CTA button), so advancing the hero can never reflow the rows
+        /// below it — that reflow was the visible "glitch" on every 8s auto-advance. Sized to the
+        /// tallest layout's summed slots + paddings (Nuvio-style: 150+32+108+56 + 3×16 + 2×24)
+        /// with a little headroom.
+        static let heroCarouselHeight: CGFloat = 452
+        /// Fixed slot for the hero's "Go to Movie"/"Go to Show" CTA button (the hero's only
+        /// focusable element — the info block above it is static content).
+        static let heroButtonSlotHeight: CGFloat = 56
         /// Fixed logo/title slot inside a hero page (bottom-aligned; image fits within it).
         static let heroLogoSlotHeight: CGFloat = 150
         static let heroLogoMaxWidth: CGFloat = 520
