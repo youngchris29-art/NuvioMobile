@@ -6,6 +6,7 @@ import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.sync.ProfileSettingsSync
 import com.nuvio.app.core.sync.SyncPlatformProvider
 import com.nuvio.app.core.sync.TV_SYNC_PLATFORM
+import com.nuvio.app.core.sync.TVOS_SYNC_PLATFORM
 import com.nuvio.app.core.ui.CardDepthStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.features.addons.AddonProfileContext
@@ -102,9 +103,14 @@ fun installTvOsSharedProviders() {
     ProfileLifecycleProvider.coordinator = TvOsProfileLifecycleCoordinator
 
     // Platform-scoped settings sync: the Nuvio Cloud API keeps a separate settings blob per
-    // platform (p_platform), so tvOS must identify as "tv" — otherwise it would read/overwrite the
-    // phone's blob (the shared default is "mobile").
-    SyncPlatformProvider.platform = TV_SYNC_PLATFORM
+    // platform (p_platform). BUG-20: this app must NOT identify as "tv" — upstream's Nuvio
+    // Android TV app writes that same scope with a different schema, and the two clients kept
+    // full-blob-replacing each other's settings on every launch (Android lost its TMDB
+    // "Enable on Modern Home Screen" + settings-appearance keys; NuvioTV got card depth /
+    // poster style flipped back). "tvos" is ours alone; the legacy "tv" blob is read once as a
+    // migration seed if "tvos" has no blob yet, and never written.
+    SyncPlatformProvider.platform = TVOS_SYNC_PLATFORM
+    SyncPlatformProvider.legacySettingsPlatforms = listOf(TV_SYNC_PLATFORM)
 
     // Theme persistence: the shared default ThemeSettingsStore is a no-op (theme would reset every
     // launch). The tvOS adapter persists to NSUserDefaults (profile-scoped keys) and defaults to

@@ -107,18 +107,13 @@ object ProfileSettingsSync {
                 if (ProfileRepository.activeProfileId != profileId) return@withLock false
                 val localSignature = buildSignature(localBlob)
 
-                val params = buildJsonObject {
-                    put("p_profile_id", profileId)
-                    put("p_platform", SyncPlatformProvider.platform)
-                }
-                val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profile_settings_blob", params)
+                val remoteJson = fetchRemoteSettingsJson(profileId, SyncPlatformProvider.platform)
                 if (ProfileRepository.activeProfileId != profileId) return@withLock false
-                val response = result.decodeList<SettingsBlobResponse>().firstOrNull()
-                val remoteJson = response?.settingsJson
 
                 if (remoteJson == null) {
-                    log.i { "pull(profileId=$profileId) — no remote settings blob found" }
-                    return@withLock false
+                    // BUG-20: no blob under our own namespace yet — one-shot migration seed from
+                    // the legacy scope(s) this client used to share with other apps.
+                    return@withLock seedFromLegacyPlatformsLocked(profileId)
                 }
 
                 isApplyingRemoteBlob = true
@@ -136,7 +131,10 @@ object ProfileSettingsSync {
                     }
 
                     if (ProfileRepository.activeProfileId != profileId) return@withLock false
-                    applyRemoteBlob(remoteBlob)
+                    if (!applyRemoteBlob(remoteBlob, remoteJson)) {
+                        log.w { "pull(profileId=$profileId) — remote blob has no features object; preserving local" }
+                        return@withLock false
+                    }
                     skipNextPushSignature = currentObservedStateSignature()
                 } finally {
                     isApplyingRemoteBlob = false
@@ -151,6 +149,64 @@ object ProfileSettingsSync {
                 isServerSyncInFlight = false
             }
         }
+    }
+
+    private suspend fun fetchRemoteSettingsJson(profileId: Int, platform: String): JsonObject? {
+        val params = buildJsonObject {
+            put("p_profile_id", profileId)
+            put("p_platform", platform)
+        }
+        val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profile_settings_blob", params)
+        return result.decodeList<SettingsBlobResponse>().firstOrNull()?.settingsJson
+    }
+
+    /**
+     * BUG-20 migration: called (under [syncMutex]) when [SyncPlatformProvider.platform] has no
+     * settings blob for this profile yet. Reads each legacy namespace once, applies the first
+     * blob found (presence-gated — a foreign-schema blob must not reset settings it doesn't
+     * carry), and immediately writes the seeded state to our OWN namespace so later pulls find
+     * it there. The legacy scope is never written: other clients keep their blob untouched.
+     */
+    private suspend fun seedFromLegacyPlatformsLocked(profileId: Int): Boolean {
+        for (legacyPlatform in SyncPlatformProvider.legacySettingsPlatforms) {
+            val legacyJson = runCatching { fetchRemoteSettingsJson(profileId, legacyPlatform) }
+                .getOrElse { error ->
+                    log.e(error) { "pull(profileId=$profileId) — legacy '$legacyPlatform' fetch FAILED" }
+                    null
+                } ?: continue
+            if (ProfileRepository.activeProfileId != profileId) return false
+
+            val legacyBlob = runCatching {
+                json.decodeFromJsonElement(MobileProfileSettingsBlob.serializer(), legacyJson)
+            }.getOrElse { error ->
+                log.e(error) { "pull(profileId=$profileId) — failed to decode legacy '$legacyPlatform' blob" }
+                continue
+            }
+
+            isApplyingRemoteBlob = true
+            try {
+                if (!applyRemoteBlob(legacyBlob, legacyJson)) {
+                    log.w { "pull(profileId=$profileId) — legacy '$legacyPlatform' blob has no features object; skipping" }
+                    continue
+                }
+                skipNextPushSignature = currentObservedStateSignature()
+            } finally {
+                isApplyingRemoteBlob = false
+            }
+
+            runCatching { pushToRemoteLocked(profileId, exportSettingsBlob()) }
+                .onFailure { error ->
+                    // Seed push failed — settings applied locally; the next pull retries the
+                    // migration (our namespace is still empty), which is safe to repeat.
+                    log.e(error) { "pull(profileId=$profileId) — seed push to '${SyncPlatformProvider.platform}' FAILED" }
+                }
+
+            log.i { "pull(profileId=$profileId) — seeded '${SyncPlatformProvider.platform}' settings from legacy '$legacyPlatform'" }
+            return true
+        }
+
+        log.i { "pull(profileId=$profileId) — no remote settings blob found" }
+        return false
     }
 
     suspend fun pushCurrentProfileToRemote(): Boolean {
@@ -243,48 +299,91 @@ object ProfileSettingsSync {
         )
     }
 
-    private fun applyRemoteBlob(blob: MobileProfileSettingsBlob) {
-        ThemeSettingsStoreProvider.store.replaceFromSyncPayload(blob.features.themeSettings)
-        ThemeSettingsRepository.onProfileChanged()
+    /**
+     * Applies [blob] to local storage, but only the feature blocks actually PRESENT in the raw
+     * [remoteJson] (BUG-20): the decoded struct fills absent fields with empty defaults, and
+     * blindly applying those wiped every setting the writing client's schema doesn't carry —
+     * e.g. upstream's Android TV blob has no card-depth/poster-style payloads, so each of its
+     * pushes reset them here. Absence now means "that client doesn't model this" and the local
+     * value is preserved.
+     *
+     * @return false (nothing applied) when [remoteJson] carries no `features` object at all.
+     */
+    private fun applyRemoteBlob(blob: MobileProfileSettingsBlob, remoteJson: JsonObject): Boolean {
+        val rawFeatures = remoteJson["features"] as? JsonObject ?: return false
+        fun has(key: String) = rawFeatures.containsKey(key)
 
-        PosterCardStyleStorage.savePayload(blob.features.posterCardStyleSettingsPayload)
-        PosterCardStyleRepository.onProfileChanged()
+        if (has("theme_settings")) {
+            ThemeSettingsStoreProvider.store.replaceFromSyncPayload(blob.features.themeSettings)
+            ThemeSettingsRepository.onProfileChanged()
+        }
 
-        CardDepthStyleStorage.savePayload(blob.features.cardDepthStyleSettingsPayload)
-        CardDepthStyleRepository.onProfileChanged()
+        if (has("poster_card_style_settings_payload")) {
+            PosterCardStyleStorage.savePayload(blob.features.posterCardStyleSettingsPayload)
+            PosterCardStyleRepository.onProfileChanged()
+        }
 
-        PlayerSettingsStorage.replaceFromSyncPayload(blob.features.playerSettings)
-        PlayerSettingsRepository.onProfileChanged()
+        if (has("card_depth_style_settings_payload")) {
+            CardDepthStyleStorage.savePayload(blob.features.cardDepthStyleSettingsPayload)
+            CardDepthStyleRepository.onProfileChanged()
+        }
 
-        StreamBadgeSettingsStorage.replaceFromSyncPayload(blob.features.streamBadgeSettings)
-        StreamBadgeSettingsRepository.onProfileChanged()
+        if (has("player_settings")) {
+            PlayerSettingsStorage.replaceFromSyncPayload(blob.features.playerSettings)
+            PlayerSettingsRepository.onProfileChanged()
+        }
 
-        DebridSettingsStorage.replaceFromSyncPayload(blob.features.debridSettings)
-        DebridSettingsRepository.onProfileChanged()
+        if (has("stream_badge_settings")) {
+            StreamBadgeSettingsStorage.replaceFromSyncPayload(blob.features.streamBadgeSettings)
+            StreamBadgeSettingsRepository.onProfileChanged()
+        }
 
-        TmdbSettingsStorage.replaceFromSyncPayload(blob.features.tmdbSettings)
-        TmdbSettingsRepository.onProfileChanged()
+        if (has("debrid_settings")) {
+            DebridSettingsStorage.replaceFromSyncPayload(blob.features.debridSettings)
+            DebridSettingsRepository.onProfileChanged()
+        }
 
-        MdbListSettingsStorage.replaceFromSyncPayload(blob.features.mdbListSettings)
-        MdbListMetadataService.clearCache()
-        MdbListSettingsRepository.onProfileChanged()
+        if (has("tmdb_settings")) {
+            TmdbSettingsStorage.replaceFromSyncPayload(blob.features.tmdbSettings)
+            TmdbSettingsRepository.onProfileChanged()
+        }
 
-        MetaScreenSettingsStorage.savePayload(blob.features.metaScreenSettingsPayload)
-        MetaScreenSettingsRepository.onProfileChanged()
+        if (has("mdblist_settings")) {
+            MdbListSettingsStorage.replaceFromSyncPayload(blob.features.mdbListSettings)
+            MdbListMetadataService.clearCache()
+            MdbListSettingsRepository.onProfileChanged()
+        }
 
-        CollectionMobileSettingsStorage.savePayload(blob.features.collectionMobileSettingsPayload)
-        CollectionMobileSettingsRepository.onProfileChanged()
+        if (has("meta_screen_settings_payload")) {
+            MetaScreenSettingsStorage.savePayload(blob.features.metaScreenSettingsPayload)
+            MetaScreenSettingsRepository.onProfileChanged()
+        }
 
-        ContinueWatchingPreferencesStorage.savePayload(blob.features.continueWatchingSettingsPayload)
-        ContinueWatchingPreferencesRepository.onProfileChanged()
+        if (has("collection_mobile_settings_payload")) {
+            CollectionMobileSettingsStorage.savePayload(blob.features.collectionMobileSettingsPayload)
+            CollectionMobileSettingsRepository.onProfileChanged()
+        }
 
-        TraktSettingsStorage.savePayload(blob.features.traktSettingsPayload)
-        TraktSettingsRepository.onProfileChanged()
+        if (has("continue_watching_settings_payload")) {
+            ContinueWatchingPreferencesStorage.savePayload(blob.features.continueWatchingSettingsPayload)
+            ContinueWatchingPreferencesRepository.onProfileChanged()
+        }
 
-        TraktCommentsStorage.replaceFromSyncPayload(blob.features.traktCommentsSettings)
-        TraktCommentsSettings.onProfileChanged()
+        if (has("trakt_settings_payload")) {
+            TraktSettingsStorage.savePayload(blob.features.traktSettingsPayload)
+            TraktSettingsRepository.onProfileChanged()
+        }
 
-        EpisodeReleaseNotificationsRepository.applyFromSyncEnabled(blob.features.notificationsSettings.episodeReleaseAlertsEnabled)
+        if (has("trakt_comments_settings")) {
+            TraktCommentsStorage.replaceFromSyncPayload(blob.features.traktCommentsSettings)
+            TraktCommentsSettings.onProfileChanged()
+        }
+
+        if (has("notifications_settings")) {
+            EpisodeReleaseNotificationsRepository.applyFromSyncEnabled(blob.features.notificationsSettings.episodeReleaseAlertsEnabled)
+        }
+
+        return true
     }
 
     private fun ensureRepositoriesLoaded() {

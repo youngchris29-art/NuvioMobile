@@ -4,6 +4,17 @@ import kotlin.concurrent.Volatile
 
 const val MOBILE_SYNC_PLATFORM = "mobile"
 const val TV_SYNC_PLATFORM = "tv"
+
+/**
+ * BUG-20: NuvioTV's own settings namespace. The generic "tv" scope is ALSO written by upstream's
+ * Nuvio Android TV app, and the two clients have different settings schemas — each one's push is
+ * a full-blob replace built from its own typed model, so every launch stripped the other app's
+ * keys (Android lost `tmdb` enrichment flags and settings-appearance keys; NuvioTV got its card
+ * depth / poster style reset by Android's schema-less blob). A namespace only this app writes
+ * ends the fight outright; `p_platform` is a free-form namespace per the cloud API reference
+ * (§Profile Settings), so no server change is needed.
+ */
+const val TVOS_SYNC_PLATFORM = "tvos"
 internal const val HOME_CATALOG_SHARED_SYNC_PLATFORM = "home_catalog_shared"
 internal val HOME_CATALOG_LEGACY_SYNC_PLATFORMS = listOf(MOBILE_SYNC_PLATFORM, TV_SYNC_PLATFORM)
 
@@ -20,4 +31,13 @@ internal val HOME_CATALOG_LEGACY_SYNC_PLATFORMS = listOf(MOBILE_SYNC_PLATFORM, T
 object SyncPlatformProvider {
     @Volatile
     var platform: String = MOBILE_SYNC_PLATFORM
+
+    /**
+     * Namespaces to read (never write) when [platform] has no settings blob yet — one-shot
+     * migration seed. tvOS sets `["tv"]` so an existing install keeps its cloud settings the
+     * first time it runs under the "tvos" namespace; after the seed is pushed to [platform],
+     * the legacy scope is never touched again (mirrors HOME_CATALOG_LEGACY_SYNC_PLATFORMS).
+     */
+    @Volatile
+    var legacySettingsPlatforms: List<String> = emptyList()
 }
