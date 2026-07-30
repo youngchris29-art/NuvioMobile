@@ -206,6 +206,11 @@ private enum AnimatedGifDecoder {
         let delayCentiseconds: Int
     }
 
+    /// Frames are decoded down to at most this many pixels on the long edge. Collection tiles
+    /// render at ~360–420pt; 800px comfortably covers @2x while cutting a 1080p GIF's per-frame
+    /// bitmap (and its decode time) by ~4x.
+    private static let maxFramePixelSize = 800
+
     private static func decodedGif(from data: Data) -> DecodedGif? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let count = CGImageSourceGetCount(source)
@@ -215,8 +220,22 @@ private enum AnimatedGifDecoder {
         var frames: [GifFrame] = []
         frames.reserveCapacity(count)
 
+        // BUG-19: `CGImageSourceCreateImageAtIndex` returns LAZILY-decoded images — the actual
+        // bitmap decompression then happened on the MAIN thread at render time, once per frame
+        // at full GIF resolution, which is exactly the scroll stutter the tester reported (every
+        // D-pad step focuses a new tile and starts a fresh animation). Thumbnail creation with
+        // ShouldCacheImmediately decodes each frame HERE, on this detached task, downsampled to
+        // tile size — the render path then just blits ready bitmaps.
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxFramePixelSize,
+        ]
+
         for index in 0..<count {
-            guard let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) else { continue }
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, index, thumbnailOptions as CFDictionary)
+                ?? CGImageSourceCreateImageAtIndex(source, index, nil) else { continue }
             let delay = index < delays.count ? delays[index] : defaultFrameDelayCentiseconds
             frames.append(GifFrame(image: cgImage, delayCentiseconds: max(delay, 1)))
         }

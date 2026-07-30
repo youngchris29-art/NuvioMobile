@@ -567,15 +567,22 @@ struct InlineTrailerCard: View {
     /// same slot. Landscape rows keep their own title (nothing is faded there).
     private var showsOverlayTitle: Bool { fadesBaseCard && posterStyle.showTitle }
 
+    /// UX-4a: the morph target scales with the user's Poster Size setting. The fixed 360×203
+    /// tile was designed against the default 220pt poster — next to enlarged posters it read
+    /// as "too small, looks weird" (tester photo). Scaling by the same factor keeps the
+    /// trailer tile's presence relative to its neighbours at every poster size; at the
+    /// default width the factor is 1 and nothing changes.
+    private var posterScaleFactor: CGFloat { posterStyle.width / Theme.Size.posterWidth }
+
     /// Landscape rows are already the target geometry — no morph there, the trailer just fades in.
     private var artworkWidth: CGFloat {
         if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeWidth }
-        return model.isExpanded ? Theme.Size.landscapeWidth : posterStyle.width
+        return model.isExpanded ? Theme.Size.landscapeWidth * posterScaleFactor : posterStyle.width
     }
 
     private var artworkHeight: CGFloat {
         if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeHeight }
-        return model.isExpanded ? Theme.Size.landscapeHeight : posterStyle.height
+        return model.isExpanded ? Theme.Size.landscapeHeight * posterScaleFactor : posterStyle.height
     }
 }
 

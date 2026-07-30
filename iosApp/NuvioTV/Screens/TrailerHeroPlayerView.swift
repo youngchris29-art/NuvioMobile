@@ -181,6 +181,14 @@ struct FullScreenTrailerPlayer: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
+        // BUG-18: never trigger a display-mode switch for trailer clips. AVPlayerViewController
+        // applies display criteria AUTOMATICALLY on tvOS when the system's Match Content setting
+        // is on — for a short trailer that meant an HDMI renegotiation black-out at start (and it
+        // swallowed the auto-play exit hint), with no real benefit for a 1-2 minute YouTube clip.
+        // The inline background trailer never switched (raw AVPlayerLayer), which is why it was
+        // unaffected — this makes the full-screen path behave the same. Real movie playback
+        // (mpv/native paths) still matches frame rate per the user's settings.
+        controller.appliesPreferredDisplayCriteriaAutomatically = false
         if let url = URL(string: urlString) {
             let player = AVPlayer(url: url)
             controller.player = player

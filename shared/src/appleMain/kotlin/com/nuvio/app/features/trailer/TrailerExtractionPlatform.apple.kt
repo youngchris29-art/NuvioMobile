@@ -90,10 +90,16 @@ internal actual object TrailerExtractionPlatform {
         val videoUrl = resolveReachableUrl(bestVideo?.url ?: combinedUrl ?: return@withContext null)
         val audioUrl = bestAudio?.url?.let { resolveReachableUrl(it) }
 
-        // AVPlayer-friendly muxed progressive (H.264/AAC MP4), falling back to the HLS manifest —
-        // both play natively via AVPlayer. Used by tvOS instead of the adaptive video URL.
-        val progressiveUrl = bestProgressive?.url?.let { resolveReachableUrl(it) }
-            ?: bestManifest?.manifestUrl
+        // AVPlayer-friendly URL for tvOS — both candidates play natively via AVPlayer, so pick
+        // by QUALITY, not by kind (UX-4c "all the trailers are low quality"): YouTube's muxed
+        // progressive MP4 is effectively capped at 360p today, while the HLS manifest carries
+        // up to 1080p variants. Preferring progressive unconditionally pinned every trailer to
+        // the 360p file; use the same height comparison as `combinedUrl` above.
+        val progressiveUrl = if (bestCombinedIsManifest) {
+            bestManifest.manifestUrl
+        } else {
+            bestProgressive?.url?.let { resolveReachableUrl(it) } ?: bestManifest?.manifestUrl
+        }
 
         TrailerPlaybackSource(
             videoUrl = videoUrl,

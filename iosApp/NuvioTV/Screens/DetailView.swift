@@ -25,6 +25,10 @@ struct DetailView: View {
     @AppStorage("detail_trailer_autoplay") private var trailerAutoplayEnabled: Bool = true
     /// Tester ask: keep the poster visible on the right, backdrop-style, behind the description.
     @AppStorage("detail_poster_backdrop") private var posterBackdropEnabled: Bool = true
+    /// UX-4b (tester ask): the muted trailer looping behind the description previously had no
+    /// switch at all — only auto-play did. Off = detail pages stay on the still artwork; the
+    /// explicit "Watch Trailer" button and auto-play (if enabled) still work.
+    @AppStorage("detail_trailer_background") private var backgroundTrailerEnabled: Bool = true
 
     /// One-shot per detail visit — never re-fires after the auto-played trailer is dismissed.
     @State private var didAutoPlayTrailer = false
@@ -53,7 +57,7 @@ struct DetailView: View {
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             // Also pause it while a full-screen trailer plays (no doubled decode/audio).
-            if let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil {
+            if backgroundTrailerEnabled, let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil {
                 TrailerHeroPlayer(urlString: trailer, onFailure: { model.trailerFailed() })
                     .ignoresSafeArea()
                     .transition(.opacity)
@@ -108,7 +112,7 @@ struct DetailView: View {
             // the ScrollView's full-bleed frame; shown only while the hero trailer is actually
             // playing (same gating as the player itself, just re-checked without `trailer` unwrapped
             // since we don't need the URL here).
-            if model.trailerVideoURL != nil, !showStreams, model.trailerPlayback == nil {
+            if isTrailerActive {
                 HeroTrailerMuteButton()
                     .padding(Theme.Spacing.screen)
                     .transition(.opacity)
@@ -119,7 +123,7 @@ struct DetailView: View {
         // presses to the tab bar instead — so the reachable control is the Siri Remote's
         // play/pause button, and the overlay acts as the state indicator.
         .onPlayPauseCommand {
-            if model.trailerVideoURL != nil, !showStreams, model.trailerPlayback == nil {
+            if isTrailerActive {
                 HeroTrailerAudioState.shared.toggleMuted()
             }
         }
@@ -205,7 +209,7 @@ struct DetailView: View {
 
     /// Same gate the muted background hero player (and its mute button/play-pause toggle) use.
     private var isTrailerActive: Bool {
-        model.trailerVideoURL != nil && !showStreams && model.trailerPlayback == nil
+        backgroundTrailerEnabled && model.trailerVideoURL != nil && !showStreams && model.trailerPlayback == nil
     }
 
     /// The poster-backdrop layer only earns its keep when it would show something the plain
@@ -860,7 +864,11 @@ struct DetailView: View {
             .animation(.easeOut(duration: 0.6), value: trailerHintVisible)
             .onAppear {
                 trailerHintVisible = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                // 6s (was 4): reported as "doesn't stay on the screen" when the display-mode
+                // switch ate the start of the window (BUG-18). The switch is gone now, but the
+                // longer dwell keeps the hint readable even on TVs that blank briefly at
+                // playback start for other reasons.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
                     trailerHintVisible = false
                 }
             }

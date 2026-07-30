@@ -16,6 +16,8 @@ struct AppearanceSettingsPane: View {
     @AppStorage("detail_trailer_autoplay") private var detailTrailerAutoplay = true
     /// Mirrors DetailView's `detail_poster_backdrop` key. Local-only, not synced.
     @AppStorage("detail_poster_backdrop") private var detailPosterBackdrop = true
+    /// UX-4b: the muted background trailer on detail pages (distinct from auto-play above).
+    @AppStorage("detail_trailer_background") private var detailTrailerBackground = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
@@ -59,6 +61,17 @@ struct AppearanceSettingsPane: View {
                     isOn: detailTrailerAutoplay
                 ) {
                     detailTrailerAutoplay.toggle()
+                }
+                // UX-4b (tester ask): the auto-play toggle above never controlled the muted
+                // trailer looping BEHIND the detail description — that had no switch at all.
+                SettingsToggleRow(
+                    title: String(localized: "Background Trailer on Detail"),
+                    subtitle: detailTrailerBackground
+                        ? String(localized: "On \u{00B7} A muted trailer plays behind the description on detail pages")
+                        : String(localized: "Off \u{00B7} Detail pages stay on the still artwork"),
+                    isOn: detailTrailerBackground
+                ) {
+                    detailTrailerBackground.toggle()
                 }
                 SettingsToggleRow(
                     title: String(localized: "Poster in Detail Background"),
