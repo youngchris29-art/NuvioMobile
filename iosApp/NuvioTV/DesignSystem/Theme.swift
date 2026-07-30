@@ -181,6 +181,10 @@ enum Theme {
         /// Nuvio-style raises the info panel toward the top of the backdrop (classic uses
         /// `heroForegroundTopPad`'s lower-third placement).
         static let heroForegroundTopPadNuvio: CGFloat = 120
+        /// Width of the right-anchored artwork panel in the Nuvio-style hero (tvOS layout is
+        /// a fixed 1920pt canvas). Its left ~30% fades out via a gradient mask, so the flat
+        /// background region behind the 680pt info panel meets the art in a smooth blend.
+        static let heroNuvioArtworkWidth: CGFloat = 1250
     }
 }
 

@@ -59,13 +59,10 @@ struct HomeView: View {
                 // Continue Watching / the catalogs.
                 if let hero = currentHero {
                     Group {
-                        HomeHeroBackdrop(item: hero)
+                        // Nuvio-style: right-anchored artwork whose left edge fades to the
+                        // flat background — the info panel never sits over the art.
+                        HomeHeroBackdrop(item: hero, nuvioStyle: heroNuvioStyle)
                         HomeHeroScrim()
-                        // Nuvio-style hero: the artwork reads on the RIGHT, so darken the
-                        // leading side for the info panel that now sits top-left over it.
-                        if heroNuvioStyle {
-                            HomeHeroLeadingScrim()
-                        }
                     }
                     .opacity(heroPosterFocusOnly ? (heroFocused ? 1 : 0) : 1)
                     .animation(.easeInOut(duration: 0.4), value: heroFocused)
@@ -318,17 +315,43 @@ struct ResumeTarget: Identifiable {
 /// image crossfades when the parent advances `item`.
 struct HomeHeroBackdrop: View {
     let item: MetaPreview
+    /// Nuvio-style hero: the artwork becomes a right-anchored panel whose LEFT edge fades
+    /// out through a gradient mask, so the info panel sits on pure flat background — none of
+    /// the artwork ever renders behind the title/description (Christian's spec, 2026-07-30).
+    var nuvioStyle: Bool = false
 
     var body: some View {
-        CachedAsyncImage(string: backdropURL)
-            .frame(height: Theme.Size.heroBackdropHeight)
-            .frame(maxWidth: .infinity)
-            .clipped()
-            .frame(maxHeight: .infinity, alignment: .top)
-            .ignoresSafeArea()
-            .id(item.id)
-            .transition(.opacity)
-            .animation(.easeInOut(duration: 0.6), value: item.id)
+        Group {
+            if nuvioStyle {
+                CachedAsyncImage(string: backdropURL)
+                    .frame(width: Theme.Size.heroNuvioArtworkWidth, height: Theme.Size.heroBackdropHeight)
+                    .clipped()
+                    // The left ~30% of the image dissolves into the background color the rest
+                    // of the screen is painted with — a smooth black→artwork transition, no
+                    // hard edge and no art under the text.
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0.0),
+                                .init(color: .black.opacity(0.35), location: 0.16),
+                                .init(color: .black, location: 0.32),
+                            ],
+                            startPoint: .leading, endPoint: .trailing
+                        )
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            } else {
+                CachedAsyncImage(string: backdropURL)
+                    .frame(height: Theme.Size.heroBackdropHeight)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea()
+        .id(item.id)
+        .transition(.opacity)
+        .animation(.easeInOut(duration: 0.6), value: item.id)
     }
 
     private var backdropURL: String? {
@@ -456,26 +479,6 @@ struct HomeHeroForeground: View {
     }
 }
 
-/// Nuvio-style hero only: darkens the LEADING side of the backdrop so the top-left info panel
-/// reads over any artwork, leaving the right side — where the art's subject usually sits —
-/// untouched. Complements the vertical `HomeHeroScrim`, which stays in both layouts.
-struct HomeHeroLeadingScrim: View {
-    var body: some View {
-        LinearGradient(
-            stops: [
-                .init(color: Theme.Palette.background.opacity(0.88), location: 0.0),
-                .init(color: Theme.Palette.background.opacity(0.55), location: 0.30),
-                .init(color: .clear, location: 0.62),
-            ],
-            startPoint: .leading, endPoint: .trailing
-        )
-        .frame(height: Theme.Size.heroBackdropHeight)
-        .frame(maxWidth: .infinity)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
-    }
-}
 
 /// Subtle focus treatment for the hero carousel page: brightens the content and adds a soft white
 /// glow when focused. Deliberately no ring, platter, or scale — the hero spans the full carousel
