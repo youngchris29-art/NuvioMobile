@@ -164,10 +164,9 @@ struct SettingsView: View {
                             .font(Theme.Font.body)
                         Spacer(minLength: 0)
                     }
-                    .foregroundStyle(
-                        category == selectedCategory
-                            ? Theme.Palette.accent
-                            : Theme.Palette.textPrimary
+                    .rowAccentTint(
+                        category == selectedCategory,
+                        inactiveColor: Theme.Palette.textPrimary
                     )
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.vertical, Theme.Spacing.md)

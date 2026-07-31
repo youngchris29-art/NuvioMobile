@@ -126,3 +126,31 @@ extension View {
     /// Apply to the label of an accent-tinted `.borderedProminent` button.
     func prominentAccentLabel() -> some View { modifier(ProminentAccentLabel()) }
 }
+
+/// Accent tint for icons/labels that sit INSIDE a focusable row or chip (BUG-22). The row
+/// styles above flip their platter to near-white on focus and rely on semantic colors flipping
+/// with the forced light `colorScheme` — but an explicit `Theme.Palette.accent` bypasses that,
+/// and the White theme's accent (~#F5F5F5) disappears on the white platter (state checkmarks,
+/// row icons, the sidebar's selected category — the reporter's "white-on-white settings").
+/// At rest the accent applies; on focus the content joins the platter's dark label color.
+struct RowAccentTint: ViewModifier {
+    /// When false the content shows [inactiveColor] instead of the accent (e.g. an unchecked
+    /// state circle) — pass a SEMANTIC color so the row's colorScheme flip keeps it legible.
+    var active = true
+    var inactiveColor: Color = Theme.Palette.textSecondary
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(
+            active ? (isFocused ? FocusLook.onPlatter : Theme.Palette.accent) : inactiveColor
+        )
+    }
+}
+
+extension View {
+    /// Focus-aware accent for content inside `.settingsRow`/`.chip`-styled buttons — see
+    /// [RowAccentTint]. Never use a bare `Theme.Palette.accent` inside those rows.
+    func rowAccentTint(_ active: Bool = true, inactiveColor: Color = Theme.Palette.textSecondary) -> some View {
+        modifier(RowAccentTint(active: active, inactiveColor: inactiveColor))
+    }
+}

@@ -191,7 +191,7 @@ private struct DefaultPlayerRow: View {
                 HStack(spacing: Theme.Spacing.lg) {
                     Image(systemName: "play.rectangle.on.rectangle")
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.accent)
+                        .rowAccentTint()
                     VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                         Text("Default Player")
                             .font(Theme.Font.body)

@@ -478,6 +478,55 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
+    /// BUG-22 verification: switch to the WHITE accent theme (the reporter's config) and capture
+    /// the surfaces that were white-on-white pre-fix — the sidebar's focused+selected category
+    /// and a focused ON toggle row. Restores the Ocean theme at the end (theme syncs per profile).
+    func test13WhiteThemeContrast() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+        // The theme swatches are the pane's FIRST row — walk RIGHT along it to White.
+        let white = app.buttons["White"]
+        _ = moveFocus(.right, until: white, max: 8)
+        if white.exists && white.hasFocus {
+            remote.press(.select)
+            pause(2.5) // theme change rebuilds the tree (.id flip)
+        }
+        shot(app, "13a_white_theme_applied")
+
+        // The money shot pre-fix: walk focus back to the SIDEBAR — the focused row is always the
+        // selected category, whose label was raw accent (white on the white platter).
+        press(.left, times: 8, gap: 0.6)
+        pause(1)
+        shot(app, "13b_sidebar_focused_selected")
+
+        // Back into the pane: focus an ON toggle row (Auto-Play Trailer defaults on for this
+        // profile) so the checkmark renders on the white platter.
+        press(.right, times: 1)
+        pause(1)
+        let autoPlay = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Auto-Play Trailer'")).firstMatch
+        _ = moveFocus(.down, until: autoPlay, max: 16)
+        pause(1)
+        shot(app, "13c_toggle_row_focused")
+
+        // Restore the Ocean theme (the account's real setting): back up to the swatch row,
+        // then walk left along it.
+        let ocean = app.buttons["Ocean"]
+        press(.up, times: 4, gap: 0.6)
+        if !moveFocus(.left, until: ocean, max: 8) { _ = moveFocus(.right, until: ocean, max: 8) }
+        if ocean.exists && ocean.hasFocus {
+            remote.press(.select)
+            pause(2.5)
+        }
+        shot(app, "13d_theme_restored")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
     /// Probe: what does the Appearance pane show for Corners on a fresh launch (repo state truth)?
     /// Focus a Size chip so the Corners row renders unfocused — the selected chip's accent tint
     /// is unambiguous there.

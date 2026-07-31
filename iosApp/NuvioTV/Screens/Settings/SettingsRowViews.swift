@@ -31,7 +31,7 @@ struct SettingsActionRow: View {
             HStack(spacing: Theme.Spacing.lg) {
                 Image(systemName: systemImage)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.accent)
+                    .rowAccentTint()
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(title)
                         .font(Theme.Font.body)
@@ -73,7 +73,7 @@ struct SettingsToggleRow: View {
                 Spacer()
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
                     .font(Theme.Font.body)
-                    .foregroundStyle(isOn ? Theme.Palette.accent : Theme.Palette.textSecondary)
+                    .rowAccentTint(isOn)
             }
             .padding(Theme.Spacing.lg)
             .frame(maxWidth: .infinity)

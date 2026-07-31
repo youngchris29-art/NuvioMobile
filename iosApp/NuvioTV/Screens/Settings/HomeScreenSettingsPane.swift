@@ -260,7 +260,7 @@ private struct HeroSourceRow: View {
                 Spacer()
                 Image(systemName: item.heroSourceEnabled ? "checkmark.circle.fill" : "circle")
                     .font(Theme.Font.body)
-                    .foregroundStyle(item.heroSourceEnabled ? Theme.Palette.accent : Theme.Palette.textSecondary)
+                    .rowAccentTint(item.heroSourceEnabled)
             }
             .padding(.vertical, Theme.Spacing.xs)
             .padding(.horizontal, Theme.Spacing.md)
@@ -307,7 +307,7 @@ private struct CatalogSettingRow: View {
 
             Button(action: onToggle) {
                 Image(systemName: item.enabled ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(item.enabled ? Theme.Palette.accent : Theme.Palette.textSecondary)
+                    .rowAccentTint(item.enabled)
             }
             .buttonStyle(.chip)
             .accessibilityLabel(item.enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
