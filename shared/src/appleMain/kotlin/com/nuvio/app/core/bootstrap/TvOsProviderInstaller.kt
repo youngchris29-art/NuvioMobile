@@ -18,10 +18,12 @@ import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
+import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.home.HomeCatalogSettingsRepository
 import com.nuvio.app.features.home.HomeRepository
 import com.nuvio.app.features.library.LibraryDisplaySettingsRepository
 import com.nuvio.app.features.library.LibraryRepository
+import com.nuvio.app.features.mdblist.MdbListSettingsRepository
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerSettingsRepository
@@ -39,6 +41,7 @@ import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamContextStore
 import com.nuvio.app.features.streams.StreamLaunchStore
 import com.nuvio.app.features.streams.StreamsRepository
+import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watched.WatchedRepository
@@ -352,23 +355,45 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
 
     override fun onProfileSelected(profileIndex: Int) {
         log.i { "Profile selected: $profileIndex — running fan-out" }
+        // BUG-25: this list must mirror composeApp's ProfileLifecycleCoordinatorAdapter for every
+        // repository tvOS uses — it had drifted to an early subset, so profile-scoped settings
+        // repos NOT listed here (poster style being the reported one) kept the state loaded at
+        // app boot, BEFORE the profile gate resolved the real profile id. Result: every write
+        // persisted correctly under the selected profile's key while reads/renders stayed on the
+        // boot-time (usually empty) row — "the option does nothing" for any profile whose id
+        // differs from the boot default. The cloud-sync pull normally papers over this by calling
+        // onProfileChanged() after applying a remote blob, but only presence-gated per feature —
+        // a blob missing the feature key (e.g. one seeded from the BUG-20-mauled legacy "tv"
+        // namespace) leaves the stale state in place for the whole session.
         step("tvOsExtras") { TvOsExtraLifecycleHooks.onProfileChanged(profileIndex) }
         step("watched") { WatchedRepository.onProfileChanged(profileIndex) }
+        step("traktSettings") { TraktSettingsRepository.onProfileChanged() }
+        step("traktAuth") { TraktAuthRepository.onProfileChanged(profileIndex) }
         step("library") { LibraryRepository.onProfileChanged(profileIndex) }
         step("libraryDisplaySettings") { LibraryDisplaySettingsRepository.onProfileChanged() }
         step("watchProgress") { WatchProgressRepository.onProfileChanged(profileIndex) }
-        step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
         step("addons") { AddonRepository.onProfileChanged(profileIndex) }
-        step("searchHistory") { SearchHistoryRepository.onProfileChanged() }
-        // Theme is profile-scoped (ProfileScopedKey) — reload it for the new profile.
         step("theme") { ThemeSettingsRepository.onProfileChanged() }
-        // Card-depth poster styling is profile-scoped too; reload so a local (guest) profile switch
-        // doesn't leave the previous profile's setting live on the tvOS card surfaces.
+        step("posterCardStyle") { PosterCardStyleRepository.onProfileChanged() }
         step("cardDepthStyle") { CardDepthStyleRepository.onProfileChanged() }
-        // Debrid keys/settings are profile-scoped too; without this a guest profile switch
-        // (no cloud pull) would keep the previous profile's keys in memory.
-        step("debridSettings") { DebridSettingsRepository.onProfileChanged() }
+        step("playerSettings") { PlayerSettingsRepository.onProfileChanged() }
+        step("streamBadges") { StreamBadgeSettingsRepository.onProfileChanged() }
+        step("homeCatalogSettings") { HomeCatalogSettingsRepository.onProfileChanged() }
         step("home") { HomeRepository.clear() }
+        step("metaScreenSettings") { MetaScreenSettingsRepository.onProfileChanged() }
+        step("continueWatchingPreferences") { ContinueWatchingPreferencesRepository.onProfileChanged() }
+        step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
+        step("episodeReleaseAlerts") { EpisodeReleaseNotificationsRepository.onProfileChanged() }
+        step("tmdbSettings") { TmdbSettingsRepository.onProfileChanged() }
+        step("mdbListSettings") { MdbListSettingsRepository.onProfileChanged() }
+        step("searchHistory") { SearchHistoryRepository.onProfileChanged() }
+        step("collections") { CollectionRepository.onProfileChanged() }
+        step("collectionMobileSettings") { CollectionMobileSettingsRepository.onProfileChanged() }
+        step("downloads") { DownloadsRepository.onProfileChanged() }
+        // Debrid keys/settings are profile-scoped too (tvOS-specific step; upstream keeps debrid
+        // out of its adapter) — without this a guest profile switch (no cloud pull) would keep
+        // the previous profile's keys in memory.
+        step("debridSettings") { DebridSettingsRepository.onProfileChanged() }
         log.i { "Profile-select fan-out complete for profile $profileIndex" }
     }
 

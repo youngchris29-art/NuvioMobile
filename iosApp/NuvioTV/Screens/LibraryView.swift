@@ -45,6 +45,7 @@ struct LibraryView: View {
                                         PosterCard(title: item.name, imageURL: item.poster)
                                     }
                                     .buttonStyle(.borderless)
+                                    .posterButtonShape()
                                     .contextMenu {
                                         Button(role: .destructive) {
                                             model.remove(item)

@@ -214,6 +214,7 @@ struct SearchView: View {
                         PosterCard(title: item.name, imageURL: item.poster)
                     }
                     .buttonStyle(.borderless)
+                    .posterButtonShape()
                     .onAppear { model.discoverItemAppeared(at: index) }
                 }
             }

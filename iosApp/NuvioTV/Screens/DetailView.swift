@@ -482,6 +482,7 @@ struct DetailView: View {
                                 )
                             }
                             .buttonStyle(.borderless)
+                            .posterButtonShape()
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
@@ -572,6 +573,7 @@ struct DetailView: View {
                                 )
                             }
                             .buttonStyle(.borderless)
+                            .posterButtonShape()
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)

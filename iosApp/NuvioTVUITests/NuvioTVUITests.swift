@@ -304,4 +304,196 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "06b_hero_nuvio_paged")
         XCTAssertTrue(app.state == .runningForeground)
     }
+
+    // MARK: - BUG-25 audit: do the card settings still reach the beta.8 surfaces?
+
+    /// Drives the REAL Settings pane (the reporter's own path): baseline shot of a poster row,
+    /// then Corners → Round, Card Depth ON + Bold/Bright/Full, back to Home, after shot.
+    /// A human/agent compares 07a vs 07e: corner radius must visibly change and the depth
+    /// edge+sheen must appear. If they don't, the pane→repository→environment chain is broken
+    /// in practice even though it reads correct statically.
+    func test07CardSettingsAudit() throws {
+        let app = launchToHome()
+        press(.down, times: 4, gap: 1.0)
+        pause(3) // let row artwork decode
+        shot(app, "07a_cards_baseline")
+
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+
+        // Into the content pane: Corners → "Round" (28pt — the biggest visual jump from the
+        // default 12).
+        press(.right, times: 1)
+        pause(1)
+        let round = app.buttons["Round"]
+        if !moveFocus(.down, until: round, max: 16) { _ = moveFocus(.up, until: round, max: 16) }
+        if round.exists && round.hasFocus {
+            remote.press(.select)
+            pause(1)
+        }
+        shot(app, "07b_corners_round")
+
+        // Card Depth master toggle, then max out the visual: Bold edge, Bright sheen, Full
+        // coverage (chips only render once the toggle is on).
+        let depthToggle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Card Depth'")).firstMatch
+        if moveFocus(.down, until: depthToggle, max: 24) {
+            remote.press(.select)
+            pause(1.2)
+        }
+        shot(app, "07c_depth_toggle")
+        for chipName in ["Bold", "Bright", "Full"] {
+            let chip = app.buttons[chipName]
+            if moveFocus(.down, until: chip, max: 12) {
+                remote.press(.select)
+                pause(0.8)
+            }
+        }
+        shot(app, "07d_depth_options")
+
+        openTab(app, named: "Home")
+        press(.down, times: 3, gap: 1.0)
+        pause(3)
+        shot(app, "07e_cards_after")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - BUG-24 audit: does "Hero Poster Only When Focused" still gate the backdrop?
+
+    /// Forces the toggle through the argument domain (test06's trick) to isolate the RENDER
+    /// path from the Settings write path. 08a (hero CTA focused) must show the backdrop;
+    /// 08b (focus down in the rows) must show the flat background. If 08b still shows
+    /// artwork, the beta.8 CTA-button focus rewiring broke `heroFocused`.
+    func test08HeroFocusOnlyToggle() throws {
+        let app = launchToHome(extraArguments: ["-hero_poster_focus_only", "YES"])
+        pause(4)
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(2) // fade-in animation + artwork load
+        shot(app, "08a_hero_focused_art_visible")
+        press(.down, times: 3, gap: 0.8)
+        pause(2) // fade-out animation
+        shot(app, "08b_rows_focused_art_hidden")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// Second BUG-25 pass, sharper: storage was left with depth ON (test07's writes landed even
+    /// though the pane displayed OFF), so this run checks all three links separately:
+    /// 09a — RENDER: Home cards must show the Bold edge + Bright sheen from stored state.
+    /// 09b — WRITE: select "Square" corners, then defocus the row so the selection color is
+    ///        unambiguous (the white focus platter masks the accent).
+    /// 09c/09d — DISPLAY: the Card Depth toggle must show ON before the press (storage truth)
+    ///        and OFF 4s after it; chips must collapse.
+    /// 09e — RENDER AGAIN: back on Home the depth effect must be gone.
+    func test09CardSettingsAudit2() throws {
+        let app = launchToHome()
+        press(.down, times: 4, gap: 1.0)
+        pause(3)
+        shot(app, "09a_cards_depth_should_be_on")
+
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+
+        let square = app.buttons["Square"]
+        if moveFocus(.down, until: square, max: 16) {
+            remote.press(.select)
+            pause(2)
+        }
+        press(.up, times: 1)
+        pause(1)
+        shot(app, "09b_corners_after_square_defocused")
+
+        let depthToggle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Card Depth'")).firstMatch
+        _ = moveFocus(.down, until: depthToggle, max: 24)
+        pause(1)
+        shot(app, "09c_depth_before_press")
+        remote.press(.select)
+        pause(4)
+        shot(app, "09d_depth_4s_after_press")
+
+        openTab(app, named: "Home")
+        pause(2)
+        press(.down, times: 4, gap: 1.0)
+        pause(3)
+        shot(app, "09e_cards_depth_should_be_off")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// Final render check for the BUG-25 audit: storage now holds depth ON (Subtle/Bright/Full)
+    /// and Square corners for the active profile — Home cards must draw both. Reads the
+    /// debug_env accessibility label (DEBUG builds) so the environment truth lands in the log.
+    func test10RenderCheck() throws {
+        let app = launchToHome()
+        let env = app.staticTexts["debug_env"]
+        if env.waitForExistence(timeout: 6) {
+            let attachment = XCTAttachment(string: env.label)
+            attachment.name = "10_env_truth"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            print("[BUG25] env: \(env.label)")
+        } else {
+            print("[BUG25] debug_env not found")
+        }
+        press(.down, times: 4, gap: 1.0)
+        pause(4)
+        shot(app, "10a_cards_square_depth_on")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// Cleanup after the BUG-25 audit: the audit toggled Card Depth on (Bold/Bright/Full) and set
+    /// Square corners on the signed-in profile — and those writes sync to the real cloud account.
+    /// Reset both sections via their own "Reset to Defaults" buttons (poster section first in the
+    /// pane, card depth second).
+    func test12ResetAppearanceDefaults() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+        let resets = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Reset to Defaults'"))
+        // Poster style reset.
+        let posterReset = resets.element(boundBy: 0)
+        if moveFocus(.down, until: posterReset, max: 20) {
+            remote.press(.select)
+            pause(1.5)
+        }
+        shot(app, "12a_poster_reset")
+        // Card depth reset (second Reset button, further down).
+        let depthReset = resets.element(boundBy: 1)
+        if moveFocus(.down, until: depthReset, max: 24) {
+            remote.press(.select)
+            pause(1.5)
+        }
+        shot(app, "12b_depth_reset")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// Probe: what does the Appearance pane show for Corners on a fresh launch (repo state truth)?
+    /// Focus a Size chip so the Corners row renders unfocused — the selected chip's accent tint
+    /// is unambiguous there.
+    func test11PaneStateProbe() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+        let medium = app.buttons["Medium"]
+        _ = moveFocus(.down, until: medium, max: 10)
+        pause(1)
+        shot(app, "11a_poster_style_rows")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
 }

@@ -250,6 +250,7 @@ struct FolderDetailView: View {
                                     PosterCard(title: item.name, imageURL: item.poster)
                                 }
                                 .buttonStyle(.borderless)
+                                .posterButtonShape()
                                 .onAppear { model.itemAppeared(at: index) }
                             }
                         }

@@ -8,6 +8,13 @@ struct HomeView: View {
     @StateObject private var model = HomeViewModel()
     @State private var resume: ResumeTarget?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if DEBUG
+    /// BUG-25 audit hook (kept): exposes the poster/depth environment Home actually renders
+    /// with, as an invisible accessibility element the NuvioTVUITests harness reads
+    /// (test10RenderCheck). DEBUG-only; costs nothing in release builds.
+    @Environment(\.posterStyle) private var debugPosterStyle
+    @Environment(\.cardDepthStyle) private var debugCardDepth
+    #endif
 
     /// Whether the hero backdrop artwork only renders while the hero carousel is focused (the
     /// original behavior). A beta tester read the focus-gated fade as a bug ("hero posts don't
@@ -49,6 +56,14 @@ struct HomeView: View {
         NavigationStack {
             ZStack(alignment: .top) {
                 Theme.Palette.background.ignoresSafeArea()
+
+                #if DEBUG
+                // BUG-25 diagnostic (invisible, harness-readable): the env values Home renders with.
+                Text("debug_env cr=\(Int(debugPosterStyle.cornerRadius)) w=\(Int(debugPosterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_env")
+                #endif
 
                 // Full-bleed hero backdrop runs to every edge (and under the floating glass tab
                 // bar); the rows scroll over it, Detail-style.
@@ -266,6 +281,7 @@ struct ContinueWatchingRow: View {
                                 )
                             }
                             .buttonStyle(.borderless)
+                            .posterButtonShape()
                             .focused($focusedVideoId, equals: entry.videoId)
                             .contextMenu {
                                 Button(role: .destructive) {

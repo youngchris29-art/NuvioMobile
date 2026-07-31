@@ -117,6 +117,7 @@ struct PersonDetailView: View {
                                 )
                             }
                             .buttonStyle(.borderless)
+                            .posterButtonShape()
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)

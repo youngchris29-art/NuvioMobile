@@ -248,6 +248,7 @@ struct EntityBrowseView: View {
                             )
                         }
                         .buttonStyle(.borderless)
+                        .posterButtonShape()
                         .onAppear { model.itemAppeared(railId: rail.id, index: index) }
                     }
                     if rail.isLoadingMore {

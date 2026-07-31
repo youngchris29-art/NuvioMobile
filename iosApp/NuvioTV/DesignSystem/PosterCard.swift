@@ -12,7 +12,27 @@ import SwiftUI
 /// ```swift
 /// NavigationLink(value: route) { PosterCard(title: item.name, imageURL: item.poster) }
 ///     .buttonStyle(.borderless)
+///     .posterButtonShape()   // BUG-25: without this the system radius overrides Corners
 /// ```
+/// BUG-25 (beta.8 regression): the borderless button style rounds its label artwork with a
+/// SYSTEM corner radius, silently overriding the card's own `clipShape` — which is driven by
+/// the user's Poster Style → Corners setting. `buttonBorderShape` is the supported lever for
+/// the lockup's radius, so every card button attaches this modifier to make Corners visible
+/// again (Square/Rounded/Round all rendered identically without it).
+struct PosterButtonShape: ViewModifier {
+    @Environment(\.posterStyle) private var style
+
+    func body(content: Content) -> some View {
+        content.buttonBorderShape(.roundedRectangle(radius: style.cornerRadius))
+    }
+}
+
+extension View {
+    /// Follow the user's Poster Style corner radius on a borderless card button — see
+    /// [PosterButtonShape].
+    func posterButtonShape() -> some View { modifier(PosterButtonShape()) }
+}
+
 struct PosterCard: View {
     let title: String
     let imageURL: String?
