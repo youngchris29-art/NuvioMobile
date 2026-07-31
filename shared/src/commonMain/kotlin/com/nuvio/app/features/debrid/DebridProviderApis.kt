@@ -96,7 +96,7 @@ private class TorboxDebridProviderApi(
         season: Int?,
         episode: Int?,
     ): DirectDebridResolveResult {
-        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error
+        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error()
         val magnet = resolve.magnetUri?.takeIf { it.isNotBlank() }
             ?: buildMagnetUri(resolve)
             ?: return DirectDebridResolveResult.Stale
@@ -108,12 +108,13 @@ private class TorboxDebridProviderApi(
 
             val torrent = TorboxApiClient.getTorrent(apiKey = apiKey, id = torrentId)
             if (!torrent.isSuccessful) {
-                return DirectDebridResolveResult.Stale
+                return torboxStepFailure("fetching the file list", torrent.status, torrent.body)
             }
             val files = torrent.body?.data?.files.orEmpty()
             val file = fileSelector.selectFile(files, resolve, season, episode)
-                ?: return DirectDebridResolveResult.Stale
-            val fileId = file.id ?: return DirectDebridResolveResult.Stale
+                ?: return torboxStepFailure("finding a matching video file (of ${files.size})")
+            val fileId = file.id
+                ?: return torboxStepFailure("finding the selected file's id")
 
             val link = TorboxApiClient.requestDownloadLink(
                 apiKey = apiKey,
@@ -121,10 +122,10 @@ private class TorboxDebridProviderApi(
                 fileId = fileId,
             )
             if (!link.isSuccessful) {
-                return DirectDebridResolveResult.Stale
+                return torboxStepFailure("requesting the download link", link.status, link.body)
             }
             val url = link.body?.data?.takeIf { it.isNotBlank() }
-                ?: return DirectDebridResolveResult.Stale
+                ?: return torboxStepFailure("reading the download link (empty response)")
 
             DirectDebridResolveResult.Success(
                 url = url,
@@ -133,7 +134,7 @@ private class TorboxDebridProviderApi(
             )
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            DirectDebridResolveResult.Error
+            torboxStepFailure("network request", exception = error.message ?: error::class.simpleName)
         }
     }
 }
@@ -170,7 +171,7 @@ class PremiumizeDebridProviderApi(
         season: Int?,
         episode: Int?,
     ): DirectDebridResolveResult {
-        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error
+        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error()
         val source = resolve.magnetUri?.takeIf { it.isNotBlank() }
             ?: buildMagnetUri(resolve)
             ?: stream.playableDirectUrl?.takeIf { it.isNotBlank() }
@@ -206,7 +207,7 @@ private class RealDebridProviderApi(
         season: Int?,
         episode: Int?,
     ): DirectDebridResolveResult {
-        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error
+        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error()
         val magnet = resolve.magnetUri?.takeIf { it.isNotBlank() }
             ?: buildMagnetUri(resolve)
             ?: return DirectDebridResolveResult.Stale
@@ -260,7 +261,7 @@ private class RealDebridProviderApi(
             }
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            DirectDebridResolveResult.Error
+            DirectDebridResolveResult.Error()
         }
     }
 }
@@ -310,7 +311,7 @@ private class AllDebridDebridProviderApi(
         season: Int?,
         episode: Int?,
     ): DirectDebridResolveResult {
-        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error
+        val resolve = stream.clientResolve ?: return DirectDebridResolveResult.Error()
         val magnet = resolve.magnetUri?.takeIf { it.isNotBlank() }
             ?: buildMagnetUri(resolve)
             ?: return DirectDebridResolveResult.Stale
@@ -523,13 +524,13 @@ internal suspend fun resolveAllDebridMagnet(
         )
     } catch (error: Exception) {
         if (error is CancellationException) throw error
-        DirectDebridResolveResult.Error
+        DirectDebridResolveResult.Error()
     }
 }
 
 private fun DebridApiResponse<AllDebridEnvelopeDto<AllDebridMagnetUploadDataDto>>.toFailureForUpload(): DirectDebridResolveResult =
     when (status) {
-        401, 403 -> DirectDebridResolveResult.Error
+        401, 403 -> DirectDebridResolveResult.Error()
         else -> DirectDebridResolveResult.Stale
     }
 
@@ -548,7 +549,7 @@ internal suspend fun resolvePremiumizeDirectDownload(
         val response = PremiumizeApiClient.directDownload(apiKey = apiKey, source = normalizedSource)
         if (!response.isSuccessful) {
             return when (response.status) {
-                401, 403 -> DirectDebridResolveResult.Error
+                401, 403 -> DirectDebridResolveResult.Error()
                 else -> DirectDebridResolveResult.Stale
             }
         }
@@ -575,7 +576,7 @@ internal suspend fun resolvePremiumizeDirectDownload(
         )
     } catch (error: Exception) {
         if (error is CancellationException) throw error
-        DirectDebridResolveResult.Error
+        DirectDebridResolveResult.Error()
     }
 }
 
@@ -585,16 +586,17 @@ private fun String.toTrackerUrlOrNull(): String? {
     return value.removePrefix("tracker:").trim().takeIf { it.isNotBlank() }
 }
 
+// BUG-21: keep 409 = NotCached; everything else surfaces TorBox's error code + detail
+// (see the twin mapping in DirectDebridResolver.kt).
 private fun DebridApiResponse<TorboxEnvelopeDto<TorboxCreateTorrentDataDto>>.toFailureForCreate(): DirectDebridResolveResult =
     when (status) {
-        401, 403 -> DirectDebridResolveResult.Error
         409 -> DirectDebridResolveResult.NotCached
-        else -> DirectDebridResolveResult.Stale
+        else -> torboxStepFailure("adding the item", status, body)
     }
 
 private fun DebridApiResponse<RealDebridAddTorrentDto>.toFailureForAdd(): DirectDebridResolveResult =
     when (status) {
-        401, 403 -> DirectDebridResolveResult.Error
+        401, 403 -> DirectDebridResolveResult.Error()
         else -> DirectDebridResolveResult.Stale
     }
 

@@ -58,7 +58,7 @@ object DirectDebridPlaybackResolver {
             newResolve.cancel()
             return it
         }
-        val deferred = activeResolve.first ?: return DirectDebridResolveResult.Error
+        val deferred = activeResolve.first ?: return DirectDebridResolveResult.Error()
         if (!ownsResolve) newResolve.cancel()
         if (ownsResolve) deferred.start()
 
@@ -125,7 +125,7 @@ object DirectDebridPlaybackResolver {
             return localAddonStreamResolver.resolve(stream, season, episode)
         }
         val providerId = DebridProviders.byId(stream.clientResolve?.service)?.id
-            ?: return DirectDebridResolveResult.Error
+            ?: return DirectDebridResolveResult.Error()
         val settings = DebridSettingsRepository.snapshot()
         if (providerId != settings.activeResolverProviderId) {
             return DirectDebridResolveResult.Stale
@@ -135,7 +135,7 @@ object DirectDebridPlaybackResolver {
             .trim()
             .takeIf { it.isNotBlank() }
             ?: return DirectDebridResolveResult.MissingApiKey
-        val api = DebridProviderApis.apiFor(providerId) ?: return DirectDebridResolveResult.Error
+        val api = DebridProviderApis.apiFor(providerId) ?: return DirectDebridResolveResult.Error()
         return api.resolveClientStream(stream, apiKey, season, episode)
     }
 
@@ -152,7 +152,7 @@ object DirectDebridPlaybackResolver {
             DirectDebridResolveResult.MissingApiKey -> DirectDebridPlayableResult.MissingApiKey
             DirectDebridResolveResult.NotCached -> DirectDebridPlayableResult.NotCached
             DirectDebridResolveResult.Stale -> DirectDebridPlayableResult.Stale
-            DirectDebridResolveResult.Error -> DirectDebridPlayableResult.Error
+            is DirectDebridResolveResult.Error -> DirectDebridPlayableResult.Error(result.message)
         }
     }
 }
@@ -169,7 +169,10 @@ sealed class DirectDebridPlayableResult {
     data object MissingApiKey : DirectDebridPlayableResult()
     data object NotCached : DirectDebridPlayableResult()
     data object Stale : DirectDebridPlayableResult()
-    data object Error : DirectDebridPlayableResult()
+
+    // [message] is an optional step-specific diagnostic (BUG-21); null falls back to the
+    // generic "Could not open this link." toast.
+    data class Error(val message: String? = null) : DirectDebridPlayableResult()
 }
 
 sealed class DirectDebridResolveResult {
@@ -182,7 +185,11 @@ sealed class DirectDebridResolveResult {
     data object MissingApiKey : DirectDebridResolveResult()
     data object NotCached : DirectDebridResolveResult()
     data object Stale : DirectDebridResolveResult()
-    data object Error : DirectDebridResolveResult()
+
+    // [message] names the failing step plus the provider's own error code/detail when known
+    // (BUG-21: the generic Error hid which of the four TorBox calls failed). Diagnostic
+    // strings are intentionally English-only until the next localization sweep.
+    data class Error(val message: String? = null) : DirectDebridResolveResult()
 }
 
 fun DirectDebridPlayableResult.toastMessage(): String? =
@@ -194,9 +201,29 @@ fun DirectDebridPlayableResult.toastMessage(): String? =
             resourceString("Not cached on Torbox.", StringKey.debrid_not_cached)
         DirectDebridPlayableResult.Stale ->
             resourceString("This link expired. Refreshing results.", StringKey.debrid_stream_stale)
-        DirectDebridPlayableResult.Error ->
-            resourceString("Could not open this link.", StringKey.debrid_resolve_failed)
+        is DirectDebridPlayableResult.Error ->
+            message ?: resourceString("Could not open this link.", StringKey.debrid_resolve_failed)
     }
+
+// Builds the step-specific failure for a TorBox call: which step, the HTTP status when it
+// wasn't a 2xx, and TorBox's own `error` code + human `detail` from the response envelope
+// (e.g. `BAD_TOKEN: Your token is invalid…`). Shared by both TorBox resolve paths.
+internal fun torboxStepFailure(
+    step: String,
+    status: Int? = null,
+    envelope: TorboxEnvelopeDto<*>? = null,
+    exception: String? = null,
+): DirectDebridResolveResult.Error {
+    val parts = listOfNotNull(
+        status?.takeIf { it !in 200..299 }?.let { "HTTP $it" },
+        listOfNotNull(
+            envelope?.error?.takeIf { it.isNotBlank() },
+            (envelope?.detail ?: exception)?.takeIf { it.isNotBlank() }?.take(140),
+        ).joinToString(": ").takeIf { it.isNotBlank() },
+    ).joinToString(" · ")
+    val suffix = if (parts.isBlank()) "" else " ($parts)"
+    return DirectDebridResolveResult.Error("TorBox: $step failed$suffix")
+}
 
 private class LocalDebridAddonStreamResolver(
     private val fileSelector: TorboxFileSelector = TorboxFileSelector(),
@@ -248,10 +275,13 @@ private class LocalDebridAddonStreamResolver(
                 fallbackSize = stream.behaviorHints.videoSize,
                 fileSelector = allDebridFileSelector,
             )
-            else -> DirectDebridResolveResult.Error
+            else -> DirectDebridResolveResult.Error()
         }
     }
 
+    // BUG-21: every non-Success exit names its step — this chain had never been exercised
+    // end-to-end, and the old mapping collapsed most failures into Stale ("link expired",
+    // which also triggers a pointless result reload) or the bare generic Error.
     private suspend fun resolveTorbox(
         stream: StreamItem,
         resolve: StreamClientResolve,
@@ -267,12 +297,13 @@ private class LocalDebridAddonStreamResolver(
 
             val torrent = TorboxApiClient.getTorrent(apiKey = apiKey, id = torrentId)
             if (!torrent.isSuccessful) {
-                return DirectDebridResolveResult.Stale
+                return torboxStepFailure("fetching the file list", torrent.status, torrent.body)
             }
             val files = torrent.body?.data?.files.orEmpty()
             val file = fileSelector.selectFile(files, resolve, season, episode)
-                ?: return DirectDebridResolveResult.Stale
-            val fileId = file.id ?: return DirectDebridResolveResult.Stale
+                ?: return torboxStepFailure("finding a matching video file (of ${files.size})")
+            val fileId = file.id
+                ?: return torboxStepFailure("finding the selected file's id")
 
             val link = TorboxApiClient.requestDownloadLink(
                 apiKey = apiKey,
@@ -280,10 +311,10 @@ private class LocalDebridAddonStreamResolver(
                 fileId = fileId,
             )
             if (!link.isSuccessful) {
-                return DirectDebridResolveResult.Stale
+                return torboxStepFailure("requesting the download link", link.status, link.body)
             }
             val url = link.body?.data?.takeIf { it.isNotBlank() }
-                ?: return DirectDebridResolveResult.Stale
+                ?: return torboxStepFailure("reading the download link (empty response)")
 
             DirectDebridResolveResult.Success(
                 url = url,
@@ -293,7 +324,7 @@ private class LocalDebridAddonStreamResolver(
             )
         } catch (error: Exception) {
             if (error is CancellationException) throw error
-            DirectDebridResolveResult.Error
+            torboxStepFailure("network request", exception = error.message ?: error::class.simpleName)
         }
     }
 }
@@ -361,11 +392,13 @@ private fun StreamItem.toResolveMetadata(season: Int?, episode: Int?, providerId
         isCached = debridCacheStatus?.state == StreamDebridCacheState.CACHED,
     )
 
+// BUG-21: 409 keeps its NotCached meaning; everything else (auth failures, plan limits,
+// success=false envelopes, unexpected shapes) surfaces TorBox's own error code + detail
+// instead of the old blanket Stale/Error split that hid which call failed.
 private fun DebridApiResponse<TorboxEnvelopeDto<TorboxCreateTorrentDataDto>>.toFailureForCreate(): DirectDebridResolveResult =
     when (status) {
-        401, 403 -> DirectDebridResolveResult.Error
         409 -> DirectDebridResolveResult.NotCached
-        else -> DirectDebridResolveResult.Stale
+        else -> torboxStepFailure("adding the item", status, body)
     }
 
 private fun String.stableFingerprint(): String {

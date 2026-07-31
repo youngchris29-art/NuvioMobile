@@ -642,6 +642,9 @@ struct StreamPickerView: View {
 
     /// Mirrors the shared `DirectDebridPlayableResult.toastMessage()` wording (tvOS renders the
     /// English fallbacks; matching locally avoids depending on the ext-fun's bridged name).
+    /// BUG-21: `Error` now carries a step-specific diagnostic ("TorBox: adding the item failed
+    /// (HTTP 403 · BAD_TOKEN: …)") built shared-side — show it verbatim so a tester's toast
+    /// names the exact failing call instead of the old catch-all.
     private static func resolveFailureMessage(_ result: DirectDebridPlayableResult?) -> String {
         switch result {
         case is DirectDebridPlayableResult.MissingApiKey:
@@ -650,6 +653,8 @@ struct StreamPickerView: View {
             return String(localized: "Not cached on your debrid service.")
         case is DirectDebridPlayableResult.Stale:
             return String(localized: "This link expired. Refreshing results.")
+        case let error as DirectDebridPlayableResult.Error:
+            return error.message ?? String(localized: "Could not open this link.")
         default:
             return String(localized: "Could not open this link.")
         }
