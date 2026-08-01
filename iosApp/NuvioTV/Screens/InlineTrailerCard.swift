@@ -434,6 +434,11 @@ struct InlineTrailerCard: View {
     /// Master gate: the user's setting plus tvOS's "Reduce Autoplay". False ⇒ plain card, no state
     /// machine, no overlay, no modifiers.
     var enabled: Bool = true
+    /// BUG-29: fires whenever `model.isExpanded` flips, so the enclosing row can scroll itself to
+    /// keep the morphing tile on screen. Focus never moves during the morph (it's the same button,
+    /// just wider), so tvOS's automatic focus-driven scroll never fires on its own — the row has to
+    /// ask for it explicitly.
+    var onExpansionChange: ((Bool) -> Void)? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var posterStyle
@@ -504,6 +509,9 @@ struct InlineTrailerCard: View {
         }
         .onChange(of: reduceMotion) { _, motion in model.prefersReducedMotion = motion }
         .onDisappear { model.reset() }
+        // BUG-29: notify the row on every expand/collapse edge, not just expand — a card that
+        // collapses mid-scroll-request should still let the row know its width is back to normal.
+        .onChange(of: model.isExpanded) { _, expanded in onExpansionChange?(expanded) }
     }
 
     /// The expanded card: landscape tile plus the title in the same slot the poster's title occupies,

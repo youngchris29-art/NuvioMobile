@@ -100,6 +100,11 @@ struct CatalogRowView: View {
     /// Which card currently owns the single inline `AVPlayer`, published by the shared coordinator.
     @ObservedObject private var trailerCoordinator = InlineTrailerCoordinator.shared
 
+    /// BUG-29: an inline-trailer expansion widens its card in place without moving focus, so tvOS's
+    /// automatic focus-driven scroll never fires — the row has to scroll itself, and Reduce Motion
+    /// governs whether that scroll animates (see `expansionChanged(for:expanded:proxy:)`).
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
     private var inlineTrailersActive: Bool {
@@ -140,33 +145,36 @@ struct CatalogRowView: View {
                 }
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: Theme.Spacing.rowGap) {
-                    ForEach(section.items, id: \.id) { item in
-                        Group {
-                            if let onSelect {
-                                Button { onSelect(item) } label: { card(for: item) }
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: Theme.Spacing.rowGap) {
+                        ForEach(section.items, id: \.id) { item in
+                            Group {
+                                if let onSelect {
+                                    Button { onSelect(item) } label: { card(for: item, proxy: proxy) }
+                                        .buttonStyle(.borderless)
+                                        .posterButtonShape()
+                                } else {
+                                    NavigationLink(value: TitleRoute(preview: item)) {
+                                        card(for: item, proxy: proxy)
+                                    }
                                     .buttonStyle(.borderless)
                                     .posterButtonShape()
-                            } else {
-                                NavigationLink(value: TitleRoute(preview: item)) {
-                                    card(for: item)
                                 }
-                                .buttonStyle(.borderless)
-                                .posterButtonShape()
                             }
+                            .focused($focusedItemId, equals: item.id)
+                            // Mirrors Detail's hero trailer: the card's mute glyph isn't reachable by
+                            // the focus engine, so play/pause is the toggle. Nil unless *this* focused
+                            // card is the one playing — an unconditional handler would swallow
+                            // play/pause from everything else that wants it (Home's hero).
+                            .onPlayPauseCommand(perform: muteToggle(for: item))
+                            .id(item.id)
                         }
-                        .focused($focusedItemId, equals: item.id)
-                        // Mirrors Detail's hero trailer: the card's mute glyph isn't reachable by
-                        // the focus engine, so play/pause is the toggle. Nil unless *this* focused
-                        // card is the one playing — an unconditional handler would swallow
-                        // play/pause from everything else that wants it (Home's hero).
-                        .onPlayPauseCommand(perform: muteToggle(for: item))
                     }
+                    .padding(.vertical, Theme.Spacing.lg)
                 }
-                .padding(.vertical, Theme.Spacing.lg)
+                .scrollClipDisabled()
             }
-            .scrollClipDisabled()
         }
         .focusSection()
     }
@@ -175,8 +183,36 @@ struct CatalogRowView: View {
     /// rows — both rendered by `InlineTrailerCard`, which also grows the muted trailer preview once
     /// focus rests on the card. With inline trailers off it is a straight pass-through to the same
     /// two cards, so the row is unchanged.
-    private func card(for item: MetaPreview) -> some View {
-        InlineTrailerCard(item: item, enabled: inlineTrailersActive)
+    private func card(for item: MetaPreview, proxy: ScrollViewProxy) -> some View {
+        InlineTrailerCard(item: item, enabled: inlineTrailersActive) { expanded in
+            expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
+        }
+    }
+
+    /// BUG-29: an inline-trailer expansion morphs the focused card wider **to the right** in place —
+    /// focus never moves (it's still the same button), so tvOS never issues its usual focus-driven
+    /// scroll, and a card near a row's trailing edge grows straight off the visible strip. Ask the
+    /// `ScrollView` to bring the card back into view ourselves whenever it expands; a `nil` anchor
+    /// asks for the *minimal* scroll needed, so a card that already fits doesn't jump. Collapsing
+    /// needs no help — the row only ever overflows while a card is wide, never while it's back to
+    /// poster width.
+    ///
+    /// Deferred by one runloop hop so the scroll targets the tile's *expanded* geometry: `expanded`
+    /// flips the instant the morph starts (`InlineTrailerCardModel.setPhase`), not when it finishes,
+    /// so scrolling in the same tick would still measure the old, narrower frame. The morph itself
+    /// runs 0.35s (`InlineTrailerCardModel.morphAnimation`), so the deferred scroll still lands well
+    /// inside it and the two animate together visually.
+    private func expansionChanged(itemId: String, expanded: Bool, proxy: ScrollViewProxy) {
+        guard expanded else { return }
+        Task { @MainActor in
+            if reduceMotion {
+                proxy.scrollTo(itemId, anchor: nil)
+            } else {
+                withAnimation(InlineTrailerCardModel.morphAnimation) {
+                    proxy.scrollTo(itemId, anchor: nil)
+                }
+            }
+        }
     }
 
     /// Play/pause handler for `item`'s focusable button, or `nil` when this card isn't the focused,
