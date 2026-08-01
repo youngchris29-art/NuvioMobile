@@ -28,12 +28,20 @@ final class DebridViewModel: ObservableObject {
     @Published private(set) var authProviderId: String?
     @Published private(set) var authPhase: AuthPhase = .idle
     @Published private(set) var activeSession: DebridDeviceAuthorization?
+    /// Providers whose stored credential failed auth (BUG-21 follow-up) — fed by the shared
+    /// `DebridCredentialHealth` (cache checks, resolves, and the pane-open revalidation below
+    /// all record into it). Drives the "Session expired" row state.
+    @Published private(set) var authFailedIds: Set<String> = []
 
     /// UI-visible providers (Torbox, Premiumize — Real-Debrid is `visibleInUi = false` upstream).
     let providers: [DebridProvider] = DebridProviders.shared.visible()
 
     private var settingsWatcher: FlowWatcher?
+    private var healthWatcher: FlowWatcher?
     private var pollTask: Task<Void, Never>?
+    /// Providers already probed this pane visit — `revalidateConnected()` runs on every
+    /// `.onAppear`, and one whoami round-trip per provider per visit is plenty.
+    private var revalidatedThisVisit: Set<String> = []
 
     /// Bounds the redeem-poll loop when errors are persistent rather than transient.
     private static let pollDeadlineSeconds: TimeInterval = 10 * 60
@@ -45,12 +53,36 @@ final class DebridViewModel: ObservableObject {
             guard let self, let value = emitted as? DebridSettings else { return }
             self.settings = value
         }
+        healthWatcher = FlowWatcherKt.watch(DebridCredentialHealth.shared.authFailedProviderIds) { [weak self] emitted in
+            guard let self else { return }
+            let ids = (emitted as? Set<AnyHashable>)?.compactMap { $0 as? String } ?? []
+            self.authFailedIds = Set(ids)
+        }
     }
 
     func stop() {
         settingsWatcher?.cancel()
         settingsWatcher = nil
+        healthWatcher?.cancel()
+        healthWatcher = nil
+        revalidatedThisVisit = []
         cancelActivation()
+    }
+
+    /// BUG-21 follow-up: probe every connected provider's stored credential against its whoami
+    /// endpoint when the pane opens. "Connected" used to mean only "a key string is stored" —
+    /// an expired device-flow token kept that label forever while every API call failed. The
+    /// probe records into the shared `DebridCredentialHealth`, so a failure flips this pane's
+    /// row to "Session expired" AND arms the stream picker's warning banner. Transport errors
+    /// record nothing (offline must not read as expired).
+    func revalidateConnected() {
+        for provider in providers where isConnected(provider.id) {
+            guard !revalidatedThisVisit.contains(provider.id) else { continue }
+            revalidatedThisVisit.insert(provider.id)
+            DebridCredentialHealth.shared.revalidateStoredCredential(providerId: provider.id) { _, _ in
+                // Outcome lands via the health flow watcher; nothing to do here.
+            }
+        }
     }
 
     // MARK: - Derived state

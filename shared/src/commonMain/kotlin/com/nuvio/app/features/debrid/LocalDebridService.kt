@@ -31,6 +31,9 @@ internal object LocalDebridService {
     ): Map<String, LocalDebridCachedItem>? =
         try {
             val response = TorboxApiClient.checkCached(apiKey = apiKey, hashes = hashes)
+            // BUG-21: a dead token fails this check silently (rows fall back to UNKNOWN), so a
+            // definitive auth status is the one place the UI can learn the credential is gone.
+            DebridCredentialHealth.recordHttpStatus(DebridProviders.TORBOX_ID, response.status)
             if (!response.isSuccessful || response.body?.success == false) {
                 null
             } else {
@@ -58,6 +61,7 @@ internal object LocalDebridService {
             if (normalizedHashes.isEmpty()) return emptyMap()
             val sources = normalizedHashes.map { hash -> "magnet:?xt=urn:btih:$hash" }
             val response = PremiumizeApiClient.checkCache(apiKey = apiKey, items = sources)
+            DebridCredentialHealth.recordHttpStatus(DebridProviders.PREMIUMIZE_ID, response.status)
             val body = response.body
             if (!response.isSuccessful || body?.status.equals("error", ignoreCase = true)) {
                 null

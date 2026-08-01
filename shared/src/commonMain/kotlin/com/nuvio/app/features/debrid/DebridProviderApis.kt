@@ -103,6 +103,7 @@ private class TorboxDebridProviderApi(
 
         return try {
             val create = TorboxApiClient.createTorrent(apiKey = apiKey, magnet = magnet)
+            DebridCredentialHealth.recordHttpStatus(provider.id, create.status)
             val torrentId = create.body?.takeIf { it.success != false }?.data?.resolvedTorrentId()
                 ?: return create.toFailureForCreate()
 

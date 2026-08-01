@@ -76,6 +76,9 @@ object DebridSettingsRepository {
         val provider = DebridProviders.byId(providerId) ?: return
         val normalized = value.trim()
         if (providerApiKeys[provider.id].orEmpty() == normalized) return
+        // A changed key invalidates any recorded session-expired state (BUG-21 follow-up):
+        // both reconnect and disconnect must drop the stale "reconnect needed" hint.
+        DebridCredentialHealth.clear(provider.id)
         providerApiKeys = if (normalized.isBlank()) {
             providerApiKeys - provider.id
         } else {

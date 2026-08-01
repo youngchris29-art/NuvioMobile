@@ -136,6 +136,25 @@ struct StreamPickerView: View {
                         .font(Theme.Font.screenTitle)
                         .foregroundStyle(Theme.Palette.textPrimary)
 
+                    // BUG-21 follow-up: the active debrid credential failed auth on a recent
+                    // call — without this banner the only symptom is every resolve failing
+                    // while Settings still says "Connected". Not focusable; purely advisory.
+                    if let warning = model.credentialWarning {
+                        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                            Text(warning)
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textPrimary)
+                        }
+                        .padding(Theme.Spacing.md)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(.yellow.opacity(0.12))
+                        )
+                        .frame(maxWidth: 1100, alignment: .leading)
+                    }
+
                     if model.isLoading {
                         HStack(spacing: Theme.Spacing.md) {
                             ProgressView()

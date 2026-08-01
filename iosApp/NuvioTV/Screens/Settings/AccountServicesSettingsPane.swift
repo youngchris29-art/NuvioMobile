@@ -46,6 +46,9 @@ struct AccountServicesSettingsPane: View {
                 debridSection
             }
         }
+        // BUG-21 follow-up: verify each connected provider's stored credential the moment the
+        // pane opens, so an expired token reads "Session expired" instead of "Connected".
+        .onAppear { debrid.revalidateConnected() }
     }
 
     /// The Trakt section body — four states: keys missing / connected / awaiting code approval /
@@ -145,14 +148,27 @@ struct AccountServicesSettingsPane: View {
     @ViewBuilder
     private func debridProviderRows(_ provider: DebridProvider) -> some View {
         if debrid.isConnected(provider.id) {
-            SettingsActionRow(
-                title: String(localized: "\(provider.displayName) \u{00B7} Connected"),
-                subtitle: debrid.activeResolverId == provider.id
-                    ? String(localized: "Active resolver \u{00B7} press to disconnect")
-                    : String(localized: "Press to disconnect"),
-                systemImage: "checkmark.circle.fill"
-            ) {
-                debridDisconnectId = provider.id
+            // Session-expired beats Connected (BUG-21 follow-up): the stored token failed auth
+            // on a real provider call or the pane-open revalidation. Same disconnect action —
+            // reconnecting mints a fresh token, which is the entire fix.
+            if debrid.authFailedIds.contains(provider.id) {
+                SettingsActionRow(
+                    title: String(localized: "\(provider.displayName) \u{00B7} Session expired"),
+                    subtitle: String(localized: "\(provider.displayName) rejected the saved sign-in. Press to disconnect, then connect again."),
+                    systemImage: "exclamationmark.triangle.fill"
+                ) {
+                    debridDisconnectId = provider.id
+                }
+            } else {
+                SettingsActionRow(
+                    title: String(localized: "\(provider.displayName) \u{00B7} Connected"),
+                    subtitle: debrid.activeResolverId == provider.id
+                        ? String(localized: "Active resolver \u{00B7} press to disconnect")
+                        : String(localized: "Press to disconnect"),
+                    systemImage: "checkmark.circle.fill"
+                ) {
+                    debridDisconnectId = provider.id
+                }
             }
         } else if debrid.authProviderId == provider.id {
             switch debrid.authPhase {

@@ -45,10 +45,20 @@ final class StreamsViewModel: ObservableObject {
     /// Mobile parity (`StreamsScreen.kt:229`): append "- <Provider> Instant" to cached rows
     /// only when debrid resolution is on and no custom stream-name template is active.
     @Published private(set) var instantSuffixEnabled = false
+    /// Non-nil when the active resolver's stored credential has failed auth (401/403) on a
+    /// recent provider call — the BUG-21 failure mode where "Connected" was a lie. Rendered as
+    /// a warning banner above the stream list; clears itself on the next successful call or
+    /// when the user reconnects (the shared health object is the source of truth).
+    @Published private(set) var credentialWarning: String?
 
     private var watcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
     private var debridWatcher: FlowWatcher?
+    private var healthWatcher: FlowWatcher?
+    /// Latest auth-failed provider ids from `DebridCredentialHealth`, kept to re-derive the
+    /// warning when the active resolver changes (and vice versa).
+    private var authFailedProviderIds: Set<String> = []
+    private var activeResolverProviderId: String?
     /// Last raw state, kept so a debrid-settings flip re-filters without a reload.
     private var lastState: StreamsUiState?
     private let type: String
@@ -92,6 +102,8 @@ final class StreamsViewModel: ObservableObject {
             guard let self, let value = emitted as? DebridSettings else { return }
             let canResolve = value.canResolvePlayableLinks
             self.instantSuffixEnabled = canResolve && !value.hasCustomStreamFormatting
+            self.activeResolverProviderId = canResolve ? value.activeResolverProviderId : nil
+            self.updateCredentialWarning()
             if self.debridResolveEnabled != canResolve {
                 self.debridResolveEnabled = canResolve
                 // Filtering depends on this flag — re-derive the visible groups.
@@ -99,6 +111,13 @@ final class StreamsViewModel: ObservableObject {
             } else {
                 self.debridResolveEnabled = canResolve
             }
+        }
+        healthWatcher = FlowWatcherKt.watch(DebridCredentialHealth.shared.authFailedProviderIds) { [weak self] emitted in
+            guard let self else { return }
+            // Kotlin Set<String> arrives as a Swift Set of AnyHashable.
+            let ids = (emitted as? Set<AnyHashable>)?.compactMap { $0 as? String } ?? []
+            self.authFailedProviderIds = Set(ids)
+            self.updateCredentialWarning()
         }
 
         StreamsRepository.shared.load(
@@ -118,7 +137,24 @@ final class StreamsViewModel: ObservableObject {
         badgeWatcher = nil
         debridWatcher?.cancel()
         debridWatcher = nil
+        healthWatcher?.cancel()
+        healthWatcher = nil
         StreamsRepository.shared.clear()
+    }
+
+    /// Rebuilds `credentialWarning` from the latest health set + active resolver. Only the
+    /// ACTIVE resolver's failure is surfaced here — a stale key on a non-active provider
+    /// doesn't affect this screen and is handled by the Settings pane instead.
+    private func updateCredentialWarning() {
+        guard let providerId = activeResolverProviderId,
+              authFailedProviderIds.contains(providerId) else {
+            credentialWarning = nil
+            return
+        }
+        let name = DebridProviders.shared.displayName(id: providerId)
+        credentialWarning = String(
+            localized: "Your \(name) session has expired. Reconnect in Settings \u{2192} Account & Services \u{2192} Debrid."
+        )
     }
 
     /// Full re-fetch — used when a debrid resolve reports the picked link went stale
@@ -203,5 +239,6 @@ final class StreamsViewModel: ObservableObject {
         watcher?.cancel()
         badgeWatcher?.cancel()
         debridWatcher?.cancel()
+        healthWatcher?.cancel()
     }
 }

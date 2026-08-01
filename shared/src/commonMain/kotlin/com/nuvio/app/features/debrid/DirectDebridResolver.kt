@@ -292,6 +292,7 @@ private class LocalDebridAddonStreamResolver(
     ): DirectDebridResolveResult {
         return try {
             val create = TorboxApiClient.createTorrent(apiKey = apiKey, magnet = magnet)
+            DebridCredentialHealth.recordHttpStatus(DebridProviders.TORBOX_ID, create.status)
             val torrentId = create.body?.takeIf { it.success != false }?.data?.resolvedTorrentId()
                 ?: return create.toFailureForCreate()
 

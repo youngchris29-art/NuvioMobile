@@ -56,7 +56,13 @@ object DebridStreamPresentation {
                 isTorrentStream &&
                     status != null &&
                     DebridProviders.byId(status.providerId)?.supports(DebridProviderCapability.LocalTorrentCacheCheck) == true &&
-                    status.state != StreamDebridCacheState.CHECKING
+                    // Only a VERIFIED cache hit earns the debrid treatment (the "{service}
+                    // Instant" rename above all). UNKNOWN — the cache check failed, e.g. on a
+                    // dead token (BUG-21) — must fall through as passthrough with the addon's
+                    // own title: labeling unverified rows "Instant" told the reporter every
+                    // row was cached while every resolve failed. NOT_CACHED rows are already
+                    // hidden by [isUncachedDebridStream]; CHECKING was passthrough before too.
+                    status.state == StreamDebridCacheState.CACHED
             ))
         }
 
