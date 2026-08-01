@@ -147,7 +147,26 @@ final class HomeViewModel: ObservableObject {
         }
 
         rows = built
+
+        #if DEBUG
+        // BUG-26: time-to-content milestones. First non-empty rows = the KMP fetch layer has
+        // delivered; subsequent count growth shows the fan-out filling in.
+        if !built.isEmpty {
+            if !didTraceFirstRows {
+                didTraceFirstRows = true
+                LaunchTrace.mark("first_rows n=\(built.count) hero=\(heroItems.count)")
+            } else if built.count != lastTracedRowCount {
+                LaunchTrace.mark("rows n=\(built.count)")
+            }
+            lastTracedRowCount = built.count
+        }
+        #endif
     }
+
+    #if DEBUG
+    private var didTraceFirstRows = false
+    private var lastTracedRowCount = 0
+    #endif
 
     private func onAddonsChanged(_ state: AddonsUiState) {
         // First run with an empty store → seed Cinemeta, then wait for the next emission.

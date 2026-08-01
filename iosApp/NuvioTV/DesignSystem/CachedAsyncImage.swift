@@ -75,11 +75,23 @@ enum ArtworkStore {
     private static let maxDownloadBytes = 20 * 1024 * 1024
 
     /// Dedicated session with a large disk cache for artwork, isolated from data requests.
+    ///
+    /// BUG-26: the cache MUST be given its own directory. Constructed without one, this
+    /// instance shared the app's default cache directory with `URLCache.shared` (which the
+    /// Ktor/Supabase sessions open too) — two `URLCache` instances over one store is
+    /// unsupported, and this one silently lost the disk tier: writes appeared in Cache.db but
+    /// every lookup missed, so EVERY cold start re-downloaded all artwork over the network
+    /// (trace-proven: 50/50 loads `net` on a warm-disk relaunch; the reporter's "takes much
+    /// longer to reload all the movies and artwork").
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
+        let cacheDir = FileManager.default
+            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ArtworkURLCache", isDirectory: true)
         config.urlCache = URLCache(
             memoryCapacity: 32 * 1024 * 1024,   // 32 MB
-            diskCapacity: 256 * 1024 * 1024     // 256 MB
+            diskCapacity: 256 * 1024 * 1024,    // 256 MB
+            directory: cacheDir
         )
         config.requestCachePolicy = .returnCacheDataElseLoad
         return URLSession(configuration: config)
@@ -128,12 +140,26 @@ enum ArtworkStore {
     /// lands in the cache for whoever wants it next.
     @MainActor
     static func fetch(_ url: URL) async throws -> UIImage {
-        if let hit = cached(url) { return hit }
+        if let hit = cached(url) {
+            #if DEBUG
+            LaunchTrace.artwork(.memory)  // BUG-26 attribution
+            #endif
+            return hit
+        }
         if let existing = inflight[url] { return try await existing.value }
 
         let work = Task<UIImage, Error> {
             await acquireFetchSlot()
             defer { releaseFetchSlot() }
+            #if DEBUG
+            // BUG-26: classify where this load's bytes come from — a healthy relaunch should be
+            // dominated by disk (URLCache) hits; all-network on every cold start would confirm
+            // the "something invalidates the artwork cache" theory.
+            var traceSource: LaunchTrace.ArtworkSource =
+                session.configuration.urlCache?.cachedResponse(for: URLRequest(url: url)) != nil
+                    ? .disk
+                    : .network
+            #endif
             let data: Data
             if url.scheme == "data" {
                 // Inline `data:image/...;base64,...` avatars (custom pictures imported from
@@ -145,6 +171,9 @@ enum ArtworkStore {
                 data = try await Task.detached(priority: .userInitiated) {
                     try Data(contentsOf: url)
                 }.value
+                #if DEBUG
+                traceSource = .disk  // local bytes, no network involved
+                #endif
             } else {
                 let (fetchedData, response) = try await session.data(from: url)
 
@@ -172,6 +201,9 @@ enum ArtworkStore {
 
             let cost = decoded.cgImage.map { $0.bytesPerRow * $0.height } ?? 4 * 1024 * 1024
             memory.setObject(decoded, forKey: url as NSURL, cost: cost)
+            #if DEBUG
+            LaunchTrace.artwork(traceSource)  // BUG-26 attribution
+            #endif
             return decoded
         }
         inflight[url] = work

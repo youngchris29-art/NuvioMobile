@@ -217,6 +217,9 @@ struct HomeView: View {
             }
         }
         .onAppear {
+            #if DEBUG
+            LaunchTrace.mark("home_appear")  // BUG-26: profile gate passed, Home mounting
+            #endif
             model.start()
             prefetchHeroArt()
         }
