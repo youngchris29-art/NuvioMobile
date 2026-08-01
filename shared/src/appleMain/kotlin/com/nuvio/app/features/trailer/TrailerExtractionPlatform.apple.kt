@@ -82,7 +82,7 @@ internal actual object TrailerExtractionPlatform {
             (bestProgressive == null || bestManifestHeight > bestProgressive.height)
 
         val combinedUrl = if (bestCombinedIsManifest) {
-            bestManifest.manifestUrl
+            bestManifest.selectedVariantUrl
         } else {
             bestProgressive?.url
         }
@@ -94,11 +94,15 @@ internal actual object TrailerExtractionPlatform {
         // by QUALITY, not by kind (UX-4c "all the trailers are low quality"): YouTube's muxed
         // progressive MP4 is effectively capped at 360p today, while the HLS manifest carries
         // up to 1080p variants. Preferring progressive unconditionally pinned every trailer to
-        // the 360p file; use the same height comparison as `combinedUrl` above.
+        // the 360p file; use the same height comparison as `combinedUrl` above. When the
+        // manifest wins we hand AVPlayer the concrete top-resolution variant playlist
+        // (selectedVariantUrl), not the master playlist — under the small inline hero layer
+        // ABR parks the master playlist at a low rung, so pinning the variant directly is what
+        // actually gets us the high-res stream (UX-4c round 2).
         val progressiveUrl = if (bestCombinedIsManifest) {
-            bestManifest.manifestUrl
+            bestManifest.selectedVariantUrl
         } else {
-            bestProgressive?.url?.let { resolveReachableUrl(it) } ?: bestManifest?.manifestUrl
+            bestProgressive?.url?.let { resolveReachableUrl(it) } ?: bestManifest?.selectedVariantUrl
         }
 
         TrailerPlaybackSource(
