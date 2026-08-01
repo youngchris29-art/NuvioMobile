@@ -20,6 +20,12 @@ struct NuvioTVApp: App {
         // never runs). Runs once, before any repository is accessed.
         TvOsProviderInstallerKt.installTvOsSharedProviders()
 
+        // FEAT-11: seed the shared hero-trailer audio state from the user's configured default
+        // (PlaybackSettingsPane's "Trailer Sound by Default" toggle, same `trailer_audio_default_on`
+        // key) so the very first trailer of a launch already respects it — DetailView otherwise
+        // only restores this default after a full-screen trailer dismisses.
+        HeroTrailerAudioState.shared.setMuted(value: !UserDefaults.standard.bool(forKey: "trailer_audio_default_on"))
+
         // Localize shared-module strings (toasts, month names, error messages…) through the
         // Shared string catalog. Without this, shared code uses its inline English fallbacks.
         LocalizedStrings.shared.provider = SharedStringProvider()

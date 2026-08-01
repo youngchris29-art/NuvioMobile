@@ -8,6 +8,13 @@ import SharedCore
 struct PlaybackSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
 
+    /// FEAT-11: whether a full-screen trailer should start with sound instead of muted. Mirrors
+    /// DetailView's `trailer_audio_default_on` key (same @AppStorage key) — DetailView reads this
+    /// to seed `HeroTrailerAudioState` at app launch and to restore it after a full-screen trailer
+    /// dismisses; this pane also flips the shared state immediately so the change is felt without
+    /// a relaunch.
+    @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
             settingsSection(String(localized: "Playback")) {
@@ -50,6 +57,19 @@ struct PlaybackSettingsPane: View {
                     ) {
                         model.setDvP7FelMpv(!model.dvP7FelMpv)
                     }
+                }
+                // FEAT-11
+                SettingsToggleRow(
+                    title: String(localized: "Trailer Sound by Default"),
+                    subtitle: trailerAudioDefaultOn
+                        ? String(localized: "On \u{00B7} Trailers start with sound; play/pause mutes")
+                        : String(localized: "Off \u{00B7} Trailers start muted"),
+                    isOn: trailerAudioDefaultOn
+                ) {
+                    trailerAudioDefaultOn.toggle()
+                    // Applies immediately, without relaunch — DetailView otherwise only reads this
+                    // default at app launch and after a full-screen trailer dismisses.
+                    HeroTrailerAudioState.shared.setMuted(value: !trailerAudioDefaultOn)
                 }
                 tuningChipRow(
                     title: String(localized: "Streaming Buffer"),

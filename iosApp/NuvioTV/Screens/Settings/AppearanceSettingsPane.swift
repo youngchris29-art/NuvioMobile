@@ -1,6 +1,31 @@
 import SwiftUI
 import SharedCore
 
+/// A titled row of value chips (poster size/corners, card-depth edge/sheen/coverage, FEAT-8's
+/// trailer duration, etc.). Hoisted out of `PosterStyleControls` (FEAT-8) to a file-private free
+/// function so any section in this file can build the same chip-selector row without duplicating
+/// it — `PosterStyleControls` itself just calls this now.
+@ViewBuilder
+private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+        Text(title)
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+        HStack(spacing: Theme.Spacing.md) { content() }
+    }
+}
+
+/// A single selectable value chip, paired with `controlRow`. Hoisted alongside it (see above).
+private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Text(label)
+            .font(Theme.Font.meta)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xxs + 2)
+    }
+    .buttonStyle(.chip(selected: selected))
+}
+
 /// "Appearance" category content: accent theme, poster card style, card depth effect, and stream
 /// badges. Extracted from SettingsView.swift (Phase 2 HIG revamp file split) — logic and wiring
 /// preserved verbatim, only regrouped into a per-category pane.
@@ -18,6 +43,10 @@ struct AppearanceSettingsPane: View {
     @AppStorage("detail_poster_backdrop") private var detailPosterBackdrop = true
     /// UX-4b: the muted background trailer on detail pages (distinct from auto-play above).
     @AppStorage("detail_trailer_background") private var detailTrailerBackground = true
+    /// FEAT-8: mirrors DetailView's `detail_trailer_duration` key. 0 = play forever.
+    @AppStorage("detail_trailer_duration") private var detailTrailerDuration = 0
+    /// FEAT-9: mirrors DetailView's `detail_action_icons_only` key.
+    @AppStorage("detail_action_icons_only") private var detailActionIconsOnly = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
@@ -77,6 +106,10 @@ struct AppearanceSettingsPane: View {
                 ) {
                     detailTrailerBackground.toggle()
                 }
+                // FEAT-8: only meaningful while the background trailer itself is on.
+                if detailTrailerBackground {
+                    trailerDurationRow
+                }
                 SettingsToggleRow(
                     title: String(localized: "Poster in Detail Background"),
                     subtitle: detailPosterBackdrop
@@ -85,6 +118,16 @@ struct AppearanceSettingsPane: View {
                     isOn: detailPosterBackdrop
                 ) {
                     detailPosterBackdrop.toggle()
+                }
+                // FEAT-9
+                SettingsToggleRow(
+                    title: String(localized: "Icon-Only Detail Buttons"),
+                    subtitle: detailActionIconsOnly
+                        ? String(localized: "On \u{00B7} Buttons show icons only")
+                        : String(localized: "Off \u{00B7} Buttons show text and icons"),
+                    isOn: detailActionIconsOnly
+                ) {
+                    detailActionIconsOnly.toggle()
                 }
             }
 
@@ -102,6 +145,24 @@ struct AppearanceSettingsPane: View {
 
             settingsSection(String(localized: "Stream Badges")) {
                 StreamBadgesSection(badges: badges)
+            }
+        }
+    }
+
+    /// FEAT-8: how long the muted background trailer plays before fading back to the still
+    /// backdrop. 0 ("Always") is the original play-forever behavior.
+    private var trailerDurationRow: some View {
+        let options: [(value: Int, label: String)] = [
+            (30, String(localized: "30s")),
+            (60, String(localized: "1 min")),
+            (90, String(localized: "90s")),
+            (0, String(localized: "Always")),
+        ]
+        return controlRow(String(localized: "Trailer Duration")) {
+            ForEach(options, id: \.value) { option in
+                chip(option.label, selected: detailTrailerDuration == option.value) {
+                    detailTrailerDuration = option.value
+                }
             }
         }
     }
@@ -229,26 +290,6 @@ private struct PosterStyleControls: View {
             }
             .buttonStyle(.chip)
         }
-    }
-
-    @ViewBuilder
-    private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text(title)
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            HStack(spacing: Theme.Spacing.md) { content() }
-        }
-    }
-
-    private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(Theme.Font.meta)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xxs + 2)
-        }
-        .buttonStyle(.chip(selected: selected))
     }
 }
 

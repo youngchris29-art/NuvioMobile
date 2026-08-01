@@ -108,7 +108,19 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             statusObservation = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
                 switch observed.status {
                 case .failed: self?.fail()
-                case .readyToPlay: self?.started = true
+                case .readyToPlay:
+                    self?.started = true
+                    #if DEBUG
+                    // UX-4c verification: log the actual resolved stream resolution. With the
+                    // master-playlist bug the presentationSize sat at ~854x480; the pinned
+                    // top-resolution variant should report ~1920x1080. presentationSize can be
+                    // .zero at the readyToPlay edge, so log a beat later.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak observed] in
+                        guard let item = observed else { return }
+                        let size = item.presentationSize
+                        print("[TrailerQuality] presentationSize=\(Int(size.width))x\(Int(size.height))")
+                    }
+                    #endif
                 default: break
                 }
             }

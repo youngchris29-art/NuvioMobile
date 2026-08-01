@@ -29,6 +29,30 @@ struct DetailView: View {
     /// switch at all — only auto-play did. Off = detail pages stay on the still artwork; the
     /// explicit "Watch Trailer" button and auto-play (if enabled) still work.
     @AppStorage("detail_trailer_background") private var backgroundTrailerEnabled: Bool = true
+    /// FEAT-8: how long the muted background trailer plays before fading back to the still
+    /// backdrop. 0 = play forever (previous, still-default behavior). Mirrors
+    /// AppearanceSettingsPane's "Trailer Duration" chip row (same @AppStorage key).
+    @AppStorage("detail_trailer_duration") private var trailerDurationSeconds: Int = 0
+    /// FEAT-9: render the five detail action buttons (Play, Watch Trailer, Mark Watched, Add to
+    /// Library) as icon-only pills. Mirrors AppearanceSettingsPane's "Icon-Only Detail Buttons"
+    /// toggle (same @AppStorage key).
+    @AppStorage("detail_action_icons_only") private var actionIconsOnly = false
+    /// FEAT-11: whether a full-screen trailer should start with sound instead of muted. Mirrors
+    /// PlaybackSettingsPane's "Trailer Sound by Default" toggle (same @AppStorage key) — read here
+    /// only to restore the shared `HeroTrailerAudioState` back to this default once a full-screen
+    /// trailer is dismissed (see the `.fullScreenCover(item: $model.trailerPlayback` below).
+    @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
+
+    /// FEAT-8: true once `trailerDurationSeconds` has elapsed for the current background trailer —
+    /// fades the background player back out to the still backdrop without ever touching
+    /// `model.trailerVideoURL` (that still gates the "Watch Trailer" button). Reset per detail visit.
+    @State private var backgroundTrailerStopped = false
+    @State private var trailerDurationTask: Task<Void, Never>?
+
+    /// UX-6: 0...0.35 darkening applied over the whole backdrop/poster/trailer stack as the user
+    /// scrolls the description down, computed once inside `.onScrollGeometryChange`'s `of:` so it
+    /// stops firing once fully saturated.
+    @State private var scrollDarkening: Double = 0
 
     /// One-shot per detail visit — never re-fires after the auto-played trailer is dismissed.
     @State private var didAutoPlayTrailer = false
@@ -57,12 +81,15 @@ struct DetailView: View {
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             // Also pause it while a full-screen trailer plays (no doubled decode/audio).
-            if backgroundTrailerEnabled, let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil {
+            if backgroundTrailerEnabled, let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil, !backgroundTrailerStopped {
                 TrailerHeroPlayer(urlString: trailer, onFailure: { model.trailerFailed() })
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
             scrimOverlay(posterBackdropVisible: showPosterBackdrop)
+            // UX-6: darkens the whole backdrop/poster/trailer stack (trailer keeps playing
+            // underneath) as the description scrolls down — the scrim above stays untouched.
+            Color.black.opacity(scrollDarkening).ignoresSafeArea().allowsHitTesting(false)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     header
@@ -106,6 +133,13 @@ struct DetailView: View {
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
+            // stops firing state updates once fully dark.
+            .onScrollGeometryChange(for: Double.self, of: { geo in
+                min(max((geo.contentOffset.y - geo.contentInsets.top) / 500.0, 0), 1) * 0.35
+            }, action: { _, newValue in
+                scrollDarkening = newValue
+            })
         }
         .overlay(alignment: .topTrailing) {
             // Topmost so it stays reachable over both the scrim (hit-testing disabled there) and
@@ -118,7 +152,10 @@ struct DetailView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.8), value: model.trailerVideoURL != nil)
+        // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
+        // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
+        // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
+        .animation(.easeInOut(duration: 0.8), value: model.trailerVideoURL != nil && !backgroundTrailerStopped)
         // The speaker overlay sits above the ScrollView, where the tvOS focus engine routes Up
         // presses to the tab bar instead — so the reachable control is the Siri Remote's
         // play/pause button, and the overlay acts as the state indicator.
@@ -132,13 +169,22 @@ struct DetailView: View {
         // This only adds an observer alongside the focus engine's own directional handling (like
         // `onPlayPauseCommand` above), so ordinary focus movement between buttons/rows is unaffected.
         .onMoveCommand { _ in userInteracted = true }
-        .onAppear { model.start() }
+        .onAppear {
+            model.start()
+            // FEAT-8: one-shot per screen visit — a prior visit's expiry must not carry over.
+            backgroundTrailerStopped = false
+            cancelTrailerDurationTask()
+        }
         .onDisappear {
             model.stop()
             cancelAutoPlayTrailer()
+            cancelTrailerDurationTask()
         }
         .onChange(of: model.trailerVideoURL) { _, newValue in
-            if newValue != nil { scheduleAutoPlayTrailerIfNeeded() }
+            if newValue != nil {
+                scheduleAutoPlayTrailerIfNeeded()
+                scheduleTrailerDurationTimerIfNeeded()
+            }
         }
         .onChange(of: showStreams) { _, isShowing in
             if isShowing { cancelAutoPlayTrailer() }
@@ -164,16 +210,13 @@ struct DetailView: View {
             )
         }
         .fullScreenCover(item: $model.trailerPlayback, onDismiss: {
-            // Returning from ANY full-screen trailer (the hero "Watch Trailer" button above, or a
-            // "Trailers & Extras" row item) to the muted background loop — force the shared audio
-            // preference back to muted so the sound the user just heard doesn't carry over into the
-            // background player once it reappears (it seeds `isMuted` from this same shared state on
-            // re-attach; see `TrailerHeroPlayerView.Coordinator.attach`). `HeroTrailerAudioState` only
-            // exposes `toggleMuted()` (no direct setter), so only flip it when it's currently unmuted.
-            if let isCurrentlyMuted = (HeroTrailerAudioState.shared.muted.value_ as? KotlinBoolean)?.boolValue,
-               !isCurrentlyMuted {
-                HeroTrailerAudioState.shared.toggleMuted()
-            }
+            // FEAT-11: returning from ANY full-screen trailer (the hero "Watch Trailer" button
+            // above, or a "Trailers & Extras" row item) to the muted background loop — restore the
+            // shared audio preference back to the user's configured default (it seeds `isMuted`
+            // from this same shared state on re-attach; see
+            // `TrailerHeroPlayerView.Coordinator.attach`) so the sound the user just heard doesn't
+            // unconditionally carry over into the background player once it reappears.
+            HeroTrailerAudioState.shared.setMuted(value: !trailerAudioDefaultOn)
             trailerPlaybackIsAutoPlay = false
         }) { item in
             FullScreenTrailerPlayer(urlString: item.url)
@@ -208,8 +251,11 @@ struct DetailView: View {
     private var posterUrl: String? { model.meta?.poster ?? preview.poster }
 
     /// Same gate the muted background hero player (and its mute button/play-pause toggle) use.
+    /// FEAT-8: also false once the trailer-duration timer has stopped the background player, so the
+    /// mute button hides and the poster-backdrop layer (below) reclaims the area it faded into.
     private var isTrailerActive: Bool {
-        backgroundTrailerEnabled && model.trailerVideoURL != nil && !showStreams && model.trailerPlayback == nil
+        backgroundTrailerEnabled && model.trailerVideoURL != nil && !showStreams
+            && model.trailerPlayback == nil && !backgroundTrailerStopped
     }
 
     /// The poster-backdrop layer only earns its keep when it would show something the plain
@@ -353,11 +399,12 @@ struct DetailView: View {
                         // `prominentAccentLabel()` (already proven for `.borderedProminent` sites,
                         // BUG-4) covers both states: accent-contrasting text unfocused, dark text
                         // on the near-white focus lift.
-                        Label("Play", systemImage: "play.fill")
-                            .font(Theme.Font.meta)
-                            .prominentAccentLabel()
-                            .padding(.horizontal, Theme.Spacing.lg)
-                            .padding(.vertical, Theme.Spacing.xxs + 2)
+                        actionButtonPadding(
+                            actionLabel("Play", systemImage: "play.fill")
+                                .font(Theme.Font.meta)
+                                .prominentAccentLabel(),
+                            horizontal: Theme.Spacing.lg
+                        )
                     }
                     .buttonStyle(.glassProminent)
                     .tint(Theme.Palette.accent)
@@ -366,11 +413,12 @@ struct DetailView: View {
                         seriesPlay = SeriesPlayRoute(meta: meta, action: action)
                     } label: {
                         // BUG-14: see the non-series Play button above.
-                        Label(action.label, systemImage: "play.fill")
-                            .font(Theme.Font.meta)
-                            .prominentAccentLabel()
-                            .padding(.horizontal, Theme.Spacing.lg)
-                            .padding(.vertical, Theme.Spacing.xxs + 2)
+                        actionButtonPadding(
+                            actionLabel(action.label, systemImage: "play.fill")
+                                .font(Theme.Font.meta)
+                                .prominentAccentLabel(),
+                            horizontal: Theme.Spacing.lg
+                        )
                     }
                     .buttonStyle(.glassProminent)
                     .tint(Theme.Palette.accent)
@@ -391,10 +439,11 @@ struct DetailView: View {
                             model.trailerPlayback = TrailerPlaybackItem(id: "hero-trailer", url: trailer, title: title)
                         }
                     } label: {
-                        Label("Watch Trailer", systemImage: "play.rectangle.fill")
-                            .font(Theme.Font.meta)
-                            .padding(.horizontal, Theme.Spacing.md)
-                            .padding(.vertical, Theme.Spacing.xxs + 2)
+                        actionButtonPadding(
+                            actionLabel("Watch Trailer", systemImage: "play.rectangle.fill")
+                                .font(Theme.Font.meta),
+                            horizontal: Theme.Spacing.md
+                        )
                     }
                     .buttonStyle(.glass)
                 }
@@ -402,13 +451,14 @@ struct DetailView: View {
                 Button {
                     model.toggleWatched()
                 } label: {
-                    Label(
-                        model.isWatched ? "Watched" : "Mark Watched",
-                        systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                    actionButtonPadding(
+                        actionLabel(
+                            model.isWatched ? "Watched" : "Mark Watched",
+                            systemImage: model.isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                        )
+                        .font(Theme.Font.meta),
+                        horizontal: Theme.Spacing.md
                     )
-                    .font(Theme.Font.meta)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.xxs + 2)
                 }
                 .buttonStyle(.glass)
                 .tint(model.isWatched ? Theme.Palette.accent : nil)
@@ -416,19 +466,45 @@ struct DetailView: View {
                 Button {
                     model.toggleLibrary()
                 } label: {
-                    Label(
-                        model.isSaved ? "In Library" : "Add to Library",
-                        systemImage: model.isSaved ? "checkmark" : "plus"
+                    actionButtonPadding(
+                        actionLabel(
+                            model.isSaved ? "In Library" : "Add to Library",
+                            systemImage: model.isSaved ? "checkmark" : "plus"
+                        )
+                        .font(Theme.Font.meta),
+                        horizontal: Theme.Spacing.md
                     )
-                    .font(Theme.Font.meta)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.xxs + 2)
                 }
                 .buttonStyle(.glass)
                 .tint(model.isSaved ? Theme.Palette.accent : nil)
             }
         }
         .focusSection()
+    }
+
+    /// FEAT-9: the underlying `Label` for one action-row button — icon + text normally, icon-only
+    /// (with the title preserved for VoiceOver) when `actionIconsOnly` is on.
+    @ViewBuilder
+    private func actionLabel(_ title: String, systemImage: String) -> some View {
+        let label = Label(title, systemImage: systemImage)
+        if actionIconsOnly {
+            label.labelStyle(.iconOnly).accessibilityLabel(Text(title))
+        } else {
+            label
+        }
+    }
+
+    /// FEAT-9: shared padding for action-row buttons — the normal asymmetric horizontal/vertical
+    /// padding, or symmetric padding (pills go square-ish around the bare icon) when icons-only.
+    @ViewBuilder
+    private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat) -> some View {
+        if actionIconsOnly {
+            content.padding(Theme.Spacing.md)
+        } else {
+            content
+                .padding(.horizontal, horizontal)
+                .padding(.vertical, Theme.Spacing.xxs + 2)
+        }
     }
 
     @ViewBuilder
@@ -850,6 +926,37 @@ struct DetailView: View {
     private func cancelAutoPlayTrailer() {
         autoPlayTrailerTask?.cancel()
         autoPlayTrailerTask = nil
+    }
+
+    // MARK: - FEAT-8: background-trailer duration
+
+    /// One-shot per detail visit — starts the configured countdown once the background trailer
+    /// becomes active (mirrors `scheduleAutoPlayTrailerIfNeeded`'s shape). `trailerDurationSeconds
+    /// == 0` means "play forever" (the original behavior), so nothing is scheduled.
+    private func scheduleTrailerDurationTimerIfNeeded() {
+        guard trailerDurationSeconds > 0, !backgroundTrailerStopped else { return }
+        trailerDurationTask?.cancel()
+        let seconds = trailerDurationSeconds
+        trailerDurationTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { stopBackgroundTrailer() }
+        }
+    }
+
+    /// Fades the background trailer back to the still backdrop. Deliberately slower than the
+    /// ordinary 0.8s crossfade — the slow 1.5s fade back to the still artwork IS the "smoother
+    /// return to backdrop" this feature asks for. Never touches `model.trailerVideoURL`: that still
+    /// gates the "Watch Trailer" button, so the trailer stays one tap away after it stops.
+    private func stopBackgroundTrailer() {
+        withAnimation(.easeInOut(duration: 1.5)) {
+            backgroundTrailerStopped = true
+        }
+    }
+
+    private func cancelTrailerDurationTask() {
+        trailerDurationTask?.cancel()
+        trailerDurationTask = nil
     }
 
     /// "Press Back to exit the trailer" — shown only for the auto-play entry (not the explicit
