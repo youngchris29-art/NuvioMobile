@@ -73,6 +73,9 @@ extension EnvironmentValues {
 private struct TabBarScrollAutoHide: ViewModifier {
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     @State private var hidesBar = false
+    /// Optional mirror of `hidesBar` for the attaching screen's own use (BUG-27: Home keys its
+    /// Menu-to-top shortcut off the same hysteresis the bar uses, so the two never disagree).
+    var isScrolledDown: Binding<Bool>?
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: CGFloat.self, of: { geo in
@@ -81,9 +84,11 @@ private struct TabBarScrollAutoHide: ViewModifier {
             if !hidesBar, offset > 60 {
                 hidesBar = true
                 tabBarVisibility.setScrolled(true)
+                isScrolledDown?.wrappedValue = true
             } else if hidesBar, offset < 8 {
                 hidesBar = false
                 tabBarVisibility.setScrolled(false)
+                isScrolledDown?.wrappedValue = false
             }
         })
     }
@@ -92,8 +97,9 @@ private struct TabBarScrollAutoHide: ViewModifier {
 extension View {
     /// Attach to a tab root's main (vertical) `ScrollView` so its position drives the floating tab
     /// bar's scroll-driven auto-hide. Screens that don't meaningfully scroll (Settings, Profile)
-    /// should not attach this.
-    func reportsScrollToTabBar() -> some View {
-        modifier(TabBarScrollAutoHide())
+    /// should not attach this. Pass `isScrolledDown` to also receive the same hysteresis-filtered
+    /// signal locally (crossings only, never per scroll tick).
+    func reportsScrollToTabBar(isScrolledDown: Binding<Bool>? = nil) -> some View {
+        modifier(TabBarScrollAutoHide(isScrolledDown: isScrolledDown))
     }
 }

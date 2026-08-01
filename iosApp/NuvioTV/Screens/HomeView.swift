@@ -46,6 +46,13 @@ struct HomeView: View {
     /// profile publishers) starved it and the carousel silently stopped advancing.
     @State private var heroTimer = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
 
+    /// BUG-27: mirrors the tab bar's scroll hysteresis (set by `reportsScrollToTabBar` below).
+    /// While true, a Menu press jumps back to the top of Home and focuses the hero instead of
+    /// bubbling up (which from a tab root would suspend the app) — the tvOS "long way down,
+    /// short way back" convention (Netflix, TV app). At the top the handler detaches (nil), so
+    /// Menu keeps its default behavior and the App Store exit convention stays intact.
+    @State private var isScrolledDown = false
+
     private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
         guard !heroItems.isEmpty else { return nil }
@@ -63,6 +70,13 @@ struct HomeView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_env")
+                // BUG-23 diagnostic (invisible, harness-readable): the hero carousel's live
+                // selection + focus state, so the UITest can watch exactly what a left press
+                // does to the index (one-press page? two? snap-back?).
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_hero")
                 #endif
 
                 // Full-bleed hero backdrop runs to every edge (and under the floating glass tab
@@ -87,6 +101,7 @@ struct HomeView: View {
                     .accessibilityHidden(true)
                 }
 
+                ScrollViewReader { scrollProxy in
                 ScrollView(.vertical) {
                     // Lazy so row construction (and each row's poster loads) is deferred to
                     // scroll position — an eager VStack builds every catalog row up front,
@@ -127,9 +142,29 @@ struct HomeView: View {
                         }
                     }
                     .padding(Theme.Spacing.screen)
+                    // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
+                    // hero — the anchor must exist even while the hero row is lazily culled.
+                    .id("home_top")
                 }
                 .scrollClipDisabled()
-                .reportsScrollToTabBar()
+                .reportsScrollToTabBar(isScrolledDown: $isScrolledDown)
+                // BUG-27: from down the page, Menu jumps back to the top and hands focus to
+                // the hero CTA — one press instead of dozens of Ups, and from there a single
+                // Up reaches the (now visible again) tab bar. The handler is nil at the top
+                // so Menu keeps its default root behavior there; it only attaches when the
+                // hero exists, because jumping without a focus anchor would let the focus
+                // engine drag the scroll right back down to the still-focused row.
+                .onExitCommand(perform: (isScrolledDown && !heroItems.isEmpty) ? {
+                    withAnimation(.easeInOut(duration: 0.45)) {
+                        scrollProxy.scrollTo("home_top", anchor: .top)
+                    }
+                    // Focus can only land on the hero CTA once the lazy top region is built;
+                    // hand it over just after the scroll animation settles.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                        heroFocused = true
+                    }
+                } : nil)
+                }
             }
             .onReceive(heroTimer) { _ in
                 // Reduce Motion: pause auto-advance entirely rather than rebasing the TabView
@@ -203,6 +238,21 @@ struct HomeView: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             .frame(height: Theme.Size.heroCarouselHeight)
             .focusSection()
+            // BUG-23: the paged TabView keeps the NEXT page alive (for the peek), so a right
+            // press moves focus into it and pages natively — but the PREVIOUS page gets culled,
+            // so a left press finds no focus target and does nothing (harness-proven: idx froze
+            // at 3 through two left presses while right paged 1→2→3). A press that fails to
+            // move focus is precisely when tvOS delivers a move command here instead, so this
+            // handler only ever sees the dropped presses: page left programmatically (animated —
+            // never rebase a tvOS paged TabView's selection without animation) and wrap
+            // 0 → last, mirroring the auto-advance's forward wrap. Native paging, whenever it
+            // does work, moves focus instead and never reaches this. Up/down are untouched.
+            .onMoveCommand { direction in
+                guard direction == .left, heroItems.count > 1 else { return }
+                withAnimation(.easeInOut(duration: 0.4)) {
+                    heroIndex = (min(heroIndex, heroItems.count - 1) - 1 + heroItems.count) % heroItems.count
+                }
+            }
 
             if heroItems.count > 1 {
                 // Both layouts keep the info panel on the left, so the dots stay leading.

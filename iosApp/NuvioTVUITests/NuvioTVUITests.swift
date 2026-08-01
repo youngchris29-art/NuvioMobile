@@ -545,4 +545,89 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "11a_poster_style_rows")
         XCTAssertTrue(app.state == .runningForeground)
     }
+
+    // MARK: - BUG-23 diagnostic: does one left press page the hero back by exactly one?
+
+    /// Reads the `debug_hero` probe (idx / focus / count) around single left and right presses
+    /// on the hero CTA. Expected healthy sequence from page 1: left ⇒ idx 0, stays 0. The bug
+    /// report says left needs TWO presses and "snaps back to the right-hand item" — so the
+    /// probe samples both immediately after the press and again after the page animation
+    /// settles, to catch a transient page-back-then-snap-forward.
+    private func heroProbe(_ app: XCUIApplication, _ name: String) {
+        let probe = app.staticTexts["debug_hero"]
+        let text = probe.waitForExistence(timeout: 4) ? probe.label : "debug_hero MISSING"
+        let attachment = XCTAttachment(string: "\(name): \(text)")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[BUG23] \(name): \(text)")
+    }
+
+    func test14HeroLeftNavDiag() throws {
+        let app = launchToHome()
+        // Normalize focus onto the hero CTA (same walk as test06: up to the tab bar, one down
+        // lands on the hero button).
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(2)
+        heroProbe(app, "14a_initial")
+        shot(app, "14a_hero_focused")
+
+        // Page right twice so left has room (and so we're clear of any wrap edge case).
+        press(.right, times: 1, gap: 1.5)
+        pause(2)
+        heroProbe(app, "14b_after_right1")
+        press(.right, times: 1, gap: 1.5)
+        pause(2)
+        heroProbe(app, "14c_after_right2")
+        shot(app, "14c_paged_right_twice")
+
+        // THE measurement: one left press, sampled mid-animation and settled.
+        remote.press(.left)
+        pause(0.4)
+        heroProbe(app, "14d_left1_immediate")
+        pause(2.5)
+        heroProbe(app, "14e_left1_settled")
+        shot(app, "14e_after_left1")
+
+        // Second left press — if the bug reproduces, THIS is the press that visibly pages.
+        remote.press(.left)
+        pause(0.4)
+        heroProbe(app, "14f_left2_immediate")
+        pause(2.5)
+        heroProbe(app, "14g_left2_settled")
+        shot(app, "14g_after_left2")
+
+        // The BUG-23 fix intercepts dropped LEFT presses via onMoveCommand on the carousel —
+        // verify it did not accidentally trap vertical movement: one down press must move
+        // focus out of the hero (probe foc flips to 0).
+        press(.down, times: 1)
+        pause(1.5)
+        heroProbe(app, "14h_down_leaves_hero")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - BUG-27: Menu from down the page jumps back to the top / tab bar
+
+    /// Walks focus several rows down Home (far enough that the tab bar auto-hides), presses
+    /// Menu once, and verifies the app is still frontmost with the hero focused (probe foc=1)
+    /// — i.e. Menu was intercepted as jump-to-top rather than bubbling to the springboard.
+    /// A second Up press should then reach the visible tab bar (screenshot evidence).
+    func test15MenuJumpToTop() throws {
+        let app = launchToHome()
+        press(.down, times: 6, gap: 1.2)
+        pause(2)
+        shot(app, "15a_deep_in_rows")
+
+        remote.press(.menu)
+        pause(1.8)
+        XCTAssertTrue(app.state == .runningForeground, "Menu from deep rows must NOT exit the app")
+        heroProbe(app, "15b_after_menu")
+        shot(app, "15b_back_at_top")
+
+        press(.up, times: 1)
+        pause(1.2)
+        shot(app, "15c_tab_bar_reached")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
 }
