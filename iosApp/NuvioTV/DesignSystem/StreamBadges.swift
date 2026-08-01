@@ -22,6 +22,15 @@ enum StreamBadgeMetrics {
 struct StreamBadgeChipView: View {
     let badge: StreamBadge
 
+    // BUG-28: `.settingsRow`-styled rows force `.environment(\.colorScheme, .light)` while
+    // focused (see FlatControlStyles.swift), which flips SEMANTIC colors (`Theme.Palette
+    // .textPrimary`/`.textSecondary`) but leaves FIXED pack-supplied hex colors untouched —
+    // producing white-on-white when a pack's `textColor`/`tagColor` happen to both be light.
+    // This environment value propagates into button labels (proven by `RowAccentTint` in
+    // FlatControlStyles.swift), so reading it here lets the chip pick focus-safe fixed colors
+    // instead of trusting the pack.
+    @Environment(\.isFocused) private var isFocused
+
     var body: some View {
         if badge.imageURL.isEmpty {
             textChip
@@ -33,14 +42,28 @@ struct StreamBadgeChipView: View {
     private var imageChip: some View {
         let shape = RoundedRectangle(cornerRadius: StreamBadgeMetrics.cornerRadius)
         let filled = badge.tagStyle.caseInsensitiveCompare("filled") == .orderedSame
-        let background = filled ? Color(hexString: badge.tagColor) : nil
+        // Non-filled badge images are authored to sit on a dark surface (transparent PNGs).
+        // On the white focus platter they vanish, so recreate that dark context while focused.
+        let background: Color? = filled
+            ? Color(hexString: badge.tagColor)
+            : (isFocused ? Theme.Palette.surfaceElevated : nil)
         let border = Color(hexString: badge.borderColor)
+        let fallbackDecision = Self.effectiveTextChipColors(
+            textColorHex: badge.textColor,
+            tagColorHex: badge.tagColor,
+            isFocused: isFocused
+        )
+        let fallbackForeground = Self.resolvedForeground(
+            fallbackDecision,
+            textColorHex: badge.textColor,
+            tagColorHex: badge.tagColor
+        )
 
         return BadgeImageView(url: badge.imageURL) {
             // Broken/unreachable image → readable text stand-in.
             Text(badge.name)
                 .font(Theme.Font.caption.weight(.semibold))
-                .foregroundStyle(Color(hexString: badge.textColor) ?? Theme.Palette.textPrimary)
+                .foregroundStyle(fallbackForeground)
                 .lineLimit(1)
         }
         .frame(height: StreamBadgeMetrics.imageHeight)
@@ -53,9 +76,14 @@ struct StreamBadgeChipView: View {
     }
 
     private var textChip: some View {
-        let background = Color(hexString: badge.tagColor) ?? Theme.Palette.surfaceElevated
-        let foreground = Color(hexString: badge.textColor) ?? Theme.Palette.textPrimary
-        let border = Color(hexString: badge.borderColor)
+        let decision = Self.effectiveTextChipColors(
+            textColorHex: badge.textColor,
+            tagColorHex: badge.tagColor,
+            isFocused: isFocused
+        )
+        let foreground = Self.resolvedForeground(decision, textColorHex: badge.textColor, tagColorHex: badge.tagColor)
+        let background = Self.resolvedBackground(decision, tagColorHex: badge.tagColor)
+        let border = decision.showBorder ? Color(hexString: badge.borderColor) : nil
 
         return Text(badge.name)
             .font(Theme.Font.caption)
@@ -67,6 +95,111 @@ struct StreamBadgeChipView: View {
             .overlay(
                 Capsule().stroke(border ?? .clear, lineWidth: border == nil ? 0 : 1)
             )
+    }
+
+    // MARK: - BUG-28 pure color decision logic
+
+    /// Where a text chip's foreground should come from. Kept as a plain enum (no `Color`) so the
+    /// decision is testable with simple `==` — see `StreamBadgeColorTests`.
+    enum ChipFgSource: Equatable {
+        /// `Theme.Palette.textPrimary` — semantic, tracks the row's colorScheme flip.
+        case semantic
+        /// The pack's own `textColor` hex.
+        case pack
+        /// Dark/light pick computed against the effective background (pack guard triggered).
+        case computedOnBg
+        /// Fixed light color used while the row's focus platter is showing.
+        case focusedFixed
+    }
+
+    /// Where a text chip's background should come from.
+    enum ChipBgSource: Equatable {
+        /// `Theme.Palette.surfaceElevated` — the existing fixed-dark default.
+        case semantic
+        /// The pack's own `tagColor` hex.
+        case pack
+        /// Fixed translucent fill used while the row's focus platter is showing.
+        case focusedFixed
+    }
+
+    struct ChipColorDecision: Equatable {
+        var fg: ChipFgSource
+        var bg: ChipBgSource
+        /// Whether the pack's `borderColor` should still be drawn.
+        var showBorder: Bool
+    }
+
+    /// Default effective background hex used for the fg/bg contrast guard when the pack supplies
+    /// no (or an unparseable) `tagColor` — mirrors `Theme.Palette.surfaceElevated` (0x242424).
+    private static let defaultBgHex = "242424"
+
+    /// Pure decision function for a text chip's colors — see BUG-28.
+    ///
+    /// FOCUSED: ignore the pack entirely. The row's focus platter is near-white, so pack hexes
+    /// (authored against the app's normal dark surfaces) are never trustworthy here — use fixed
+    /// colors instead, with no pack border.
+    ///
+    /// UNFOCUSED: keep the pack's colors. But if the pack's `textColor` and effective `tagColor`
+    /// (or the semantic default when `tagColor` is missing) are both light or both dark — luminance
+    /// difference under 0.3 — the pair is illegible (this is the reporter's white-on-white case),
+    /// so replace the foreground with a computed dark/light pick against that background. When
+    /// `textColor` itself is missing/unparseable, fall back to the semantic default (today's
+    /// existing behavior for text-only, colorless badges).
+    static func effectiveTextChipColors(
+        textColorHex: String,
+        tagColorHex: String,
+        isFocused: Bool
+    ) -> ChipColorDecision {
+        if isFocused {
+            return ChipColorDecision(fg: .focusedFixed, bg: .focusedFixed, showBorder: false)
+        }
+
+        let packBgLum = Theme.Palette.luminance(fromHexString: tagColorHex)
+        let bgSource: ChipBgSource = packBgLum != nil ? .pack : .semantic
+
+        guard let fgLum = Theme.Palette.luminance(fromHexString: textColorHex) else {
+            return ChipColorDecision(fg: .semantic, bg: bgSource, showBorder: true)
+        }
+
+        let effectiveBgLum = packBgLum ?? Theme.Palette.luminance(fromHexString: defaultBgHex)!
+        if abs(fgLum - effectiveBgLum) < 0.3 {
+            return ChipColorDecision(fg: .computedOnBg, bg: bgSource, showBorder: true)
+        }
+        return ChipColorDecision(fg: .pack, bg: bgSource, showBorder: true)
+    }
+
+    /// Maps a `ChipColorDecision.fg` to an actual `Color`. Split from `effectiveTextChipColors`
+    /// so the pure decision stays `Color`-free while callers (text chip, image-chip fallback
+    /// text) share this mapping.
+    static func resolvedForeground(
+        _ decision: ChipColorDecision,
+        textColorHex: String,
+        tagColorHex: String
+    ) -> Color {
+        switch decision.fg {
+        case .semantic:
+            return Theme.Palette.textPrimary
+        case .pack:
+            return Color(hexString: textColorHex) ?? Theme.Palette.textPrimary
+        case .focusedFixed:
+            return Theme.Palette.onFocusPlatter
+        case .computedOnBg:
+            let bgLum = Theme.Palette.luminance(fromHexString: tagColorHex)
+                ?? Theme.Palette.luminance(fromHexString: defaultBgHex)!
+            return bgLum > 0.5 ? Color(hex: 0x0D0D0D) : Theme.Palette.textPrimary
+        }
+    }
+
+    /// Maps a `ChipColorDecision.bg` to an actual `Color`.
+    static func resolvedBackground(_ decision: ChipColorDecision, tagColorHex: String) -> Color {
+        switch decision.bg {
+        case .pack:
+            return Color(hexString: tagColorHex) ?? Theme.Palette.surfaceElevated
+        case .semantic:
+            return Theme.Palette.surfaceElevated
+        case .focusedFixed:
+            return Color.black.opacity(0.08)
+        }
     }
 }
 
@@ -155,7 +288,12 @@ struct StreamFileSizeChip: View {
         let shape = RoundedRectangle(cornerRadius: StreamBadgeMetrics.cornerRadius)
         Text(Self.label(for: bytes))
             .font(Theme.Font.caption.weight(.bold))
-            .foregroundStyle(Theme.Palette.textPrimary)
+            // BUG-28: fixed (not semantic) foreground — this chip's background is a fixed dark
+            // fill that does NOT flip with the row's focus colorScheme, so a semantic foreground
+            // (which does flip) could end up dark-on-dark once focused. Fixed/fixed keeps the
+            // pair legible in both states; the resulting light-on-dark chip reads fine sitting on
+            // the white focus platter too.
+            .foregroundStyle(Color.white)
             .lineLimit(1)
             .padding(.horizontal, Theme.Spacing.sm)
             .frame(height: StreamBadgeMetrics.containerHeight)
@@ -186,7 +324,9 @@ struct BadgeOverflowChip: View {
         let shape = Capsule()
         Text("+\(count)")
             .font(Theme.Font.caption.weight(.semibold))
-            .foregroundStyle(Theme.Palette.textSecondary)
+            // BUG-28: fixed (not semantic) foreground for the same reason as StreamFileSizeChip
+            // above — this chip's background is fixed-dark and doesn't flip with focus.
+            .foregroundStyle(Color.white.opacity(0.7))
             .lineLimit(1)
             .padding(.horizontal, Theme.Spacing.sm)
             .frame(height: StreamBadgeMetrics.containerHeight)

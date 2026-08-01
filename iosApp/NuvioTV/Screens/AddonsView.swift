@@ -108,7 +108,7 @@ private struct AddonRow: View {
             HStack(spacing: 24) {
                 Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
                     .font(Theme.Font.body)
-                    .foregroundStyle(enabled ? Theme.Palette.accent : Theme.Palette.textSecondary)
+                    .rowAccentTint(enabled)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.headline).lineLimit(1)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)

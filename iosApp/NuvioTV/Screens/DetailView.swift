@@ -699,7 +699,7 @@ struct DetailView: View {
                                         ProgressView()
                                     } else {
                                         Image(systemName: "play.circle.fill")
-                                            .foregroundStyle(Theme.Palette.accent)
+                                            .rowAccentTint()
                                     }
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(trailer.name)

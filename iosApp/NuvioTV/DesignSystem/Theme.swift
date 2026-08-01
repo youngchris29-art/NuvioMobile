@@ -59,6 +59,38 @@ enum Theme {
             let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
             return luminance > 0.75 ? Color(hex: 0x0D0D0D) : textPrimary
         }
+
+        /// Relative luminance (0–1, Rec. 709 weights) of a `#RGB`/`#RRGGBB`/`#RRGGBBAA` hex
+        /// string, using the same parsing rules as `Color(hexString:)`. Returns nil for
+        /// empty/malformed input so callers can fall back. Deliberately String-in/Double-out (no
+        /// `Color` involved) so pure color-decision logic elsewhere (e.g.
+        /// `StreamBadgeChipView.effectiveTextChipColors`, BUG-28) stays unit-testable without
+        /// relying on `Color` equality.
+        static func luminance(fromHexString hexString: String) -> Double? {
+            var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty else { return nil }
+            if s.hasPrefix("#") { s.removeFirst() }
+            guard s.count == 3 || s.count == 6 || s.count == 8,
+                  let value = UInt64(s, radix: 16) else { return nil }
+
+            let r, g, b: Double
+            switch s.count {
+            case 3:
+                r = Double((value >> 8) & 0xF) / 15.0
+                g = Double((value >> 4) & 0xF) / 15.0
+                b = Double(value & 0xF) / 15.0
+            case 6:
+                r = Double((value >> 16) & 0xFF) / 255.0
+                g = Double((value >> 8) & 0xFF) / 255.0
+                b = Double(value & 0xFF) / 255.0
+            default: // 8: RRGGBBAA
+                r = Double((value >> 24) & 0xFF) / 255.0
+                g = Double((value >> 16) & 0xFF) / 255.0
+                b = Double((value >> 8) & 0xFF) / 255.0
+            }
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
         /// Primary text — semantic, resolves against the pinned dark scheme (near-white) and
         /// tracks Increase Contrast automatically. (Was hard-coded 0xF5F7F8.)
         static let textPrimary = Color.primary
@@ -70,6 +102,11 @@ enum Theme {
         static let star = Color(hex: 0xFFC857)
         /// Progress bar fill (continue watching).
         static let progress = Color(hex: 0xFF5252)
+        /// Label color on the system focus platter (near-white). Public mirror of
+        /// `FlatControlStyles.FocusLook.onPlatter` — that type stays private to
+        /// FlatControlStyles.swift, so call sites elsewhere (e.g. `StreamBadges.swift`, BUG-28)
+        /// that need the same "on the white platter" color use this instead of duplicating it.
+        static let onFocusPlatter = Color.black.opacity(0.85)
     }
 
     // MARK: - Surfaces (materials / Liquid Glass)

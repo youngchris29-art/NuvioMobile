@@ -169,7 +169,7 @@ struct CloudItemRow: View {
             HStack(spacing: Theme.Spacing.lg) {
                 Image(systemName: iconName)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.accent)
+                    .rowAccentTint()
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(item.name)
                         .font(Theme.Font.body)
@@ -251,7 +251,7 @@ struct CloudFilePickerView: View {
                         } label: {
                             HStack(spacing: Theme.Spacing.lg) {
                                 Image(systemName: "play.circle")
-                                    .foregroundStyle(Theme.Palette.accent)
+                                    .rowAccentTint()
                                 Text(file.name)
                                     .font(Theme.Font.body)
                                     .foregroundStyle(Theme.Palette.textPrimary)
