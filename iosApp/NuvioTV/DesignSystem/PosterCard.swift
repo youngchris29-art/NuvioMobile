@@ -50,7 +50,7 @@ struct PosterCard: View {
     private var titleVisible: Bool { showTitle ?? style.showTitle }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
             CachedAsyncImage(string: imageURL)
                 .frame(width: resolvedWidth, height: resolvedHeight)
                 .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
@@ -95,7 +95,7 @@ struct LandscapeCard: View {
     private var titleVisible: Bool { showTitle ?? style.showTitle }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: imageURL)
                     .frame(width: width, height: height)

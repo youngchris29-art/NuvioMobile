@@ -517,7 +517,7 @@ struct InlineTrailerCard: View {
     /// The expanded card: landscape tile plus the title in the same slot the poster's title occupies,
     /// both following the animated artwork width.
     private var expandedTile: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and LandscapeCard
             trailerSurface
 
             if showsOverlayTitle {

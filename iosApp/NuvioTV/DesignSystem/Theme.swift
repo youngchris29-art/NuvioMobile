@@ -139,8 +139,8 @@ enum Theme {
         static let screenTitle = SwiftUI.Font.title3.weight(.bold)
         /// Section/row headers (was fixed 30pt semibold → callout, 31pt).
         static let sectionTitle = SwiftUI.Font.callout.weight(.semibold)
-        /// Card titles under posters (was fixed 24pt → caption, 25pt).
-        static let cardTitle = SwiftUI.Font.caption
+        /// Card titles under posters (was fixed 24pt → caption2, 23pt).
+        static let cardTitle = SwiftUI.Font.caption2
         /// Body copy (was fixed 28pt → body, 29pt — the HIG minimum for body text).
         static let body = SwiftUI.Font.body
         /// Metadata lines — year/runtime/rating (was fixed 26pt semibold → caption, 25pt).
