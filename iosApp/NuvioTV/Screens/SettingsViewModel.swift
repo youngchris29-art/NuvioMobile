@@ -41,6 +41,18 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var posterLandscapeRows = false
     /// Card-depth styling (master toggle + edge/sheen/coverage strengths + per-surface flags).
     @Published private(set) var cardDepth = CardDepthStyle.default
+    /// FEAT-10: every search-capable catalog across the enabled addons — the rows behind
+    /// Settings → Content Sources → Search Sources. Derived from the addon watcher below.
+    @Published private(set) var searchSourceOptions: [SearchCatalogOption] = []
+    /// FEAT-10: disabled-source keys, mirrored from `SearchViewModel.SearchSourceSettings`
+    /// into a published property so the pane's toggles re-render on change.
+    @Published private(set) var disabledSearchSourceKeys: Set<String> = SearchViewModel.SearchSourceSettings.disabledKeys
+
+    /// FEAT-10: flip one search source on/off (persists locally + updates the published mirror).
+    func setSearchSource(key: String, disabled: Bool) {
+        SearchViewModel.SearchSourceSettings.setDisabled(disabled, forKey: key)
+        disabledSearchSourceKeys = SearchViewModel.SearchSourceSettings.disabledKeys
+    }
 
     private var themeWatcher: FlowWatcher?
     private var playerWatcher: FlowWatcher?
@@ -111,6 +123,8 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? AddonsUiState else { return }
             let enabled = AddonModelsKt.enabledAddons(state.addons)
             self.enabledAddons = enabled
+            // FEAT-10: keep the Search Sources rows in step with the installed addons.
+            self.searchSourceOptions = SearchRepository.shared.searchCatalogOptions(addons: enabled)
             HomeCatalogSettingsRepository.shared.syncCatalogs(addons: enabled)
         }
         catalogWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in

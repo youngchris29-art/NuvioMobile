@@ -24,6 +24,19 @@ enum class DiscoverEmptyStateReason {
     RequestFailed,
 }
 
+/// One search-capable catalog, as shown in the tvOS "Search Sources" settings (FEAT-10).
+/// [key] is the stable identity persisted when the user disables a source — same
+/// `manifestId:type:catalogId` shape as [DiscoverCatalogOption.key].
+data class SearchCatalogOption(
+    val key: String,
+    val addonName: String,
+    val catalogName: String,
+    val type: String,
+    /// Localized media-type label ("Movies", "Series", …) resolved at construction so UI
+    /// layers can render it without reaching back into shared string helpers.
+    val typeLabel: String,
+)
+
 data class DiscoverCatalogOption(
     val key: String,
     val addonName: String,

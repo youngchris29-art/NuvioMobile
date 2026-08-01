@@ -14675,6 +14675,238 @@
           }
         }
       }
+    },
+    "Hide Hero Artwork While Browsing": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero-Artwork beim Stöbern ausblenden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocultar la imagen del héroe al navegar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Masquer le visuel du héros pendant la navigation"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nascondi l'artwork dell'eroe durante la navigazione"
+          }
+        }
+      }
+    },
+    "On · Artwork shows while the hero is highlighted and hides once you move down into the rows": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein · Das Artwork erscheint, solange der Hero hervorgehoben ist, und verschwindet, sobald du nach unten in die Reihen gehst"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · La imagen se muestra mientras el héroe está resaltado y se oculta al bajar a las filas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · Le visuel s'affiche tant que le héros est en surbrillance et disparaît dès que vous descendez dans les rangées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivo · L'artwork appare finché l'eroe è evidenziato e scompare quando scendi tra le file"
+          }
+        }
+      }
+    },
+    "Off · Hero artwork stays visible while you browse": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Das Hero-Artwork bleibt beim Stöbern sichtbar"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · La imagen del héroe permanece visible mientras navegas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · Le visuel du héros reste visible pendant la navigation"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivo · L'artwork dell'eroe resta visibile mentre navighi"
+          }
+        }
+      }
+    },
+    "Search Sources": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suchquellen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fuentes de búsqueda"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sources de recherche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fonti di ricerca"
+          }
+        }
+      }
+    },
+    "Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wähle, welche Kataloge die Suche durchsucht. Weniger Quellen bedeuten schnellere, gezieltere Ergebnisse. Gilt nur für dieses Apple TV."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige qué catálogos consulta la búsqueda. Menos fuentes significan resultados más rápidos y precisos. Solo se aplica a este Apple TV."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choisissez les catalogues consultés par la recherche. Moins de sources donne des résultats plus rapides et plus précis. S'applique uniquement à cette Apple TV."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scegli quali cataloghi consulta la ricerca. Meno fonti significano risultati più rapidi e mirati. Vale solo per questa Apple TV."
+          }
+        }
+      }
+    },
+    "No installed add-on offers search. Install a catalog add-on with search support and its sources will appear here.": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kein installiertes Add-on bietet eine Suche an. Installiere ein Katalog-Add-on mit Suchunterstützung, dann erscheinen seine Quellen hier."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ningún add-on instalado ofrece búsqueda. Instala un add-on de catálogo con búsqueda y sus fuentes aparecerán aquí."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune extension installée ne propose de recherche. Installez une extension de catalogue avec recherche et ses sources apparaîtront ici."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun add-on installato offre la ricerca. Installa un add-on di catalogo con supporto alla ricerca e le sue fonti appariranno qui."
+          }
+        }
+      }
+    },
+    "Off · %@ · skipped when searching": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · %@ · wird bei der Suche übersprungen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · %@ · se omite al buscar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · %@ · ignoré lors de la recherche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivo · %@ · saltato durante la ricerca"
+          }
+        }
+      }
+    },
+    "On · %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein · %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivo · %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

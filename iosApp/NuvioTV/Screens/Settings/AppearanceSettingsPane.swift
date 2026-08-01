@@ -44,11 +44,15 @@ struct AppearanceSettingsPane: View {
                 // Default (off) always shows the Home hero's backdrop artwork — a beta
                 // tester read the old focus-only fade as a bug ("hero posts don't
                 // work"). This restores that original fade for anyone who preferred it.
+                // BUG-24/UX-1: the old name ("Hero Poster Only When Focused") confused two
+                // testers in opposite directions — one asked for the OFF behavior thinking it
+                // was missing (UX-1), one reported the toggle "does nothing" while describing
+                // exactly what ON does (BUG-24). The name now states the action.
                 SettingsToggleRow(
-                    title: String(localized: "Hero Poster Only When Focused"),
+                    title: String(localized: "Hide Hero Artwork While Browsing"),
                     subtitle: heroPosterFocusOnly
-                        ? String(localized: "On \u{00B7} Home hero artwork fades in only while the hero carousel is focused")
-                        : String(localized: "Off \u{00B7} Home hero artwork is always visible"),
+                        ? String(localized: "On \u{00B7} Artwork shows while the hero is highlighted and hides once you move down into the rows")
+                        : String(localized: "Off \u{00B7} Hero artwork stays visible while you browse"),
                     isOn: heroPosterFocusOnly
                 ) {
                     heroPosterFocusOnly.toggle()

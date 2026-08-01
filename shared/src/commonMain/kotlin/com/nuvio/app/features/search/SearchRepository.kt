@@ -48,7 +48,7 @@ object SearchRepository {
     private var discoverSources: List<DiscoverCatalogOption> = emptyList()
     private var lastDiscoverHideUnreleasedContent: Boolean? = null
 
-    fun search(query: String, addons: List<ManagedAddon>) {
+    fun search(query: String, addons: List<ManagedAddon>, disabledCatalogKeys: Set<String> = emptySet()) {
         val normalizedQuery = query.trim()
         if (normalizedQuery.isBlank()) {
             clear()
@@ -68,6 +68,7 @@ object SearchRepository {
         val requests = buildSearchRequests(
             addons = activeAddons,
             query = normalizedQuery,
+            disabledCatalogKeys = disabledCatalogKeys,
         )
         if (requests.isEmpty()) {
             activeJob?.cancel()
@@ -319,9 +320,32 @@ object SearchRepository {
         loadDiscoverFeed(reset = false)
     }
 
-    private fun buildSearchRequests(
+    /// FEAT-10: every search-capable catalog across the enabled addons, in fan-out order —
+    /// the option list behind the tvOS "Search Sources" settings. Key shape matches
+    /// [DiscoverCatalogOption.key] (`manifestId:type:catalogId`).
+    fun searchCatalogOptions(addons: List<ManagedAddon>): List<SearchCatalogOption> =
+        addons.enabledAddons().mapNotNull { addon ->
+            val manifest = addon.manifest ?: return@mapNotNull null
+            addon to manifest
+        }.flatMap { (addon, manifest) ->
+            manifest.catalogs
+                .filter { catalog -> catalog.supportsSearch() }
+                .map { catalog ->
+                    SearchCatalogOption(
+                        key = searchCatalogKey(manifest.id, catalog),
+                        addonName = addon.displayTitle,
+                        catalogName = catalog.name,
+                        type = catalog.type,
+                        typeLabel = catalog.type.displayLabel(),
+                    )
+                }
+        }
+
+    // Internal (not private) so common tests can exercise the FEAT-10 filter without a network.
+    internal fun buildSearchRequests(
         addons: List<ManagedAddon>,
         query: String,
+        disabledCatalogKeys: Set<String> = emptySet(),
     ): List<SearchCatalogRequest> =
         addons.mapNotNull { addon ->
             val manifest = addon.manifest ?: return@mapNotNull null
@@ -329,6 +353,9 @@ object SearchRepository {
         }.flatMap { (addon, manifest) ->
             manifest.catalogs
                 .filter { catalog -> catalog.supportsSearch() }
+                // FEAT-10: sources the user switched off in Search Sources. Unknown keys in
+                // the stored set (uninstalled addons, renamed catalogs) simply never match.
+                .filterNot { catalog -> searchCatalogKey(manifest.id, catalog) in disabledCatalogKeys }
                 .map { catalog ->
                     SearchCatalogRequest(
                         addon = addon,
@@ -340,6 +367,9 @@ object SearchRepository {
                     )
                 }
         }
+
+    private fun searchCatalogKey(manifestId: String, catalog: AddonCatalog): String =
+        "$manifestId:${catalog.type}:${catalog.id}"
 
     private fun buildDiscoverSources(addons: List<ManagedAddon>): List<DiscoverCatalogOption> =
         addons.mapNotNull { addon ->
@@ -513,7 +543,7 @@ private fun CatalogPage.withUnreleasedFilter(): CatalogPage {
     return if (filteredItems.size == items.size) this else copy(items = filteredItems)
 }
 
-private data class SearchCatalogRequest(
+internal data class SearchCatalogRequest(
     val addon: ManagedAddon,
     val catalogId: String,
     val catalogName: String,

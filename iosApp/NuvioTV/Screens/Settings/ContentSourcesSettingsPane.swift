@@ -82,8 +82,45 @@ struct ContentSourcesSettingsPane: View {
                 }
             }
 
+            // FEAT-10 (tester ask): choose which catalogs Search fans out to. Fewer sources
+            // means faster, more focused results — the fan-out across every search-capable
+            // catalog of every addon is also the app's biggest single burst of requests.
+            settingsSection(String(localized: "Search Sources")) {
+                searchSourcesSection
+            }
+
             settingsSection(String(localized: "Plugins")) {
                 pluginsSection
+            }
+        }
+    }
+
+    /// FEAT-10: one toggle per search-capable catalog. Rows derive from the installed addons
+    /// (SettingsViewModel's addon watcher), the disabled set is local to this Apple TV.
+    @ViewBuilder
+    private var searchSourcesSection: some View {
+        Text("Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
+
+        if model.searchSourceOptions.isEmpty {
+            Text("No installed add-on offers search. Install a catalog add-on with search support and its sources will appear here.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+        } else {
+            ForEach(model.searchSourceOptions, id: \.key) { option in
+                let disabled = model.disabledSearchSourceKeys.contains(option.key)
+                SettingsToggleRow(
+                    title: "\(option.catalogName) \u{00B7} \(option.typeLabel)",
+                    subtitle: disabled
+                        ? String(localized: "Off \u{00B7} \(option.addonName) \u{00B7} skipped when searching")
+                        : String(localized: "On \u{00B7} \(option.addonName)"),
+                    isOn: !disabled
+                ) {
+                    model.setSearchSource(key: option.key, disabled: !disabled)
+                }
             }
         }
     }

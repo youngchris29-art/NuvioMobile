@@ -630,4 +630,45 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "15c_tab_bar_reached")
         XCTAssertTrue(app.state == .runningForeground)
     }
+
+    // MARK: - BUG-24 rename + FEAT-10 Search Sources: do the new Settings rows render?
+
+    /// Visual check for two settings changes: (a) Appearance now says "Hide Hero Artwork
+    /// While Browsing" (BUG-24/UX-1 rename), (b) Content Sources gained a "Search Sources"
+    /// section with one toggle per search-capable catalog (FEAT-10).
+    func test16SettingsNewRows() throws {
+        let app = launchToHome()
+
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+        let renamed = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'Hide Hero Artwork'")
+        ).firstMatch
+        _ = moveFocus(.down, until: renamed, max: 16)
+        pause(1)
+        shot(app, "16a_hero_toggle_renamed")
+        XCTAssertTrue(renamed.exists, "renamed BUG-24 toggle must exist in Appearance")
+
+        press(.left, times: 1)
+        pause(1)
+        let contentSources = app.buttons["Content Sources"]
+        if !moveFocus(.down, until: contentSources, max: 10) {
+            _ = moveFocus(.up, until: contentSources, max: 10)
+        }
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+        // Walk down far enough to bring the Search Sources section into view (it sits below
+        // the TMDB and MDBList sections).
+        press(.down, times: 10, gap: 0.6)
+        pause(1)
+        shot(app, "16b_search_sources_section")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
 }

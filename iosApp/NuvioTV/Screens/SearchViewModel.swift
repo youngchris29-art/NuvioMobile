@@ -10,6 +10,24 @@ import SharedCore
 /// Queries are debounced so we don't fire a request on every keystroke.
 @MainActor
 final class SearchViewModel: ObservableObject {
+    /// FEAT-10: which search-capable catalogs the user has switched OFF in Settings →
+    /// Content Sources → Search Sources. Stored as their stable `manifestId:type:catalogId`
+    /// keys. Local to this Apple TV (not synced), like the appearance toggles — keys for
+    /// since-uninstalled addons linger harmlessly (they never match) and re-arm if the
+    /// addon comes back.
+    enum SearchSourceSettings {
+        private static let defaultsKey = "search_disabled_catalog_keys"
+
+        static var disabledKeys: Set<String> {
+            Set(UserDefaults.standard.stringArray(forKey: defaultsKey) ?? [])
+        }
+
+        static func setDisabled(_ disabled: Bool, forKey key: String) {
+            var keys = disabledKeys
+            if disabled { keys.insert(key) } else { keys.remove(key) }
+            UserDefaults.standard.set(Array(keys).sorted(), forKey: defaultsKey)
+        }
+    }
     @Published private(set) var sections: [HomeCatalogSection] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var emptyMessage: String?
@@ -88,7 +106,13 @@ final class SearchViewModel: ObservableObject {
         debounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled, let self else { return }
-            SearchRepository.shared.search(query: trimmed, addons: self.enabledAddons)
+            SearchRepository.shared.search(
+                query: trimmed,
+                addons: self.enabledAddons,
+                // FEAT-10: sources switched off in Settings → Content Sources → Search
+                // Sources. Read fresh per query so a settings change applies immediately.
+                disabledCatalogKeys: Self.SearchSourceSettings.disabledKeys
+            )
         }
     }
 
