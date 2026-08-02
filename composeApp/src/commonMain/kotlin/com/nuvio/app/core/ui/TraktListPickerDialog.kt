@@ -25,7 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import com.nuvio.app.features.trakt.TraktListTab
+import com.nuvio.app.features.tracking.TrackingLibraryTab
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.action_cancel
 import nuvio.composeapp.generated.resources.action_save
@@ -38,7 +38,7 @@ import org.jetbrains.compose.resources.stringResource
 fun TraktListPickerDialog(
     visible: Boolean,
     title: String,
-    tabs: List<TraktListTab>,
+    tabs: List<TrackingLibraryTab>,
     membership: Map<String, Boolean>,
     isPending: Boolean,
     errorMessage: String?,

@@ -27,22 +27,18 @@ val TraktContinueWatchingDaysOptions: List<Int> = listOf(
     TRAKT_CONTINUE_WATCHING_DAYS_CAP_ALL,
 )
 
-@Serializable
-enum class WatchProgressSource {
-    TRAKT,
-    NUVIO_SYNC;
+// The watch-progress source enum now lives in `features/tracking` (provider-neutral). These
+// aliases/delegates keep every existing `com.nuvio.app.features.trakt.*` import — shared code,
+// composeApp screens, and the composeApp test suite — compiling unchanged.
+typealias WatchProgressSource = com.nuvio.app.features.tracking.WatchProgressSource
 
-    companion object {
-        fun fromStorage(value: String?): WatchProgressSource =
-            entries.firstOrNull { it.name == value } ?: DEFAULT_WATCH_PROGRESS_SOURCE
-    }
-}
-
-val DEFAULT_WATCH_PROGRESS_SOURCE: WatchProgressSource = WatchProgressSource.TRAKT
-val DEFAULT_LIBRARY_SOURCE_MODE: LibrarySourceMode = LibrarySourceMode.TRAKT
+val DEFAULT_WATCH_PROGRESS_SOURCE: WatchProgressSource =
+    com.nuvio.app.features.tracking.DEFAULT_WATCH_PROGRESS_SOURCE
+val DEFAULT_LIBRARY_SOURCE_MODE: LibrarySourceMode =
+    com.nuvio.app.features.tracking.DEFAULT_LIBRARY_SOURCE_MODE
 
 fun librarySourceModeFromStorage(value: String?): LibrarySourceMode =
-    LibrarySourceMode.entries.firstOrNull { it.name == value } ?: DEFAULT_LIBRARY_SOURCE_MODE
+    com.nuvio.app.features.tracking.librarySourceModeFromStorage(value)
 
 @Serializable
 enum class MoreLikeThisSourcePreference {
@@ -184,34 +180,39 @@ fun normalizeTraktContinueWatchingDaysCap(days: Int): Int =
         days.coerceIn(TRAKT_MIN_CONTINUE_WATCHING_DAYS_CAP, TRAKT_MAX_CONTINUE_WATCHING_DAYS_CAP)
     }
 
+// ── Trakt-shaped source resolvers ────────────────────────────────────────────
+// Kept as thin delegates over the provider-neutral `features/tracking` functions. The sync spine
+// now calls the tracking versions; these remain because fork-only callers (composeApp screens,
+// composeApp's WatchedModelsTest/HomeScreenTest, and `shouldUseTraktLibrary` below) still take the
+// Trakt-shaped `isAuthenticated` boolean.
+
 fun shouldUseTraktProgress(
     isAuthenticated: Boolean,
     source: WatchProgressSource,
-): Boolean = isAuthenticated && source == WatchProgressSource.TRAKT
+): Boolean = effectiveWatchProgressSource(
+    isTraktAuthenticated = isAuthenticated,
+    requestedSource = source,
+) == WatchProgressSource.TRAKT
 
 fun effectiveWatchProgressSource(
     isTraktAuthenticated: Boolean,
     requestedSource: WatchProgressSource,
-): WatchProgressSource =
-    if (shouldUseTraktProgress(
-            isAuthenticated = isTraktAuthenticated,
-            source = requestedSource,
-        )
-    ) {
-        WatchProgressSource.TRAKT
-    } else {
-        WatchProgressSource.NUVIO_SYNC
-    }
+): WatchProgressSource = com.nuvio.app.features.tracking.effectiveWatchProgressSource(
+    requestedSource = requestedSource,
+    isProviderAuthenticated = { providerId ->
+        providerId == com.nuvio.app.features.tracking.TrackingProviderId.TRAKT && isTraktAuthenticated
+    },
+)
 
 fun effectiveLibrarySourceMode(
     isAuthenticated: Boolean,
     source: LibrarySourceMode,
-): LibrarySourceMode =
-    if (isAuthenticated && source == LibrarySourceMode.TRAKT) {
-        LibrarySourceMode.TRAKT
-    } else {
-        LibrarySourceMode.LOCAL
-    }
+): LibrarySourceMode = com.nuvio.app.features.tracking.effectiveLibrarySourceMode(
+    requestedSource = source,
+    isProviderAuthenticated = { providerId ->
+        providerId == com.nuvio.app.features.tracking.TrackingProviderId.TRAKT && isAuthenticated
+    },
+)
 
 fun shouldUseTraktLibrary(
     isAuthenticated: Boolean,

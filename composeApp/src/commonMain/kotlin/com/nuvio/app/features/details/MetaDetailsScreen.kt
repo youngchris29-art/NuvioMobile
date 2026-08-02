@@ -114,7 +114,7 @@ import com.nuvio.app.features.trakt.TraktCommentReview
 import com.nuvio.app.features.trakt.TraktCommentsRepository
 import com.nuvio.app.features.trakt.TraktCommentsSettings
 import com.nuvio.app.features.trakt.TraktConnectionMode
-import com.nuvio.app.features.trakt.TraktListTab
+import com.nuvio.app.features.tracking.TrackingLibraryTab
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.trailer.TrailerPlaybackResolver
 import com.nuvio.app.features.trailer.TrailerPlaybackSource
@@ -211,7 +211,7 @@ fun MetaDetailsScreen(
     var selectedComment by remember(type, id) { mutableStateOf<TraktCommentReview?>(null) }
     val detailsScope = rememberCoroutineScope()
     var showLibraryListPicker by remember(type, id) { mutableStateOf(false) }
-    var pickerTabs by remember(type, id) { mutableStateOf<List<TraktListTab>>(emptyList()) }
+    var pickerTabs by remember(type, id) { mutableStateOf<List<TrackingLibraryTab>>(emptyList()) }
     var pickerMembership by remember(type, id) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     var pickerPending by remember(type, id) { mutableStateOf(false) }
     var pickerError by remember(type, id) { mutableStateOf<String?>(null) }

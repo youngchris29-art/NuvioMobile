@@ -9,6 +9,11 @@ import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import com.nuvio.app.features.addons.httpPostJsonWithHeaders
 import com.nuvio.app.features.addons.httpRequestRaw
 import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.tracking.TrackingAuthProvider
+import com.nuvio.app.features.tracking.TrackingCapability
+import com.nuvio.app.features.tracking.TrackingProviderDescriptor
+import com.nuvio.app.features.tracking.TrackingProviderId
+import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import io.ktor.http.Url
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.CancellationException
@@ -30,7 +35,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.random.Random
 
-object TraktAuthRepository {
+object TraktAuthRepository : TrackingAuthProvider {
     private const val BASE_URL = "https://api.trakt.tv"
     private const val AUTHORIZE_URL = "https://trakt.tv/oauth/authorize"
     private const val API_VERSION = "2"
@@ -47,7 +52,28 @@ object TraktAuthRepository {
     val uiState: StateFlow<TraktAuthUiState> = _uiState.asStateFlow()
 
     private val _isAuthenticated = MutableStateFlow(false)
-    val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
+    override val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
+
+    override val descriptor = TrackingProviderDescriptor(
+        id = TrackingProviderId.TRAKT,
+        displayName = "Trakt",
+        capabilities = setOf(
+            TrackingCapability.AUTHENTICATION,
+            TrackingCapability.LIBRARY_READ,
+            TrackingCapability.LIBRARY_WRITE,
+            TrackingCapability.WATCHED_READ,
+            TrackingCapability.WATCHED_WRITE,
+            TrackingCapability.PROGRESS_READ,
+            TrackingCapability.PROGRESS_WRITE,
+            TrackingCapability.SCROBBLE,
+            TrackingCapability.COMMENTS,
+            TrackingCapability.RECOMMENDATIONS,
+        ),
+    )
+
+    init {
+        TrackingProviderRegistry.register(this)
+    }
 
     private var hasLoaded = false
     private var currentProfileId: Int = 1
@@ -59,7 +85,20 @@ object TraktAuthRepository {
     private var deviceVerificationUrl: String? = null
     private var deviceExpiresAtMillis: Long? = null
 
-    fun ensureLoaded(profileId: Int = ProfileRepository.activeProfileId) {
+    // TrackingAuthProvider speaks the provider-neutral (no-argument) lifecycle; the fork's
+    // per-profile auth isolation lives in the `profileId` overloads below, which stay the
+    // authoritative entry points (Swift's TraktViewModel and the tvOS profile fan-out call them
+    // with an explicit id). The no-argument overrides resolve the active profile and delegate, so
+    // registry-driven calls cannot silently load another profile's credentials.
+    override fun ensureLoaded() {
+        ensureLoaded(ProfileRepository.activeProfileId)
+    }
+
+    override fun onProfileChanged() {
+        onProfileChanged(ProfileRepository.activeProfileId)
+    }
+
+    override fun ensureLoaded(profileId: Int) {
         if (hasLoaded && currentProfileId == profileId) return
         loadFromDisk(profileId)
     }
@@ -68,13 +107,22 @@ object TraktAuthRepository {
         loadFromDisk(profileId)
     }
 
-    fun clearLocalState() {
+    override fun clearLocalState() {
         cancelDeviceFlowInternal()
         hasLoaded = false
         currentProfileId = 1
         profileGeneration += 1L
         authState = TraktAuthState()
         publish()
+    }
+
+    /**
+     * Drops a profile's stored credentials without touching the in-memory state of the active
+     * profile. The fork's [TraktAuthStorage] has no delete primitive, so an empty payload is
+     * written — [loadFromDisk] treats blank as "no credentials", which is what removal means here.
+     */
+    override fun removeStoredProfile(profileId: Int) {
+        TraktAuthStorage.savePayload(profileId, "")
     }
 
     fun snapshot(profileId: Int = ProfileRepository.activeProfileId): TraktAuthUiState {
@@ -294,6 +342,15 @@ object TraktAuthRepository {
             completeAuthorizationFromCallback(callbackUrl, profileId)
         }
     }
+
+    override fun handleAuthCallback(url: String): Boolean {
+        if (!isTraktAuthCallback(url)) return false
+        onAuthCallbackReceived(url)
+        return true
+    }
+
+    private fun isTraktAuthCallback(url: String): Boolean =
+        url == TraktConfig.REDIRECT_URI || url.startsWith("${TraktConfig.REDIRECT_URI}?")
 
     suspend fun authorizedHeaders(profileId: Int = currentProfileId): Map<String, String>? {
         ensureLoaded(profileId)

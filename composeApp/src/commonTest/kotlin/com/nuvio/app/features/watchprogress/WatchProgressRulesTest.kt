@@ -413,19 +413,19 @@ class WatchProgressRulesTest {
         assertFalse(
             shouldCascadeCompletedProgressToWatchedHistory(
                 entry = completed,
-                isUsingTraktProgress = true,
+                providerOwnsCompletedHistory = true,
             ),
         )
         assertTrue(
             shouldCascadeCompletedProgressToWatchedHistory(
                 entry = completed,
-                isUsingTraktProgress = false,
+                providerOwnsCompletedHistory = false,
             ),
         )
         assertFalse(
             shouldCascadeCompletedProgressToWatchedHistory(
                 entry = inProgress,
-                isUsingTraktProgress = false,
+                providerOwnsCompletedHistory = false,
             ),
         )
     }

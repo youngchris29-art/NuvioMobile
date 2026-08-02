@@ -91,6 +91,7 @@ import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.sync.AppForegroundMonitor
 import com.nuvio.app.core.sync.ProfileSettingsSync
+import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.core.sync.SyncManager
 import com.nuvio.app.core.ui.LocalNuvioNavBarScrollState
 import com.nuvio.app.core.ui.NuvioNavigationBar
@@ -218,7 +219,7 @@ import com.nuvio.app.features.streams.StreamsScreen
 import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
-import com.nuvio.app.features.trakt.TraktListTab
+import com.nuvio.app.features.tracking.TrackingLibraryTab
 import com.nuvio.app.features.trakt.TraktScrobbleRepository
 import com.nuvio.app.features.updater.AppUpdaterHost
 import com.nuvio.app.features.updater.AppUpdaterPlatform
@@ -837,6 +838,11 @@ private fun MainAppContent(
             remember {
                 ProfileSettingsSync.startObserving()
             }
+            // Register the tracking providers (Trakt today) into TrackingProviderRegistry before
+            // any screen resolves the active watch-progress/library source through it.
+            remember {
+                ensureTrackingProvidersRegistered()
+            }
         }
         val hapticFeedback = LocalHapticFeedback.current
         val focusManager = LocalFocusManager.current
@@ -863,7 +869,7 @@ private fun MainAppContent(
         var showLibraryListPicker by remember { mutableStateOf(false) }
         var pickerItem by remember { mutableStateOf<LibraryItem?>(null) }
         var pickerTitle by remember { mutableStateOf("") }
-        var pickerTabs by remember { mutableStateOf<List<TraktListTab>>(emptyList()) }
+        var pickerTabs by remember { mutableStateOf<List<TrackingLibraryTab>>(emptyList()) }
         var pickerMembership by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
         var pickerPending by remember { mutableStateOf(false) }
         var pickerError by remember { mutableStateOf<String?>(null) }

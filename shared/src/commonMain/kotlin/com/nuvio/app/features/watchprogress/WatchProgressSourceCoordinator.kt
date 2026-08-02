@@ -5,11 +5,14 @@ import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.features.profiles.ProfileRepository
-import com.nuvio.app.features.trakt.DEFAULT_WATCH_PROGRESS_SOURCE
-import com.nuvio.app.features.trakt.TraktAuthRepository
-import com.nuvio.app.features.trakt.TraktSettingsRepository
-import com.nuvio.app.features.trakt.WatchProgressSource
-import com.nuvio.app.features.trakt.effectiveWatchProgressSource
+import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
+import com.nuvio.app.features.tracking.DEFAULT_WATCH_PROGRESS_SOURCE
+import com.nuvio.app.features.tracking.TrackingProviderId
+import com.nuvio.app.features.tracking.TrackingProviderRegistry
+import com.nuvio.app.features.tracking.TrackingSettingsRepository
+import com.nuvio.app.features.tracking.WatchProgressSource
+import com.nuvio.app.features.tracking.effectiveWatchProgressSource
+import com.nuvio.app.features.tracking.providerId
 import com.nuvio.app.features.watched.WatchedRepository
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.locks.SynchronizedObject
@@ -236,16 +239,16 @@ object WatchProgressSourceCoordinator {
             if (observeJob?.isActive == true) return
             observeJob = scope.launch {
                 combine(
-                    TraktSettingsRepository.uiState,
-                    TraktAuthRepository.isAuthenticated,
+                    TrackingSettingsRepository.uiState,
+                    TrackingProviderRegistry.connectedProviderIds,
                     AuthRepository.state,
                     ProfileRepository.state,
-                ) { settings, isTraktAuthenticated, authState, profileState ->
+                ) { settings, connectedProviderIds, authState, profileState ->
                     buildContext(
                         profileId = profileState.activeProfile?.profileIndex
                             ?: ProfileRepository.activeProfileId,
                         requestedSource = settings.watchProgressSource,
-                        isTraktAuthenticated = isTraktAuthenticated,
+                        connectedProviderIds = connectedProviderIds,
                         authState = authState,
                     )
                 }
@@ -271,8 +274,9 @@ object WatchProgressSourceCoordinator {
     }
 
     private fun ensureSourceStateLoaded() {
-        TraktAuthRepository.ensureLoaded()
-        TraktSettingsRepository.ensureLoaded()
+        ensureTrackingProvidersRegistered()
+        TrackingProviderRegistry.ensureLoaded()
+        TrackingSettingsRepository.ensureLoaded()
     }
 
     suspend fun selectSource(
@@ -283,7 +287,7 @@ object WatchProgressSourceCoordinator {
         ensureSourceStateLoadedForGeneration(operationGeneration)
         synchronized(startLock) {
             ensureCoordinatorGeneration(operationGeneration)
-            TraktSettingsRepository.setWatchProgressSource(source, profileId)
+            TrackingSettingsRepository.setWatchProgressSource(source, profileId)
         }
         val context = currentContext(profileId)
         return try {
@@ -475,22 +479,48 @@ object WatchProgressSourceCoordinator {
     private fun buildContext(
         profileId: Int,
         requestedSource: WatchProgressSource,
-        isTraktAuthenticated: Boolean,
+        connectedProviderIds: Set<TrackingProviderId>,
         authState: AuthState,
     ): WatchProgressSourceContext = WatchProgressSourceContext(
         profileId = profileId,
         requestedSource = requestedSource,
         effectiveSource = effectiveWatchProgressSource(
-            isTraktAuthenticated = isTraktAuthenticated,
             requestedSource = requestedSource,
+            isProviderAuthenticated = { providerId ->
+                providerId in connectedProviderIds &&
+                    TrackingProviderRegistry.progressProvider(providerId) != null &&
+                    TrackingProviderRegistry.watchedProvider(providerId) != null
+            },
         ),
         isNuvioAuthenticated = authState is AuthState.Authenticated && !authState.isAnonymous,
     )
 
     private fun currentContext(profileId: Int): WatchProgressSourceContext = buildContext(
         profileId = profileId,
-        requestedSource = TraktSettingsRepository.uiState.value.watchProgressSource,
-        isTraktAuthenticated = TraktAuthRepository.isAuthenticated.value,
+        requestedSource = TrackingSettingsRepository.uiState.value.watchProgressSource,
+        connectedProviderIds = TrackingProviderRegistry.connectedProviderIdsSnapshot(),
         authState = AuthRepository.state.value,
+    )
+
+    /**
+     * Refreshes one provider and, when that provider currently owns the active source, the
+     * application read models built on top of it. Ported from upstream's
+     * `TrackingProviderRefreshCoordinator` seam; no caller in Phase 1 (the Simkl settings UI is
+     * upstream's only user) but it keeps the coordination rule unit-testable.
+     */
+    suspend fun refreshProviderAndActiveSource(
+        profileId: Int,
+        providerId: TrackingProviderId,
+        refreshProvider: suspend () -> Boolean,
+    ): Boolean = coordinateTrackingProviderRefresh(
+        providerId = providerId,
+        refreshProvider = refreshProvider,
+        activeProviderId = {
+            ensureSourceStateLoaded()
+            currentContext(profileId).effectiveSource.providerId
+        },
+        refreshActiveReadModels = {
+            refreshActiveSource(profileId = profileId, force = false).succeeded
+        },
     )
 }

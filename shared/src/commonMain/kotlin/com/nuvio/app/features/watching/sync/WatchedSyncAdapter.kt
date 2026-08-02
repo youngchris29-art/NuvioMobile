@@ -19,6 +19,13 @@ interface WatchedSyncAdapter {
         pageSize: Int,
     ): List<WatchedItem>
 
+    /**
+     * Fully-watched series keys the provider tracks separately from individual watched items.
+     * `null` means "this adapter has no opinion" and leaves the current set untouched — which is
+     * every adapter the fork ships today (Nuvio Sync and Trakt both derive the set locally).
+     */
+    suspend fun pullFullyWatchedSeriesKeys(profileId: Int): Set<String>? = null
+
     suspend fun getDeltaCursor(profileId: Int): Long? = null
 
     suspend fun pullDelta(

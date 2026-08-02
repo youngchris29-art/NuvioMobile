@@ -7,6 +7,7 @@ import com.nuvio.app.core.sync.ProfileSettingsSync
 import com.nuvio.app.core.sync.SyncPlatformProvider
 import com.nuvio.app.core.sync.TV_SYNC_PLATFORM
 import com.nuvio.app.core.sync.TVOS_SYNC_PLATFORM
+import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.core.ui.CardDepthStyleRepository
 import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.features.addons.AddonProfileContext
@@ -125,6 +126,15 @@ fun installTvOsSharedProviders() {
     // tvOS-set key stays local-only, so the sign-out wipe loses them and the next sign-in's pull
     // REPLACES local settings with the (empty) server blob. With it, sign-in restores everything.
     ProfileSettingsSync.startObserving()
+
+    // Tracking providers (Trakt today) → TrackingProviderRegistry. The sync spine
+    // (WatchedRepository / WatchProgressRepository / LibraryRepository / SyncManager) resolves the
+    // active watch-progress + library source through the registry, so nothing tracker-backed
+    // resolves until the providers are registered. Each of those repositories also calls
+    // `ensureTrackingProvidersRegistered()` defensively, but registering once at startup keeps the
+    // very first `effectiveWatchProgressSource(...)` from seeing an empty registry and silently
+    // falling back to NUVIO_SYNC.
+    ensureTrackingProvidersRegistered()
 
     // Restore any previously-persisted profiles + active selection from NSUserDefaults before the
     // repositories read the active profile id. No-op on a fresh install (no stored payload yet);
