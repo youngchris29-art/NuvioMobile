@@ -198,8 +198,10 @@ private extension View {
             // its own scrolled-content bar treatment on tvOS 26, fighting our hysteresis — on
             // device the re-shown bar rendered clipped at the top edge until focus entered it and
             // forced a re-layout (beta.9 device pass, 2026-08-01). One authority: ours.
+            // No custom `.animation` wrapper either (round 3, same device pass): retiming the
+            // system bar's own show transition left it frozen mid-slide — still clipped, just
+            // less. The system toolbar animates its own visibility changes.
             .toolbarVisibility(vis.hidden ? .hidden : .visible, for: .tabBar)
-            .animation(.easeInOut(duration: 0.25), value: vis.hidden)
     }
 }
 
