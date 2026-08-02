@@ -181,8 +181,35 @@ if [[ -f "$BUILT_PLIST" ]]; then
     echo "error: pbxproj target-level version override is back (FEAT-13): product reports ${BUILT_MARKETING_VERSION} (${BUILT_BUILD_NUMBER}), Version.xcconfig says ${MARKETING_VERSION} (${BUILD_NUMBER})" >&2
     exit 1
   fi
+
+  # Regression guard: the Stamp Build Metadata phase once ran before
+  # ProcessInfoPlistFile in clean Release builds, which clobbered both keys
+  # (beta.9's IPA had to be stamped by hand). The About pane must never ship
+  # blank again: the stamped tag has to match the tag being published, and the
+  # commit SHA has to be present.
+  BUILT_BETA_TAG="$(/usr/libexec/PlistBuddy -c 'Print :NuvioBetaTag' "$BUILT_PLIST" 2>/dev/null || echo "")"
+  BUILT_COMMIT_SHA="$(/usr/libexec/PlistBuddy -c 'Print :NuvioCommitSHA' "$BUILT_PLIST" 2>/dev/null || echo "")"
+  if [[ "$BUILT_BETA_TAG" != "$TAG" ]]; then
+    echo "error: stamp guard (FEAT-13): product's NuvioBetaTag is '${BUILT_BETA_TAG}', publishing as '${TAG}'." >&2
+    echo "       The Stamp Build Metadata phase did not run (or ran before plist processing)," >&2
+    echo "       or --skip-build is reusing a product stamped for a different tag. Rebuild." >&2
+    exit 1
+  fi
+  if [[ -z "$BUILT_COMMIT_SHA" ]]; then
+    echo "error: stamp guard (FEAT-13): product's NuvioCommitSHA is empty — the Stamp Build Metadata phase did not survive the build. Rebuild." >&2
+    exit 1
+  fi
+  HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short=8 HEAD 2>/dev/null || echo "")"
+  if [[ "$SKIP_BUILD" -eq 0 && "$BUILT_COMMIT_SHA" != "$HEAD_SHA" ]]; then
+    echo "error: stamp guard (FEAT-13): product's NuvioCommitSHA is ${BUILT_COMMIT_SHA} but HEAD is ${HEAD_SHA} — fresh build stamped a stale SHA." >&2
+    exit 1
+  elif [[ "$BUILT_COMMIT_SHA" != "$HEAD_SHA" ]]; then
+    echo "warning: reused product was built at ${BUILT_COMMIT_SHA}; HEAD is now ${HEAD_SHA}." >&2
+  fi
+  echo "==> Stamp check: NuvioBetaTag=${BUILT_BETA_TAG} NuvioCommitSHA=${BUILT_COMMIT_SHA}"
 else
-  echo "warning: $BUILT_PLIST not found; skipping version regression check." >&2
+  echo "error: $BUILT_PLIST not found; cannot verify version/stamp keys." >&2
+  exit 1
 fi
 
 echo "==> Packaging $IPA_NAME"
