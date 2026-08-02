@@ -27,6 +27,15 @@ final class SearchViewModel: ObservableObject {
             if disabled { keys.insert(key) } else { keys.remove(key) }
             UserDefaults.standard.set(Array(keys).sorted(), forKey: defaultsKey)
         }
+
+        /// Persists an entire resolved disabled-keys set in one write. Callers that compute a
+        /// whole new set (e.g. the collision-group resolver in `SettingsViewModel.setSearchSource`)
+        /// should use this instead of a remove/add diff loop: a single `UserDefaults.set` call is
+        /// atomic for this purpose, so app termination mid-update can't land on a torn state where
+        /// some sibling keys were persisted and others weren't.
+        static func setAll(_ keys: Set<String>) {
+            UserDefaults.standard.set(Array(keys).sorted(), forKey: defaultsKey)
+        }
     }
     @Published private(set) var sections: [HomeCatalogSection] = []
     @Published private(set) var isLoading: Bool = false

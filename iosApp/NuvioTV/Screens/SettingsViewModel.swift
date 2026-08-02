@@ -55,8 +55,10 @@ final class SettingsViewModel: ObservableObject {
     /// switches off its whole collision group, and dropping only the row's suffixed key would
     /// leave that bare key behind — the row would stay off forever (Codex round-2 finding N1).
     /// The resolver drops the bare key and re-persists the other group members under their own
-    /// keys, so only this row changes state. Persisting is a diff against the stored set because
-    /// `SearchSourceSettings` exposes per-key writes.
+    /// keys, so only this row changes state. Persisting uses `setAll`, a single UserDefaults write
+    /// of the whole resolved set, rather than a remove/add diff loop — a diff loop can be
+    /// interrupted by app termination between the two passes and drop the legacy bare key without
+    /// having pinned its sibling keys yet, silently re-enabling them.
     func setSearchSource(key: String, disabled: Bool) {
         let current = SearchViewModel.SearchSourceSettings.disabledKeys
         // Kotlin Set<String> arrives as a Swift Set of AnyHashable.
@@ -68,12 +70,7 @@ final class SettingsViewModel: ObservableObject {
         )
         let resolved = Set(resolvedRaw.compactMap { $0 as? String })
 
-        for removed in current.subtracting(resolved) {
-            SearchViewModel.SearchSourceSettings.setDisabled(false, forKey: removed)
-        }
-        for added in resolved.subtracting(current) {
-            SearchViewModel.SearchSourceSettings.setDisabled(true, forKey: added)
-        }
+        SearchViewModel.SearchSourceSettings.setAll(resolved)
         disabledSearchSourceKeys = SearchViewModel.SearchSourceSettings.disabledKeys
     }
 

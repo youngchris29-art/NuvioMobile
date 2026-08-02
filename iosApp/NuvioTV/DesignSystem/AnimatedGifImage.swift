@@ -499,11 +499,18 @@ private enum AnimatedGifDecoder {
             // which can exceed the unpadded `side × 4` the pre-decode estimate above assumed.
             // Check the ACTUAL cost against the ACTUAL running total before this frame is kept —
             // once keeping it would push the total over `maxDecodedBytesPerGif`, stop decoding
-            // (always keep at least the first frame, guarded by `!frames.isEmpty`) and fold this
+            // (normally keep at least the first frame, guarded by `!frames.isEmpty`) and fold this
             // frame's delay AND every remaining source frame's delay into the last frame that was
             // actually kept, so total playback duration is preserved even though fewer unique
             // bitmaps end up stored.
             let frameBytes = cgImage.bytesPerRow * cgImage.height
+            // Defensive guard: the ≤400px downsample ceiling on `decodeSide` should make this
+            // unreachable in practice, but the budget is documented as a hard bound, so a
+            // pathological first frame that alone exceeds it must fail the whole decode (→ static
+            // cover) rather than being kept unconditionally by the `!frames.isEmpty` exemption below.
+            if frames.isEmpty && frameBytes > maxDecodedBytesPerGif {
+                return nil
+            }
             if !frames.isEmpty && decodedBytesTotal + frameBytes > maxDecodedBytesPerGif {
                 var extraDelay = 0
                 for skipped in index..<count {
