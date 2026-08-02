@@ -46,6 +46,15 @@ struct ProfileSelectionView: View {
     @State private var editing: ProfileEditTarget?
     @State private var pinPrompt: PinPrompt?
 
+    /// Anchors `.prefersDefaultFocus` so initial D-pad focus lands on the user's own (first)
+    /// profile tile instead of the Add-profile tile, regardless of layout order.
+    @Namespace private var defaultFocusNamespace
+    /// Profiles arrive asynchronously (`model.start()`), so at first render the row may contain
+    /// only the Add tile and `.prefersDefaultFocus` settles on it. This nudges focus onto the
+    /// first real profile once profiles land, one time only.
+    @FocusState private var focusedProfile: Int32?
+    @State private var didSeedDefaultFocus = false
+
     var body: some View {
         ZStack {
             Theme.Palette.background.ignoresSafeArea()
@@ -94,6 +103,11 @@ struct ProfileSelectionView: View {
                                 }
                             }
                             .buttonStyle(.borderless)
+                            .focused($focusedProfile, equals: profile.profileIndex)
+                            .prefersDefaultFocus(
+                                profile.profileIndex == model.profiles.first?.profileIndex,
+                                in: defaultFocusNamespace
+                            )
                             .contextMenu {
                                 Button {
                                     requirePin(for: profile, action: .edit)
@@ -127,6 +141,7 @@ struct ProfileSelectionView: View {
                     .padding(.horizontal, Theme.Spacing.screen)
                     .padding(.vertical, Theme.Spacing.lg)
                     .focusSection()
+                    .focusScope(defaultFocusNamespace)
 
                 Text("Hold to manage profile")
                     .font(Theme.Font.caption)
@@ -137,6 +152,16 @@ struct ProfileSelectionView: View {
             }
         }
         .onAppear { model.start() }
+        .onChange(of: model.profiles.count) { oldCount, newCount in
+            // One-shot: profiles land after initial focus may have already settled on Add, so
+            // nudge focus onto the first real profile the moment they arrive (empty → non-empty).
+            guard !didSeedDefaultFocus, oldCount == 0, newCount > 0 else { return }
+            didSeedDefaultFocus = true
+            let firstProfileIndex = model.profiles.first?.profileIndex
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                focusedProfile = firstProfileIndex
+            }
+        }
         .fullScreenCover(item: $editing) { target in
             ProfileEditView(model: model, target: target)
         }

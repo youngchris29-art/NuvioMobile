@@ -89,6 +89,10 @@ final class SearchViewModel: ObservableObject {
         discoverWatcher = nil
         historyWatcher = nil
         started = false
+        // Re-arm Discover for the next start(): refreshDiscoverIfNeeded() early-returns when
+        // the signature already matches, so without this the section would never rebuild.
+        // canReuseDiscoverState in the repository still avoids redundant network work.
+        lastDiscoverAddonSignature = nil
     }
 
     /// Called as the search text changes; debounces, then queries (or resets on empty).
@@ -97,7 +101,10 @@ final class SearchViewModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
-            SearchRepository.shared.reset()
+            // `.reset()` is the nuclear account/profile-teardown variant — it also wipes
+            // discoverSources, which permanently kills the Discover section here since
+            // nothing ever re-arms it. Use `.clear()`, which only resets search state. (BUG-33(2))
+            SearchRepository.shared.clear()
             sections = []
             emptyMessage = nil
             return

@@ -322,23 +322,17 @@ object SearchRepository {
 
     /// FEAT-10: every search-capable catalog across the enabled addons, in fan-out order —
     /// the option list behind the tvOS "Search Sources" settings. Key shape matches
-    /// [DiscoverCatalogOption.key] (`manifestId:type:catalogId`).
+    /// [DiscoverCatalogOption.key] (`manifestId:type:catalogId`), plus a `#n` suffix on the
+    /// second and later occurrences of an otherwise-identical key (see [enumerateSearchCatalogs]).
     fun searchCatalogOptions(addons: List<ManagedAddon>): List<SearchCatalogOption> =
-        addons.enabledAddons().mapNotNull { addon ->
-            val manifest = addon.manifest ?: return@mapNotNull null
-            addon to manifest
-        }.flatMap { (addon, manifest) ->
-            manifest.catalogs
-                .filter { catalog -> catalog.supportsSearch() }
-                .map { catalog ->
-                    SearchCatalogOption(
-                        key = searchCatalogKey(manifest.id, catalog),
-                        addonName = addon.displayTitle,
-                        catalogName = catalog.name,
-                        type = catalog.type,
-                        typeLabel = catalog.type.displayLabel(),
-                    )
-                }
+        enumerateSearchCatalogs(addons.enabledAddons()).map { entry ->
+            SearchCatalogOption(
+                key = entry.key,
+                addonName = entry.addon.displayTitle,
+                catalogName = entry.catalog.name,
+                type = entry.catalog.type,
+                typeLabel = entry.catalog.type.displayLabel(),
+            )
         }
 
     // Internal (not private) so common tests can exercise the FEAT-10 filter without a network.
@@ -346,27 +340,76 @@ object SearchRepository {
         addons: List<ManagedAddon>,
         query: String,
         disabledCatalogKeys: Set<String> = emptySet(),
-    ): List<SearchCatalogRequest> =
-        addons.mapNotNull { addon ->
+    ): List<SearchCatalogRequest> {
+        val entries = enumerateSearchCatalogs(addons)
+        logSearchSourceFilter(entries, disabledCatalogKeys)
+        return entries
+            // FEAT-10: sources the user switched off in Search Sources. Unknown keys in
+            // the stored set (uninstalled addons, renamed catalogs) simply never match.
+            .filterNot { entry -> entry.key in disabledCatalogKeys }
+            .map { entry ->
+                SearchCatalogRequest(
+                    addon = entry.addon,
+                    catalogId = entry.catalog.id,
+                    catalogName = entry.catalog.name,
+                    type = entry.catalog.type,
+                    query = query,
+                    supportsPagination = entry.catalog.supportsPagination(),
+                )
+            }
+    }
+
+    /// BUG-33 hardening: the single ordered enumeration of every search-capable catalog, and the
+    /// ONLY place a search catalog key is minted. [searchCatalogOptions] (the settings pane) and
+    /// [buildSearchRequests] (the fan-out filter) both go through here, so the two can never
+    /// derive different keys for the same input ordering.
+    ///
+    /// `manifestId:type:catalogId` is not guaranteed unique — the same manifest.id can be
+    /// installed twice under different URLs, and a single manifest may declare two catalogs with
+    /// the same type+id. Colliding keys made one toggle silently govern several fan-out entries
+    /// ("I select two catalogs but it searches all of them") and broke SwiftUI `ForEach` identity
+    /// in the settings pane.
+    ///
+    /// Disambiguation is strictly additive: the FIRST occurrence of a key keeps the exact legacy
+    /// format byte-for-byte (so persisted `search_disabled_catalog_keys` keep matching), and each
+    /// later duplicate takes the next free `#2`, `#3`, ... suffix in encounter order. The loop
+    /// also covers the pathological case where a synthesized suffix would itself collide with a
+    /// literal catalog id.
+    private fun enumerateSearchCatalogs(addons: List<ManagedAddon>): List<SearchCatalogEntry> {
+        val usedKeys = mutableSetOf<String>()
+        return addons.mapNotNull { addon ->
             val manifest = addon.manifest ?: return@mapNotNull null
             addon to manifest
         }.flatMap { (addon, manifest) ->
             manifest.catalogs
                 .filter { catalog -> catalog.supportsSearch() }
-                // FEAT-10: sources the user switched off in Search Sources. Unknown keys in
-                // the stored set (uninstalled addons, renamed catalogs) simply never match.
-                .filterNot { catalog -> searchCatalogKey(manifest.id, catalog) in disabledCatalogKeys }
-                .map { catalog ->
-                    SearchCatalogRequest(
-                        addon = addon,
-                        catalogId = catalog.id,
-                        catalogName = catalog.name,
-                        type = catalog.type,
-                        query = query,
-                        supportsPagination = catalog.supportsPagination(),
-                    )
-                }
+                .map { catalog -> SearchCatalogEntry(addon, catalog, searchCatalogKey(manifest.id, catalog)) }
+        }.map { entry ->
+            var key = entry.key
+            var occurrence = 1
+            while (!usedKeys.add(key)) {
+                occurrence += 1
+                key = "${entry.key}#$occurrence"
+            }
+            if (key == entry.key) entry else entry.copy(key = key)
         }
+    }
+
+    /// BUG-33 diagnostics: one line per search whenever the user has disabled at least one
+    /// source, so a device log immediately shows requested-vs-filtered without a rebuild.
+    private fun logSearchSourceFilter(
+        entries: List<SearchCatalogEntry>,
+        disabledCatalogKeys: Set<String>,
+    ) {
+        if (disabledCatalogKeys.isEmpty()) return
+        log.d {
+            val disabled = disabledCatalogKeys.sorted().joinToString(separator = ", ", prefix = "[", postfix = "]")
+            val statuses = entries.joinToString(separator = ", ", prefix = "[", postfix = "]") { entry ->
+                "${entry.key}=${if (entry.key in disabledCatalogKeys) "FILTERED" else "kept"}"
+            }
+            "[SearchSources] disabled=${disabledCatalogKeys.size}$disabled catalogs=${entries.size} $statuses"
+        }
+    }
 
     private fun searchCatalogKey(manifestId: String, catalog: AddonCatalog): String =
         "$manifestId:${catalog.type}:${catalog.id}"
@@ -542,6 +585,14 @@ private fun CatalogPage.withUnreleasedFilter(): CatalogPage {
     val filteredItems = items.filterReleasedItems(CurrentDateProvider.todayIsoDate())
     return if (filteredItems.size == items.size) this else copy(items = filteredItems)
 }
+
+/// One search-capable catalog paired with its collision-free key. Internal to the enumeration —
+/// nothing crosses the Swift boundary (see [SearchCatalogOption], whose fields are unchanged).
+private data class SearchCatalogEntry(
+    val addon: ManagedAddon,
+    val catalog: AddonCatalog,
+    val key: String,
+)
 
 internal data class SearchCatalogRequest(
     val addon: ManagedAddon,

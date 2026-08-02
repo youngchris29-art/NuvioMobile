@@ -53,6 +53,15 @@ struct HomeView: View {
     /// Menu keeps its default behavior and the App Store exit convention stays intact.
     @State private var isScrolledDown = false
 
+    /// BUG-30 device-verify probe: does tvOS focus-driven scrolling ever rest short of the true
+    /// top? Six on-device fix attempts were reverted (see the do-not-retry marker below); this is
+    /// instrumentation only, read once at init so toggling it never costs a UserDefaults lookup
+    /// per scroll event. Kept out of `#if DEBUG` — testers run release builds and their console
+    /// log is the only diagnostic we get (precedent: ProfilesViewModel.select(_:), kept out of
+    /// DEBUG for the same reason). Runtime-gated instead, off by default:
+    ///   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
+    private let homeScrollProbeEnabled = UserDefaults.standard.bool(forKey: "debug.homeScrollProbe")
+
     private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
         guard !heroItems.isEmpty else { return nil }
@@ -148,6 +157,12 @@ struct HomeView: View {
                 }
                 .scrollClipDisabled()
                 .reportsScrollToTabBar(isScrolledDown: $isScrolledDown)
+                // BUG-30 device-verify probe (instrumentation only, behavior-neutral): logs raw
+                // contentOffset/contentInsets on every change so `log show` after a D-pad walk-up
+                // shows where focus-driven scrolling rests vs. the true top. Off by default; the
+                // modifier is only attached when the knob is set, so disabled testers pay nothing.
+                //   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
+                .modifier(HomeScrollProbeModifier(enabled: homeScrollProbeEnabled))
                 // BUG-27: from down the page, Menu jumps back to the top and hands focus to
                 // the hero CTA — one press instead of dozens of Ups, and from there a single
                 // Up reaches the (now visible again) tab bar. The handler is nil at the top
@@ -318,6 +333,30 @@ struct HomeView: View {
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .padding(.vertical, Theme.Spacing.xl)
+        }
+    }
+}
+
+/// BUG-30 instrumentation: reports Home's vertical ScrollView contentOffset/contentInsets so an
+/// on-device `log show` after a D-pad walk-up can compare where focus-driven scrolling actually
+/// rests against the true top. Instrumentation only — attaching/detaching this modifier changes
+/// no scrolling, focus, or tab-bar behavior. When `enabled` is false the probe modifier isn't
+/// attached at all (see call site), so this type's body never runs and there is zero log output
+/// and zero measurable work.
+fileprivate struct HomeScrollProbeModifier: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        // `enabled == false` returns bare `content` — onScrollGeometryChange is never attached to
+        // the view tree, so there's no closure evaluation, no comparison, and no log output.
+        if enabled {
+            content.onScrollGeometryChange(for: String.self, of: { geo in
+                "y=\(Int(geo.contentOffset.y)) inset=\(Int(geo.contentInsets.top))"
+            }, action: { _, v in
+                NSLog("[HomeScrollProbe] %@", v)
+            })
+        } else {
+            content
         }
     }
 }

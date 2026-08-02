@@ -19,6 +19,34 @@ func settingsSection<Content: View>(
     .focusSection()
 }
 
+/// Focus-aware title/subtitle/value text color for content inside `.settingsRow`-styled buttons
+/// (BUG-4/14/22/28/33 white-on-white class). An explicit `Theme.Palette.textPrimary`/
+/// `textSecondary` on a Text bypasses `SettingsRowButtonStyle`'s dark-label treatment and
+/// `colorScheme` flip on focus, leaving light text on the near-white focus platter — same fix
+/// shape as `RowAccentTint` (FlatControlStyles.swift), applied to row text instead of icon tints.
+private struct RowTextColor: ViewModifier {
+    /// Secondary variant (subtitles/values/chevrons) dims slightly even on the focused platter,
+    /// mirroring the textPrimary/textSecondary contrast used unfocused.
+    var secondary = false
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(
+            isFocused
+                ? Theme.Palette.onFocusPlatter.opacity(secondary ? 0.7 : 1)
+                : (secondary ? Theme.Palette.textSecondary : Theme.Palette.textPrimary)
+        )
+    }
+}
+
+private extension View {
+    /// Focus-aware replacement for a bare `.foregroundStyle(Theme.Palette.textPrimary/textSecondary)`
+    /// on title/subtitle/value/chevron text inside `.settingsRow`-styled buttons.
+    func rowTextColor(secondary: Bool = false) -> some View {
+        modifier(RowTextColor(secondary: secondary))
+    }
+}
+
 /// A focusable settings row that performs an action on select (chevron affordance).
 struct SettingsActionRow: View {
     let title: String
@@ -35,15 +63,15 @@ struct SettingsActionRow: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(title)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .rowTextColor()
                     Text(subtitle)
                         .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .rowTextColor(secondary: true)
             }
             .padding(Theme.Spacing.lg)
             .frame(maxWidth: .infinity)
@@ -70,11 +98,11 @@ struct SettingsInfoRow: View {
                 }
                 Text(title)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .rowTextColor()
                 Spacer()
                 Text(value)
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .rowTextColor(secondary: true)
             }
             .padding(Theme.Spacing.lg)
             .frame(maxWidth: .infinity)
@@ -96,10 +124,10 @@ struct SettingsToggleRow: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(title)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .rowTextColor()
                     Text(subtitle)
                         .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                 }
                 Spacer()
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
