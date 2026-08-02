@@ -84,6 +84,8 @@ internal actual object TrailerExtractionPlatform {
         bestProgressive: StreamCandidate?,
         bestVideo: StreamCandidate?,
         bestAudio: StreamCandidate?,
+        bestAvcVideo: StreamCandidate?,
+        bestM4aAudio: StreamCandidate?,
     ): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
         val bestManifestHeight = bestManifest?.height ?: -1
         val bestCombinedIsManifest = bestManifest != null &&
@@ -112,11 +114,50 @@ internal actual object TrailerExtractionPlatform {
         } else {
             bestProgressive?.url?.let { resolveReachableUrl(it) } ?: bestManifest?.selectedVariantUrl
         }
+        // Height the AVPlayer path reaches WITHOUT repackaging, mirroring the progressiveUrl pick
+        // above (-1 when there is no AVPlayer-friendly URL at all).
+        val progressiveHeight = when {
+            bestCombinedIsManifest -> bestManifestHeight
+            bestProgressive != null -> bestProgressive.height
+            else -> bestManifestHeight
+        }
+
+        // SABR follow-up (UX-4c): when the demuxed H.264+AAC pair beats every muxed/HLS option —
+        // the common case once innertube stops returning hlsManifestUrl and the muxed progressive
+        // is capped at 360p — expose it so tvOS can repackage a local byte-range HLS playlist.
+        // Swift falls back to progressiveUrl if the repackage fails, so this is advisory.
+        val repackWorthwhile = bestAvcVideo != null && bestM4aAudio != null &&
+            bestAvcVideo.height > progressiveHeight
+        if (bestAvcVideo != null && bestM4aAudio != null) {
+            trailerDebugLog(
+                "repack decision: avc=${bestAvcVideo.height}p vs progressive=${progressiveHeight}p " +
+                    "-> ${if (repackWorthwhile) "ELIGIBLE" else "skip (progressive is not worse)"}"
+            )
+        }
+        val adaptiveVideo = bestAvcVideo?.takeIf { repackWorthwhile }?.toAdaptiveTrack()
+        val adaptiveAudio = bestM4aAudio?.takeIf { repackWorthwhile }?.toAdaptiveTrack()
 
         TrailerPlaybackSource(
             videoUrl = videoUrl,
             audioUrl = audioUrl,
             progressiveUrl = progressiveUrl,
+            adaptiveVideo = adaptiveVideo,
+            adaptiveAudio = adaptiveAudio,
+        )
+    }
+
+    private suspend fun StreamCandidate.toAdaptiveTrack(): TrailerAdaptiveTrack {
+        return TrailerAdaptiveTrack(
+            url = resolveReachableUrl(url),
+            codecs = codecs,
+            bitrate = bitrateBps,
+            width = width,
+            height = height,
+            initStart = initStart,
+            initEnd = initEnd,
+            indexStart = indexStart,
+            indexEnd = indexEnd,
+            durationMs = durationMs,
         )
     }
 

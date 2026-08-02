@@ -20,6 +20,7 @@ private val VIDEO_ID_REGEX = Regex("^[a-zA-Z0-9_-]{11}$")
 private val API_KEY_REGEX = Regex("\"INNERTUBE_API_KEY\":\"([^\"]+)\"")
 private val VISITOR_DATA_REGEX = Regex("\"VISITOR_DATA\":\"([^\"]+)\"")
 private val QUALITY_LABEL_REGEX = Regex("(\\d{2,4})p")
+private val CODECS_REGEX = Regex("codecs=\"([^\"]+)\"")
 
 private data class YouTubeClient(
     val key: String,
@@ -44,7 +45,21 @@ internal data class StreamCandidate(
     val height: Int,
     val fps: Int,
     val ext: String,
-)
+    /** RFC 6381 codec string parsed from the mimeType (empty when absent). */
+    val codecs: String = "",
+    val bitrateBps: Long = 0,
+    val width: Int = 0,
+    val durationMs: Long = 0,
+    /** Inclusive byte ranges for the fMP4 header (ftyp+moov) and sidx index; -1 when absent. */
+    val initStart: Long = -1,
+    val initEnd: Long = -1,
+    val indexStart: Long = -1,
+    val indexEnd: Long = -1,
+) {
+    /** True when the stream is a demuxed fMP4 with the ranges local HLS repackaging needs. */
+    val hasSegmentRanges: Boolean
+        get() = initStart >= 0 && initEnd > initStart && indexStart > initEnd && indexEnd > indexStart
+}
 
 private data class ManifestBestVariant(
     val url: String,
@@ -251,6 +266,14 @@ class InAppYouTubeExtractor {
                             height = height,
                             fps = fps,
                             ext = if (mimeType.contains("webm")) "webm" else "mp4",
+                            codecs = parseCodecs(mimeType),
+                            bitrateBps = bitrate.toLong(),
+                            width = (format.numberValue("width") ?: 0.0).toInt(),
+                            durationMs = format.stringValue("approxDurationMs")?.toLongOrNull() ?: 0,
+                            initStart = rangeValue(format, "initRange", "start"),
+                            initEnd = rangeValue(format, "initRange", "end"),
+                            indexStart = rangeValue(format, "indexRange", "start"),
+                            indexEnd = rangeValue(format, "indexRange", "end"),
                         )
                     } else if (hasAudio) {
                         val bitrate = format.numberValue("bitrate")
@@ -267,6 +290,13 @@ class InAppYouTubeExtractor {
                             height = 0,
                             fps = 0,
                             ext = if (mimeType.contains("webm")) "webm" else "m4a",
+                            codecs = parseCodecs(mimeType),
+                            bitrateBps = bitrate.toLong(),
+                            durationMs = format.stringValue("approxDurationMs")?.toLongOrNull() ?: 0,
+                            initStart = rangeValue(format, "initRange", "start"),
+                            initEnd = rangeValue(format, "initRange", "end"),
+                            indexStart = rangeValue(format, "indexRange", "start"),
+                            indexEnd = rangeValue(format, "indexRange", "end"),
                         )
                     }
                 }
@@ -317,11 +347,31 @@ class InAppYouTubeExtractor {
         val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
         val bestAudio = pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENT)
 
+        // AVPlayer-decodable demuxed pair for local HLS repackaging (SABR fallback): H.264 fMP4
+        // video + AAC fMP4 audio, both with init/index ranges. Audio prefers the video's client so
+        // the pair shares one CDN session shape.
+        val bestAvcVideo = pickBestForClient(
+            adaptiveVideo.filter { it.ext == "mp4" && it.codecs.startsWith("avc1") && it.hasSegmentRanges },
+            PREFERRED_SEPARATE_CLIENT,
+        )
+        val bestM4aAudio = bestAvcVideo?.let { video ->
+            pickBestForClient(
+                adaptiveAudio.filter { it.ext == "m4a" && it.codecs.startsWith("mp4a") && it.hasSegmentRanges },
+                video.client,
+            )
+        }
+        trailerDebugLog(
+            "repack candidates: avcVideo=${bestAvcVideo?.let { "${it.height}p ${it.codecs} (${it.client})" } ?: "none"} " +
+                "m4aAudio=${bestM4aAudio?.let { "${it.codecs} (${it.client})" } ?: "none"}"
+        )
+
         return TrailerExtractionPlatform.buildPlaybackSource(
             bestManifest = bestManifest,
             bestProgressive = bestProgressive,
             bestVideo = bestVideo,
             bestAudio = bestAudio,
+            bestAvcVideo = bestAvcVideo,
+            bestM4aAudio = bestM4aAudio,
         )
     }
 
@@ -519,6 +569,15 @@ class InAppYouTubeExtractor {
     private fun parseQualityLabel(label: String?): Int? {
         if (label.isNullOrBlank()) return null
         return QUALITY_LABEL_REGEX.find(label)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    private fun parseCodecs(mimeType: String): String {
+        return CODECS_REGEX.find(mimeType)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+    }
+
+    /** innertube serves range bounds as strings: `"initRange": {"start": "0", "end": "741"}`. */
+    private fun rangeValue(format: JsonObject, rangeKey: String, boundKey: String): Long {
+        return format.objectValue(rangeKey)?.stringValue(boundKey)?.toLongOrNull() ?: -1
     }
 
     private fun hasNParam(url: String): Boolean {

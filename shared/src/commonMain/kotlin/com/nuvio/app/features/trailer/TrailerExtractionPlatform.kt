@@ -22,6 +22,9 @@ internal expect object TrailerExtractionPlatform {
         bestProgressive: StreamCandidate?,
         bestVideo: StreamCandidate?,
         bestAudio: StreamCandidate?,
+        /** AVPlayer-decodable demuxed fMP4 pair for tvOS local HLS repackaging; Android ignores. */
+        bestAvcVideo: StreamCandidate?,
+        bestM4aAudio: StreamCandidate?,
     ): TrailerPlaybackSource?
 }
 

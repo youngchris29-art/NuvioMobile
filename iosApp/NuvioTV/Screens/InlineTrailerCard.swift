@@ -354,15 +354,22 @@ final class InlineTrailerCardModel: ObservableObject {
         let source = await resolveYouTube(trailer.youtubePlaybackUrl())
         InlineTrailerCoordinator.shared.endExtraction()
 
-        // AVPlayer-friendly progressive/HLS only — adaptive-VP9/AV1-only results collapse the card.
-        let progressive: String? = source?.progressiveUrl
-        guard let progressive, !progressive.isEmpty else {
+        // AVPlayer-friendly URL only — a local byte-range HLS repackage of the demuxed 1080p pair
+        // when the extractor surfaced one (SABR fallback), else the progressive/HLS URL.
+        // Adaptive-VP9/AV1-only results collapse the card.
+        let playable: String?
+        if let source {
+            playable = await TrailerLocalHLS.shared.playbackURL(for: source)
+        } else {
+            playable = nil
+        }
+        guard let playable, !playable.isEmpty else {
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: key)
             abandonExpansion(key: key)
             return
         }
-        TrailerResolutionCache.shared.store(.resolved(progressive, Date()), for: key)
-        startPlayback(progressive, key: key)
+        TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
+        startPlayback(playable, key: key)
     }
 
     /// Only attaches when this card is *still* sitting expanded on the title that was resolved —

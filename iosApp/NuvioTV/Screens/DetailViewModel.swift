@@ -151,14 +151,26 @@ final class DetailViewModel: ObservableObject {
               let trailer = HeroTrailerSelectorKt.selectHeroTrailer(trailers: trailers) else { return }
         didRequestTrailer = true
 
-        let youtubeUrl = trailer.youtubePlaybackUrl()
+        var youtubeUrl = trailer.youtubePlaybackUrl()
+        #if DEBUG
+        // Sim verification knob for the SABR repackaging path: force every Detail hero trailer to a
+        // specific videoId (e.g. rNZ0xKaCdus) so [TrailerRepack]/[TrailerQuality] logs are
+        // deterministic. `defaults write <bundle> debug.trailerSmokeVideoId <id>`.
+        if let forced = UserDefaults.standard.string(forKey: "debug.trailerSmokeVideoId"), !forced.isEmpty {
+            youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
+        }
+        #endif
         HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { [weak self] source, _ in
             DispatchQueue.main.async {
                 guard let self, let source else { return }
-                // Use the AVPlayer-friendly progressive/HLS URL (tvOS plays trailers via AVPlayer,
-                // not libmpv). Falls back to nil → static backdrop when only adaptive VP9/AV1 exists.
-                let progressive: String? = source.progressiveUrl
-                if let progressive, !progressive.isEmpty { self.trailerVideoURL = progressive }
+                // AVPlayer-friendly URL only (tvOS plays trailers via AVPlayer, not libmpv):
+                // a local byte-range HLS repackage of the demuxed 1080p pair when the extractor
+                // surfaced one (SABR fallback), else the progressive/HLS URL as before. Nil →
+                // static backdrop when only adaptive VP9/AV1 exists.
+                TrailerLocalHLS.shared.playbackURL(for: source) { [weak self] url in
+                    guard let self, let url else { return }
+                    self.trailerVideoURL = url
+                }
             }
         }
     }
@@ -176,11 +188,16 @@ final class DetailViewModel: ObservableObject {
         resolvingTrailerId = trailer.id
         HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: trailer.youtubePlaybackUrl()) { [weak self] source, _ in
             DispatchQueue.main.async {
-                guard let self else { return }
-                self.resolvingTrailerId = nil
-                let progressive: String? = source?.progressiveUrl
-                guard let progressive, !progressive.isEmpty else { return }
-                self.trailerPlayback = TrailerPlaybackItem(id: trailer.id, url: progressive, title: trailer.name)
+                guard let self, let source else {
+                    self?.resolvingTrailerId = nil
+                    return
+                }
+                TrailerLocalHLS.shared.playbackURL(for: source) { [weak self] url in
+                    guard let self else { return }
+                    self.resolvingTrailerId = nil
+                    guard let url else { return }
+                    self.trailerPlayback = TrailerPlaybackItem(id: trailer.id, url: url, title: trailer.name)
+                }
             }
         }
     }

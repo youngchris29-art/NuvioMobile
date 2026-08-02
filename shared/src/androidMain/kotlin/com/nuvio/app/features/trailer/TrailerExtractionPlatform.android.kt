@@ -84,6 +84,9 @@ internal actual object TrailerExtractionPlatform {
         bestProgressive: StreamCandidate?,
         bestVideo: StreamCandidate?,
         bestAudio: StreamCandidate?,
+        // Local-HLS repackaging is a tvOS/AVPlayer concern; mobile's libmpv plays bestVideo/bestAudio.
+        bestAvcVideo: StreamCandidate?,
+        bestM4aAudio: StreamCandidate?,
     ): TrailerPlaybackSource? = withContext(Dispatchers.IO) {
         val bestCombinedIsManifest = bestManifest != null &&
             (bestProgressive == null || bestManifest.height > bestProgressive.height)
