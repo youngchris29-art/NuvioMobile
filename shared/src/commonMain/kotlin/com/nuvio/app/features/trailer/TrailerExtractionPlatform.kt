@@ -24,3 +24,10 @@ internal expect object TrailerExtractionPlatform {
         bestAudio: StreamCandidate?,
     ): TrailerPlaybackSource?
 }
+
+/**
+ * Step-specific extraction diagnostics (UX-4c): one terse line per decision point so a device
+ * `log show` names the exact step that degraded a trailer to the 360p progressive fallback.
+ * NSLog-backed on Apple, logcat on Android.
+ */
+internal expect fun trailerDebugLog(message: String)

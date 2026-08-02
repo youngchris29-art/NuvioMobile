@@ -118,7 +118,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak observed] in
                         guard let item = observed else { return }
                         let size = item.presentationSize
-                        print("[TrailerQuality] presentationSize=\(Int(size.width))x\(Int(size.height))")
+                        // NSLog (not print): lands in unified logging, so `log show` can read it
+                        // even when no console pty is attached.
+                        NSLog("[TrailerQuality] presentationSize=%dx%d", Int(size.width), Int(size.height))
                     }
                     #endif
                 default: break
@@ -131,6 +133,20 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             ) { [weak self] _ in self?.fail() }
 
             queue.play()
+
+            #if DEBUG
+            // UX-4c verification: log the resolved stream's actual resolution. Anchored to
+            // play() rather than the readyToPlay KVO case above, because that observation
+            // (options: [.new]) demonstrably never fires for this item (the watchdog below
+            // only survives via timeControlStatus) — see BUG notes in the beta.9 batch.
+            // Read the QUEUE's current item, not the template `item`: with loops == true the
+            // AVPlayerLooper plays copies of the template, whose own presentationSize stays 0x0.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak queue] in
+                guard let current = queue?.currentItem else { return }
+                let size = current.presentationSize
+                NSLog("[TrailerQuality] presentationSize=%dx%d", Int(size.width), Int(size.height))
+            }
+            #endif
 
             // Insurance: if nothing is playing within a few seconds, give up (static fallback).
             let timer = Timer(timeInterval: 6, repeats: false) { [weak self] _ in

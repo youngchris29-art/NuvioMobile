@@ -15,6 +15,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
+internal actual fun trailerDebugLog(message: String) {
+    android.util.Log.d("TrailerExtract", message)
+}
+
 internal actual object TrailerExtractionPlatform {
     actual val defaultHeaders: Map<String, String> = mapOf(
         "accept-language" to "en-US,en;q=0.9",

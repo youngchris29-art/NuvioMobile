@@ -17,8 +17,16 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import platform.Foundation.NSLog
 import platform.Foundation.NSURLComponents
 import platform.Foundation.NSURLQueryItem
+
+internal actual fun trailerDebugLog(message: String) {
+    // Single-argument NSLog with escaped format chars: Kotlin/Native strings do NOT bridge to
+    // NSString through NSLog's C varargs, so `NSLog("%@", message)` dereferences the Kotlin
+    // string's bytes as an ObjC pointer and crashes (SIGSEGV, learned the hard way).
+    NSLog("[TrailerExtract] " + message.replace("%", "%%"))
+}
 
 internal actual object TrailerExtractionPlatform {
     actual val defaultHeaders: Map<String, String> = mapOf(

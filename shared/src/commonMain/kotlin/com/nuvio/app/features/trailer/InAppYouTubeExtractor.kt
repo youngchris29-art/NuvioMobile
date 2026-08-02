@@ -177,8 +177,23 @@ class InAppYouTubeExtractor {
                     visitorData = watchConfig.visitorData,
                 )
 
-                val streamingData = playerResponse.objectValue("streamingData") ?: return@runCatching
+                val streamingData = playerResponse.objectValue("streamingData")
+                if (streamingData == null) {
+                    val status = playerResponse.objectValue("playabilityStatus")
+                    trailerDebugLog(
+                        "client=${client.key} NO streamingData " +
+                            "(playability=${status?.stringValue("status")} " +
+                            "reason=${status?.stringValue("reason")?.take(60)})"
+                    )
+                    return@runCatching
+                }
                 val hlsManifestUrl = streamingData.stringValue("hlsManifestUrl")
+                trailerDebugLog(
+                    "client=${client.key} video=$videoId hls=${!hlsManifestUrl.isNullOrBlank()} " +
+                        "formats=${streamingData.listObjectValue("formats").size} " +
+                        "adaptive=${streamingData.listObjectValue("adaptiveFormats").size} " +
+                        "sdKeys=${streamingData.keys.joinToString(",")}"
+                )
                 if (!hlsManifestUrl.isNullOrBlank()) {
                     manifestUrls += Triple(client.key, client.priority, hlsManifestUrl)
                 }
@@ -255,6 +270,8 @@ class InAppYouTubeExtractor {
                         )
                     }
                 }
+            }.onFailure {
+                trailerDebugLog("client=${client.key} REQUEST FAILED: ${it.message?.take(80)}")
             }
         }
 
@@ -265,7 +282,12 @@ class InAppYouTubeExtractor {
         var bestManifest: ManifestCandidate? = null
         for ((clientKey, priority, manifestUrl) in manifestUrls) {
             runCatching {
-                val variant = parseHlsManifest(manifestUrl) ?: return@runCatching
+                val variant = parseHlsManifest(manifestUrl)
+                if (variant == null) {
+                    trailerDebugLog("manifest client=$clientKey parsed but no variants")
+                    return@runCatching
+                }
+                trailerDebugLog("manifest client=$clientKey top variant ${variant.width}x${variant.height}")
                 val candidate = ManifestCandidate(
                     client = clientKey,
                     priority = priority,
@@ -281,10 +303,17 @@ class InAppYouTubeExtractor {
                 ) {
                     bestManifest = candidate
                 }
+            }.onFailure {
+                trailerDebugLog("manifest client=$clientKey FETCH/PARSE FAILED: ${it.message?.take(80)}")
             }
         }
 
         val bestProgressive = sortCandidates(progressive).firstOrNull()
+        trailerDebugLog(
+            "selection: manifest=${bestManifest?.height ?: "none"} " +
+                "progressive=${bestProgressive?.height ?: "none"} " +
+                "(manifests collected=${manifestUrls.size})"
+        )
         val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
         val bestAudio = pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENT)
 
