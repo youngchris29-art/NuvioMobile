@@ -53,6 +53,10 @@ struct HomeView: View {
     /// Menu keeps its default behavior and the App Store exit convention stays intact.
     @State private var isScrolledDown = false
 
+    /// Tab-bar clip round 6: true while the scroll rests in the "walked back up but short of the
+    /// true top" window (4–150pt). The hero-refocus completion scroll below only fires here.
+    @State private var topCompletionEligible = false
+
     private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
         guard !heroItems.isEmpty else { return nil }
@@ -164,14 +168,23 @@ struct HomeView: View {
                         heroFocused = true
                     }
                 } : nil)
-                // Tab-bar clip, round 5 — the actual mechanism (device-diagnosed): focus-driven
+                // Tab-bar clip, rounds 5–6 — the actual mechanism (device-diagnosed): focus-driven
                 // scrolling stops wherever the focused item fits, SHORT of the true top edge, and
                 // the tvOS 26 system bar's scroll-linked expansion sticks mid-way (clipped at the
                 // screen top until focus moves inside the bar). Menu-to-top never clipped because
                 // it scrolls to the real top — so when focus WALKS back onto the hero, finish the
-                // job the same way. No-op when already at the top.
+                // job the same way. Round 6: gated to the residual window (near the top but not AT
+                // it) — round 5 fired this unconditionally, and the scroll animation it started on
+                // every at-top focus return contended with downward focus scrolling, wedging Down
+                // navigation at the hero.
+                .onScrollGeometryChange(for: Bool.self, of: { geo in
+                    let y = geo.contentOffset.y - geo.contentInsets.top
+                    return y > 4 && y < 150
+                }, action: { _, inWindow in
+                    topCompletionEligible = inWindow
+                })
                 .onChange(of: heroFocused) { _, focused in
-                    guard focused else { return }
+                    guard focused, topCompletionEligible else { return }
                     withAnimation(.easeInOut(duration: 0.3)) {
                         scrollProxy.scrollTo("home_top", anchor: .top)
                     }
