@@ -86,5 +86,9 @@ internal actual object PlatformLocalAccountDataCleaner {
                 defaults.removeObjectForKey(keyString)
             }
         }
+
+        // File-backed payload stores (PayloadFileStore) — the defaults-key removals above only
+        // cover values left behind by pre-migration builds.
+        AppleFilePayloadStores.deleteAll()
     }
 }

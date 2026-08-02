@@ -256,7 +256,12 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
 
         for (key in defaults.dictionaryRepresentation().keys) {
             val keyString = key as? String ?: continue
-            if (keyString.startsWith("stream_link_")) {
+            // stream_link_* and cw_enrichment_cache_* live in files now (PayloadFileStore);
+            // these prefix scans clear any legacy defaults keys left by pre-migration builds
+            // (mirrors composeApp's PlatformLocalAccountDataCleaner.ios).
+            if (keyString.startsWith("stream_link_") ||
+                keyString.startsWith("cw_enrichment_cache_")
+            ) {
                 defaults.removeObjectForKey(keyString)
             }
             // Plugin state + per-scraper settings (scraper ids embed the manifest URL, so the
@@ -266,8 +271,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
             }
         }
 
-        com.nuvio.app.features.plugins.PluginStateFiles.deleteAll()
-        com.nuvio.app.features.trakt.TraktLibraryStorage.deleteAll()
+        // 3) File-backed payload stores (PayloadFileStore) — the defaults-key removals above only
+        // cover values left behind by pre-migration builds.
+        com.nuvio.app.core.storage.AppleFilePayloadStores.deleteAll()
     }
 }
 
