@@ -28,21 +28,29 @@ enum Theme {
         /// theme keeps the existing light `textPrimary`. Only use this where text sits on a solid
         /// accent fill — accent borders/rings don't need it.
         nonisolated(unsafe) static var accentText = Color(hex: 0x0D0D0D)
+        /// Raw hex backing `accentFocus`, set alongside it in `applyTheme`. FEAT-14 needs the
+        /// hex (not just the `Color`) to run it through `focusRingHex(accentFocusHex:)` for the
+        /// opt-in accent focus ring on artwork cards. Defaults to CRIMSON's focus hex, matching
+        /// `accentFocus`'s own default above.
+        nonisolated(unsafe) static var accentFocusHex = "FF5252"
 
         /// Retints the palette for a shared `AppTheme` (by enum name). Accents mirror mobile's
         /// `ThemeColors.kt` (`AppTheme.nativeAccentHex`), with a brighter focus variant per theme.
         static func applyTheme(named name: String) {
             let accentHex: UInt32
+            let focusHex: UInt32
             switch name {
-            case "OCEAN":   accentHex = 0x1E88E5; accentFocus = Color(hex: 0x42A5F5)
-            case "VIOLET":  accentHex = 0x8E24AA; accentFocus = Color(hex: 0xAB47BC)
-            case "EMERALD": accentHex = 0x43A047; accentFocus = Color(hex: 0x66BB6A)
-            case "AMBER":   accentHex = 0xFB8C00; accentFocus = Color(hex: 0xFFA726)
-            case "ROSE":    accentHex = 0xD81B60; accentFocus = Color(hex: 0xEC407A)
-            case "WHITE":   accentHex = 0xF5F5F5; accentFocus = Color(hex: 0xFFFFFF)
-            default:        accentHex = 0xE53935; accentFocus = Color(hex: 0xFF5252) // CRIMSON
+            case "OCEAN":   accentHex = 0x1E88E5; focusHex = 0x42A5F5
+            case "VIOLET":  accentHex = 0x8E24AA; focusHex = 0xAB47BC
+            case "EMERALD": accentHex = 0x43A047; focusHex = 0x66BB6A
+            case "AMBER":   accentHex = 0xFB8C00; focusHex = 0xFFA726
+            case "ROSE":    accentHex = 0xD81B60; focusHex = 0xEC407A
+            case "WHITE":   accentHex = 0xF5F5F5; focusHex = 0xFFFFFF
+            default:        accentHex = 0xE53935; focusHex = 0xFF5252 // CRIMSON
             }
             accent = Color(hex: accentHex)
+            accentFocus = Color(hex: focusHex)
+            accentFocusHex = String(format: "%06X", focusHex)
             accentText = onColor(forFillHex: accentHex)
         }
 
@@ -89,6 +97,26 @@ enum Theme {
                 b = Double((value >> 8) & 0xFF) / 255.0
             }
             return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
+        /// FEAT-14: decides the accent focus ring's actual draw color, given the current theme's
+        /// `accentFocus` hex. Same decision-table shape as BUG-28's `onColor(forFillHex:)` /
+        /// `StreamBadgeChipView.effectiveTextChipColors` — a luminance threshold picks between the
+        /// theme color and a fixed legible fallback. Six of the seven themes' focus hexes are
+        /// saturated/dark enough (highest is Amber's ~0.69) to clear the threshold and read as a
+        /// ring against artwork; only the White theme's near-white focus hex (0xFFFFFF, luminance
+        /// 1.0) would draw a near-invisible ring against the system focus platter/lift brightness,
+        /// so it falls back to a fixed dark ring instead. Threshold (0.75) matches
+        /// `onColor(forFillHex:)`'s — same "only near-white fills cross it" guarantee. Fallback
+        /// hex ("1A1A1A") is the app's `Palette.surface` — the same dark value
+        /// `onColor(forFillHex:)` uses for on-light text. Pure String-in/String-out (no `Color`)
+        /// so this unit-tests without SwiftUI, per
+        /// `luminance(fromHexString:)`'s precedent above.
+        static func focusRingHex(accentFocusHex: String) -> String {
+            guard let lum = luminance(fromHexString: accentFocusHex), lum > 0.75 else {
+                return accentFocusHex
+            }
+            return "1A1A1A"
         }
 
         /// Primary text — semantic, resolves against the pinned dark scheme (near-white) and

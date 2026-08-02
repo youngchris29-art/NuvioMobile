@@ -50,6 +50,10 @@ struct AppearanceSettingsPane: View {
     /// FEAT-7: mirrors SettingsView's own `settings_style` key (same UserDefaults key, read
     /// independently here) so this pane's chip row and the sidebar it controls stay in sync.
     @AppStorage("settings_style") private var settingsStyle = "default"
+    /// FEAT-14: opt-in accent-colored focus ring on artwork cards (PosterCard/LandscapeCard).
+    /// Default OFF — off must render byte-identical to the pre-FEAT-14 tree, so PosterCard reads
+    /// this same key independently rather than through a passed-down flag.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
@@ -59,6 +63,18 @@ struct AppearanceSettingsPane: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
                 ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
+
+                // FEAT-14: opt-in accent focus ring on artwork cards. Default OFF — off renders
+                // byte-identical to today (PosterCard/LandscapeCard skip the overlay entirely).
+                SettingsToggleRow(
+                    title: String(localized: "Accent Focus Ring"),
+                    subtitle: accentFocusRing
+                        ? String(localized: "On \u{00B7} Focused artwork shows a ring in your accent color")
+                        : String(localized: "Off \u{00B7} Focused artwork uses the system highlight only"),
+                    isOn: accentFocusRing
+                ) {
+                    accentFocusRing.toggle()
+                }
 
                 settingsStyleRow
             }

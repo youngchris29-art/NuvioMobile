@@ -44,6 +44,12 @@ struct PosterCard: View {
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
+    /// FEAT-14: opt-in accent focus ring, default OFF. Read independently (same UserDefaults key
+    /// as `AppearanceSettingsPane`'s toggle) rather than threaded through props, so every card
+    /// picks up the setting without a prop-drilling pass through every call site. When OFF the
+    /// `if` below emits no overlay at all — no extra view/layer exists in the tree, keeping the
+    /// OFF render byte-identical to pre-FEAT-14.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
 
     private var resolvedWidth: CGFloat { width ?? style.width }
     private var resolvedHeight: CGFloat { height ?? style.height }
@@ -67,6 +73,15 @@ struct PosterCard: View {
                 // lift can't fall back to a system rect that extends past the artwork.
                 .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: style.cornerRadius))
                 .hoverEffect(.highlight)
+                // FEAT-14: opt-in accent focus ring — layered after the hover/lift chain so it
+                // rides along with the system lift rather than sitting on a static base. Aligned
+                // to the same Corners radius as the clip/hover geometry above.
+                .overlay {
+                    if accentFocusRing && isFocused {
+                        RoundedRectangle(cornerRadius: style.cornerRadius)
+                            .strokeBorder(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: 3)
+                    }
+                }
 
             if titleVisible {
                 Text(title)
@@ -98,6 +113,9 @@ struct LandscapeCard: View {
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
+    /// FEAT-14: opt-in accent focus ring, default OFF — see `PosterCard`'s copy of this property
+    /// for the full rationale (same UserDefaults key, same byte-identical-when-OFF guarantee).
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
 
     private var titleVisible: Bool { showTitle ?? style.showTitle }
 
@@ -129,6 +147,14 @@ struct LandscapeCard: View {
             // BUG-31/BUG-25: pin the highlight geometry to the card's own Corners radius.
             .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: style.cornerRadius))
             .hoverEffect(.highlight)
+            // FEAT-14: opt-in accent focus ring — see PosterCard for the rationale. Aligned to the
+            // same Corners radius as the clip/hover geometry above.
+            .overlay {
+                if accentFocusRing && isFocused {
+                    RoundedRectangle(cornerRadius: style.cornerRadius)
+                        .strokeBorder(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: 3)
+                }
+            }
 
             if titleVisible {
                 Text(title)
