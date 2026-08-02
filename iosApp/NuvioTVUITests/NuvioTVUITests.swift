@@ -40,16 +40,31 @@ final class NuvioTVUITests: XCTestCase {
     ///
     /// 2026-07-28: a cold `launch()` from XCTest reproducibly sits on **AuthView** — the Supabase
     /// session restore doesn't complete for it (a plain `xcrun simctl launch` of the same build
-    /// reaches the profile picker in ~20s). So when the app is already running and no launch
-    /// arguments are needed, `activate()` it instead: pre-warm the sim with
+    /// reaches the profile picker in ~20s). So when the app is already running in the foreground
+    /// and no launch arguments are needed, `activate()` it instead: pre-warm the sim with
     /// `xcrun simctl launch <udid> com.nuvio.media.NuvioTV` before the run and the suite attaches to
-    /// that signed-in instance.
+    /// that signed-in instance. (In-suite relaunches of a warm app reach the picker fine — test05/
+    /// 06/08 prove it every run — so the fall-through below is safe mid-suite.)
+    ///
+    /// 2026-08-02 — the suite-order failure class (test04/09/11/19 failed in-suite, passed
+    /// isolated): the old recovery dance here blindly pressed Menu 4×. When the previous test
+    /// ended at a ROOT tab surface (top of Home is how test03/08/10/18 all end), the first Menu
+    /// press exited to the springboard, and `activate()` from there intermittently re-fronts the
+    /// app into a black-screen state: XCUIScreen captures pure black, the AX tree stays queryable,
+    /// and D-pad presses go blind (the failed run's screen recordings show the tab-walk presses
+    /// driving springboard app icons). Two rules keep the path order-independent now:
+    ///  - only press Menu while the root tab bar ("Home") is not visibly on screen — pushed
+    ///    screens (immersive DetailView, covers) remove it and deep scroll moves it off screen,
+    ///    and a Menu press with the bar visible is exactly the press that escapes;
+    ///  - never `activate()` out of a springboard escape or a backgrounded app — fall through to
+    ///    a full relaunch instead, the only reliable recovery.
+    /// `forceFreshLaunch` forces that same relaunch unconditionally, for tests that must not
+    /// inherit any prior UI state (settings-pane scroll/focus, pushed screens) from suite order.
     @discardableResult
-    private func launchToHome(extraArguments: [String] = []) -> XCUIApplication {
+    private func launchToHome(extraArguments: [String] = [], forceFreshLaunch: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += extraArguments
-        let alreadyRunning = app.state == .runningForeground || app.state == .runningBackground
-        if extraArguments.isEmpty && alreadyRunning {
+        if extraArguments.isEmpty && !forceFreshLaunch && app.state == .runningForeground {
             app.activate()
             pause(2)
             let chris = app.buttons["Chris"]
@@ -60,28 +75,37 @@ final class NuvioTVUITests: XCTestCase {
                 return app
             }
             // Already past the profile gate, somewhere inside the app (a prior test's end state —
-            // e.g. test01 deliberately ends on a pushed DetailView). Pop back out with Menu,
-            // re-front if a root-level Menu press exited to the springboard, then reselect the
-            // Home tab so every test starts from the same top-of-Home state a fresh launch gives.
+            // e.g. test01 deliberately ends on a pushed DetailView). Pop pushed screens with Menu
+            // ONLY while the root tab bar is off screen (see the header comment), then reselect
+            // the Home tab so every test starts from the same top-of-Home state a fresh launch
+            // gives. `.exists` alone is NOT the right stop signal: the failed run's hierarchy
+            // dumps show the bar's buttons stay in the tree when scrolled off screen (frame.minY
+            // -604…-1510) and sit at ~+62 when actually visible — and only the visible-bar state
+            // is the one where a Menu press escapes to the springboard (off-screen-deep Menu is
+            // the BUG-27 jump-to-top interception, and pushed covers remove the bar entirely).
+            let homeTab = app.buttons["Home"]
+            var escapedToSpringboard = false
             for _ in 0..<4 {
+                if homeTab.exists, homeTab.frame.minY > 0 { break }
                 remote.press(.menu)
                 pause(1.2)
                 if app.state != .runningForeground {
-                    app.activate()
-                    pause(2)
+                    escapedToSpringboard = true
                     break
                 }
             }
-            press(.up, times: 8, gap: 0.5)
-            let homeTab = app.buttons["Home"]
-            if !moveFocus(.left, until: homeTab, max: 8) {
-                _ = moveFocus(.right, until: homeTab, max: 8)
+            if !escapedToSpringboard {
+                press(.up, times: 8, gap: 0.5)
+                if !moveFocus(.left, until: homeTab, max: 8) {
+                    _ = moveFocus(.right, until: homeTab, max: 8)
+                }
+                remote.press(.select)
+                pause(3)
+                press(.down, times: 1)
+                pause(1)
+                return app
             }
-            remote.press(.select)
-            pause(3)
-            press(.down, times: 1)
-            pause(1)
-            return app
+            // Springboard escape: fall through to app.launch() below.
         }
         app.launch()
         // Session restore + profile fetch can take well past 15s on a cold sim launch; a short wait
@@ -241,7 +265,10 @@ final class NuvioTVUITests: XCTestCase {
     // MARK: - Settings: new rows + hero sources
 
     func test04SettingsRows() throws {
-        let app = launchToHome()
+        // Fresh launch (2026-08-02): this test asserts Settings pane CONTENT, so it must not
+        // inherit a prior test's pane scroll/focus or the springboard black-screen state (see
+        // launchToHome's header) — in-suite it failed exactly that way after test03.
+        let app = launchToHome(forceFreshLaunch: true)
         openTab(app, named: "Settings")
         shot(app, "04a_settings")
 
@@ -388,7 +415,10 @@ final class NuvioTVUITests: XCTestCase {
     ///        and OFF 4s after it; chips must collapse.
     /// 09e — RENDER AGAIN: back on Home the depth effect must be gone.
     func test09CardSettingsAudit2() throws {
-        let app = launchToHome()
+        // Fresh launch (2026-08-02): order-independence — the stored per-profile state this
+        // audit reads survives a relaunch, but the pane walk below must start from a clean
+        // top-of-pane, not wherever test08 (or the springboard escape) left the UI.
+        let app = launchToHome(forceFreshLaunch: true)
         press(.down, times: 4, gap: 1.0)
         pause(3)
         shot(app, "09a_cards_depth_should_be_on")
@@ -531,7 +561,10 @@ final class NuvioTVUITests: XCTestCase {
     /// Focus a Size chip so the Corners row renders unfocused — the selected chip's accent tint
     /// is unambiguous there.
     func test11PaneStateProbe() throws {
-        let app = launchToHome()
+        // Fresh launch (2026-08-02): this probe's whole premise is "what does the pane show on a
+        // fresh launch (repo state truth)" — forceFreshLaunch makes that literal, and makes the
+        // test independent of test10's end state (which fed it the springboard escape in-suite).
+        let app = launchToHome(forceFreshLaunch: true)
         openTab(app, named: "Settings")
         let appearance = app.buttons["Appearance"]
         _ = moveFocus(.down, until: appearance, max: 10)
@@ -797,16 +830,49 @@ final class NuvioTVUITests: XCTestCase {
     /// type 1-2 letters on the tvOS keyboard, wait for results to render, clear the field (Menu
     /// back to the field, then delete/backspace to empty it, or re-select and clear), and confirm
     /// Discover's genre chips / catalog grid reappear rather than staying blank.
+    ///
+    /// FINDING 7 fix (P2, Codex review): every failure path previously fell through to only
+    /// `app.state == .runningForeground`, so the test could pass without ever confirming Discover
+    /// actually rendered — a regression that left Discover blank after clearing a search, or a sim
+    /// that couldn't drive the keyboard at all, would still go green. This now asserts a concrete
+    /// Discover signal — the `Text("Discover")` section header from `SearchView.discoverSection`
+    /// (SearchView.swift ~line 143) — which `SearchViewModel.start()` renders as soon as
+    /// `discoverUiState` emits once, independent of whether any catalogs/items are present (an
+    /// empty-addon profile still gets the header plus an empty-state message below it). Profile
+    /// "Chris" (launchToHome) has real addons installed (test16 walks live Settings against it),
+    /// so the header is expected to appear here, not just in principle.
+    ///
+    /// ALWAYS asserted (mandatory, regardless of how the keyboard step goes):
+    ///   1. the Discover header exists right after opening Search, before any keyboard interaction.
+    ///   2. the Discover header exists again after the Menu/Menu round-trip that backs out of the
+    ///      keyboard — this is the actual BUG-33(2) regression check.
+    ///   3. the app is still in the foreground at the end (kept as a final sanity net).
+    /// Best-effort / conditional (does not fail the test if the keyboard grid can't be driven):
+    ///   - typing "as" into the query field.
+    ///   - if typing demonstrably succeeded (both letter keys were focused and selected), that a
+    ///     results signal (a result cell, or the "No results." empty-results message) appeared —
+    ///     this is still a real `XCTAssertTrue`, it's just skipped entirely when typing itself
+    ///     could not be driven, so a keyboard-grid mismatch doesn't fail the test.
     func test19DiscoverSurvivesSearch() throws {
-        let app = launchToHome()
+        // Fresh launch (2026-08-02): the Discover asserts below need a Search tab with no
+        // leftover query/keyboard state from suite order, and test18's end state fed this test
+        // the springboard escape in-suite (see launchToHome's header).
+        let app = launchToHome(forceFreshLaunch: true)
         openTab(app, named: "Search")
         pause(1.5)
         shot(app, "19a_discover_before")
 
+        // Mandatory: Discover must actually be on screen before we touch the keyboard at all,
+        // otherwise everything that follows is exercising nothing.
+        let discoverHeader = app.staticTexts["Discover"]
+        XCTAssertTrue(discoverHeader.waitForExistence(timeout: 6), "Discover missing on entry")
+
         let searchField = app.textFields.firstMatch
         guard searchField.waitForExistence(timeout: 4) else {
-            // Field never resolved — nothing further to drive automatically.
+            // Field never resolved — nothing further to drive automatically. Still re-check
+            // Discover so this path can't silently pass without exercising anything.
             shot(app, "19b_discover_after")
+            XCTAssertTrue(discoverHeader.exists, "Discover gone after search/keyboard round-trip — BUG-33(2) regression")
             XCTAssertTrue(app.state == .runningForeground)
             return
         }
@@ -817,18 +883,40 @@ final class NuvioTVUITests: XCTestCase {
         pause(2) // full-screen keyboard presentation
 
         // Best-effort "as": walk to "a", select, then to "s", select. Bail to the manual-step
-        // path (Menu back out) if the grid doesn't expose letter keys the way expected.
+        // path (Menu back out) if the grid doesn't expose letter keys the way expected. Tracks
+        // whether both selects were actually driven, so the post-typing results assert below can
+        // stay guarded rather than failing the test on a keyboard-grid mismatch.
+        var typedSuccessfully = false
         let keyA = app.keys["a"]
         if keyA.waitForExistence(timeout: 3) {
             _ = moveFocus(.right, until: keyA, max: 12)
-            if keyA.hasFocus { remote.press(.select) }
+            var selectedA = false
+            if keyA.hasFocus {
+                remote.press(.select)
+                selectedA = true
+            }
             pause(0.5)
             let keyS = app.keys["s"]
+            var selectedS = false
             if moveFocus(.right, until: keyS, max: 8) || moveFocus(.down, until: keyS, max: 6) {
                 remote.press(.select)
+                selectedS = true
             }
             pause(2.5) // debounce + results fetch
             shot(app, "19a2_after_query_typed")
+            typedSuccessfully = selectedA && selectedS
+        }
+
+        // Conditional: only when typing was actually driven do we require a results signal — a
+        // result cell for a hit, or the "No results." empty-results text for a legitimate miss.
+        // Either counts as proof the query round-tripped through SearchRepository.
+        if typedSuccessfully {
+            let resultCell = app.cells.firstMatch
+            let noResultsMessage = app.staticTexts["No results."]
+            XCTAssertTrue(
+                resultCell.waitForExistence(timeout: 3) || noResultsMessage.waitForExistence(timeout: 1),
+                "typed query \"as\" produced neither result cells nor an empty-results message"
+            )
         }
 
         // Clear back to Discover: Menu dismisses the keyboard/backs out of the query. If the
@@ -840,6 +928,9 @@ final class NuvioTVUITests: XCTestCase {
         pause(1.5)
 
         shot(app, "19b_discover_after")
+        // Mandatory: the actual BUG-33(2) regression check — Discover must reappear after the
+        // search + clear round-trip, whether or not the query itself could be typed.
+        XCTAssertTrue(discoverHeader.waitForExistence(timeout: 6), "Discover gone after search/keyboard round-trip — BUG-33(2) regression")
         XCTAssertTrue(app.state == .runningForeground, "app must survive the search + clear cycle even if the query itself couldn't be driven")
     }
 }

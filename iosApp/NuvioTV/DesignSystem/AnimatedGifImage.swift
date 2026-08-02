@@ -159,9 +159,21 @@ private final class AnimatedGifLoader: ObservableObject {
 
     private var currentURL: URL?
     private var task: Task<Void, Never>?
-    /// Whether `loadIfNeeded` has already spent (or is spending) a fetch on `currentURL`. Keeps a
-    /// permanently failing URL from re-downloading on every focus.
+    /// Whether `loadIfNeeded` has already spent (or is spending) a fetch on `currentURL`. This is
+    /// a RETRY LATCH, not a one-shot flag: on a failed decode it is cleared again (see below) so
+    /// the tile's next focus retries, up to `maxLoadAttempts` total tries for this URL — only
+    /// after the cap is reached does it stay latched, so a permanently-dead URL stops
+    /// re-downloading on every focus.
     private var didRequestLoad = false
+    /// Attempts already spent on `currentURL`. Reset only when `prepare` points the loader at a
+    /// genuinely new URL (see below), so this counts total tries per URL, not per call.
+    private var attemptCount = 0
+    /// Retry cap (FINDING 1): a transient network error or truncated download must not permanently
+    /// latch `didRequestLoad` — that left `image == nil` forever with no future focus ever trying
+    /// again. But an unconditional retry-on-every-focus would hammer a permanently-dead URL
+    /// forever too. Three attempts splits the difference: enough to ride out a flaky connection,
+    /// bounded enough that a truly broken URL settles on the static cover for good.
+    private static let maxLoadAttempts = 3
 
     /// Point the loader at a URL WITHOUT starting any network/decode work. A synchronous memory
     /// cache hit is taken immediately (that's the whole reason the cache exists — see
@@ -172,6 +184,7 @@ private final class AnimatedGifLoader: ObservableObject {
         task?.cancel()
         task = nil
         didRequestLoad = false
+        attemptCount = 0
         image = AnimatedGifCache.cached(url)
     }
 
@@ -185,11 +198,22 @@ private final class AnimatedGifLoader: ObservableObject {
             return
         }
 
+        attemptCount += 1
+        let isFinalAttempt = attemptCount >= Self.maxLoadAttempts
+
         task = Task { [weak self] in
             let decoded = await AnimatedGifDecoder.decode(url)
             if Task.isCancelled { return }
             guard let self, self.currentURL == url else { return }
-            self.image = decoded
+            if let decoded {
+                self.image = decoded
+            } else if !isFinalAttempt {
+                // FINDING 1 fix: clear the latch so the NEXT focus (not this one — no busy-retry)
+                // re-attempts the fetch+decode. Once `attemptCount` hits the cap, fall through and
+                // leave the latch set: `image` stays nil and the caller's fallback cover shows
+                // indefinitely instead of refetching a dead URL on every subsequent focus.
+                self.didRequestLoad = false
+            }
         }
     }
 
@@ -352,21 +376,54 @@ private enum AnimatedGifDecoder {
     /// every frame's bitmap for no visible gain.)
     private static let maxFramePixelSize = 400
     /// Floor for the adaptive ceiling below — never decode a tile-sized GIF smaller than this.
+    /// FINDING 5: below `frameCount` ≈ `maxFramesAtFloorSize`, resolution can no longer shrink to
+    /// hold the budget, so `decodedGif` shrinks the UNIQUE FRAME COUNT instead (see
+    /// `subsampledIndices`) — the floor never lets a single GIF exceed `maxDecodedBytesPerGif`.
     private static let minFramePixelSize = 200
-    /// Hard budget for ONE decoded GIF's total bitmap memory. A row of tiles keeps its decoded
-    /// frames alive while mounted (that's the point of the fix), so the per-GIF number, not just
-    /// the cache total, is what bounds a 15-tile row: 15 × 12 MB ≈ 180 MB absolute worst case,
-    /// and in practice the `LazyHStack` unmounts scrolled-away tiles well before that.
+    /// Hard budget for ONE decoded GIF's total bitmap memory, ACTUALLY ENFORCED (not just
+    /// estimated) by the pixel-ceiling/frame-subsampling combination below. A row of tiles keeps
+    /// its decoded frames alive while mounted (that's the point of the fix), so the per-GIF
+    /// number, not just the cache total, is what bounds a 15-tile row: 15 × 12 MB = 180 MB is a
+    /// real worst case now, and in practice the `LazyHStack` unmounts scrolled-away tiles well
+    /// before that.
     private static let maxDecodedBytesPerGif = 12 * 1024 * 1024
+    /// FINDING 5: the most unique frames that fit inside `maxDecodedBytesPerGif` at the floor
+    /// size — 12 MiB / (4 bytes/px × 200×200) ≈ 78. A GIF with more source frames than this
+    /// doesn't get to keep them all at 200 px (that was the bug: a 100-frame square GIF hit
+    /// ~15.3 MiB, 3.3 MiB over budget); instead `decodedGif` decodes only this many, evenly
+    /// subsampled across the animation, with kept frames' delays summed to cover the frames they
+    /// stand in for so total playback duration is unchanged.
+    private static let maxFramesAtFloorSize = maxDecodedBytesPerGif / (4 * minFramePixelSize * minFramePixelSize)
 
     /// Long GIFs get downsampled harder so no single entry can blow the budget:
     /// side = √(budget / (4 bytes per pixel × frames)), clamped to [200, 400].
     /// 10 frames → 400 px (clamped, ~6 MB) · 20 frames → 400 px (~12 MB) · 60 frames → 229 px.
+    /// Note this alone only bounds bytes for frameCount ≤ `maxFramesAtFloorSize` (~78): above
+    /// that the 200 px floor stops the math from working out and `decodedGif` additionally
+    /// subsamples the frame count (see `maxFramesAtFloorSize`).
     private nonisolated static func framePixelCeiling(frameCount: Int) -> Int {
         guard frameCount > 0 else { return maxFramePixelSize }
         let pixelsPerFrame = Double(maxDecodedBytesPerGif) / (4.0 * Double(frameCount))
         let side = Int(pixelsPerFrame.squareRoot())
         return min(maxFramePixelSize, max(minFramePixelSize, side))
+    }
+
+    /// FINDING 5: evenly-spaced source-frame indices to keep when a GIF has more frames than
+    /// `maxFramesAtFloorSize` can afford at the resolution floor. Spreads the kept frames across
+    /// the whole animation (not just the first N) so subsampling doesn't visibly favor the start.
+    private nonisolated static func subsampledIndices(totalCount: Int, keepCount: Int) -> [Int] {
+        guard keepCount < totalCount, keepCount > 0 else { return Array(0..<totalCount) }
+        let stride = Double(totalCount) / Double(keepCount)
+        var indices: [Int] = []
+        indices.reserveCapacity(keepCount)
+        var seen = Set<Int>()
+        for i in 0..<keepCount {
+            let index = min(Int(Double(i) * stride), totalCount - 1)
+            if seen.insert(index).inserted {
+                indices.append(index)
+            }
+        }
+        return indices.isEmpty ? [0] : indices
     }
 
     private nonisolated static func decodedGif(from data: Data) -> DecodedGif? {
@@ -376,8 +433,26 @@ private enum AnimatedGifDecoder {
         guard count > 0 else { return nil }
 
         let delays = parseFrameDurations(data)
+
+        // FINDING 5: decide UP FRONT whether decoding every source frame at the adaptive-ceiling
+        // side would exceed `maxDecodedBytesPerGif`. This only happens once `framePixelCeiling`
+        // has bottomed out at `minFramePixelSize` (for smaller frame counts the ceiling formula
+        // already keeps side×side×4×frameCount ≤ budget by construction) — in that regime the
+        // fix is to decode FEWER unique frames, not smaller ones.
+        let ceilingSide = framePixelCeiling(frameCount: count)
+        let estimatedBytes = count * ceilingSide * ceilingSide * 4
+        let frameIndices: [Int]
+        let decodeSide: Int
+        if estimatedBytes > maxDecodedBytesPerGif {
+            frameIndices = subsampledIndices(totalCount: count, keepCount: max(maxFramesAtFloorSize, 1))
+            decodeSide = minFramePixelSize
+        } else {
+            frameIndices = Array(0..<count)
+            decodeSide = ceilingSide
+        }
+
         var frames: [GifFrame] = []
-        frames.reserveCapacity(count)
+        frames.reserveCapacity(frameIndices.count)
 
         // BUG-19: `CGImageSourceCreateImageAtIndex` returns LAZILY-decoded images — the actual
         // bitmap decompression then happened on the MAIN thread at render time, once per frame
@@ -389,10 +464,10 @@ private enum AnimatedGifDecoder {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: framePixelCeiling(frameCount: count),
+            kCGImageSourceThumbnailMaxPixelSize: decodeSide,
         ]
 
-        for index in 0..<count {
+        for (position, index) in frameIndices.enumerated() {
             // Per-frame completeness (lever e): an individually incomplete frame is the magenta
             // garbage. Fail the whole decode so the caller falls back to the static cover.
             guard CGImageSourceGetStatusAtIndex(source, index) == .statusComplete else { return nil }
@@ -402,7 +477,14 @@ private enum AnimatedGifDecoder {
             guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, index, thumbnailOptions as CFDictionary) else {
                 return nil
             }
-            let delay = index < delays.count ? delays[index] : defaultFrameDelayCentiseconds
+            // FINDING 5: when `frameIndices` is a subsample, this kept frame stands in for itself
+            // AND every source frame skipped after it, so its delay is the SUM of that run's
+            // delays — fewer unique bitmaps, same total playback duration.
+            let nextIndex = position + 1 < frameIndices.count ? frameIndices[position + 1] : count
+            var delay = 0
+            for skipped in index..<nextIndex {
+                delay += skipped < delays.count ? delays[skipped] : defaultFrameDelayCentiseconds
+            }
             frames.append(GifFrame(image: cgImage, delayCentiseconds: max(delay, 1)))
         }
         guard !frames.isEmpty else { return nil }
@@ -417,18 +499,48 @@ private enum AnimatedGifDecoder {
         return DecodedGif(image: animated, cost: max(totalBytes, 1))
     }
 
+    /// FINDING 6: floor/ceiling for a single frame's delay BEFORE it enters the GCD-tick
+    /// computation below. GIF89a allows any 1–65535 cs delay per frame, so a pathological file
+    /// with e.g. a 1 cs frame next to a 65535 cs frame produces `gcd(1, 65535) == 1`: a 1 cs tick
+    /// times a many-second total duration expands to hundreds of thousands of retained `UIImage`
+    /// references (all pointing at the same handful of unique bitmaps, but each reference still
+    /// costs array/object overhead and blows the decode-time peak). Clamping first keeps the tick
+    /// itself from ever going below 2 cs and keeps any one frame's delay from demanding more than
+    /// 1000 cs worth of ticks.
+    private static let minExpandedFrameDelayCentiseconds = 2
+    private static let maxExpandedFrameDelayCentiseconds = 1000
+    /// FINDING 6: hard ceiling on the TOTAL expanded array length, independent of the clamp above
+    /// (a GIF with many frames, each individually reasonable, can still multiply out past this
+    /// once ticked). Chosen well above any real per-tile animation's natural frame count so it
+    /// only ever fires on pathological/adversarial input.
+    private static let maxExpandedFrameCount = 1200
+
     /// Ported from `expandedGifFrames`: GIF allows each frame its own delay, but
     /// `UIImage.animatedImage(with:duration:)` only takes one total duration divided evenly
     /// across the image array — so frames with a longer delay are repeated (by reference, so no
     /// extra bitmap memory) to fill out their share of a common "tick" (the GCD of all delays).
     private nonisolated static func expandedFrames(_ frames: [GifFrame]) -> (images: [UIImage], tickCentiseconds: Int) {
-        let delays = frames.map { max($0.delayCentiseconds, 1) }
+        let delays = frames.map {
+            min(max($0.delayCentiseconds, minExpandedFrameDelayCentiseconds), maxExpandedFrameDelayCentiseconds)
+        }
         let tick = delays.dropFirst().reduce(delays.first ?? defaultFrameDelayCentiseconds) { greatestCommonDivisor($0, $1) }
 
+        let expandedCount = delays.reduce(0) { $0 + max($1 / tick, 1) }
+        guard expandedCount <= maxExpandedFrameCount else {
+            // FINDING 6: exact per-frame timing would blow the cap even after clamping — fall
+            // back to one reference per unique frame at a uniform delay (the clamped average),
+            // matching `UIImage.animatedImage`'s own even-division behavior. Visually
+            // indistinguishable from correct timing for the pathological inputs that hit this
+            // path; nowhere close for any real tile GIF, which never reaches this branch.
+            let averageDelay = max(delays.reduce(0, +) / max(delays.count, 1), minExpandedFrameDelayCentiseconds)
+            return (frames.map { UIImage(cgImage: $0.image) }, averageDelay)
+        }
+
         var expanded: [UIImage] = []
-        for frame in frames {
+        expanded.reserveCapacity(expandedCount)
+        for (frame, delay) in zip(frames, delays) {
             let uiImage = UIImage(cgImage: frame.image)
-            let repeatCount = max(max(frame.delayCentiseconds, 1) / tick, 1)
+            let repeatCount = max(delay / tick, 1)
             expanded.append(contentsOf: Array(repeating: uiImage, count: repeatCount))
         }
         return (expanded, tick)

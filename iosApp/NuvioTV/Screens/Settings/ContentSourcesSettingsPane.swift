@@ -111,7 +111,8 @@ struct ContentSourcesSettingsPane: View {
                 .frame(maxWidth: 1100, alignment: .leading)
         } else {
             ForEach(model.searchSourceOptions, id: \.key) { option in
-                let disabled = model.disabledSearchSourceKeys.contains(option.key)
+                // Legacy bare keys disable a whole collision group; exact-match misses that (Codex finding 2/4 follow-up).
+                let disabled = SearchRepository.shared.isSearchSourceDisabled(optionKey: option.key, disabledCatalogKeys: model.disabledSearchSourceKeys)
                 SettingsToggleRow(
                     title: "\(option.catalogName) \u{00B7} \(option.typeLabel)",
                     subtitle: disabled

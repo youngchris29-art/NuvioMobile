@@ -86,7 +86,9 @@ object SearchRepository {
             append('|')
             append(
                 requests.joinToString(separator = "|") { request ->
-                    "${request.addon.manifestUrl}:${request.type}:${request.catalogId}"
+                    // BUG-33: request.key already disambiguates duplicate installs and twin
+                    // catalogs, so identical fan-out sets collapse and different ones don't.
+                    "${request.addon.manifestUrl}:${request.key}"
                 },
             )
         }
@@ -322,8 +324,9 @@ object SearchRepository {
 
     /// FEAT-10: every search-capable catalog across the enabled addons, in fan-out order —
     /// the option list behind the tvOS "Search Sources" settings. Key shape matches
-    /// [DiscoverCatalogOption.key] (`manifestId:type:catalogId`), plus a `#n` suffix on the
-    /// second and later occurrences of an otherwise-identical key (see [enumerateSearchCatalogs]).
+    /// [DiscoverCatalogOption.key] (`manifestId:type:catalogId`) for the universal
+    /// collision-free case, plus an identity-hash `#xxxxxxxx` suffix on EVERY member of a
+    /// colliding group (see [enumerateSearchCatalogs]).
     fun searchCatalogOptions(addons: List<ManagedAddon>): List<SearchCatalogOption> =
         enumerateSearchCatalogs(addons.enabledAddons()).map { entry ->
             SearchCatalogOption(
@@ -334,6 +337,43 @@ object SearchRepository {
                 typeLabel = entry.catalog.type.displayLabel(),
             )
         }
+
+    /// FEAT-10 / BUG-33: the ONE place that decides whether a stored disabled-key set switches a
+    /// given catalog off. Both the fan-out filter ([buildSearchRequests]) and the diagnostics log
+    /// go through here, and [isSearchSourceDisabled] re-exposes the same rule for UI layers.
+    ///
+    /// Two causes, checked in order:
+    ///  * [SearchSourceDisableCause.StoredKey] — the entry's own (possibly suffixed) key is in
+    ///    the set. This is what current UI writes produce, so per-member granularity is exact.
+    ///  * [SearchSourceDisableCause.LegacyBaseKey] — the entry's BARE base key is in the set.
+    ///    Keys persisted before the collision hardening are always bare, and pre-hardening they
+    ///    disabled every colliding catalog at once. Honouring the bare key for every member of
+    ///    the group reproduces that behaviour instead of silently re-enabling all but one
+    ///    catalog on upgrade.
+    private fun SearchCatalogEntry.disableCause(disabledCatalogKeys: Set<String>): SearchSourceDisableCause? =
+        when {
+            key in disabledCatalogKeys -> SearchSourceDisableCause.StoredKey
+            baseKey in disabledCatalogKeys -> SearchSourceDisableCause.LegacyBaseKey
+            else -> null
+        }
+
+    /// The [disableCause] rule, reachable from a key alone — for UI layers that hold a
+    /// [SearchCatalogOption] and the persisted disabled set but not the enumeration.
+    ///
+    /// The tvOS Search Sources pane currently derives its toggle state with a plain
+    /// `disabledKeys.contains(option.key)`, which cannot see a LEGACY bare-key disable of a
+    /// suffixed member: the search fan-out skips the catalog while the row still reads "On".
+    /// Swiping that call over to this function is a one-line Swift change (tracked as a
+    /// follow-up — this pass may not touch Swift).
+    ///
+    /// Best-effort mirror, not the authority: it recovers the base key by parsing the suffix, so
+    /// a catalog id that literally ends in `#<8 hex>` could be over-matched here. The fan-out
+    /// filter never parses — it compares against the entry's real base key.
+    fun isSearchSourceDisabled(optionKey: String, disabledCatalogKeys: Set<String>): Boolean {
+        if (optionKey in disabledCatalogKeys) return true
+        val base = optionKey.stripIdentitySuffix()
+        return base != optionKey && base in disabledCatalogKeys
+    }
 
     // Internal (not private) so common tests can exercise the FEAT-10 filter without a network.
     internal fun buildSearchRequests(
@@ -346,7 +386,7 @@ object SearchRepository {
         return entries
             // FEAT-10: sources the user switched off in Search Sources. Unknown keys in
             // the stored set (uninstalled addons, renamed catalogs) simply never match.
-            .filterNot { entry -> entry.key in disabledCatalogKeys }
+            .filter { entry -> entry.disableCause(disabledCatalogKeys) == null }
             .map { entry ->
                 SearchCatalogRequest(
                     addon = entry.addon,
@@ -355,6 +395,7 @@ object SearchRepository {
                     type = entry.catalog.type,
                     query = query,
                     supportsPagination = entry.catalog.supportsPagination(),
+                    key = entry.key,
                 )
             }
     }
@@ -368,28 +409,54 @@ object SearchRepository {
     /// installed twice under different URLs, and a single manifest may declare two catalogs with
     /// the same type+id. Colliding keys made one toggle silently govern several fan-out entries
     /// ("I select two catalogs but it searches all of them") and broke SwiftUI `ForEach` identity
-    /// in the settings pane.
+    /// in the settings pane and in the results list.
     ///
-    /// Disambiguation is strictly additive: the FIRST occurrence of a key keeps the exact legacy
-    /// format byte-for-byte (so persisted `search_disabled_catalog_keys` keep matching), and each
-    /// later duplicate takes the next free `#2`, `#3`, ... suffix in encounter order. The loop
-    /// also covers the pathological case where a synthesized suffix would itself collide with a
-    /// literal catalog id.
+    /// Disambiguation is IDENTITY-STABLE, not positional:
+    ///  * A base key with no collision keeps the legacy format byte-for-byte — the universal
+    ///    case, so persisted `search_disabled_catalog_keys` keep matching.
+    ///  * EVERY member of a colliding group (including the first) gets `base#<h>`, where `<h>`
+    ///    is [identityHash] of that member's OWN identity: its addon's manifestUrl plus the
+    ///    catalog's index inside that manifest. Nothing about the other group members feeds the
+    ///    hash, so uninstalling one addon never renumbers the survivors and their persisted
+    ///    disablements keep matching (the earlier positional `#2`/`#3` scheme did renumber, and
+    ///    silently re-enabled sources). The one accepted exception is benign: a group that
+    ///    shrinks to a single member drops back to the bare base key.
+    ///
+    /// The trailing `.2`, `.3` loop is a pathological-case guard only: it covers a base key that
+    /// literally ends in a synthesized suffix, and the degenerate case of the exact same
+    /// manifestUrl installed twice (identical identities ⇒ identical hashes).
     private fun enumerateSearchCatalogs(addons: List<ManagedAddon>): List<SearchCatalogEntry> {
-        val usedKeys = mutableSetOf<String>()
-        return addons.mapNotNull { addon ->
+        val entries = addons.mapNotNull { addon ->
             val manifest = addon.manifest ?: return@mapNotNull null
             addon to manifest
         }.flatMap { (addon, manifest) ->
-            manifest.catalogs
-                .filter { catalog -> catalog.supportsSearch() }
-                .map { catalog -> SearchCatalogEntry(addon, catalog, searchCatalogKey(manifest.id, catalog)) }
-        }.map { entry ->
-            var key = entry.key
-            var occurrence = 1
+            manifest.catalogs.mapIndexedNotNull { catalogIndex, catalog ->
+                if (!catalog.supportsSearch()) return@mapIndexedNotNull null
+                SearchCatalogEntry(
+                    addon = addon,
+                    catalog = catalog,
+                    baseKey = searchCatalogKey(manifest.id, catalog),
+                    // Identity = this catalog's own coordinates. The index is taken over the FULL
+                    // manifest catalog list so that a catalog gaining/losing `search` support
+                    // elsewhere in the manifest cannot shift it.
+                    identityHash = identityHash(addon.manifestUrl, catalogIndex),
+                )
+            }
+        }
+
+        val collisionCounts = entries.groupingBy { entry -> entry.baseKey }.eachCount()
+        val usedKeys = mutableSetOf<String>()
+        return entries.map { entry ->
+            val preferred = if (collisionCounts[entry.baseKey] == 1) {
+                entry.baseKey
+            } else {
+                "${entry.baseKey}#${entry.identityHash}"
+            }
+            var key = preferred
+            var tiebreak = 1
             while (!usedKeys.add(key)) {
-                occurrence += 1
-                key = "${entry.key}#$occurrence"
+                tiebreak += 1
+                key = "$preferred.$tiebreak"
             }
             if (key == entry.key) entry else entry.copy(key = key)
         }
@@ -397,6 +464,8 @@ object SearchRepository {
 
     /// BUG-33 diagnostics: one line per search whenever the user has disabled at least one
     /// source, so a device log immediately shows requested-vs-filtered without a rebuild.
+    /// FILTERED entries carry their match cause (`stored` = the entry's own key, `legacy` = the
+    /// bare base key covering a whole collision group).
     private fun logSearchSourceFilter(
         entries: List<SearchCatalogEntry>,
         disabledCatalogKeys: Set<String>,
@@ -405,14 +474,22 @@ object SearchRepository {
         log.d {
             val disabled = disabledCatalogKeys.sorted().joinToString(separator = ", ", prefix = "[", postfix = "]")
             val statuses = entries.joinToString(separator = ", ", prefix = "[", postfix = "]") { entry ->
-                "${entry.key}=${if (entry.key in disabledCatalogKeys) "FILTERED" else "kept"}"
+                val status = when (entry.disableCause(disabledCatalogKeys)) {
+                    SearchSourceDisableCause.StoredKey -> "FILTERED(stored)"
+                    SearchSourceDisableCause.LegacyBaseKey -> "FILTERED(legacy:${entry.baseKey})"
+                    null -> "kept"
+                }
+                "${entry.key}=$status"
             }
             "[SearchSources] disabled=${disabledCatalogKeys.size}$disabled catalogs=${entries.size} $statuses"
         }
     }
 
     private fun searchCatalogKey(manifestId: String, catalog: AddonCatalog): String =
-        "$manifestId:${catalog.type}:${catalog.id}"
+        searchCatalogKey(manifestId, catalog.type, catalog.id)
+
+    private fun searchCatalogKey(manifestId: String, type: String, catalogId: String): String =
+        "$manifestId:$type:$catalogId"
 
     private fun buildDiscoverSources(addons: List<ManagedAddon>): List<DiscoverCatalogOption> =
         addons.mapNotNull { addon ->
@@ -451,7 +528,7 @@ object SearchRepository {
         }
 
         return HomeCatalogSection(
-            key = "${manifest.id}:search:$type:$catalogId:${query.lowercase()}",
+            key = sectionKey(),
             title = resourceString("$catalogName • ${type.displayLabel()}", StringKey.discover_catalog_context, catalogName, type.displayLabel()),
             subtitle = addon.displayTitle,
             addonName = addon.displayTitle,
@@ -588,11 +665,26 @@ private fun CatalogPage.withUnreleasedFilter(): CatalogPage {
 
 /// One search-capable catalog paired with its collision-free key. Internal to the enumeration —
 /// nothing crosses the Swift boundary (see [SearchCatalogOption], whose fields are unchanged).
+///
+/// [baseKey] is the legacy `manifestId:type:catalogId` form; [key] equals it unless the base
+/// collides, in which case it is `baseKey#identityHash`.
 private data class SearchCatalogEntry(
     val addon: ManagedAddon,
     val catalog: AddonCatalog,
-    val key: String,
+    val baseKey: String,
+    val identityHash: String,
+    val key: String = baseKey,
 )
+
+/// Why a catalog counts as disabled — see `SearchRepository.disableCause`.
+private enum class SearchSourceDisableCause {
+    /// The entry's own (possibly suffixed) key is in the stored set.
+    StoredKey,
+
+    /// The entry's bare base key is in the stored set: a pre-hardening persisted key, which
+    /// disables every member of the collision group exactly as it used to.
+    LegacyBaseKey,
+}
 
 internal data class SearchCatalogRequest(
     val addon: ManagedAddon,
@@ -601,7 +693,67 @@ internal data class SearchCatalogRequest(
     val type: String,
     val query: String,
     val supportsPagination: Boolean,
+    /// BUG-33: the disambiguated enumeration key this request came from. Kotlin-internal (no
+    /// Swift exposure) — it exists so the results section key can stay unique per install.
+    val key: String,
 )
+
+/// BUG-33: the results list is `ForEach(model.sections, id: \.key)` (SearchView.swift), so two
+/// duplicate installs of the same catalog must not produce the same section key or the rails
+/// collapse into one identity. The request carries the enumeration's disambiguated key, and its
+/// suffix (empty for the collision-free case) is spliced in right after the catalog id — so
+/// non-colliding catalogs keep the legacy section-key format byte-for-byte.
+///
+/// Internal so common tests can assert uniqueness without a network round-trip.
+internal fun SearchCatalogRequest.sectionKey(): String {
+    val manifestId = addon.manifest?.id.orEmpty()
+    val baseKey = "$manifestId:$type:$catalogId"
+    val disambiguator = key.removePrefix(baseKey).takeIf { it != key }.orEmpty()
+    return "$manifestId:search:$type:$catalogId$disambiguator:${query.lowercase()}"
+}
+
+private val FNV32_OFFSET_BASIS: UInt = 2166136261u
+private val FNV32_PRIME: UInt = 16777619u
+
+/// 32-bit FNV-1a over UTF-16 code units, big-endian per unit. Explicit and platform-independent
+/// by construction: no `String.hashCode`, no randomness, no clock — identical on JVM/Native/JS
+/// for identical input, which is what makes the persisted keys portable and stable.
+private fun fnv1a32(value: String): UInt {
+    var hash = FNV32_OFFSET_BASIS
+    for (char in value) {
+        val code = char.code
+        hash = (hash xor ((code shr 8) and 0xFF).toUInt()) * FNV32_PRIME
+        hash = (hash xor (code and 0xFF).toUInt()) * FNV32_PRIME
+    }
+    return hash
+}
+
+/// The stable per-catalog identity digest used to disambiguate colliding base keys. Derived
+/// ONLY from the catalog's own coordinates — the installing addon's manifestUrl (the thing that
+/// actually distinguishes two installs of the same manifest.id) and the catalog's index inside
+/// that manifest (the thing that distinguishes two same-type+id catalogs in one manifest).
+/// A space separates the two fields (a manifest URL never contains one), so a URL ending in
+/// digits cannot alias a different index. Rendered as 8 lowercase hex digits.
+private fun identityHash(manifestUrl: String, catalogIndex: Int): String =
+    fnv1a32("$manifestUrl $catalogIndex").toString(16).padStart(8, '0')
+
+/// Inverse of the suffix minting in `enumerateSearchCatalogs`: recovers the bare base key from a
+/// possibly-suffixed one. Only strips a suffix that matches the synthesized shape
+/// (`#` + 8 hex digits, optionally `.` + tiebreak digits), so a catalog id containing a literal
+/// `#` is left alone.
+private fun String.stripIdentitySuffix(): String {
+    val hashIndex = lastIndexOf('#')
+    if (hashIndex <= 0) return this
+    var suffix = substring(hashIndex + 1)
+    val dotIndex = suffix.indexOf('.')
+    if (dotIndex >= 0) {
+        val tiebreak = suffix.substring(dotIndex + 1)
+        if (tiebreak.isEmpty() || tiebreak.any { !it.isDigit() }) return this
+        suffix = suffix.substring(0, dotIndex)
+    }
+    if (suffix.length != 8 || suffix.any { char -> char !in '0'..'9' && char !in 'a'..'f' }) return this
+    return substring(0, hashIndex)
+}
 
 private fun AddonCatalog.supportsSearch(): Boolean =
     extra.any { property -> property.name == "search" } &&
