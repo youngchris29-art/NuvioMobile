@@ -230,31 +230,33 @@ struct HomeView: View {
     /// auto-advancing swaps content inside a constant frame, so the rows below never move.
     private var heroCarousel: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            TabView(selection: $heroIndex) {
-                ForEach(Array(heroItems.enumerated()), id: \.offset) { index, item in
-                    // The page's only focusable element is the CTA button inside the
-                    // foreground, which carries the heroFocused binding directly.
-                    HomeHeroForeground(item: item, heroFocused: $heroFocused)
-                        .tag(index)
+            // BUG-23 round 2 (device finding): the paged TabView is GONE. The sim fix caught
+            // dropped D-pad presses via onMoveCommand, but the real Siri Remote pages by
+            // touch-surface SWIPE, which drives the TabView's native interactive paging —
+            // and dragging toward the culled previous page can't commit, so it visibly
+            // snapped back ("jumps back to the right"). With no native pager competing, BOTH
+            // input styles (presses and swipes) arrive here as move commands, the single CTA
+            // button keeps focus across page changes (no focus hop), and the whole
+            // culled-page/selection-fight class is gone. The backdrop crossfade (outside,
+            // keyed off currentHero) and the auto-advance timer are unchanged.
+            Group {
+                if let hero = currentHero {
+                    HomeHeroForeground(item: hero, heroFocused: $heroFocused)
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
             .frame(height: Theme.Size.heroCarouselHeight)
             .focusSection()
-            // BUG-23: the paged TabView keeps the NEXT page alive (for the peek), so a right
-            // press moves focus into it and pages natively — but the PREVIOUS page gets culled,
-            // so a left press finds no focus target and does nothing (harness-proven: idx froze
-            // at 3 through two left presses while right paged 1→2→3). A press that fails to
-            // move focus is precisely when tvOS delivers a move command here instead, so this
-            // handler only ever sees the dropped presses: page left programmatically (animated —
-            // never rebase a tvOS paged TabView's selection without animation) and wrap
-            // 0 → last, mirroring the auto-advance's forward wrap. Native paging, whenever it
-            // does work, moves focus instead and never reaches this. Up/down are untouched.
             .onMoveCommand { direction in
-                guard direction == .left, heroItems.count > 1 else { return }
-                withAnimation(.easeInOut(duration: 0.4)) {
-                    heroIndex = (min(heroIndex, heroItems.count - 1) - 1 + heroItems.count) % heroItems.count
+                guard heroItems.count > 1 else { return }
+                let count = heroItems.count
+                let clamped = min(heroIndex, count - 1)
+                let next: Int
+                switch direction {
+                case .left: next = (clamped - 1 + count) % count
+                case .right: next = (clamped + 1) % count
+                default: return
                 }
+                withAnimation(.easeInOut(duration: 0.4)) { heroIndex = next }
             }
 
             if heroItems.count > 1 {

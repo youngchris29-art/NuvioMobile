@@ -90,6 +90,14 @@ struct DetailView: View {
             // UX-6: darkens the whole backdrop/poster/trailer stack (trailer keeps playing
             // underneath) as the description scrolls down — the scrim above stays untouched.
             Color.black.opacity(scrollDarkening).ignoresSafeArea().allowsHitTesting(false)
+            #if DEBUG
+            // UX-6 diagnostic (invisible, harness-readable): the live darkening value, so the
+            // UITest can prove whether focus-driven scrolling feeds the overlay at all.
+            Text("debug_ux6 dark=\(Int(scrollDarkening * 1000))")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_ux6")
+            #endif
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     header
@@ -136,10 +144,23 @@ struct DetailView: View {
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { geo in
-                min(max((geo.contentOffset.y - geo.contentInsets.top) / 500.0, 0), 1) * 0.35
+                // 0 → 0.85 over the first ~400pt of scroll. Device pass (2026-08-01): the
+                // original 0.35 ceiling was invisible over a bright playing trailer on a real
+                // TV — the reporter's ask (and upstream's cinematic mode) is a near-black dim
+                // once the description scrolls up. Sim-verified via debug_ux6 (test17).
+                min(max((geo.contentOffset.y - geo.contentInsets.top) / 400.0, 0), 1) * 0.85
             }, action: { _, newValue in
                 scrollDarkening = newValue
             })
+            #if DEBUG
+            // UX-6 device-verify probe: raw offset/inset so `log show` proves whether tvOS
+            // focus-scrolling moves this ScrollView's contentOffset at all.
+            .onScrollGeometryChange(for: String.self, of: { geo in
+                "y=\(Int(geo.contentOffset.y)) inset=\(Int(geo.contentInsets.top))"
+            }, action: { _, v in
+                NSLog("[UX6] %@", v)
+            })
+            #endif
         }
         .overlay(alignment: .topTrailing) {
             // Topmost so it stays reachable over both the scrim (hit-testing disabled there) and

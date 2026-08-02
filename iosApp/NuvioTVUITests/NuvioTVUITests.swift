@@ -671,4 +671,39 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "16b_search_sources_section")
         XCTAssertTrue(app.state == .runningForeground)
     }
+
+    // MARK: - UX-6: detail background darkens on scroll
+
+    private func ux6Probe(_ app: XCUIApplication, _ name: String) {
+        let probe = app.staticTexts["debug_ux6"]
+        let text = probe.waitForExistence(timeout: 4) ? probe.label : "debug_ux6 MISSING"
+        let attachment = XCTAttachment(string: "\(name): \(text)")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[UX6] \(name): \(text)")
+    }
+
+    /// Opens a detail page from the hero CTA and walks focus down the page, sampling the live
+    /// darkening value before/after — the device report says the background never darkens, so
+    /// this measures whether focus-driven scrolling feeds `onScrollGeometryChange` at all.
+    func test17DetailScrollDarkening() throws {
+        let app = launchToHome()
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(2)
+        remote.press(.select)
+        pause(8)
+        ux6Probe(app, "17a_detail_opened")
+        shot(app, "17a_detail_top")
+
+        press(.down, times: 4, gap: 1.0)
+        pause(1.5)
+        ux6Probe(app, "17b_after_down4")
+        press(.down, times: 4, gap: 1.0)
+        pause(1.5)
+        ux6Probe(app, "17c_after_down8")
+        shot(app, "17c_detail_scrolled")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
 }

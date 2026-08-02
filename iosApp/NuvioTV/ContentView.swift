@@ -194,7 +194,11 @@ struct MainTabView: View {
 private extension View {
     func tabBarAutoHide(_ vis: TabBarVisibility) -> some View {
         self
-            .toolbarVisibility(vis.hidden ? .hidden : .automatic, for: .tabBar)
+            // `.visible` (not `.automatic`) when shown: with `.automatic` the system ALSO applies
+            // its own scrolled-content bar treatment on tvOS 26, fighting our hysteresis — on
+            // device the re-shown bar rendered clipped at the top edge until focus entered it and
+            // forced a re-layout (beta.9 device pass, 2026-08-01). One authority: ours.
+            .toolbarVisibility(vis.hidden ? .hidden : .visible, for: .tabBar)
             .animation(.easeInOut(duration: 0.25), value: vis.hidden)
     }
 }

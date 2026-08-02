@@ -204,13 +204,26 @@ struct CatalogRowView: View {
     /// inside it and the two animate together visually.
     private func expansionChanged(itemId: String, expanded: Bool, proxy: ScrollViewProxy) {
         guard expanded else { return }
+        // Device finding (BUG-29 round 2): a nil-anchor scrollTo at morph START is a no-op —
+        // the tile's pre-growth frame is still fully visible at that moment, so "minimal
+        // scroll" resolves to nothing and the tile then grows off the trailing edge anyway.
+        // Two-part fix: the LAST item deterministically needs its trailing edge pinned to the
+        // viewport (no geometry read needed), and every other item gets a correction pass
+        // AFTER the 0.35s morph settles, when scrollTo finally sees the expanded frame.
+        let anchor: UnitPoint? = itemId == section.items.last?.id ? .trailing : nil
         Task { @MainActor in
-            if reduceMotion {
-                proxy.scrollTo(itemId, anchor: nil)
-            } else {
-                withAnimation(InlineTrailerCardModel.morphAnimation) {
-                    proxy.scrollTo(itemId, anchor: nil)
-                }
+            scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
+        }
+    }
+
+    private func scrollToExpanded(_ itemId: String, anchor: UnitPoint?, proxy: ScrollViewProxy) {
+        if reduceMotion {
+            proxy.scrollTo(itemId, anchor: anchor)
+        } else {
+            withAnimation(InlineTrailerCardModel.morphAnimation) {
+                proxy.scrollTo(itemId, anchor: anchor)
             }
         }
     }
