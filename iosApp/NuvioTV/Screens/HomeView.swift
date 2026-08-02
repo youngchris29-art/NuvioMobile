@@ -164,6 +164,18 @@ struct HomeView: View {
                         heroFocused = true
                     }
                 } : nil)
+                // Tab-bar clip, round 5 — the actual mechanism (device-diagnosed): focus-driven
+                // scrolling stops wherever the focused item fits, SHORT of the true top edge, and
+                // the tvOS 26 system bar's scroll-linked expansion sticks mid-way (clipped at the
+                // screen top until focus moves inside the bar). Menu-to-top never clipped because
+                // it scrolls to the real top — so when focus WALKS back onto the hero, finish the
+                // job the same way. No-op when already at the top.
+                .onChange(of: heroFocused) { _, focused in
+                    guard focused else { return }
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        scrollProxy.scrollTo("home_top", anchor: .top)
+                    }
+                }
                 }
             }
             .onReceive(heroTimer) { _ in
