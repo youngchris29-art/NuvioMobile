@@ -53,10 +53,6 @@ struct HomeView: View {
     /// Menu keeps its default behavior and the App Store exit convention stays intact.
     @State private var isScrolledDown = false
 
-    /// Tab-bar clip round 6: true while the scroll rests in the "walked back up but short of the
-    /// true top" window (4–150pt). The hero-refocus completion scroll below only fires here.
-    @State private var topCompletionEligible = false
-
     private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
         guard !heroItems.isEmpty else { return nil }
@@ -162,33 +158,29 @@ struct HomeView: View {
                     withAnimation(.easeInOut(duration: 0.45)) {
                         scrollProxy.scrollTo("home_top", anchor: .top)
                     }
-                    // Focus can only land on the hero CTA once the lazy top region is built;
-                    // hand it over just after the scroll animation settles.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
-                        heroFocused = true
+                    // Focus can only land on the hero CTA once the lazy top region is built —
+                    // and a one-shot handoff that fires too early is silently dropped, leaving
+                    // focus on the deep row so the focus engine drags the scroll straight back
+                    // down ("Menu only scrolls up two categories", device pass 2026-08-02).
+                    // Retry: re-issue the scroll and the focus grab until it sticks.
+                    for (attempt, delay) in [0.55, 1.2, 2.0].enumerated() {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            guard !heroFocused else { return }
+                            if attempt > 0 {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    scrollProxy.scrollTo("home_top", anchor: .top)
+                                }
+                            }
+                            heroFocused = true
+                        }
                     }
                 } : nil)
-                // Tab-bar clip, rounds 5–6 — the actual mechanism (device-diagnosed): focus-driven
-                // scrolling stops wherever the focused item fits, SHORT of the true top edge, and
-                // the tvOS 26 system bar's scroll-linked expansion sticks mid-way (clipped at the
-                // screen top until focus moves inside the bar). Menu-to-top never clipped because
-                // it scrolls to the real top — so when focus WALKS back onto the hero, finish the
-                // job the same way. Round 6: gated to the residual window (near the top but not AT
-                // it) — round 5 fired this unconditionally, and the scroll animation it started on
-                // every at-top focus return contended with downward focus scrolling, wedging Down
-                // navigation at the hero.
-                .onScrollGeometryChange(for: Bool.self, of: { geo in
-                    let y = geo.contentOffset.y - geo.contentInsets.top
-                    return y > 4 && y < 150
-                }, action: { _, inWindow in
-                    topCompletionEligible = inWindow
-                })
-                .onChange(of: heroFocused) { _, focused in
-                    guard focused, topCompletionEligible else { return }
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        scrollProxy.scrollTo("home_top", anchor: .top)
-                    }
-                }
+                // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
+                // Rounds 5–6 tried completing the scroll to the true top when focus re-entered
+                // the hero; both caused worse regressions on device (wedged Down navigation,
+                // interrupted Menu-to-top) and were reverted. Do not reintroduce a hero-focus-
+                // triggered scroll here without a device-verified plan — the harness cannot see
+                // the system bar's hardware-only mid-expansion state.
                 }
             }
             .onReceive(heroTimer) { _ in
