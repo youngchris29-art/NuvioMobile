@@ -49,8 +49,31 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var disabledSearchSourceKeys: Set<String> = SearchViewModel.SearchSourceSettings.disabledKeys
 
     /// FEAT-10: flip one search source on/off (persists locally + updates the published mirror).
+    ///
+    /// The new set is computed in shared code (`resolveSearchSourceToggle`), never by inserting or
+    /// removing the row's own key here: a row can be disabled by a LEGACY bare base key that
+    /// switches off its whole collision group, and dropping only the row's suffixed key would
+    /// leave that bare key behind — the row would stay off forever (Codex round-2 finding N1).
+    /// The resolver drops the bare key and re-persists the other group members under their own
+    /// keys, so only this row changes state. Persisting is a diff against the stored set because
+    /// `SearchSourceSettings` exposes per-key writes.
     func setSearchSource(key: String, disabled: Bool) {
-        SearchViewModel.SearchSourceSettings.setDisabled(disabled, forKey: key)
+        let current = SearchViewModel.SearchSourceSettings.disabledKeys
+        // Kotlin Set<String> arrives as a Swift Set of AnyHashable.
+        let resolvedRaw = SearchRepository.shared.resolveSearchSourceToggle(
+            optionKey: key,
+            disabled: disabled,
+            currentDisabledKeys: current,
+            addons: enabledAddons
+        )
+        let resolved = Set(resolvedRaw.compactMap { $0 as? String })
+
+        for removed in current.subtracting(resolved) {
+            SearchViewModel.SearchSourceSettings.setDisabled(false, forKey: removed)
+        }
+        for added in resolved.subtracting(current) {
+            SearchViewModel.SearchSourceSettings.setDisabled(true, forKey: added)
+        }
         disabledSearchSourceKeys = SearchViewModel.SearchSourceSettings.disabledKeys
     }
 

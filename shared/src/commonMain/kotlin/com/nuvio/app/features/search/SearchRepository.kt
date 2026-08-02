@@ -360,19 +360,77 @@ object SearchRepository {
     /// The [disableCause] rule, reachable from a key alone — for UI layers that hold a
     /// [SearchCatalogOption] and the persisted disabled set but not the enumeration.
     ///
-    /// The tvOS Search Sources pane currently derives its toggle state with a plain
+    /// The tvOS Search Sources pane derives its toggle state from this call (not from a plain
     /// `disabledKeys.contains(option.key)`, which cannot see a LEGACY bare-key disable of a
-    /// suffixed member: the search fan-out skips the catalog while the row still reads "On".
-    /// Swiping that call over to this function is a one-line Swift change (tracked as a
-    /// follow-up — this pass may not touch Swift).
+    /// suffixed member: the search fan-out would skip the catalog while the row still read "On").
     ///
     /// Best-effort mirror, not the authority: it recovers the base key by parsing the suffix, so
     /// a catalog id that literally ends in `#<8 hex>` could be over-matched here. The fan-out
     /// filter never parses — it compares against the entry's real base key.
     fun isSearchSourceDisabled(optionKey: String, disabledCatalogKeys: Set<String>): Boolean {
         if (optionKey in disabledCatalogKeys) return true
+        // ACCEPTED (Codex round-2 P3): pathological false display only. A real catalog id that
+        // literally ends in `#<8 hex>` parses as a synthesized suffix here, so this mirror could
+        // report the row as disabled when its (unrelated) "base" happens to be a stored key. It
+        // is display-only — the fan-out filter compares against the entry's real baseKey and is
+        // unaffected — and requires an addon author to mint an id in exactly the shape this
+        // enumeration synthesizes. Not worth threading the enumeration into every UI layer.
         val base = optionKey.stripIdentitySuffix()
         return base != optionKey && base in disabledCatalogKeys
+    }
+
+    /// Codex round-2 finding N1: the WRITE side of [isSearchSourceDisabled]. Given one toggle
+    /// action, returns the FULL disabled-key set to persist. Pure and Swift-callable — the
+    /// settings pane owns the storage, this owns the key semantics, because only the enumeration
+    /// knows which catalogs share a base key.
+    ///
+    /// Disabling is always "add the row's own key". Enabling is where the legacy semantics bite:
+    /// a row can be off because a pre-hardening BARE base key sits in the set, and a bare key
+    /// disables EVERY member of its collision group. Removing only the row's own (suffixed) key
+    /// leaves that bare key in place, so [isSearchSourceDisabled] keeps reporting the row as
+    /// disabled and the user can never switch it back on. Enabling such a member therefore
+    /// MIGRATES the group: the bare key is dropped, and every OTHER member it was covering is
+    /// re-persisted under its own suffixed key so their off state survives the migration
+    /// unchanged. The toggled member's own key is deliberately not re-added — that is the point.
+    ///
+    /// Cases:
+    ///  * disable → `current + optionKey`.
+    ///  * enable with no legacy bare key in play — including a non-colliding catalog whose own
+    ///    key IS the bare key — → plain `current - optionKey`, no migration.
+    ///  * enable a group member covered by a bare key → `current - optionKey - baseKey +
+    ///    {other group members' keys}`.
+    ///  * enable an optionKey the enumeration no longer lists (a stale row racing an addon
+    ///    change) → plain removal: group membership is unknowable, and guessing by parsing the
+    ///    suffix could silently re-enable catalogs the user never touched.
+    fun resolveSearchSourceToggle(
+        optionKey: String,
+        disabled: Boolean,
+        currentDisabledKeys: Set<String>,
+        addons: List<ManagedAddon>,
+    ): Set<String> {
+        if (disabled) return currentDisabledKeys + optionKey
+
+        val next = currentDisabledKeys.toMutableSet()
+        next.remove(optionKey)
+
+        // The same enumeration the settings rows were minted from, so group membership here is
+        // authoritative rather than parsed back out of the key string.
+        val entries = enumerateSearchCatalogs(addons.enabledAddons())
+        val entry = entries.firstOrNull { it.key == optionKey } ?: return next
+        val baseKey = entry.baseKey
+        // Own key == bare key (the non-colliding case): the removal above already cleared it and
+        // there is no group to migrate.
+        if (baseKey == optionKey || baseKey !in currentDisabledKeys) return next
+
+        next.remove(baseKey)
+        entries.forEach { other ->
+            // `other.key != baseKey` is belt-and-braces: a group with 2+ members has every member
+            // suffixed, so no sibling can carry the bare key we are retiring.
+            if (other.baseKey == baseKey && other.key != optionKey && other.key != baseKey) {
+                next.add(other.key)
+            }
+        }
+        return next
     }
 
     // Internal (not private) so common tests can exercise the FEAT-10 filter without a network.
@@ -454,6 +512,14 @@ object SearchRepository {
             }
             var key = preferred
             var tiebreak = 1
+            // ACCEPTED (Codex round-2 P3): this loop is not identity-stable. If two members of ONE
+            // collision group ever produced the same 32-bit FNV digest, the `.2` suffix would be
+            // handed out by encounter order, so uninstalling one addon could renumber the other —
+            // exactly the silent re-enable the identity hash exists to avoid. It needs a digest
+            // collision between two catalogs sharing a base key (a handful of members, not the
+            // birthday bound over all keys), i.e. ~2^-32 per pair — astronomically unlikely, and
+            // the only alternatives (wider digest, positional fallback) cost key-format stability
+            // for every user to fix a case no install will hit.
             while (!usedKeys.add(key)) {
                 tiebreak += 1
                 key = "$preferred.$tiebreak"

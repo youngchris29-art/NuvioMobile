@@ -334,6 +334,189 @@ class SearchSourceFilterTest {
         assertTrue(SearchRepository.isSearchSourceDisabled(twinKey, legacyDisabled))
     }
 
+    // ---- Codex round-2 finding N1: legacy-key migration on toggle ----
+
+    private fun twinKeys(): Triple<String, String, String> {
+        val options = SearchRepository.searchCatalogOptions(listOf(twins))
+        return Triple(
+            options.single { it.catalogName == "Popular" }.key,
+            options.single { it.catalogName == "Popular Mirror" }.key,
+            options.single { it.catalogName == "Popular Backup" }.key,
+        )
+    }
+
+    @Test
+    fun `enabling a legacy-disabled group member drops the bare key and pins the survivors`() {
+        // FINDING N1: before the resolver, the pane removed only the row's own suffixed key —
+        // which was never in the set — so the bare key survived and the row could never be
+        // switched back on.
+        val (popular, mirror, backup) = twinKeys()
+        val legacy = setOf("com.test.twins:movie:popular")
+
+        val next = SearchRepository.resolveSearchSourceToggle(
+            optionKey = mirror,
+            disabled = false,
+            currentDisabledKeys = legacy,
+            addons = listOf(twins),
+        )
+
+        assertEquals(setOf(popular, backup), next, "bare key retires; the other two keep their own keys")
+        assertFalse(SearchRepository.isSearchSourceDisabled(mirror, next), "the toggled row must read enabled")
+        assertTrue(SearchRepository.isSearchSourceDisabled(popular, next))
+        assertTrue(SearchRepository.isSearchSourceDisabled(backup, next))
+
+        // And the fan-out agrees: exactly the toggled catalog comes back.
+        val requests = SearchRepository.buildSearchRequests(listOf(twins), "dune", next)
+        assertEquals(listOf("Popular Mirror"), requests.map { it.catalogName })
+    }
+
+    @Test
+    fun `legacy migration spans duplicate installs of one manifest`() {
+        // Same defect, the other collision source: one bare key covering two separate installs.
+        val installs = listOf(marvel, marvelMirror)
+        val options = SearchRepository.searchCatalogOptions(installs)
+        val firstKey = options[0].key
+        val mirrorKey = options[1].key
+
+        val next = SearchRepository.resolveSearchSourceToggle(
+            optionKey = firstKey,
+            disabled = false,
+            currentDisabledKeys = setOf("com.test.marvel:movie:mcu", "com.test.cinemeta:series:top"),
+            addons = installs,
+        )
+
+        assertEquals(setOf(mirrorKey, "com.test.cinemeta:series:top"), next, "unrelated keys are untouched")
+        assertFalse(SearchRepository.isSearchSourceDisabled(firstKey, next))
+        assertTrue(SearchRepository.isSearchSourceDisabled(mirrorKey, next))
+    }
+
+    @Test
+    fun `enabling a non-colliding catalog disabled by its bare key is a plain removal`() {
+        // The catalog's own key IS the bare key, so there is no group to migrate — nothing else
+        // may be added to the set.
+        val next = SearchRepository.resolveSearchSourceToggle(
+            optionKey = "com.test.cinemeta:series:top",
+            disabled = false,
+            currentDisabledKeys = setOf("com.test.cinemeta:series:top", "com.test.marvel:movie:mcu"),
+            addons = listOf(cinemeta, marvel),
+        )
+        assertEquals(setOf("com.test.marvel:movie:mcu"), next)
+    }
+
+    @Test
+    fun `enabling a member disabled by its own suffixed key leaves the group alone`() {
+        // No legacy bare key in play: a suffixed member is per-member granular already, so the
+        // migration branch must not fire and no sibling key may be synthesized.
+        val (popular, mirror, backup) = twinKeys()
+        val next = SearchRepository.resolveSearchSourceToggle(
+            optionKey = mirror,
+            disabled = false,
+            currentDisabledKeys = setOf(mirror, backup),
+            addons = listOf(twins),
+        )
+        assertEquals(setOf(backup), next)
+        assertFalse(SearchRepository.isSearchSourceDisabled(popular, next))
+    }
+
+    @Test
+    fun `disabling writes the member's own key`() {
+        val (_, mirror, _) = twinKeys()
+        assertEquals(
+            setOf(mirror),
+            SearchRepository.resolveSearchSourceToggle(
+                optionKey = mirror,
+                disabled = true,
+                currentDisabledKeys = emptySet(),
+                addons = listOf(twins),
+            ),
+            "a colliding member is disabled by its suffixed key, never by the bare base key",
+        )
+        assertEquals(
+            setOf("com.test.marvel:movie:mcu", "com.test.cinemeta:movie:top"),
+            SearchRepository.resolveSearchSourceToggle(
+                optionKey = "com.test.marvel:movie:mcu",
+                disabled = true,
+                currentDisabledKeys = setOf("com.test.cinemeta:movie:top"),
+                addons = listOf(cinemeta, marvel),
+            ),
+        )
+    }
+
+    @Test
+    fun `toggling a legacy-disabled member off again restores an equivalent set`() {
+        // Round-trip: after the migration, switching the same row back off writes its own key and
+        // the group is fully disabled again — just under per-member keys instead of the bare one.
+        val (popular, mirror, backup) = twinKeys()
+        val migrated = SearchRepository.resolveSearchSourceToggle(
+            optionKey = mirror,
+            disabled = false,
+            currentDisabledKeys = setOf("com.test.twins:movie:popular"),
+            addons = listOf(twins),
+        )
+        val reDisabled = SearchRepository.resolveSearchSourceToggle(
+            optionKey = mirror,
+            disabled = true,
+            currentDisabledKeys = migrated,
+            addons = listOf(twins),
+        )
+        assertEquals(setOf(popular, mirror, backup), reDisabled)
+        assertTrue(SearchRepository.buildSearchRequests(listOf(twins), "dune", reDisabled).isEmpty())
+    }
+
+    @Test
+    fun `enabling an already-enabled member changes nothing`() {
+        val (popular, mirror, backup) = twinKeys()
+        val current = setOf(backup)
+
+        val once = SearchRepository.resolveSearchSourceToggle(
+            optionKey = mirror,
+            disabled = false,
+            currentDisabledKeys = current,
+            addons = listOf(twins),
+        )
+        assertEquals(current, once, "no bare key to migrate and no own key to drop")
+
+        val twice = SearchRepository.resolveSearchSourceToggle(
+            optionKey = mirror,
+            disabled = false,
+            currentDisabledKeys = once,
+            addons = listOf(twins),
+        )
+        assertEquals(once, twice, "the resolver is idempotent")
+
+        // Re-applying the migration is idempotent too: the second pass sees no bare key.
+        val migrated = SearchRepository.resolveSearchSourceToggle(
+            optionKey = mirror,
+            disabled = false,
+            currentDisabledKeys = setOf("com.test.twins:movie:popular"),
+            addons = listOf(twins),
+        )
+        assertEquals(
+            migrated,
+            SearchRepository.resolveSearchSourceToggle(
+                optionKey = mirror,
+                disabled = false,
+                currentDisabledKeys = migrated,
+                addons = listOf(twins),
+            ),
+        )
+        assertEquals(setOf(popular, backup), migrated)
+    }
+
+    @Test
+    fun `an unknown option key falls back to plain removal`() {
+        // A stale row racing an addon change: group membership is unknowable, so nothing is
+        // synthesized and no unrelated key is disturbed.
+        val stale = "com.gone.addon:movie:old#deadbeef"
+        val next = SearchRepository.resolveSearchSourceToggle(
+            optionKey = stale,
+            disabled = false,
+            currentDisabledKeys = setOf(stale, "com.gone.addon:movie:old", "com.test.marvel:movie:mcu"),
+            addons = listOf(cinemeta, marvel),
+        )
+        assertEquals(setOf("com.gone.addon:movie:old", "com.test.marvel:movie:mcu"), next)
+    }
+
     @Test
     fun `section keys stay unique under duplicate installs and unchanged otherwise`() {
         // FINDING 3: SearchView renders `ForEach(model.sections, id: \.key)`; duplicate installs
