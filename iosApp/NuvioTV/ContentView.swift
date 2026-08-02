@@ -194,14 +194,13 @@ struct MainTabView: View {
 private extension View {
     func tabBarAutoHide(_ vis: TabBarVisibility) -> some View {
         self
-            // `.visible` (not `.automatic`) when shown: with `.automatic` the system ALSO applies
-            // its own scrolled-content bar treatment on tvOS 26, fighting our hysteresis — on
-            // device the re-shown bar rendered clipped at the top edge until focus entered it and
-            // forced a re-layout (beta.9 device pass, 2026-08-01). One authority: ours.
-            // No custom `.animation` wrapper either (round 3, same device pass): retiming the
-            // system bar's own show transition left it frozen mid-slide — still clipped, just
-            // less. The system toolbar animates its own visibility changes.
-            .toolbarVisibility(vis.hidden ? .hidden : .visible, for: .tabBar)
+            // Round 4 (see TabBarVisibility.immersiveHidden): scroll no longer toggles bar
+            // visibility at all — `.automatic` lets the tvOS 26 system bar do its native
+            // minimize/expand as content scrolls, and only the immersive detail push
+            // force-hides. Rounds 1–3 proved any hidden→shown reshow can freeze mid-slide
+            // on hardware (clipped at the top until focus re-entered the bar), so the fix
+            // is to not have a reshow.
+            .toolbarVisibility(vis.immersiveHidden ? .hidden : .automatic, for: .tabBar)
     }
 }
 

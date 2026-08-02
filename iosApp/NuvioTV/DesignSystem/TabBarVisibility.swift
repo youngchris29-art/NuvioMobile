@@ -52,6 +52,17 @@ final class TabBarVisibility: ObservableObject {
     private func recompute() {
         hidden = scrolledAway || detailDepth > 0
     }
+
+    /// Device pass round 4 (2026-08-02): the toolbar drives off THIS, not `hidden`. Toggling
+    /// `.toolbarVisibility(.hidden)` on scroll and re-showing it later left the system bar
+    /// frozen mid-slide on real hardware — clipped at the top until focus moved within it —
+    /// through three rounds of transition fixes (.automatic→.visible, dropping the custom
+    /// animation). The cure is structural: never toggle visibility for scrolling at all; the
+    /// tvOS 26 system bar already minimizes/expands natively as content scrolls (`.automatic`),
+    /// so there is no hidden→shown transition left to get stuck. Only the immersive detail
+    /// push still force-hides. `hidden`/`scrolledAway` remain for the BUG-27 Menu-to-top
+    /// hysteresis, which is unrelated to bar presentation.
+    var immersiveHidden: Bool { detailDepth > 0 }
 }
 
 private struct TabBarVisibilityKey: EnvironmentKey {
