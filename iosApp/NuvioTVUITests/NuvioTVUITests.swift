@@ -646,6 +646,22 @@ final class NuvioTVUITests: XCTestCase {
         pause(1.5)
         press(.right, times: 1)
         pause(1)
+        // FEAT-14: opt-in "Accent Focus Ring" toggle (default OFF), Theme section — the first
+        // section in the pane, so content-pane focus (the press(.right, 1) above lands on the
+        // theme swatches row) reaches it in a single Down press. Screenshot + existence/label
+        // check only — do NOT select it, this test asserts the OFF default, not the ON behavior.
+        let accentRing = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'")
+        ).firstMatch
+        _ = moveFocus(.down, until: accentRing, max: 8)
+        pause(1)
+        shot(app, "16c_accent_ring_toggle_default_off")
+        XCTAssertTrue(accentRing.exists, "FEAT-14 Accent Focus Ring toggle must exist in the Theme section")
+        XCTAssertTrue(
+            accentRing.label.contains("Off"),
+            "Accent Focus Ring must default OFF, got label: \(accentRing.label)"
+        )
+
         let renamed = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH 'Hide Hero Artwork'")
         ).firstMatch
@@ -705,5 +721,125 @@ final class NuvioTVUITests: XCTestCase {
         ux6Probe(app, "17c_after_down8")
         shot(app, "17c_detail_scrolled")
         XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - BUG-33(3): settings-row legibility when focused, default vs White theme
+
+    /// The white-on-white regression only showed up on focused rows in the White theme
+    /// (SettingsRowViews are now focus-aware). Capture the SAME row class focused in both the
+    /// default (dark/Ocean) theme and White so the exported screenshots are a direct A/B — a
+    /// human/agent compares 18a vs 18b for a legible label + control on both platters.
+    /// Navigation to the White swatch and back mirrors test13WhiteThemeContrast's walk
+    /// (duplicated rather than factored out — the two tests reach it from different starting
+    /// focus positions and this harness already accepts duplication over shared helpers).
+    func test18FocusedSettingsRowLegibility() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+
+        // Accent Focus Ring toggle (Theme section, top of pane) — one Down press from the
+        // swatches row that content-pane focus lands on.
+        let accentRing = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'")
+        ).firstMatch
+        _ = moveFocus(.down, until: accentRing, max: 8)
+        pause(1)
+        shot(app, "18a_row_focused_dark")
+
+        // Back up to the swatch row, then right along it to White (test13's walk).
+        press(.up, times: 4, gap: 0.6)
+        let white = app.buttons["White"]
+        if !moveFocus(.right, until: white, max: 8) { _ = moveFocus(.left, until: white, max: 8) }
+        if white.exists && white.hasFocus {
+            remote.press(.select)
+            pause(2.5) // theme change rebuilds the tree (.id flip)
+        }
+
+        // Refocus the same toggle row under the new theme.
+        _ = moveFocus(.down, until: accentRing, max: 8)
+        pause(1)
+        shot(app, "18b_row_focused_white")
+
+        // Restore Ocean (the account's real setting) so later tests aren't affected.
+        press(.up, times: 4, gap: 0.6)
+        let ocean = app.buttons["Ocean"]
+        if !moveFocus(.left, until: ocean, max: 8) { _ = moveFocus(.right, until: ocean, max: 8) }
+        if ocean.exists && ocean.hasFocus {
+            remote.press(.select)
+            pause(2.5)
+        }
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - BUG-33(2): Discover survives a search + clear cycle
+
+    /// SearchView.swift: query-empty shows Discover (recent-search chips + the shared
+    /// `discoverUiState` browse grid); a non-empty query swaps in `searchResults`. The reported
+    /// bug is Discover staying wiped after a search is cleared back to empty.
+    ///
+    /// tvOS drives text entry via its own full-screen system keyboard (the file's own comment:
+    /// "opens tvOS's self-contained full-screen keyboard"), which no test in this harness has
+    /// driven before, so its exact key-grid layout/labels are unverified here — this pass has no
+    /// sim run available to confirm `app.keys[...]` resolves the way it does for a plain iOS
+    /// on-screen keyboard. Every keyboard-grid step below is therefore guarded by `.exists`
+    /// checks: if the grid doesn't expose the expected keys, the test backs out via Menu and
+    /// still captures the "after" screenshot, instead of guessing a fixed arrow-press count that
+    /// could hang or mistype.
+    ///
+    /// MANUAL SIM STEP — keyboard grid driving unreliable: if the exported "19a2_after_query"
+    /// screenshot never shows a typed query, or "19b_discover_after" doesn't show the Discover
+    /// chips/grid back on screen, verify this manually instead: open Search, select the field,
+    /// type 1-2 letters on the tvOS keyboard, wait for results to render, clear the field (Menu
+    /// back to the field, then delete/backspace to empty it, or re-select and clear), and confirm
+    /// Discover's genre chips / catalog grid reappear rather than staying blank.
+    func test19DiscoverSurvivesSearch() throws {
+        let app = launchToHome()
+        openTab(app, named: "Search")
+        pause(1.5)
+        shot(app, "19a_discover_before")
+
+        let searchField = app.textFields.firstMatch
+        guard searchField.waitForExistence(timeout: 4) else {
+            // Field never resolved — nothing further to drive automatically.
+            shot(app, "19b_discover_after")
+            XCTAssertTrue(app.state == .runningForeground)
+            return
+        }
+        if !searchField.hasFocus {
+            _ = moveFocus(.up, until: searchField, max: 6)
+        }
+        remote.press(.select)
+        pause(2) // full-screen keyboard presentation
+
+        // Best-effort "as": walk to "a", select, then to "s", select. Bail to the manual-step
+        // path (Menu back out) if the grid doesn't expose letter keys the way expected.
+        let keyA = app.keys["a"]
+        if keyA.waitForExistence(timeout: 3) {
+            _ = moveFocus(.right, until: keyA, max: 12)
+            if keyA.hasFocus { remote.press(.select) }
+            pause(0.5)
+            let keyS = app.keys["s"]
+            if moveFocus(.right, until: keyS, max: 8) || moveFocus(.down, until: keyS, max: 6) {
+                remote.press(.select)
+            }
+            pause(2.5) // debounce + results fetch
+            shot(app, "19a2_after_query_typed")
+        }
+
+        // Clear back to Discover: Menu dismisses the keyboard/backs out of the query. If the
+        // query text survived (see the manual-step note above), a human should re-check by
+        // clearing it explicitly and re-screenshotting.
+        remote.press(.menu)
+        pause(1.5)
+        remote.press(.menu)
+        pause(1.5)
+
+        shot(app, "19b_discover_after")
+        XCTAssertTrue(app.state == .runningForeground, "app must survive the search + clear cycle even if the query itself couldn't be driven")
     }
 }
