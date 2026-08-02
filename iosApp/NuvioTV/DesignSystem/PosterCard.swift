@@ -33,6 +33,15 @@ extension View {
     func posterButtonShape() -> some View { modifier(PosterButtonShape()) }
 }
 
+/// FEAT-14 accent focus ring geometry (device-verified geometry fix): the ring must float just
+/// OUTSIDE the poster's edge, not overlap the artwork. `strokeBorder` on the artwork's own
+/// `RoundedRectangle` draws fully inside the shape bounds — since that shape equals the artwork
+/// frame, the ring rendered on top of the image (the bug). Both ring sites below instead draw an
+/// outward-offset ring using these two constants; see the arithmetic comment at each call site.
+private let ringWidth: CGFloat = 3
+/// Gap between the artwork's outer edge and the ring's inner edge.
+private let ringGap: CGFloat = 2
+
 struct PosterCard: View {
     let title: String
     let imageURL: String?
@@ -78,8 +87,31 @@ struct PosterCard: View {
                 // to the same Corners radius as the clip/hover geometry above.
                 .overlay {
                     if accentFocusRing && isFocused {
-                        RoundedRectangle(cornerRadius: style.cornerRadius)
-                            .strokeBorder(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: 3)
+                        // BUG (device-verified): `strokeBorder` insets its stroke fully inside the
+                        // shape it strokes, and that shape was the artwork's own bounds — so the
+                        // ring rendered ON TOP of the poster instead of around it. Fix: draw the
+                        // ring on a RoundedRectangle whose path is offset outward from the artwork
+                        // edge by `ringOffset = ringGap + ringWidth / 2`, then pull its layout frame
+                        // back in by the same `ringOffset` via negative padding (this is the
+                        // standard "ring drawn outside my own frame" trick — the shape still paints
+                        // at its true, larger geometry; only the reported layout size shrinks back
+                        // to the artwork's frame, and nothing here clips the overpaint).
+                        // `.stroke` centers its line ON the path, so the painted ring spans from
+                        // (ringOffset - ringWidth/2) = ringGap outside the artwork, to
+                        // (ringOffset + ringWidth/2) = ringGap + ringWidth outside — i.e. exactly a
+                        // ringGap-wide gap followed by a ringWidth-wide ring, as required.
+                        // Offsetting a rounded rect's boundary uniformly outward by `ringOffset`
+                        // keeps the corners concentric by growing the radius by that same amount,
+                        // which is why `cornerRadius: style.cornerRadius + ringOffset` below must
+                        // use the identical `ringOffset` as the `.padding(-ringOffset)` call. When
+                        // style.cornerRadius is 0 (Square corners) the shape's radius is still
+                        // `ringOffset` (> 0), so the ring's corners are gently rounded rather than
+                        // sharp-clipped, and since ringGap/ringWidth are fixed positive constants
+                        // the radius can never go negative.
+                        let ringOffset = ringGap + ringWidth / 2
+                        RoundedRectangle(cornerRadius: style.cornerRadius + ringOffset)
+                            .stroke(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: ringWidth)
+                            .padding(-ringOffset)
                     }
                 }
 
@@ -151,8 +183,16 @@ struct LandscapeCard: View {
             // same Corners radius as the clip/hover geometry above.
             .overlay {
                 if accentFocusRing && isFocused {
-                    RoundedRectangle(cornerRadius: style.cornerRadius)
-                        .strokeBorder(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: 3)
+                    // See PosterCard's copy of this overlay for the full arithmetic: `ringOffset`
+                    // both grows the stroked shape's corner radius and shrinks its padding by the
+                    // same amount, which offsets the ring's path `ringOffset` outside the artwork
+                    // edge while keeping corners concentric; `.stroke` then centers a `ringWidth`
+                    // line on that path, landing its inner edge exactly `ringGap` outside the
+                    // artwork.
+                    let ringOffset = ringGap + ringWidth / 2
+                    RoundedRectangle(cornerRadius: style.cornerRadius + ringOffset)
+                        .stroke(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: ringWidth)
+                        .padding(-ringOffset)
                 }
             }
 
