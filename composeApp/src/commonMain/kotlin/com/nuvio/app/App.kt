@@ -91,8 +91,6 @@ import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.sync.AppForegroundMonitor
 import com.nuvio.app.core.sync.ProfileSettingsSync
-import com.nuvio.app.core.sync.RealtimeSyncConfig
-import com.nuvio.app.core.sync.RealtimeSyncInvalidationService
 import com.nuvio.app.core.sync.SyncManager
 import com.nuvio.app.core.ui.LocalNuvioNavBarScrollState
 import com.nuvio.app.core.ui.NuvioNavigationBar
@@ -1214,38 +1212,6 @@ private fun MainAppContent(
                     }
                 }
             }
-        }
-    }
-
-    LaunchedEffect(authState, profileState.activeProfile?.profileIndex) {
-        if (!ownsAppRuntime) return@LaunchedEffect
-        if (!RealtimeSyncConfig.ENABLED) {
-            RealtimeSyncInvalidationService.stop()
-            return@LaunchedEffect
-        }
-
-        val authenticatedState = authState as? AuthState.Authenticated ?: return@LaunchedEffect
-        if (authenticatedState.isAnonymous) return@LaunchedEffect
-
-        val activeProfileId = profileState.activeProfile?.profileIndex ?: return@LaunchedEffect
-        RealtimeSyncInvalidationService.start(
-            userId = authenticatedState.userId,
-            profileId = activeProfileId,
-        )
-    }
-
-    DisposableEffect(authState, profileState.activeProfile?.profileIndex) {
-        val authenticatedState = authState as? AuthState.Authenticated
-        if (ownsAppRuntime && (
-            !RealtimeSyncConfig.ENABLED ||
-            authenticatedState == null ||
-            authenticatedState.isAnonymous ||
-            profileState.activeProfile == null
-        )) {
-            RealtimeSyncInvalidationService.stop()
-        }
-        onDispose {
-            if (ownsAppRuntime) RealtimeSyncInvalidationService.stop()
         }
     }
 
