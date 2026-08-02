@@ -52,6 +52,37 @@ struct SettingsActionRow: View {
     }
 }
 
+/// A focusable, read-only settings row that shows a title/value pair (e.g. About pane entries).
+/// Focusable (not just a plain HStack) so it participates in the same D-pad flow as the other
+/// rows in its section and picks up the platter/label treatment via `.settingsRow`.
+struct SettingsInfoRow: View {
+    let title: String
+    let value: String
+    var systemImage: String? = nil
+
+    var body: some View {
+        Button(action: {}) {
+            HStack(spacing: Theme.Spacing.lg) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(Theme.Font.body)
+                        .rowAccentTint()
+                }
+                Text(title)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                Spacer()
+                Text(value)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            .padding(Theme.Spacing.lg)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.settingsRow)
+    }
+}
+
 /// A focusable settings row that toggles a boolean on select.
 struct SettingsToggleRow: View {
     let title: String

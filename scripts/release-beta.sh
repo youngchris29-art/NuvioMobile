@@ -161,12 +161,29 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
   xcodebuild -project "$IOS_PROJECT" -scheme "$TVOS_SCHEME" -configuration Release \
     -destination "generic/platform=tvOS" -derivedDataPath "$DERIVED_DATA" \
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+    NUVIO_BETA_TAG="$TAG" \
     | tail -5
 else
   echo "==> Skipping build, reusing $PRODUCTS_DIR"
 fi
 
 [[ -d "$PRODUCTS_DIR/$APP_NAME" ]] || { echo "error: $PRODUCTS_DIR/$APP_NAME not found" >&2; exit 1; }
+
+# Regression guard: the NuvioTV target used to hardcode its own
+# MARKETING_VERSION/CURRENT_PROJECT_VERSION, silently overriding
+# Version.xcconfig (FEAT-13). Verify the built product's Info.plist actually
+# reflects Version.xcconfig before we ship it.
+BUILT_PLIST="$PRODUCTS_DIR/$APP_NAME/Info.plist"
+if [[ -f "$BUILT_PLIST" ]]; then
+  BUILT_MARKETING_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$BUILT_PLIST" 2>/dev/null || echo "")"
+  BUILT_BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$BUILT_PLIST" 2>/dev/null || echo "")"
+  if [[ "$BUILT_MARKETING_VERSION" != "$MARKETING_VERSION" || "$BUILT_BUILD_NUMBER" != "$BUILD_NUMBER" ]]; then
+    echo "error: pbxproj target-level version override is back (FEAT-13): product reports ${BUILT_MARKETING_VERSION} (${BUILT_BUILD_NUMBER}), Version.xcconfig says ${MARKETING_VERSION} (${BUILD_NUMBER})" >&2
+    exit 1
+  fi
+else
+  echo "warning: $BUILT_PLIST not found; skipping version regression check." >&2
+fi
 
 echo "==> Packaging $IPA_NAME"
 cd "$PRODUCTS_DIR"

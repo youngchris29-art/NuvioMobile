@@ -47,6 +47,9 @@ struct AppearanceSettingsPane: View {
     @AppStorage("detail_trailer_duration") private var detailTrailerDuration = 0
     /// FEAT-9: mirrors DetailView's `detail_action_icons_only` key.
     @AppStorage("detail_action_icons_only") private var detailActionIconsOnly = false
+    /// FEAT-7: mirrors SettingsView's own `settings_style` key (same UserDefaults key, read
+    /// independently here) so this pane's chip row and the sidebar it controls stay in sync.
+    @AppStorage("settings_style") private var settingsStyle = "default"
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
@@ -56,6 +59,8 @@ struct AppearanceSettingsPane: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
                 ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
+
+                settingsStyleRow
             }
 
             settingsSection(String(localized: "Poster Style")) {
@@ -162,6 +167,22 @@ struct AppearanceSettingsPane: View {
             ForEach(options, id: \.value) { option in
                 chip(option.label, selected: detailTrailerDuration == option.value) {
                     detailTrailerDuration = option.value
+                }
+            }
+        }
+    }
+
+    /// FEAT-7: Default keeps the sidebar's category icons at normal row height; Minimal drops the
+    /// icons and tightens row padding for a denser list. (A third "Top Bar" style was scoped out.)
+    private var settingsStyleRow: some View {
+        let options: [(value: String, label: String)] = [
+            ("default", String(localized: "Default")),
+            ("minimal", String(localized: "Minimal")),
+        ]
+        return controlRow(String(localized: "Settings Style")) {
+            ForEach(options, id: \.value) { option in
+                chip(option.label, selected: settingsStyle == option.value) {
+                    settingsStyle = option.value
                 }
             }
         }

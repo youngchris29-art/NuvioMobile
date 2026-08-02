@@ -280,6 +280,7 @@
 				94AEB9E12FF2294B007C43F2 /* Frameworks */,
 				94AEB9E22FF2294B007C43F2 /* Resources */,
 				947233752FF8500F001B4F7C /* Embed Foundation Extensions */,
+				9A1B2C3D4E5F60718293A4C1 /* Stamp Build Metadata */,
 			);
 			buildRules = (
 			);
@@ -468,6 +469,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "if [ \"YES\" = \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" ]; then\n  echo \"Skipping Gradle build task invocation due to OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED environment variable set to \\\"YES\\\"\"\n  exit 0\nfi\nif [ -z \"$JAVA_HOME\" ] && [ -x \"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/bin/java\" ]; then\n  export JAVA_HOME=\"/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home\"\nfi\nif [ -n \"$JAVA_HOME\" ]; then\n  export PATH=\"$JAVA_HOME/bin:/opt/homebrew/bin:$PATH\"\nelse\n  export PATH=\"/opt/homebrew/bin:$PATH\"\nfi\nif [ -z \"$GRADLE_OPTS\" ]; then\n  export GRADLE_OPTS=\"-Xmx12288M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=2048m\"\nfi\nif [ -z \"$KOTLIN_DAEMON_JVMARGS\" ]; then\n  export KOTLIN_DAEMON_JVMARGS=\"-Xmx8192M\"\nfi\ncase \"$CONFIGURATION\" in\n  Release*|release*) KOTLIN_FRAMEWORK_CONFIG=\"Release\" ;;\n  *) KOTLIN_FRAMEWORK_CONFIG=\"Debug\" ;;\nesac\ncase \"$SDK_NAME\" in\n  appletvos*) KONAN_TARGET=\"TvosArm64\" ;;\n  appletvsimulator*) KONAN_TARGET=\"TvosSimulatorArm64\" ;;\n  *) echo \"error: NuvioTV shared-framework build: unsupported SDK '$SDK_NAME'\"; exit 1 ;;\nesac\ncd \"$SRCROOT/..\"\n./gradlew \":shared:link${KOTLIN_FRAMEWORK_CONFIG}Framework${KONAN_TARGET}\"\n";
+		};
+		9A1B2C3D4E5F60718293A4C1 /* Stamp Build Metadata */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Stamp Build Metadata";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "PLIST=\"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\nSHA=$(git -C \"$SRCROOT/..\" rev-parse --short=8 HEAD 2>/dev/null || echo \"\")\n/usr/libexec/PlistBuddy -c \"Add :NuvioCommitSHA string $SHA\" \"$PLIST\" 2>/dev/null || /usr/libexec/PlistBuddy -c \"Set :NuvioCommitSHA $SHA\" \"$PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :NuvioBetaTag string ${NUVIO_BETA_TAG:-}\" \"$PLIST\" 2>/dev/null || /usr/libexec/PlistBuddy -c \"Set :NuvioBetaTag ${NUVIO_BETA_TAG:-}\" \"$PLIST\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -764,7 +783,6 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = NuvioTopShelf/NuvioTopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNYA9B575G;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -776,7 +794,6 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nuvio.media.NuvioTV.NuvioTopShelf;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -797,7 +814,6 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = NuvioTopShelf/NuvioTopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNYA9B575G;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -809,7 +825,6 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nuvio.media.NuvioTV.NuvioTopShelf;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -832,7 +847,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/NuvioTV.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNYA9B575G;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -846,7 +860,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-framework",
@@ -874,7 +887,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/NuvioTV.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WNYA9B575G;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -888,7 +900,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-framework",

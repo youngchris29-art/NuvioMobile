@@ -23,6 +23,9 @@ struct SettingsView: View {
     /// Which category's sections are shown in the detail pane (split-view, tvOS-Settings style).
     @State private var selectedCategory: SettingsCategory = .accountServices
     @FocusState private var focusedCategory: SettingsCategory?
+    /// FEAT-7: "Default" shows the category icon at normal row padding; "Minimal" drops the icon
+    /// and tightens the row for a denser sidebar. Set from the Appearance pane's Settings Style chips.
+    @AppStorage("settings_style") private var settingsStyle = "default"
 
     var body: some View {
         NavigationStack {
@@ -140,6 +143,8 @@ struct SettingsView: View {
             ContentSourcesSettingsPane(model: model, plugins: plugins)
         case .advanced:
             AdvancedSettingsPane(remote: remote)
+        case .about:
+            AboutSettingsPane()
         }
     }
 
@@ -157,9 +162,11 @@ struct SettingsView: View {
                     selectedCategory = category
                 } label: {
                     HStack(spacing: Theme.Spacing.md) {
-                        Image(systemName: category.icon)
-                            .font(Theme.Font.body)
-                            .frame(width: 40)
+                        if settingsStyle != "minimal" {
+                            Image(systemName: category.icon)
+                                .font(Theme.Font.body)
+                                .frame(width: 40)
+                        }
                         Text(category.title)
                             .font(Theme.Font.body)
                         Spacer(minLength: 0)
@@ -169,7 +176,7 @@ struct SettingsView: View {
                         inactiveColor: Theme.Palette.textPrimary
                     )
                     .padding(.horizontal, Theme.Spacing.lg)
-                    .padding(.vertical, Theme.Spacing.md)
+                    .padding(.vertical, settingsStyle == "minimal" ? Theme.Spacing.sm : Theme.Spacing.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.settingsRow)
@@ -193,6 +200,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case homeScreen
     case contentSources
     case advanced
+    case about
 
     var id: String { rawValue }
 
@@ -204,6 +212,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .homeScreen: return String(localized: "Home Screen")
         case .contentSources: return String(localized: "Content Sources")
         case .advanced: return String(localized: "Advanced")
+        case .about: return String(localized: "About")
         }
     }
 
@@ -215,6 +224,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .homeScreen: return "house"
         case .contentSources: return "square.stack.3d.up"
         case .advanced: return "gearshape.2"
+        case .about: return "info.circle"
         }
     }
 }
