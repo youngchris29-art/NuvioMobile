@@ -670,7 +670,13 @@ final class NuvioTVUITests: XCTestCase {
     /// While Browsing" (BUG-24/UX-1 rename), (b) Content Sources gained a "Search Sources"
     /// section with one toggle per search-capable catalog (FEAT-10).
     func test16SettingsNewRows() throws {
-        let app = launchToHome()
+        // Fresh launch (2026-08-02): in-suite, re-entering the Settings tab restores focus to
+        // wherever the last Settings test left it — which can be deep inside the Appearance
+        // pane, where the lazy pane culls the top-of-pane Theme rows from the AX tree and the
+        // Accent Focus Ring existence assert below fails ("no matches found") even though the
+        // row renders fine (same test passed isolated on the same build). A fresh launch
+        // guarantees the sidebar-default Settings entry this test's walk assumes.
+        let app = launchToHome(forceFreshLaunch: true)
 
         openTab(app, named: "Settings")
         let appearance = app.buttons["Appearance"]
