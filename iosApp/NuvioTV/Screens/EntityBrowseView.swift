@@ -140,6 +140,12 @@ struct EntityBrowseView: View {
 
     @StateObject private var model: EntityBrowseViewModel
 
+    /// BUG-34: anchors `.prefersDefaultFocus` on the header/description block so initial focus can
+    /// never settle on a rail poster (see `topBlock`).
+    @Namespace private var topFocusNamespace
+    /// Drives the focus affordance on the otherwise non-interactive `topBlock`.
+    @FocusState private var topFocused: Bool
+
     init(route: EntityRoute) {
         self.route = route
         _model = StateObject(wrappedValue: EntityBrowseViewModel(route: route))
@@ -151,17 +157,13 @@ struct EntityBrowseView: View {
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                    headerBlock
-
-                    if let description = model.header?.description_, !description.isEmpty {
-                        Text(description)
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                            .frame(maxWidth: 1100, alignment: .leading)
-                    }
+                    topBlock
 
                     ForEach(model.rails) { rail in
+                        // Each rail is its own focus region, so vertical D-pad moves land on the
+                        // rail's nearest poster instead of geometrically skipping past it.
                         railRow(rail)
+                            .focusSection()
                     }
 
                     if model.isLoading {
@@ -177,12 +179,61 @@ struct EntityBrowseView: View {
                 }
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Scope must wrap every focus candidate on the page (top block + all rails) for
+                // `prefersDefaultFocus` on the top block to win.
+                .focusScope(topFocusNamespace)
             }
         }
         .onAppear { model.start() }
     }
 
     // MARK: - Sections
+
+    /// Header + description as ONE focusable — but non-interactive — region.
+    ///
+    /// Same shape (and same BUG-34 trap) as `PersonDetailView`: without this, the rail posters are
+    /// the page's only focus candidates, so when the async rails land the focus engine claims the
+    /// first poster, focus-scrolls the page down, and strands the header above the viewport with
+    /// nothing above to move back to. This block renders from `route.name` on the very first frame,
+    /// so it takes initial focus, holds it while the rails arrive, and gives D-pad Up out of the
+    /// first rail a real destination. Select is inert; Menu still pops the screen.
+    private var topBlock: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            headerBlock
+
+            if let description = model.header?.description_, !description.isEmpty {
+                Text(description)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                    // Keeps the focusable region shorter than the screen — a focus target taller
+                    // than the viewport can only be scrolled to its nearest edge, which would put
+                    // the header back off-screen when arrowing Up out of the rails.
+                    .lineLimit(8)
+                    .frame(maxWidth: 1100, alignment: .leading)
+            }
+        }
+        // Full-bleed width so an Up move from *any* poster (rails scroll horizontally) still finds
+        // this block geometrically above it.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background { topFocusPlatter }
+        .focusable()
+        .focused($topFocused)
+        .prefersDefaultFocus(true, in: topFocusNamespace)
+        .accessibilityElement(children: .combine)
+        .animation(.easeInOut(duration: 0.15), value: topFocused)
+    }
+
+    /// Focus affordance for `topBlock`. Drawn outside the block's bounds via negative padding so
+    /// the unfocused layout is unchanged (no content shift on focus).
+    private var topFocusPlatter: some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.hero)
+            .fill(Theme.Palette.surface.opacity(topFocused ? 0.9 : 0))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.hero)
+                    .strokeBorder(Color.white.opacity(topFocused ? 0.55 : 0), lineWidth: 2) // neutral by design: the HIG contract bans accent focus rings (FEAT-14 is opt-in only)
+            )
+            .padding(-Theme.Spacing.md)
+    }
 
     private var headerBlock: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.lg) {

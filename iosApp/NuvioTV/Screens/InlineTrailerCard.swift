@@ -562,6 +562,10 @@ struct InlineTrailerCard: View {
                     loops: false,
                     onPlaybackEnded: { model.playbackFinished() }
                 )
+                // UX-9: parity zoom over the baked-in letterbox bars (see `parityZoom` doc) — only
+                // the video surface, not the static artwork underneath: the artwork is already
+                // sized to the tile, with no bars of its own to hide.
+                .scaleEffect(TrailerHeroPlayer.parityZoom)
                 .transition(.asymmetric(insertion: .opacity, removal: .identity))
             }
         }

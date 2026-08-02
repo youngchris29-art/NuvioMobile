@@ -34,10 +34,23 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     /// Only ever fires when `loops == false`; main-queue.
     var onPlaybackEnded: (() -> Void)? = nil
 
+    /// UX-9: our YouTube trailer encodes bake letterboxing directly into the frame (2.39:1 film
+    /// inside a 16:9 container), so `.resizeAspectFill` alone still shows black bars — it fills the
+    /// *container* while the bars stay part of the *image*. Upstream Compose hides them with a flat
+    /// parity scale on the trailer surface (DetailHero.kt:145–153, `scaleX = scaleY = 1.08f`); this
+    /// mirrors that constant exactly rather than re-deriving it. A computed ~1.33 crop (undoing a
+    /// 2.39:1-in-16:9 letterbox exactly) was rejected: there's no signal that tells us a given
+    /// trailer actually has bars, so it would just as happily eat >20% of a genuinely-16:9 trailer.
+    static let parityZoom: CGFloat = 1.08
+
     func makeUIView(context: Context) -> TrailerPlayerUIView {
         let view = TrailerPlayerUIView()
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = false
+        // Never set before UX-9: once the trailer surface is scaled past fill (see `parityZoom`
+        // above) to hide baked-in letterbox bars, the overscaled edges must not bleed past this
+        // view's bounds into whatever sits around it.
+        view.clipsToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
         context.coordinator.attach(to: view, urlString: urlString, loops: loops)
         return view

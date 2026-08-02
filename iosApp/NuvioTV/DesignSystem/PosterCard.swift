@@ -53,12 +53,19 @@ struct PosterCard: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
             CachedAsyncImage(string: imageURL)
                 .frame(width: resolvedWidth, height: resolvedHeight)
+                // BUG-31: CachedAsyncImage is `.fill` with no clip of its own, and this frame is
+                // always exactly 2:3 — so off-ratio artwork overflows it and the hover lift copies
+                // the overflow too, drawing a ghost-doubled subject. Clip inside the frame first.
+                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
                 .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
                 // Whole-card system lift: without this the borderless hover effect lands on the
                 // inner Image, so the artwork parallaxes INSIDE a static clipped edge (device
                 // feedback). Tagging the clipped container makes the entire card — edge included —
                 // lift and track the remote as one object.
+                // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so the
+                // lift can't fall back to a system rect that extends past the artwork.
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: style.cornerRadius))
                 .hoverEffect(.highlight)
 
             if titleVisible {
@@ -99,6 +106,9 @@ struct LandscapeCard: View {
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: imageURL)
                     .frame(width: width, height: height)
+                    // BUG-31: same fill-overflow → hover-lift ghosting as PosterCard; artwork whose
+                    // ratio isn't 16:9 spills out of this fixed frame unless clipped here.
+                    .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: depthSurface)
 
@@ -116,6 +126,8 @@ struct LandscapeCard: View {
             }
             .frame(width: width, height: height)
             // Whole-card system lift — see PosterCard: the progress bar and artwork move as one.
+            // BUG-31/BUG-25: pin the highlight geometry to the card's own Corners radius.
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: style.cornerRadius))
             .hoverEffect(.highlight)
 
             if titleVisible {

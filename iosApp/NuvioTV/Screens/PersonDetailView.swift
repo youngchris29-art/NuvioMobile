@@ -13,6 +13,12 @@ struct PersonDetailView: View {
 
     @StateObject private var model: PersonDetailViewModel
 
+    /// BUG-34: anchors `.prefersDefaultFocus` on the header/bio block so initial focus can never
+    /// settle on a credit poster (see `topBlock` for the full story).
+    @Namespace private var topFocusNamespace
+    /// Drives the focus affordance on the otherwise non-interactive `topBlock`.
+    @FocusState private var topFocused: Bool
+
     init(personId: Int, personName: String) {
         self.personId = personId
         self.personName = personName
@@ -25,17 +31,15 @@ struct PersonDetailView: View {
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                    headerBlock
+                    topBlock
 
-                    if let bio = model.person?.biography, !bio.isEmpty {
-                        Text(bio)
-                            .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                            .frame(maxWidth: 1100, alignment: .leading)
-                    }
-
+                    // Each row is its own focus region, so vertical D-pad moves land on the row's
+                    // nearest poster instead of geometrically skipping past it (same reason as
+                    // DetailView's EpisodesSection).
                     creditsRow(title: String(localized: "Movies"), items: model.person?.movieCredits ?? [])
+                        .focusSection()
                     creditsRow(title: String(localized: "TV Shows"), items: model.person?.tvCredits ?? [])
+                        .focusSection()
 
                     if model.isLoading {
                         ProgressView()
@@ -50,12 +54,66 @@ struct PersonDetailView: View {
                 }
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Scope must wrap every focus candidate on the page (top block + both credit
+                // rows) for `prefersDefaultFocus` on the top block to win.
+                .focusScope(topFocusNamespace)
             }
         }
         .onAppear { model.start() }
     }
 
     // MARK: - Sections
+
+    /// Header + biography as ONE focusable — but non-interactive — region.
+    ///
+    /// BUG-34: the credit posters used to be this page's only focusable views, so the instant the
+    /// async credits landed (~0.5s after open) the focus engine claimed the first Movies poster and
+    /// focus-scrolled the page down, stranding the header and biography above the viewport with no
+    /// upward focus candidate to get back to. Making the top region focusable fixes both halves:
+    /// it exists from the very first frame (the header renders from `personName` before the fetch
+    /// returns), so it takes initial focus and *keeps* it when the credits arrive, and it gives
+    /// D-pad Up out of the first credit row somewhere real to land.
+    ///
+    /// Select does nothing here on purpose — `.focusable()` without an action is inert, so this
+    /// stays a reading surface, and Menu still pops the screen (no `onExitCommand` anywhere).
+    private var topBlock: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            headerBlock
+
+            if let bio = model.person?.biography, !bio.isEmpty {
+                Text(bio)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                    // Keeps the focusable region shorter than the screen. A focus target taller
+                    // than the viewport can only be scrolled to its nearest edge, which would put
+                    // the header back off-screen when arrowing Up out of the credits — the exact
+                    // symptom being fixed. TMDB bios run arbitrarily long, so they get capped.
+                    .lineLimit(8)
+                    .frame(maxWidth: 1100, alignment: .leading)
+            }
+        }
+        // Full-bleed width so an Up move from *any* poster (rows scroll horizontally, so a poster
+        // can sit far to the right) still finds this block geometrically above it.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background { topFocusPlatter }
+        .focusable()
+        .focused($topFocused)
+        .prefersDefaultFocus(true, in: topFocusNamespace)
+        .accessibilityElement(children: .combine)
+        .animation(.easeInOut(duration: 0.15), value: topFocused)
+    }
+
+    /// Focus affordance for `topBlock`. Drawn outside the block's bounds via negative padding so
+    /// the unfocused layout is byte-identical to before the fix (no content shift on focus).
+    private var topFocusPlatter: some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.hero)
+            .fill(Theme.Palette.surface.opacity(topFocused ? 0.9 : 0))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.hero)
+                    .strokeBorder(Color.white.opacity(topFocused ? 0.55 : 0), lineWidth: 2) // neutral by design: the HIG contract bans accent focus rings (FEAT-14 is opt-in only)
+            )
+            .padding(-Theme.Spacing.md)
+    }
 
     private var headerBlock: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.lg) {

@@ -14,18 +14,45 @@ import UIKit
 /// `parseGifFrameDurations` (per-frame Graphic Control Extension delay parsing), and
 /// `expandedGifFrames` (GCD-based frame-reference duplication so unequal per-frame delays still
 /// play back correctly on a single fixed-duration `UIImage` animation).
+///
+/// BUG-19 (4th attempt — the first three moved decode work around without removing the actual
+/// main-thread cost per focus step). The measured symptom was a 700–830 ms freeze of EVERY visible
+/// tile on each D-pad step, i.e. a main-thread hang, not a slow animation. Four levers, all of
+/// which had to land together:
+///   1. the GIF `URLSession`'s `URLCache` had no `directory:`, so it silently had no disk tier at
+///      all (same defect ArtworkStore hit — see the `session` comment below);
+///   2. the memory cache's cost accounting made every realistic entry larger than the whole
+///      budget, so it was evicted on insert and the "cached" path never hit (see `AnimatedGifCache`);
+///   3. fetch + cache-write ran on the main actor (only the CGImage expansion hopped off);
+///   4. the view was mounted/unmounted by focus, so every step tore down a whole pipeline (freeing
+///      the expanded frame array on the main thread in `dismantleUIView`) and built a new one.
+/// The view is now mounted for the tile's whole lifetime and focus only toggles
+/// `isAnimating`/opacity — see `FolderTile` in `CollectionsUI.swift`.
 struct AnimatedGifImage: View {
     private let url: URL?
     private let fallbackURLString: String?
     private let contentMode: ContentMode
+    private let isAnimating: Bool
 
     @StateObject private var loader = AnimatedGifLoader()
 
     /// - Parameters:
     ///   - string: the animated GIF's URL (Kotlin-bridged `String?`; empty/nil → no animation).
     ///   - fallback: the folder's static cover, shown underneath while the GIF loads and if it
-    ///     never resolves to an animated image (bad URL, decode failure, non-GIF data).
-    init(string: String?, fallback: String?, contentMode: ContentMode = .fill) {
+    ///     never resolves to an animated image (bad URL, decode failure, non-GIF data). Pass `nil`
+    ///     when the caller already mounts the cover itself (`FolderTile` does, so the cover isn't
+    ///     torn down and re-decoded alongside the GIF).
+    ///   - isAnimating: BUG-19 — drives playback AND visibility without changing view identity.
+    ///     `false` keeps the decoded frames alive in this view's loader but stops the
+    ///     `UIImageView` and fades the GIF out to reveal the cover underneath. The first
+    ///     transition to `true` is also what lazily kicks off the download/decode: a 15-tile row
+    ///     must not decode 15 GIFs at mount.
+    init(
+        string: String?,
+        fallback: String?,
+        contentMode: ContentMode = .fill,
+        isAnimating: Bool = true
+    ) {
         if let string, !string.isEmpty {
             self.url = URL(string: string)
         } else {
@@ -33,49 +60,84 @@ struct AnimatedGifImage: View {
         }
         self.fallbackURLString = fallback
         self.contentMode = contentMode
+        self.isAnimating = isAnimating
     }
+
+    /// Visible only once there is something to show AND the tile wants animation — until then the
+    /// cover (this view's own fallback, or the caller's) shows through.
+    private var gifVisible: Bool { isAnimating && loader.image != nil }
 
     var body: some View {
         ZStack {
-            CachedAsyncImage(string: fallbackURLString, contentMode: contentMode)
-
-            if let image = loader.image {
-                AnimatedUIImageView(image: image, contentMode: contentMode)
-                    .transition(.opacity)
+            if let fallbackURLString, !fallbackURLString.isEmpty {
+                CachedAsyncImage(string: fallbackURLString, contentMode: contentMode)
             }
+
+            // Always mounted (BUG-19 lever 4): no `if` around this view, so focus changes never
+            // create/destroy a UIImageView and never free the expanded frame array on the main
+            // thread. `image` is nil until the decode lands.
+            AnimatedUIImageView(
+                image: loader.image,
+                contentMode: contentMode,
+                isAnimating: isAnimating
+            )
+            .opacity(gifVisible ? 1 : 0)
+            .allowsHitTesting(false)
         }
-        .animation(.easeInOut(duration: 0.2), value: loader.image == nil)
-        .onAppear { loader.load(url) }
-        .onChange(of: url) { _, newURL in loader.load(newURL) }
+        .animation(.easeInOut(duration: 0.15), value: gifVisible)
+        .onAppear {
+            loader.prepare(url)
+            if isAnimating { loader.loadIfNeeded() }
+        }
+        .onChange(of: url) { _, newURL in
+            loader.prepare(newURL)
+            if isAnimating { loader.loadIfNeeded() }
+        }
+        .onChange(of: isAnimating) { _, animating in
+            // Lazy first focus: the decode starts here, not at mount.
+            if animating { loader.loadIfNeeded() }
+        }
     }
 }
 
 /// Thin `UIViewRepresentable` around `UIImageView` — the only UIKit type that actually plays an
-/// animated `UIImage`'s frames back. Mirrors the Kotlin reference's `updateGifImage` helper:
-/// stop before reassigning, (re)start whenever a non-nil image is set, and fully tear down
-/// (stop + clear) when the view leaves the hierarchy so a scrolled-away tile never keeps
-/// animating in the background.
+/// animated `UIImage`'s frames back.
+///
+/// BUG-19: playback is now driven by the `isAnimating` INPUT rather than by the view's existence.
+/// `makeUIView`/`dismantleUIView` therefore run once per tile instead of once per focus step, and
+/// an unfocused tile costs exactly one stopped `UIImageView` holding an already-decoded image.
 private struct AnimatedUIImageView: UIViewRepresentable {
-    let image: UIImage
+    let image: UIImage?
     let contentMode: ContentMode
+    let isAnimating: Bool
 
     func makeUIView(context: Context) -> UIImageView {
-        let view = UIImageView(image: image)
+        let view = UIImageView()
         view.contentMode = contentMode == .fill ? .scaleAspectFill : .scaleAspectFit
         view.clipsToBounds = true
         view.isUserInteractionEnabled = false
-        view.startAnimating()
+        apply(to: view)
         return view
     }
 
     func updateUIView(_ uiView: UIImageView, context: Context) {
-        guard uiView.image !== image else {
-            if !uiView.isAnimating { uiView.startAnimating() }
-            return
+        apply(to: uiView)
+    }
+
+    private func apply(to view: UIImageView) {
+        if view.image !== image {
+            // Reassigning `image` while animating leaves UIImageView's frame timer pointing at the
+            // old frame array; stop first (this is the Kotlin reference's `updateGifImage` order).
+            if view.isAnimating { view.stopAnimating() }
+            view.image = image
         }
-        uiView.stopAnimating()
-        uiView.image = image
-        uiView.startAnimating()
+        if isAnimating, image != nil {
+            if !view.isAnimating { view.startAnimating() }
+        } else if view.isAnimating {
+            // Stopped, NOT dismantled: the frames stay retained by the loader/cache so re-focusing
+            // this tile is a `startAnimating()` call, not a fresh download+decode.
+            view.stopAnimating()
+        }
     }
 
     static func dismantleUIView(_ uiView: UIImageView, coordinator: ()) {
@@ -87,22 +149,38 @@ private struct AnimatedUIImageView: UIViewRepresentable {
 /// Loads, decodes, and caches one animated-GIF URL for one `AnimatedGifImage`. Shaped like this
 /// file's neighbor `CachedImageLoader` (`CachedAsyncImage.swift`): a `@MainActor`
 /// `ObservableObject` that cancels its in-flight work when superseded or deallocated.
+///
+/// BUG-19: split into `prepare` (free — point at a URL, answer synchronously from the memory
+/// cache, never start work) and `loadIfNeeded` (starts the one download+decode, at most once per
+/// URL). `prepare` alone must stay cheap because every tile in a row calls it at mount.
 @MainActor
 private final class AnimatedGifLoader: ObservableObject {
     @Published var image: UIImage?
 
     private var currentURL: URL?
     private var task: Task<Void, Never>?
+    /// Whether `loadIfNeeded` has already spent (or is spending) a fetch on `currentURL`. Keeps a
+    /// permanently failing URL from re-downloading on every focus.
+    private var didRequestLoad = false
 
-    func load(_ url: URL?) {
+    /// Point the loader at a URL WITHOUT starting any network/decode work. A synchronous memory
+    /// cache hit is taken immediately (that's the whole reason the cache exists — see
+    /// `AnimatedGifCache`'s cost arithmetic, which previously made every hit a miss).
+    func prepare(_ url: URL?) {
         guard url != currentURL else { return }
         currentURL = url
         task?.cancel()
-        image = nil
+        task = nil
+        didRequestLoad = false
+        image = AnimatedGifCache.cached(url)
+    }
 
-        guard let url else { return }
+    /// Lazily start the fetch+decode — called on the tile's FIRST focus, not at mount.
+    func loadIfNeeded() {
+        guard let url = currentURL, image == nil, !didRequestLoad else { return }
+        didRequestLoad = true
 
-        if let cached = AnimatedGifCache.shared.object(forKey: url as NSURL) {
+        if let cached = AnimatedGifCache.cached(url) {
             image = cached
             return
         }
@@ -120,38 +198,76 @@ private final class AnimatedGifLoader: ObservableObject {
 
 /// Dedicated animated-image cache — deliberately NOT `ArtworkStore.memory` (`CachedAsyncImage.swift`).
 /// That cache's cost accounting assumes one decoded single-frame bitmap per entry; an animated
-/// `UIImage` here carries many frames, so it gets its own small, explicitly-costed budget instead
-/// of silently blowing the shared artwork cache's assumptions. Sized to match the Kotlin
-/// reference's `MaxCachedGifImages = 12`.
+/// `UIImage` here carries many frames, so it gets its own explicitly-costed budget instead of
+/// silently blowing the shared artwork cache's assumptions.
+///
+/// BUG-19 cost arithmetic (the old numbers made this cache a no-op). Entry cost is now the TRUE
+/// sum of every unique decoded frame's bitmap (`AnimatedGifDecoder.decodedGif`), and the decoder
+/// caps that sum at `maxDecodedBytesPerGif` = 12 MB by shrinking the per-frame downsample ceiling
+/// for long GIFs. So:
+///
+///   * worst case per entry ...... 12 MB (a 60-frame GIF decoded to ~229 px/side)
+///   * typical Services tile ...... 20 frames × 400×400 RGBA (640 KB) ≈ 12 MB, at full 400 px
+///   * short 10-frame loop ........ 10 × 640 KB ≈ 6 MB
+///
+///   totalCostLimit 144 MB = 12 worst-case entries, or ~24 six-megabyte ones.
+///   countLimit 24 covers the Services + Genres rows' visible+prefetched tiles together (the old
+///   limit of 12 was per the Kotlin reference's `MaxCachedGifImages`, which is a phone-sized row).
+///
+/// The old configuration was countLimit 12 / 64 MB against an entry cost of
+/// `frameCount × firstFrameBytes` ≈ 86 MB for a 60-frame 800 px collage: every entry exceeded the
+/// entire budget, so `NSCache` evicted it during the very `setObject` that inserted it and the
+/// synchronous hit path never fired — every focus step re-downloaded and re-decoded.
+///
+/// `nonisolated(unsafe)` mirrors `ArtworkStore.memory`: `NSCache` locks internally, and the
+/// decoder writes to it from a detached task while views read it synchronously.
 private enum AnimatedGifCache {
-    static let shared: NSCache<NSURL, UIImage> = {
+    nonisolated(unsafe) static let shared: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
-        cache.countLimit = 12
-        cache.totalCostLimit = 64 * 1024 * 1024
+        cache.countLimit = 24
+        cache.totalCostLimit = 144 * 1024 * 1024   // decoded bytes; see arithmetic above
         return cache
     }()
+
+    /// Synchronous lookup — safe from any context (`NSCache` is thread-safe).
+    static func cached(_ url: URL?) -> UIImage? {
+        guard let url else { return nil }
+        return shared.object(forKey: url as NSURL)
+    }
 }
 
 /// Fetch + decode pipeline for animated GIFs, with in-flight de-duplication per URL (mirrors
 /// `ArtworkStore.fetch`'s `inflight` dictionary shape).
 ///
-/// Deviation from the task brief: the brief suggested reusing `ArtworkStore.session` for the raw
-/// download so the GIF bytes ride its disk cache "for free". That property is `private` to
-/// `CachedAsyncImage.swift` (inaccessible from this file), and this port is scoped to touch only
-/// `AnimatedGifImage.swift` (new) and `CollectionsUI.swift` — widening `ArtworkStore`'s access
-/// control was out of bounds. Instead this file gets its own small disk-backed `URLSession`,
-/// configured the same way (`.returnCacheDataElseLoad`, a bounded `URLCache`, the same 20 MB
-/// download ceiling as `ArtworkStore`), so repeated focus/unfocus cycles on one tile still hit
-/// disk instead of the network without touching the shared store's internals.
+/// This file gets its own disk-backed `URLSession` rather than reusing `ArtworkStore.session`
+/// (which is `private` to `CachedAsyncImage.swift`), configured the same way
+/// (`.returnCacheDataElseLoad`, a bounded `URLCache` **in its own directory**, the same 20 MB
+/// download ceiling), so repeated focus/unfocus cycles on one tile hit disk instead of the network.
+///
+/// BUG-19: only `decode`'s bookkeeping is `@MainActor` now. The download, the ImageIO decode, the
+/// frame expansion and the cache write all run on a detached task, so a focus step never waits on
+/// them.
 private enum AnimatedGifDecoder {
     private static let maxDownloadBytes = 20 * 1024 * 1024
     private static let defaultFrameDelayCentiseconds = 10
 
-    private static let session: URLSession = {
+    /// BUG-19 lever (a). The `URLCache` MUST be given its own `directory:`. Constructed without
+    /// one — as this session was — the instance shares the app's default cache store with
+    /// `URLCache.shared` (which the Ktor/Supabase sessions open too); two `URLCache` instances
+    /// over one store is unsupported and this one silently lost its disk tier: writes landed in
+    /// Cache.db but every lookup missed. That is exactly the defect ArtworkStore hit and fixed in
+    /// commit 8ab9fa23 (BUG-26, documented at `CachedAsyncImage.swift:78–95`); the GIF session was
+    /// written from the same template *before* that fix and inherited the bug, which is why every
+    /// focus step re-downloaded the GIF bytes over the network.
+    nonisolated(unsafe) private static let session: URLSession = {
         let config = URLSessionConfiguration.default
+        let cacheDir = FileManager.default
+            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GifURLCache", isDirectory: true)
         config.urlCache = URLCache(
-            memoryCapacity: 8 * 1024 * 1024,
-            diskCapacity: 64 * 1024 * 1024
+            memoryCapacity: 8 * 1024 * 1024,     // 8 MB
+            diskCapacity: 128 * 1024 * 1024,     // 128 MB of compressed GIF bytes
+            directory: cacheDir
         )
         config.requestCachePolicy = .returnCacheDataElseLoad
         return URLSession(configuration: config)
@@ -159,28 +275,30 @@ private enum AnimatedGifDecoder {
 
     @MainActor private static var inflight: [URL: Task<UIImage?, Never>] = [:]
 
+    /// De-dupe bookkeeping and the final `UIImage` handoff stay on the main actor; everything
+    /// expensive happens inside the detached task.
     @MainActor
     static func decode(_ url: URL) async -> UIImage? {
+        if let cached = AnimatedGifCache.cached(url) { return cached }
         if let existing = inflight[url] {
             return await existing.value
         }
 
-        let work = Task<UIImage?, Never> {
+        // `Task.detached` (not `Task`): a plain `Task` created here would INHERIT @MainActor, which
+        // is what put `fetchData`'s await, the frame expansion and the cache write on the main
+        // thread. Only the CGImage decode hopped off before.
+        let work = Task<UIImage?, Never>.detached(priority: .userInitiated) {
             guard let data = try? await fetchData(url) else { return nil }
-            let result = await Task.detached(priority: .userInitiated) {
-                decodedGif(from: data)
-            }.value
-            if let result {
-                AnimatedGifCache.shared.setObject(result.image, forKey: url as NSURL, cost: result.cost)
-            }
-            return result?.image
+            guard let result = decodedGif(from: data) else { return nil }
+            AnimatedGifCache.shared.setObject(result.image, forKey: url as NSURL, cost: result.cost)
+            return result.image
         }
         inflight[url] = work
         defer { inflight[url] = nil }
         return await work.value
     }
 
-    private static func fetchData(_ url: URL) async throws -> Data {
+    private nonisolated static func fetchData(_ url: URL) async throws -> Data {
         let (data, response) = try await session.data(from: url)
         if let http = response as? HTTPURLResponse {
             guard (200...299).contains(http.statusCode) else {
@@ -190,14 +308,35 @@ private enum AnimatedGifDecoder {
         guard !data.isEmpty, data.count <= maxDownloadBytes else {
             throw URLError(.dataLengthExceedsMaximum)
         }
+
+        // BUG-19 lever (e): a truncated body still decodes — ImageIO happily returns the frames it
+        // could parse and fills the rest with garbage, which is the 2-frame magenta corruption
+        // caught on camera. Status + byte count can't see this (a cut-off transfer is still 200 OK
+        // with a plausible length), so validate the container itself before anything caches or
+        // renders it, and evict the bad bytes from the disk cache so the next focus retries the
+        // network instead of replaying the corruption forever.
+        guard isCompleteGif(data) else {
+            session.configuration.urlCache?.removeCachedResponse(for: URLRequest(url: url))
+            throw URLError(.cannotDecodeContentData)
+        }
         return data
+    }
+
+    /// Cheap completeness check on the raw payload: GIF magic, a parseable image source, and
+    /// ImageIO's own "I have all the bytes" verdict.
+    private nonisolated static func isCompleteGif(_ data: Data) -> Bool {
+        guard hasGifHeader([UInt8](data.prefix(6))) else { return false }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return false }
+        guard CGImageSourceGetStatus(source) == .statusComplete else { return false }
+        return CGImageSourceGetCount(source) > 0
     }
 
     // MARK: - GIF decode (ported from `gifImageWithData` / `expandedGifFrames`)
 
     private struct DecodedGif {
         let image: UIImage
-        /// frameCount × first-frame bitmap bytes, for `NSCache`'s explicit cost accounting.
+        /// Sum of EVERY unique frame's decoded bitmap bytes, for `NSCache`'s cost accounting.
+        /// (The expanded array repeats frames by reference, so it adds no bitmap memory.)
         let cost: Int
     }
 
@@ -206,13 +345,33 @@ private enum AnimatedGifDecoder {
         let delayCentiseconds: Int
     }
 
-    /// Frames are decoded down to at most this many pixels on the long edge. Collection tiles
-    /// render at ~360–420pt; 800px comfortably covers @2x while cutting a 1080p GIF's per-frame
-    /// bitmap (and its decode time) by ~4x.
-    private static let maxFramePixelSize = 800
+    /// Per-frame downsample ceiling on the long edge. tvOS lays every app out in a fixed
+    /// 1920×1080 POINT space, so a collection tile at ~360–420 pt is ~360–420 real pixels; 400 px
+    /// is effectively native for these tiles, and GIF sources are palette-quantised and moving, so
+    /// nothing about them survives extra resolution anyway. (The old 800 px ceiling quadrupled
+    /// every frame's bitmap for no visible gain.)
+    private static let maxFramePixelSize = 400
+    /// Floor for the adaptive ceiling below — never decode a tile-sized GIF smaller than this.
+    private static let minFramePixelSize = 200
+    /// Hard budget for ONE decoded GIF's total bitmap memory. A row of tiles keeps its decoded
+    /// frames alive while mounted (that's the point of the fix), so the per-GIF number, not just
+    /// the cache total, is what bounds a 15-tile row: 15 × 12 MB ≈ 180 MB absolute worst case,
+    /// and in practice the `LazyHStack` unmounts scrolled-away tiles well before that.
+    private static let maxDecodedBytesPerGif = 12 * 1024 * 1024
 
-    private static func decodedGif(from data: Data) -> DecodedGif? {
+    /// Long GIFs get downsampled harder so no single entry can blow the budget:
+    /// side = √(budget / (4 bytes per pixel × frames)), clamped to [200, 400].
+    /// 10 frames → 400 px (clamped, ~6 MB) · 20 frames → 400 px (~12 MB) · 60 frames → 229 px.
+    private nonisolated static func framePixelCeiling(frameCount: Int) -> Int {
+        guard frameCount > 0 else { return maxFramePixelSize }
+        let pixelsPerFrame = Double(maxDecodedBytesPerGif) / (4.0 * Double(frameCount))
+        let side = Int(pixelsPerFrame.squareRoot())
+        return min(maxFramePixelSize, max(minFramePixelSize, side))
+    }
+
+    private nonisolated static func decodedGif(from data: Data) -> DecodedGif? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        guard CGImageSourceGetStatus(source) == .statusComplete else { return nil }
         let count = CGImageSourceGetCount(source)
         guard count > 0 else { return nil }
 
@@ -230,16 +389,23 @@ private enum AnimatedGifDecoder {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxFramePixelSize,
+            kCGImageSourceThumbnailMaxPixelSize: framePixelCeiling(frameCount: count),
         ]
 
         for index in 0..<count {
-            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, index, thumbnailOptions as CFDictionary)
-                ?? CGImageSourceCreateImageAtIndex(source, index, nil) else { continue }
+            // Per-frame completeness (lever e): an individually incomplete frame is the magenta
+            // garbage. Fail the whole decode so the caller falls back to the static cover.
+            guard CGImageSourceGetStatusAtIndex(source, index) == .statusComplete else { return nil }
+            // No lazy `CGImageSourceCreateImageAtIndex` fallback any more: it would reintroduce
+            // main-thread decompression at render time for exactly the frames we couldn't decode
+            // cheaply here. Better a static cover than a stuttering tile.
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, index, thumbnailOptions as CFDictionary) else {
+                return nil
+            }
             let delay = index < delays.count ? delays[index] : defaultFrameDelayCentiseconds
             frames.append(GifFrame(image: cgImage, delayCentiseconds: max(delay, 1)))
         }
-        guard let firstFrame = frames.first else { return nil }
+        guard !frames.isEmpty else { return nil }
 
         let (expandedImages, tickCentiseconds) = expandedFrames(frames)
         let durationSeconds = Double(expandedImages.count * tickCentiseconds) / 100.0
@@ -247,16 +413,15 @@ private enum AnimatedGifDecoder {
             return nil
         }
 
-        let firstFrameBytes = firstFrame.image.bytesPerRow * firstFrame.image.height
-        let cost = max(frames.count, 1) * max(firstFrameBytes, 1)
-        return DecodedGif(image: animated, cost: cost)
+        let totalBytes = frames.reduce(0) { $0 + $1.image.bytesPerRow * $1.image.height }
+        return DecodedGif(image: animated, cost: max(totalBytes, 1))
     }
 
     /// Ported from `expandedGifFrames`: GIF allows each frame its own delay, but
     /// `UIImage.animatedImage(with:duration:)` only takes one total duration divided evenly
     /// across the image array — so frames with a longer delay are repeated (by reference, so no
     /// extra bitmap memory) to fill out their share of a common "tick" (the GCD of all delays).
-    private static func expandedFrames(_ frames: [GifFrame]) -> (images: [UIImage], tickCentiseconds: Int) {
+    private nonisolated static func expandedFrames(_ frames: [GifFrame]) -> (images: [UIImage], tickCentiseconds: Int) {
         let delays = frames.map { max($0.delayCentiseconds, 1) }
         let tick = delays.dropFirst().reduce(delays.first ?? defaultFrameDelayCentiseconds) { greatestCommonDivisor($0, $1) }
 
@@ -269,7 +434,7 @@ private enum AnimatedGifDecoder {
         return (expanded, tick)
     }
 
-    private static func greatestCommonDivisor(_ a: Int, _ b: Int) -> Int {
+    private nonisolated static func greatestCommonDivisor(_ a: Int, _ b: Int) -> Int {
         var x = a
         var y = b
         while y != 0 {
@@ -280,7 +445,7 @@ private enum AnimatedGifDecoder {
 
     // MARK: - Per-frame delay parsing (ported from `parseGifFrameDurations`)
 
-    private static func parseFrameDurations(_ data: Data) -> [Int] {
+    private nonisolated static func parseFrameDurations(_ data: Data) -> [Int] {
         let bytes = [UInt8](data)
         guard bytes.count >= 13, hasGifHeader(bytes) else { return [] }
 
@@ -338,7 +503,7 @@ private enum AnimatedGifDecoder {
         return frameDurations
     }
 
-    private static func hasGifHeader(_ bytes: [UInt8]) -> Bool {
+    private nonisolated static func hasGifHeader(_ bytes: [UInt8]) -> Bool {
         bytes.count >= 6 &&
             bytes[0] == UInt8(ascii: "G") &&
             bytes[1] == UInt8(ascii: "I") &&
@@ -348,7 +513,7 @@ private enum AnimatedGifDecoder {
             bytes[5] == UInt8(ascii: "a")
     }
 
-    private static func skipSubBlocks(_ bytes: [UInt8], _ start: Int) -> Int {
+    private nonisolated static func skipSubBlocks(_ bytes: [UInt8], _ start: Int) -> Int {
         var index = start
         while index < bytes.count {
             let blockSize = Int(bytes[index])
@@ -359,7 +524,7 @@ private enum AnimatedGifDecoder {
         return index
     }
 
-    private static func readUnsignedShort(_ bytes: [UInt8], _ start: Int) -> Int {
+    private nonisolated static func readUnsignedShort(_ bytes: [UInt8], _ start: Int) -> Int {
         guard start + 1 < bytes.count else { return 0 }
         return Int(bytes[start]) | (Int(bytes[start + 1]) << 8)
     }

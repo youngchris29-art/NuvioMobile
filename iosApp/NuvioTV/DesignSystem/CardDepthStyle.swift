@@ -149,21 +149,66 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
                 .clipShape(shape)
             }
             if edge > 0 {
-                shape.strokeBorder(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .white.opacity(edge), location: 0),
-                            .init(color: .white.opacity(edge * (0.33 + 0.67 * coverage)), location: 0.5),
-                            .init(color: .white.opacity(edge * coverage), location: 1),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
+                edgeHighlight(edge: edge, coverage: coverage)
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// The inset edge highlight, cut down to `coverage`.
+    ///
+    /// BUG-31: this used to be nothing but the closed `strokeBorder` below, with coverage ramping only
+    /// the gradient's ALPHA down the Y axis. A closed stroke can never be "top only" that way — at
+    /// coverage 0 ("Top") the top still painted at full edge opacity, the SIDES still painted at ~1/3
+    /// opacity through mid-height, and only the bottom reached zero, so the card read as a gray
+    /// hairline around all four edges. The stops are unchanged; the coverage cut is now GEOMETRIC.
+    @ViewBuilder
+    private func edgeHighlight(edge: Double, coverage: Double) -> some View {
+        let stroke = shape.strokeBorder(
+            LinearGradient(
+                stops: [
+                    .init(color: .white.opacity(edge), location: 0),
+                    .init(color: .white.opacity(edge * (0.33 + 0.67 * coverage)), location: 0.5),
+                    .init(color: .white.opacity(edge * coverage), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            ),
+            lineWidth: 1
+        )
+
+        if coverage >= 1 {
+            // Full: no mask at all, so the full-perimeter look is pixel-identical to pre-BUG-31.
+            stroke
+        } else {
+            stroke.mask { coverageMask(coverage) }
+        }
+    }
+
+    /// Vertical mask that makes the edge honor `coverage` geometrically: opaque through a short top
+    /// band, fading to clear, and erased outright below — so at Top the highlight arcs over the upper
+    /// corners and dies on their shoulders (no side rails, no bottom).
+    ///
+    ///     fadeEnd(c)   = 0.28 + 0.44·c + 0.28·c²      → 0.28 @ Top, 0.57 @ Half, 1.00 @ Full
+    ///     fadeStart(c) = fadeEnd(c) · (0.35 + 0.65·c) → 0.10 @ Top, 0.39 @ Half, 1.00 @ Full
+    ///
+    /// Both are continuous and monotonic in `c` — the setting is 0…100 and the chips are only presets,
+    /// so every intermediate value gets a sensible band. Both converge on 1.0 as c → 1, i.e. the mask
+    /// degenerates to "opaque everywhere"; `edgeHighlight` takes that limit exactly by dropping the
+    /// mask at Full rather than emitting coincident stops at location 1.
+    private func coverageMask(_ coverage: Double) -> some View {
+        let fadeEnd = min(0.28 + 0.44 * coverage + 0.28 * coverage * coverage, 1)
+        let fadeStart = min(fadeEnd * (0.35 + 0.65 * coverage), fadeEnd)
+        return LinearGradient(
+            stops: [
+                .init(color: .white, location: 0),
+                .init(color: .white, location: fadeStart),
+                .init(color: .clear, location: fadeEnd),
+                .init(color: .clear, location: 1),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     /// Shared strengths are stored 0…100; the Compose port works in 0…1.

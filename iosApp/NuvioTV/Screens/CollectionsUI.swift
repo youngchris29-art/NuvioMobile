@@ -55,6 +55,7 @@ struct CollectionRowView: View {
                             FolderTile(folder: folder)
                         }
                         .buttonStyle(.borderless)
+                        .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
                     }
                 }
                 .padding(.vertical, Theme.Spacing.sm)
@@ -89,14 +90,15 @@ struct FolderTile: View {
             ZStack {
                 let cover: String? = folder.coverImageUrl
                 let gifUrl: String? = folder.focusGifUrl
-                if folder.focusGifEnabled, let gifUrl, !gifUrl.isEmpty, isFocused {
-                    // Focused + has a focus GIF: animate. Falls back to the static cover
-                    // internally while the GIF loads/decodes, so this never shows blank.
-                    AnimatedGifImage(string: gifUrl, fallback: cover)
-                        .transition(.opacity)
-                } else if let cover, !cover.isEmpty {
+
+                // BUG-19: the cover is mounted for the tile's WHOLE lifetime — it used to live in
+                // the `else` branch of an `isFocused` test, so every D-pad step destroyed one
+                // image pipeline and built another (a new @StateObject loader, a new
+                // CachedAsyncImage, and — worse — a full AnimatedGifImage teardown that freed the
+                // expanded GIF frame array on the main thread). That teardown/rebuild, not the
+                // animation, is the 700–830 ms per-step main-thread hang the tester measured.
+                if let cover, !cover.isEmpty {
                     CachedAsyncImage(string: cover)
-                        .transition(.opacity)
                 } else {
                     LinearGradient(
                         colors: [Theme.Palette.accent.opacity(0.55), Theme.Palette.background],
@@ -106,6 +108,18 @@ struct FolderTile: View {
                     let emoji: String? = folder.coverEmoji
                     Text(emoji?.isEmpty == false ? emoji! : String(folder.title.prefix(1)))
                         .font(Theme.Font.hero)
+                }
+
+                if folder.focusGifEnabled, let gifUrl, !gifUrl.isEmpty {
+                    // Also mounted persistently, layered OVER the cover. Focus no longer changes
+                    // view identity: it flips `isAnimating`, which starts/stops the UIImageView and
+                    // cross-fades the GIF's opacity (AnimatedGifImage owns that fade — only it
+                    // knows whether the frames have decoded yet, and it keeps the cover showing
+                    // until they have). `fallback: nil` because the cover above already covers the
+                    // loading/failure case; passing it here would decode the same artwork twice.
+                    // The GIF's download+decode is deferred to this tile's FIRST focus, so a
+                    // 15-tile Services row doesn't decode 15 GIFs the moment the row appears.
+                    AnimatedGifImage(string: gifUrl, fallback: nil, isAnimating: isFocused)
                 }
             }
             .frame(width: tileWidth, height: tileHeight)

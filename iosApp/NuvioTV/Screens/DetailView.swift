@@ -82,7 +82,12 @@ struct DetailView: View {
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             // Also pause it while a full-screen trailer plays (no doubled decode/audio).
             if backgroundTrailerEnabled, let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil, !backgroundTrailerStopped {
+                // UX-9: same parity zoom as the inline card (see `TrailerHeroPlayer.parityZoom`) to
+                // hide the letterbox bars baked into our YouTube encodes. Full-screen and already
+                // ignoring the safe area, so the 1.08 overscale just pushes the bars past the
+                // screen edges — the screen bounds themselves do the clipping.
                 TrailerHeroPlayer(urlString: trailer, onFailure: { model.trailerFailed() })
+                    .scaleEffect(TrailerHeroPlayer.parityZoom)
                     .ignoresSafeArea()
                     .transition(.opacity)
             }

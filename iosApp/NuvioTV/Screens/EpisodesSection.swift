@@ -233,6 +233,10 @@ private struct EpisodeThumbCard: View {
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: thumbnailURL)
                     .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+                    // BUG-31: episode stills are not all 16:9 (and the poster fallback never is), so
+                    // the `.fill` image overflows this fixed frame and the hover lift copies the
+                    // overflow as a ghost-doubled subject. Clip inside the frame first.
+                    .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: Theme.Radius.card), surface: .episodeCards)
 
@@ -255,6 +259,8 @@ private struct EpisodeThumbCard: View {
             }
             .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
             // Whole-card system lift — see PosterCard: still, scrim, and badges move as one.
+            // BUG-31/BUG-25: pin the highlight geometry to the card's own corner radius.
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: Theme.Radius.card))
             .hoverEffect(.highlight)
 
             Text(heading)
