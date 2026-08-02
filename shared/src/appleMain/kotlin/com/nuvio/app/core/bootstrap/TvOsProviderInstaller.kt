@@ -267,6 +267,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         }
 
         com.nuvio.app.features.plugins.PluginStateFiles.deleteAll()
+        com.nuvio.app.features.trakt.TraktLibraryStorage.deleteAll()
     }
 }
 
