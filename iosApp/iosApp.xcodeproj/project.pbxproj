@@ -472,12 +472,14 @@
 		};
 		9A1B2C3D4E5F60718293A4C1 /* Stamp Build Metadata */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Stamp Build Metadata";
 			outputFileListPaths = (
