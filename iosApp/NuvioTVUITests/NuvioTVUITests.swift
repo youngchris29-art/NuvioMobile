@@ -390,9 +390,15 @@ final class NuvioTVUITests: XCTestCase {
     // MARK: - BUG-24 audit: does "Hero Poster Only When Focused" still gate the backdrop?
 
     /// Forces the toggle through the argument domain (test06's trick) to isolate the RENDER
-    /// path from the Settings write path. 08a (hero CTA focused) must show the backdrop;
-    /// 08b (focus down in the rows) must show the flat background. If 08b still shows
-    /// artwork, the beta.8 CTA-button focus rewiring broke `heroFocused`.
+    /// path from the Settings write path. 08a (hero CTA focused) must show the backdrop.
+    /// 2026-08-02 (UX-7): a row-focused poster now OWNS the hero too — `heroPosterFocusOnly`
+    /// only gates the carousel's own idle fade, and `.opacity(... || focusModel.focusedItem
+    /// != nil ? 1 : 0)` in HomeView.swift keeps the artwork VISIBLE once focus lands on a
+    /// reporting row poster (src=f in the debug_hero probe — see test20). So 08b (focus down
+    /// onto a row poster) must ALSO show the backdrop now, not the flat background; the hidden
+    /// state this test used to assert here only applies when focus lands on a non-reporting
+    /// element (e.g. a collection folder tile that never calls into `focusModel`). Kept as a
+    /// pure render/existence check — no assertions changed, only the doc comment + shot name.
     func test08HeroFocusOnlyToggle() throws {
         let app = launchToHome(extraArguments: ["-hero_poster_focus_only", "YES"])
         pause(4)
@@ -402,7 +408,7 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "08a_hero_focused_art_visible")
         press(.down, times: 3, gap: 0.8)
         pause(2) // fade-out animation
-        shot(app, "08b_rows_focused_art_hidden")
+        shot(app, "08b_rows_focused_art_follows_focus")
         XCTAssertTrue(app.state == .runningForeground)
     }
 
@@ -938,5 +944,118 @@ final class NuvioTVUITests: XCTestCase {
         // search + clear round-trip, whether or not the query itself could be typed.
         XCTAssertTrue(discoverHeader.waitForExistence(timeout: 6), "Discover gone after search/keyboard round-trip — BUG-33(2) regression")
         XCTAssertTrue(app.state == .runningForeground, "app must survive the search + clear cycle even if the query itself couldn't be driven")
+    }
+
+    // MARK: - UX-7: focus-follows-backdrop hero on Home
+
+    /// Reads the `debug_hero` probe and asserts it contains `src=c` — the carousel owns the
+    /// hero. HomeView.swift's probe (DEBUG only) ends `src=\(focusModel.focusedItem == nil ?
+    /// "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-")`.
+    private func heroSrcProbe(_ app: XCUIApplication, _ name: String) -> String {
+        let probe = app.staticTexts["debug_hero"]
+        let text = probe.waitForExistence(timeout: 4) ? probe.label : "debug_hero MISSING"
+        let attachment = XCTAttachment(string: "\(name): \(text)")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[UX7] \(name): \(text)")
+        return text
+    }
+
+    /// UX-7: a row-focused poster now owns the hero backdrop too — `HomeFocusModel` commits a
+    /// focused row item after `commitDelay` (0.2s) and reverts to nil after `revertGrace`
+    /// (0.3s) once focus reports nothing. This walks CTA → row poster → CTA and watches the
+    /// `debug_hero` probe's `src=c|f` field flip both ways, with `fitem=` populated (not `-`)
+    /// while a row poster owns it.
+    func test20HeroFocusFollowsBackdrop() throws {
+        // Fresh launch: this test asserts the probe's live src/fitem fields, so it must not
+        // inherit a prior test's pushed screen or springboard-escape state (see launchToHome's
+        // header) — the same rationale test04/09/11/16/19 already use.
+        let app = launchToHome(forceFreshLaunch: true)
+
+        // Normalize focus onto the hero CTA (test06's walk: up to the tab bar, one down lands
+        // back on the hero button).
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(2)
+        shot(app, "20a_hero_carousel")
+        let carouselState = heroSrcProbe(app, "20a_carousel")
+        XCTAssertTrue(carouselState.contains("src=c"), "hero must start carousel-owned, got: \(carouselState)")
+
+        // Walk down one row at a time, sampling the probe after each press, until a REPORTING
+        // row takes the hero. Not every Home row drives it: the Streaming-services shelf and
+        // collection folder tiles carry no MetaPreview and by design leave the carousel in
+        // charge (src=c) — only catalog rows and Continue Watching report. The ceiling exists
+        // only so the test terminates; keep it generous (the signed-in profile's synced row
+        // order can stack several non-reporting rows before the first catalog row).
+        var downPresses = 0
+        var focusedState = ""
+        for _ in 1...12 {
+            press(.down, times: 1)
+            downPresses += 1
+            pause(1.0) // commit delay is 200ms — well clear of it by the time we sample
+            focusedState = heroSrcProbe(app, "20b_after_down_\(downPresses)")
+            if focusedState.contains("src=f") { break }
+        }
+        shot(app, "20b_hero_follows_focus")
+        XCTAssertTrue(focusedState.contains("src=f"), "no row poster took the hero within \(downPresses) presses, got: \(focusedState)")
+        XCTAssertFalse(focusedState.contains("fitem=-"), "src=f must carry a real fitem id, got: \(focusedState)")
+
+        // Walk back up to the CTA (mirrors the walk down) and confirm the carousel reclaims
+        // the hero once focus lands back on it.
+        press(.up, times: downPresses, gap: 0.8)
+        pause(1.0) // revert grace is 300ms — well clear of it by the time we sample
+        let revertedState = heroSrcProbe(app, "20c_back_on_cta")
+        XCTAssertTrue(revertedState.contains("src=c"), "hero must revert to carousel-owned, got: \(revertedState)")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - UX-10: trailer thumbnails on Detail
+
+    func test21DetailTrailerThumbnails() throws {
+        // Navigate to a detail page exactly like test02: land on a movies catalog row (portrait
+        // cards → NavigationLink to DetailView), not the Continue Watching / Streaming rows
+        // above it which open the stream picker / entity browse instead.
+        let app = launchToHome()
+        press(.down, times: 4)
+        pause(0.5)
+        remote.press(.select)
+        pause(2.5)
+
+        // Walk focus down toward the Trailers & Extras shelf (test17's detail-scroll walk).
+        press(.down, times: 10, gap: 0.5)
+        pause(1.5)
+        shot(app, "21a_trailers_row")
+
+        // Soft assertion: only when the debug_trailers probe made it on screen (title had
+        // trailers AND focus reached the shelf) do we parse and assert on it. DetailView.swift's
+        // probe (DEBUG only) is `debug_trailers n=<count> thumbs=<count-with-thumbnail-url>`.
+        let probe = app.staticTexts["debug_trailers"]
+        if probe.exists {
+            let text = probe.label
+            let attachment = XCTAttachment(string: "21b_trailers_probe: \(text)")
+            attachment.name = "21b_trailers_probe"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            print("[UX10] 21b_trailers_probe: \(text)")
+
+            func intValue(after marker: String) -> Int? {
+                guard let range = text.range(of: marker) else { return nil }
+                let rest = text[range.upperBound...]
+                let digits = rest.prefix { $0.isNumber }
+                return Int(digits)
+            }
+
+            if let n = intValue(after: "n="), let thumbs = intValue(after: "thumbs=") {
+                if n > 0 {
+                    XCTAssertGreaterThan(thumbs, 0, "trailer cards rendered without a single thumbnail URL")
+                }
+            }
+        } else {
+            // Probe not on screen (no trailers for this title, or focus didn't reach the
+            // shelf) — same softness as test02/test17, do not hard-fail on a missing probe.
+            print("[UX10] debug_trailers not found on screen")
+        }
+        XCTAssertTrue(app.state == .runningForeground)
     }
 }
