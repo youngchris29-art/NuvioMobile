@@ -791,40 +791,29 @@ struct DetailView: View {
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.lg) {
+                    LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
                         ForEach(Array(trailers.prefix(10).enumerated()), id: \.element.id) { _, trailer in
                             Button {
                                 model.playTrailer(trailer)
                             } label: {
-                                HStack(spacing: Theme.Spacing.sm) {
-                                    if model.resolvingTrailerId == trailer.id {
-                                        ProgressView()
-                                    } else {
-                                        Image(systemName: "play.circle.fill")
-                                            .rowAccentTint()
-                                    }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(trailer.name)
-                                            .font(Theme.Font.meta)
-                                            .foregroundStyle(Theme.Palette.textPrimary)
-                                            .lineLimit(1)
-                                            .frame(maxWidth: 420, alignment: .leading)
-                                        Text(trailer.type)
-                                            .font(Theme.Font.caption)
-                                            .foregroundStyle(Theme.Palette.textSecondary)
-                                    }
-                                }
-                                .padding(Theme.Spacing.md)
-                                // tvOS trailers are text rows (no thumbnail); the depth toggle opts them
-                                // into a bordered/sheen card. No-op — and no visual change — when off.
-                                .nuvioCardDepth(RoundedRectangle(cornerRadius: Theme.Radius.card), surface: .trailers)
+                                TrailerThumbCard(trailer: trailer, isResolving: model.resolvingTrailerId == trailer.id)
                             }
-                            .buttonStyle(.settingsRow)
+                            .buttonStyle(.borderless)
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)
                 }
                 .scrollClipDisabled()
+                #if DEBUG
+                // UX-10 diagnostic (invisible, harness-readable): rendered trailer count vs. how
+                // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
+                // text rows to thumbnail cards without depending on pixel comparison.
+                let rendered = Array(trailers.prefix(10))
+                Text("debug_trailers n=\(rendered.count) thumbs=\(rendered.filter { $0.thumbnailURLString != nil }.count)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_trailers")
+                #endif
             }
             .focusSection()
         }
