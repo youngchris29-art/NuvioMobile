@@ -33,14 +33,85 @@ extension View {
     func posterButtonShape() -> some View { modifier(PosterButtonShape()) }
 }
 
-/// FEAT-14 accent focus ring geometry (device-verified geometry fix): the ring must float just
-/// OUTSIDE the poster's edge, not overlap the artwork. `strokeBorder` on the artwork's own
-/// `RoundedRectangle` draws fully inside the shape bounds — since that shape equals the artwork
-/// frame, the ring rendered on top of the image (the bug). Both ring sites below instead draw an
-/// outward-offset ring using these two constants; see the arithmetic comment at each call site.
-private let ringWidth: CGFloat = 3
-/// Gap between the artwork's outer edge and the ring's inner edge.
-private let ringGap: CGFloat = 2
+/// FEAT-14 accent focus ring (final architecture — the third and last one, 2026-08-02): the ring
+/// is a `.strokeBorder` drawn INSIDE the artwork's own `RoundedRectangle`, identical to the
+/// inline-trailer surface's ring in `InlineTrailerCard` — same shape, same color, same 4pt width,
+/// same "paints inside my own clipped bounds" contract. What changed in this final pass is the
+/// hover treatment around it: when the ring is on, the card no longer uses the system
+/// `.hoverEffect(.highlight)` at all. Instead it applies a manual `.scaleEffect` (see
+/// `CardFocusTreatment` below) so the ring and the artwork scale up together as one layer, drawn
+/// by SwiftUI in a single pass rather than composited by the system lift.
+///
+/// Why the swap is necessary (framebuffer-verified on tvOS 26 hardware, 2026-08-02): the system
+/// `.hoverEffect(.highlight)` composites the artwork into its own lifted/scaled layer, and
+/// SwiftUI shape overlays living in the same subtree do NOT get pulled into that layer — they
+/// stay at base geometry. So no matter where the ring overlay sits relative to `.hoverEffect`,
+/// the artwork's lifted/scaled copy ends up covering it, and device photos showed red corner arcs
+/// of the ring peeking out from under the lifted artwork — a hardware compositor behavior the
+/// Simulator does not reproduce. The inline-trailer ring never hit this because that surface
+/// doesn't use `.hoverEffect` in the first place; ring mode now borrows that surface's approach
+/// (a manual, SwiftUI-owned lift) instead of trying to make the system lift cooperate.
+///
+/// Graveyard (do not resurrect):
+/// - Outside overpaint — a stroke drawn outside the artwork's own clip bounds: got clipped by the
+///   row/lockup's layout bounds, cutting off the outer edge of the ring.
+/// - Outside flush ring — `.padding(-ringOffset)` plus a transparent `ringMargin` grown around the
+///   label to keep the overpaint inside the button's layout bounds so the hardware lockup
+///   wouldn't clip it. Survived the clip problem, but device photos under the hover lift's shadow
+///   showed the ring reading as a detached glow/halo behind the poster, not a border on it.
+/// - Inside `strokeBorder` under the SYSTEM hover lift — geometrically the cleanest of the three
+///   (same shape, same clip, "scales with the card as one unit" on paper), except on hardware the
+///   system lift doesn't actually pull the overlay into its lifted layer, so the artwork's scaled
+///   copy covers the ring at the corners. This is the failure the manual-scale swap above fixes.
+private let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
+
+/// FEAT-14: approximates the magnitude of the system `.hoverEffect(.highlight)` lift, used by
+/// `CardFocusTreatment`'s manual scale so ring mode's focused size roughly matches the size a
+/// focused card would have under the default (non-ring) hover treatment.
+private let cardRingLiftScale: CGFloat = 1.06
+
+/// FEAT-14: swaps the whole-card hover treatment between the system lift (default, ring OFF) and
+/// a manual scale (ring ON) — see the file-level comment above for why the swap exists. Shared by
+/// both `PosterCard` and `LandscapeCard` so the branch isn't duplicated at each call site.
+///
+/// - `ringMode == false`: today's exact chain, byte-identical to pre-FEAT-14 —
+///   `.contentShape(.hoverEffect, …)` + `.hoverEffect(.highlight)`.
+/// - `ringMode == true`: no `.hoverEffect` at all; a `.scaleEffect` keyed to `isFocused` stands in
+///   for it, animated on focus change. Reduce Motion is honored explicitly here (the system lift
+///   respects it automatically, but a manual `.scaleEffect` does not) by skipping the animation
+///   and snapping straight to the focused/unfocused scale — the ring still needs to reach its
+///   scaled geometry so it stays aligned with the artwork, so scale itself is kept, not skipped.
+struct CardFocusTreatment: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let ringMode: Bool
+    let isFocused: Bool
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if ringMode {
+            content
+                .scaleEffect(isFocused ? cardRingLiftScale : 1)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+        } else {
+            content
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
+                .hoverEffect(.highlight)
+        }
+    }
+}
+
+/// FEAT-14: the ring's draw color, factored out of the two call sites below so they can't drift
+/// apart — and so `InlineTrailerCard`'s inline-trailer surface can draw the identical color.
+/// Device finding (2026-08-02): when a focused poster dwell-morphs into the inline trailer, the
+/// landscape surface had no ring of its own, so the accent ring visibly vanished the instant the
+/// morph fired. Pure extraction of the pre-existing `hex → focusRingHex → Color` derivation —
+/// same fallback to `accentFocus` on a bad/empty hex — so this refactor changes no on-screen
+/// behavior at either PosterCard call site.
+extension Theme.Palette {
+    static var focusRingColor: Color {
+        Color(hexString: focusRingHex(accentFocusHex: accentFocusHex)) ?? accentFocus
+    }
+}
 
 struct PosterCard: View {
     let title: String
@@ -74,46 +145,25 @@ struct PosterCard: View {
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
                 .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
-                // Whole-card system lift: without this the borderless hover effect lands on the
-                // inner Image, so the artwork parallaxes INSIDE a static clipped edge (device
-                // feedback). Tagging the clipped container makes the entire card — edge included —
-                // lift and track the remote as one object.
-                // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so the
-                // lift can't fall back to a system rect that extends past the artwork.
-                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: style.cornerRadius))
-                .hoverEffect(.highlight)
-                // FEAT-14: opt-in accent focus ring — layered after the hover/lift chain so it
-                // rides along with the system lift rather than sitting on a static base. Aligned
-                // to the same Corners radius as the clip/hover geometry above.
+                // FEAT-14 (final): the ring overlay sits BEFORE the hover/lift chain below, so it's
+                // part of the content the hover/lift treatment scales with the artwork — same
+                // ordering, and same inside-strokeBorder treatment, as the trailer surface's ring in
+                // `InlineTrailerCard`. See the file-level comment above for why this replaced the
+                // earlier outside-flush-ring geometry, and for why ring mode's hover treatment below
+                // is no longer the system `.hoverEffect`.
                 .overlay {
                     if accentFocusRing && isFocused {
-                        // BUG (device-verified): `strokeBorder` insets its stroke fully inside the
-                        // shape it strokes, and that shape was the artwork's own bounds — so the
-                        // ring rendered ON TOP of the poster instead of around it. Fix: draw the
-                        // ring on a RoundedRectangle whose path is offset outward from the artwork
-                        // edge by `ringOffset = ringGap + ringWidth / 2`, then pull its layout frame
-                        // back in by the same `ringOffset` via negative padding (this is the
-                        // standard "ring drawn outside my own frame" trick — the shape still paints
-                        // at its true, larger geometry; only the reported layout size shrinks back
-                        // to the artwork's frame, and nothing here clips the overpaint).
-                        // `.stroke` centers its line ON the path, so the painted ring spans from
-                        // (ringOffset - ringWidth/2) = ringGap outside the artwork, to
-                        // (ringOffset + ringWidth/2) = ringGap + ringWidth outside — i.e. exactly a
-                        // ringGap-wide gap followed by a ringWidth-wide ring, as required.
-                        // Offsetting a rounded rect's boundary uniformly outward by `ringOffset`
-                        // keeps the corners concentric by growing the radius by that same amount,
-                        // which is why `cornerRadius: style.cornerRadius + ringOffset` below must
-                        // use the identical `ringOffset` as the `.padding(-ringOffset)` call. When
-                        // style.cornerRadius is 0 (Square corners) the shape's radius is still
-                        // `ringOffset` (> 0), so the ring's corners are gently rounded rather than
-                        // sharp-clipped, and since ringGap/ringWidth are fixed positive constants
-                        // the radius can never go negative.
-                        let ringOffset = ringGap + ringWidth / 2
-                        RoundedRectangle(cornerRadius: style.cornerRadius + ringOffset)
-                            .stroke(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: ringWidth)
-                            .padding(-ringOffset)
+                        RoundedRectangle(cornerRadius: style.cornerRadius)
+                            .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
                     }
                 }
+                // Whole-card lift: without this the hover/lift treatment lands on the inner Image,
+                // so the artwork parallaxes INSIDE a static clipped edge (device feedback). Tagging
+                // the clipped container makes the entire card — edge included — lift and track the
+                // remote (or, in ring mode, the manual scale) as one object.
+                // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so the
+                // lift can't fall back to a system rect that extends past the artwork.
+                .modifier(CardFocusTreatment(ringMode: accentFocusRing, isFocused: isFocused, cornerRadius: style.cornerRadius))
 
             if titleVisible {
                 Text(title)
@@ -125,6 +175,13 @@ struct PosterCard: View {
                     .frame(width: resolvedWidth, alignment: .leading)
             }
         }
+        // FEAT-14: ring mode's manual scale (see `CardFocusTreatment`) isn't lifted into a
+        // separate compositor layer the way the system hover effect is, so without an explicit
+        // zIndex a focused card can render underneath its unfocused row neighbors instead of
+        // above them. The system lift raised the focused card above its siblings implicitly;
+        // this is the explicit equivalent, scoped to ring mode only so the default (system-lift)
+        // path's stacking is completely untouched.
+        .zIndex(accentFocusRing && isFocused ? 1 : 0)
     }
 }
 
@@ -175,26 +232,20 @@ struct LandscapeCard: View {
                 }
             }
             .frame(width: width, height: height)
-            // Whole-card system lift — see PosterCard: the progress bar and artwork move as one.
-            // BUG-31/BUG-25: pin the highlight geometry to the card's own Corners radius.
-            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: style.cornerRadius))
-            .hoverEffect(.highlight)
-            // FEAT-14: opt-in accent focus ring — see PosterCard for the rationale. Aligned to the
-            // same Corners radius as the clip/hover geometry above.
+            // FEAT-14 (final) — see PosterCard's copy of this overlay for the full rationale. The
+            // ring overlay sits BEFORE the hover/lift chain below, so it's part of the content the
+            // hover/lift treatment scales with the artwork/progress-bar group as one, using the
+            // same inside-strokeBorder treatment as the trailer surface's ring in `InlineTrailerCard`.
             .overlay {
                 if accentFocusRing && isFocused {
-                    // See PosterCard's copy of this overlay for the full arithmetic: `ringOffset`
-                    // both grows the stroked shape's corner radius and shrinks its padding by the
-                    // same amount, which offsets the ring's path `ringOffset` outside the artwork
-                    // edge while keeping corners concentric; `.stroke` then centers a `ringWidth`
-                    // line on that path, landing its inner edge exactly `ringGap` outside the
-                    // artwork.
-                    let ringOffset = ringGap + ringWidth / 2
-                    RoundedRectangle(cornerRadius: style.cornerRadius + ringOffset)
-                        .stroke(Color(hexString: Theme.Palette.focusRingHex(accentFocusHex: Theme.Palette.accentFocusHex)) ?? Theme.Palette.accentFocus, lineWidth: ringWidth)
-                        .padding(-ringOffset)
+                    RoundedRectangle(cornerRadius: style.cornerRadius)
+                        .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
                 }
             }
+            // Whole-card lift — see PosterCard: the progress bar and artwork move as one, whether
+            // that's the system lift (default) or the manual scale (ring mode).
+            // BUG-31/BUG-25: pin the highlight geometry to the card's own Corners radius.
+            .modifier(CardFocusTreatment(ringMode: accentFocusRing, isFocused: isFocused, cornerRadius: style.cornerRadius))
 
             if titleVisible {
                 Text(title)
@@ -206,5 +257,9 @@ struct LandscapeCard: View {
                     .frame(width: width, alignment: .leading)
             }
         }
+        // FEAT-14: see `PosterCard`'s copy of this zIndex for the full rationale — ring mode's
+        // manual scale needs an explicit zIndex to draw above row neighbors the way the system
+        // lift did implicitly; scoped to ring mode only, default path's stacking is untouched.
+        .zIndex(accentFocusRing && isFocused ? 1 : 0)
     }
 }

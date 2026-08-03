@@ -451,6 +451,11 @@ struct InlineTrailerCard: View {
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model = InlineTrailerCardModel()
+    /// FEAT-14 (device finding, 2026-08-02): the accent focus ring lives on `PosterCard`, but the
+    /// dwell-morph replaces that card's rendered surface with this landscape trailer tile — so
+    /// with the ring on, it visibly disappeared the instant a trailer started playing. Read
+    /// independently, same key/pattern as `PosterCard`'s copy of this property.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
 
     /// Landscape rows prefer the wide banner; a poster fallback is cropped to 16:9 by the tile's
     /// aspect-fill, which reads better than an empty slot.
@@ -571,6 +576,27 @@ struct InlineTrailerCard: View {
         }
         .frame(width: artworkWidth, height: artworkHeight)
         .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
+        // FEAT-14: the dwell-morph swaps the focused `PosterCard` out for this landscape tile, and
+        // that card's own ring dies with it — so with the setting on, the ring visibly vanished
+        // the moment a trailer started (device finding, 2026-08-02). This tile needs its own ring.
+        // Deliberately a **`.strokeBorder`** drawn INSIDE the surface bounds — the opposite of
+        // PosterCard's outside-flush ring — for two reasons: (1) the morph's width/height geometry
+        // was hardened by BUG-29's trailing-anchor row-scroll work, and growing this frame the way
+        // PosterCard grows its label (via `ringMargin` padding) would change the layout size the
+        // row measures, risking that fix; (2) an inside stroke paints strictly within the shape
+        // this view already clips to, so unlike an outside ring it can never be clipped by a
+        // parent's bounds — no `ringMargin`-style padding dance is needed here. Placed AFTER
+        // `.clipShape` so the ring paints on top of the (possibly playing) video's edge rather than
+        // being clipped away with it. Gated on `isFocused` too, not just the morph phase: the tile
+        // stays in the view tree at opacity 0 while idle/dwelling (see `expandedTile`'s doc), and
+        // this mirrors PosterCard's own `accentFocusRing && isFocused` guard rather than assuming
+        // the morph phase alone proves focus.
+        .overlay {
+            if accentFocusRing && isFocused {
+                RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
+                    .strokeBorder(Theme.Palette.focusRingColor, lineWidth: 4)
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if model.playingURL != nil {
                 InlineTrailerMuteGlyph().padding(Theme.Spacing.sm)
