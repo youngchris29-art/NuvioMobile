@@ -85,6 +85,11 @@ struct CatalogRowView: View {
     /// renders everything it fetched (Search) — then only `hasMore` can open the full grid.
     var previewLimit: Int? = nil
     var onSelect: ((MetaPreview) -> Void)? = nil
+    /// UX-7: reports the focused card's item (or nil) so Home can drive the hero from it.
+    /// Defaulted and appended last — Search's call site (`CatalogRowView(section:)`) and Home's
+    /// (`section:previewLimit:`) both compile unchanged. Gating and backdrop prefetch live in
+    /// the callback (HomeView.reportRowFocus), not here.
+    var onItemFocusChange: ((MetaPreview?) -> Void)? = nil
 
     /// Inline trailer previews on focus dwell (see `InlineTrailerCard`). Device-local on purpose —
     /// whether a living-room Apple TV should autoplay trailers is a per-device call, not a synced
@@ -177,6 +182,9 @@ struct CatalogRowView: View {
             }
         }
         .focusSection()
+        .onChange(of: focusedItemId) { _, newId in
+            onItemFocusChange?(newId.flatMap { id in section.items.first { $0.id == id } })
+        }
     }
 
     /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog

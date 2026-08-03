@@ -22,6 +22,9 @@ struct HomeView: View {
     /// false — artwork always visible — with this Settings toggle to restore the old fade for
     /// anyone who preferred it. UserDefaults-backed and local-only (not synced): it's a per-device
     /// display preference, not account state, so no shared/Kotlin settings plumbing is needed.
+    /// UX-7 precedence: a row poster that has taken over the hero (`focusModel.focusedItem`)
+    /// always shows its artwork regardless of this toggle — the fade-on-focus behavior only
+    /// governs the carousel's own idle state, not the focus-follows-backdrop takeover.
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
     /// UX-2 hero redesign, v2 (opt-in): Nuvio-style hero — title/description on the LEFT,
     /// the backdrop artwork reading on the RIGHT behind a leading scrim, info panel raised
@@ -62,10 +65,26 @@ struct HomeView: View {
     ///   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
     private let homeScrollProbeEnabled = UserDefaults.standard.bool(forKey: "debug.homeScrollProbe")
 
+    /// UX-7: always-on focus-follows-backdrop. Owns the row-focused item (if any) that should
+    /// take over the hero from the carousel.
+    @StateObject private var focusModel = HomeHeroFocusModel()
+    /// UX-7: rows whose backdrops have already been prefetch-warmed (keyed by report source),
+    /// so each row pays the warm-up exactly once per Home lifetime.
+    @State private var prefetchedBackdropRows = Set<String>()
+
     private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
         guard !heroItems.isEmpty else { return nil }
         return heroItems[min(heroIndex, heroItems.count - 1)]
+    }
+    /// UX-7: the item the hero should actually display — a row-focused poster wins over the
+    /// carousel's own current page while one is committed. Gated on `heroItems` HERE, at display
+    /// time, not at report time: rows report unconditionally, so a card focused while the hero
+    /// fan-out is still loading takes over the moment `heroItems` arrives (no re-report exists at
+    /// that boundary — `@FocusState` hasn't changed), and Show Hero OFF stays a pure display
+    /// decision (`heroItems` empty ⇒ no hero region at all).
+    private var displayHero: MetaPreview? {
+        heroItems.isEmpty ? nil : (focusModel.focusedItem ?? currentHero)
     }
 
     var body: some View {
@@ -82,7 +101,7 @@ struct HomeView: View {
                 // BUG-23 diagnostic (invisible, harness-readable): the hero carousel's live
                 // selection + focus state, so the UITest can watch exactly what a left press
                 // does to the index (one-press page? two? snap-back?).
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count)")
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-")")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")
@@ -95,15 +114,17 @@ struct HomeView: View {
                 // fall back to the original behavior — only show it while the hero itself is
                 // highlighted, fading to the flat dark background once focus moves down into
                 // Continue Watching / the catalogs.
-                if let hero = currentHero {
+                if let hero = displayHero {
                     Group {
                         // Nuvio-style: right-anchored artwork whose left edge fades to the
                         // flat background — the info panel never sits over the art.
                         HomeHeroBackdrop(item: hero, nuvioStyle: heroNuvioStyle)
                         HomeHeroScrim()
                     }
-                    .opacity(heroPosterFocusOnly ? (heroFocused ? 1 : 0) : 1)
-                    .animation(.easeInOut(duration: 0.4), value: heroFocused)
+                    // UX-7: a row-focused poster (focusModel.focusedItem != nil) always shows
+                    // its artwork — heroPosterFocusOnly only gates the carousel's own idle fade.
+                    .opacity(heroPosterFocusOnly ? ((heroFocused || focusModel.focusedItem != nil) ? 1 : 0) : 1)
+                    .animation(.easeInOut(duration: 0.4), value: heroFocused || focusModel.focusedItem != nil)
                     // Purely decorative background art — the same title/synopsis is exposed by
                     // the focusable HomeHeroForeground button in front of it, so VoiceOver
                     // shouldn't stop on this layer too.
@@ -135,7 +156,12 @@ struct HomeView: View {
                             ContinueWatchingRow(
                                 entries: model.continueWatching,
                                 onSelect: { resume = ResumeTarget(entry: $0) },
-                                onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) }
+                                onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
+                                // UX-7 (see reportRowFocus for the gating rationale).
+                                onItemFocusChange: { entry in
+                                    reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
+                                                   prefetch: { model.continueWatching.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                                }
                             )
                         }
 
@@ -144,7 +170,15 @@ struct HomeView: View {
                         ForEach(model.rows) { row in
                             switch row {
                             case .catalog(let section):
-                                CatalogRowView(section: section, previewLimit: CatalogRowView.homePreviewLimit)
+                                CatalogRowView(
+                                    section: section,
+                                    previewLimit: CatalogRowView.homePreviewLimit,
+                                    // UX-7 (see reportRowFocus for the gating rationale).
+                                    onItemFocusChange: { item in
+                                        reportRowFocus(item, source: section.key,
+                                                       prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                                    }
+                                )
                             case .collection(let collection):
                                 CollectionRowView(collection: collection)
                             }
@@ -204,7 +238,9 @@ struct HomeView: View {
                 // comment below), so the only safe accommodation is to stop advancing and let
                 // the carousel sit still until the user pages manually (still animated).
                 guard !reduceMotion else { return }
-                guard heroItems.count > 1, !heroFocused,
+                // UX-7: a row-focused poster owns the hero right now — the carousel must not
+                // advance underneath it.
+                guard heroItems.count > 1, !heroFocused, focusModel.focusedItem == nil,
                       Date().timeIntervalSince(lastHeroChange) >= 7 else { return }
                 // Plain animated selection write, including the wrap back to page 0 — programmatic
                 // non-animated selection rebasing desyncs tvOS's paged TabView (the visible page
@@ -215,6 +251,12 @@ struct HomeView: View {
             }
             .onChange(of: heroIndex) { _, _ in
                 lastHeroChange = Date()
+            }
+            // UX-7: focusing the CTA is the carousel reclaiming the hero — drop any row-focused
+            // poster immediately (no grace period; this is a deliberate hand-back, not a
+            // between-cards focus hop).
+            .onChange(of: heroFocused) { _, focused in
+                if focused { focusModel.cancelAndRevert() }
             }
             .onChange(of: heroItems.count) { _, newCount in
                 if heroIndex >= newCount { heroIndex = 0 }
@@ -254,6 +296,11 @@ struct HomeView: View {
             #endif
             model.start()
             prefetchHeroArt()
+            // UX-7: when a row-focused poster reverts (grace period elapsed, or the CTA
+            // reclaimed the hero), re-stamp the carousel's "last change" clock — otherwise the
+            // auto-advance timer's next tick would immediately yank the page the instant focus
+            // moves away, before the user even sees the carousel resume.
+            focusModel.onRevert = { lastHeroChange = Date() }
         }
         .onDisappear { model.stop() }
     }
@@ -272,7 +319,10 @@ struct HomeView: View {
             // culled-page/selection-fight class is gone. The backdrop crossfade (outside,
             // keyed off currentHero) and the auto-advance timer are unchanged.
             Group {
-                if let hero = currentHero {
+                // UX-7: a row-focused poster (displayHero) takes over the info panel too, so
+                // the title/synopsis on screen always matches the backdrop behind it. The CTA's
+                // NavigationLink is bound to `item`, so it follows along automatically.
+                if let hero = displayHero {
                     HomeHeroForeground(item: hero, heroFocused: $heroFocused)
                 }
             }
@@ -292,9 +342,13 @@ struct HomeView: View {
             }
 
             if heroItems.count > 1 {
-                // Both layouts keep the info panel on the left, so the dots stay leading.
+                // Both layouts keep the info panel on the left, so the dots stay leading. Never
+                // conditionally removed while a row poster owns the hero (UX-7) — faded out via
+                // opacity instead, so the carousel's layout never reflows around them.
                 HeroPageDots(count: heroItems.count, index: min(heroIndex, heroItems.count - 1))
                     .padding(.leading, Theme.Spacing.lg)
+                    .opacity(focusModel.focusedItem == nil ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.25), value: focusModel.focusedItem == nil)
             }
         }
     }
@@ -304,13 +358,61 @@ struct HomeView: View {
     private func prefetchHeroArt() {
         var urls: [URL] = []
         for item in heroItems {
-            let banner: String? = item.banner
-            let poster: String? = item.poster
-            let backdrop = (banner?.isEmpty == false) ? banner : poster
-            if let backdrop, !backdrop.isEmpty, let url = URL(string: backdrop) { urls.append(url) }
+            // Both render candidates (primary + poster fallback), same chain the backdrop
+            // actually uses — see heroBackdropPrefetchURLs.
+            urls.append(contentsOf: heroBackdropPrefetchURLs(for: item).compactMap(URL.init(string:)))
             if let url = heroLogoURL(for: item) { urls.append(url) }
         }
         ArtworkStore.prefetch(urls)
+    }
+
+    /// UX-7: single funnel for every row's focus report. Three layers of gating history live
+    /// here, each learned the hard way:
+    ///  - The Show Hero SETTING gates all work (reports, enrichment, backdrop prefetch) — with
+    ///    the hero deliberately off, browsing must not generate artwork/metadata traffic for a
+    ///    feature that cannot render (Codex review finding). Read LIVE from the settings repo on
+    ///    every event, never captured at row construction.
+    ///  - The temporary loading state (`heroItems` still empty during the fan-out) does NOT gate
+    ///    reports — `displayHero` gates at display time instead, so a card focused before the
+    ///    fan-out lands takes over the moment `heroItems` arrives (no re-report exists at that
+    ///    boundary, and a construction-time gate got cached dead by the LazyVStack).
+    ///  - Backdrop prefetch warms once per row, on its first non-nil report, through the same
+    ///    `heroBackdropURL` chain the hero renders.
+    private func reportRowFocus(_ item: MetaPreview?, source: String, prefetch: () -> [String]) {
+        guard HomeCatalogSettingsRepository.shared.snapshot().heroEnabled else {
+            // Also drop any claim made while the hero WAS enabled: re-enabling later must not
+            // resurrect a title whose card focus long since moved on (no @FocusState change
+            // fires at that boundary, so a cached claim would win). Idempotent when idle.
+            focusModel.cancelAndRevert()
+            return
+        }
+        if item != nil, prefetchedBackdropRows.insert(source).inserted {
+            ArtworkStore.prefetch(prefetch().compactMap(URL.init(string:)))
+        }
+        focusModel.reportFocus(item, from: source)
+    }
+
+    /// UX-7: adapts a Continue Watching entry to the hero's `MetaPreview` shape so a focused CW
+    /// card can drive the hero the same way a catalog poster does. Kotlin default args aren't
+    /// exported to Swift, so every `MetaPreview` field has to be supplied explicitly — the fields
+    /// CW doesn't carry (rating, popularity, etc.) go in as nil/empty rather than guessed.
+    private func previewFromEntry(_ entry: WatchProgressEntry) -> MetaPreview {
+        MetaPreview(
+            id: entry.parentMetaId,
+            type: entry.parentMetaType,
+            name: entry.title,
+            poster: entry.poster,
+            banner: entry.background,
+            logo: nil,
+            posterShape: .poster,
+            description: nil,
+            releaseInfo: nil,
+            rawReleaseDate: nil,
+            popularity: nil,
+            voteCount: nil,
+            imdbRating: nil,
+            genres: []
+        )
     }
 
     @ViewBuilder
@@ -361,6 +463,172 @@ fileprivate struct HomeScrollProbeModifier: ViewModifier {
     }
 }
 
+/// UX-7: drives the always-on "focus-follows-backdrop" hero. When focus rests on a poster in a
+/// Home catalog row or Continue Watching, the hero adopts that title's artwork/text live; when
+/// focus moves to the hero CTA or off every row, the carousel resumes.
+///
+/// Generation-guarded exactly like `InlineTrailerCardModel`'s dwell timer (see
+/// `InlineTrailerCard.swift`): a fast D-pad scrub across a row reports a new item on every card
+/// it crosses, and only the one the hand actually stops on may commit — a stale pending Task from
+/// an already-superseded report must never land.
+@MainActor
+final class HomeHeroFocusModel: ObservableObject {
+    /// The row-focused item currently driving the hero, or nil when the carousel owns it again.
+    @Published private(set) var focusedItem: MetaPreview?
+    /// Fired the moment `focusedItem` reverts to nil — either the grace period elapsed or
+    /// `cancelAndRevert()` was called. Home uses this to re-stamp its auto-advance timer's "last
+    /// change" clock, so the carousel doesn't immediately jump on the very next tick after focus
+    /// looks away.
+    var onRevert: (() -> Void)?
+
+    /// How long a poster must hold focus before it takes over the hero. Long enough that a fast
+    /// scrub across a row commits nothing until the hand actually stops.
+    private static let commitDelay: TimeInterval = 0.2
+    /// Grace period before reverting to nil once focus reports nothing. Bridges the brief gap
+    /// between one card losing focus and the next gaining it (row-to-row hops, diagonal D-pad
+    /// moves), so the hero doesn't flicker back to the carousel mid-navigation.
+    private static let revertGrace: TimeInterval = 0.3
+
+    private var generation = 0
+    private var pendingTask: Task<Void, Never>?
+    /// Which row's report currently backs `focusedItem` (or the pending commit). Rows update
+    /// their `@FocusState` independently on a cross-row hop, so the DESTINATION often reports its
+    /// item before the departing row reports `nil` — without this tag, that trailing `nil` would
+    /// cancel the destination's pending commit and revert the hero under a still-focused poster
+    /// (Codex review finding).
+    private var claimSource: String?
+
+    /// Called on every focus change a row reports — `nil` when nothing in that row holds focus.
+    /// `source` is a stable identity for the reporting row (`section.key`, "continue-watching").
+    func reportFocus(_ item: MetaPreview?, from source: String) {
+        // A nil from a row that doesn't own the current claim is the trailing edge of a
+        // cross-row hop; the row that DOES own the claim already spoke for itself.
+        if item == nil, let claimSource, claimSource != source { return }
+        if item != nil { claimSource = source }
+
+        // Already the committed TITLE (or already nil, reporting nil again): don't restart timers
+        // — otherwise every re-render-driven refocus of the same card would keep pushing the
+        // commit out. But a PENDING task must still die here: without that, a commit scheduled
+        // for a card the focus already left lands late and drives the hero from a stale poster
+        // (e.g. skim onto a card, then into a collection row before the 0.2s commit — the leaving
+        // row's nil report matched this guard and the stale commit fired anyway; Codex review
+        // finding).
+        if (item == nil && focusedItem == nil)
+            || (item != nil && focusedItem?.id == item?.id && focusedItem?.type == item?.type) {
+            generation &+= 1
+            pendingTask?.cancel()
+            pendingTask = nil
+            if item == nil { claimSource = nil }
+            // Same title ≠ same preview: one id can be represented by different previews across
+            // rows (a Continue Watching adaptation carries no description; a catalog card does).
+            // Adopt the newly focused card's content immediately — the title is already
+            // committed, so there's no dwell to honor — and leave a byte-identical re-report as
+            // the pure no-op it should be (Codex review finding).
+            if let item, focusedItem?.isEqual(item) != true {
+                focusedItem = item
+                enrichIfNeeded(item)
+            }
+            return
+        }
+
+        generation &+= 1
+        let generationAtStart = generation
+        pendingTask?.cancel()
+
+        if let item {
+            pendingTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.commitDelay * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.generation == generationAtStart else { return }
+                self.focusedItem = item
+                self.enrichIfNeeded(item)
+            }
+        } else {
+            pendingTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.revertGrace * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.generation == generationAtStart else { return }
+                self.focusedItem = nil
+                self.claimSource = nil
+                self.onRevert?()
+            }
+        }
+    }
+
+    /// Addons frequently represent absent metadata as `""` rather than nil (HomeCatalogParser
+    /// preserves whatever the addon sent), so "missing" must cover both.
+    private func nonBlank(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    /// A catalog/CW preview commonly omits `description`/`banner` (Home only fetches the light
+    /// list shape). Once a card commits to being the hero, fill those two gaps from TMDB — same
+    /// service Detail already leans on — so the hero shows a synopsis instead of blank space.
+    /// Fire-and-forget: on any miss (TMDB disabled, no key, no match, network failure) the hero
+    /// simply keeps showing what it already had.
+    private func enrichIfNeeded(_ item: MetaPreview) {
+        guard nonBlank(item.description_) == nil || nonBlank(item.banner) == nil else { return }
+        let settings = TmdbSettingsRepository.shared.snapshot()
+        guard settings.enabled, settings.hasApiKey,
+              settings.useArtwork || settings.useBasicInfo else { return }
+        // suspend fun → Swift completion; result may arrive off the main thread, so hop back
+        // (same convention as PersonDetailViewModel.start()).
+        TmdbMetadataService.shared.fetchPreviewEnrichment(
+            type: item.type, id: item.id, settings: settings
+        ) { [weak self] enrichment, _ in
+            DispatchQueue.main.async {
+                // Merge whenever THIS title still (or again) owns the hero — identity, not
+                // generation: a same-item refocus inside the grace window bumps the generation
+                // without recommitting, and a generation gate here silently threw away the
+                // in-flight enrichment for the title actually on screen (Codex review finding).
+                // A different committed title fails the id/type check and rejects as before.
+                // The merge BASE is the currently committed preview, not this request's `item`:
+                // the same id may have been re-adopted from a richer row (CW → catalog) while the
+                // fetch was in flight, and rebuilding from the stale capture would roll that back.
+                guard let self, let enrichment, enrichment.hasContent(),
+                      let base = self.focusedItem,
+                      base.id == item.id, base.type == item.type
+                else { return }
+                // Field gating mirrors the shared hero path (HomeRepository.withHeroEnrichment):
+                // artwork fields only under useArtwork, text fields only under useBasicInfo — a
+                // focused-row hero must not bypass the user's TMDB category preferences.
+                let useArtwork = settings.useArtwork
+                let useBasicInfo = settings.useBasicInfo
+                self.focusedItem = MetaPreview(
+                    id: base.id,
+                    type: base.type,
+                    // Carousel parity (withHeroEnrichment): the TMDB localized title wins under
+                    // Basic Info, so focusing a card never swaps a localized carousel title back
+                    // to the addon's fallback name.
+                    name: (useBasicInfo ? self.nonBlank(enrichment.localizedTitle) : nil) ?? base.name,
+                    poster: base.poster,
+                    banner: self.nonBlank(base.banner) ?? (useArtwork ? enrichment.backdrop : nil),
+                    logo: self.nonBlank(base.logo) ?? (useArtwork ? enrichment.logo : nil),
+                    posterShape: base.posterShape,
+                    description: self.nonBlank(base.description_) ?? (useBasicInfo ? enrichment.description_ : nil),
+                    releaseInfo: base.releaseInfo,
+                    rawReleaseDate: base.rawReleaseDate,
+                    popularity: base.popularity,
+                    voteCount: base.voteCount,
+                    imdbRating: base.imdbRating,
+                    genres: base.genres.isEmpty && useBasicInfo ? enrichment.genres : base.genres
+                )
+            }
+        }
+    }
+
+    /// Hard reset: the CTA reclaimed the hero, or the row is going away. No grace period — this
+    /// is a deliberate hand-back, not a between-cards focus hop.
+    func cancelAndRevert() {
+        generation &+= 1
+        pendingTask?.cancel()
+        pendingTask = nil
+        claimSource = nil
+        let wasCommitted = focusedItem != nil
+        focusedItem = nil
+        if wasCommitted { onRevert?() }
+    }
+}
+
 /// Horizontal "Continue Watching" row of in-progress titles with a progress bar. Tapping a card opens
 /// the stream picker for that exact video (the in-progress episode for series), and playback resumes
 /// from the saved position.
@@ -368,6 +636,10 @@ struct ContinueWatchingRow: View {
     let entries: [WatchProgressEntry]
     let onSelect: (WatchProgressEntry) -> Void
     let onRemove: (WatchProgressEntry) -> Void
+    /// UX-7: reports the focused card's entry (or nil) so Home can drive the hero from it.
+    /// Defaulted — nil is a plain no-op. Gating and backdrop prefetch live in the callback
+    /// (HomeView.reportRowFocus), not here.
+    var onItemFocusChange: ((WatchProgressEntry?) -> Void)? = nil
     /// Focus inside the shelf disables the reorder snap-back (mirrors upstream's
     /// hasUserScrolledContinueWatching guard in their CW scroll stabilization).
     @FocusState private var focusedVideoId: String?
@@ -418,6 +690,9 @@ struct ContinueWatchingRow: View {
             }
         }
         .focusSection()
+        .onChange(of: focusedVideoId) { _, newId in
+            onItemFocusChange?(newId.flatMap { id in entries.first { $0.videoId == id } })
+        }
     }
 
     private func fraction(_ entry: WatchProgressEntry) -> Double? {
@@ -439,8 +714,14 @@ struct ResumeTarget: Identifiable {
 }
 
 /// Full-bleed hero backdrop drawn behind the scrolling rows (Detail-style): fills the top region
-/// to every edge — no corner radius, no inset — and runs under the floating glass tab bar. The
-/// image crossfades when the parent advances `item`.
+/// to every edge — no corner radius, no inset — and runs under the floating glass tab bar.
+///
+/// UX-7: `item` now changes far more often than a carousel page turn — every row-poster focus
+/// commit swaps it too — so the crossfade lives inside `HeroCrossfadeImage` and this view is
+/// never re-identified. An `.id(item.id)`-driven transition here (the original approach) was
+/// exactly the BUG-19 identity-churn class: gating a view's identity on focus produced 700–830ms
+/// hangs on device once churn stopped being rare (occasional carousel auto-advance) and became
+/// frequent (any row focus hop).
 struct HomeHeroBackdrop: View {
     let item: MetaPreview
     /// Nuvio-style hero: the artwork becomes a right-anchored panel whose LEFT edge fades
@@ -451,7 +732,7 @@ struct HomeHeroBackdrop: View {
     var body: some View {
         Group {
             if nuvioStyle {
-                CachedAsyncImage(string: backdropURL)
+                HeroCrossfadeImage(url: heroBackdropURL(for: item), fallbackURL: item.poster)
                     .frame(width: Theme.Size.heroNuvioArtworkWidth, height: Theme.Size.heroBackdropHeight)
                     .clipped()
                     // The left ~30% of the image dissolves into the background color the rest
@@ -469,7 +750,7 @@ struct HomeHeroBackdrop: View {
                     )
                     .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                CachedAsyncImage(string: backdropURL)
+                HeroCrossfadeImage(url: heroBackdropURL(for: item), fallbackURL: item.poster)
                     .frame(height: Theme.Size.heroBackdropHeight)
                     .frame(maxWidth: .infinity)
                     .clipped()
@@ -477,16 +758,163 @@ struct HomeHeroBackdrop: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea()
-        .id(item.id)
-        .transition(.opacity)
-        .animation(.easeInOut(duration: 0.6), value: item.id)
+    }
+}
+
+/// UX-7 flash-free backdrop swapper: unlike `HomeHeroBackdrop`'s old approach, this view is NEVER
+/// re-identified as `url` changes — see the BUG-19 note on `HomeHeroBackdrop`. Instead it holds up
+/// to two decoded images itself and crossfades between them in place, so churn as fast as a row
+/// focus hop never re-triggers view construction, layout, or a load-from-scratch flash.
+struct HeroCrossfadeImage: View {
+    let url: String?
+    /// Second-chance artwork (the item's poster) for when `url` — typically a synthesized metahub
+    /// background that may 404 — fails to fetch. Without it an IMDb item with no banner and a dead
+    /// metahub entry would keep the previous title's backdrop (or blank on first load) even though
+    /// a perfectly good poster exists (Codex review finding).
+    let fallbackURL: String?
+    @State private var current: UIImage?
+    @State private var previous: UIImage?
+    /// Drives the outgoing image's fade — animated 1 → 0 on every swap (see `crossfade(to:)`).
+    @State private var previousOpacity: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Same trick as `HeroLogo.init`: seed `current` synchronously from the memory cache when the
+    /// URL is already resident, so a cached backdrop is on screen from this view's very first
+    /// frame — no placeholder flash as focus moves across a row.
+    init(url: String?, fallbackURL: String? = nil) {
+        self.url = url
+        self.fallbackURL = fallbackURL
+        let resolved: URL? = {
+            guard let url, !url.isEmpty else { return nil }
+            return URL(string: url)
+        }()
+        _current = State(initialValue: ArtworkStore.cached(resolved))
     }
 
-    private var backdropURL: String? {
-        let banner: String? = item.banner
-        if let banner, !banner.isEmpty { return banner }
-        let poster: String? = item.poster
-        return poster
+    var body: some View {
+        ZStack {
+            // Content-mode/frame/clipping are the caller's job (parity with what
+            // CachedAsyncImage used to provide at these call sites).
+            if let current {
+                Image(uiImage: current)
+                    .resizable()
+                    .scaledToFill()
+            }
+            // The OUTGOING image sits on top and fades out to reveal the new one beneath —
+            // stacked the other way (opaque newcomer above) the animated removal is invisible
+            // and every swap reads as a hard cut.
+            if let previous {
+                Image(uiImage: previous)
+                    .resizable()
+                    .scaledToFill()
+                    .opacity(previousOpacity)
+            }
+        }
+        // Keyed on BOTH urls: between same-title previews the primary can stay identical while
+        // only the fallback poster changes (CW adaptation without a poster → catalog card with
+        // one) — keyed on the primary alone, a terminally-failed primary never retried the newly
+        // available fallback.
+        .task(id: "\(url ?? "")|\(fallbackURL ?? "")") {
+            guard let url, !url.isEmpty, let resolvedURL = URL(string: url) else {
+                // This title genuinely has no artwork: fade down to the flat background rather
+                // than keep presenting the PREVIOUS title's backdrop under the new title's text.
+                fadeToEmpty()
+                return
+            }
+            if let hit = ArtworkStore.cached(resolvedURL) {
+                crossfade(to: hit)
+                return
+            }
+            let resolvedFallback: URL? = {
+                guard let fallbackURL, !fallbackURL.isEmpty, fallbackURL != url else { return nil }
+                return URL(string: fallbackURL)
+            }()
+            // Primary is a cache miss, but the fallback poster may already be resident (it's
+            // usually the card image on screen): show it NOW as this title's provisional art,
+            // then upgrade when the primary lands. Without this, a slow/unreachable metahub
+            // fetch pins the PREVIOUS title's backdrop for a whole URLSession timeout while a
+            // perfectly good cached poster sits hidden.
+            var showedArt = false
+            if let resolvedFallback, let fallbackHit = ArtworkStore.cached(resolvedFallback) {
+                crossfade(to: fallbackHit)
+                showedArt = true
+            }
+            // Race BOTH candidates rather than awaiting the primary serially — a stalled primary
+            // must not pin stale/blank art for a whole URLSession timeout while a fetchable
+            // poster exists. The fallback promotes itself only until the primary lands; a
+            // late-arriving primary still upgrades the hero. Old art stays on screen mid-flight
+            // (never blank), and `.task(id:)` cancellation stops a slow fetch for a title the
+            // user already focused past from landing over the correct, newer image. No
+            // `cancelAll()` on the primary's win: `ArtworkStore` coalesces in-flight fetches, so
+            // the drained fallback just parks in cache.
+            var primaryLanded = false
+            await withTaskGroup(of: (Bool, UIImage?).self) { group in
+                group.addTask { (true, try? await ArtworkStore.fetch(resolvedURL)) }
+                if let resolvedFallback {
+                    group.addTask { (false, try? await ArtworkStore.fetch(resolvedFallback)) }
+                }
+                for await (isPrimary, image) in group {
+                    guard !Task.isCancelled else { return }
+                    guard let image else { continue }
+                    showedArt = true
+                    if isPrimary {
+                        primaryLanded = true
+                        crossfade(to: image)
+                    } else if !primaryLanded {
+                        crossfade(to: image)
+                    }
+                }
+            }
+            // Every source failed terminally and nothing provisional made it up: same rule as
+            // the no-URL case — stale art under a mismatched title is worse than the flat
+            // background.
+            guard !Task.isCancelled, !showedArt else { return }
+            fadeToEmpty()
+        }
+    }
+
+    /// The no-artwork terminal state: fade the last image out to the flat background (scrim and
+    /// background color remain — the same look a titles-without-art hero always had).
+    private func fadeToEmpty() {
+        guard current != nil || previous != nil else { return }
+        previous = current
+        current = nil
+        if reduceMotion || previous == nil {
+            previous = nil
+            previousOpacity = 0
+            return
+        }
+        previousOpacity = 1
+        withAnimation(.easeInOut(duration: 0.3)) {
+            previousOpacity = 0
+        }
+        let fading = previous
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if previous === fading { previous = nil }
+        }
+    }
+
+    private func crossfade(to image: UIImage) {
+        guard image !== current else { return }
+        previous = current
+        current = image
+        if reduceMotion || previous == nil {
+            previous = nil
+            previousOpacity = 0
+            return
+        }
+        // Fade the old image (now stacked on top) out over the new one, then release the decoded
+        // bitmap once it's invisible — unless another swap has already taken over the slot.
+        previousOpacity = 1
+        withAnimation(.easeInOut(duration: 0.3)) {
+            previousOpacity = 0
+        }
+        let fading = previous
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if previous === fading { previous = nil }
+        }
     }
 }
 
@@ -638,6 +1066,51 @@ func heroLogoURL(for item: MetaPreview) -> URL? {
     let imdbId = item.id.split(separator: ":").first.map(String.init) ?? item.id
     guard imdbId.hasPrefix("tt") else { return nil }
     return URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img")
+}
+
+/// Resolves the backdrop artwork URL for a hero item — a carousel page, or (UX-7) a row poster
+/// that has taken over the hero. `banner` covers the common case; IMDb-id items without one fall
+/// back to metahub's background art (the same CDN `heroLogoURL` leans on above) before finally
+/// falling back to poster art. Every step is strictly additive — a miss just moves to the next
+/// source, never a hard failure.
+func heroBackdropURL(for item: MetaPreview) -> String? {
+    heroBackdropURL(banner: item.banner, id: item.id, poster: item.poster)
+}
+
+/// Same chain for a Continue Watching entry (`background` plays the banner role, the parent meta
+/// id carries the IMDb id) — the CW row's prefetch must warm the URL the hero will actually
+/// render, not a poster the metahub branch would shadow.
+func heroBackdropURL(for entry: WatchProgressEntry) -> String? {
+    heroBackdropURL(banner: entry.background, id: entry.parentMetaId, poster: entry.poster)
+}
+
+private func heroBackdropURL(banner: String?, id: String, poster: String?) -> String? {
+    if let banner, !banner.isEmpty { return banner }
+    let imdbId = id.split(separator: ":").first.map(String.init) ?? id
+    if imdbId.hasPrefix("tt") {
+        return "https://images.metahub.space/background/medium/\(imdbId)/img"
+    }
+    return (poster?.isEmpty == false) ? poster : nil
+}
+
+/// Prefetch wants BOTH candidates the hero can render — the resolved primary AND the poster
+/// `HeroCrossfadeImage` falls back to when the primary (typically a synthesized metahub URL)
+/// 404s. Warming only the primary made exactly the fallback scenario the cold, flashing one.
+/// Cheap in practice: row posters are the card images already on screen, so `ArtworkStore`'s
+/// cache check absorbs the duplicates.
+func heroBackdropPrefetchURLs(for item: MetaPreview) -> [String] {
+    var urls: [String] = []
+    if let primary = heroBackdropURL(for: item) { urls.append(primary) }
+    if let poster = item.poster, !poster.isEmpty, !urls.contains(poster) { urls.append(poster) }
+    return urls
+}
+
+/// Continue Watching flavor of `heroBackdropPrefetchURLs(for:)`.
+func heroBackdropPrefetchURLs(for entry: WatchProgressEntry) -> [String] {
+    var urls: [String] = []
+    if let primary = heroBackdropURL(for: entry) { urls.append(primary) }
+    if let poster = entry.poster, !poster.isEmpty, !urls.contains(poster) { urls.append(poster) }
+    return urls
 }
 
 /// The hero page's logo artwork, with the title text as its stand-in (no logo URL, load failure,
