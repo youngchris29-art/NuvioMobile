@@ -101,7 +101,7 @@ struct HomeView: View {
                 // BUG-23 diagnostic (invisible, harness-readable): the hero carousel's live
                 // selection + focus state, so the UITest can watch exactly what a left press
                 // does to the index (one-press page? two? snap-back?).
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-")")
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")
@@ -114,6 +114,10 @@ struct HomeView: View {
                 // fall back to the original behavior — only show it while the hero itself is
                 // highlighted, fading to the flat dark background once focus moves down into
                 // Continue Watching / the catalogs.
+                // Nuvio-style additionally pins the hero FOREGROUND (see `pinnedHeroHeader`, the
+                // fixed top half of a VStack split), so backdrop and info panel stay together as
+                // one persistent hero region no matter how far down the rows are scrolled — this
+                // layer is unchanged either way, it was already outside the scroll.
                 if let hero = displayHero {
                     Group {
                         // Nuvio-style: right-anchored artwork whose left edge fades to the
@@ -131,105 +135,112 @@ struct HomeView: View {
                     .accessibilityHidden(true)
                 }
 
+                // Pinned Nuvio hero (UX-7 extension): the hero foreground becomes the FIXED
+                // top of a VStack and the rows ScrollView takes whatever height is left, so the
+                // scroll view's bounds are honest — they contain the rows and nothing else.
+                //
+                // Why not `.safeAreaInset(edge: .top)` (the first attempt, reverted after the sim
+                // pass): an inset changes LAYOUT but not the focus engine's scroll-to-reveal
+                // target, so at deep scroll tvOS slid rows up THROUGH the inset region and rested
+                // the focused card behind the hero's text. A real VStack split shrinks the
+                // ScrollView's frame, which the focus engine does respect.
+                //
+                // BUG-19: the ScrollView changes container ONLY when the Settings toggle flips —
+                // never per scroll frame. The `heroItems` empty→loaded check is inside the VStack
+                // around the HEADER alone, so the rows' identity is untouched at that boundary.
+                //
+                // `pinned` is passed as `heroNuvioStyle && !heroItems.isEmpty`, NOT the bare
+                // setting: with Show Hero off (or before the fan-out loads), Nuvio mode renders
+                // rows-only and they must keep the CLASSIC geometry — full 60pt overscan top
+                // inset and lift-friendly disabled clipping — instead of the compact insets that
+                // only make sense under a mounted header. This is a value change (paddings,
+                // clip flag, the in-scroll hero condition), not a structural one, so flipping at
+                // the load boundary re-identifies nothing.
+                // ScrollViewReader + the Menu handler sit ABOVE the mode split: in pinned mode
+                // the hero CTA is a SIBLING of the rows ScrollView, so a handler attached to the
+                // ScrollView alone would not cover it — a Menu press with focus on the CTA while
+                // `isScrolledDown` hadn't cleared yet (e.g. a reflexive double-Menu during the
+                // jump-to-top animation) would bubble to the tab root and suspend the app. One
+                // handler on the common ancestor covers rows and CTA in both modes; scrollTo
+                // resolves the "home_top" anchor through the descendant ScrollView.
                 ScrollViewReader { scrollProxy in
-                ScrollView(.vertical) {
-                    // Lazy so row construction (and each row's poster loads) is deferred to
-                    // scroll position — an eager VStack builds every catalog row up front,
-                    // which on catalog-heavy accounts stalls the main thread past the
-                    // watchdog and bursts artwork decodes past jetsam (BUG-11).
-                    LazyVStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-                        if !heroItems.isEmpty {
-                            // Nuvio-style raises the info panel toward the top of the backdrop
-                            // (reference: upstream's modern home) — classic keeps it on the
-                            // lower third, Detail-style.
-                            heroCarousel
-                                .padding(.top, heroNuvioStyle
-                                    ? Theme.Size.heroForegroundTopPadNuvio
-                                    : Theme.Size.heroForegroundTopPad)
-                        }
-
-                        if model.rows.isEmpty {
-                            placeholder
-                        }
-
-                        if !model.continueWatching.isEmpty {
-                            ContinueWatchingRow(
-                                entries: model.continueWatching,
-                                onSelect: { resume = ResumeTarget(entry: $0) },
-                                onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
-                                // UX-7 (see reportRowFocus for the gating rationale).
-                                onItemFocusChange: { entry in
-                                    reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
-                                                   prefetch: { model.continueWatching.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                    Group {
+                        if heroNuvioStyle {
+                            VStack(spacing: 0) {
+                                if !heroItems.isEmpty {
+                                    pinnedHeroHeader
                                 }
-                            )
-                        }
-
-                        // Catalog sections and collection folder-tile rows, interleaved per the
-                        // user's Home Rows settings order.
-                        ForEach(model.rows) { row in
-                            switch row {
-                            case .catalog(let section):
-                                CatalogRowView(
-                                    section: section,
-                                    previewLimit: CatalogRowView.homePreviewLimit,
-                                    // UX-7 (see reportRowFocus for the gating rationale).
-                                    onItemFocusChange: { item in
-                                        reportRowFocus(item, source: section.key,
-                                                       prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
-                                    }
-                                )
-                            case .collection(let collection):
-                                CollectionRowView(collection: collection)
+                                rowsScroll(pinned: !heroItems.isEmpty)
                             }
+                        } else {
+                            rowsScroll(pinned: false)
                         }
                     }
-                    .padding(Theme.Spacing.screen)
-                    // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
-                    // hero — the anchor must exist even while the hero row is lazily culled.
-                    .id("home_top")
-                }
-                .scrollClipDisabled()
-                .reportsScrollToTabBar(isScrolledDown: $isScrolledDown)
-                // BUG-30 device-verify probe (instrumentation only, behavior-neutral): logs raw
-                // contentOffset/contentInsets on every change so `log show` after a D-pad walk-up
-                // shows where focus-driven scrolling rests vs. the true top. Off by default; the
-                // modifier is only attached when the knob is set, so disabled testers pay nothing.
-                //   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
-                .modifier(HomeScrollProbeModifier(enabled: homeScrollProbeEnabled))
-                // BUG-27: from down the page, Menu jumps back to the top and hands focus to
-                // the hero CTA — one press instead of dozens of Ups, and from there a single
-                // Up reaches the (now visible again) tab bar. The handler is nil at the top
-                // so Menu keeps its default root behavior there; it only attaches when the
-                // hero exists, because jumping without a focus anchor would let the focus
-                // engine drag the scroll right back down to the still-focused row.
-                .onExitCommand(perform: (isScrolledDown && !heroItems.isEmpty) ? {
-                    withAnimation(.easeInOut(duration: 0.45)) {
-                        scrollProxy.scrollTo("home_top", anchor: .top)
-                    }
-                    // Focus can only land on the hero CTA once the lazy top region is built —
-                    // and a one-shot handoff that fires too early is silently dropped, leaving
-                    // focus on the deep row so the focus engine drags the scroll straight back
-                    // down ("Menu only scrolls up two categories", device pass 2026-08-02).
-                    // Retry: re-issue the scroll and the focus grab until it sticks.
-                    for (attempt, delay) in [0.55, 1.2, 2.0].enumerated() {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                            guard !heroFocused else { return }
-                            if attempt > 0 {
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    scrollProxy.scrollTo("home_top", anchor: .top)
-                                }
-                            }
+                    // BUG-27: from down the page, Menu jumps back to the top and hands focus to
+                    // the hero CTA — one press instead of dozens of Ups, and from there a single
+                    // Up reaches the (now visible again) tab bar. The handler is nil at the top
+                    // so Menu keeps its default root behavior there; it only attaches when the
+                    // hero exists, because jumping without a focus anchor would let the focus
+                    // engine drag the scroll right back down to the still-focused row.
+                    .onExitCommand(perform: (isScrolledDown && !heroItems.isEmpty) ? {
+                        if heroNuvioStyle {
+                            // Pinned hero: the CTA lives above the ScrollView in the VStack, so
+                            // it is ALWAYS mounted — there is no "wait for the lazy top region
+                            // to build" window to lose the handoff in. Take focus FIRST and
+                            // synchronously: focus leaves the deep row on this very frame, so
+                            // nothing down the page is left for the focus engine to drag the
+                            // scroll back toward while the proxy animates (the classic branch's
+                            // whole failure mode).
                             heroFocused = true
+                            withAnimation(.easeInOut(duration: 0.45)) {
+                                scrollProxy.scrollTo("home_top", anchor: .top)
+                            }
+                            // Retries are gated on `isScrolledDown`, NOT on `!heroFocused` the
+                            // way the classic branch below is: focus lands on the statement
+                            // above, so a `!heroFocused` guard would disarm every retry before
+                            // it ran. The tab bar's scroll hysteresis is the signal that
+                            // actually says whether the scroll landed at the top.
+                            for delay in [0.6, 1.3] {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                                    guard isScrolledDown else { return }
+                                    withAnimation(.easeInOut(duration: 0.3)) {
+                                        scrollProxy.scrollTo("home_top", anchor: .top)
+                                    }
+                                    if !heroFocused { heroFocused = true }
+                                }
+                            }
+                        } else {
+                            withAnimation(.easeInOut(duration: 0.45)) {
+                                scrollProxy.scrollTo("home_top", anchor: .top)
+                            }
+                            // Focus can only land on the hero CTA once the lazy top region is
+                            // built — and a one-shot handoff that fires too early is silently
+                            // dropped, leaving focus on the deep row so the focus engine drags
+                            // the scroll straight back down ("Menu only scrolls up two
+                            // categories", device pass 2026-08-02). Retry: re-issue the scroll
+                            // and the focus grab until it sticks.
+                            for (attempt, delay) in [0.55, 1.2, 2.0].enumerated() {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                                    guard !heroFocused else { return }
+                                    if attempt > 0 {
+                                        withAnimation(.easeInOut(duration: 0.3)) {
+                                            scrollProxy.scrollTo("home_top", anchor: .top)
+                                        }
+                                    }
+                                    heroFocused = true
+                                }
+                            }
                         }
-                    }
-                } : nil)
-                // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
-                // Rounds 5–6 tried completing the scroll to the true top when focus re-entered
-                // the hero; both caused worse regressions on device (wedged Down navigation,
-                // interrupted Menu-to-top) and were reverted. Do not reintroduce a hero-focus-
-                // triggered scroll here without a device-verified plan — the harness cannot see
-                // the system bar's hardware-only mid-expansion state.
+                    } : nil)
+                    // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
+                    // Rounds 5–6 tried completing the scroll to the true top when focus
+                    // re-entered the hero; both caused worse regressions on device (wedged Down
+                    // navigation, interrupted Menu-to-top) and were reverted. Do not reintroduce
+                    // a hero-focus-triggered scroll here without a device-verified plan — the
+                    // harness cannot see the system bar's hardware-only mid-expansion state.
+                    // (The pinned-hero branch above is outside this banned class: it is
+                    // Menu-triggered, exactly like the classic branch it sits next to, not
+                    // triggered by the hero gaining focus.)
                 }
             }
             .onReceive(heroTimer) { _ in
@@ -305,6 +316,96 @@ struct HomeView: View {
         .onDisappear { model.stop() }
     }
 
+    /// The scrolling rows region — the SAME builder for both hero layouts, so row content is
+    /// never duplicated. `pinned` (Nuvio-style) flips exactly three things and nothing else:
+    /// the in-scroll hero branch (classic only), scroll clipping, and the content insets.
+    ///
+    /// Clipping: classic keeps `.scrollClipDisabled()` so focused cards may lift past the scroll
+    /// bounds. Pinned deliberately keeps DEFAULT clipping — that hard edge just under the pinned
+    /// hero is what hides rows scrolled past the viewport top (it replaces the fade mask the sim
+    /// pass falsified). The focus lift stays inside the clip because the content insets below
+    /// keep every card away from the viewport edges.
+    @ViewBuilder
+    private func rowsScroll(pinned: Bool) -> some View {
+        ScrollView(.vertical) {
+            // Lazy so row construction (and each row's poster loads) is deferred to
+            // scroll position — an eager VStack builds every catalog row up front,
+            // which on catalog-heavy accounts stalls the main thread past the
+            // watchdog and bursts artwork decodes past jetsam (BUG-11).
+            LazyVStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
+                if !heroItems.isEmpty && !pinned {
+                    // Classic only: the hero scrolls away with the rows, its info panel
+                    // sitting on the lower third of the backdrop, Detail-style.
+                    // Pinned (Nuvio-style) doesn't render a hero here at all — it sits
+                    // ABOVE this ScrollView as the fixed top of the VStack split (see
+                    // `pinnedHeroHeader`), which owns its own compacted paddings.
+                    heroCarousel
+                        .padding(.top, Theme.Size.heroForegroundTopPad)
+                }
+
+                if model.rows.isEmpty {
+                    placeholder
+                }
+
+                if !model.continueWatching.isEmpty {
+                    ContinueWatchingRow(
+                        entries: model.continueWatching,
+                        onSelect: { resume = ResumeTarget(entry: $0) },
+                        onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
+                        // UX-7 (see reportRowFocus for the gating rationale).
+                        onItemFocusChange: { entry in
+                            reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
+                                           prefetch: { model.continueWatching.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                        }
+                    )
+                }
+
+                // Catalog sections and collection folder-tile rows, interleaved per the
+                // user's Home Rows settings order.
+                ForEach(model.rows) { row in
+                    switch row {
+                    case .catalog(let section):
+                        CatalogRowView(
+                            section: section,
+                            previewLimit: CatalogRowView.homePreviewLimit,
+                            // UX-7 (see reportRowFocus for the gating rationale).
+                            onItemFocusChange: { item in
+                                reportRowFocus(item, source: section.key,
+                                               prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                            }
+                        )
+                    case .collection(let collection):
+                        CollectionRowView(collection: collection)
+                    }
+                }
+            }
+            .padding(rowsInsets(pinned: pinned))
+            // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
+            // hero — the anchor must exist even while the hero row is lazily culled.
+            // In pinned (Nuvio-style) mode the hero isn't in this stack at all, so the
+            // anchor's `.top` is simply the top of the rows region — which, with the
+            // hero pinned above the ScrollView, is exactly where "the top" now means.
+            .id("home_top")
+        }
+        // Classic keeps clipping disabled so a focused card may lift past the scroll
+        // bounds. Pinned mode must NOT: default clipping is what hides rows once they
+        // scroll past the viewport top, i.e. the hard edge just below the pinned hero
+        // (this replaces the fade mask, which the sim pass falsified — its geometry
+        // never anchored to the ScrollView frame and blanked every row). The focus
+        // lift stays inside the clip thanks to `rowsInsets`.
+        .scrollClipDisabled(!pinned)
+        .reportsScrollToTabBar(isScrolledDown: $isScrolledDown)
+        // BUG-30 device-verify probe (instrumentation only, behavior-neutral): logs raw
+        // contentOffset/contentInsets on every change so `log show` after a D-pad walk-up
+        // shows where focus-driven scrolling rests vs. the true top. Off by default; the
+        // modifier is only attached when the knob is set, so disabled testers pay nothing.
+        //   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
+        .modifier(HomeScrollProbeModifier(enabled: homeScrollProbeEnabled))
+        // The BUG-27 Menu handler is NOT here: it lives on the common ancestor in `body`,
+        // because in pinned mode the hero CTA is a sibling of this ScrollView and a handler
+        // attached here would not cover it (Menu on the CTA would suspend the app).
+    }
+
     /// The paged hero carousel plus its (static) page dots. Fixed height everywhere: paging or
     /// auto-advancing swaps content inside a constant frame, so the rows below never move.
     private var heroCarousel: some View {
@@ -351,6 +452,47 @@ struct HomeView: View {
                     .animation(.easeInOut(duration: 0.25), value: focusModel.focusedItem == nil)
             }
         }
+    }
+
+    /// The PINNED hero header (UX-7 extension, Nuvio-style only): the exact same `heroCarousel`
+    /// the classic layout embeds in the scroll, hosted here as the FIXED top of a VStack whose
+    /// second child is the rows ScrollView. Nothing about the focus model changes — the carousel
+    /// keeps rendering `displayHero`, so a row poster taking over the hero updates the pinned
+    /// panel live exactly as before.
+    ///
+    /// This replaced a `.safeAreaInset(edge: .top)` host after the sim pass: an inset changes
+    /// layout but NOT the focus engine's scroll-to-reveal target, so tvOS slid rows up through the
+    /// inset region and rested focused cards behind the hero's text. Splitting the screen with a
+    /// VStack gives the ScrollView below honest bounds, and the focus engine then reveals focused
+    /// cards fully inside them — i.e. below the hero.
+    ///
+    /// BUG-19 identity rule: `heroCarousel` may move between the in-scroll container and this one
+    /// ONLY when the Settings toggle flips — never per scroll frame, and never at the `heroItems`
+    /// empty→loaded boundary (that check wraps this header alone, not the ScrollView beside it).
+    /// No `.id()` is introduced here.
+    ///
+    /// Paddings are the COMPACTED pinned set (`heroPinnedTopPad` / `heroPinnedRowsGap`), not the
+    /// in-scroll ones: pinned mode shares one screen between hero and rows, so the hero has to
+    /// give the rows viewport ~450pt to fit a poster row. See the height budget on those tokens.
+    private var pinnedHeroHeader: some View {
+        heroCarousel
+            .padding(.top, Theme.Size.heroPinnedTopPad)
+            .padding(.horizontal, Theme.Spacing.screen)
+            .padding(.bottom, Theme.Size.heroPinnedRowsGap)
+    }
+
+    /// Content insets for the rows `LazyVStack`. Classic keeps the uniform overscan-safe
+    /// `Theme.Spacing.screen` on all four edges, byte-for-byte what it always had. Pinned trims
+    /// only the TOP: `pinnedHeroHeader` already supplied the gap above the rows
+    /// (`heroPinnedRowsGap`), and a second 60pt there would push row 1 out of the compacted
+    /// viewport. The horizontal/bottom insets stay at 60 — with clipping ENABLED in pinned mode
+    /// they are also what keeps a focused card's lift inside the clip.
+    private func rowsInsets(pinned: Bool) -> EdgeInsets {
+        pinned
+            ? EdgeInsets(top: Theme.Spacing.sm, leading: Theme.Spacing.screen,
+                         bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
+            : EdgeInsets(top: Theme.Spacing.screen, leading: Theme.Spacing.screen,
+                         bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
     }
 
     /// Warm the artwork caches for every hero page (backdrop + logo) as soon as the items are

@@ -248,12 +248,29 @@ enum Theme {
         /// Fixed width of the leading hero info panel (text column) in the Nuvio-style layout.
         static let heroInfoPanelWidth: CGFloat = 680
         /// Nuvio-style raises the info panel toward the top of the backdrop (classic uses
-        /// `heroForegroundTopPad`'s lower-third placement).
+        /// `heroForegroundTopPad`'s lower-third placement). Currently unreferenced: the
+        /// Nuvio-style hero is pinned above the rows now and uses the compacted
+        /// `heroPinnedTopPad` instead. Kept as the in-scroll Nuvio value in case that layout
+        /// comes back.
         static let heroForegroundTopPadNuvio: CGFloat = 120
         /// Width of the right-anchored artwork panel in the Nuvio-style hero (tvOS layout is
         /// a fixed 1920pt canvas). Its left ~30% fades out via a gradient mask, so the flat
         /// background region behind the 680pt info panel meets the art in a smooth blend.
         static let heroNuvioArtworkWidth: CGFloat = 1250
+        // Pinned Nuvio hero (UX-7 extension): when the Nuvio-style hero is pinned above the rows
+        // (a VStack split — hero fixed on top, rows ScrollView takes the remainder) the two share
+        // ONE 1080pt screen instead of the hero scrolling away, so the hero region has to be
+        // compacted. Height budget, measured in the sim:
+        //   ~76 tab-bar safe area + 40 top pad + ~490 carousel (452 + page dots) + 24 gap ≈ 630,
+        // leaving ~450pt for the rows viewport — a poster row needs ~424 (title ~40 + poster 330
+        // + caption ~30 + gaps), so row 1 fits with just enough headroom for the FEAT-14 focus
+        // ring lift. Shrink either constant only against that budget. Classic is untouched: it
+        // keeps `heroForegroundTopPad`, and `heroCarouselHeight` is shared by both layouts.
+        /// Top padding above the PINNED hero header (pinned Nuvio mode only — the classic
+        /// in-scroll layout keeps `heroForegroundTopPad`).
+        static let heroPinnedTopPad: CGFloat = 40
+        /// Gap between the pinned hero header and the top of the rows ScrollView below it.
+        static let heroPinnedRowsGap: CGFloat = 24
     }
 }
 

@@ -39,11 +39,14 @@ struct HomeScreenSettingsPane: View {
                 if model.heroEnabled {
                     // UX-2 hero redesign v2: title/description on the left with the artwork
                     // reading on the right (Nuvio-style, OPT-IN) vs the classic lower-left
-                    // logo layout (default).
+                    // logo layout (default). UX-7 extension: the Nuvio-style hero is also
+                    // PINNED to the top of Home (it becomes the fixed top of a VStack and the
+                    // rows get their own ScrollView below it) — only the rows scroll, so the ON
+                    // copy names that too; classic still scrolls the hero away with the rows.
                     SettingsToggleRow(
                         title: String(localized: "Nuvio-Style Hero"),
                         subtitle: heroNuvioStyle
-                            ? String(localized: "On \u{00B7} Title and description on the left, artwork on the right")
+                            ? String(localized: "On \u{00B7} Title and description on the left, artwork on the right, hero pinned while rows scroll")
                             : String(localized: "Off \u{00B7} Classic layout with the logo on the lower left"),
                         isOn: heroNuvioStyle
                     ) {

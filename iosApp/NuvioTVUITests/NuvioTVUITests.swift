@@ -1058,4 +1058,63 @@ final class NuvioTVUITests: XCTestCase {
         }
         XCTAssertTrue(app.state == .runningForeground)
     }
+
+    // MARK: - Pinned Nuvio hero: foreground stays on screen at deep scroll (UX-7 extension)
+
+    /// Launches with -hero_nuvio_style YES, walks focus deep into the rows, and asserts the hero
+    /// foreground is STILL on screen: the CTA ("Go to Movie"/"Go to Show") must exist AND be
+    /// hittable (in classic it scrolls away and stops being hittable — the discriminator), and the
+    /// debug_hero probe must carry pin=1. Screenshots give the human pass the hero-over-rows
+    /// composition check (fade band artifacts, row 1 rest position).
+    func test22PinnedHeroDeepScroll() throws {
+        // Fresh launch: the pinned-hero layout must not inherit a prior test's scroll/focus state
+        // (same rationale as test06/test20's use of the argument-domain toggle + forceFreshLaunch).
+        let app = launchToHome(extraArguments: ["-hero_nuvio_style", "YES"], forceFreshLaunch: true)
+
+        // Normalize focus onto the hero CTA (test06/test20's walk: up to the tab bar, one down
+        // lands back on the hero button).
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(2)
+        shot(app, "22a_pinned_hero_at_top")
+        let topState = heroSrcProbe(app, "22a_probe_at_top")
+        XCTAssertTrue(topState.contains("pin=1"), "hero_nuvio_style=YES must set pin=1 on the debug_hero probe, got: \(topState)")
+
+        // Deep scroll: the classic (unpinned) hero scrolls its foreground away with the carousel;
+        // the pinned variant must keep the CTA on screen and hittable throughout.
+        press(.down, times: 8, gap: 1.0)
+        pause(2)
+        shot(app, "22b_pinned_hero_deep_scroll")
+        // src=c or src=f are both legal this deep (depends which row reports) — not asserted here.
+        _ = heroSrcProbe(app, "22b_probe_after_deep_scroll")
+
+        let cta = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Go to'")).firstMatch
+        XCTAssertTrue(cta.waitForExistence(timeout: 4), "hero CTA must still exist after deep scroll with pinned hero")
+        XCTAssertTrue(cta.isHittable, "pinned hero CTA must remain hittable at deep scroll — a non-hittable CTA means it scrolled away like the classic layout")
+
+        // Up-walk through the fade band (Codex review P2, 2026-08-03): rows masked under the
+        // pinned hero stay focus-ELIGIBLE — the design bets on the focus engine's scroll-to-
+        // reveal honoring the safe-area inset so a focused card is always brought back below
+        // the hero. Walk Up one press at a time and screenshot each step; the human/agent pass
+        // checks that no step shows the focus halo resting inside the hero band on an invisible
+        // card. No hard assert — the masked card is still "visible" to the AX tree, so the
+        // screenshot is the only oracle (same philosophy as the rest of the harness).
+        for step in 1...4 {
+            press(.up, times: 1)
+            pause(1)
+            shot(app, "22b_upwalk_\(step)")
+        }
+        // Return deep so the Menu leg below exercises the pinned Menu-to-top branch from a
+        // genuinely scrolled-down state (its handler only attaches while isScrolledDown).
+        press(.down, times: 4, gap: 1.0)
+        pause(2)
+
+        // Menu from deep scroll must jump rows back to top AND land focus on the pinned CTA.
+        remote.press(.menu)
+        pause(2)
+        XCTAssertTrue(app.state == .runningForeground, "Menu from deep rows must NOT exit the app")
+        shot(app, "22c_menu_back_to_top")
+        let afterMenuState = heroSrcProbe(app, "22c_probe_after_menu")
+        XCTAssertTrue(afterMenuState.contains("foc=1"), "Menu-to-top must land focus on the pinned hero CTA (foc=1), got: \(afterMenuState)")
+    }
 }

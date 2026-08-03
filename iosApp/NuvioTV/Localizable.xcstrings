@@ -8236,34 +8236,6 @@
         }
       }
     },
-    "On · Title and description on the left, artwork on the right": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "An · Titel und Beschreibung links, Artwork rechts"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activado · título y descripción a la izquierda, imagen a la derecha"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Activé · titre et description à gauche, visuel à droite"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "On · titolo e descrizione a sinistra, artwork a destra"
-          }
-        }
-      }
-    },
     "On · rows read like “Popular - Movies”": {
       "localizations": {
         "de": {
@@ -14904,6 +14876,34 @@
           "stringUnit": {
             "state": "translated",
             "value": "Attivo · %@"
+          }
+        }
+      }
+    },
+    "On · Title and description on the left, artwork on the right, hero pinned while rows scroll": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Titel und Beschreibung links, Artwork rechts, Hero bleibt beim Scrollen oben fixiert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · título y descripción a la izquierda, imagen a la derecha, héroe fijado mientras se despl. las filas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · titre et description à gauche, visuel à droite, héros épinglé pendant le défilement des rangées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · titolo e descrizione a sinistra, artwork a destra, hero fissato mentre le righe scorrono"
           }
         }
       }
