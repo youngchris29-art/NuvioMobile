@@ -101,13 +101,16 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
 
     override suspend fun delete(profileId: Int, items: Collection<WatchedItem>) {
         if (profileId != ProfileRepository.activeProfileId || items.isEmpty()) return
+        // Fork: upstream filters to episode entries here and returns early when there are none,
+        // so unmarking a movie (or a whole-series marker) never reaches /sync/history/remove —
+        // it vanishes locally and reappears on the next refresh. Every item is forwarded instead;
+        // the episode-only work below still keys off season/episode being present.
         val episodeItems = items.filter { item -> item.season != null && item.episode != null }
-        if (episodeItems.isEmpty()) return
         // Optimistically mark video IDs as removed so fallback won't show them as watched
         episodeItems.forEach { item -> item.videoId?.let(SimklAnimeWatchedFallback::markOptimisticallyRemoved) }
         SimklSyncRepository.ensureLoaded()
         val snapshot = SimklSyncRepository.state.value.snapshot
-        val media = episodeItems.map { item ->
+        val media = items.map { item ->
             snapshot.mediaReference(
                 contentId = item.id,
                 contentType = item.type,
@@ -118,7 +121,12 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
                 videoId = item.videoId,
             ).let { ref ->
                 val enriched = snapshot.enrichMediaReference(ref)
-                enriched.resolveAnimeEpisodeForSimkl()
+                // Anime episode resolution is meaningless without a season/episode pair.
+                if (item.season != null && item.episode != null) {
+                    enriched.resolveAnimeEpisodeForSimkl()
+                } else {
+                    enriched
+                }
             }
         }
         val result = SimklMutationRepository.removeFromHistory(profileId = profileId, items = media)
