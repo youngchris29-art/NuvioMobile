@@ -1,6 +1,7 @@
 package com.nuvio.app.features.watched
 
 import com.nuvio.app.features.home.MetaPreview
+import com.nuvio.app.features.tracking.TrackingAttributedItem
 import com.nuvio.app.features.trakt.TraktPlatformClock
 import com.nuvio.app.features.watching.domain.WatchingContentRef
 import com.nuvio.app.features.watching.domain.watchedKey
@@ -15,8 +16,15 @@ data class WatchedItem(
     val releaseInfo: String? = null,
     val season: Int? = null,
     val episode: Int? = null,
+    val videoId: String? = null,
+    override val trackingProviderId: String? = null,
+    override val trackingProviderItemId: String? = null,
+    override val trackingSourceUrl: String? = null,
     val markedAtEpochMs: Long,
-)
+) : TrackingAttributedItem {
+    override val trackingContentId: String
+        get() = id
+}
 
 data class WatchedUiState(
     val items: List<WatchedItem> = emptyList(),
