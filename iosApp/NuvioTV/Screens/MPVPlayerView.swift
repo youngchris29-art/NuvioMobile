@@ -736,8 +736,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// `INTRO_DB_URL` configured. `requireSkipIntroEnabled: false` bypasses the mobile settings gate.
     private func fetchSkipSegments() {
         guard let season = context.season, let episode = context.episode else { return }
-        SkipIntroRepository.shared.getSkipIntervals(
-            imdbId: context.parentMetaId,
+        SkipIntroRepository.shared.getSkipIntervalsForContentId(
+            // Routes kitsu:/mal: anime ids to the anime providers; everything else keeps the
+            // IMDB path. parentMetaId carries the prefix for addon-sourced anime.
+            contentId: context.parentMetaId,
             season: Int32(season),
             episode: Int32(episode),
             // Respect the Settings > Playback "Skip Intro" toggle (skipIntroEnabled).
@@ -1012,7 +1014,12 @@ final class MPVTVPlayerViewController: UIViewController {
                 if state.upNextPlayNow?() == true {
                     handled = true
                 } else if let prompt = state.skipPrompt {
-                    seekAbsolute(prompt.targetSec)
+                    // Clamp against duration: a skip-outro target past EOF wedges mpv.
+                    // durationSec is still 0 before the first duration event — seek unclamped then.
+                    let target = state.durationSec > 0
+                        ? min(prompt.targetSec, state.durationSec - 0.5)
+                        : prompt.targetSec
+                    seekAbsolute(target)
                     state.skipPrompt = nil
                     flashControls()
                     handled = true

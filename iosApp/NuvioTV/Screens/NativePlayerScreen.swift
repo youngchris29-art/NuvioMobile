@@ -129,8 +129,9 @@ struct NativePlayerScreen: View {
     /// numbers). Respects the Settings > Playback "Skip Intro" toggle.
     private func fetchSkipSegments() {
         guard let season = context.season, let episode = context.episode else { return }
-        SkipIntroRepository.shared.getSkipIntervals(
-            imdbId: context.parentMetaId,
+        SkipIntroRepository.shared.getSkipIntervalsForContentId(
+            // Routes kitsu:/mal: anime ids to the anime providers (same rules as the mpv screen).
+            contentId: context.parentMetaId,
             season: Int32(season),
             episode: Int32(episode),
             requireSkipIntroEnabled: true

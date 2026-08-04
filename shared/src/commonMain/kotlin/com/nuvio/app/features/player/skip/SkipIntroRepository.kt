@@ -135,6 +135,39 @@ object SkipIntroRepository {
     }
 
     /**
+     * Route a content id to the right lookup. Anime served by a Kitsu/MAL-backed addon carries a
+     * `kitsu:`/`mal:` id that the IMDB-mapped path can never resolve, so those go to the anime
+     * providers directly; everything else keeps the IMDB behaviour.
+     *
+     * Mirrors mobile's routing in `PlayerScreenRuntimeEffects`. It lives here rather than in the
+     * tvOS Swift callers so the prefix parsing exists once instead of once per player screen.
+     */
+    suspend fun getSkipIntervalsForContentId(
+        contentId: String?,
+        season: Int,
+        episode: Int,
+        requireSkipIntroEnabled: Boolean = true,
+    ): List<SkipInterval> = when {
+        contentId == null -> emptyList()
+        contentId.startsWith("mal:") -> getSkipIntervalsForMal(
+            malId = contentId.removePrefix("mal:").substringBefore(':'),
+            episode = episode,
+            requireSkipIntroEnabled = requireSkipIntroEnabled,
+        )
+        contentId.startsWith("kitsu:") -> getSkipIntervalsForKitsu(
+            kitsuId = contentId.removePrefix("kitsu:").substringBefore(':'),
+            episode = episode,
+            requireSkipIntroEnabled = requireSkipIntroEnabled,
+        )
+        else -> getSkipIntervals(
+            imdbId = contentId,
+            season = season,
+            episode = episode,
+            requireSkipIntroEnabled = requireSkipIntroEnabled,
+        )
+    }
+
+    /**
      * Merge provider results into one best-of: fill each segment category (opening / ending /
      * recap) from the highest-priority provider that has it. Arguments MUST be passed in priority
      * order (IntroDB has the broadest coverage, then Anime-Skip, then AniSkip), so a partial
