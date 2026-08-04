@@ -332,14 +332,21 @@ struct HomeView: View {
             // scroll position — an eager VStack builds every catalog row up front,
             // which on catalog-heavy accounts stalls the main thread past the
             // watchdog and bursts artwork decodes past jetsam (BUG-11).
-            LazyVStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
+            //
+            // Spacing: pinned rows are SELF-CONTAINED — each row's shelf carries the
+            // `rowCardTopReach` band (title overlaid inside it) and bottom reach within its
+            // own frame, so no external gap is needed and every focusable frame stays inside
+            // its row's focus section (out-of-bounds frames froze the focus engine — device
+            // rounds 5–7, sim-reproduced). Classic keeps the plain 48pt sectionGap.
+            LazyVStack(alignment: .leading,
+                       spacing: pinned ? 0 : Theme.Spacing.sectionGap) {
                 if !heroItems.isEmpty && !pinned {
                     // Classic only: the hero scrolls away with the rows, its info panel
                     // sitting on the lower third of the backdrop, Detail-style.
                     // Pinned (Nuvio-style) doesn't render a hero here at all — it sits
                     // ABOVE this ScrollView as the fixed top of the VStack split (see
                     // `pinnedHeroHeader`), which owns its own compacted paddings.
-                    heroCarousel
+                    heroCarousel(compact: false)
                         .padding(.top, Theme.Size.heroForegroundTopPad)
                 }
 
@@ -363,22 +370,34 @@ struct HomeView: View {
                 // Catalog sections and collection folder-tile rows, interleaved per the
                 // user's Home Rows settings order.
                 ForEach(model.rows) { row in
-                    switch row {
-                    case .catalog(let section):
-                        CatalogRowView(
-                            section: section,
-                            previewLimit: CatalogRowView.homePreviewLimit,
-                            // UX-7 (see reportRowFocus for the gating rationale).
-                            onItemFocusChange: { item in
-                                reportRowFocus(item, source: section.key,
-                                               prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
-                            }
-                        )
-                    case .collection(let collection):
-                        CollectionRowView(collection: collection)
+                    Group {
+                        switch row {
+                        case .catalog(let section):
+                            CatalogRowView(
+                                section: section,
+                                previewLimit: CatalogRowView.homePreviewLimit,
+                                // UX-7 (see reportRowFocus for the gating rationale).
+                                onItemFocusChange: { item in
+                                    reportRowFocus(item, source: section.key,
+                                                   prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                                }
+                            )
+                        case .collection(let collection):
+                            CollectionRowView(collection: collection)
+                        }
                     }
                 }
             }
+            // Pinned only (device rounds 4–5): every row card extends its focusable frame
+            // UPWARD by the row band and DOWNWARD past its caption (transparent,
+            // layout-compensated inside each row component) so the focus engine's
+            // scroll-to-reveal — the ONLY scroll driver on tvOS, swipes included — always
+            // reveals the section title above AND the full art/caption below, even with the
+            // device's short-rest error in either direction. Rounds 2–3 proved padding
+            // OUTSIDE the card frame can't do this: the reveal target simply doesn't
+            // include it. See rowCardTopReach / rowCardBottomReach (BrowseComponents).
+            .environment(\.rowCardTopReach, pinned ? Theme.Size.heroPinnedRowTopPad : 0)
+            .environment(\.rowCardBottomReach, pinned ? Theme.Size.heroPinnedRowBottomReach : 0)
             .padding(rowsInsets(pinned: pinned))
             // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
             // hero — the anchor must exist even while the hero row is lazily culled.
@@ -408,7 +427,7 @@ struct HomeView: View {
 
     /// The paged hero carousel plus its (static) page dots. Fixed height everywhere: paging or
     /// auto-advancing swaps content inside a constant frame, so the rows below never move.
-    private var heroCarousel: some View {
+    private func heroCarousel(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             // BUG-23 round 2 (device finding): the paged TabView is GONE. The sim fix caught
             // dropped D-pad presses via onMoveCommand, but the real Siri Remote pages by
@@ -424,10 +443,14 @@ struct HomeView: View {
                 // the title/synopsis on screen always matches the backdrop behind it. The CTA's
                 // NavigationLink is bound to `item`, so it follows along automatically.
                 if let hero = displayHero {
-                    HomeHeroForeground(item: hero, heroFocused: $heroFocused)
+                    HomeHeroForeground(item: hero, heroFocused: $heroFocused, compact: compact)
                 }
             }
-            .frame(height: Theme.Size.heroCarouselHeight)
+            // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
+            // extended focus frame plus the engine's reveal margin — see the Theme comment
+            // on heroCarouselHeightPinned (device round 6).
+            .frame(height: compact ? Theme.Size.heroCarouselHeightPinned
+                                   : Theme.Size.heroCarouselHeight)
             .focusSection()
             .onMoveCommand { direction in
                 guard heroItems.count > 1 else { return }
@@ -475,25 +498,27 @@ struct HomeView: View {
     /// in-scroll ones: pinned mode shares one screen between hero and rows, so the hero has to
     /// give the rows viewport ~450pt to fit a poster row. See the height budget on those tokens.
     private var pinnedHeroHeader: some View {
-        heroCarousel
+        heroCarousel(compact: true)
             .padding(.top, Theme.Size.heroPinnedTopPad)
             .padding(.horizontal, Theme.Spacing.screen)
             .padding(.bottom, Theme.Size.heroPinnedRowsGap)
     }
 
     /// Content insets for the rows `LazyVStack`. Classic keeps the uniform overscan-safe
-    /// `Theme.Spacing.screen` on all four edges, byte-for-byte what it always had. Pinned trims
-    /// only the TOP: `pinnedHeroHeader` already supplied the gap above the rows
-    /// (`heroPinnedRowsGap`), and a second 60pt there would push row 1 out of the compacted
-    /// viewport. The horizontal/bottom insets stay at 60 — with clipping ENABLED in pinned mode
-    /// they are also what keeps a focused card's lift inside the clip.
+    /// `Theme.Spacing.screen` on all four edges, byte-for-byte what it always had. Pinned uses
+    /// `heroPinnedRowsHeadroom` (80) on top: NOT spacing — it is the buffer that absorbs the
+    /// device-only BUG-30 walk-up residual (~67pt short of the sim's rest position), which the
+    /// pinned clip edge otherwise turns into cropped poster tops / a bisected row title (device
+    /// round 1, 2026-08-03). The horizontal/bottom insets stay at 60 — with clipping ENABLED in
+    /// pinned mode they are also what keeps a focused card's lift inside the clip.
     private func rowsInsets(pinned: Bool) -> EdgeInsets {
         pinned
-            ? EdgeInsets(top: Theme.Spacing.sm, leading: Theme.Spacing.screen,
+            ? EdgeInsets(top: Theme.Size.heroPinnedRowsHeadroom, leading: Theme.Spacing.screen,
                          bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
             : EdgeInsets(top: Theme.Spacing.screen, leading: Theme.Spacing.screen,
                          bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
     }
+
 
     /// Warm the artwork caches for every hero page (backdrop + logo) as soon as the items are
     /// known, so manual paging and the auto-advance crossfade never flash a placeholder.
@@ -785,12 +810,21 @@ struct ContinueWatchingRow: View {
     /// Focus inside the shelf disables the reorder snap-back (mirrors upstream's
     /// hasUserScrolledContinueWatching guard in their CW scroll stabilization).
     @FocusState private var focusedVideoId: String?
+    /// Pinned-hero card reach (UX-7 extension, device rounds 4–5) — see `rowCardTopReach` /
+    /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
+    @Environment(\.rowCardTopReach) private var cardTopReach
+    @Environment(\.rowCardBottomReach) private var cardBottomReach
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text("Continue Watching")
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
+            // Pinned mode overlays the title inside the shelf's reach band instead (see
+            // CatalogRowView's structural comment — out-of-bounds frames froze the focus
+            // engine; all paddings must stay positive).
+            if cardTopReach == 0 {
+                Text("Continue Watching")
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -804,6 +838,8 @@ struct ContinueWatchingRow: View {
                                     imageURL: imageURL(entry),
                                     progress: fraction(entry)
                                 )
+                                .padding(.top, cardTopReach)
+                                .padding(.bottom, cardBottomReach)
                             }
                             .buttonStyle(.borderless)
                             .posterButtonShape()
@@ -818,7 +854,17 @@ struct ContinueWatchingRow: View {
                             .id(entry.videoId)
                         }
                     }
+                    // Always positive — the reach lives inside the buttons (see CatalogRowView).
                     .padding(.vertical, Theme.Spacing.lg)
+                }
+                .overlay(alignment: .topLeading) {
+                    if cardTopReach > 0 {
+                        Text("Continue Watching")
+                            .font(Theme.Font.sectionTitle)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .padding(.top, Theme.Size.heroPinnedRowTitleInset)
+                            .allowsHitTesting(false)
+                    }
                 }
                 .scrollClipDisabled()
                 .onChange(of: entries.first?.videoId) { _, newFirst in
@@ -1097,6 +1143,11 @@ struct HomeHeroForeground: View {
     /// it is static content (Christian's spec 2026-07-30: the title is no longer selectable;
     /// a "Go to Movie"/"Go to Show" button below the description carries focus instead).
     var heroFocused: FocusState<Bool>.Binding
+    /// Compact slots for the PINNED hero (device round 6): smaller logo slot, 2-line synopsis,
+    /// tighter vertical padding — the pinned split must leave the rows viewport large enough
+    /// for a reach-extended focus frame plus the engine's reveal margin. Classic and full
+    /// Nuvio (never pinned) always pass false and are layout-identical to before.
+    var compact: Bool = false
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
     var body: some View {
@@ -1122,7 +1173,8 @@ struct HomeHeroForeground: View {
             .frame(height: Theme.Size.heroButtonSlotHeight, alignment: .center)
             .accessibilityLabel("\(ctaTitle): \(item.name)")
         }
-        .padding(Theme.Spacing.lg)
+        .padding(.horizontal, Theme.Spacing.lg)
+        .padding(.vertical, compact ? Theme.Spacing.md : Theme.Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1138,7 +1190,9 @@ struct HomeHeroForeground: View {
     private var nuvioLayout: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             HeroLogo(item: item)
-                .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
+                .frame(height: compact ? Theme.Size.heroLogoSlotHeightPinned
+                                       : Theme.Size.heroLogoSlotHeight,
+                       alignment: .bottomLeading)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(metaLine)
@@ -1150,10 +1204,12 @@ struct HomeHeroForeground: View {
             Text(synopsis)
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                .lineLimit(3)
+                .lineLimit(compact ? 2 : 3)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: Theme.Size.heroSynopsisSlotHeightNuvio, alignment: .topLeading)
+                .frame(height: compact ? Theme.Size.heroSynopsisSlotHeightPinned
+                                       : Theme.Size.heroSynopsisSlotHeightNuvio,
+                       alignment: .topLeading)
         }
         .frame(width: Theme.Size.heroInfoPanelWidth, alignment: .leading)
     }

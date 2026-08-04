@@ -261,16 +261,63 @@ enum Theme {
         // (a VStack split — hero fixed on top, rows ScrollView takes the remainder) the two share
         // ONE 1080pt screen instead of the hero scrolling away, so the hero region has to be
         // compacted. Height budget, measured in the sim:
-        //   ~76 tab-bar safe area + 40 top pad + ~490 carousel (452 + page dots) + 24 gap ≈ 630,
-        // leaving ~450pt for the rows viewport — a poster row needs ~424 (title ~40 + poster 330
-        // + caption ~30 + gaps), so row 1 fits with just enough headroom for the FEAT-14 focus
-        // ring lift. Shrink either constant only against that budget. Classic is untouched: it
+        //   ~76 tab-bar safe area + 8 top pad + ~490 carousel (452 + page dots) + 0 gap ≈ 574,
+        // leaving ~506pt for the rows viewport. A default poster row's FOCUS FRAME is
+        //   72 top reach + 330 poster + 16 gap + ~28 caption + 48 bottom reach ≈ 494 ≤ 506 —
+        // both reaches must fit INSIDE the viewport or the focus engine can't reveal the whole
+        // frame and rest positions degrade. Oversized user Poster Style settings can exceed the
+        // budget; that degrades to partially-revealed frames (art-edge cuts), same as before the
+        // reaches existed. Shrink these only against that budget. Classic is untouched: it
         // keeps `heroForegroundTopPad`, and `heroCarouselHeight` is shared by both layouts.
+        /// Compact pinned-hero slots (device round 6): the full 452pt carousel left the rows
+        /// viewport at ~506pt, and a reach-extended row focus frame (~490) PLUS the focus
+        /// engine's own reveal margin (~60, device-measured) did not fit — unsatisfiable
+        /// reveals produced stuck rests, cut captions, and trapped focus. The pinned hero
+        /// renders a COMPACT foreground instead (smaller logo slot, 2-line synopsis, tighter
+        /// vertical padding): content = 16 + (110 logo + 16 + 32 meta + 16 + 72 synopsis) +
+        /// 16 + 56 CTA + 16 ≈ 350 → frame 352, freeing ~100pt (rows viewport ≈ 606).
+        /// Classic keeps the full-size slots everywhere.
+        static let heroCarouselHeightPinned: CGFloat = 352
+        static let heroLogoSlotHeightPinned: CGFloat = 110
+        /// 2-line synopsis in the compact pinned hero (3 lines in full Nuvio).
+        static let heroSynopsisSlotHeightPinned: CGFloat = 72
         /// Top padding above the PINNED hero header (pinned Nuvio mode only — the classic
         /// in-scroll layout keeps `heroForegroundTopPad`).
-        static let heroPinnedTopPad: CGFloat = 40
+        static let heroPinnedTopPad: CGFloat = 8
         /// Gap between the pinned hero header and the top of the rows ScrollView below it.
-        static let heroPinnedRowsGap: CGFloat = 24
+        /// 0: the page-dots row inside the carousel already carries its own whitespace.
+        static let heroPinnedRowsGap: CGFloat = 10
+        /// Top content inset INSIDE the pinned rows ScrollView. Small: the real protection
+        /// against device rest-position error lives per-row in `heroPinnedRowTopPad` (below) —
+        /// this only sets where row 1 rests at true top (8 + 72 ≈ the 80 the round-2 fix used).
+        static let heroPinnedRowsHeadroom: CGFloat = 8
+        /// Per-row top band in the PINNED rows list (replaces the LazyVStack's sectionGap in
+        /// pinned mode, which drops to 0), AND the `rowCardTopReach` each row card extends its
+        /// focusable frame upward by in pinned mode (see BrowseComponents). Device rounds 1–4
+        /// of the pinned-hero pass (2026-08-03): hardware rests the focus engine's
+        /// scroll-to-reveal systematically high (BUG-30 residual class; every tvOS scroll is
+        /// reveal-driven — swipes drive focus, there is no free momentum scrolling), and the
+        /// pinned clip edge turned that into cropped poster tops / bisected titles. Padding
+        /// OUTSIDE the card frame can never fix that (the reveal target excludes it — rounds
+        /// 2–3 proved it on device); the card frames themselves reach up through this band, so
+        /// the reveal always includes the section title. Also the row-to-row visual gap in
+        /// pinned mode (72 vs classic's 48 sectionGap — slightly airier by design).
+        static let heroPinnedRowTopPad: CGFloat = 72
+        /// Downward card reach in pinned mode (device round 5): scrolling DOWN, the reveal
+        /// rests short in the mirror direction, leaving the focused card's caption — and up to
+        /// ~40pt of art — below the fold. Extending the focus frame down by this much makes the
+        /// reveal pull the row fully above the fold even with that shortfall. Smaller than the
+        /// top reach because there is no title band to cover below, only the rest error.
+        static let heroPinnedRowBottomReach: CGFloat = 44
+        /// Top inset of the section title OVERLAID inside a pinned row's reach band (the title
+        /// floats over the transparent region the cards' focus frames cover, so the engine's
+        /// reveal always shows it). Band above the art = shelf padding (24) + top reach (72)
+        /// = 96; the title (~40) sits LOW in the band at this inset (a ~12pt gap to the art)
+        /// so that the distance from the button frame's top to the title's top (~48pt)
+        /// exceeds the device's measured ~45pt reveal residual — a full-residual rest still
+        /// shows the whole title. Reach stays at 72: the sim freeze bisected to reach 100
+        /// (focus resolution dies), and 72 is the proven-navigable value.
+        static let heroPinnedRowTitleInset: CGFloat = 48
     }
 }
 

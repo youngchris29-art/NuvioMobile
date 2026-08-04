@@ -2,6 +2,45 @@ import SwiftUI
 import UIKit
 import SharedCore
 
+/// Pinned-hero card reach (UX-7 extension, device round 4 of the pinned pass, 2026-08-03).
+///
+/// On tvOS there is no free momentum scrolling — Siri Remote swipes drive the FOCUS engine and
+/// every vertical rest comes from its scroll-to-reveal, which aligns to the focused CARD's
+/// frame. Real hardware rests that reveal systematically short (the BUG-30 residual class), so
+/// in Home's pinned-hero mode — where the rows viewport hard-clips at the hero boundary — any
+/// content ABOVE the focused card's frame (the row's section title, the top band) can end up
+/// cut. Rounds 2–3 proved padding OUTSIDE the card frame can never fix this: the reveal simply
+/// doesn't include it.
+///
+/// The fix: rows extend each focusable card's frame UPWARD by this many transparent points
+/// (inside the button label, compensated by the row's paddings so nothing moves visually). The
+/// reveal target then physically includes the title band — the engine cannot rest a row with
+/// its title or art cut. 0 (the default) everywhere except Home's pinned mode, where HomeView
+/// sets `Theme.Size.heroPinnedRowTopPad`; at 0 every consuming expression collapses to the
+/// original layout, keeping classic byte-identical.
+private struct RowCardTopReachKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+/// Downward twin of `rowCardTopReach` (device round 5): scrolling DOWN, the reveal rests short
+/// in the mirror direction — the focused card's frame BOTTOM (caption included) lands below the
+/// fold and the art's bottom edge is cut. Extending the frame downward by this many transparent
+/// points absorbs that shortfall the same way the top reach absorbs the upward one.
+private struct RowCardBottomReachKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var rowCardTopReach: CGFloat {
+        get { self[RowCardTopReachKey.self] }
+        set { self[RowCardTopReachKey.self] = newValue }
+    }
+    var rowCardBottomReach: CGFloat {
+        get { self[RowCardBottomReachKey.self] }
+        set { self[RowCardBottomReachKey.self] = newValue }
+    }
+}
+
 /// Swift-side navigation value. Kotlin data classes don't conform to Swift `Hashable`, so we wrap the
 /// `MetaPreview` and hash on its stable identity (type + id) while still carrying all its fields for
 /// the destination's initial render. Shared by Home, Search, and detail "more like this".
@@ -125,29 +164,30 @@ struct CatalogRowView: View {
         return section.canOpenCatalog(previewLimit: Int32(previewLimit))
     }
 
+    /// Pinned-hero card reach (UX-7 extension, device rounds 4–5) — see `rowCardTopReach` /
+    /// `rowCardBottomReach` for the mechanism. 0 (no-op) everywhere except Home's pinned mode.
+    @Environment(\.rowCardTopReach) private var cardTopReach
+    @Environment(\.rowCardBottomReach) private var cardBottomReach
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(alignment: .firstTextBaseline) {
+            // Classic keeps the title as a plain sibling above the shelf. PINNED mode instead
+            // overlays the title INSIDE the shelf's top reach band (below) so the focused
+            // cards' frames — which the focus engine's scroll-to-reveal aligns — physically
+            // contain the title's region. Earlier attempts reached the card frames upward
+            // with NEGATIVE compensating paddings; once the reach exceeded the row's own
+            // bounds the focused item sat outside its .focusSection() geometry and the
+            // engine's directional resolution FROZE outright (sim-reproduced, device rounds
+            // 5–7). All-positive paddings keep every frame inside the row.
+            //
+            // The "See All" affordance is a trailing CARD inside the shelf (device round 5,
+            // Christian's call): the old header pill was a focusable stop BETWEEN rows, so
+            // vertical focus travel could land on it and reveals would align its tiny frame —
+            // degenerate rest positions (sliver rows, floating pill, art cut at the fold).
+            if cardTopReach == 0 {
                 Text(section.title)
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
-
-                Spacer()
-
-                // Only when the full catalog holds more than this row shows (see `canOpenFullCatalog`).
-                if canOpenFullCatalog {
-                    NavigationLink(value: CatalogRoute(section: section)) {
-                        HStack(spacing: Theme.Spacing.xs) {
-                            Text("See All")
-                            Image(systemName: "chevron.right")
-                        }
-                        .font(Theme.Font.meta)
-                        .foregroundStyle(Theme.Palette.textPrimary)
-                        .padding(.horizontal, Theme.Spacing.md)
-                        .padding(.vertical, Theme.Spacing.xs)
-                    }
-                    .buttonStyle(.glass)
-                }
             }
 
             ScrollViewReader { proxy in
@@ -156,12 +196,18 @@ struct CatalogRowView: View {
                         ForEach(section.items, id: \.id) { item in
                             Group {
                                 if let onSelect {
-                                    Button { onSelect(item) } label: { card(for: item, proxy: proxy) }
+                                    Button { onSelect(item) } label: {
+                                        card(for: item, proxy: proxy)
+                                            .padding(.top, cardTopReach)
+                                            .padding(.bottom, cardBottomReach)
+                                    }
                                         .buttonStyle(.borderless)
                                         .posterButtonShape()
                                 } else {
                                     NavigationLink(value: TitleRoute(preview: item)) {
                                         card(for: item, proxy: proxy)
+                                            .padding(.top, cardTopReach)
+                                            .padding(.bottom, cardBottomReach)
                                     }
                                     .buttonStyle(.borderless)
                                     .posterButtonShape()
@@ -175,10 +221,36 @@ struct CatalogRowView: View {
                             .onPlayPauseCommand(perform: muteToggle(for: item))
                             .id(item.id)
                         }
+
+                        // Trailing "See All" card (see the header comment). Same gate as the
+                        // pill had; same route.
+                        if canOpenFullCatalog {
+                            NavigationLink(value: CatalogRoute(section: section)) {
+                                SeeAllCard()
+                                    .padding(.top, cardTopReach)
+                                    .padding(.bottom, cardBottomReach)
+                            }
+                            .buttonStyle(.borderless)
+                            .posterButtonShape()
+                        }
                     }
+                    // ALWAYS positive — the reach lives inside the buttons' labels, the row's
+                    // frame contains it whole, and nothing pokes outside the focus section.
                     .padding(.vertical, Theme.Spacing.lg)
                 }
                 .scrollClipDisabled()
+                // Pinned: the title floats over the (transparent) reach band at the shelf's
+                // top-leading corner — visually where it always was, but INSIDE the region
+                // the focused cards' frames cover, so every reveal shows it.
+                .overlay(alignment: .topLeading) {
+                    if cardTopReach > 0 {
+                        Text(section.title)
+                            .font(Theme.Font.sectionTitle)
+                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .padding(.top, Theme.Size.heroPinnedRowTitleInset)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
         }
         .focusSection()
@@ -244,6 +316,53 @@ struct CatalogRowView: View {
               trailerCoordinator.playingKey == TrailerResolutionCache.key(type: item.type, id: item.id)
         else { return nil }
         return { HeroTrailerAudioState.shared.toggleMuted() }
+    }
+}
+
+/// The trailing "See All" tile at the end of a catalog row (device round 5 of the pinned-hero
+/// pass — replaces the focusable header pill; see CatalogRowView's header comment for why).
+/// Shaped like the row's RESTING cards — portrait per the user's Poster Style, or 16:9 landscape
+/// when landscape catalog rows are on — so the shelf reads as one continuous strip and vertical
+/// focus travel always lands on card-sized frames. When captions are visible, an empty caption
+/// slot keeps the tile's art aligned with its neighbors' art. Standard system lift
+/// (`.hoverEffect(.highlight)`); in FEAT-14 ring mode the tile deliberately keeps the system
+/// treatment — the accent ring marks CONTENT cards, and a utility tile reads fine without it.
+struct SeeAllCard: View {
+    @Environment(\.posterStyle) private var style
+
+    private var tileWidth: CGFloat {
+        style.landscapeCatalogRows ? Theme.Size.landscapeWidth : style.width
+    }
+    private var tileHeight: CGFloat {
+        style.landscapeCatalogRows ? Theme.Size.landscapeHeight : style.height
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            VStack(spacing: Theme.Spacing.sm) {
+                Image(systemName: "chevron.right.circle.fill")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                Text("See All")
+                    .font(Theme.Font.cardTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
+            .frame(width: tileWidth, height: tileHeight)
+            .background(
+                Theme.Palette.surfaceElevated,
+                in: RoundedRectangle(cornerRadius: style.cornerRadius)
+            )
+            .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
+            .hoverEffect(.highlight)
+
+            if style.showTitle {
+                // Empty caption slot: neighbors are art + caption, so without this the
+                // LazyHStack's center alignment would float the tile relative to their art.
+                Text(verbatim: " ")
+                    .font(Theme.Font.cardTitle)
+                    .padding(.horizontal, Theme.Spacing.xs)
+            }
+        }
     }
 }
 

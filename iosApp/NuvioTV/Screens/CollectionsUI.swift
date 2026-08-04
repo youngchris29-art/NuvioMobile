@@ -41,24 +41,55 @@ struct FolderRoute: Hashable {
 /// One collection as a horizontal row of focusable folder tiles (Home).
 struct CollectionRowView: View {
     let collection: NuvioCollection
+    /// Pinned-hero card reach (UX-7 extension, device rounds 4–5) — see `rowCardTopReach` /
+    /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
+    @Environment(\.rowCardTopReach) private var cardTopReach
+    @Environment(\.rowCardBottomReach) private var cardBottomReach
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text(collection.title)
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
+            // Pinned mode overlays the title inside the shelf's reach band instead (see
+            // CatalogRowView's structural comment — out-of-bounds frames froze the focus
+            // engine; all paddings must stay positive).
+            if cardTopReach == 0 {
+                Text(collection.title)
+                    .font(Theme.Font.sectionTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: Theme.Spacing.rowGap) {
+                // Pinned: TOP-aligned so mixed-shape folders (poster/landscape/square heights)
+                // all start their reach frames at the same y — center alignment shifted the
+                // shorter tiles' frames below the overlaid title, breaking the reveal-contains-
+                // title invariant for them (Codex review). Classic keeps center, as ever.
+                LazyHStack(alignment: cardTopReach > 0 ? .top : .center,
+                           spacing: Theme.Spacing.rowGap) {
                     ForEach(collection.folders, id: \.id) { folder in
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
                             FolderTile(folder: folder)
+                                .padding(.top, cardTopReach)
+                                .padding(.bottom, cardBottomReach)
                         }
                         .buttonStyle(.borderless)
                         .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
                     }
                 }
-                .padding(.vertical, Theme.Spacing.sm)
+                // Always positive — the reach lives inside the buttons (see CatalogRowView).
+                // Pinned TOP matches the catalog/CW shelves' 24pt: `heroPinnedRowTitleInset`
+                // assumes a 24 + reach band, and the tighter 12pt here left the overlaid title
+                // only ~36pt of clearance — overlapping folder art at larger text sizes
+                // (Codex review, device-pass gating round). Classic keeps the original 12.
+                .padding(.top, cardTopReach > 0 ? Theme.Spacing.lg : Theme.Spacing.sm)
+                .padding(.bottom, Theme.Spacing.sm)
+            }
+            .overlay(alignment: .topLeading) {
+                if cardTopReach > 0 {
+                    Text(collection.title)
+                        .font(Theme.Font.sectionTitle)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .padding(.top, Theme.Size.heroPinnedRowTitleInset)
+                        .allowsHitTesting(false)
+                }
             }
         }
         .focusSection()
