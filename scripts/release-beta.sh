@@ -90,13 +90,38 @@ if ! git branch -r --contains "$HEAD_SHA" | grep -q 'origin/'; then
   exit 1
 fi
 
+# gh release create --target rejects commit SHAs with HTTP 422 since ~2026-08-03
+# (beta.10 hit it on both repos with pushed 40-char SHAs), so releases target
+# branch names. The tag then lands on the branch's tip on GitHub — verify that
+# tip is exactly the commit we're building, not merely an ancestor.
+if [[ "$BRANCH" == "detached" ]]; then
+  echo "error: HEAD is detached — releases target a branch name (GitHub 422s SHA targets). Check out a branch first." >&2
+  exit 1
+fi
+REMOTE_TIP="$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
+if [[ "$REMOTE_TIP" != "$HEAD_SHA" ]]; then
+  echo "error: origin/$BRANCH is at ${REMOTE_TIP:-<missing>} but HEAD is $HEAD_SHA — the release tag targets the branch tip, so they must match. Push/sync first." >&2
+  exit 1
+fi
+
 # The mirror release targets the outer NuvioTV checkout's HEAD; verify it is
 # actually that repo (someone may have cloned NuvioMobile standalone).
 MIRROR_SHA=""
+MIRROR_BRANCH=""
 if git -C "$MIRROR_DIR" remote get-url origin 2>/dev/null | grep -q "NuvioTV"; then
   MIRROR_SHA="$(git -C "$MIRROR_DIR" rev-parse HEAD)"
   if ! git -C "$MIRROR_DIR" branch -r --contains "$MIRROR_SHA" | grep -q 'origin/'; then
     echo "error: NuvioTV repo HEAD ($MIRROR_SHA) is not pushed to origin — push it first (the public download link lives on that repo)." >&2
+    exit 1
+  fi
+  MIRROR_BRANCH="$(git -C "$MIRROR_DIR" symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+  if [[ "$MIRROR_BRANCH" == "detached" ]]; then
+    echo "error: NuvioTV repo HEAD is detached — releases target a branch name (GitHub 422s SHA targets). Check out a branch in $MIRROR_DIR first." >&2
+    exit 1
+  fi
+  MIRROR_TIP="$(git -C "$MIRROR_DIR" ls-remote origin "refs/heads/$MIRROR_BRANCH" | cut -f1)"
+  if [[ "$MIRROR_TIP" != "$MIRROR_SHA" ]]; then
+    echo "error: NuvioTV origin/$MIRROR_BRANCH is at ${MIRROR_TIP:-<missing>} but its HEAD is $MIRROR_SHA — the release tag targets the branch tip, so they must match. Push/sync first." >&2
     exit 1
   fi
 else
@@ -283,13 +308,13 @@ EOF
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "==> Dry run: release notes that would be published:"
   sed 's/^/    /' "$NOTES_FILE"
-  echo "==> Dry run: would publish $TAG to $GH_REPO targeting $HEAD_SHA with asset $PRODUCTS_DIR/$IPA_NAME"
-  [[ -n "$MIRROR_SHA" ]] && echo "==> Dry run: would publish $TAG to $MIRROR_REPO targeting $MIRROR_SHA"
+  echo "==> Dry run: would publish $TAG to $GH_REPO targeting branch $BRANCH (tip $HEAD_SHA) with asset $PRODUCTS_DIR/$IPA_NAME"
+  [[ -n "$MIRROR_SHA" ]] && echo "==> Dry run: would publish $TAG to $MIRROR_REPO targeting branch $MIRROR_BRANCH (tip $MIRROR_SHA)"
   exit 0
 fi
 
-publish_release() { # publish_release <repo> <target_sha>
-  echo "==> Publishing prerelease $TAG to $1"
+publish_release() { # publish_release <repo> <target_branch>
+  echo "==> Publishing prerelease $TAG to $1 (target branch: $2)"
   gh release create "$TAG" \
     --repo "$1" \
     --target "$2" \
@@ -299,7 +324,7 @@ publish_release() { # publish_release <repo> <target_sha>
     "$PRODUCTS_DIR/$IPA_NAME#NuvioTV.ipa (unsigned tvOS IPA)"
 }
 
-publish_release "$GH_REPO" "$HEAD_SHA"
+publish_release "$GH_REPO" "$BRANCH"
 if [[ -n "$MIRROR_SHA" ]]; then
-  publish_release "$MIRROR_REPO" "$MIRROR_SHA"
+  publish_release "$MIRROR_REPO" "$MIRROR_BRANCH"
 fi
