@@ -16,9 +16,9 @@ import kotlinx.atomicfu.locks.synchronized
 /**
  * Identity of a tracking backend.
  *
- * Fork note: only [TRAKT] has a registered provider today. [SIMKL] is kept as an inert id so the
- * storage-id parsing in [TrackingMedia]/[TrackingAttribution] stays upstream-faithful and so
- * Phase 2 (the Simkl feature port) does not have to re-shape this enum.
+ * Both [TRAKT] and [SIMKL] have registered providers (see `ensureTrackingProvidersRegistered`).
+ * The storage ids are upstream-faithful so the parsing in [TrackingMedia]/[TrackingAttribution]
+ * round-trips persisted attributions unchanged.
  */
 enum class TrackingProviderId(
     val storageId: String,

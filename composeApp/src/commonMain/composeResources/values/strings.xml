@@ -1128,6 +1128,7 @@
     <string name="trakt_watch_progress_dialog_subtitle">Choose whether resume and continue watching should use Trakt or Nuvio Sync while Trakt scrobbling stays active.</string>
     <string name="trakt_watch_progress_source_trakt">Trakt</string>
     <string name="trakt_watch_progress_source_nuvio">Nuvio Sync</string>
+    <string name="tracking_source_simkl">Simkl</string>
     <string name="trakt_watch_progress_trakt_selected">Watch progress source set to Trakt</string>
     <string name="trakt_watch_progress_nuvio_selected">Watch progress source set to Nuvio Sync</string>
     <string name="trakt_more_like_this_source_title">More Like This source</string>

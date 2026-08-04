@@ -88,7 +88,7 @@ data class LibraryVerticalProjection(
 
 // Fork: public (upstream: internal) — consumed cross-module (composeApp UI/tests, tvOS Swift).
 fun availableLibrarySortOptions(sourceMode: LibrarySourceMode): List<LibrarySortOption> =
-    if (sourceMode == LibrarySourceMode.TRAKT) {
+    if (sourceMode.isRemoteTrackingSource) {
         LibrarySortOption.entries
     } else {
         LibrarySortOption.entries.filterNot { it == LibrarySortOption.DEFAULT }
@@ -156,8 +156,8 @@ fun buildLibraryVerticalProjection(
     selectedType: String?,
     sortOption: LibrarySortOption,
 ): LibraryVerticalProjection {
-    val availableSections = if (sourceMode == LibrarySourceMode.TRAKT) sections else emptyList()
-    val selectedSection = if (sourceMode == LibrarySourceMode.TRAKT) {
+    val availableSections = if (sourceMode.isRemoteTrackingSource) sections else emptyList()
+    val selectedSection = if (sourceMode.isRemoteTrackingSource) {
         sections.firstOrNull { it.type == selectedSectionKey } ?: sections.firstOrNull()
     } else {
         null
@@ -252,6 +252,14 @@ private fun libraryDisplayItemKey(item: LibraryItem): String =
     "${item.type.normalizedLibraryType()}:${item.id.trim()}"
 
 private fun String.normalizedLibraryType(): String = trim().lowercase()
+
+/**
+ * True for any provider-backed library source. Sort options and section projections apply to all
+ * of them, not just Trakt — testing `== TRAKT` silently degrades every other provider to the
+ * local-library shape.
+ */
+internal val LibrarySourceMode.isRemoteTrackingSource: Boolean
+    get() = this != LibrarySourceMode.LOCAL
 
 @Serializable
 private data class StoredLibraryDisplaySettings(

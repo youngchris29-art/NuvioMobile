@@ -85,6 +85,7 @@ import nuvio.composeapp.generated.resources.trakt_library_source_nuvio
 import nuvio.composeapp.generated.resources.trakt_library_source_nuvio_selected
 import nuvio.composeapp.generated.resources.trakt_library_source_subtitle
 import nuvio.composeapp.generated.resources.trakt_library_source_title
+import nuvio.composeapp.generated.resources.tracking_source_simkl
 import nuvio.composeapp.generated.resources.trakt_library_source_trakt
 import nuvio.composeapp.generated.resources.trakt_library_source_trakt_selected
 import nuvio.composeapp.generated.resources.trakt_more_like_this_source_dialog_subtitle
@@ -355,6 +356,7 @@ private fun librarySourceModeLabel(source: LibrarySourceMode): String =
     when (source) {
         LibrarySourceMode.TRAKT -> stringResource(Res.string.trakt_library_source_trakt)
         LibrarySourceMode.LOCAL -> stringResource(Res.string.trakt_library_source_nuvio)
+        LibrarySourceMode.SIMKL -> stringResource(Res.string.tracking_source_simkl)
     }
 
 @Composable
@@ -362,6 +364,7 @@ private fun watchProgressSourceLabel(source: WatchProgressSource): String =
     when (source) {
         WatchProgressSource.TRAKT -> stringResource(Res.string.trakt_watch_progress_source_trakt)
         WatchProgressSource.NUVIO_SYNC -> stringResource(Res.string.trakt_watch_progress_source_nuvio)
+        WatchProgressSource.SIMKL -> stringResource(Res.string.tracking_source_simkl)
     }
 
 @Composable
