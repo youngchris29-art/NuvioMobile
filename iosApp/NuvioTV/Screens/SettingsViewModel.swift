@@ -449,10 +449,17 @@ final class SettingsViewModel: ObservableObject {
         case "simkl": source = .simkl
         default: source = .nuvioSync
         }
-        TrackingSettingsRepository.shared.setWatchProgressSource(
-            source: source,
-            profileId: ProfileRepository.shared.activeProfileId
-        )
+        // Route through the repository/coordinator rather than writing the setting directly.
+        // TrackingSettingsRepository.setWatchProgressSource only persists the value and updates
+        // the chip — WatchProgressRepository and WatchedRepository stay on the previous source
+        // until something else happens to refresh them. In guest sessions
+        // SyncManager.requestForegroundPull returns early without starting the coordinator, so
+        // that refresh may not arrive until relaunch. selectWatchProgressSource sets the value
+        // AND runs the source transition.
+        WatchProgressRepository.shared.selectWatchProgressSource(
+            profileId: ProfileRepository.shared.activeProfileId,
+            source: source
+        ) { _ in }
     }
 
     /// Show/hide the Home hero entirely. The shared repo republishes `HomeUiState` from already

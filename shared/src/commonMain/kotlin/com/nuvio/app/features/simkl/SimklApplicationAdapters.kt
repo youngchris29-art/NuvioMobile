@@ -102,15 +102,22 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
     override suspend fun delete(profileId: Int, items: Collection<WatchedItem>) {
         if (profileId != ProfileRepository.activeProfileId || items.isEmpty()) return
         // Fork: upstream filters to episode entries here and returns early when there are none,
-        // so unmarking a movie (or a whole-series marker) never reaches /sync/history/remove —
-        // it vanishes locally and reappears on the next refresh. Every item is forwarded instead;
-        // the episode-only work below still keys off season/episode being present.
-        val episodeItems = items.filter { item -> item.season != null && item.episode != null }
+        // so unmarking a MOVIE never reached /sync/history/remove — it vanished locally and
+        // reappeared on the next refresh. Movies are forwarded now, but series-level markers are
+        // NOT: such an item has no season/episode, so it would become a show-level
+        // /sync/history/remove that deletes the entire show's episode history on Simkl. That is
+        // not hypothetical — reconcileSeriesWatchedState drops the series marker AUTOMATICALLY
+        // (e.g. once a new episode airs and the show is no longer fully watched), which would
+        // silently wipe history the user never asked to remove.
+        // Allowlist, not denylist: an unrecognized type is skipped rather than sent destructively.
+        val removableItems = items.filter { item -> item.isSimklHistoryRemovable() }
+        if (removableItems.isEmpty()) return
+        val episodeItems = removableItems.filter { item -> item.season != null && item.episode != null }
         // Optimistically mark video IDs as removed so fallback won't show them as watched
         episodeItems.forEach { item -> item.videoId?.let(SimklAnimeWatchedFallback::markOptimisticallyRemoved) }
         SimklSyncRepository.ensureLoaded()
         val snapshot = SimklSyncRepository.state.value.snapshot
-        val media = items.map { item ->
+        val media = removableItems.map { item ->
             snapshot.mediaReference(
                 contentId = item.id,
                 contentType = item.type,
@@ -248,3 +255,20 @@ object SimklTrackingProgressProvider : TrackingProgressProvider {
 }
 
 private const val SIMKL_PLAYBACK_PROGRESS_KEY_PREFIX = "simkl-playback:"
+
+/**
+ * Fork: which watched entries may be forwarded to Simkl's `/sync/history/remove`.
+ *
+ * Episodes and movies map to a single Simkl history entry, so removing them is precise. A
+ * series-level marker has no season/episode and would serialize as a bare show, which Simkl treats
+ * as "remove this show's entire history" — far more destructive than the local marker it mirrors.
+ *
+ * Deliberately an allowlist: anything whose type is unrecognized (or that carries a partial
+ * season/episode pair) is skipped rather than sent, so the failure mode is a stale Simkl entry
+ * instead of deleted history.
+ */
+private fun WatchedItem.isSimklHistoryRemovable(): Boolean {
+    val isEpisode = season != null && episode != null
+    val isMovie = type.trim().lowercase() in setOf("movie", "film")
+    return isEpisode || isMovie
+}
