@@ -17,6 +17,9 @@ internal actual object PlatformLocalAccountDataCleaner {
         "nuvio_poster_card_style",
         "nuvio_debrid_settings",
         "nuvio_mdblist_settings",
+        // Holds tmdb_api_key. Was missing here, so the TMDB key survived sign-out on Android
+        // as well — the Apple-side leak fixed in 1debbe1f was not Apple-only after all.
+        "nuvio_tmdb_settings",
         "nuvio_auth",
         "nuvio_trakt_auth",
         "nuvio_trakt_library",
