@@ -82,6 +82,10 @@ struct ContentSourcesSettingsPane: View {
                 }
             }
 
+            settingsSection(String(localized: "Library & Watch Progress")) {
+                librarySection
+            }
+
             // FEAT-10 (tester ask): choose which catalogs Search fans out to. Fewer sources
             // means faster, more focused results — the fan-out across every search-capable
             // catalog of every addon is also the app's biggest single burst of requests.
@@ -93,6 +97,41 @@ struct ContentSourcesSettingsPane: View {
                 pluginsSection
             }
         }
+    }
+
+    /// Library Source (which backend the Library tab reads from) and Watch Progress Source (which
+    /// backend owns Continue Watching / watched history). Both are provider-neutral picks backed by
+    /// `TrackingSettingsRepository`; the shared layer falls back to the local/Nuvio option on its
+    /// own if the chosen provider isn't connected (`effectiveLibrarySourceMode` /
+    /// `effectiveWatchProgressSource`), so this pane doesn't need to gate the options itself.
+    /// Reuses `LanguageSelectRow` (already shared with the Playback and TMDB-language rows above) —
+    /// it's a generic name/code chip row, not language-specific despite the name.
+    @ViewBuilder
+    private var librarySection: some View {
+        Text("Choose where your library and watch progress are saved. Connect Trakt or Simkl in Account & Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
+
+        LanguageSelectRow(
+            title: String(localized: "Library Source"),
+            options: [
+                (String(localized: "Nuvio Library"), "local"),
+                (String(localized: "Trakt"), "trakt"),
+                (String(localized: "Simkl"), "simkl"),
+            ],
+            selected: model.librarySourceMode
+        ) { model.setLibrarySourceMode($0) }
+
+        LanguageSelectRow(
+            title: String(localized: "Watch Progress Source"),
+            options: [
+                (String(localized: "Nuvio Sync"), "nuvio_sync"),
+                (String(localized: "Trakt"), "trakt"),
+                (String(localized: "Simkl"), "simkl"),
+            ],
+            selected: model.watchProgressSource
+        ) { model.setWatchProgressSource($0) }
     }
 
     /// FEAT-10: one toggle per search-capable catalog. Rows derive from the installed addons

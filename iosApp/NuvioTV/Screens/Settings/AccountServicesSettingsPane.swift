@@ -6,6 +6,7 @@ import SharedCore
 /// wiring preserved verbatim, only regrouped into a per-category pane.
 struct AccountServicesSettingsPane: View {
     @ObservedObject var trakt: TraktViewModel
+    @ObservedObject var simkl: SimklViewModel
     @ObservedObject var debrid: DebridViewModel
     @EnvironmentObject private var auth: AuthViewModel
 
@@ -13,6 +14,8 @@ struct AccountServicesSettingsPane: View {
     @Binding var confirmingSignOut: Bool
     /// Drives the shared Trakt-disconnect confirmation alert owned by SettingsView.
     @Binding var confirmingTraktDisconnect: Bool
+    /// Drives the shared Simkl-disconnect confirmation alert owned by SettingsView.
+    @Binding var confirmingSimklDisconnect: Bool
     /// Provider id pending a debrid disconnect confirmation (drives the alert owned by SettingsView).
     @Binding var debridDisconnectId: String?
 
@@ -40,6 +43,10 @@ struct AccountServicesSettingsPane: View {
 
             settingsSection(String(localized: "Trakt")) {
                 traktSection
+            }
+
+            settingsSection(String(localized: "Simkl")) {
+                simklSection
             }
 
             settingsSection(String(localized: "Debrid")) {
@@ -88,6 +95,51 @@ struct AccountServicesSettingsPane: View {
                 trakt.connect()
             }
             if let error = trakt.errorMessage {
+                Text(error)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    /// The Simkl section body — same four states as `traktSection`. Simkl uses a PIN code (not
+    /// Trakt's device code) but the shared repo publishes the same uiState shape, so the pane logic
+    /// mirrors Trakt's exactly.
+    @ViewBuilder
+    private var simklSection: some View {
+        if !simkl.credentialsConfigured {
+            Text("Simkl isn't configured in this build. Add SIMKL_CLIENT_ID to local.properties, then rebuild the shared framework.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+        } else if simkl.isConnected {
+            SettingsActionRow(
+                title: String(localized: "Disconnect Simkl"),
+                subtitle: String(localized: "Connected as \(simkl.username ?? "your Simkl account") \u{00B7} watched history is scrobbled automatically as you play."),
+                systemImage: "checkmark.circle.fill"
+            ) {
+                confirmingSimklDisconnect = true
+            }
+        } else if let code = simkl.deviceUserCode {
+            SimklActivationCard(
+                code: code,
+                verificationUrl: simkl.deviceVerificationUrl ?? "https://simkl.com/pin/"
+            ) {
+                simkl.cancelActivation()
+            }
+        } else {
+            Text("Track what you watch on this Apple TV to your Simkl profile (movies and episodes are marked watched automatically).")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+            SettingsActionRow(
+                title: simkl.isLoading ? String(localized: "Requesting code\u{2026}") : String(localized: "Connect Simkl"),
+                subtitle: String(localized: "Shows a short code to enter at simkl.com/pin on your phone or computer."),
+                systemImage: "antenna.radiowaves.left.and.right"
+            ) {
+                simkl.connect()
+            }
+            if let error = simkl.errorMessage {
                 Text(error)
                     .font(Theme.Font.caption)
                     .foregroundStyle(.red)
@@ -222,6 +274,49 @@ struct AccountServicesSettingsPane: View {
 /// Shown while a Trakt device-code flow awaits approval: the big user code, where to enter it,
 /// a waiting spinner (the shared repo polls in the background), and a Cancel row.
 private struct TraktActivationCard: View {
+    let code: String
+    let verificationUrl: String
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            Text("On your phone or computer, go to")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text(verificationUrl)
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            Text("and enter this code:")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text(code)
+                .font(Theme.Font.hero.monospaced())
+                .kerning(12)
+                .foregroundStyle(Theme.Palette.accent)
+                .padding(.vertical, Theme.Spacing.md)
+            HStack(spacing: Theme.Spacing.md) {
+                ProgressView()
+                Text("Waiting for approval\u{2026} this screen updates automatically.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            SettingsActionRow(
+                title: String(localized: "Cancel"),
+                subtitle: String(localized: "Stop waiting and dismiss the code."),
+                systemImage: "xmark.circle"
+            ) {
+                onCancel()
+            }
+        }
+        .frame(maxWidth: 1100, alignment: .leading)
+    }
+}
+
+/// Shown while a Simkl PIN flow awaits approval: same layout as `TraktActivationCard` (the shared
+/// repo publishes the same code/verificationUrl shape), kept as its own sibling struct rather than
+/// a shared/generic component — `DebridActivationCard` below establishes that as the precedent for
+/// this file, so a provider-specific card doesn't need parameterizing into a generic one.
+private struct SimklActivationCard: View {
     let code: String
     let verificationUrl: String
     let onCancel: () -> Void

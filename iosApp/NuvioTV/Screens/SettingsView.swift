@@ -11,6 +11,7 @@ import SharedCore
 struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
     @StateObject private var trakt = TraktViewModel()
+    @StateObject private var simkl = SimklViewModel()
     @StateObject private var debrid = DebridViewModel()
     @StateObject private var remote = RemoteSetupViewModel()
     @StateObject private var plugins = PluginsViewModel()
@@ -18,6 +19,7 @@ struct SettingsView: View {
     @EnvironmentObject private var auth: AuthViewModel
     @State private var confirmingSignOut = false
     @State private var confirmingTraktDisconnect = false
+    @State private var confirmingSimklDisconnect = false
     /// Provider id pending a debrid disconnect confirmation (drives the alert).
     @State private var debridDisconnectId: String?
     /// Which category's sections are shown in the detail pane (split-view, tvOS-Settings style).
@@ -55,6 +57,7 @@ struct SettingsView: View {
         .onAppear {
             model.start()
             trakt.start()
+            simkl.start()
             debrid.start()
             plugins.start()
             badges.start()
@@ -62,6 +65,7 @@ struct SettingsView: View {
         .onDisappear {
             model.stop()
             trakt.stop()
+            simkl.stop()
             debrid.stop()
             plugins.stop()
             badges.stop()
@@ -84,6 +88,12 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Scrobbling stops and this Apple TV's Trakt access token is revoked. Your Trakt history is untouched.")
+        }
+        .alert("Disconnect Simkl?", isPresented: $confirmingSimklDisconnect) {
+            Button("Disconnect", role: .destructive) { simkl.disconnect() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Scrobbling stops and this Apple TV's Simkl authorization is cleared. Your Simkl history is untouched.")
         }
         .alert(
             "Disconnect debrid provider?",
@@ -128,9 +138,11 @@ struct SettingsView: View {
         case .accountServices:
             AccountServicesSettingsPane(
                 trakt: trakt,
+                simkl: simkl,
                 debrid: debrid,
                 confirmingSignOut: $confirmingSignOut,
                 confirmingTraktDisconnect: $confirmingTraktDisconnect,
+                confirmingSimklDisconnect: $confirmingSimklDisconnect,
                 debridDisconnectId: $debridDisconnectId
             )
         case .playback:

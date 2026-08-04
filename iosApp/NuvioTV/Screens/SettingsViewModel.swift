@@ -47,6 +47,14 @@ final class SettingsViewModel: ObservableObject {
     /// FEAT-10: disabled-source keys, mirrored from `SearchViewModel.SearchSourceSettings`
     /// into a published property so the pane's toggles re-render on change.
     @Published private(set) var disabledSearchSourceKeys: Set<String> = SearchViewModel.SearchSourceSettings.disabledKeys
+    /// Which backend owns the Library tab: "local", "trakt", or "simkl". Chip-row key, not the raw
+    /// Kotlin enum — mirrors `tmdbLanguageSelection`'s string-key pattern so the Content Sources
+    /// pane can reuse `LanguageSelectRow` without switching over the bridged enum in the view.
+    /// Backed by the provider-neutral `TrackingSettingsRepository` facade (currently persists
+    /// through the Trakt settings store — see the Kotlin object's doc comment).
+    @Published private(set) var librarySourceMode = "trakt"
+    /// Which backend owns Continue Watching / watched history: "trakt", "simkl", or "nuvio_sync".
+    @Published private(set) var watchProgressSource = "trakt"
 
     /// FEAT-10: flip one search source on/off (persists locally + updates the published mirror).
     ///
@@ -82,6 +90,7 @@ final class SettingsViewModel: ObservableObject {
     private var mdbListWatcher: FlowWatcher?
     private var posterStyleWatcher: FlowWatcher?
     private var cardDepthWatcher: FlowWatcher?
+    private var trackingSettingsWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -137,6 +146,17 @@ final class SettingsViewModel: ObservableObject {
             self.cardDepth = CardDepthStyle(from: state)
         }
 
+        // Library Source / Watch Progress Source (Content Sources pane). `TrackingSettingsRepository`
+        // is the provider-neutral facade added alongside Simkl; its uiState is still the Trakt
+        // settings type under the hood (`TrackingSettingsUiState` is a Kotlin typealias for
+        // `TraktSettingsUiState`), so that's what the watcher casts to.
+        TrackingSettingsRepository.shared.ensureLoaded()
+        trackingSettingsWatcher = FlowWatcherKt.watch(TrackingSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? TraktSettingsUiState else { return }
+            self.librarySourceMode = Self.librarySourceModeKey(state.librarySourceMode)
+            self.watchProgressSource = Self.watchProgressSourceKey(state.watchProgressSource)
+        }
+
         // The catalog list is derived from the installed add-ons; sync it whenever they change so
         // the Home Rows list stays current (tvOS has to call this itself).
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
@@ -164,6 +184,7 @@ final class SettingsViewModel: ObservableObject {
         mdbListWatcher?.cancel(); mdbListWatcher = nil
         posterStyleWatcher?.cancel(); posterStyleWatcher = nil
         cardDepthWatcher?.cancel(); cardDepthWatcher = nil
+        trackingSettingsWatcher?.cancel(); trackingSettingsWatcher = nil
     }
 
     // MARK: - Actions
@@ -389,6 +410,49 @@ final class SettingsViewModel: ObservableObject {
 
     func resetCardDepth() {
         CardDepthStyleRepository.shared.resetToDefaults()
+    }
+
+    // MARK: - Library Source / Watch Progress Source
+
+    /// "local", "trakt", or "simkl" → the shared `LibrarySourceMode`. Comparisons use `==` against
+    /// the bridged Kotlin enum rather than `switch` (same caution as `setCardDepthSurface`: Kotlin
+    /// enum entries are not guaranteed to import as an exhaustively-switchable Swift enum).
+    private static func librarySourceModeKey(_ mode: LibrarySourceMode) -> String {
+        if mode == .trakt { return "trakt" }
+        if mode == .simkl { return "simkl" }
+        return "local"
+    }
+
+    private static func watchProgressSourceKey(_ source: WatchProgressSource) -> String {
+        if source == .trakt { return "trakt" }
+        if source == .simkl { return "simkl" }
+        return "nuvio_sync"
+    }
+
+    /// Falls back to the local Nuvio library (the shared repo's own fallback, `local`) for any
+    /// unrecognized key rather than the Trakt default, since a stray key here is a UI bug, not an
+    /// unauthenticated-provider condition.
+    func setLibrarySourceMode(_ key: String) {
+        let mode: LibrarySourceMode
+        switch key {
+        case "trakt": mode = .trakt
+        case "simkl": mode = .simkl
+        default: mode = .local
+        }
+        TrackingSettingsRepository.shared.setLibrarySourceMode(source: mode)
+    }
+
+    func setWatchProgressSource(_ key: String) {
+        let source: WatchProgressSource
+        switch key {
+        case "trakt": source = .trakt
+        case "simkl": source = .simkl
+        default: source = .nuvioSync
+        }
+        TrackingSettingsRepository.shared.setWatchProgressSource(
+            source: source,
+            profileId: ProfileRepository.shared.activeProfileId
+        )
     }
 
     /// Show/hide the Home hero entirely. The shared repo republishes `HomeUiState` from already
