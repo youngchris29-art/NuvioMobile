@@ -232,9 +232,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
         // Provider-neutral fan-out to every registered tracking provider (Trakt, Simkl, …).
-        // The explicit Trakt calls above stay as a safety net for the case where the registry
-        // has not been bootstrapped yet; clearLocalState is idempotent. Naming providers here
-        // one by one is what let Simkl's auth token and sync snapshot survive a wipe.
+        // NOTE: this only resets IN-MEMORY state — TrackingProfileStore.clearLocalState does not
+        // erase persisted payloads (removeStoredProfile does). The actual on-disk erasure happens
+        // in steps 2 and 3 below, so any new provider must ALSO be added to profileScopedBaseKeys
+        // and/or AppleFilePayloadStores. Naming providers one by one there is what let Simkl's
+        // auth token and sync snapshot survive a wipe.
         TrackingProviderRegistry.clearLocalState()
         PlayerSettingsRepository.clearLocalState()
         StreamBadgeSettingsRepository.clearLocalState()

@@ -54,6 +54,9 @@ internal actual object PlatformLocalAccountDataCleaner {
         "trakt_auth_payload",
         "trakt_library_payload",
         "trakt_settings_payload",
+        // Simkl's sync snapshot is file-backed and handled by AppleFilePayloadStores.deleteAll();
+        // only the NSUserDefaults-backed auth payload needs listing here.
+        "simkl_auth_payload",
         "library_display_settings_payload",
         "pending_watch_progress_source",
         "collection_mobile_settings_payload",

@@ -21,6 +21,8 @@ internal actual object PlatformLocalAccountDataCleaner {
         "nuvio_trakt_auth",
         "nuvio_trakt_library",
         "nuvio_trakt_settings",
+        "nuvio_simkl_auth",
+        "nuvio_simkl_sync",
         "nuvio_watched",
         "nuvio_stream_link_cache",
         "nuvio_stream_badge_settings",
