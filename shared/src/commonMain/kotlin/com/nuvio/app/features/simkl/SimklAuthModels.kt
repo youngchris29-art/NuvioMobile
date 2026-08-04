@@ -181,6 +181,14 @@ internal sealed interface SimklPinPollOutcome {
     /**
      * The credentials themselves were refused (401/403). Retrying cannot help, so this ends the
      * flow immediately rather than leaving a dead code on screen for the full expiry window.
+     *
+     * Defensive only — verified against the live API 2026-08-04: Simkl answers 200 with
+     * `{"result":"KO","message":"Authorization pending"}` for ANY client id, including a garbage
+     * or empty one, at both `/oauth/pin` and `/oauth/pin/{user_code}`. It never validates the
+     * client id on these endpoints (that happens when the user approves at simkl.com/pin), so
+     * this branch does not fire today. A misconfigured client id therefore shows a code that
+     * simply never approves, bounded by the 900s expiry — there is no client-side fast-fail
+     * available. Kept in case Simkl tightens this later.
      */
     data class Rejected(val status: Int) : SimklPinPollOutcome
 }
