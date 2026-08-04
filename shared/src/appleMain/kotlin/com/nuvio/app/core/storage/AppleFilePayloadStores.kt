@@ -16,5 +16,6 @@ object AppleFilePayloadStores {
         com.nuvio.app.features.library.LibraryStorage.deleteAll()
         com.nuvio.app.features.watched.WatchedStorage.deleteAll()
         com.nuvio.app.features.streams.StreamLinkCacheStorage.deleteAll()
+        com.nuvio.app.features.simkl.SimklSyncStorage.deleteAll()
     }
 }

@@ -43,6 +43,7 @@ import com.nuvio.app.features.streams.StreamContextStore
 import com.nuvio.app.features.streams.StreamLaunchStore
 import com.nuvio.app.features.streams.StreamsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
+import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watched.WatchedRepository
@@ -202,6 +203,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         "trakt_auth_payload",
         "trakt_library_payload",
         "trakt_settings_payload",
+        "simkl_auth_payload",
         "collection_mobile_settings_payload",
         "collections_payload",
     )
@@ -229,6 +231,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
+        // Provider-neutral fan-out to every registered tracking provider (Trakt, Simkl, …).
+        // The explicit Trakt calls above stay as a safety net for the case where the registry
+        // has not been bootstrapped yet; clearLocalState is idempotent. Naming providers here
+        // one by one is what let Simkl's auth token and sync snapshot survive a wipe.
+        TrackingProviderRegistry.clearLocalState()
         PlayerSettingsRepository.clearLocalState()
         StreamBadgeSettingsRepository.clearLocalState()
         CatalogRepository.clear()
