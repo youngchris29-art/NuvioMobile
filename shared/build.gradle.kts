@@ -50,6 +50,12 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     abstract val traktRedirectUri: Property<String>
 
     @get:Input
+    abstract val simklClientId: Property<String>
+
+    @get:Input
+    abstract val simklAppName: Property<String>
+
+    @get:Input
     abstract val premiumizeClientId: Property<String>
 
     @get:Input
@@ -110,6 +116,22 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
                 |    const val CLIENT_ID = "${traktClientId.get()}"
                 |    const val CLIENT_SECRET = "${traktClientSecret.get()}"
                 |    const val REDIRECT_URI = "${traktRedirectUri.get()}"
+                |}
+                """.trimMargin()
+            )
+        }
+        // Fork: no REDIRECT_URI. tvOS authenticates Simkl through the PIN flow (see
+        // SimklAuthRepository), which takes a client id and nothing else — upstream's
+        // SIMKL_REDIRECT_URI belongs to the redirect-OAuth flow the fork does not run.
+        outDir.resolve("com/nuvio/app/features/simkl").apply {
+            mkdirs()
+            resolve("SimklConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.simkl
+                |
+                |object SimklConfig {
+                |    const val CLIENT_ID = "${simklClientId.get()}"
+                |    const val APP_NAME = "${simklAppName.get()}"
                 |}
                 """.trimMargin()
             )
@@ -235,6 +257,8 @@ val generateSharedRuntimeConfigs = tasks.register<GenerateSharedRuntimeConfigsTa
     traktClientId.set(sharedRuntimeConfigValue("TRAKT_CLIENT_ID"))
     traktClientSecret.set(sharedRuntimeConfigValue("TRAKT_CLIENT_SECRET"))
     traktRedirectUri.set(sharedRuntimeConfigValue("TRAKT_REDIRECT_URI", "nuvio://auth/trakt"))
+    simklClientId.set(sharedRuntimeConfigValue("SIMKL_CLIENT_ID"))
+    simklAppName.set(sharedRuntimeConfigValue("SIMKL_APP_NAME", "nuvio"))
     premiumizeClientId.set(sharedRuntimeConfigValue("PREMIUMIZE_CLIENT_ID"))
     introDbUrl.set(sharedRuntimeConfigValue("INTRODB_API_URL"))
     imdbRatingsBaseUrl.set(sharedRuntimeConfigValue("IMDB_RATINGS_API_BASE_URL"))
