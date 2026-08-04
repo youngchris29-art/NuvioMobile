@@ -1,43 +1,19 @@
 package com.nuvio.app.core.storage
 
 import android.content.Context
+import com.nuvio.app.core.account.AccountDataStores
 
+/**
+ * Android half of the account-data wipe: a whole-file `clear()` of every SharedPreferences file
+ * that holds account data.
+ *
+ * The file list comes from `core.account.AccountDataStores` — the same registry the two Apple
+ * cleaners read — so this can no longer drift behind them. (It had: `nuvio_tmdb_settings` was
+ * missing from the hand-maintained list, so the TMDB key survived sign-out on Android too; the
+ * Apple-side leak fixed in 1debbe1f was not Apple-only after all.) Adding a persisted store means
+ * adding a line to `AccountDataStores.all`, NOT editing this file.
+ */
 internal actual object PlatformLocalAccountDataCleaner {
-    private val preferenceNames = listOf(
-        "nuvio_addons",
-        "nuvio_library",
-        "nuvio_library_display_settings",
-        "nuvio_home_catalog_settings",
-        "nuvio_player_settings",
-        "torrent_settings",
-        "nuvio_profile_cache",
-        "nuvio_avatar_cache",
-        "nuvio_profile_pin_cache",
-        "nuvio_theme_settings",
-        "nuvio_poster_card_style",
-        "nuvio_debrid_settings",
-        "nuvio_mdblist_settings",
-        // Holds tmdb_api_key. Was missing here, so the TMDB key survived sign-out on Android
-        // as well — the Apple-side leak fixed in 1debbe1f was not Apple-only after all.
-        "nuvio_tmdb_settings",
-        "nuvio_auth",
-        "nuvio_trakt_auth",
-        "nuvio_trakt_library",
-        "nuvio_trakt_settings",
-        "nuvio_simkl_auth",
-        "nuvio_simkl_sync",
-        "nuvio_watched",
-        "nuvio_stream_link_cache",
-        "nuvio_stream_badge_settings",
-        "nuvio_continue_watching_preferences",
-        "nuvio_cw_enrichment",
-        "nuvio_episode_release_notifications",
-        "nuvio_episode_release_notifications_platform",
-        "nuvio_watch_progress",
-        "nuvio_collection_mobile_settings",
-        "nuvio_collections",
-        "nuvio_plugins",
-    )
 
     private var appContext: Context? = null
 
@@ -47,7 +23,7 @@ internal actual object PlatformLocalAccountDataCleaner {
 
     actual fun wipe() {
         val context = appContext ?: return
-        preferenceNames.forEach { name ->
+        AccountDataStores.androidPreferenceNames().forEach { name ->
             context.getSharedPreferences(name, Context.MODE_PRIVATE)
                 .edit()
                 .clear()

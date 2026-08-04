@@ -1,6 +1,7 @@
 package com.nuvio.app.core.bootstrap
 
 import com.nuvio.app.core.account.AccountDataCleanerProvider
+import com.nuvio.app.core.account.AccountDataStores
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.sync.ProfileSettingsSync
@@ -148,72 +149,13 @@ fun installTvOsSharedProviders() {
  * composeApp's `LocalAccountDataCleaner`:
  *  1. In-memory/repo state via each shared repository's `clearLocalState()`/`clear()`/`reset()`.
  *  2. NSUserDefaults keys for ALL profile slots (repo-level clears only touch the active profile's
- *     `ProfileScopedKey`s) — same key list as composeApp's `PlatformLocalAccountDataCleaner.ios`,
- *     but iterating 1..MAX_PROFILES (6) instead of its legacy 1..4.
+ *     `ProfileScopedKey`s), driven entirely by `core.account.AccountDataStores` — the same registry
+ *     composeApp's `PlatformLocalAccountDataCleaner.ios` reads, so the two Apple wipes can no
+ *     longer drift. Both iterate 1..MAX_PROFILES.
+ *
+ * Adding a persisted store means adding a line to [AccountDataStores.all], NOT editing this file.
  */
 private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCleaner {
-    private val plainKeys = listOf(
-        "profile_payload",
-        "avatar_catalog_payload",
-    )
-    private val profileIndexedPrefixes = listOf(
-        "installed_manifest_urls_",
-        "plugins_state_",
-        "library_payload_",
-        "watched_payload_",
-        "watch_progress_payload_",
-        "profile_pin_cache_",
-    )
-    private val profileScopedBaseKeys = listOf(
-        "catalog_settings_payload",
-        "library_display_settings_payload",
-        "continue_watching_preferences_payload",
-        "poster_card_style_payload",
-        "episode_release_notifications_payload",
-        "episode_release_notification_scheduled_ids",
-        "selected_theme",
-        "amoled_enabled",
-        "show_loading_overlay",
-        "preferred_audio_language",
-        "secondary_preferred_audio_language",
-        "preferred_subtitle_language",
-        "secondary_preferred_subtitle_language",
-        "subtitle_text_color",
-        "subtitle_outline_enabled",
-        "subtitle_font_size_sp",
-        "subtitle_bottom_offset",
-        "stream_reuse_last_link_enabled",
-        "stream_reuse_last_link_cache_hours",
-        "stream_badge_rules",
-        "show_file_size_badges",
-        "stream_badge_placement",
-        "debrid_stream_badge_rules",
-        // Credentials. These are profile-scoped and were never wiped on Apple — only Android's
-        // whole-file SharedPreferences wipe cleared them — so debrid provider API keys and the
-        // TMDB key survived sign-out on tvOS and iOS.
-        "debrid_torbox_api_key",
-        "debrid_real_debrid_api_key",
-        "debrid_alldebrid_api_key",
-        "tmdb_api_key",
-        "p2p_enabled",
-        "enable_upload",
-        "hide_torrent_stats",
-        "mdblist_enabled",
-        "mdblist_api_key",
-        "mdblist_use_imdb",
-        "mdblist_use_tmdb",
-        "mdblist_use_tomatoes",
-        "mdblist_use_metacritic",
-        "mdblist_use_trakt",
-        "mdblist_use_letterboxd",
-        "mdblist_use_audience",
-        "trakt_auth_payload",
-        "trakt_library_payload",
-        "trakt_settings_payload",
-        "simkl_auth_payload",
-        "collection_mobile_settings_payload",
-        "collections_payload",
-    )
 
     override fun wipe() {
         // 0) tvOS-only extras installed from tvosMain (plugins today).
@@ -241,9 +183,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // Provider-neutral fan-out to every registered tracking provider (Trakt, Simkl, …).
         // NOTE: this only resets IN-MEMORY state — TrackingProfileStore.clearLocalState does not
         // erase persisted payloads (removeStoredProfile does). The actual on-disk erasure happens
-        // in steps 2 and 3 below, so any new provider must ALSO be added to profileScopedBaseKeys
-        // and/or AppleFilePayloadStores. Naming providers one by one there is what let Simkl's
-        // auth token and sync snapshot survive a wipe.
+        // in steps 2 and 3 below, so any new provider must ALSO get an entry in
+        // AccountDataStores.all. Hand-maintaining that key list here is what let Simkl's auth
+        // token and sync snapshot survive a wipe.
         TrackingProviderRegistry.clearLocalState()
         PlayerSettingsRepository.clearLocalState()
         StreamBadgeSettingsRepository.clearLocalState()
@@ -256,11 +198,13 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         StreamLaunchStore.clear()
         StreamContextStore.clear()
 
-        // 2) Persisted keys for every profile slot.
+        // 2) Persisted keys for every profile slot, from the shared registry.
         val defaults = NSUserDefaults.standardUserDefaults
 
-        plainKeys.forEach(defaults::removeObjectForKey)
+        AccountDataStores.applePlainKeys().forEach(defaults::removeObjectForKey)
 
+        val profileIndexedPrefixes = AccountDataStores.appleProfileIndexedPrefixes()
+        val profileScopedBaseKeys = AccountDataStores.appleProfileScopedBases()
         (1..MAX_PROFILES).forEach { profileId ->
             profileIndexedPrefixes.forEach { prefix ->
                 defaults.removeObjectForKey("$prefix$profileId")
@@ -270,24 +214,14 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
             }
         }
 
+        // Keys that embed runtime data (content-id hashes, manifest URLs, debrid provider ids)
+        // cannot be enumerated, so they are swept by prefix. This also clears legacy defaults
+        // values left by pre-migration builds for stores that are file-backed today
+        // (stream_link_*, cw_enrichment_cache_*, plugins_state_*).
+        val dynamicPrefixes = AccountDataStores.appleDynamicPrefixes()
         for (key in defaults.dictionaryRepresentation().keys) {
             val keyString = key as? String ?: continue
-            // stream_link_* and cw_enrichment_cache_* live in files now (PayloadFileStore);
-            // these prefix scans clear any legacy defaults keys left by pre-migration builds
-            // (mirrors composeApp's PlatformLocalAccountDataCleaner.ios).
-            if (keyString.startsWith("stream_link_") ||
-                keyString.startsWith("cw_enrichment_cache_")
-            ) {
-                defaults.removeObjectForKey(keyString)
-            }
-            // Plugin state + per-scraper settings (scraper ids embed the manifest URL, so the
-            // settings keys look like "settings_https://…" — safe to match on that prefix).
-            if (keyString.startsWith("plugins_state_") || keyString.startsWith("settings_http")) {
-                defaults.removeObjectForKey(keyString)
-            }
-            // Pending debrid device authorizations embed the provider id, so they cannot be
-            // enumerated statically: "debrid_pending_device_authorization_<provider>_<profile>".
-            if (keyString.startsWith("debrid_pending_device_authorization_")) {
+            if (dynamicPrefixes.any { keyString.startsWith(it) }) {
                 defaults.removeObjectForKey(keyString)
             }
         }

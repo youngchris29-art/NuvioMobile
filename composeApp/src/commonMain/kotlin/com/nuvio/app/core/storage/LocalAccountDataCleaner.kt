@@ -26,6 +26,7 @@ import com.nuvio.app.features.streams.StreamContextStore
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamLaunchStore
 import com.nuvio.app.features.streams.StreamsRepository
+import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.core.ui.CardDepthStyleRepository
@@ -67,6 +68,14 @@ internal object LocalAccountDataCleaner {
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
+        // Provider-neutral fan-out to every registered tracking provider (Trakt, Simkl, …). The
+        // two explicit Trakt calls above stay: they clear repository state the registry does not
+        // own. Without this, Simkl's in-memory auth/sync state survived sign-out on the phone —
+        // tvOS's TvOsAccountDataCleaner has always called it.
+        // NOTE: this only resets IN-MEMORY state — TrackingProfileStore.clearLocalState does not
+        // erase persisted payloads. On-disk erasure is PlatformLocalAccountDataCleaner's job,
+        // driven by core.account.AccountDataStores.
+        TrackingProviderRegistry.clearLocalState()
         PlayerSettingsRepository.clearLocalState()
         StreamBadgeSettingsRepository.clearLocalState()
         P2pSettingsRepository.clearLocalState()
