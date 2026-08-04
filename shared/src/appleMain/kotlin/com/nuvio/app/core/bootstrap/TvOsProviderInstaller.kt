@@ -188,6 +188,13 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         "show_file_size_badges",
         "stream_badge_placement",
         "debrid_stream_badge_rules",
+        // Credentials. These are profile-scoped and were never wiped on Apple — only Android's
+        // whole-file SharedPreferences wipe cleared them — so debrid provider API keys and the
+        // TMDB key survived sign-out on tvOS and iOS.
+        "debrid_torbox_api_key",
+        "debrid_real_debrid_api_key",
+        "debrid_alldebrid_api_key",
+        "tmdb_api_key",
         "p2p_enabled",
         "enable_upload",
         "hide_torrent_stats",
@@ -276,6 +283,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
             // Plugin state + per-scraper settings (scraper ids embed the manifest URL, so the
             // settings keys look like "settings_https://…" — safe to match on that prefix).
             if (keyString.startsWith("plugins_state_") || keyString.startsWith("settings_http")) {
+                defaults.removeObjectForKey(keyString)
+            }
+            // Pending debrid device authorizations embed the provider id, so they cannot be
+            // enumerated statically: "debrid_pending_device_authorization_<provider>_<profile>".
+            if (keyString.startsWith("debrid_pending_device_authorization_")) {
                 defaults.removeObjectForKey(keyString)
             }
         }
