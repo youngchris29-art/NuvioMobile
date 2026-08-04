@@ -12,20 +12,35 @@ wording that avoids the Automod rules that have tripped this sub before); text
 generated from commit subjects would read badly and risk removal. Pass a file
 you wrote, the same way scripts/release-beta.sh takes --changelog.
 
-Credentials come from the environment, never from the repo. Create a "script"
-app at https://www.reddit.com/prefs/apps (the account must be the post author)
-and export:
+Auth is a refresh token, not the account password. The token is scoped to
+"read edit" (fetch the post, edit own posts) and nothing else, so a leak cannot
+post, delete, message, or touch the account. Credentials come from the
+environment, never from the repo:
 
-    REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USERNAME, REDDIT_PASSWORD
+    REDDIT_CLIENT_ID, REDDIT_REFRESH_TOKEN, and REDDIT_CLIENT_SECRET
+    (secret is required for a "web app", omitted for an "installed app")
+
+One-time setup:
+  1. https://www.reddit.com/prefs/apps as the post author -> create an app.
+     "installed app" needs no secret; "web app" issues one. Set the redirect
+     URI to anything you control, e.g. http://localhost:8080 (nothing has to
+     listen there; you just copy the code out of the URL bar).
+  2. export REDDIT_CLIENT_ID=... [REDDIT_CLIENT_SECRET=...]
+  3. ./update-reddit-beta-post.py --authorize --redirect-uri http://localhost:8080
+     Open the printed URL, approve, then paste the URL you land on. It prints a
+     refresh token; export it as REDDIT_REFRESH_TOKEN. It does not expire, so
+     this is done once.
 
 Usage:
     update-reddit-beta-post.py --changelog notes.md [--post-id 1v26ebw]
                                [--dry-run] [--yes]
+    update-reddit-beta-post.py --authorize [--redirect-uri URI]
     update-reddit-beta-post.py --self-test
 
     --dry-run    Fetch and show the diff, write nothing. Needs credentials
                  (Reddit returns 403 for unauthenticated reads).
     --yes        Skip the confirmation prompt. For non-interactive release runs.
+    --authorize  One-time flow that turns an approval into a refresh token.
     --self-test  Run the block-replacement logic against fixtures and exit.
                  Needs no credentials and no network.
 """
@@ -117,26 +132,88 @@ def _api(method: str, url: str, token: str | None = None, data: dict | None = No
         raise SystemExit(f"error: {method} {url} -> HTTP {exc.code}\n{detail}") from exc
 
 
-def get_token() -> str:
-    missing = [k for k in ("REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET",
-                           "REDDIT_USERNAME", "REDDIT_PASSWORD") if not os.environ.get(k)]
-    if missing:
+# Only what the job needs: read the post, edit our own post. Not submit, not
+# modify account settings, not send messages.
+OAUTH_SCOPE = "read edit"
+
+
+def _client() -> tuple[str, str]:
+    """(client_id, client_secret). Secret is "" for an installed (public) app."""
+    cid = os.environ.get("REDDIT_CLIENT_ID")
+    if not cid:
         raise SystemExit(
-            "error: missing credentials: " + ", ".join(missing) + "\n"
-            "       Create a 'script' app at https://www.reddit.com/prefs/apps as the\n"
-            "       post author and export those four variables. They are read from the\n"
-            "       environment only; do not put them in the repo."
+            "error: REDDIT_CLIENT_ID is not set.\n"
+            "       Create an app at https://www.reddit.com/prefs/apps as the post author,\n"
+            "       then see --help for the one-time --authorize step."
         )
-    out = _api(
-        "POST", "https://www.reddit.com/api/v1/access_token",
-        auth=(os.environ["REDDIT_CLIENT_ID"], os.environ["REDDIT_CLIENT_SECRET"]),
-        data={"grant_type": "password",
-              "username": os.environ["REDDIT_USERNAME"],
-              "password": os.environ["REDDIT_PASSWORD"]},
-    )
+    return cid, os.environ.get("REDDIT_CLIENT_SECRET", "")
+
+
+def get_token() -> str:
+    cid, csec = _client()
+    refresh = os.environ.get("REDDIT_REFRESH_TOKEN")
+    if not refresh:
+        raise SystemExit(
+            "error: REDDIT_REFRESH_TOKEN is not set.\n"
+            "       Run once:  ./update-reddit-beta-post.py --authorize\n"
+            "       then export the token it prints. It does not expire."
+        )
+    out = _api("POST", "https://www.reddit.com/api/v1/access_token",
+               auth=(cid, csec),
+               data={"grant_type": "refresh_token", "refresh_token": refresh})
     if "access_token" not in out:
-        raise SystemExit(f"error: no access_token in auth response: {out}")
+        raise SystemExit(f"error: no access_token in refresh response: {out}")
     return out["access_token"]
+
+
+def authorize(redirect_uri: str) -> int:
+    """One-time: turn a browser approval into a long-lived refresh token."""
+    import secrets
+    cid, csec = _client()
+    state = secrets.token_urlsafe(16)
+    url = "https://www.reddit.com/api/v1/authorize?" + urllib.parse.urlencode({
+        "client_id": cid, "response_type": "code", "state": state,
+        "redirect_uri": redirect_uri, "duration": "permanent",
+        "scope": OAUTH_SCOPE,
+    })
+    print("1. Open this URL as the post author and approve:\n")
+    print("   " + url + "\n")
+    print(f"2. You will land on {redirect_uri}?... (nothing needs to be listening there).")
+    try:
+        pasted = input("   Paste that full URL, or just the code: ").strip()
+    except EOFError:
+        raise SystemExit("\nerror: --authorize needs a terminal to paste the code into") from None
+
+    if "code=" in pasted:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(pasted).query)
+        if qs.get("error"):
+            raise SystemExit(f"error: reddit returned {qs['error'][0]}")
+        got_state = (qs.get("state") or [None])[0]
+        if got_state and got_state != state:
+            raise SystemExit("error: state mismatch, discarding (possible mix-up or tampering)")
+        code = (qs.get("code") or [""])[0]
+    else:
+        code = pasted
+    # Reddit appends #_ to the redirect fragment; strip anything trailing.
+    code = code.split("#")[0].strip()
+    if not code:
+        raise SystemExit("error: no authorization code found in that input")
+
+    out = _api("POST", "https://www.reddit.com/api/v1/access_token",
+               auth=(cid, csec),
+               data={"grant_type": "authorization_code", "code": code,
+                     "redirect_uri": redirect_uri})
+    token = out.get("refresh_token")
+    if not token:
+        raise SystemExit(
+            f"error: no refresh_token in response: {out}\n"
+            "       Make sure the authorize URL had duration=permanent and that the\n"
+            "       redirect URI matches the app's exactly."
+        )
+    print("\n==> Add this to your shell profile (scope: " + OAUTH_SCOPE + "):\n")
+    print(f'export REDDIT_REFRESH_TOKEN="{token}"\n')
+    print("It does not expire. Treat it like a password: it can read and edit as you.")
+    return 0
 
 
 def fetch_post(token: str, post_id: str) -> dict:
@@ -155,10 +232,17 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--authorize", action="store_true",
+                    help="one-time: exchange a browser approval for a refresh token")
+    ap.add_argument("--redirect-uri", default="http://localhost:8080",
+                    help="must match the app's redirect URI exactly (default: %(default)s)")
     args = ap.parse_args()
 
     if args.self_test:
         return self_test()
+
+    if args.authorize:
+        return authorize(args.redirect_uri)
 
     if not args.changelog:
         ap.error("--changelog is required (or use --self-test)")

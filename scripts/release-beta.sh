@@ -44,10 +44,12 @@ Options:
                        r/Nuvio beta thread's post body for this file's contents,
                        so the post always describes what releases/latest serves.
                        Shows a diff and asks before touching the live post; pass
-                       --yes to skip the prompt. Needs REDDIT_CLIENT_ID,
-                       REDDIT_CLIENT_SECRET, REDDIT_USERNAME and REDDIT_PASSWORD
-                       in the environment. Write this file by hand: it is public
-                       prose for testers, not generated commit subjects.
+                       --yes to skip the prompt. Needs REDDIT_CLIENT_ID and
+                       REDDIT_REFRESH_TOKEN in the environment (plus
+                       REDDIT_CLIENT_SECRET for a "web app"); get the token once
+                       via scripts/update-reddit-beta-post.py --authorize.
+                       Write this file by hand: it is public prose for testers,
+                       not generated commit subjects.
   --reddit-post <id>   Override the post id (default: the beta thread)
   --yes                Do not prompt before editing the Reddit post
   --skip-build         Reuse the existing build products (repackage + publish only)
@@ -103,13 +105,18 @@ if [[ -n "$REDDIT_CHANGELOG_FILE" ]]; then
     echo "error: $REDDIT_SCRIPT missing or not executable" >&2
     exit 1
   fi
+  # REDDIT_CLIENT_SECRET is intentionally not required: an "installed app" is a
+  # public client and has none. The refresh token is scoped to "read edit", so it
+  # cannot post or touch the account even if it leaks.
   missing_reddit_env=()
-  for v in REDDIT_CLIENT_ID REDDIT_CLIENT_SECRET REDDIT_USERNAME REDDIT_PASSWORD; do
+  for v in REDDIT_CLIENT_ID REDDIT_REFRESH_TOKEN; do
     [[ -n "${!v:-}" ]] || missing_reddit_env+=("$v")
   done
   if [[ ${#missing_reddit_env[@]} -gt 0 ]]; then
     echo "error: --reddit-changelog needs these in the environment: ${missing_reddit_env[*]}" >&2
-    echo "       Create a 'script' app at https://www.reddit.com/prefs/apps as the post author." >&2
+    echo "       One-time setup: create an app at https://www.reddit.com/prefs/apps as the" >&2
+    echo "       post author, then run:" >&2
+    echo "         $REDDIT_SCRIPT --authorize" >&2
     exit 1
   fi
   echo "==> Reddit post update armed ($(basename "$REDDIT_CHANGELOG_FILE"))"
