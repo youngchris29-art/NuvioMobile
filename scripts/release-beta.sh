@@ -39,6 +39,17 @@ hotfix/rebuild that genuinely adds nothing user-facing.
 Options:
   --tag <tag>          Use an explicit release tag instead of auto-incrementing
   --changelog <file>   Markdown file with hand-written highlights for the notes
+  --reddit-changelog <file>
+                       After publishing, swap the "Latest build" block in the
+                       r/Nuvio beta thread's post body for this file's contents,
+                       so the post always describes what releases/latest serves.
+                       Shows a diff and asks before touching the live post; pass
+                       --yes to skip the prompt. Needs REDDIT_CLIENT_ID,
+                       REDDIT_CLIENT_SECRET, REDDIT_USERNAME and REDDIT_PASSWORD
+                       in the environment. Write this file by hand: it is public
+                       prose for testers, not generated commit subjects.
+  --reddit-post <id>   Override the post id (default: the beta thread)
+  --yes                Do not prompt before editing the Reddit post
   --skip-build         Reuse the existing build products (repackage + publish only)
   --skip-readme-check  Allow releasing without a README update (hotfixes/rebuilds)
   --dry-run            Build and package, print the notes + what would be published, skip publish
@@ -51,10 +62,16 @@ SKIP_BUILD=0
 SKIP_README_CHECK=0
 DRY_RUN=0
 CHANGELOG_FILE=""
+REDDIT_CHANGELOG_FILE=""
+REDDIT_POST_ID=""
+ASSUME_YES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="$2"; shift 2 ;;
     --changelog) CHANGELOG_FILE="$2"; shift 2 ;;
+    --reddit-changelog) REDDIT_CHANGELOG_FILE="$2"; shift 2 ;;
+    --reddit-post) REDDIT_POST_ID="$2"; shift 2 ;;
+    --yes) ASSUME_YES=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --skip-readme-check) SKIP_README_CHECK=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -70,6 +87,32 @@ if [[ -n "$CHANGELOG_FILE" ]]; then
   fi
   # Resolve now — the script cd's to ROOT_DIR below, which would break a relative path.
   CHANGELOG_FILE="$(cd "$(dirname "$CHANGELOG_FILE")" && pwd)/$(basename "$CHANGELOG_FILE")"
+fi
+
+# Validate the Reddit step up front. It runs after publishing, and discovering a
+# typo'd path or a missing credential at that point would leave the release out
+# and the thread stale — the one state this is meant to prevent.
+REDDIT_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update-reddit-beta-post.py"
+if [[ -n "$REDDIT_CHANGELOG_FILE" ]]; then
+  if [[ ! -r "$REDDIT_CHANGELOG_FILE" ]]; then
+    echo "error: reddit changelog file not readable: $REDDIT_CHANGELOG_FILE" >&2
+    exit 1
+  fi
+  REDDIT_CHANGELOG_FILE="$(cd "$(dirname "$REDDIT_CHANGELOG_FILE")" && pwd)/$(basename "$REDDIT_CHANGELOG_FILE")"
+  if [[ ! -x "$REDDIT_SCRIPT" ]]; then
+    echo "error: $REDDIT_SCRIPT missing or not executable" >&2
+    exit 1
+  fi
+  missing_reddit_env=()
+  for v in REDDIT_CLIENT_ID REDDIT_CLIENT_SECRET REDDIT_USERNAME REDDIT_PASSWORD; do
+    [[ -n "${!v:-}" ]] || missing_reddit_env+=("$v")
+  done
+  if [[ ${#missing_reddit_env[@]} -gt 0 ]]; then
+    echo "error: --reddit-changelog needs these in the environment: ${missing_reddit_env[*]}" >&2
+    echo "       Create a 'script' app at https://www.reddit.com/prefs/apps as the post author." >&2
+    exit 1
+  fi
+  echo "==> Reddit post update armed ($(basename "$REDDIT_CHANGELOG_FILE"))"
 fi
 
 cd "$ROOT_DIR"
@@ -310,6 +353,12 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   sed 's/^/    /' "$NOTES_FILE"
   echo "==> Dry run: would publish $TAG to $GH_REPO targeting branch $BRANCH (tip $HEAD_SHA) with asset $PRODUCTS_DIR/$IPA_NAME"
   [[ -n "$MIRROR_SHA" ]] && echo "==> Dry run: would publish $TAG to $MIRROR_REPO targeting branch $MIRROR_BRANCH (tip $MIRROR_SHA)"
+  if [[ -n "$REDDIT_CHANGELOG_FILE" ]]; then
+    echo "==> Dry run: Reddit post diff that would be applied:"
+    reddit_args=(--changelog "$REDDIT_CHANGELOG_FILE" --dry-run)
+    [[ -n "$REDDIT_POST_ID" ]] && reddit_args+=(--post-id "$REDDIT_POST_ID")
+    "$REDDIT_SCRIPT" "${reddit_args[@]}" || echo "==> Dry run: reddit preview failed (see above)"
+  fi
   exit 0
 fi
 
@@ -327,4 +376,20 @@ publish_release() { # publish_release <repo> <target_branch>
 publish_release "$GH_REPO" "$BRANCH"
 if [[ -n "$MIRROR_SHA" ]]; then
   publish_release "$MIRROR_REPO" "$MIRROR_BRANCH"
+fi
+
+# Post-publish: point the beta thread at the build that is now live. Deliberately
+# last — the release is the thing that matters, and a Reddit failure here must not
+# fail the release that already succeeded. It exits non-zero on its own if the post
+# is not in the shape it knows how to edit, rather than mangling it.
+if [[ -n "$REDDIT_CHANGELOG_FILE" ]]; then
+  echo "==> Updating the r/Nuvio beta thread's post body"
+  reddit_args=(--changelog "$REDDIT_CHANGELOG_FILE")
+  [[ -n "$REDDIT_POST_ID" ]] && reddit_args+=(--post-id "$REDDIT_POST_ID")
+  [[ "$ASSUME_YES" -eq 1 ]] && reddit_args+=(--yes)
+  if ! "$REDDIT_SCRIPT" "${reddit_args[@]}"; then
+    echo "warning: $TAG published successfully, but the Reddit post was NOT updated." >&2
+    echo "         Re-run just that step once fixed:" >&2
+    echo "         $REDDIT_SCRIPT --changelog $REDDIT_CHANGELOG_FILE" >&2
+  fi
 fi
