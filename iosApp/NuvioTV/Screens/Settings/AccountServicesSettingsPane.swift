@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import SharedCore
 
@@ -105,6 +106,12 @@ struct AccountServicesSettingsPane: View {
     /// The Simkl section body — same four states as `traktSection`. Simkl uses a PIN code (not
     /// Trakt's device code) but the shared repo publishes the same uiState shape, so the pane logic
     /// mirrors Trakt's exactly.
+    ///
+    /// Once connected the section also carries the deferred-parity set ported from upstream's
+    /// Compose tracking settings: Sync Now, "How syncing works", and the anime ID preference —
+    /// the last two gated on CONNECTED exactly as upstream gates its "Simkl features" section.
+    /// The attribution footnote below is unconditional (upstream keeps it on the licenses page,
+    /// which tvOS doesn't have).
     @ViewBuilder
     private var simklSection: some View {
         if !simkl.credentialsConfigured {
@@ -119,6 +126,29 @@ struct AccountServicesSettingsPane: View {
                 systemImage: "checkmark.circle.fill"
             ) {
                 confirmingSimklDisconnect = true
+            }
+
+            SimklSyncNowRow(
+                isSyncing: simkl.isSyncing,
+                lastSyncedAt: simkl.lastSyncedAt
+            ) {
+                simkl.syncNow()
+            }
+
+            // Non-destructive failure surface: the row above stays pressable, this is just a
+            // caption. A sync that fails fast (no client id in this build, no network) leaves the
+            // section fully usable.
+            if let syncError = simkl.syncErrorMessage {
+                Text(syncError)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: 1100, alignment: .leading)
+            }
+
+            SimklSyncInfoRow()
+
+            SimklAnimeIdRow(selection: simkl.animeIdPreference) { key in
+                simkl.setAnimeIdPreference(key)
             }
         } else if let code = simkl.deviceUserCode {
             SimklActivationCard(
@@ -145,6 +175,15 @@ struct AccountServicesSettingsPane: View {
                     .foregroundStyle(.red)
             }
         }
+
+        // Data-source attribution (upstream's `settings_licenses_attributions_simkl_body`, kept
+        // verbatim). Upstream shows it on its Licenses & Attributions page; tvOS has no such page,
+        // so the credit lives with the integration it describes and shows in every state — the
+        // claim is about the integration, not about being signed in.
+        Text("Nuvio connects to Simkl for account authentication, watchlists, watched history, playback progress, and scrobbling. Movie, TV, and anime tracking data is provided by Simkl. Nuvio is not affiliated with or endorsed by Simkl.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+            .frame(maxWidth: 1100, alignment: .leading)
     }
 
     // MARK: - Debrid (native TorBox/Premiumize resolution via the shared debrid stack)
@@ -268,6 +307,211 @@ struct AccountServicesSettingsPane: View {
                 debrid.saveManualKey(provider.id, key: key)
             }
         }
+    }
+}
+
+/// Manual "Sync now" for Simkl (upstream's primary button on the connected provider card).
+///
+/// Deliberately NOT `.disabled(isSyncing)`: disabling a focused tvOS row throws focus somewhere
+/// else mid-sync and then takes it back when the sync ends. The double-press guard lives in
+/// `SimklViewModel.syncNow()` instead, so a press during a sync is a harmless no-op.
+private struct SimklSyncNowRow: View {
+    let isSyncing: Bool
+    let lastSyncedAt: Date?
+    let action: () -> Void
+
+    /// 15 minutes is `SIMKL_AUTOMATIC_REFRESH_INTERVAL_MINUTES` in the shared refresh policy. That
+    /// constant is `internal` in Kotlin, so it isn't in the SharedCore framework header and can't
+    /// be read here — if the shared interval ever changes, this copy has to change with it.
+    private static let automaticIntervalMinutes = 15
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
+    private var subtitle: String {
+        if isSyncing {
+            return String(localized: "Checking Simkl for changes made in another app or on the website\u{2026}")
+        }
+        guard let lastSyncedAt else {
+            return String(localized: "Check Simkl now instead of waiting for the next automatic check (every \(Self.automaticIntervalMinutes) minutes).")
+        }
+        let relative = Self.relativeFormatter.localizedString(for: lastSyncedAt, relativeTo: Date())
+        return String(localized: "Last synced \(relative) \u{00B7} Nuvio checks on its own at most every \(Self.automaticIntervalMinutes) minutes.")
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.lg) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(Theme.Font.body)
+                    .rowAccentTint()
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    Text(isSyncing ? String(localized: "Syncing\u{2026}") : String(localized: "Sync Now"))
+                        .font(Theme.Font.body)
+                        .rowTextColor()
+                    Text(subtitle)
+                        .font(Theme.Font.caption)
+                        .rowTextColor(secondary: true)
+                }
+                Spacer()
+                if isSyncing {
+                    RowProgressIndicator()
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(Theme.Font.body)
+                        .rowTextColor(secondary: true)
+                }
+            }
+            .padding(Theme.Spacing.lg)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.settingsRow)
+    }
+}
+
+/// A `ProgressView` that survives the focus platter. `rowTextColor()`/`rowAccentTint()` only set
+/// `foregroundStyle`, which the circular indicator ignores — it follows `tint`, so it needs the
+/// same focus-aware treatment applied there or it renders near-white on the near-white focused
+/// row (the white-on-white regression class this app keeps hitting).
+private struct RowProgressIndicator: View {
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        ProgressView()
+            .progressViewStyle(.circular)
+            .tint(isFocused ? Theme.Palette.onFocusPlatter : Theme.Palette.textSecondary)
+    }
+}
+
+/// "How Syncing Works" — upstream's `SimklSyncInfoDialog` adapted to tvOS.
+///
+/// Rendered as an expanding row rather than an alert: it is four paragraphs of explanation with no
+/// decision attached, and a tvOS alert with that much body text is unreadable at 10 feet. The
+/// collapsed/expanded header mirrors the Home Screen pane's disclosure groups (a plain Button +
+/// conditional content — tvOS `DisclosureGroup` focus highlighting is unusable).
+///
+/// Upstream's "Read the Simkl sync guide" button is dropped: it calls `UriHandler.openUri`, and
+/// tvOS has no browser to hand the URL to. The URL is printed instead so it can be opened on a
+/// phone — the same escape hatch the activation cards above use for simkl.com/pin.
+private struct SimklSyncInfoRow: View {
+    @State private var isExpanded = false
+
+    /// Same 15 as `SimklSyncNowRow.automaticIntervalMinutes` (upstream substitutes it into the
+    /// dialog's first paragraph).
+    private static let automaticIntervalMinutes = 15
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: Theme.Spacing.lg) {
+                    Image(systemName: "info.circle")
+                        .font(Theme.Font.body)
+                        .rowAccentTint()
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                        Text("How Syncing Works")
+                            .font(Theme.Font.body)
+                            .rowTextColor()
+                        Text("What Nuvio sends to Simkl, when it checks back, and why some shows leave Continue Watching.")
+                            .font(Theme.Font.caption)
+                            .rowTextColor(secondary: true)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(Theme.Font.body)
+                        .rowTextColor(secondary: true)
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(Theme.Spacing.lg)
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.settingsRow)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    Text("Nuvio automatically checks Simkl at most once every \(Self.automaticIntervalMinutes) minutes. Changes made through another app or the Simkl website may take that long to appear.")
+                    Text("Each refresh first checks whether Simkl reports any changes and downloads only the updates. This follows Simkl\u{2019}s API rules, reduces unnecessary data use, and helps keep the service stable.")
+                    Text("Changes made in Nuvio are sent to Simkl immediately. Use Sync Now whenever you want Nuvio to check for remote changes sooner.")
+                    Text("Shows placed in Simkl\u{2019}s On Hold or Dropped lists are hidden from Continue Watching. They remain hidden for as long as they stay in either list.")
+                    Text("Full sync guide: api.simkl.org/guides/sync")
+                }
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+                .padding(.leading, Theme.Spacing.md)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isExpanded)
+    }
+}
+
+/// Anime ID preference — which external ID is the canonical content ID for anime resolved through
+/// Simkl (`SimklAnimeIdPreference`). Upstream opens an adaptive picker dialog listing each option
+/// with a description; on tvOS this is the Menu + Picker dropdown the Playback pane's Default
+/// Player row established: the row shows the current choice, Select pops the native menu, and the
+/// embedded Picker gets radio-style checkmarks for free.
+///
+/// The per-option descriptions upstream shows inside its dialog don't survive that trip (tvOS menu
+/// items are single labels), so the trade-off they explain is folded into the row's own subtitle.
+private struct SimklAnimeIdRow: View {
+    let selection: String
+    let onSelect: (String) -> Void
+
+    private static let options: [(key: String, name: String)] = [
+        ("imdb", String(localized: "Prefer IMDB")),
+        ("mal", String(localized: "Prefer MyAnimeList")),
+        ("kitsu", String(localized: "Prefer Kitsu"))
+    ]
+
+    private var selectedName: String {
+        Self.options.first { $0.key == selection }?.name ?? Self.options[0].name
+    }
+
+    /// The Picker binds through this rather than to a @State mirror: the shared settings flow is
+    /// the source of truth, so the row re-renders from the repository's own emission and can never
+    /// display a choice that failed to persist.
+    private var binding: Binding<String> {
+        Binding(get: { selection }, set: { onSelect($0) })
+    }
+
+    var body: some View {
+        Menu {
+            Picker(String(localized: "Anime ID Preference"), selection: binding) {
+                ForEach(Self.options, id: \.key) { option in
+                    Text(option.name).tag(option.key)
+                }
+            }
+        } label: {
+            HStack(spacing: Theme.Spacing.lg) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(Theme.Font.body)
+                    .rowAccentTint()
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    Text("Anime ID Preference")
+                        .font(Theme.Font.body)
+                        .rowTextColor()
+                    Text("Which external ID identifies anime entries. MyAnimeList or Kitsu give each season its own entry; IMDB groups the seasons of a franchise under one ID.")
+                        .font(Theme.Font.caption)
+                        .rowTextColor(secondary: true)
+                }
+                Spacer()
+                Text(selectedName)
+                    .font(Theme.Font.body)
+                    .rowTextColor(secondary: true)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Theme.Font.body)
+                    .rowTextColor(secondary: true)
+            }
+            .padding(Theme.Spacing.lg)
+            .frame(maxWidth: .infinity)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.settingsRow)
     }
 }
 
