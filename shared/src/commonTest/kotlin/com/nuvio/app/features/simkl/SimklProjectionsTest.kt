@@ -2,6 +2,7 @@ package com.nuvio.app.features.simkl
 
 import com.nuvio.app.features.tracking.TrackingMediaKind
 import com.nuvio.app.features.tracking.TrackingMembershipRemovalImpact
+import com.nuvio.app.features.watched.watchedItemKey
 import com.nuvio.app.features.watchprogress.WatchProgressSourceSimklPlayback
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -185,6 +186,134 @@ class SimklProjectionsTest {
     }
 
     @Test
+    fun `anime movies project a movie watched item just like a regular movie`() {
+        val animeMovie = entry(
+            type = SimklMediaType.ANIME,
+            status = SimklListStatus.COMPLETED,
+            id = 46409,
+            imdb = "tt0245429",
+            lastWatchedAt = "2023-11-14T22:13:20Z",
+            animeType = "movie",
+        )
+
+        val projection = SimklSyncSnapshot(entries = listOf(animeMovie)).toSimklWatchedProjection()
+
+        val watched = assertNotNull(projection.items.singleOrNull())
+        assertEquals("movie", watched.type)
+        assertEquals("tt0245429", watched.id)
+        assertNull(watched.season)
+        assertNull(watched.episode)
+        assertEquals("https://simkl.com/anime/46409", watched.trackingSourceUrl)
+        // An anime movie is never a "fully watched series".
+        assertTrue(projection.fullyWatchedSeriesKeys.isEmpty())
+    }
+
+    @Test
+    fun `anime movies use movie alternate keys and are skipped by the anime series keys`() {
+        val animeMovie = entry(
+            type = SimklMediaType.ANIME,
+            status = SimklListStatus.COMPLETED,
+            id = 46409,
+            imdb = "tt0245429",
+            mal = 199,
+            lastWatchedAt = "2023-11-14T22:13:20Z",
+            animeType = "movie",
+        )
+        val snapshot = SimklSyncSnapshot(entries = listOf(animeMovie))
+
+        assertTrue(snapshot.animeAlternateWatchedKeys().isEmpty())
+        val movieKeys = snapshot.movieAlternateWatchedKeys()
+        assertTrue(movieKeys.contains(watchedItemKey("movie", "mal:199")))
+        assertTrue(movieKeys.contains(watchedItemKey("movie", "simkl:46409")))
+    }
+
+    @Test
+    fun `episodic anime entries stay series across every projection`() {
+        val animeSeries = entry(
+            type = SimklMediaType.ANIME,
+            status = SimklListStatus.COMPLETED,
+            id = 39687,
+            imdb = "tt2560140",
+            mal = 16498,
+            lastWatchedAt = "2023-11-14T22:13:20Z",
+            animeType = "tv",
+            seasons = listOf(
+                SimklSeason(
+                    number = 1,
+                    episodes = listOf(SimklEpisode(number = 1, watchedAt = "2023-11-14T23:13:20Z")),
+                ),
+            ),
+        )
+        val snapshot = SimklSyncSnapshot(entries = listOf(animeSeries))
+
+        val projection = snapshot.toSimklWatchedProjection()
+        assertTrue(projection.items.all { item -> item.type == "series" })
+        assertTrue(projection.fullyWatchedSeriesKeys.any { key -> "tt2560140" in key })
+        assertTrue(snapshot.animeAlternateWatchedKeys().contains(watchedItemKey("series", "mal:16498")))
+        assertTrue(snapshot.movieAlternateWatchedKeys().isEmpty())
+    }
+
+    @Test
+    fun `anime playback without an episode projects movie progress`() {
+        val session = SimklPlaybackSession(
+            id = 777,
+            progress = 30.0,
+            pausedAt = "2024-04-30T22:13:00.250Z",
+            type = "movie",
+            episode = null,
+            anime = media(id = 46409, imdb = "tt0245429", runtime = 125),
+        )
+
+        val entry = SimklSyncSnapshot(playback = listOf(session)).toSimklProgressEntries().single()
+
+        assertEquals("movie", entry.contentType)
+        assertEquals("movie", entry.parentMetaType)
+        assertEquals("tt0245429", entry.parentMetaId)
+        assertEquals("tt0245429", entry.videoId)
+        assertNull(entry.seasonNumber)
+        assertNull(entry.episodeNumber)
+    }
+
+    @Test
+    fun `episodic anime playback with a missing episode projects nothing`() {
+        // Codex review of the 6e5e41f3 port: only the session's explicit `type == "movie"`
+        // marks an anime session as a movie. An episodic (or untyped) anime session that lost
+        // its episode details is incomplete data and must be discarded, not emitted as movie
+        // progress.
+        val episodic = SimklPlaybackSession(
+            id = 778,
+            progress = 30.0,
+            pausedAt = "2024-04-30T22:13:00.250Z",
+            type = "episode",
+            episode = null,
+            anime = media(id = 39687, imdb = "tt2560140", runtime = 24),
+        )
+        val untyped = episodic.copy(id = 779, type = null)
+
+        assertTrue(
+            SimklSyncSnapshot(playback = listOf(episodic, untyped)).toSimklProgressEntries().isEmpty(),
+        )
+    }
+
+    @Test
+    fun `anime playback with an episode still projects series progress`() {
+        val session = SimklPlaybackSession(
+            id = 778,
+            progress = 30.0,
+            pausedAt = "2024-04-30T22:13:00.250Z",
+            type = "episode",
+            episode = SimklPlaybackEpisode(season = 1, number = 4),
+            anime = media(id = 39687, imdb = "tt2560140", runtime = 24),
+        )
+
+        val entry = SimklSyncSnapshot(playback = listOf(session)).toSimklProgressEntries().single()
+
+        assertEquals("series", entry.contentType)
+        assertEquals(1, entry.seasonNumber)
+        assertEquals(4, entry.episodeNumber)
+    }
+
+    @Test
     fun `playback projection preserves Simkl session identity and percentage`() {
         val session = SimklPlaybackSession(
             id = 12345,
@@ -350,12 +479,14 @@ class SimklProjectionsTest {
         slug: String? = null,
         addedAt: String? = null,
         lastWatchedAt: String? = null,
+        animeType: String? = null,
         seasons: List<SimklSeason> = emptyList(),
     ): SimklLibraryEntry = SimklLibraryEntry(
         mediaType = type,
         status = status,
         addedToWatchlistAt = addedAt,
         lastWatchedAt = lastWatchedAt,
+        animeType = animeType,
         seasons = seasons,
         movie = if (type == SimklMediaType.MOVIES) media(id, imdb, mal, slug = slug) else null,
         show = if (type != SimklMediaType.MOVIES) media(id, imdb, mal, slug = slug) else null,

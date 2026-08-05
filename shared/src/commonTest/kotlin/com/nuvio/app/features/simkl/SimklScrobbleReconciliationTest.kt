@@ -3,6 +3,8 @@ package com.nuvio.app.features.simkl
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -173,6 +175,192 @@ class SimklScrobbleReconciliationTest {
         assertEquals("tt1375666", updated.toSimklWatchedProjection().items.single().id)
     }
 
+    @Test
+    fun `completed anime movie stop stamps a movie entry when the library says anime_type movie`() {
+        val media = animeMovieMedia(46409L, "tt0245429", 199L)
+        val snapshot = SimklSyncSnapshot(entries = listOf(animeMovieEntry(media)))
+
+        val updated = snapshot.applyScrobbleResult(
+            result = SimklScrobbleResult(
+                outcome = SimklScrobbleOutcome.SCROBBLE,
+                playbackId = 20L,
+                progress = 95.0,
+                mediaType = SimklMediaType.ANIME,
+                media = media,
+                // Simkl still echoes an episode for anime movies; anime_type must win.
+                episode = SimklPlaybackEpisode(season = 1, number = 1),
+                watchedAt = "2023-11-14T21:00:00Z",
+            ),
+            committedAtEpochMs = 1_700_000_000_000L,
+        )
+
+        val entry = updated.entries.single()
+        assertEquals(SimklMediaType.ANIME, entry.mediaType)
+        assertEquals("movie", entry.animeType)
+        assertEquals(SimklListStatus.COMPLETED, entry.status)
+        assertEquals("2023-11-14T21:00:00Z", entry.lastWatchedAt)
+        assertTrue(entry.isMovieEntry())
+        assertTrue(entry.seasons.isEmpty())
+        val watched = updated.toSimklWatchedProjection().items.single()
+        assertEquals("movie", watched.type)
+        assertEquals("tt0245429", watched.id)
+    }
+
+    @Test
+    fun `completed anime movie stop without an episode creates a stamped movie entry`() {
+        val media = animeMovieMedia(46409L, "tt0245429", 199L)
+
+        val updated = SimklSyncSnapshot().applyScrobbleResult(
+            result = SimklScrobbleResult(
+                outcome = SimklScrobbleOutcome.SCROBBLE,
+                playbackId = 21L,
+                progress = 95.0,
+                mediaType = SimklMediaType.ANIME,
+                media = media,
+                episode = null,
+                watchedAt = "2023-11-14T21:00:00Z",
+            ),
+            committedAtEpochMs = 1_700_000_000_000L,
+        )
+
+        val entry = updated.entries.single()
+        assertEquals(SimklMediaType.ANIME, entry.mediaType)
+        assertEquals("movie", entry.animeType)
+        assertEquals(SimklListStatus.COMPLETED, entry.status)
+        assertTrue(entry.isMovieEntry())
+        assertEquals("movie", updated.toSimklWatchedProjection().items.single().type)
+    }
+
+    @Test
+    fun `paused anime movie is stored as a movie session not an anime episode`() {
+        val media = animeMovieMedia(46409L, "tt0245429", 199L)
+        val snapshot = SimklSyncSnapshot(entries = listOf(animeMovieEntry(media)))
+
+        val updated = snapshot.applyScrobbleResult(
+            result = SimklScrobbleResult(
+                outcome = SimklScrobbleOutcome.PAUSE,
+                playbackId = 22L,
+                progress = 45.0,
+                mediaType = SimklMediaType.ANIME,
+                media = media,
+                episode = SimklPlaybackEpisode(season = 1, number = 1),
+            ),
+            committedAtEpochMs = 1_700_000_000_000L,
+        )
+
+        val session = updated.playback.single()
+        assertEquals("movie", session.type)
+        // Codex-review contract: the media STAYS in the anime field (so the derived mediaType —
+        // and thus the Simkl source URL — remains anime); `type == "movie"` is the movie marker,
+        // and the echoed episode is dropped rather than carried onto movie progress.
+        assertNotNull(session.anime)
+        assertNull(session.movie)
+        assertNull(session.show)
+        assertNull(session.episode)
+        assertEquals(SimklMediaType.ANIME, session.mediaType)
+        val progress = updated.toSimklProgressEntries().single()
+        assertEquals("movie", progress.contentType)
+        assertEquals("tt0245429", progress.videoId)
+        assertNull(progress.seasonNumber)
+        assertNull(progress.episodeNumber)
+    }
+
+    @Test
+    fun `completed episodic anime with a missing episode is not reclassified as a movie`() {
+        // Codex review P1: an explicit animeType "tv" must veto the null-episode movie fallback —
+        // a scrobble response missing its episode is incomplete data, not evidence of a movie.
+        val media = animeMedia(39687L, "tt2560140", 16498L)
+        val snapshot = SimklSyncSnapshot(
+            entries = listOf(
+                animeEntry(media, season = 1, episode = 3).copy(animeType = "tv"),
+            ),
+        )
+
+        val updated = snapshot.applyScrobbleResult(
+            result = SimklScrobbleResult(
+                outcome = SimklScrobbleOutcome.SCROBBLE,
+                playbackId = 24L,
+                progress = 95.0,
+                mediaType = SimklMediaType.ANIME,
+                media = media,
+                episode = null,
+                watchedAt = "2023-11-14T21:00:00Z",
+            ),
+            committedAtEpochMs = 1_700_000_000_000L,
+        )
+
+        val entry = updated.entries.single()
+        assertEquals("tv", entry.animeType)
+        assertNull(entry.movie)
+        assertFalse(entry.isMovieEntry())
+        assertEquals(SimklListStatus.WATCHING, entry.status)
+    }
+
+    @Test
+    fun `paused episodic anime with a missing episode stays an episode session`() {
+        val media = animeMedia(39687L, "tt2560140", 16498L)
+        val snapshot = SimklSyncSnapshot(
+            entries = listOf(
+                animeEntry(media, season = 1, episode = 3).copy(animeType = "tv"),
+            ),
+        )
+
+        val updated = snapshot.applyScrobbleResult(
+            result = SimklScrobbleResult(
+                outcome = SimklScrobbleOutcome.PAUSE,
+                playbackId = 25L,
+                progress = 40.0,
+                mediaType = SimklMediaType.ANIME,
+                media = media,
+                episode = null,
+            ),
+            committedAtEpochMs = 1_700_000_000_000L,
+        )
+
+        val session = updated.playback.single()
+        assertEquals("episode", session.type)
+        assertNotNull(session.anime)
+        assertNull(session.movie)
+        // Incomplete episodic session (no episode coordinates) projects nothing rather than
+        // masquerading as movie progress.
+        assertTrue(updated.toSimklProgressEntries().isEmpty())
+    }
+
+    @Test
+    fun `completed episodic anime stop is never treated as a movie`() {
+        val media = animeMedia(39687L, "tt2560140", 16498L)
+        val snapshot = SimklSyncSnapshot(
+            entries = listOf(
+                animeEntry(media, season = 1, episode = 3).copy(animeType = "tv"),
+            ),
+        )
+
+        val updated = snapshot.applyScrobbleResult(
+            result = SimklScrobbleResult(
+                outcome = SimklScrobbleOutcome.SCROBBLE,
+                playbackId = 23L,
+                progress = 95.0,
+                mediaType = SimklMediaType.ANIME,
+                media = media,
+                episode = SimklPlaybackEpisode(season = 1, number = 3),
+            ),
+            committedAtEpochMs = 1_700_000_000_000L,
+        )
+
+        val entry = updated.entries.single()
+        assertEquals(SimklMediaType.ANIME, entry.mediaType)
+        assertEquals("tv", entry.animeType)
+        assertNull(entry.movie)
+        assertFalse(entry.isMovieEntry())
+        assertEquals(
+            "2023-11-14T22:13:20Z",
+            entry.seasons.single().episodes.single().watchedAt,
+        )
+        val watched = updated.toSimklWatchedProjection().items.single()
+        assertEquals("series", watched.type)
+        assertEquals(3, watched.episode)
+    }
+
     private fun showMedia(simklId: Long, imdb: String) = SimklMedia(
         title = "The Walking Dead",
         year = 2010,
@@ -190,6 +378,24 @@ class SimklScrobbleReconciliationTest {
             "imdb" to JsonPrimitive(imdb),
             "mal" to JsonPrimitive(mal),
         ),
+    )
+
+    private fun animeMovieMedia(simklId: Long, imdb: String, mal: Long) = SimklMedia(
+        title = "Spirited Away",
+        year = 2001,
+        ids = mapOf(
+            "simkl" to JsonPrimitive(simklId),
+            "imdb" to JsonPrimitive(imdb),
+            "mal" to JsonPrimitive(mal),
+        ),
+    )
+
+    /** An anime movie: Simkl keeps it in the anime list and flags it with anime_type. */
+    private fun animeMovieEntry(media: SimklMedia) = SimklLibraryEntry(
+        mediaType = SimklMediaType.ANIME,
+        status = SimklListStatus.WATCHING,
+        animeType = "movie",
+        show = media,
     )
 
     private fun animeEntry(

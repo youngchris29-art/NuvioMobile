@@ -20,6 +20,17 @@ internal fun SimklSyncSnapshot.applyScrobbleResult(
     }.reconcileWatchedPlayback()
 }
 
+/// Positive-evidence rule for treating an ANIME scrobble as a movie (Codex review of the
+/// 6e5e41f3 port): a known `animeType` decides outright — "movie" → yes, anything else
+/// (e.g. "tv") → NO, even when the scrobble carries no episode, because a missing episode on
+/// an explicitly episodic entry is incomplete data, not a movie. Only when the library holds
+/// no animeType at all does the null-episode fallback apply (a movie scrobble never has one).
+private fun SimklLibraryEntry?.isAnimeMovieEvidence(result: SimklScrobbleResult): Boolean =
+    when (val known = this?.animeType?.takeIf { it.isNotBlank() }) {
+        null -> result.episode == null
+        else -> known == "movie"
+    }
+
 private fun SimklSyncSnapshot.withPausedScrobble(
     result: SimklScrobbleResult,
     committedAt: String,
@@ -32,13 +43,22 @@ private fun SimklSyncSnapshot.withPausedScrobble(
         .mergeMissing(existingEntry?.media)
         .mergeMissing(existingSession?.media)
     val mediaType = existingEntry?.mediaType ?: result.mediaType
+    val isAnimeMovie = mediaType == SimklMediaType.ANIME &&
+        existingEntry.isAnimeMovieEvidence(result)
+    val isMovieSession = mediaType == SimklMediaType.MOVIES || isAnimeMovie
     val session = SimklPlaybackSession(
         id = result.playbackId ?: existingSession?.id,
         progress = result.progress,
         pausedAt = committedAt,
-        type = if (mediaType == SimklMediaType.MOVIES) "movie" else "episode",
-        episode = result.episode?.mergeMissing(existingSession?.episode),
+        type = if (isMovieSession) "movie" else "episode",
+        // A movie session carries no episode coordinates even if Simkl echoed some back —
+        // retaining them would project season/episode fields onto movie progress.
+        episode = result.episode?.mergeMissing(existingSession?.episode)
+            .takeUnless { isMovieSession },
         show = media.takeIf { mediaType == SimklMediaType.SHOWS },
+        // Anime movies STAY in the anime field (type = "movie" is the movie marker):
+        // SimklPlaybackSession.mediaType is derived from which field is populated, and moving
+        // the media to `movie` made downstream source URLs read /movies/ instead of /anime/.
         anime = media.takeIf { mediaType == SimklMediaType.ANIME },
         movie = media.takeIf { mediaType == SimklMediaType.MOVIES },
     )
@@ -56,11 +76,13 @@ private fun SimklSyncSnapshot.withCompletedScrobble(
     val updatedEntries = entries.toMutableList()
     val index = updatedEntries.indexOfMatchingEntry(result)
     val existing = updatedEntries.getOrNull(index)
-    val updated = when (result.mediaType) {
-        SimklMediaType.MOVIES -> existing
+    val updated = when {
+        result.mediaType == SimklMediaType.MOVIES ||
+            (result.mediaType == SimklMediaType.ANIME &&
+                existing.isAnimeMovieEvidence(result)) -> existing
             ?.withWatchedMovie(result, committedAt)
             ?: result.toWatchedMovieEntry(committedAt)
-        SimklMediaType.SHOWS, SimklMediaType.ANIME -> existing
+        else -> existing
             ?.withWatchedEpisode(result, committedAt)
             ?: result.toWatchedSeriesEntry(committedAt)
     }
@@ -81,7 +103,8 @@ private fun SimklLibraryEntry.withWatchedMovie(
     result: SimklScrobbleResult,
     committedAt: String,
 ): SimklLibraryEntry = copy(
-    mediaType = SimklMediaType.MOVIES,
+    mediaType = result.mediaType,
+    animeType = if (result.mediaType == SimklMediaType.ANIME) "movie" else animeType,
     lastWatchedAt = committedAt,
     status = SimklListStatus.COMPLETED,
     movie = result.media.mergeMissing(media),
@@ -90,7 +113,8 @@ private fun SimklLibraryEntry.withWatchedMovie(
 
 private fun SimklScrobbleResult.toWatchedMovieEntry(committedAt: String): SimklLibraryEntry =
     SimklLibraryEntry(
-        mediaType = SimklMediaType.MOVIES,
+        mediaType = mediaType,
+        animeType = if (mediaType == SimklMediaType.ANIME) "movie" else null,
         lastWatchedAt = committedAt,
         status = SimklListStatus.COMPLETED,
         movie = media,
