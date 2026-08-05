@@ -597,11 +597,6 @@ struct InlineTrailerCard: View {
                     .strokeBorder(Theme.Palette.focusRingColor, lineWidth: 4)
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            if model.playingURL != nil {
-                InlineTrailerMuteGlyph().padding(Theme.Spacing.sm)
-            }
-        }
         .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.playingURL)
     }
@@ -633,46 +628,3 @@ struct InlineTrailerCard: View {
 
 // MARK: - Mute indicator
 
-/// Card-sized echo of `HeroTrailerMuteButton`: same glyph pair, same shared `HeroTrailerAudioState`,
-/// same "press play/pause" story — just scaled for a tile instead of a full-screen hero. Not
-/// focusable (the focus engine owns the card itself).
-private struct InlineTrailerMuteGlyph: View {
-    @StateObject private var audio = InlineTrailerAudioObserver()
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "playpause.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Image(systemName: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(Theme.Palette.textPrimary)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
-        .background(Capsule().fill(Color.black.opacity(0.35)))
-        .accessibilityLabel(audio.isMuted
-            ? String(localized: "Trailer muted — press play/pause to unmute")
-            : String(localized: "Trailer sound on — press play/pause to mute"))
-    }
-}
-
-/// Bridges `HeroTrailerAudioState.muted` (Kotlin `StateFlow<Boolean>`) to SwiftUI for the glyph
-/// above — same shape as Detail's private observer, which isn't visible from here.
-@MainActor
-private final class InlineTrailerAudioObserver: ObservableObject {
-    @Published private(set) var isMuted: Bool
-
-    private var watcher: FlowWatcher?
-
-    init() {
-        let flow = HeroTrailerAudioState.shared.muted
-        self.isMuted = (flow.value_ as? KotlinBoolean)?.boolValue ?? true
-        self.watcher = FlowWatcherKt.watch(flow) { [weak self] emitted in
-            guard let self, let boxed = emitted as? KotlinBoolean else { return }
-            self.isMuted = boxed.boolValue
-        }
-    }
-
-    deinit { watcher?.cancel() }
-}

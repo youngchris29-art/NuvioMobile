@@ -219,16 +219,16 @@ private struct SettingsDisclosureRow: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(title)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .rowTextColor()
                     Text(subtitle)
                         .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                         .lineLimit(2)
                 }
                 Spacer()
                 Image(systemName: "chevron.down")
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .rowTextColor(secondary: true)
                     .rotationEffect(.degrees(isExpanded ? 180 : 0))
             }
             .padding(Theme.Spacing.lg)
@@ -253,11 +253,11 @@ private struct HeroSourceRow: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(item.displayTitle)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .rowTextColor()
                         .lineLimit(1)
                     Text(item.addonName)
                         .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                         .lineLimit(1)
                 }
                 Spacer()

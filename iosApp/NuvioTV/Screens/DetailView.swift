@@ -1,5 +1,40 @@
+import Combine
 import SwiftUI
 import SharedCore
+
+/// BUG-41: isolates UX-6's scroll-driven dim value from `DetailView`'s own `@State` so writing it
+/// every scroll-geometry frame doesn't invalidate (and re-evaluate) the entire detail page body —
+/// see `DetailView.dimModel` and `ScrollDimOverlay` below, its sole observer.
+private final class ScrollDimModel: ObservableObject {
+    @Published var value: Double = 0
+}
+
+/// The UX-6 dim overlay + its DEBUG diagnostic Text, as `ScrollDimModel`'s only observer (BUG-41).
+/// Kept as a standalone child view so SwiftUI only re-renders THIS small view when `model.value`
+/// changes, instead of the whole `DetailView.body` the way writing a `@State` on DetailView did.
+/// Honesty note (2026-08-05 sim measurement): the @State variant did NOT measurably re-eval body
+/// per scroll frame on the sim's D-pad walk — this isolation is invalidation hygiene, not a
+/// confirmed fix for BUG-41's reported choppiness, which needs a real-swipe device before/after
+/// (the `[BUG41]` probe below is there for exactly that).
+private struct ScrollDimOverlay: View {
+    @ObservedObject var model: ScrollDimModel
+
+    var body: some View {
+        ZStack {
+            // UX-6: darkens the whole backdrop/poster/trailer stack (trailer keeps playing
+            // underneath) as the description scrolls down — the scrim above stays untouched.
+            Color.black.opacity(model.value).ignoresSafeArea().allowsHitTesting(false)
+            #if DEBUG
+            // UX-6 diagnostic (invisible, harness-readable): the live darkening value, so the
+            // UITest can prove whether focus-driven scrolling feeds the overlay at all.
+            Text("debug_ux6 dark=\(Int(model.value * 1000))")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_ux6")
+            #endif
+        }
+    }
+}
 
 /// Full detail screen for a single title, fed by the shared `MetaDetailsRepository`.
 /// Constructed from a `MetaPreview` (the card the user focused), then enriched in place as the
@@ -49,10 +84,12 @@ struct DetailView: View {
     @State private var backgroundTrailerStopped = false
     @State private var trailerDurationTask: Task<Void, Never>?
 
-    /// UX-6: 0...0.35 darkening applied over the whole backdrop/poster/trailer stack as the user
+    /// UX-6: 0...0.85 darkening applied over the whole backdrop/poster/trailer stack as the user
     /// scrolls the description down, computed once inside `.onScrollGeometryChange`'s `of:` so it
-    /// stops firing once fully saturated.
-    @State private var scrollDarkening: Double = 0
+    /// stops firing once fully saturated. BUG-41: lives in `ScrollDimModel` (a tiny
+    /// `ObservableObject`), not a plain `@State` on `DetailView` — see that type's doc comment for
+    /// why the indirection matters for scroll smoothness.
+    @StateObject private var dimModel = ScrollDimModel()
 
     /// One-shot per detail visit — never re-fires after the auto-played trailer is dismissed.
     @State private var didAutoPlayTrailer = false
@@ -71,7 +108,24 @@ struct DetailView: View {
         _model = StateObject(wrappedValue: DetailViewModel(preview: preview))
     }
 
+    #if DEBUG
+    /// BUG-41 measurement probe (DEBUG only): counts `DetailView.body` evaluations so the main
+    /// session can compare before/after this fix. Logs every 10th eval (not every single one) to
+    /// stay cheap while still grep-able: `log show --predicate 'eventMessage contains "BUG41"'`.
+    static var bodyEvalCount = 0
+    static func logBodyEval() {
+        bodyEvalCount += 1
+        if bodyEvalCount % 10 == 0 {
+            NSLog("[BUG41] detailBodyEval=%d", bodyEvalCount)
+        }
+    }
+    #endif
+
     var body: some View {
+        #if DEBUG
+        // BUG-41 measurement probe (DEBUG only).
+        let _ = Self.logBodyEval()
+        #endif
         ZStack(alignment: .topLeading) {
             backdropImage
             if showPosterBackdrop {
@@ -92,36 +146,14 @@ struct DetailView: View {
                     .transition(.opacity)
             }
             scrimOverlay(posterBackdropVisible: showPosterBackdrop)
-            // UX-6: darkens the whole backdrop/poster/trailer stack (trailer keeps playing
-            // underneath) as the description scrolls down — the scrim above stays untouched.
-            Color.black.opacity(scrollDarkening).ignoresSafeArea().allowsHitTesting(false)
-            #if DEBUG
-            // UX-6 diagnostic (invisible, harness-readable): the live darkening value, so the
-            // UITest can prove whether focus-driven scrolling feeds the overlay at all.
-            Text("debug_ux6 dark=\(Int(scrollDarkening * 1000))")
-                .font(.system(size: 8))
-                .opacity(0.011)
-                .accessibilityIdentifier("debug_ux6")
-            #endif
+            // UX-6/BUG-41: the dim overlay + its debug Text live in `ScrollDimOverlay`, the sole
+            // observer of `dimModel` — see that type's doc comment for why.
+            ScrollDimOverlay(model: dimModel)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
-                    header
-                    metaLine
-                    actionRow
-                    if !genres.isEmpty {
-                        Text(genres.joined(separator: " \u{2022} "))
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                    }
-                    if let overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(Theme.Font.body)
-                            .frame(maxWidth: 1100, alignment: .leading)
-                            .foregroundStyle(Theme.Palette.textPrimary)
-                    }
+                    topBlock
                     // Grouped to stay under ViewBuilder's 10-subview ceiling.
                     Group {
-                        infoSection
                         companyLogosRow
                         parentalGuideSection
                     }
@@ -153,9 +185,13 @@ struct DetailView: View {
                 // original 0.35 ceiling was invisible over a bright playing trailer on a real
                 // TV — the reporter's ask (and upstream's cinematic mode) is a near-black dim
                 // once the description scrolls up. Sim-verified via debug_ux6 (test17).
-                min(max((geo.contentOffset.y - geo.contentInsets.top) / 400.0, 0), 1) * 0.85
+                let raw = min(max((geo.contentOffset.y - geo.contentInsets.top) / 400.0, 0), 1) * 0.85
+                // BUG-41: quantized to 2 decimal places — `onScrollGeometryChange` only calls
+                // `action:` when the mapped value actually *changes*, so rounding away sub-1%
+                // wobble cuts the update rate down, independent of the `dimModel` isolation.
+                return (raw * 100).rounded() / 100
             }, action: { _, newValue in
-                scrollDarkening = newValue
+                dimModel.value = newValue
             })
             #if DEBUG
             // UX-6 device-verify probe: raw offset/inset so `log show` proves whether tvOS
@@ -167,24 +203,12 @@ struct DetailView: View {
             })
             #endif
         }
-        .overlay(alignment: .topTrailing) {
-            // Topmost so it stays reachable over both the scrim (hit-testing disabled there) and
-            // the ScrollView's full-bleed frame; shown only while the hero trailer is actually
-            // playing (same gating as the player itself, just re-checked without `trailer` unwrapped
-            // since we don't need the URL here).
-            if isTrailerActive {
-                HeroTrailerMuteButton()
-                    .padding(Theme.Spacing.screen)
-                    .transition(.opacity)
-            }
-        }
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
         // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
         .animation(.easeInOut(duration: 0.8), value: model.trailerVideoURL != nil && !backgroundTrailerStopped)
-        // The speaker overlay sits above the ScrollView, where the tvOS focus engine routes Up
-        // presses to the tab bar instead — so the reachable control is the Siri Remote's
-        // play/pause button, and the overlay acts as the state indicator.
+        // UX-12 removed the on-screen speaker indicator (FEAT-11's default-audio setting makes it
+        // redundant); the Siri Remote's play/pause button remains the mute/unmute control.
         .onPlayPauseCommand {
             if isTrailerActive {
                 HeroTrailerAudioState.shared.toggleMuted()
@@ -245,7 +269,12 @@ struct DetailView: View {
             HeroTrailerAudioState.shared.setMuted(value: !trailerAudioDefaultOn)
             trailerPlaybackIsAutoPlay = false
         }) { item in
-            FullScreenTrailerPlayer(urlString: item.url)
+            // UX-9: the player scales itself past fill (parityZoom) to crop baked-in letterbox
+            // bars; end-of-playback dismisses back to Detail rather than resting on a black
+            // frame, since the controls-free surface has no replay affordance.
+            FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
+                model.trailerPlayback = nil
+            })
                 .ignoresSafeArea()
                 .overlay(alignment: .bottom) {
                     if trailerPlaybackIsAutoPlay {
@@ -352,6 +381,41 @@ struct DetailView: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+
+    /// BUG-44: header/metaLine/actionRow/genres/overview/info as ONE focus region — the same
+    /// pattern as `PersonDetailView`'s BUG-34 fix (read that file's `topBlock` first for the full
+    /// story). Previously each of these lived loose in the page's outer `VStack`, with only the
+    /// lower rows (episodes, cast, collection, trailers, more-like-this, comments) individually
+    /// `.focusSection()`'d — so from some scroll positions the focus engine found no upward
+    /// candidate at all in the current column, and the tester had to detour the cursor all the way
+    /// left to escape. Grouping the whole top-of-page run into one section means vertical D-pad Up
+    /// from anywhere below (a horizontal row, or scrolled past the non-focusable overview `Text`)
+    /// always finds a landing target in here. Unlike `PersonDetailView`'s inert `topBlock`, this one
+    /// is already interactive (`actionRow`'s buttons), so no extra `.focusable()` /
+    /// `.prefersDefaultFocus` scaffolding is needed — but that also means the section is never
+    /// empty: `actionRow` always renders at least "Mark Watched" and "Add to Library", so it anchors
+    /// the section's focusability even when Play, Watch Trailer, genres, overview and infoSection
+    /// are all absent (`.focusSection()` requires *something* focusable inside it).
+    private var topBlock: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
+            header
+            metaLine
+            actionRow
+            if !genres.isEmpty {
+                Text(genres.joined(separator: " \u{2022} "))
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            if let overview, !overview.isEmpty {
+                Text(overview)
+                    .font(Theme.Font.body)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
+            infoSection
+        }
+        .focusSection()
     }
 
     @ViewBuilder
@@ -505,7 +569,9 @@ struct DetailView: View {
                 .tint(model.isSaved ? Theme.Palette.accent : nil)
             }
         }
-        .focusSection()
+        // BUG-44: no longer its own `.focusSection()` — folded into `topBlock`'s single top-of-page
+        // section (header/metaLine/actionRow/genres/overview/info) so the section boundary can't
+        // fragment vertical navigation between this row and the content around it.
     }
 
     /// FEAT-9: the underlying `Label` for one action-row button — icon + text normally, icon-only

@@ -265,7 +265,11 @@ struct SearchView: View {
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
                             .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
+                            // BUG-33 defect 3: a bare `textSecondary` here went to 1.52:1 on the
+                            // focused platter (worse than the 2.23:1 it measured unfocused) —
+                            // `.chipMetaText` (FlatControlStyles.swift) anchors to the same
+                            // focus/selection-aware tokens the chip's own label already uses.
+                            .chipMetaText(selected: isSelected)
                     }
                 }
             }

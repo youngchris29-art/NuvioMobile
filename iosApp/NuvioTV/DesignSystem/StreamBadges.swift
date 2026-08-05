@@ -133,18 +133,38 @@ struct StreamBadgeChipView: View {
     /// no (or an unparseable) `tagColor` — mirrors `Theme.Palette.surfaceElevated` (0x242424).
     private static let defaultBgHex = "242424"
 
-    /// Pure decision function for a text chip's colors — see BUG-28.
+    /// Approximate luminance of `Theme.Palette.textPrimary` (`Color.primary`) as it actually
+    /// renders in this app: near-white, since the app pins a dark color scheme (see that
+    /// property's doc comment). `Color.primary` has no hex to measure outside a live SwiftUI
+    /// environment, so this mirrors the literal value `textPrimary` was hard-coded to before it
+    /// became semantic (`0xF5F7F8`) — close enough for the contrast guard below, which only
+    /// needs to know "this resolves light."
+    private static let semanticFgApproxHex = "F5F7F8"
+
+    /// Pure decision function for a text chip's colors — see BUG-28 and BUG-43.
     ///
     /// FOCUSED: ignore the pack entirely. The row's focus platter is near-white, so pack hexes
     /// (authored against the app's normal dark surfaces) are never trustworthy here — use fixed
     /// colors instead, with no pack border.
     ///
-    /// UNFOCUSED: keep the pack's colors. But if the pack's `textColor` and effective `tagColor`
-    /// (or the semantic default when `tagColor` is missing) are both light or both dark — luminance
-    /// difference under 0.3 — the pair is illegible (this is the reporter's white-on-white case),
-    /// so replace the foreground with a computed dark/light pick against that background. When
-    /// `textColor` itself is missing/unparseable, fall back to the semantic default (today's
-    /// existing behavior for text-only, colorless badges).
+    /// UNFOCUSED, `textColor` present: keep the pack's colors. But if the pack's `textColor` and
+    /// effective `tagColor` (or the semantic default when `tagColor` is missing) are both light or
+    /// both dark — luminance difference under 0.3 — the pair is illegible (BUG-28's reported
+    /// white-on-white case), so replace the foreground with a computed dark/light pick against
+    /// that background.
+    ///
+    /// UNFOCUSED, `textColor` missing/unparseable (BUG-43): mobile never renders a text chip at
+    /// all (`StreamBadgeChip.kt` only draws `imageURL`), so plenty of imported packs set `tagColor`
+    /// alone and leave `textColor` blank — nothing on mobile ever needed it. Naively defaulting to
+    /// the semantic foreground here ignores what it will actually sit on: `Theme.Palette
+    /// .textPrimary` (`Color.primary`) resolves near-white in this app's pinned dark scheme, and
+    /// pairing that with a LIGHT pack `tagColor` (a language badge's flag-style fill, say)
+    /// produces a near-invisible near-white-on-light chip — the reported "badge appears in the
+    /// light theme" while sibling badges (which supply both colors and go through the guard above)
+    /// render dark correctly. So this path runs the identical luminance guard, using
+    /// `semanticFgApproxHex` to stand in for the un-measurable `Color.primary`: a light effective
+    /// background swaps in the same `.computedOnBg` dark-text pick the explicit-`textColor` path
+    /// already uses; a dark/default background keeps today's `.semantic` behavior unchanged.
     static func effectiveTextChipColors(
         textColorHex: String,
         tagColorHex: String,
@@ -156,12 +176,16 @@ struct StreamBadgeChipView: View {
 
         let packBgLum = Theme.Palette.luminance(fromHexString: tagColorHex)
         let bgSource: ChipBgSource = packBgLum != nil ? .pack : .semantic
+        let effectiveBgLum = packBgLum ?? Theme.Palette.luminance(fromHexString: defaultBgHex)!
 
         guard let fgLum = Theme.Palette.luminance(fromHexString: textColorHex) else {
+            let assumedSemanticFgLum = Theme.Palette.luminance(fromHexString: semanticFgApproxHex)!
+            if abs(assumedSemanticFgLum - effectiveBgLum) < 0.3 {
+                return ChipColorDecision(fg: .computedOnBg, bg: bgSource, showBorder: true)
+            }
             return ChipColorDecision(fg: .semantic, bg: bgSource, showBorder: true)
         }
 
-        let effectiveBgLum = packBgLum ?? Theme.Palette.luminance(fromHexString: defaultBgHex)!
         if abs(fgLum - effectiveBgLum) < 0.3 {
             return ChipColorDecision(fg: .computedOnBg, bg: bgSource, showBorder: true)
         }

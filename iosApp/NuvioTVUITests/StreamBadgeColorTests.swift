@@ -75,6 +75,11 @@ final class StreamBadgeColorTests: XCTestCase {
 
     private static let defaultBgHex = "242424"
 
+    /// Mirror of `StreamBadgeChipView.semanticFgApproxHex` (BUG-43) — the literal hex
+    /// `Theme.Palette.textPrimary` was hard-coded to before it became `Color.primary`, used here
+    /// only to stand in for that semantic color's (un-measurable outside SwiftUI) luminance.
+    private static let semanticFgApproxHex = "F5F7F8"
+
     // MARK: - Mirror of StreamBadgeChipView.effectiveTextChipColors
 
     private func effectiveTextChipColors(
@@ -88,12 +93,16 @@ final class StreamBadgeColorTests: XCTestCase {
 
         let packBgLum = luminance(fromHexString: tagColorHex)
         let bgSource: ChipBgSource = packBgLum != nil ? .pack : .semantic
+        let effectiveBgLum = packBgLum ?? luminance(fromHexString: Self.defaultBgHex)!
 
         guard let fgLum = luminance(fromHexString: textColorHex) else {
+            let assumedSemanticFgLum = luminance(fromHexString: Self.semanticFgApproxHex)!
+            if abs(assumedSemanticFgLum - effectiveBgLum) < 0.3 {
+                return ChipColorDecision(fg: .computedOnBg, bg: bgSource, showBorder: true)
+            }
             return ChipColorDecision(fg: .semantic, bg: bgSource, showBorder: true)
         }
 
-        let effectiveBgLum = packBgLum ?? luminance(fromHexString: Self.defaultBgHex)!
         if abs(fgLum - effectiveBgLum) < 0.3 {
             return ChipColorDecision(fg: .computedOnBg, bg: bgSource, showBorder: true)
         }
@@ -166,5 +175,54 @@ final class StreamBadgeColorTests: XCTestCase {
         XCTAssertEqual(decision.fg, .pack)
         XCTAssertEqual(decision.bg, .semantic)
         XCTAssertTrue(decision.showBorder)
+    }
+
+    // MARK: - BUG-43: `tagColor` present but `textColor` missing (the language-badge case)
+
+    /// BUG-43 reproduction: mobile never renders a text chip (`StreamBadgeChip.kt` only draws
+    /// `imageURL`), so a badge pack commonly ships `tagColor` alone — nothing on mobile ever
+    /// needed `textColor`. A tester's language badge hit exactly this: a light `tagColor`
+    /// (flag-style fill) with `textColor` blank. Before the fix, the missing-`textColor` branch
+    /// skipped the contrast guard entirely and always used the semantic foreground
+    /// (`Theme.Palette.textPrimary` / `Color.primary`, near-white in this app's pinned dark
+    /// scheme) — pairing near-white text with a near-white pack background, reading as a stray
+    /// light-theme badge next to correctly-dark siblings. The guard must now catch this the same
+    /// way it catches an explicit too-close `textColor`/`tagColor` pair.
+    func testMissingTextColor_lightTagColor_unfocused_appliesContrastGuard() {
+        let decision = effectiveTextChipColors(textColorHex: "", tagColorHex: "F5F5F5", isFocused: false)
+        XCTAssertEqual(decision.fg, .computedOnBg)
+        XCTAssertEqual(decision.bg, .pack)
+        XCTAssertTrue(decision.showBorder)
+    }
+
+    /// Symmetric guard direction: a near-black `tagColor` alone is just as illegible against a
+    /// near-white semantic default as a near-white one — the guard is a luminance-distance check,
+    /// not a "light bg only" special case.
+    func testMissingTextColor_darkTagColor_unfocused_appliesContrastGuard() {
+        let decision = effectiveTextChipColors(textColorHex: "", tagColorHex: "0D0D0D", isFocused: false)
+        // A near-black background is already far from near-white semantic text (that's the
+        // ordinary, correct case) — the guard should NOT trip here, unlike the light-bg case above.
+        XCTAssertEqual(decision.fg, .semantic)
+        XCTAssertEqual(decision.bg, .pack)
+        XCTAssertTrue(decision.showBorder)
+    }
+
+    /// Regression pin: a `tagColor` in the app's own dark-surface range (mid-dark, not
+    /// pale/light) must keep today's semantic-foreground behavior — the BUG-43 guard should only
+    /// swap in a computed pick for genuinely light backgrounds, not overcorrect on ordinary dark
+    /// pack fills.
+    func testMissingTextColor_midDarkTagColor_unfocused_keepsSemanticForeground() {
+        let decision = effectiveTextChipColors(textColorHex: "", tagColorHex: "242424", isFocused: false)
+        XCTAssertEqual(decision.fg, .semantic)
+        XCTAssertEqual(decision.bg, .pack)
+        XCTAssertTrue(decision.showBorder)
+    }
+
+    /// FOCUSED still ignores the pack entirely even when only `tagColor` is set (mirrors
+    /// `testMissingHexes_focused_ignoresPackEntirely`, but with a light `tagColor` present) — the
+    /// focus platter is near-white regardless of what the guard above would have picked.
+    func testMissingTextColor_lightTagColor_focused_ignoresPackEntirely() {
+        let decision = effectiveTextChipColors(textColorHex: "", tagColorHex: "F5F5F5", isFocused: true)
+        XCTAssertEqual(decision, ChipColorDecision(fg: .focusedFixed, bg: .focusedFixed, showBorder: false))
     }
 }

@@ -7,7 +7,7 @@ import SharedCore
 /// A looping, controls-free trailer surface behind the Detail hero, backed by **AVPlayer**. Starts
 /// muted and follows the shared `HeroTrailerAudioState` (same singleton the mobile app's hero
 /// trailer uses) from then on, so the user's mute/unmute choice persists across titles for the
-/// session. `HeroTrailerMuteButton` below is the affordance that flips it.
+/// session. The Siri Remote's play/pause button controls mute/unmute.
 ///
 /// This replaced an earlier libmpv/Vulkan implementation: a second Vulkan (MoltenVK) context running
 /// alongside an interactive SwiftUI screen asserts on the tvOS simulator whenever Detail re-renders
@@ -210,78 +210,104 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     }
 }
 
-/// Full-screen trailer playback with sound and transport controls — presented from either the
-/// Detail action row's "Watch Trailer" button (the hero trailer, already resolved for the muted
-/// background loop) or a "Trailers & Extras" row item (resolved on demand). `AVPlayerViewController`
-/// supplies the standard tvOS player UI; the presenting `fullScreenCover` handles Menu-to-dismiss.
-/// Deliberately a separate `AVPlayer` instance from `TrailerHeroPlayer` above — the two never run
-/// concurrently (Detail hides/dismantles the background player while `trailerPlayback` is non-nil),
-/// so there's no doubled decode/audio, and each keeps its own simple, single-purpose lifecycle.
-struct FullScreenTrailerPlayer: UIViewControllerRepresentable {
+/// Full-screen trailer playback with sound — presented from either the Detail action row's
+/// "Watch Trailer" button (the hero trailer, already resolved for the muted background loop) or a
+/// "Trailers & Extras" row item (resolved on demand). The presenting `fullScreenCover` handles
+/// Menu-to-dismiss; the Siri Remote's play/pause button toggles pause; playback end reports out so
+/// the host can dismiss instead of resting on a black end frame.
+///
+/// UX-9: this replaced an `AVPlayerViewController`. Our YouTube encodes bake letterbox bars into
+/// the frame (see `TrailerHeroPlayer.parityZoom`), and the standard controller exposes no way to
+/// overscale its video layer without also scaling the transport chrome — so full-screen trailers
+/// were the one surface that still showed bars. A raw `AVPlayerLayer` gets the same
+/// aspect-fill + parity-zoom treatment as every other trailer surface (full-screen and ignoring
+/// the safe area, the screen edges do the clipping). Trade-off, accepted deliberately: no scrub
+/// bar — trailers are 1-2 minute clips and Back already exits. The controller swap also retires
+/// BUG-18's display-criteria workaround by construction: a bare layer never renegotiates HDMI.
+/// Deliberately a separate `AVPlayer` instance from `TrailerHeroPlayer` above (always unmuted —
+/// FEAT-11's default only governs the background loop) — the two never run concurrently, so
+/// there's no doubled decode/audio, and each keeps its own simple, single-purpose lifecycle.
+struct FullScreenTrailerPlayer: View {
     let urlString: String
+    var onPlaybackEnded: () -> Void = {}
 
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        // BUG-18: never trigger a display-mode switch for trailer clips. AVPlayerViewController
-        // applies display criteria AUTOMATICALLY on tvOS when the system's Match Content setting
-        // is on — for a short trailer that meant an HDMI renegotiation black-out at start (and it
-        // swallowed the auto-play exit hint), with no real benefit for a 1-2 minute YouTube clip.
-        // The inline background trailer never switched (raw AVPlayerLayer), which is why it was
-        // unaffected — this makes the full-screen path behave the same. Real movie playback
-        // (mpv/native paths) still matches frame rate per the user's settings.
-        controller.appliesPreferredDisplayCriteriaAutomatically = false
-        if let url = URL(string: urlString) {
-            let player = AVPlayer(url: url)
-            controller.player = player
-            player.play()
-        }
-        return controller
-    }
-
-    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {}
-}
-
-/// Bridges `HeroTrailerAudioState.muted` (Kotlin `StateFlow<Boolean>`) to SwiftUI, the same way
-/// `StateFlowObserver` bridges the UiState repositories — but scoped to a bare `Boolean`, which KMP
-/// boxes as `KotlinBoolean` rather than a data-class UiState, so it doesn't fit that generic type.
-@MainActor
-private final class HeroTrailerAudioObserver: ObservableObject {
-    @Published private(set) var isMuted: Bool
-
-    private var watcher: FlowWatcher?
-
-    init() {
-        let flow = HeroTrailerAudioState.shared.muted
-        self.isMuted = (flow.value_ as? KotlinBoolean)?.boolValue ?? true
-        self.watcher = FlowWatcherKt.watch(flow) { [weak self] emitted in
-            guard let self, let boxed = emitted as? KotlinBoolean else { return }
-            self.isMuted = boxed.boolValue
-        }
-    }
-
-    deinit { watcher?.cancel() }
-}
-
-/// Mute-state indicator for the hero trailer. Not focusable: the overlay sits above the detail
-/// ScrollView where the focus engine routes Up presses to the tab bar, so the actual toggle is the
-/// Siri Remote's play/pause button (`.onPlayPauseCommand` in `DetailView`) — this just shows the
-/// current state plus the ⏯ hint. Toggling flips the shared `HeroTrailerAudioState` preference the
-/// mobile app also reads, so the choice persists across titles for the session.
-struct HeroTrailerMuteButton: View {
-    @StateObject private var audio = HeroTrailerAudioObserver()
+    /// Stable across body re-evals (@State keeps the instance); bridges the play/pause command
+    /// to the representable's player without making the surface observable.
+    @State private var control = FullScreenTrailerControl()
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "playpause.fill")
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Image(systemName: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(Theme.Font.meta)
-                .foregroundStyle(Theme.Palette.textPrimary)
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 56)
-        .background(Capsule().fill(Color.black.opacity(0.35)))
-        .accessibilityLabel(audio.isMuted ? String(localized: "Trailer muted — press play/pause to unmute") : String(localized: "Trailer sound on — press play/pause to mute"))
+        FullScreenTrailerSurface(urlString: urlString, control: control, onPlaybackEnded: onPlaybackEnded)
+            .scaleEffect(TrailerHeroPlayer.parityZoom)
+            .ignoresSafeArea()
+            .onPlayPauseCommand { control.togglePause() }
     }
 }
+
+/// Holds a weak handle to the full-screen player so the SwiftUI layer can toggle pause.
+final class FullScreenTrailerControl {
+    weak var player: AVPlayer?
+
+    func togglePause() {
+        guard let player else { return }
+        if player.timeControlStatus == .paused {
+            player.play()
+        } else {
+            player.pause()
+        }
+    }
+}
+
+private struct FullScreenTrailerSurface: UIViewRepresentable {
+    let urlString: String
+    let control: FullScreenTrailerControl
+    let onPlaybackEnded: () -> Void
+
+    func makeUIView(context: Context) -> TrailerPlayerUIView {
+        let view = TrailerPlayerUIView()
+        view.backgroundColor = .black
+        view.isUserInteractionEnabled = false
+        view.playerLayer.videoGravity = .resizeAspectFill
+        if let url = URL(string: urlString) {
+            let player = AVPlayer(url: url)
+            player.isMuted = false
+            view.playerLayer.player = player
+            control.player = player
+            context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
+            player.play()
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: TrailerPlayerUIView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: TrailerPlayerUIView, coordinator: Coordinator) {
+        coordinator.teardown()
+        uiView.playerLayer.player?.pause()
+        uiView.playerLayer.player = nil
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        private var endObserver: NSObjectProtocol?
+
+        func observeEnd(of player: AVPlayer, onEnded: @escaping () -> Void) {
+            endObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: player.currentItem,
+                queue: .main
+            ) { _ in onEnded() }
+        }
+
+        func teardown() {
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+                self.endObserver = nil
+            }
+        }
+
+        deinit { teardown() }
+    }
+}
+
+

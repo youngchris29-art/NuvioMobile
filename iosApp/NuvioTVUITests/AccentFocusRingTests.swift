@@ -11,46 +11,20 @@ import XCTest
 /// code into this bundle). This file keeps a small, exact mirror of just the pure functions under
 /// test instead.
 ///
-/// Keep this in sync by hand with `Theme.Palette.focusRingHex(accentFocusHex:)` /
-/// `Theme.Palette.luminance(fromHexString:)` whenever that logic changes.
+/// Keep this in sync by hand with `Theme.Palette.focusRingHex(accentFocusHex:)` whenever that
+/// logic changes.
+///
+/// BUG-40 (beta feedback): `focusRingHex` used to route near-white hexes through a fixed dark
+/// fallback via a luminance threshold (mirroring BUG-28's `onColor(forFillHex:)`), so the White
+/// theme's focus ring rendered grey instead of white. That fallback existed for platter-contrast
+/// reasons that don't apply to the ring — see `Theme.swift`'s doc comment on `focusRingHex` for
+/// why — so the function is now the identity function and this suite was rewritten to match.
 final class AccentFocusRingTests: XCTestCase {
-
-    // MARK: - Mirror of Theme.Palette.luminance(fromHexString:)
-
-    private func luminance(fromHexString hexString: String) -> Double? {
-        var s = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return nil }
-        if s.hasPrefix("#") { s.removeFirst() }
-        guard s.count == 3 || s.count == 6 || s.count == 8,
-              let value = UInt64(s, radix: 16) else { return nil }
-
-        let r, g, b: Double
-        switch s.count {
-        case 3:
-            r = Double((value >> 8) & 0xF) / 15.0
-            g = Double((value >> 4) & 0xF) / 15.0
-            b = Double(value & 0xF) / 15.0
-        case 6:
-            r = Double((value >> 16) & 0xFF) / 255.0
-            g = Double((value >> 8) & 0xFF) / 255.0
-            b = Double(value & 0xFF) / 255.0
-        default: // 8: RRGGBBAA
-            r = Double((value >> 24) & 0xFF) / 255.0
-            g = Double((value >> 16) & 0xFF) / 255.0
-            b = Double((value >> 8) & 0xFF) / 255.0
-        }
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b
-    }
 
     // MARK: - Mirror of Theme.Palette.focusRingHex(accentFocusHex:)
 
-    private static let fallbackHex = "1A1A1A"
-
     private func focusRingHex(accentFocusHex: String) -> String {
-        guard let lum = luminance(fromHexString: accentFocusHex), lum > 0.75 else {
-            return accentFocusHex
-        }
-        return Self.fallbackHex
+        accentFocusHex
     }
 
     // MARK: - The seven themes' accentFocus hexes (Theme.swift:37-49's applyTheme table)
@@ -63,7 +37,7 @@ final class AccentFocusRingTests: XCTestCase {
     private static let roseFocusHex = "EC407A"
     private static let whiteFocusHex = "FFFFFF"
 
-    // MARK: - Dark/saturated themes: ring keeps the theme's own accent color
+    // MARK: - Every theme's ring keeps the theme's own accent color, including White
 
     func testCrimsonFocusHex_mapsToItself() {
         XCTAssertEqual(focusRingHex(accentFocusHex: Self.crimsonFocusHex), Self.crimsonFocusHex)
@@ -81,9 +55,6 @@ final class AccentFocusRingTests: XCTestCase {
         XCTAssertEqual(focusRingHex(accentFocusHex: Self.emeraldFocusHex), Self.emeraldFocusHex)
     }
 
-    /// Amber is the brightest of the six saturated themes (luminance ~0.69) — closest to the
-    /// 0.75 threshold without crossing it, so it's the sharpest regression check that the
-    /// threshold isn't accidentally too low.
     func testAmberFocusHex_mapsToItself() {
         XCTAssertEqual(focusRingHex(accentFocusHex: Self.amberFocusHex), Self.amberFocusHex)
     }
@@ -92,13 +63,11 @@ final class AccentFocusRingTests: XCTestCase {
         XCTAssertEqual(focusRingHex(accentFocusHex: Self.roseFocusHex), Self.roseFocusHex)
     }
 
-    // MARK: - White theme: near-white focus hex falls back to the fixed dark ring
-
-    /// The White theme's accentFocus (0xFFFFFF, luminance 1.0) is the one case a near-white ring
-    /// would vanish against the system focus platter/lift brightness — this is the whole reason
-    /// `focusRingHex` exists.
-    func testWhiteFocusHex_fallsBackToFixedDarkRing() {
-        XCTAssertEqual(focusRingHex(accentFocusHex: Self.whiteFocusHex), Self.fallbackHex)
+    /// BUG-40: the White theme's near-white accentFocus (0xFFFFFF) used to fall back to a fixed
+    /// dark ring hex ("1A1A1A") — a beta tester reported this as a grey ring after explicitly
+    /// picking white. It now maps to itself like every other theme, so the ring renders white.
+    func testWhiteFocusHex_mapsToItself() {
+        XCTAssertEqual(focusRingHex(accentFocusHex: Self.whiteFocusHex), Self.whiteFocusHex)
     }
 
     // MARK: - Determinism
@@ -110,30 +79,13 @@ final class AccentFocusRingTests: XCTestCase {
         }
     }
 
-    // MARK: - Threshold boundary
-    //
-    // For a gray hex (R == G == B == v), the Rec. 709 weights sum to 1.0, so luminance reduces
-    // exactly to v/255 — no rounding fuzz. 0.75 * 255 = 191.25, so 0xBF (191 → 0.74902) sits just
-    // below the threshold and 0xC0 (192 → 0.75294) sits just above it, giving two exact,
-    // deterministic asserts either side of the `> 0.75` guard.
+    // MARK: - Arbitrary/malformed/missing input all pass through unchanged (identity function)
 
-    /// Just below the threshold (0xBF, luminance ≈ 0.749): the guard's `>` doesn't trip, so the
-    /// theme color is kept.
-    func testJustBelowThreshold_keepsThemeColor() {
+    func testArbitraryGrayHex_returnsInputUnchanged() {
         XCTAssertEqual(focusRingHex(accentFocusHex: "BFBFBF"), "BFBFBF")
-    }
-
-    /// Just above the threshold (0xC0, luminance ≈ 0.753): the guard trips and falls back.
-    func testJustAboveThreshold_fallsBack() {
-        XCTAssertEqual(focusRingHex(accentFocusHex: "C0C0C0"), Self.fallbackHex)
-    }
-
-    /// Comfortably below the threshold, for a non-boundary sanity check.
-    func testMidGray_keepsThemeColor() {
+        XCTAssertEqual(focusRingHex(accentFocusHex: "C0C0C0"), "C0C0C0")
         XCTAssertEqual(focusRingHex(accentFocusHex: "808080"), "808080")
     }
-
-    // MARK: - Malformed/missing input falls through unchanged (nil luminance short-circuits)
 
     func testMalformedHex_returnsInputUnchanged() {
         XCTAssertEqual(focusRingHex(accentFocusHex: "not-a-hex"), "not-a-hex")

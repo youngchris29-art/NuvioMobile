@@ -110,6 +110,39 @@ extension ButtonStyle where Self == ChipButtonStyle {
     static func chip(selected: Bool) -> ChipButtonStyle { .init(selected: selected) }
 }
 
+/// Subtitle/meta text inside a `.chip`-styled button (e.g. a catalog chip's addon-name line,
+/// BUG-33 defect 3). A bare `.foregroundStyle(Theme.Palette.textSecondary)` on that text ignores
+/// both the chip's fill and its focus state — `Color.secondary` resolves as a flat mid-grey once
+/// `ChipButtonStyle` forces the `colorScheme` to `.light` on focus, measured at 1.52:1 against the
+/// near-white focused platter (worse than the 2.23:1 it measured unfocused, where it can also sit
+/// on a near-white "White"-theme accent fill). Anchor to the SAME tokens `ChipButtonStyle`'s own
+/// `labelColor` already resolves correctly (`onPlatter` focused, `accentText` on a selected
+/// accent fill, `textPrimary` otherwise) and only dim opacity for hierarchy when unfocused —
+/// focused always gets the full-contrast token, undimmed, so the chip reads at 10 feet.
+struct ChipMetaText: ViewModifier {
+    var selected = false
+    @Environment(\.isFocused) private var isFocused
+
+    private var color: Color {
+        if isFocused { return FocusLook.onPlatter }
+        if selected { return Theme.Palette.accentText }
+        return Theme.Palette.textPrimary
+    }
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(color.opacity(isFocused ? 1 : 0.7))
+    }
+}
+
+extension View {
+    /// Focus- and selection-aware subtitle/meta text inside a `.chip`-styled button. Use instead
+    /// of a bare `.foregroundStyle(Theme.Palette.textSecondary)`/`.secondary`, which does not
+    /// survive the chip's focus platter or a light accent fill (BUG-33).
+    func chipMetaText(selected: Bool = false) -> some View {
+        modifier(ChipMetaText(selected: selected))
+    }
+}
+
 /// Label color for accent-tinted `.borderedProminent` buttons. tvOS swaps the prominent platter to
 /// a near-white "lifted" fill on focus regardless of tint, so no fixed label color works: focused
 /// needs dark text, unfocused needs the accent's contrast color (`Theme.Palette.accentText`). An
@@ -132,17 +165,24 @@ extension View {
 /// with the forced light `colorScheme` — but an explicit `Theme.Palette.accent` bypasses that,
 /// and the White theme's accent (~#F5F5F5) disappears on the white platter (state checkmarks,
 /// row icons, the sidebar's selected category — the reporter's "white-on-white settings").
-/// At rest the accent applies; on focus the content joins the platter's dark label color.
+/// At rest the accent applies (when active) or [inactiveColor] (when not); on focus the content
+/// ALWAYS joins the platter's dark label color, regardless of `active` — BUG-45: the previous
+/// version only forced `onPlatter` inside the `active` branch, so a focused-but-inactive row
+/// (an unchecked toggle icon, a sidebar row focused a frame before `active` catches up to the
+/// focus change) fell through to [inactiveColor], which is not guaranteed safe on the white
+/// platter (e.g. the default `textSecondary` resolves as a flat mid-grey under the forced light
+/// `colorScheme`). Focus must win outright so every call site is platter-safe unconditionally.
 struct RowAccentTint: ViewModifier {
-    /// When false the content shows [inactiveColor] instead of the accent (e.g. an unchecked
-    /// state circle) — pass a SEMANTIC color so the row's colorScheme flip keeps it legible.
+    /// When false and NOT focused, the content shows [inactiveColor] instead of the accent (e.g.
+    /// an unchecked state circle) — pass a SEMANTIC color so the row's colorScheme flip keeps it
+    /// legible. Ignored while focused: the platter-safe color always wins then.
     var active = true
     var inactiveColor: Color = Theme.Palette.textSecondary
     @Environment(\.isFocused) private var isFocused
 
     func body(content: Content) -> some View {
         content.foregroundStyle(
-            active ? (isFocused ? FocusLook.onPlatter : Theme.Palette.accent) : inactiveColor
+            isFocused ? FocusLook.onPlatter : (active ? Theme.Palette.accent : inactiveColor)
         )
     }
 }

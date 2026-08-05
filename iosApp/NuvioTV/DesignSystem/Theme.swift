@@ -100,23 +100,19 @@ enum Theme {
         }
 
         /// FEAT-14: decides the accent focus ring's actual draw color, given the current theme's
-        /// `accentFocus` hex. Same decision-table shape as BUG-28's `onColor(forFillHex:)` /
-        /// `StreamBadgeChipView.effectiveTextChipColors` — a luminance threshold picks between the
-        /// theme color and a fixed legible fallback. Six of the seven themes' focus hexes are
-        /// saturated/dark enough (highest is Amber's ~0.69) to clear the threshold and read as a
-        /// ring against artwork; only the White theme's near-white focus hex (0xFFFFFF, luminance
-        /// 1.0) would draw a near-invisible ring against the system focus platter/lift brightness,
-        /// so it falls back to a fixed dark ring instead. Threshold (0.75) matches
-        /// `onColor(forFillHex:)`'s — same "only near-white fills cross it" guarantee. Fallback
-        /// hex ("1A1A1A") is the app's `Palette.surface` — the same dark value
-        /// `onColor(forFillHex:)` uses for on-light text. Pure String-in/String-out (no `Color`)
-        /// so this unit-tests without SwiftUI, per
-        /// `luminance(fromHexString:)`'s precedent above.
+        /// `accentFocus` hex. Originally mirrored BUG-28's `onColor(forFillHex:)` — a luminance
+        /// threshold routed near-white hexes to a fixed dark fallback ("1A1A1A") so they wouldn't
+        /// vanish against the system focus platter/lift brightness. BUG-40 (beta feedback): that
+        /// reasoning doesn't hold for the ring, this function's only caller (`focusRingColor` in
+        /// `PosterCard.swift`). Ring mode never puts artwork under the system platter — it swaps
+        /// out `.hoverEffect(.highlight)` for a manual `.scaleEffect` (`CardFocusTreatment`, also
+        /// in `PosterCard.swift`) specifically so the ring is the only focus indicator drawn, and
+        /// it carries its own stroke over the artwork rather than a fill needing on-light-fill
+        /// text contrast. So a user who picks the White theme and turns the ring on should see a
+        /// white ring, not a grey one. No dark fallback: the ring always draws in the theme's own
+        /// focus color.
         static func focusRingHex(accentFocusHex: String) -> String {
-            guard let lum = luminance(fromHexString: accentFocusHex), lum > 0.75 else {
-                return accentFocusHex
-            }
-            return "1A1A1A"
+            accentFocusHex
         }
 
         /// Primary text — semantic, resolves against the pinned dark scheme (near-white) and

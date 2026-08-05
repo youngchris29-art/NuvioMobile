@@ -24,7 +24,7 @@ func settingsSection<Content: View>(
 /// `textSecondary` on a Text bypasses `SettingsRowButtonStyle`'s dark-label treatment and
 /// `colorScheme` flip on focus, leaving light text on the near-white focus platter — same fix
 /// shape as `RowAccentTint` (FlatControlStyles.swift), applied to row text instead of icon tints.
-private struct RowTextColor: ViewModifier {
+struct RowTextColor: ViewModifier {
     /// Secondary variant (subtitles/values/chevrons) dims slightly even on the focused platter,
     /// mirroring the textPrimary/textSecondary contrast used unfocused.
     var secondary = false
@@ -39,7 +39,10 @@ private struct RowTextColor: ViewModifier {
     }
 }
 
-private extension View {
+// Internal (was file-private): BUG-45's audit found the same bare-palette-inside-settingsRow
+// pattern in other panes (HomeScreenSettingsPane's disclosure/hero-source rows) — they need this
+// exact modifier, not a new mechanism.
+extension View {
     /// Focus-aware replacement for a bare `.foregroundStyle(Theme.Palette.textPrimary/textSecondary)`
     /// on title/subtitle/value/chevron text inside `.settingsRow`-styled buttons.
     func rowTextColor(secondary: Bool = false) -> some View {
