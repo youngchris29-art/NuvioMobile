@@ -41,6 +41,156 @@ extension EnvironmentValues {
     }
 }
 
+// MARK: - Home geometry probes (BUG-30 / BUG-37)
+
+/// Runtime knob shared by every Home geometry probe — all of them log with the `[HomeScrollProbe]`
+/// prefix, so one device walk produces one greppable stream:
+///
+///     defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
+///
+/// Read ONCE at launch: a disabled probe costs a single Bool for the whole session, because every
+/// probe is a modifier that simply isn't attached when this is false (see `pinnedRowTitleTracking`
+/// here and `HomeScrollProbeModifier` in HomeView).
+///
+/// Deliberately NOT `#if DEBUG`, matching the existing BUG-30 probe it now backs: there is no
+/// automated input path to the physical Apple TV, so every device pass is a manual walk that may
+/// well be a release-configuration sideload, and the console is the only diagnostic that comes
+/// back (same precedent as `ProfilesViewModel.select(_:)`).
+enum HomeGeometryProbe {
+    nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.homeScrollProbe")
+}
+
+// MARK: - Pinned row title tracking (BUG-37)
+
+/// Keeps a PINNED row's overlaid section title inside the rows viewport at every rest position the
+/// DEVICE produces, not just the exact ones the simulator produces.
+///
+/// Why round 8's compromise wasn't enough. The title is overlaid `heroPinnedRowTitleInset` (48)
+/// below the SHELF's top; the focusable card frame the engine's scroll-to-reveal aligns starts
+/// `Spacing.lg` (24) below that same shelf top, inside the shelf's own padding. So the static
+/// margin between "the engine rested the card frame's top at the viewport edge" and "the title's
+/// top" is 48 − 24 = 24pt — round 8 read the inset against the shelf and recorded it as ~48. The
+/// device's measured rest error is 40–67pt short (`[HomeScrollProbe]`, 1,603 samples, 2026-08-02:
+/// rest y=-90 vs true top -157), so the title clears on the sim and is cut on hardware.
+///
+/// Why NOT card-anchoring the title (moving it inside the button's label), which is the obvious
+/// "it moves with the card" fix. It buys nothing here: the shelf never scrolls vertically, so the
+/// title and the cards are already rigid with respect to each other — re-anchoring changes which
+/// edge the inset is measured from, not the geometry. The band above the art is 96pt whichever
+/// anchor you pick, the title is ~40pt, so the best static margin either way is ~32pt, still under
+/// the envelope. And it would spend the structural invariants rounds 5–7 paid for: label content
+/// has to be compensated by paddings that stay POSITIVE (negative compensation put focusable
+/// frames outside their `.focusSection()` and froze directional resolution), a per-card overlay
+/// would draw the title once per card, and any extra band means a reach above 72 — the sim
+/// bisected 100 as where focus resolution dies.
+///
+/// What happens instead: the title stays exactly where round 8 put it at a true rest, and slides
+/// DOWN by however much the viewport's top edge has eaten into it, clamped to
+/// `heroPinnedRowTitleMaxSlide`. Render-time only — `visualEffect` runs at draw time, so there is
+/// no layout pass, no `@State` write, and no view identity involved (the BUG-19 rule is untouched;
+/// nothing here can churn identity per scroll frame). At 0pt of rest error nothing moves and the
+/// look is byte-identical to beta.10; across the whole 0–67pt envelope the title parks against the
+/// clip edge instead of disappearing behind it; past the clamp (a row scrolled well above the
+/// focused one) it releases and scrolls away like any other content, i.e. it behaves as a sticky
+/// header for exactly as long as its row is still on screen.
+///
+/// Contract note for `CollectionRowView` (CollectionsUI.swift, same overlay pattern via the same
+/// environment values): the contract is UNCHANGED — the title is still an overlay on the shelf at
+/// the same inset — so that row keeps working untouched, it simply keeps the round-8 behavior. The
+/// follow-up is one line: add `.pinnedRowTitleTracking(rowKey: collection.id)` to its overlaid
+/// `Text` immediately before the existing `.padding(.top, Theme.Size.heroPinnedRowTitleInset)`.
+enum PinnedRowTitle {
+    /// Name Home attaches to its rows ScrollView (`rowsScroll`) purely as a resolution fallback
+    /// for `visibleBounds` below. Also the name `CollectionRowView`'s follow-up inherits for free.
+    nonisolated static let rowsScrollSpace = "home_rows_scroll"
+
+    /// The rows viewport's rect, converted into the TITLE's local space — so `minY > 0` reads
+    /// directly as "the viewport's top edge is this far BELOW the title's top", i.e. exactly this
+    /// much of the title is currently clipped away.
+    ///
+    /// Primary lookup is the enclosing VERTICAL scroll view (the row's own shelf is horizontal, so
+    /// the axis filter skips it). The named fallback covers the case where that filter doesn't
+    /// resolve through the nested shelf: a miss on both is fail-safe (no slide = exactly today's
+    /// behavior) but silent, so the probe logs nothing for titles — which is itself the signal
+    /// that the lookup, not the geometry, is what needs looking at.
+    nonisolated static func visibleBounds(_ proxy: GeometryProxy) -> CGRect? {
+        proxy.bounds(of: .scrollView(axis: .vertical)) ?? proxy.bounds(of: .named(rowsScrollSpace))
+    }
+
+    /// How far the title must ride DOWN to stay fully inside the rows viewport, clamped.
+    /// `proxy` must be the TITLE's own geometry (local origin = the title's top-left).
+    nonisolated static func slide(_ proxy: GeometryProxy) -> CGFloat {
+        guard let visible = visibleBounds(proxy) else { return 0 }
+        return min(max(visible.minY, 0), Theme.Size.heroPinnedRowTitleMaxSlide)
+    }
+
+    /// Signed clearance between the title's top and the viewport's top edge BEFORE sliding —
+    /// negative means the rest fell short far enough to cut the title (BUG-37 reproducing).
+    /// Probe-only.
+    nonisolated static func rawMargin(_ proxy: GeometryProxy) -> CGFloat? {
+        visibleBounds(proxy).map { -$0.minY }
+    }
+}
+
+extension View {
+    /// Applies the BUG-37 slide, plus (knob on) the measurement the manual device pass needs.
+    /// Attach to the TITLE TEXT ITSELF, BEFORE its `.padding(.top,)` — the modifier reads the
+    /// text's own frame, so padding applied first would shift what it measures.
+    func pinnedRowTitleTracking(rowKey: String) -> some View {
+        modifier(PinnedRowTitleTracking(rowKey: rowKey))
+    }
+}
+
+private struct PinnedRowTitleTracking: ViewModifier {
+    let rowKey: String
+
+    func body(content: Content) -> some View {
+        content
+            .visualEffect { effect, proxy in
+                effect.offset(y: PinnedRowTitle.slide(proxy))
+            }
+            .modifier(PinnedRowTitleProbe(rowKey: rowKey, enabled: HomeGeometryProbe.enabled))
+    }
+}
+
+/// `[HomeScrollProbe] title row=… margin=… slide=… net=…`, so a single manual up-walk MEASURES
+/// BUG-37 instead of eyeballing it, per row:
+///  - `margin` — title top vs the viewport's top edge BEFORE the slide. Negative is round 8's
+///    failure reproducing, and its magnitude is that rest's share of the 0–67pt envelope.
+///  - `slide`  — how far this fix moved the title (0 at a true rest).
+///  - `net`    — what the viewer actually sees. **This must stay ≥ 0**; a negative `net` means the
+///    rest exceeded `heroPinnedRowTitleMaxSlide` and the clamp needs raising.
+/// Not attached at all when the knob is off, so disabled builds evaluate none of it.
+private struct PinnedRowTitleProbe: ViewModifier {
+    let rowKey: String
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            // Captured by value so the geometry closure holds a plain String rather than this
+            // (view-isolated) modifier.
+            let key = rowKey
+            content.onGeometryChange(for: String.self, of: { proxy in
+                guard let margin = PinnedRowTitle.rawMargin(proxy) else { return "" }
+                let slide = PinnedRowTitle.slide(proxy)
+                return "row=\(key) margin=\(probeBucket(margin)) slide=\(probeBucket(slide)) net=\(probeBucket(margin + slide))"
+            }, action: { _, value in
+                guard !value.isEmpty else { return }
+                NSLog("[HomeScrollProbe] title %@", value)
+            })
+        } else {
+            content
+        }
+    }
+}
+
+/// 2pt buckets. `onGeometryChange` only fires when its value CHANGES, so quantizing turns a
+/// per-frame scroll animation into a handful of lines per row per hop while staying an order of
+/// magnitude finer than the 40–67pt envelope being measured.
+private nonisolated func probeBucket(_ value: CGFloat) -> Int {
+    Int((value / 2).rounded()) * 2
+}
+
 /// Swift-side navigation value. Kotlin data classes don't conform to Swift `Hashable`, so we wrap the
 /// `MetaPreview` and hash on its stable identity (type + id) while still carrying all its fields for
 /// the destination's initial render. Shared by Home, Search, and detail "more like this".
@@ -242,11 +392,23 @@ struct CatalogRowView: View {
                 // Pinned: the title floats over the (transparent) reach band at the shelf's
                 // top-leading corner — visually where it always was, but INSIDE the region
                 // the focused cards' frames cover, so every reveal shows it.
+                //
+                // BUG-37: "inside the region the frames cover" is necessary but not sufficient on
+                // hardware — a rest that falls 40–67pt short leaves the top of that region above
+                // the viewport's clip edge, title included. `pinnedRowTitleTracking` rides the
+                // title down to the clip edge for exactly that shortfall (render-time only; no
+                // layout, no state, no identity). See its doc comment for why the band cannot
+                // simply be widened and why card-anchoring the title buys nothing.
                 .overlay(alignment: .topLeading) {
                     if cardTopReach > 0 {
                         Text(section.title)
                             .font(Theme.Font.sectionTitle)
                             .foregroundStyle(Theme.Palette.textPrimary)
+                            // Legibility for the slid state only: at a short rest the title parks
+                            // against the clip edge and can overlap the top of the artwork. Over
+                            // the flat background of a true rest this is invisible.
+                            .shadow(color: .black.opacity(0.7), radius: 8, y: 2)
+                            .pinnedRowTitleTracking(rowKey: section.key)
                             .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                             .allowsHitTesting(false)
                     }

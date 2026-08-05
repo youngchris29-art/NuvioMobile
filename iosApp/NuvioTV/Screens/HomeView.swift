@@ -25,12 +25,28 @@ struct HomeView: View {
     /// UX-7 precedence: a row poster that has taken over the hero (`focusModel.focusedItem`)
     /// always shows its artwork regardless of this toggle — the fade-on-focus behavior only
     /// governs the carousel's own idle state, not the focus-follows-backdrop takeover.
+    /// FEAT-15 precedence: the toggle is IGNORED ENTIRELY in focus-panel mode (Show Hero off).
+    /// There it would be self-contradictory — with no carousel, the artwork IS the browsing
+    /// feedback, and "hide it while browsing" would blank the one thing the mode exists to show
+    /// (it would also blank the resting state, where nothing holds focus yet). Its Settings row
+    /// lives in the Appearance pane and stays visible; it simply has no effect while the hero is
+    /// off, which is the same relationship "Nuvio-Style Hero" has (see `heroNuvioStyle`).
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
     /// UX-2 hero redesign, v2 (opt-in): Nuvio-style hero — title/description on the LEFT,
     /// the backdrop artwork reading on the RIGHT behind a leading scrim, info panel raised
     /// toward the top (Christian's reference photos, 2026-07-30). Default stays the classic
     /// lower-left layout. Mirrored by HomeHeroForeground and the Home Screen settings pane.
+    /// FEAT-15: this governs the CAROUSEL's layout only. The Show-Hero-off focus panel always
+    /// renders the pinned Nuvio presentation regardless of this value — that layout is the one
+    /// the request is modelled on, it is the only pinned geometry that has been device-tuned
+    /// (`heroPinned*`), and the Settings row for this toggle is already hidden while Show Hero is
+    /// off, so honoring a stored value the user cannot see or change would be invisible state.
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
+    /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
+    /// the entire preference map on every call, so it cannot be read from `body` at render
+    /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
+    /// flow SettingsViewModel does and republishes the single field Home renders from.
+    @StateObject private var heroSettings = HomeHeroSettingsObserver()
 
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
@@ -63,7 +79,18 @@ struct HomeView: View {
     /// log is the only diagnostic we get (precedent: ProfilesViewModel.select(_:), kept out of
     /// DEBUG for the same reason). Runtime-gated instead, off by default:
     ///   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
-    private let homeScrollProbeEnabled = UserDefaults.standard.bool(forKey: "debug.homeScrollProbe")
+    /// The same knob now also arms BUG-37's per-row title probe, so ONE walk logs both under the
+    /// `[HomeScrollProbe]` prefix — see `HomeGeometryProbe` (BrowseComponents), which owns it.
+    private let homeScrollProbeEnabled = HomeGeometryProbe.enabled
+
+    /// BUG-30 companion knob, OFF by default so shipped behavior is byte-identical: applies an
+    /// explicit HARD top scroll-edge treatment to the rows ScrollView. The tvOS 26 system tab bar
+    /// is what renders clipped after a D-pad walk-up, and its edge presentation is driven by the
+    /// scroll view's edge state — but a hard edge would also draw a crisp line across Home's
+    /// full-bleed hero backdrop, which nothing but a device can judge. So it ships as an A/B knob
+    /// the manual pass can flip between runs rather than an unverified visual change:
+    ///   defaults write com.nuvio.media.NuvioTV debug.homeScrollEdgeHard -bool YES
+    private let homeScrollEdgeHard = UserDefaults.standard.bool(forKey: "debug.homeScrollEdgeHard")
 
     /// UX-7: always-on focus-follows-backdrop. Owns the row-focused item (if any) that should
     /// take over the hero from the carousel.
@@ -77,14 +104,108 @@ struct HomeView: View {
         guard !heroItems.isEmpty else { return nil }
         return heroItems[min(heroIndex, heroItems.count - 1)]
     }
+
+    // MARK: - Hero mode (FEAT-15)
+    //
+    // The hero region has exactly TWO live modes and they are mutually exclusive:
+    //
+    //  * CAROUSEL (`heroCarouselActive`) — Show Hero on and the fan-out has landed. Rotating
+    //    pages, auto-advance timer, page dots, a focusable CTA, and the UX-7 focus takeover on
+    //    top of all of it. Byte-for-byte what beta.10 shipped.
+    //  * FOCUS PANEL (`focusHeroActive`) — Show Hero OFF. FEAT-15/BUG-24: the reporter has asked
+    //    three times for the end state where there is no rotating banner at all, only the focused
+    //    title's backdrop + text. beta.10 coupled the two (hero off killed the focus follow), so
+    //    turning the carousel off cost them the description. Now hero-off KEEPS the UX-7 surface
+    //    and drops only the carousel: no timer, no `heroItems`, no dots, and — deliberately — no
+    //    CTA, so the panel is a pure reflection of row focus and never competes for it.
+    //
+    // Both modes are settings-driven, so the container split below flips only when a toggle
+    // flips (the BUG-19 identity rule), never per scroll frame and never per focus event.
+
+    /// Show Hero on AND the hero fan-out has landed: the rotating carousel exists.
+    private var heroCarouselActive: Bool { !heroItems.isEmpty }
+
+    /// Anything a row card can focus. The focus panel has nothing to reflect (and nothing to
+    /// reserve space above) until Home has at least one row, so it mounts on this — a one-shot
+    /// load-boundary flip, the same class as `heroItems` empty→loaded, NOT a per-focus value.
+    private var hasFocusableRows: Bool {
+        !model.rows.isEmpty || !model.continueWatching.isEmpty
+    }
+
+    /// FEAT-15: the hero region is the focus-only panel. Gated on the SETTING, never on
+    /// `heroItems.isEmpty` — the latter is also true during the hero-on fan-out window, and
+    /// mounting a panel there would pin/unpin the header inside that window in classic mode.
+    /// Codex review: gated on `heroPanelSeed` rather than `hasFocusableRows` — a collection-only
+    /// Home has focusable rows but nothing the panel can ever represent (`CollectionRowView`
+    /// never reports a `MetaPreview`), and mounting it there reserved a permanently blank band.
+    /// With no seed the layout degenerates to pure rows, which is also the only way a "rows
+    /// only, no hero region" configuration remains reachable. Still a content/load-boundary
+    /// value, never per-focus.
+    private var focusHeroActive: Bool { !heroSettings.heroEnabled && heroPanelSeed != nil }
+
+    /// Whether a hero header is mounted above the rows ScrollView at all.
+    private var heroHeaderVisible: Bool {
+        focusHeroActive || (heroNuvioStyle && heroCarouselActive)
+    }
+
+    /// Which CONTAINER the rows ScrollView lives in (BUG-19: this may change only when a Settings
+    /// toggle flips). Pinned-capable configurations keep the VStack split permanently — the header
+    /// appearing/disappearing inside it at the load boundary is a value change, not a structural
+    /// one, so the rows' identity survives. `heroSettings.heroEnabled` starts at its `true` default
+    /// until the settings flow publishes (very early on the Home path — `AddonRepository.initialize`
+    /// and `CollectionRepository.initialize` both drive `ensureLoaded` → `publish`), so a hero-off
+    /// user sees at most one container flip, before rows exist.
+    private var heroContainerPinned: Bool { heroNuvioStyle || !heroSettings.heroEnabled }
+
+    /// FEAT-15 resting state for the focus panel: the first title of the first CATALOG row.
+    ///
+    /// Why a resting item at all — the focus model's natural empty state is `nil`, and with no
+    /// carousel underneath, `nil` means a blank hero band. That happens twice in normal use: for
+    /// the frame or two between rows appearing and the first card's 0.2s commit, and every time
+    /// focus leaves the rows entirely (walking up to the tab bar), where the revert grace fires a
+    /// `nil` with nothing to fall back to. A deterministic resting title is stabler than a panel
+    /// that blinks empty.
+    ///
+    /// Why a CATALOG row is preferred over the first VISIBLE row: a Continue Watching entry is
+    /// adapted through `previewFromEntry`, which carries no description at all, so seeding from CW
+    /// would open Home on a title with an empty synopsis. Catalog previews carry the addon's
+    /// description (and BUG-42's shared publish localizes them). A CW preview is still the
+    /// LAST-RESORT seed (Codex review): on a CW-only Home the alternative was a panel that sat
+    /// blank until a focus commit and blanked again whenever focus left the row — title+backdrop
+    /// without a synopsis beats an empty band.
+    ///
+    /// Deliberately STATELESS — it is derived, never committed into `HomeHeroFocusModel`, so it
+    /// cannot fight a real focus claim, cannot take a `claimSource`, and cannot leave a stale
+    /// pending commit. The cost is that a resting title with no description gets no TMDB gap-fill
+    /// (that runs on commit only); the first focus fixes it.
+    ///
+    /// `heroPanelSeed` is the settings-independent content lookup (it also GATES the panel via
+    /// `focusHeroActive`, so it must not consult it — that would be circular).
+    private var heroPanelSeed: MetaPreview? {
+        for row in model.rows {
+            if case .catalog(let section) = row, let first = section.items.first { return first }
+        }
+        if let firstEntry = model.continueWatching.first { return previewFromEntry(firstEntry) }
+        return nil
+    }
+
+    private var heroRestingItem: MetaPreview? {
+        guard focusHeroActive else { return nil }
+        return heroPanelSeed
+    }
+
     /// UX-7: the item the hero should actually display — a row-focused poster wins over the
-    /// carousel's own current page while one is committed. Gated on `heroItems` HERE, at display
+    /// carousel's own current page while one is committed. Gated on the hero MODE here, at display
     /// time, not at report time: rows report unconditionally, so a card focused while the hero
     /// fan-out is still loading takes over the moment `heroItems` arrives (no re-report exists at
-    /// that boundary — `@FocusState` hasn't changed), and Show Hero OFF stays a pure display
-    /// decision (`heroItems` empty ⇒ no hero region at all).
+    /// that boundary — `@FocusState` hasn't changed).
+    /// FEAT-15: in focus-panel mode there is no carousel to fall back to, so the fallback is the
+    /// resting item instead. Both modes off ⇒ nil ⇒ no hero region at all, exactly as Show Hero
+    /// OFF behaved before this change.
     private var displayHero: MetaPreview? {
-        heroItems.isEmpty ? nil : (focusModel.focusedItem ?? currentHero)
+        if heroCarouselActive { return focusModel.focusedItem ?? currentHero }
+        if focusHeroActive { return focusModel.focusedItem ?? heroRestingItem }
+        return nil
     }
 
     var body: some View {
@@ -101,7 +222,7 @@ struct HomeView: View {
                 // BUG-23 diagnostic (invisible, harness-readable): the hero carousel's live
                 // selection + focus state, so the UITest can watch exactly what a left press
                 // does to the index (one-press page? two? snap-back?).
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0)")
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none"))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")
@@ -122,12 +243,17 @@ struct HomeView: View {
                     Group {
                         // Nuvio-style: right-anchored artwork whose left edge fades to the
                         // flat background — the info panel never sits over the art.
-                        HomeHeroBackdrop(item: hero, nuvioStyle: heroNuvioStyle)
+                        // FEAT-15: the focus panel always uses that treatment (see heroNuvioStyle).
+                        HomeHeroBackdrop(item: hero, nuvioStyle: heroNuvioStyle || focusHeroActive)
                         HomeHeroScrim()
                     }
                     // UX-7: a row-focused poster (focusModel.focusedItem != nil) always shows
                     // its artwork — heroPosterFocusOnly only gates the carousel's own idle fade.
-                    .opacity(heroPosterFocusOnly ? ((heroFocused || focusModel.focusedItem != nil) ? 1 : 0) : 1)
+                    // FEAT-15: and only the CAROUSEL's. In focus-panel mode the toggle is inert —
+                    // hiding the artwork "while browsing" there would hide it always, since
+                    // browsing is the only thing that mode ever shows (see heroPosterFocusOnly).
+                    .opacity(heroPosterFocusOnly && heroCarouselActive
+                             ? ((heroFocused || focusModel.focusedItem != nil) ? 1 : 0) : 1)
                     .animation(.easeInOut(duration: 0.4), value: heroFocused || focusModel.focusedItem != nil)
                     // Purely decorative background art — the same title/synopsis is exposed by
                     // the focusable HomeHeroForeground button in front of it, so VoiceOver
@@ -149,13 +275,19 @@ struct HomeView: View {
                 // never per scroll frame. The `heroItems` empty→loaded check is inside the VStack
                 // around the HEADER alone, so the rows' identity is untouched at that boundary.
                 //
-                // `pinned` is passed as `heroNuvioStyle && !heroItems.isEmpty`, NOT the bare
-                // setting: with Show Hero off (or before the fan-out loads), Nuvio mode renders
-                // rows-only and they must keep the CLASSIC geometry — full 60pt overscan top
+                // `pinned` is passed as `heroHeaderVisible`, NOT the bare setting: before the
+                // fan-out loads (or before rows exist in FEAT-15's focus-panel mode) no header is
+                // mounted, and the rows must keep the CLASSIC geometry — full 60pt overscan top
                 // inset and lift-friendly disabled clipping — instead of the compact insets that
                 // only make sense under a mounted header. This is a value change (paddings,
                 // clip flag, the in-scroll hero condition), not a structural one, so flipping at
                 // the load boundary re-identifies nothing.
+                //
+                // FEAT-15: the container test is `heroContainerPinned` (Nuvio-style OR Show Hero
+                // off) — still purely settings-driven. Show Hero off now pins the focus panel
+                // above the rows for the same reason Nuvio mode pins the carousel: a description
+                // panel that scrolls away with the rows cannot follow focus down the page, which
+                // is the whole request.
                 // ScrollViewReader + the Menu handler sit ABOVE the mode split: in pinned mode
                 // the hero CTA is a SIBLING of the rows ScrollView, so a handler attached to the
                 // ScrollView alone would not cover it — a Menu press with focus on the CTA while
@@ -165,12 +297,12 @@ struct HomeView: View {
                 // resolves the "home_top" anchor through the descendant ScrollView.
                 ScrollViewReader { scrollProxy in
                     Group {
-                        if heroNuvioStyle {
+                        if heroContainerPinned {
                             VStack(spacing: 0) {
-                                if !heroItems.isEmpty {
+                                if heroHeaderVisible {
                                     pinnedHeroHeader
                                 }
-                                rowsScroll(pinned: !heroItems.isEmpty)
+                                rowsScroll(pinned: heroHeaderVisible)
                             }
                         } else {
                             rowsScroll(pinned: false)
@@ -182,6 +314,14 @@ struct HomeView: View {
                     // so Menu keeps its default root behavior there; it only attaches when the
                     // hero exists, because jumping without a focus anchor would let the focus
                     // engine drag the scroll right back down to the still-focused row.
+                    //
+                    // FEAT-15 leaves this gate on `heroItems` deliberately, so the focus-panel
+                    // mode keeps EXACTLY the Menu behavior Show Hero off has always had (handler
+                    // detached — Menu is the tab root's). The panel has no CTA on purpose, so
+                    // there is no focus anchor at the top to hand off to, and the comment block
+                    // below records that scrolling to the top WITHOUT taking focus first is the
+                    // documented failure mode. Giving hero-off users Menu-to-top needs a
+                    // device-verified anchor plan, not a flag change here.
                     .onExitCommand(perform: (isScrolledDown && !heroItems.isEmpty) ? {
                         if heroNuvioStyle {
                             // Pinned hero: the CTA lives above the ScrollView in the VStack, so
@@ -241,6 +381,15 @@ struct HomeView: View {
                     // (The pinned-hero branch above is outside this banned class: it is
                     // Menu-triggered, exactly like the classic branch it sits next to, not
                     // triggered by the hero gaining focus.)
+                    //
+                    // Round 7 (2026-08-05) deliberately does NOT touch this site: instead of
+                    // correcting the scroll after the fact, it removes the reason the scroll
+                    // stops short — the classic hero now carries its top padding as a
+                    // transparent frame reach, so the topmost revealable frame IS the content
+                    // top (see `heroCarousel(compact:topReach:)` and `rowsInsets`). That is a
+                    // geometry change on the way UP, invisible to Menu-to-top, which already
+                    // scrolls to "home_top" explicitly and is unaffected either way. Unverified
+                    // until a device walk says the probe's `residual` dropped from 67 toward 0.
                 }
             }
             .onReceive(heroTimer) { _ in
@@ -249,6 +398,11 @@ struct HomeView: View {
                 // comment below), so the only safe accommodation is to stop advancing and let
                 // the carousel sit still until the user pages manually (still animated).
                 guard !reduceMotion else { return }
+                // FEAT-15: no carousel, nothing to advance. Implied by the `heroItems.count > 1`
+                // test below (Show Hero off publishes an empty hero list), but stated explicitly
+                // because "the auto-advance timer never runs in focus-panel mode" is part of the
+                // feature's contract, not an accident of how the shared repo publishes.
+                guard heroCarouselActive else { return }
                 // UX-7: a row-focused poster owns the hero right now — the carousel must not
                 // advance underneath it.
                 guard heroItems.count > 1, !heroFocused, focusModel.focusedItem == nil,
@@ -273,6 +427,13 @@ struct HomeView: View {
                 if heroIndex >= newCount { heroIndex = 0 }
             }
             .onChange(of: heroItems.map(\.id)) { _, _ in
+                prefetchHeroArt()
+            }
+            // FEAT-15: the focus panel has no hero pages to warm, but it DOES paint the resting
+            // item the moment rows land — warm that one title's backdrop/logo so Home doesn't
+            // open on a placeholder. Inert in carousel mode: `heroRestingItem` is nil there, so
+            // this fires once (nil → nil) and never again.
+            .onChange(of: heroRestingItem?.id) { _, _ in
                 prefetchHeroArt()
             }
             .navigationDestination(for: TitleRoute.self) { route in
@@ -306,6 +467,7 @@ struct HomeView: View {
             LaunchTrace.mark("home_appear")  // BUG-26: profile gate passed, Home mounting
             #endif
             model.start()
+            heroSettings.start()
             prefetchHeroArt()
             // UX-7: when a row-focused poster reverts (grace period elapsed, or the CTA
             // reclaimed the hero), re-stamp the carousel's "last change" clock — otherwise the
@@ -313,7 +475,10 @@ struct HomeView: View {
             // moves away, before the user even sees the carousel resume.
             focusModel.onRevert = { lastHeroChange = Date() }
         }
-        .onDisappear { model.stop() }
+        .onDisappear {
+            model.stop()
+            heroSettings.stop()
+        }
     }
 
     /// The scrolling rows region — the SAME builder for both hero layouts, so row content is
@@ -346,8 +511,20 @@ struct HomeView: View {
                     // Pinned (Nuvio-style) doesn't render a hero here at all — it sits
                     // ABOVE this ScrollView as the fixed top of the VStack split (see
                     // `pinnedHeroHeader`), which owns its own compacted paddings.
-                    heroCarousel(compact: false)
-                        .padding(.top, Theme.Size.heroForegroundTopPad)
+                    //
+                    // BUG-30 reframe (2026-08-05, classic-only): the hero's `.padding(.top,)`
+                    // and the LazyVStack's 60pt top inset used to be PADDING — layout that sits
+                    // outside every frame the focus engine can reveal, so the topmost thing the
+                    // engine could ever align was ~400pt below the content's true top and the
+                    // walk-up rest landed short of it (`[HomeScrollProbe]` 2026-08-02: rest
+                    // y=-90 vs true top -157, deterministic 67pt; the tab bar only expands fully
+                    // at the true top, which is why it comes back clipped). Both are now carried
+                    // as the hero's OWN transparent top reach instead — same pixels, but the
+                    // hero's frame (and its `.focusSection()`) starts at content y=0, so a
+                    // reveal that satisfies the hero IS the true top. Layout is unchanged to the
+                    // point: the inner fixed-height frame is bottom-aligned inside the extended
+                    // one, so the info panel renders exactly where it always did.
+                    heroCarousel(compact: false, topReach: Self.classicHeroTopReach)
                 }
 
                 if model.rows.isEmpty {
@@ -398,7 +575,9 @@ struct HomeView: View {
             // include it. See rowCardTopReach / rowCardBottomReach (BrowseComponents).
             .environment(\.rowCardTopReach, pinned ? Theme.Size.heroPinnedRowTopPad : 0)
             .environment(\.rowCardBottomReach, pinned ? Theme.Size.heroPinnedRowBottomReach : 0)
-            .padding(rowsInsets(pinned: pinned))
+            // BUG-30: `heroInScroll` moves the classic top inset into the hero's own reach (see
+            // the hero branch above). Every other configuration keeps its inset unchanged.
+            .padding(rowsInsets(pinned: pinned, heroInScroll: !heroItems.isEmpty && !pinned))
             // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
             // hero — the anchor must exist even while the hero row is lazily culled.
             // In pinned (Nuvio-style) mode the hero isn't in this stack at all, so the
@@ -413,21 +592,56 @@ struct HomeView: View {
         // never anchored to the ScrollView frame and blanked every row). The focus
         // lift stays inside the clip thanks to `rowsInsets`.
         .scrollClipDisabled(!pinned)
+        // BUG-37: names this exact view (the rows viewport, whose top edge is the pinned clip
+        // edge) so a pinned row title can always resolve the rect it must stay inside, even if
+        // `.scrollView(axis: .vertical)` doesn't resolve through the row's nested horizontal
+        // shelf. Inert otherwise — naming a coordinate space changes no layout.
+        .coordinateSpace(.named(PinnedRowTitle.rowsScrollSpace))
         .reportsScrollToTabBar(isScrolledDown: $isScrolledDown)
         // BUG-30 device-verify probe (instrumentation only, behavior-neutral): logs raw
-        // contentOffset/contentInsets on every change so `log show` after a D-pad walk-up
-        // shows where focus-driven scrolling rests vs. the true top. Off by default; the
-        // modifier is only attached when the knob is set, so disabled testers pay nothing.
+        // contentOffset/contentInsets — and the RESIDUAL they imply — on every change, plus a
+        // debounced REST line, so `log show` after a D-pad walk-up shows exactly where
+        // focus-driven scrolling stopped vs. the true top, in a named hero mode. Off by
+        // default; the modifier is only attached when the knob is set, so disabled testers pay
+        // nothing.
         //   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
-        .modifier(HomeScrollProbeModifier(enabled: homeScrollProbeEnabled))
+        .modifier(HomeScrollProbeModifier(enabled: homeScrollProbeEnabled,
+                                          mode: probeMode(pinned: pinned)))
+        // BUG-30 A/B knob (see `homeScrollEdgeHard`). Not attached unless the knob is set, so
+        // the shipped tree is unchanged.
+        .modifier(HomeScrollEdgeStyleModifier(hard: homeScrollEdgeHard))
         // The BUG-27 Menu handler is NOT here: it lives on the common ancestor in `body`,
         // because in pinned mode the hero CTA is a sibling of this ScrollView and a handler
         // attached here would not cover it (Menu on the CTA would suspend the app).
     }
 
-    /// The paged hero carousel plus its (static) page dots. Fixed height everywhere: paging or
-    /// auto-advancing swaps content inside a constant frame, so the rows below never move.
-    private func heroCarousel(compact: Bool) -> some View {
+    /// The hero region's foreground: the paged carousel plus its (static) page dots, or — with
+    /// Show Hero off (FEAT-15) — the same info panel with every carousel affordance stripped.
+    /// Fixed height everywhere: paging, auto-advancing, or a focus takeover swaps content inside a
+    /// constant frame, so the rows below never move.
+    ///
+    /// FEAT-15 removes exactly three things in focus-panel mode, and adds none:
+    ///  - the CTA (`showsCTA: false`). It is the hero's ONLY focusable element, and leaving it in
+    ///    would break the mode two ways: initial focus would land on it instead of the first row
+    ///    (so the panel would open empty and the user would have to press Down to fill it), and
+    ///    `onChange(of: heroFocused)` treats CTA focus as the carousel reclaiming the hero — it
+    ///    calls `cancelAndRevert()`, which with no carousel underneath just blanks the panel.
+    ///    Nothing is lost: the CTA opened the focused title's detail screen, which is what
+    ///    pressing Select on the row card under it already does.
+    ///  - `focusSection()` + `onMoveCommand` (via `HeroCarouselInteractionModifier`). Both are
+    ///    inert with no focusable descendant, but declaring a focus section over a region the
+    ///    engine can never enter is exactly the kind of empty-container edge this screen has been
+    ///    burned by before, so the modifiers are simply not attached.
+    ///  - the page dots (already `heroItems.count > 1`, i.e. never in this mode).
+    ///
+    /// `topReach` (BUG-30, classic only) extends the hero's frame UPWARD by that many transparent
+    /// points with the fixed-height content bottom-aligned inside it — the same "the reveal target
+    /// must physically contain the region" mechanism the row cards use (`rowCardTopReach`), scaled
+    /// to the one focusable thing at the top of the classic scroll. It replaces an identical
+    /// amount of PADDING at the call site, so nothing moves; what changes is that the padding is
+    /// now inside the hero's own frame and `.focusSection()` rather than outside them. 0 (the
+    /// pinned header's value) collapses the modifier entirely — pinned geometry is untouched.
+    private func heroCarousel(compact: Bool, topReach: CGFloat = 0) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             // BUG-23 round 2 (device finding): the paged TabView is GONE. The sim fix caught
             // dropped D-pad presses via onMoveCommand, but the real Siri Remote pages by
@@ -443,16 +657,43 @@ struct HomeView: View {
                 // the title/synopsis on screen always matches the backdrop behind it. The CTA's
                 // NavigationLink is bound to `item`, so it follows along automatically.
                 if let hero = displayHero {
-                    HomeHeroForeground(item: hero, heroFocused: $heroFocused, compact: compact)
+                    HomeHeroForeground(item: hero, heroFocused: $heroFocused, compact: compact,
+                                       showsCTA: heroCarouselActive,
+                                       forceNuvioLayout: focusHeroActive)
                 }
             }
             // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
             // extended focus frame plus the engine's reveal margin — see the Theme comment
-            // on heroCarouselHeightPinned (device round 6).
+            // on heroCarouselHeightPinned (device round 6). FEAT-15's panel keeps the SAME
+            // fixed height as the pinned carousel — the freed CTA slot is redistributed to the
+            // synopsis INSIDE the panel (see HomeHeroForeground), never given back to the rows,
+            // so the pinned geometry the `heroPinned*` reach constants were tuned against
+            // (device rounds 4–7) is identical in both modes.
             .frame(height: compact ? Theme.Size.heroCarouselHeightPinned
                                    : Theme.Size.heroCarouselHeight)
-            .focusSection()
-            .onMoveCommand { direction in
+            // BUG-30 (classic only, `topReach > 0`): grow the frame upward to the content top,
+            // bottom-aligning the fixed-height slot above so the panel does not move a pixel.
+            // Applied BEFORE the focus section so the section covers the extended frame — the
+            // whole point is that the engine's reveal target now reaches the true top. The
+            // extension is transparent and holds nothing focusable, so it adds no focus stop
+            // (and in FEAT-15's panel mode, where there is deliberately no focusable element at
+            // all, `topReach` is 0 and this modifier is not applied).
+            //
+            // OPEN QUESTION FOR THE DEVICE PASS (Codex review, unresolved by design): the engine
+            // may align its reveal to the focused CTA's own frame rather than this enlarged
+            // container/section — in which case `REST classic` will still log residual≈67 and
+            // this reach did nothing. The CTA is `.glass`-styled, so the row-card fix (reach as
+            // padding INSIDE the focusable label) would balloon its platter; restyling the CTA
+            // blind is the exact failure mode of BUG-30's six reverted rounds. If the probe says
+            // residual is unchanged, the next round extends the CTA's focusable frame with a
+            // device in the loop (likely a borderless custom-glass restyle), not before.
+            .modifier(HeroTopReachModifier(
+                extendedHeight: topReach > 0
+                    ? (compact ? Theme.Size.heroCarouselHeightPinned
+                               : Theme.Size.heroCarouselHeight) + topReach
+                    : 0
+            ))
+            .modifier(HeroCarouselInteractionModifier(enabled: heroCarouselActive) { direction in
                 guard heroItems.count > 1 else { return }
                 let count = heroItems.count
                 let clamped = min(heroIndex, count - 1)
@@ -463,7 +704,7 @@ struct HomeView: View {
                 default: return
                 }
                 withAnimation(.easeInOut(duration: 0.4)) { heroIndex = next }
-            }
+            })
 
             if heroItems.count > 1 {
                 // Both layouts keep the info panel on the left, so the dots stay leading. Never
@@ -494,6 +735,11 @@ struct HomeView: View {
     /// empty→loaded boundary (that check wraps this header alone, not the ScrollView beside it).
     /// No `.id()` is introduced here.
     ///
+    /// FEAT-15: this same header also hosts the Show-Hero-off focus panel — the request is for the
+    /// focused title's backdrop and text and nothing else, which is precisely what this header
+    /// already renders during a UX-7 takeover. The only difference is that with no carousel
+    /// underneath, the takeover is the header's entire life rather than a temporary override.
+    ///
     /// Paddings are the COMPACTED pinned set (`heroPinnedTopPad` / `heroPinnedRowsGap`), not the
     /// in-scroll ones: pinned mode shares one screen between hero and rows, so the hero has to
     /// give the rows viewport ~450pt to fit a poster row. See the height budget on those tokens.
@@ -511,48 +757,87 @@ struct HomeView: View {
     /// pinned clip edge otherwise turns into cropped poster tops / a bisected row title (device
     /// round 1, 2026-08-03). The horizontal/bottom insets stay at 60 — with clipping ENABLED in
     /// pinned mode they are also what keeps a focused card's lift inside the clip.
-    private func rowsInsets(pinned: Bool) -> EdgeInsets {
-        pinned
-            ? EdgeInsets(top: Theme.Size.heroPinnedRowsHeadroom, leading: Theme.Spacing.screen,
-                         bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
-            : EdgeInsets(top: Theme.Spacing.screen, leading: Theme.Spacing.screen,
-                         bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
+    ///
+    /// BUG-30: in CLASSIC mode WITH the in-scroll hero, the 60pt top inset moves into the hero's
+    /// own `topReach` (see the hero branch in `rowsScroll`) and this returns 0 — same pixels, but
+    /// carried inside a frame the focus engine can reveal instead of a padding gap it can't. Every
+    /// other configuration is byte-identical to beta.10, including classic BEFORE the hero fan-out
+    /// lands (no hero to carry the inset ⇒ the rows keep their own 60).
+    private func rowsInsets(pinned: Bool, heroInScroll: Bool) -> EdgeInsets {
+        if pinned {
+            return EdgeInsets(top: Theme.Size.heroPinnedRowsHeadroom, leading: Theme.Spacing.screen,
+                              bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
+        }
+        return EdgeInsets(top: heroInScroll ? 0 : Theme.Spacing.screen,
+                          leading: Theme.Spacing.screen,
+                          bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
+    }
+
+    /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact
+    /// padding it gives up in exchange (`heroForegroundTopPad`, which placed the info panel on the
+    /// lower third of the backdrop, plus the `Spacing.screen` top inset `rowsInsets` no longer
+    /// applies in that configuration). Sum, not a new token: it must track those two by
+    /// construction, or the hero moves.
+    private static let classicHeroTopReach = Theme.Size.heroForegroundTopPad + Theme.Spacing.screen
+
+    /// Which geometry a `[HomeScrollProbe]` line was measured in. BUG-30's 67pt capture is a
+    /// CLASSIC measurement (full-screen rows ScrollView under the tab bar — its 157pt top content
+    /// inset is the tab bar's safe area), and the reframe above is scoped there, so every line has
+    /// to name its mode rather than leave the reader to infer it.
+    private func probeMode(pinned: Bool) -> String {
+        guard pinned else { return "classic" }
+        return heroCarouselActive ? "pinned-hero" : "pinned-panel"
     }
 
 
     /// Warm the artwork caches for every hero page (backdrop + logo) as soon as the items are
     /// known, so manual paging and the auto-advance crossfade never flash a placeholder.
+    /// FEAT-15: in focus-panel mode there are no pages, so the one title the panel paints before
+    /// anything is focused — the resting item — is warmed instead. Every OTHER title's backdrop is
+    /// still warmed the same way it always was: one batch per row, on that row's first focus
+    /// report (`reportRowFocus`), which is unchanged and now runs in both hero modes.
     private func prefetchHeroArt() {
         var urls: [URL] = []
+        // Both render candidates (primary + poster fallback), same chain the backdrop
+        // actually uses — see heroBackdropPrefetchURLs.
         for item in heroItems {
-            // Both render candidates (primary + poster fallback), same chain the backdrop
-            // actually uses — see heroBackdropPrefetchURLs.
             urls.append(contentsOf: heroBackdropPrefetchURLs(for: item).compactMap(URL.init(string:)))
             if let url = heroLogoURL(for: item) { urls.append(url) }
+        }
+        if let resting = heroRestingItem {
+            urls.append(contentsOf: heroBackdropPrefetchURLs(for: resting).compactMap(URL.init(string:)))
+            if let url = heroLogoURL(for: resting) { urls.append(url) }
         }
         ArtworkStore.prefetch(urls)
     }
 
-    /// UX-7: single funnel for every row's focus report. Three layers of gating history live
-    /// here, each learned the hard way:
-    ///  - The Show Hero SETTING gates all work (reports, enrichment, backdrop prefetch) — with
-    ///    the hero deliberately off, browsing must not generate artwork/metadata traffic for a
-    ///    feature that cannot render (Codex review finding). Read LIVE from the settings repo on
-    ///    every event, never captured at row construction.
+    /// UX-7: single funnel for every row's focus report. The gating history here is worth keeping
+    /// straight, because FEAT-15 removed one of its three layers and the reason matters:
+    ///
+    ///  - The Show Hero SETTING used to gate all work — reports, enrichment, backdrop prefetch —
+    ///    and called `cancelAndRevert()` on every event while the hero was off. The premise was
+    ///    "with the hero deliberately off, browsing must not generate artwork/metadata traffic for
+    ///    a feature that cannot render" (Codex review finding). That premise is now false: with
+    ///    Show Hero off the focus panel IS the hero region (see the hero-mode block at the top of
+    ///    this file), so the feature renders in both settings states and there is no wasted
+    ///    traffic to suppress. Leaving the guard in place is what made hero-off silently kill the
+    ///    description panel — FEAT-15/BUG-24, the same request three times over — so the guard is
+    ///    gone rather than inverted: there is no configuration left in which a report is dead
+    ///    work, and adding a second setting to recreate one would just recreate the trap.
     ///  - The temporary loading state (`heroItems` still empty during the fan-out) does NOT gate
     ///    reports — `displayHero` gates at display time instead, so a card focused before the
     ///    fan-out lands takes over the moment `heroItems` arrives (no re-report exists at that
-    ///    boundary, and a construction-time gate got cached dead by the LazyVStack).
+    ///    boundary, and a construction-time gate got cached dead by the LazyVStack). That window
+    ///    is the one place reports can still outrun a renderable hero, and it is deliberate.
     ///  - Backdrop prefetch warms once per row, on its first non-nil report, through the same
-    ///    `heroBackdropURL` chain the hero renders.
+    ///    `heroBackdropURL` chain the hero renders. Unchanged, and now warm in both hero modes.
+    ///
+    /// Note the removed `cancelAndRevert()` had a second job — dropping a claim made while the
+    /// hero was enabled so that re-enabling later could not resurrect a stale title. That job is
+    /// obsolete for the same reason: the claim is never orphaned now, because both settings states
+    /// display it. Toggling Show Hero mid-browse simply moves the committed title from the
+    /// carousel's hero to the focus panel and back.
     private func reportRowFocus(_ item: MetaPreview?, source: String, prefetch: () -> [String]) {
-        guard HomeCatalogSettingsRepository.shared.snapshot().heroEnabled else {
-            // Also drop any claim made while the hero WAS enabled: re-enabling later must not
-            // resurrect a title whose card focus long since moved on (no @FocusState change
-            // fires at that boundary, so a cached claim would win). Idempotent when idle.
-            focusModel.cancelAndRevert()
-            return
-        }
         if item != nil, prefetchedBackdropRows.insert(source).inserted {
             ArtworkStore.prefetch(prefetch().compactMap(URL.init(string:)))
         }
@@ -612,17 +897,28 @@ struct HomeView: View {
 /// no scrolling, focus, or tab-bar behavior. When `enabled` is false the probe modifier isn't
 /// attached at all (see call site), so this type's body never runs and there is zero log output
 /// and zero measurable work.
+///
+/// Each line now carries `residual` and the hero `mode`, and a settled scroll emits one extra
+/// `REST` line, so the manual pass MEASURES the walk-up instead of eyeballing the tab bar:
+///     grep 'HomeScrollProbe] REST'
+/// `residual` is 0 at the true top and positive by exactly how far the rest fell short of it.
 fileprivate struct HomeScrollProbeModifier: ViewModifier {
     let enabled: Bool
+    /// "classic" / "pinned-hero" / "pinned-panel" — see `HomeView.probeMode(pinned:)`.
+    let mode: String
 
     func body(content: Content) -> some View {
         // `enabled == false` returns bare `content` — onScrollGeometryChange is never attached to
         // the view tree, so there's no closure evaluation, no comparison, and no log output.
         if enabled {
+            // Captured by value so the geometry closures hold a plain String, not this modifier.
+            let modeName = mode
             content.onScrollGeometryChange(for: String.self, of: { geo in
-                "y=\(Int(geo.contentOffset.y)) inset=\(Int(geo.contentInsets.top))"
+                let residual = geo.contentOffset.y + geo.contentInsets.top
+                return "y=\(Int(geo.contentOffset.y.rounded())) inset=\(Int(geo.contentInsets.top.rounded())) residual=\(Int(residual.rounded()))"
             }, action: { _, v in
-                NSLog("[HomeScrollProbe] %@", v)
+                NSLog("[HomeScrollProbe] %@ %@", modeName, v)
+                HomeScrollProbeRest.schedule(mode: modeName, line: v)
             })
         } else {
             content
@@ -630,9 +926,135 @@ fileprivate struct HomeScrollProbeModifier: ViewModifier {
     }
 }
 
+/// Debounce behind the probe's `REST` line: the walk-up's animation emits a line per frame, and
+/// only the value the scroll SETTLES on answers "did focus-driven scrolling reach the true top".
+/// Re-armed on every sample; the last one standing after 400ms of stillness logs. Plain static
+/// storage rather than `@State`: every writer is a SwiftUI scroll-geometry callback on the main
+/// thread, and a state write here would invalidate Home on every scroll frame — the probe must
+/// not perturb the geometry it is measuring.
+fileprivate enum HomeScrollProbeRest {
+    nonisolated(unsafe) private static var generation = 0
+
+    nonisolated static func schedule(mode: String, line: String) {
+        generation &+= 1
+        let scheduled = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard scheduled == generation else { return }
+            NSLog("[HomeScrollProbe] REST %@ %@", mode, line)
+        }
+    }
+}
+
+/// BUG-30 A/B knob (`debug.homeScrollEdgeHard`, default off): an explicit HARD top scroll-edge
+/// treatment for the rows ScrollView. The system tab bar's clipped re-appearance is an edge-state
+/// presentation, and this is the only supported lever over it on tvOS 26 — but a hard edge also
+/// draws a crisp line across Home's full-bleed hero backdrop, which no simulator gate can judge.
+/// Shipping it as a knob lets one device pass compare both states without a rebuild, and leaves
+/// the default tree byte-identical. NOT one of the six banned rounds: those all moved the SCROLL
+/// (visibility overrides, animation removal, a hero-refocus completion scroll that wedged Down
+/// navigation); this changes no scroll position, no focus, and nothing about Menu-to-top.
+fileprivate struct HomeScrollEdgeStyleModifier: ViewModifier {
+    let hard: Bool
+
+    func body(content: Content) -> some View {
+        if hard {
+            content.scrollEdgeEffectStyle(.hard, for: .top)
+        } else {
+            content
+        }
+    }
+}
+
+/// BUG-30: extends the classic in-scroll hero's frame upward to the scroll content's true top,
+/// bottom-aligning its fixed-height content inside the taller frame so the visible layout is
+/// unchanged. `extendedHeight == 0` (the pinned header) collapses to bare `content`, so pinned
+/// mode — whose geometry took eight device rounds to settle — is not touched at all. The flag is
+/// per call site and constant there, so this never re-identifies the hero mid-browse.
+fileprivate struct HeroTopReachModifier: ViewModifier {
+    let extendedHeight: CGFloat
+
+    func body(content: Content) -> some View {
+        if extendedHeight > 0 {
+            content.frame(height: extendedHeight, alignment: .bottom)
+        } else {
+            content
+        }
+    }
+}
+
+/// FEAT-15: attaches the CAROUSEL's interaction affordances — a focus section around the hero
+/// page and the left/right paging handler — only when a carousel actually exists. With Show Hero
+/// off the hero region is a display-only panel with no focusable descendant, and neither modifier
+/// has anything to act on; `enabled` flips solely with the Show Hero setting, so this never
+/// re-identifies the hero mid-browse.
+fileprivate struct HeroCarouselInteractionModifier: ViewModifier {
+    let enabled: Bool
+    let onMove: (MoveCommandDirection) -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .focusSection()
+                .onMoveCommand(perform: onMove)
+        } else {
+            content
+        }
+    }
+}
+
+/// FEAT-15: republishes the one Home-catalog setting the Home SCREEN renders from — "Show Hero".
+///
+/// Why a dedicated observer rather than `HomeCatalogSettingsRepository.shared.snapshot()`: that
+/// call runs `ensureLoaded()` and rebuilds the entire preferences map into fresh
+/// `HomeCatalogPreference` values every time. `reportRowFocus` could afford that per focus event;
+/// `body` cannot afford it per render, and the hero mode is now a rendering decision. This watches
+/// the same `uiState` flow `SettingsViewModel` does (so the two never disagree) and keeps a single
+/// Bool. Deliberately NOT folded into `HomeViewModel` — that type is shared with other in-flight
+/// work; this is a self-contained, cancellable watcher with the same start/stop lifecycle.
+@MainActor
+final class HomeHeroSettingsObserver: ObservableObject {
+    /// Defaults to `true` (the repository's own default) so the first frames behave exactly as
+    /// they did before this change. The Home path drives `ensureLoaded()` → `publish()` early —
+    /// `AddonRepository.initialize()` → `syncCatalogs`, `CollectionRepository.initialize()` →
+    /// `syncCollections` — so a hero-off user's real value lands before rows do.
+    @Published private(set) var heroEnabled = true
+
+    private var watcher: FlowWatcher?
+
+    func start() {
+        guard watcher == nil else { return }
+        // Codex review: the watcher dies with stop() while Home's tab is hidden, so a Show Hero
+        // change made from Settings in the meantime would leave this stale — and a returning
+        // Home would mount the retained rows in the WRONG container branch, then structurally
+        // swap them when the fresh flow value landed (resetting scroll/focus). Seed
+        // synchronously from the repository snapshot before re-subscribing; one snapshot() per
+        // Home appearance, not per body pass.
+        let current = HomeCatalogSettingsRepository.shared.snapshot().heroEnabled
+        if heroEnabled != current { heroEnabled = current }
+        watcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
+            // Guarded assignment: this flow republishes on every catalog reorder/rename too, and
+            // an unconditional write would invalidate Home on each one.
+            if self.heroEnabled != state.heroEnabled { self.heroEnabled = state.heroEnabled }
+        }
+    }
+
+    func stop() {
+        watcher?.cancel()
+        watcher = nil
+    }
+
+    deinit { watcher?.cancel() }
+}
+
 /// UX-7: drives the always-on "focus-follows-backdrop" hero. When focus rests on a poster in a
 /// Home catalog row or Continue Watching, the hero adopts that title's artwork/text live; when
 /// focus moves to the hero CTA or off every row, the carousel resumes.
+///
+/// FEAT-15: with Show Hero off this model drives the hero region outright — there is no carousel
+/// to resume to, so `focusedItem == nil` resolves to Home's resting title (`heroRestingItem`)
+/// instead. Nothing in this class changes between the two modes; the difference lives entirely in
+/// what `HomeView.displayHero` falls back to.
 ///
 /// Generation-guarded exactly like `InlineTrailerCardModel`'s dwell timer (see
 /// `InlineTrailerCard.swift`): a fast D-pad scrub across a row reports a new item on every card
@@ -873,11 +1295,16 @@ struct ContinueWatchingRow: View {
                     // Always positive — the reach lives inside the buttons (see CatalogRowView).
                     .padding(.vertical, Theme.Spacing.lg)
                 }
+                // BUG-37: rides down to the viewport's clip edge when the device rests short —
+                // same one-line treatment as every other pinned row title (see
+                // `pinnedRowTitleTracking` in BrowseComponents for the geometry and history).
                 .overlay(alignment: .topLeading) {
                     if cardTopReach > 0 {
                         Text("Continue Watching")
                             .font(Theme.Font.sectionTitle)
                             .foregroundStyle(Theme.Palette.textPrimary)
+                            .shadow(color: .black.opacity(0.7), radius: 8, y: 2)
+                            .pinnedRowTitleTracking(rowKey: "continue-watching")
                             .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                             .allowsHitTesting(false)
                     }
@@ -1152,7 +1579,16 @@ struct HomeHeroScrim: View {
 ///   fixed-width panel on the LEFT, raised toward the top of the backdrop, while the artwork
 ///   reads on the right behind `HomeHeroLeadingScrim` — upstream's modern-home look.
 /// Both obey the fixed-slot rule: every slot has a FIXED height/width, so all pages are
-/// layout-identical and advancing the carousel can never reflow anything around it.
+/// layout-identical and advancing the carousel can never reflow anything around it. The same rule
+/// is what lets a focus takeover (UX-7) — and FEAT-15's focus panel, where every repaint is a
+/// takeover — swap titles without moving the rows underneath.
+///
+/// Accessibility note for the CTA-less form (`showsCTA: false`): the info block keeps its combined
+/// accessibility element, but with no focusable descendant tvOS VoiceOver has no way to land on
+/// it. That is not a regression — Show Hero off previously rendered no hero region at all — but it
+/// does mean the synopsis is sighted-only in that mode. Restoring it needs a focusable element,
+/// which is exactly what the mode removes on purpose; a non-competing route (e.g. folding the
+/// synopsis into the focused card's accessibility value) would belong in the row components.
 struct HomeHeroForeground: View {
     let item: MetaPreview
     /// Bound to the CTA button — the hero page's ONLY focusable element. The info block above
@@ -1164,12 +1600,24 @@ struct HomeHeroForeground: View {
     /// for a reach-extended focus frame plus the engine's reveal margin. Classic and full
     /// Nuvio (never pinned) always pass false and are layout-identical to before.
     var compact: Bool = false
+    /// FEAT-15: false in the Show-Hero-off focus panel, which has no carousel and therefore no
+    /// reason to own a focusable element (see `HomeView.heroCarousel`). The CTA's fixed slot is
+    /// not left empty — `synopsisSlotHeight` absorbs it — so the panel's total height, and with it
+    /// the pinned rows viewport, is unchanged in both modes.
+    var showsCTA: Bool = true
+    /// FEAT-15: forces the Nuvio (leading text column / trailing artwork) layout regardless of the
+    /// stored `hero_nuvio_style` preference. The focus panel always uses it: it is the layout the
+    /// request is modelled on, the pinned geometry has only ever been device-tuned for it, and its
+    /// Settings row is hidden while Show Hero is off.
+    var forceNuvioLayout: Bool = false
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
+
+    private var usesNuvioLayout: Bool { forceNuvioLayout || heroNuvioStyle }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Group {
-                if heroNuvioStyle {
+                if usesNuvioLayout {
                     nuvioLayout
                 } else {
                     classicLayout
@@ -1180,18 +1628,44 @@ struct HomeHeroForeground: View {
             // The CTA sits below the description and above the page dots (which render
             // outside the TabView). D-pad left/right still pages the carousel while this
             // button holds focus — it is the page's focus anchor.
-            NavigationLink(value: TitleRoute(preview: item)) {
-                Text(ctaTitle)
-                    .font(Theme.Font.body)
+            if showsCTA {
+                NavigationLink(value: TitleRoute(preview: item)) {
+                    Text(ctaTitle)
+                        .font(Theme.Font.body)
+                }
+                .buttonStyle(.glass)
+                .focused(heroFocused)
+                .frame(height: Theme.Size.heroButtonSlotHeight, alignment: .center)
+                .accessibilityLabel("\(ctaTitle): \(item.name)")
             }
-            .buttonStyle(.glass)
-            .focused(heroFocused)
-            .frame(height: Theme.Size.heroButtonSlotHeight, alignment: .center)
-            .accessibilityLabel("\(ctaTitle): \(item.name)")
         }
         .padding(.horizontal, Theme.Spacing.lg)
         .padding(.vertical, compact ? Theme.Spacing.md : Theme.Spacing.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Fixed synopsis slot. FEAT-15: with no CTA the panel would otherwise centre itself inside
+    /// the hero region's fixed frame and leave a dead band where the button used to be, so the
+    /// synopsis absorbs the CTA slot AND the `md` gap that preceded it — same arithmetic on the
+    /// same existing tokens, no new Theme constant, and the summed panel height comes out
+    /// IDENTICAL, which is what keeps the pinned rows viewport (and every `heroPinned*` reach
+    /// constant tuned against it) untouched:
+    ///     carousel form  32 padding + 110 logo + 16 + 32 meta + 16 + 72 synopsis + 16 + 56 CTA = 350
+    ///     panel form     32 padding + 110 logo + 16 + 32 meta + 16 + 144 synopsis            = 350
+    /// both inside the 352pt `heroCarouselHeightPinned` frame the caller pins. The line limit
+    /// grows with the slot: 144pt fits four 29pt body lines, so the panel FEAT-15 asks for shows
+    /// twice the description the pinned carousel could.
+    private var synopsisSlotHeight: CGFloat {
+        let base = compact ? Theme.Size.heroSynopsisSlotHeightPinned
+                           : Theme.Size.heroSynopsisSlotHeightNuvio
+        guard !showsCTA else { return base }
+        return base + Theme.Size.heroButtonSlotHeight + Theme.Spacing.md
+    }
+
+    /// Lines the synopsis may use, tracking `synopsisSlotHeight` above.
+    private var synopsisLineLimit: Int {
+        let base = compact ? 2 : 3
+        return showsCTA ? base : base + 2
     }
 
     /// "movie" is the only meta type that reads as a film; series/tv both read as shows.
@@ -1220,12 +1694,10 @@ struct HomeHeroForeground: View {
             Text(synopsis)
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                .lineLimit(compact ? 2 : 3)
+                .lineLimit(synopsisLineLimit)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: compact ? Theme.Size.heroSynopsisSlotHeightPinned
-                                       : Theme.Size.heroSynopsisSlotHeightNuvio,
-                       alignment: .topLeading)
+                .frame(height: synopsisSlotHeight, alignment: .topLeading)
         }
         .frame(width: Theme.Size.heroInfoPanelWidth, alignment: .leading)
     }

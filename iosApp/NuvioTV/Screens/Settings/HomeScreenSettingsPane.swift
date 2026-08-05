@@ -23,11 +23,18 @@ struct HomeScreenSettingsPane: View {
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
             } else {
+                // FEAT-15 (and BUG-24, the same request in disguise): OFF no longer means "no
+                // hero region". It means "no ROTATING banner" — the top of Home becomes the
+                // focused title's own backdrop and description, updating as you move through the
+                // rows. The old copy ("Home starts directly with catalog rows") described a
+                // behavior that also silently took the description panel away with it, which is
+                // precisely the trap the reporter hit three times; both states now state what
+                // they DO, and neither implies losing the description.
                 SettingsToggleRow(
                     title: String(localized: "Show Hero"),
                     subtitle: model.heroEnabled
-                        ? String(localized: "On \u{00B7} Home opens with a rotating banner built from up to 2 of your catalogs")
-                        : String(localized: "Off \u{00B7} Home starts directly with catalog rows"),
+                        ? String(localized: "On \u{00B7} A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse")
+                        : String(localized: "Off \u{00B7} No rotating banner \u{2014} the top of Home shows the focused title's artwork and description"),
                     isOn: model.heroEnabled
                 ) {
                     model.setHeroEnabled(!model.heroEnabled)
@@ -36,6 +43,11 @@ struct HomeScreenSettingsPane: View {
                 // Collections are hard-forced to heroSourceEnabled = false on the
                 // Kotlin side (HomeCatalogSettingsRepository.normalizePreferences),
                 // so they never appear as a hero source — filter defensively here too.
+                //
+                // Everything inside this branch configures the ROTATING banner specifically —
+                // its layout and which catalogs feed it — so it stays hidden with Show Hero off,
+                // where there are no hero pages to lay out or source (FEAT-15: the focus panel
+                // always uses the pinned Nuvio presentation, see HomeView.heroNuvioStyle).
                 if model.heroEnabled {
                     // UX-2 hero redesign v2: title/description on the left with the artwork
                     // reading on the right (Nuvio-style, OPT-IN) vs the classic lower-left

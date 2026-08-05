@@ -87,6 +87,10 @@ struct CollectionRowView: View {
                     Text(collection.title)
                         .font(Theme.Font.sectionTitle)
                         .foregroundStyle(Theme.Palette.textPrimary)
+                        // BUG-37: same clip-edge slide the catalog/CW shelves got — short
+                        // real-swipe rests must never leave this row's title off-screen.
+                        .shadow(color: .black.opacity(0.7), radius: 8, y: 2)
+                        .pinnedRowTitleTracking(rowKey: collection.id)
                         .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                         .allowsHitTesting(false)
                 }

@@ -313,7 +313,31 @@ enum Theme {
         /// exceeds the device's measured ~45pt reveal residual — a full-residual rest still
         /// shows the whole title. Reach stays at 72: the sim freeze bisected to reach 100
         /// (focus resolution dies), and 72 is the proven-navigable value.
+        ///
+        /// BUG-37 CORRECTION (2026-08-05): that "~48pt" was the inset read against the wrong
+        /// anchor. The overlay is attached to the SHELF (the horizontal ScrollView), whose top is
+        /// where this inset is measured from, while the card's focusable frame — the thing the
+        /// engine's scroll-to-reveal actually aligns — starts `Spacing.lg` (24) further down,
+        /// inside the shelf's own vertical padding. The real button-top→title-top margin is
+        /// 48 − 24 = **24pt**, roughly half the device's 40–67pt rest envelope, which is exactly
+        /// why titles still vanish on hardware while the sim looks correct. The inset itself is
+        /// left alone (it is the resting look device round 8 signed off); the shortfall is
+        /// absorbed by the slide below.
         static let heroPinnedRowTitleInset: CGFloat = 48
+        /// BUG-37 (2026-08-05): how far the overlaid title may ride DOWN to stay inside the rows
+        /// viewport when the device rests short of the reveal target.
+        ///
+        /// No static inset can cover the envelope. The whole band above the art is
+        /// shelf padding (24) + reach (72) = 96pt and the title is ~40pt tall, so the largest
+        /// static button-top→title-top margin the band can offer is 96 − 40 − 24 = 32pt — under
+        /// the 40–67pt measured error either way, whether the title hangs off the shelf (today)
+        /// or off the card frame. Widening the band means a reach above 72, and the sim bisected
+        /// 100 as the value where focus resolution dies outright, so that door is shut too.
+        /// Hence a render-time slide (`pinnedRowTitleTracking`, BrowseComponents) with this
+        /// clamp: 72 covers the full 0–67pt envelope on top of the 24pt static margin, and bounds
+        /// how far a deeply-clipped row's title may ride over its own artwork (worst case ~62pt
+        /// of a 330pt poster, at rests where the clip edge is cutting that art anyway).
+        static let heroPinnedRowTitleMaxSlide: CGFloat = 72
     }
 }
 
