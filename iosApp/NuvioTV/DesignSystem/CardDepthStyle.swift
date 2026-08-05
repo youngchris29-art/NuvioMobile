@@ -104,6 +104,14 @@ extension View {
     /// Applies the shared card-depth treatment (inset edge highlight + top sheen) for `surface`,
     /// reading the resolved style from the environment. A no-op when the user has the effect — or this
     /// surface — turned off, so callers can attach it unconditionally right after the card's `clipShape`.
+    ///
+    /// **Attach it to the ARTWORK, never to the card lockup.** Both gradients here — the sheen's top
+    /// 22% and the edge highlight's coverage mask — measure 0…1 down *this view's* own height, so the
+    /// box this modifier lands on defines what "Top" means. On the artwork frame that is the artwork's
+    /// top edge (correct); hoisted onto a caption-bearing lockup it would silently stretch the same
+    /// band across artwork + title. BUG-36 moved the cards' focus treatment up to the lockup and
+    /// deliberately left this modifier down on the artwork for exactly that reason — the coverage
+    /// geometry below is unchanged and stays anchored where it always was.
     func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface) -> some View {
         modifier(CardDepthModifier(shape: shape, surface: surface))
     }
@@ -196,6 +204,11 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// so every intermediate value gets a sensible band. Both converge on 1.0 as c → 1, i.e. the mask
     /// degenerates to "opaque everywhere"; `edgeHighlight` takes that limit exactly by dropping the
     /// mask at Full rather than emitting coincident stops at location 1.
+    ///
+    /// The fractions are relative to the masked view's own height, and this overlay is sized to the
+    /// card's artwork frame (see `nuvioCardDepth`), so the band is measured against the artwork —
+    /// which is also why a uniform focus scale on the card can't disturb it: a scale multiplies both
+    /// the stroke and its mask by the same factor, leaving every fraction where it was.
     private func coverageMask(_ coverage: Double) -> some View {
         let fadeEnd = min(0.28 + 0.44 * coverage + 0.28 * coverage * coverage, 1)
         let fadeStart = min(fadeEnd * (0.35 + 0.65 * coverage), fadeEnd)

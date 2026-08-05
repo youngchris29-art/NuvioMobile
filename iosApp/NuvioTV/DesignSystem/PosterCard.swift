@@ -3,11 +3,17 @@ import SwiftUI
 /// The standard portrait poster lockup used across catalog rows, search results, and "more like
 /// this".
 ///
-/// HIG revamp (see docs/design/hig-hybrid-contract.md): focus motion is the SYSTEM's job now.
-/// Use this view as the label of a `Button`/`NavigationLink` with `.buttonStyle(.borderless)` —
-/// on tvOS the borderless style gives the artwork the native lockup treatment (lift, real
-/// Siri-Remote-tracking parallax, specular highlight, shadow) while the title below rides along
-/// unscaled, exactly like the system TV app. No accent rings, no custom scale/tilt.
+/// HIG revamp (see docs/design/hig-hybrid-contract.md): focus motion is the SYSTEM's job by
+/// default. Use this view as the label of a `Button`/`NavigationLink` with
+/// `.buttonStyle(.borderless)` — on tvOS the borderless style gives the lockup the native focus
+/// treatment (lift, real Siri-Remote-tracking parallax, specular highlight, shadow).
+///
+/// BUG-36 (beta.10 regression, tester verdict): the focus treatment now hangs off the WHOLE card —
+/// artwork *and* caption — instead of the artwork container alone. Focus used to "zoom only the
+/// inside of the artwork" (the lift landed inside BUG-31's `.clipped()` layer, so the tile's own
+/// edge never moved) and the focused title could disappear behind the lifted artwork. Both
+/// symptoms are structural, and both are fixed by where the treatment is attached, not by tuning
+/// numbers — see `CardFocusTreatment`.
 ///
 /// ```swift
 /// NavigationLink(value: route) { PosterCard(title: item.name, imageURL: item.poster) }
@@ -70,34 +76,150 @@ private let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
 /// focused card would have under the default (non-ring) hover treatment.
 private let cardRingLiftScale: CGFloat = 1.06
 
-/// FEAT-14: swaps the whole-card hover treatment between the system lift (default, ring OFF) and
-/// a manual scale (ring ON) — see the file-level comment above for why the swap exists. Shared by
-/// both `PosterCard` and `LandscapeCard` so the branch isn't duplicated at each call site.
+/// BUG-36: the ARTWORK's rounded rect, expressed in the WHOLE CARD's coordinate space.
 ///
-/// - `ringMode == false`: today's exact chain, byte-identical to pre-FEAT-14 —
+/// The focus treatment moved from the artwork container up to the card lockup (artwork + caption)
+/// so the whole card travels as one object. Everything that treatment draws still has to be shaped
+/// like the *artwork*, though — a hover platter, highlight border or shadow that swallowed the
+/// caption slot too would read as a grey slab behind the title. Every card in this file lays its
+/// artwork out at the top of a leading-aligned `VStack` whose width the caption matches, so the
+/// artwork is always `rect` cut down to `artworkHeight`.
+///
+/// `InsettableShape` so the still-mode highlight can use `strokeBorder` — same "paints strictly
+/// inside my own bounds" contract as the accent ring (see the FEAT-14 note above; an outside
+/// stroke gets clipped by the row's layout bounds).
+struct CardArtworkShape: Shape, InsettableShape {
+    var artworkHeight: CGFloat
+    var cornerRadius: CGFloat
+    var inset: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let height = min(artworkHeight, rect.height)
+        let artwork = CGRect(
+            x: rect.minX + inset,
+            y: rect.minY + inset,
+            width: max(rect.width - inset * 2, 0),
+            height: max(height - inset * 2, 0)
+        )
+        return RoundedRectangle(cornerRadius: max(cornerRadius - inset, 0)).path(in: artwork)
+    }
+
+    func inset(by amount: CGFloat) -> Self {
+        var copy = self
+        copy.inset += amount
+        return copy
+    }
+}
+
+/// Which focus treatment a card wears. Resolved from two independent Appearance settings so the
+/// three-way branch lives in exactly one place instead of being re-derived at every card.
+///
+/// - `.systemLift` — default (ring OFF, zoom ON): the native tvOS lockup treatment,
 ///   `.contentShape(.hoverEffect, …)` + `.hoverEffect(.highlight)`.
-/// - `ringMode == true`: no `.hoverEffect` at all; a `.scaleEffect` keyed to `isFocused` stands in
-///   for it, animated on focus change. Reduce Motion is honored explicitly here (the system lift
-///   respects it automatically, but a manual `.scaleEffect` does not) by skipping the animation
-///   and snapping straight to the focused/unfocused scale — the ring still needs to reach its
-///   scaled geometry so it stays aligned with the artwork, so scale itself is kept, not skipped.
+/// - `.manualScale` — ring ON, zoom ON: no `.hoverEffect` at all, a SwiftUI `.scaleEffect` stands
+///   in for it (FEAT-14 — the system lift leaves shape overlays like the ring behind at base
+///   geometry, so ring mode has to own the lift).
+/// - `.still` — BUG-36's "No Zoom on Focus" (`no_zoom_on_focus`), either ring state: no scale of
+///   any kind, focus is drawn as a highlight border plus a shadow.
+enum CardFocusMode {
+    case systemLift
+    case manualScale
+    /// `ringed` = the accent focus ring is already drawing on the artwork, so still mode must not
+    /// paint its own neutral highlight border on top of it.
+    case still(ringed: Bool)
+
+    static func resolve(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
+        if noZoomOnFocus { return .still(ringed: accentFocusRing) }
+        return accentFocusRing ? .manualScale : .systemLift
+    }
+
+    /// Every treatment SwiftUI draws itself needs an explicit `zIndex` to sit above its row
+    /// neighbours — only the system lift raises the focused card implicitly (it composites into
+    /// its own layer). See the `zIndex` call sites below.
+    var raisesFocusedCard: Bool {
+        if case .systemLift = self { return false }
+        return true
+    }
+}
+
+/// BUG-36 / FEAT-14: the card's focus treatment, attached to the WHOLE card lockup (the `VStack`
+/// of artwork + caption) by both `PosterCard` and `LandscapeCard` so the branch isn't duplicated
+/// at each call site.
+///
+/// **Where this is attached is the fix.** Pre-BUG-36 it hung off the artwork container, one level
+/// below the caption — and BUG-31 had just added a `.clipped()` inside that container. The lift
+/// then landed on the clipped image rather than on the tile: artwork zoomed *inside* a frozen
+/// edge, and the growing artwork could cover the title underneath it (tester verdict). Moving the
+/// treatment to the lockup makes the artwork, its `.clipped()` edge and the caption one object:
+/// in every mode the caption travels with the artwork instead of being an unmoving thing the
+/// artwork can grow over, so **the focused title can no longer be hidden in any mode**.
+///
+/// The clip stays where BUG-31 put it — directly on the image's own frame — because that is all it
+/// was ever for: cropping the artwork's (and the UX-9 trailer overscale's) own overflow inside the
+/// tile. It is now strictly interior to whatever scales, so it crops instead of capturing the lift.
+///
+/// What scales, per mode:
+/// - `.systemLift` — the whole lockup. `.contentShape(.hoverEffect, CardArtworkShape)` keeps the
+///   platter/specular geometry pinned to the ARTWORK's rounded rect (BUG-31/BUG-25: never let it
+///   fall back to a system rect that extends past the artwork) while the effect itself is attached
+///   to the card, so the caption rides along with the lift instead of standing still under it.
+/// - `.manualScale` — the whole lockup, via `.scaleEffect`. Same magnitude as before, one level
+///   up. Reduce Motion is honored explicitly here (the system lift respects it automatically, a
+///   manual `.scaleEffect` does not) by skipping the animation and snapping straight to the
+///   focused/unfocused scale — the ring still has to reach its scaled geometry to stay aligned
+///   with the artwork, so scale itself is kept, not skipped.
+/// - `.still` — nothing scales, ever. Focus reads as a border plus a drop shadow on the artwork
+///   shape: the accent ring when the user has it on, otherwise a neutral white border of the same
+///   weight, so ring-on and ring-off still modes are the same geometry in two colors and a
+///   ring-off user is never left with an unmarked focused card. Reduce Motion skips the fade.
 struct CardFocusTreatment: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let ringMode: Bool
+    let mode: CardFocusMode
     let isFocused: Bool
+    /// Height of the card's artwork — the caption is whatever sits below it. Drives
+    /// `CardArtworkShape`, so pass the same value the artwork's `.frame(height:)` uses.
+    let artworkHeight: CGFloat
     let cornerRadius: CGFloat
 
+    private var artworkShape: CardArtworkShape {
+        CardArtworkShape(artworkHeight: artworkHeight, cornerRadius: cornerRadius)
+    }
+
     func body(content: Content) -> some View {
-        if ringMode {
+        switch mode {
+        case .systemLift:
+            content
+                .contentShape(.hoverEffect, artworkShape)
+                .hoverEffect(.highlight)
+        case .manualScale:
             content
                 .scaleEffect(isFocused ? cardRingLiftScale : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
-        } else {
+        case let .still(ringed):
             content
-                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
-                .hoverEffect(.highlight)
+                // Behind the (opaque) artwork, so only the spill reads. Same weight as the inline
+                // trailer surface's shadow, which is the other card face that never scales.
+                .background {
+                    if isFocused {
+                        artworkShape
+                            .fill(Color.black)
+                            .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
+                    }
+                }
+                .overlay {
+                    if isFocused && !ringed {
+                        artworkShape.strokeBorder(stillHighlight, lineWidth: ringWidth)
+                    }
+                }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
         }
     }
+
+    /// Still mode's ring-less focus border. Deliberately NOT the accent color — the accent ring is
+    /// its own opt-in setting, and a user who left it off shouldn't get one by turning zoom off.
+    /// Near-white at partial opacity reads as the system's own highlight edge at 10 feet without
+    /// impersonating the ring.
+    private var stillHighlight: Color { Color.white.opacity(0.85) }
 }
 
 /// FEAT-14: the ring's draw color, factored out of the two call sites below so they can't drift
@@ -130,10 +252,17 @@ struct PosterCard: View {
     /// `if` below emits no overlay at all — no extra view/layer exists in the tree, keeping the
     /// OFF render byte-identical to pre-FEAT-14.
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// BUG-36: opt-in "No Zoom on Focus", default OFF. Same independent-read pattern (and the same
+    /// UserDefaults key) as `AppearanceSettingsPane`'s toggle, so every card site inherits it
+    /// without a prop-drilling pass. OFF resolves to the same two treatments as before.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     private var resolvedWidth: CGFloat { width ?? style.width }
     private var resolvedHeight: CGFloat { height ?? style.height }
     private var titleVisible: Bool { showTitle ?? style.showTitle }
+    private var focusMode: CardFocusMode {
+        .resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
@@ -142,28 +271,28 @@ struct PosterCard: View {
                 // BUG-31: CachedAsyncImage is `.fill` with no clip of its own, and this frame is
                 // always exactly 2:3 — so off-ratio artwork overflows it and the hover lift copies
                 // the overflow too, drawing a ghost-doubled subject. Clip inside the frame first.
+                // BUG-36: this clip must stay HERE, on the image's own frame, and nothing but the
+                // artwork's overflow may depend on it — while the focus treatment hung off this
+                // same container the lift landed inside the clip and zoomed the picture within a
+                // frozen tile edge. The treatment now sits on the whole card (below), leaving the
+                // clip purely as a crop.
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+                // BUG-36: the card-depth overlay stays anchored to the ARTWORK's frame — its edge
+                // coverage mask measures 0…1 down *this* box (see `CardDepthStyle.coverageMask`),
+                // so hoisting it to the lockup would stretch "Top" across the caption slot too.
                 .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
-                // FEAT-14 (final): the ring overlay sits BEFORE the hover/lift chain below, so it's
-                // part of the content the hover/lift treatment scales with the artwork — same
-                // ordering, and same inside-strokeBorder treatment, as the trailer surface's ring in
+                // FEAT-14 (final): the ring is drawn on the artwork, inside its own clip bounds —
+                // same inside-strokeBorder treatment as the trailer surface's ring in
                 // `InlineTrailerCard`. See the file-level comment above for why this replaced the
-                // earlier outside-flush-ring geometry, and for why ring mode's hover treatment below
-                // is no longer the system `.hoverEffect`.
+                // earlier outside-flush-ring geometry. It rides whatever the whole-card focus
+                // treatment below does, because it is part of that card.
                 .overlay {
                     if accentFocusRing && isFocused {
                         RoundedRectangle(cornerRadius: style.cornerRadius)
                             .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
                     }
                 }
-                // Whole-card lift: without this the hover/lift treatment lands on the inner Image,
-                // so the artwork parallaxes INSIDE a static clipped edge (device feedback). Tagging
-                // the clipped container makes the entire card — edge included — lift and track the
-                // remote (or, in ring mode, the manual scale) as one object.
-                // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so the
-                // lift can't fall back to a system rect that extends past the artwork.
-                .modifier(CardFocusTreatment(ringMode: accentFocusRing, isFocused: isFocused, cornerRadius: style.cornerRadius))
 
             if titleVisible {
                 Text(title)
@@ -175,13 +304,23 @@ struct PosterCard: View {
                     .frame(width: resolvedWidth, alignment: .leading)
             }
         }
-        // FEAT-14: ring mode's manual scale (see `CardFocusTreatment`) isn't lifted into a
-        // separate compositor layer the way the system hover effect is, so without an explicit
-        // zIndex a focused card can render underneath its unfocused row neighbors instead of
-        // above them. The system lift raised the focused card above its siblings implicitly;
-        // this is the explicit equivalent, scoped to ring mode only so the default (system-lift)
-        // path's stacking is completely untouched.
-        .zIndex(accentFocusRing && isFocused ? 1 : 0)
+        // BUG-36: the focus treatment belongs to the WHOLE card — artwork, ring and caption lift
+        // (or, in still mode, stay put) as one object. `artworkHeight` keeps everything the
+        // treatment draws shaped like the artwork rather than the lockup. See
+        // `CardFocusTreatment` for what scales in each mode.
+        .modifier(CardFocusTreatment(
+            mode: focusMode,
+            isFocused: isFocused,
+            artworkHeight: resolvedHeight,
+            cornerRadius: style.cornerRadius
+        ))
+        // FEAT-14/BUG-36: a treatment SwiftUI draws itself (ring mode's manual scale, still mode's
+        // shadow) isn't lifted into a separate compositor layer the way the system hover effect is,
+        // so without an explicit zIndex a focused card can render underneath its unfocused row
+        // neighbors instead of above them. The system lift raises the focused card above its
+        // siblings implicitly; this is the explicit equivalent, and it stays scoped to the modes
+        // that need it so the default (system-lift) path's stacking is completely untouched.
+        .zIndex(focusMode.raisesFocusedCard && isFocused ? 1 : 0)
     }
 }
 
@@ -205,8 +344,14 @@ struct LandscapeCard: View {
     /// FEAT-14: opt-in accent focus ring, default OFF — see `PosterCard`'s copy of this property
     /// for the full rationale (same UserDefaults key, same byte-identical-when-OFF guarantee).
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// BUG-36: opt-in "No Zoom on Focus", default OFF — see `PosterCard`'s copy of this property
+    /// for the full rationale (same UserDefaults key, same independent read).
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     private var titleVisible: Bool { showTitle ?? style.showTitle }
+    private var focusMode: CardFocusMode {
+        .resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
@@ -215,8 +360,11 @@ struct LandscapeCard: View {
                     .frame(width: width, height: height)
                     // BUG-31: same fill-overflow → hover-lift ghosting as PosterCard; artwork whose
                     // ratio isn't 16:9 spills out of this fixed frame unless clipped here.
+                    // BUG-36: and like PosterCard, this clip stays on the image's own frame so it
+                    // crops the artwork instead of capturing the card's focus treatment.
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+                    // BUG-36: depth (and its coverage mask) stays anchored to the artwork frame.
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: depthSurface)
 
                 if let progress {
@@ -233,19 +381,15 @@ struct LandscapeCard: View {
             }
             .frame(width: width, height: height)
             // FEAT-14 (final) — see PosterCard's copy of this overlay for the full rationale. The
-            // ring overlay sits BEFORE the hover/lift chain below, so it's part of the content the
-            // hover/lift treatment scales with the artwork/progress-bar group as one, using the
-            // same inside-strokeBorder treatment as the trailer surface's ring in `InlineTrailerCard`.
+            // ring is drawn on the artwork/progress-bar group, using the same inside-strokeBorder
+            // treatment as the trailer surface's ring in `InlineTrailerCard`, and rides whatever
+            // the whole-card focus treatment does.
             .overlay {
                 if accentFocusRing && isFocused {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
                         .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
                 }
             }
-            // Whole-card lift — see PosterCard: the progress bar and artwork move as one, whether
-            // that's the system lift (default) or the manual scale (ring mode).
-            // BUG-31/BUG-25: pin the highlight geometry to the card's own Corners radius.
-            .modifier(CardFocusTreatment(ringMode: accentFocusRing, isFocused: isFocused, cornerRadius: style.cornerRadius))
 
             if titleVisible {
                 Text(title)
@@ -257,9 +401,17 @@ struct LandscapeCard: View {
                     .frame(width: width, alignment: .leading)
             }
         }
-        // FEAT-14: see `PosterCard`'s copy of this zIndex for the full rationale — ring mode's
-        // manual scale needs an explicit zIndex to draw above row neighbors the way the system
-        // lift did implicitly; scoped to ring mode only, default path's stacking is untouched.
-        .zIndex(accentFocusRing && isFocused ? 1 : 0)
+        // BUG-36: whole-card focus treatment — artwork, progress bar, ring and caption move (or
+        // hold still) as one object. See `PosterCard`'s copy for the full rationale.
+        .modifier(CardFocusTreatment(
+            mode: focusMode,
+            isFocused: isFocused,
+            artworkHeight: height,
+            cornerRadius: style.cornerRadius
+        ))
+        // FEAT-14/BUG-36: see `PosterCard`'s copy of this zIndex for the full rationale — the
+        // SwiftUI-drawn treatments need an explicit zIndex to draw above row neighbors the way the
+        // system lift does implicitly; the default path's stacking is untouched.
+        .zIndex(focusMode.raisesFocusedCard && isFocused ? 1 : 0)
     }
 }

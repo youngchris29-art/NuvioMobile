@@ -54,6 +54,11 @@ struct AppearanceSettingsPane: View {
     /// Default OFF — off must render byte-identical to the pre-FEAT-14 tree, so PosterCard reads
     /// this same key independently rather than through a passed-down flag.
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// BUG-36: opt-in "focus without motion" for artwork cards (PosterCard/LandscapeCard). Default
+    /// OFF — off keeps the two existing treatments (system lift, or the accent ring's manual
+    /// scale). Same independent-read pattern as the ring above; the cards resolve both keys into a
+    /// single `CardFocusMode`.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
@@ -74,6 +79,20 @@ struct AppearanceSettingsPane: View {
                     isOn: accentFocusRing
                 ) {
                     accentFocusRing.toggle()
+                }
+
+                // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
+                // turns the zoom off outright — the card holds its size and marks focus with the
+                // ring (or a highlight border when the ring is off) and a shadow instead. Default
+                // OFF, so the stock focus motion is unchanged for everyone else.
+                SettingsToggleRow(
+                    title: String(localized: "No Zoom on Focus"),
+                    subtitle: noZoomOnFocus
+                        ? String(localized: "On \u{00B7} Focused cards keep their size \u{2014} highlight and shadow only")
+                        : String(localized: "Off \u{00B7} Focused cards lift and zoom slightly"),
+                    isOn: noZoomOnFocus
+                ) {
+                    noZoomOnFocus.toggle()
                 }
 
                 settingsStyleRow
