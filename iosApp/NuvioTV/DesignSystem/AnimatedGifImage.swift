@@ -33,6 +33,7 @@ struct AnimatedGifImage: View {
     private let fallbackURLString: String?
     private let contentMode: ContentMode
     private let isAnimating: Bool
+    private let targetSize: CGSize
 
     @StateObject private var loader = AnimatedGifLoader()
 
@@ -47,11 +48,20 @@ struct AnimatedGifImage: View {
     ///     `UIImageView` and fades the GIF out to reveal the cover underneath. The first
     ///     transition to `true` is also what lazily kicks off the download/decode: a 15-tile row
     ///     must not decode 15 GIFs at mount.
+    ///   - targetSize: BUG-39 — the tile's actual rendered size, in points (e.g. `FolderTile`
+    ///     passes its own `tileWidth`/`tileHeight`). Lets `AnimatedGifDecoder` downsample to
+    ///     roughly what's actually displayed instead of a fixed worst-case pixel guess, so the
+    ///     same 12 MiB per-GIF frame budget buys several times more frames at typical collection-
+    ///     tile size — see `AnimatedGifDecoder.targetDecodePixelCeiling`. Captured once, at the
+    ///     first `prepare()` call this loader makes for a given URL (see `AnimatedGifLoader.
+    ///     prepare`'s doc for why a LATER `targetSize` change — e.g. the user live-editing the
+    ///     Poster Style width in Settings — deliberately does NOT trigger a re-decode.
     init(
         string: String?,
         fallback: String?,
         contentMode: ContentMode = .fill,
-        isAnimating: Bool = true
+        isAnimating: Bool = true,
+        targetSize: CGSize
     ) {
         if let string, !string.isEmpty {
             self.url = URL(string: string)
@@ -61,6 +71,7 @@ struct AnimatedGifImage: View {
         self.fallbackURLString = fallback
         self.contentMode = contentMode
         self.isAnimating = isAnimating
+        self.targetSize = targetSize
     }
 
     /// Visible only once there is something to show AND the tile wants animation — until then the
@@ -86,11 +97,11 @@ struct AnimatedGifImage: View {
         }
         .animation(.easeInOut(duration: 0.15), value: gifVisible)
         .onAppear {
-            loader.prepare(url)
+            loader.prepare(url, targetSize: targetSize)
             if isAnimating { loader.loadIfNeeded() }
         }
         .onChange(of: url) { _, newURL in
-            loader.prepare(newURL)
+            loader.prepare(newURL, targetSize: targetSize)
             if isAnimating { loader.loadIfNeeded() }
         }
         .onChange(of: isAnimating) { _, animating in
@@ -158,6 +169,10 @@ private final class AnimatedGifLoader: ObservableObject {
     @Published var image: UIImage?
 
     private var currentURL: URL?
+    /// BUG-39: the render target this loader will decode `currentURL` at, set once per URL by
+    /// `prepare` (see its doc). Deliberately NOT re-read on every `loadIfNeeded` call from `body`
+    /// — it's captured at `prepare` time and stays pinned for that URL's whole lifetime.
+    private var currentTargetSize: CGSize = .zero
     private var task: Task<Void, Never>?
     /// Whether `loadIfNeeded` has already spent (or is spending) a fetch on `currentURL`. This is
     /// a RETRY LATCH, not a one-shot flag: on a failed decode it is cleared again (see below) so
@@ -178,9 +193,23 @@ private final class AnimatedGifLoader: ObservableObject {
     /// Point the loader at a URL WITHOUT starting any network/decode work. A synchronous memory
     /// cache hit is taken immediately (that's the whole reason the cache exists — see
     /// `AnimatedGifCache`'s cost arithmetic, which previously made every hit a miss).
-    func prepare(_ url: URL?) {
+    ///
+    /// BUG-39: `targetSize` is stored ONLY when `url` is actually new (the early-return guard
+    /// below). If the caller's `targetSize` changes later without the URL changing — e.g. the
+    /// user live-edits the Poster Style width in Settings while this tile is already decoded or
+    /// mid-decode — this method is a no-op and the stale `currentTargetSize` from the first call
+    /// keeps driving `loadIfNeeded`. That is deliberate: a target-size change is not worth a
+    /// re-decode. Forcing one would mean every visible tile re-fetches and re-decodes its GIF the
+    /// moment a settings slider moves, which is exactly the kind of main-thread/network churn
+    /// BUG-19 spent four attempts eliminating from the FOCUS path — doing it from the SETTINGS
+    /// path instead would just move the hang, not remove it. The visible cost is that a tile
+    /// keeps whatever resolution it first decoded at until its GIF URL itself changes (a new
+    /// folder, a refreshed feed, etc.), which is unnoticeable given collection-tile GIFs are
+    /// already palette-quantised and low-detail.
+    func prepare(_ url: URL?, targetSize: CGSize) {
         guard url != currentURL else { return }
         currentURL = url
+        currentTargetSize = targetSize
         task?.cancel()
         task = nil
         didRequestLoad = false
@@ -200,9 +229,10 @@ private final class AnimatedGifLoader: ObservableObject {
 
         attemptCount += 1
         let isFinalAttempt = attemptCount >= Self.maxLoadAttempts
+        let targetSize = currentTargetSize
 
         task = Task { [weak self] in
-            let decoded = await AnimatedGifDecoder.decode(url)
+            let decoded = await AnimatedGifDecoder.decode(url, targetSize: targetSize)
             if Task.isCancelled { return }
             guard let self, self.currentURL == url else { return }
             if let decoded {
@@ -230,11 +260,17 @@ private final class AnimatedGifLoader: ObservableObject {
 /// caps that sum at `maxDecodedBytesPerGif` = 12 MB by shrinking the per-frame downsample ceiling
 /// for long GIFs. So:
 ///
-///   * worst case per entry ...... 12 MB (a 60-frame GIF decoded to ~229 px/side)
-///   * typical Services tile ...... 20 frames × 400×400 RGBA (640 KB) ≈ 12 MB, at full 400 px
-///   * short 10-frame loop ........ 10 × 640 KB ≈ 6 MB
+///   * worst case per entry ...... 12 MB (still possible for a large/landscape tile near the
+///     400 px absolute cap, e.g. a 60-frame GIF decoded to ~229 px/side)
+///   * typical square "Services"-style tile (BUG-39: decodes near its own ~220 px tile size, not
+///     a blanket 400 px) ... 20 frames × 220×220 RGBA (~194 KB) ≈ 3.9 MB — well under budget, so
+///     a GIF like this now keeps EVERY source frame instead of being frame-subsampled
+///   * short 10-frame loop at the same tile size ........ 10 × 194 KB ≈ 1.9 MB
 ///
-///   totalCostLimit 144 MB = 12 worst-case entries, or ~24 six-megabyte ones.
+/// (See `AnimatedGifDecoder.targetDecodePixelCeiling` for the full per-tile-size breakdown; the
+/// old fixed-400px numbers this comment used to cite are now only the worst case, not the norm.)
+///
+///   totalCostLimit 144 MB = 12 worst-case entries, or many more typical-size ones.
 ///   countLimit 24 covers the Services + Genres rows' visible+prefetched tiles together (the old
 ///   limit of 12 was per the Kotlin reference's `MaxCachedGifImages`, which is a phone-sized row).
 ///
@@ -301,25 +337,73 @@ private enum AnimatedGifDecoder {
 
     /// De-dupe bookkeeping and the final `UIImage` handoff stay on the main actor; everything
     /// expensive happens inside the detached task.
+    ///
+    /// BUG-39: `targetSize` (points) is converted to a pixel ceiling HERE, on the main actor,
+    /// because it needs `UIScreen.main.scale` — reading it inside the detached task would touch
+    /// UIKit off the main thread. The resulting `Int` is a plain Sendable value, so it crosses
+    /// into `Task.detached` for free.
+    ///
+    /// Note on de-dupe: if two tiles with DIFFERENT `targetSize`s race for the same GIF `url`
+    /// (e.g. a portrait and a landscape folder both referencing the same shared GIF asset), the
+    /// second one's request just awaits the first one's already-in-flight `work` and gets that
+    /// decode's resolution, not its own. This is the same "keep the first decode" trade-off as
+    /// `prepare`'s target-size latch above, and for the same reason: starting a second concurrent
+    /// decode of the same bytes at a different size to chase per-tile pixel-perfection would cost
+    /// real main-thread/network work for a difference that's invisible on a palette-quantised GIF.
     @MainActor
-    static func decode(_ url: URL) async -> UIImage? {
+    static func decode(_ url: URL, targetSize: CGSize) async -> UIImage? {
         if let cached = AnimatedGifCache.cached(url) { return cached }
         if let existing = inflight[url] {
             return await existing.value
         }
+
+        let targetPixelSize = targetDecodePixelCeiling(for: targetSize, scale: UIScreen.main.scale)
 
         // `Task.detached` (not `Task`): a plain `Task` created here would INHERIT @MainActor, which
         // is what put `fetchData`'s await, the frame expansion and the cache write on the main
         // thread. Only the CGImage decode hopped off before.
         let work = Task<UIImage?, Never>.detached(priority: .userInitiated) {
             guard let data = try? await fetchData(url) else { return nil }
-            guard let result = decodedGif(from: data) else { return nil }
+            guard let result = decodedGif(from: data, targetPixelSize: targetPixelSize) else { return nil }
             AnimatedGifCache.shared.setObject(result.image, forKey: url as NSURL, cost: result.cost)
             return result.image
         }
         inflight[url] = work
         defer { inflight[url] = nil }
         return await work.value
+    }
+
+    /// BUG-39: pixel ceiling for ImageIO's `kCGImageSourceThumbnailMaxPixelSize`, derived from the
+    /// TILE's actual rendered point size instead of the old blanket `maxFramePixelSize` guess
+    /// applied to every tile in the app regardless of its real size (that guess is now only the
+    /// outer safety cap, below).
+    ///
+    /// `scale` converts the tile's point size to a pixel budget as if displayed at up to
+    /// Retina/4K density; capping the SCALE itself at 2.0 — not just the final pixel count — is
+    /// the "2x layout size" ceiling: a hypothetical higher-density screen can't blow the budget
+    /// just because `UIScreen.main.scale` reports more than 2. The result is then clamped into
+    /// `[minFramePixelSize, maxFramePixelSize]`: the floor protects a degenerate near-zero/NaN
+    /// `targetSize` (defensive only — `FolderTile` computes its `targetSize` synchronously from
+    /// `PosterStyle`, not from a UIKit layout pass, so it's never actually zero in practice) from
+    /// producing a useless sliver thumbnail, and the ceiling means no tile can decode at a LARGER
+    /// pixel size than the pre-BUG-39 fixed guess — this can only shrink the per-frame cost,
+    /// never grow it past the old worst case.
+    ///
+    /// Concrete numbers for the default `PosterStyle` (220×330 pt portrait tiles, 220×220 pt
+    /// square "Services"-style tiles, ~391×220 pt landscape tiles):
+    ///   * square tile, scale 1 (Apple TV HD) → 220 px vs the old fixed 400 px: ~3.3× more bytes
+    ///     of budget left per frame, so a GIF that used to fit ~20 frames now fits ~65+.
+    ///   * portrait tile, scale 1 → 330 px vs 400 px: ~1.5× more frames.
+    ///   * landscape tile, scale 1 → 391 px, barely below the 400 px cap: little change.
+    ///   * any of the above at scale 2 (Apple TV 4K) → the ×2 multiplier reaches or exceeds the
+    ///     400 px cap for most tile sizes, so 4K sets see smaller gains than HD ones; they were
+    ///     already decoding close to native resolution for their tile size before this fix.
+    private nonisolated static func targetDecodePixelCeiling(for targetSize: CGSize, scale: CGFloat) -> Int {
+        let longEdge = max(targetSize.width, targetSize.height)
+        guard longEdge.isFinite, longEdge > 0 else { return maxFramePixelSize }
+        let cappedScale = min(scale, 2.0)
+        let pixels = Int((longEdge * cappedScale).rounded())
+        return min(maxFramePixelSize, max(minFramePixelSize, pixels))
     }
 
     private nonisolated static func fetchData(_ url: URL) async throws -> Data {
@@ -369,11 +453,19 @@ private enum AnimatedGifDecoder {
         let delayCentiseconds: Int
     }
 
-    /// Per-frame downsample ceiling on the long edge. tvOS lays every app out in a fixed
-    /// 1920×1080 POINT space, so a collection tile at ~360–420 pt is ~360–420 real pixels; 400 px
-    /// is effectively native for these tiles, and GIF sources are palette-quantised and moving, so
-    /// nothing about them survives extra resolution anyway. (The old 800 px ceiling quadrupled
-    /// every frame's bitmap for no visible gain.)
+    /// Outer safety cap on the per-frame downsample ceiling's long edge, regardless of tile size.
+    /// tvOS lays every app out in a fixed 1920×1080 POINT space, so even the largest realistic
+    /// collection tile (~360–420 pt landscape) tops out around here, and GIF sources are
+    /// palette-quantised and moving, so nothing about them survives extra resolution anyway. (The
+    /// old 800 px ceiling quadrupled every frame's bitmap for no visible gain.)
+    ///
+    /// BUG-39: before this fix, EVERY tile decoded up to this fixed value regardless of its own
+    /// rendered size — a 220 pt square tile paid the same per-frame bitmap cost as a 420 pt
+    /// landscape one. `targetDecodePixelCeiling` (near `AnimatedGifDecoder.decode`) now derives
+    /// the ACTUAL per-call ceiling from the tile's real `targetSize`, and this constant is only
+    /// the upper bound that derivation is clamped to — so no tile can decode at a larger pixel
+    /// size than before, but most tiles now decode well below it. See that function's doc for the
+    /// concrete before/after numbers.
     private static let maxFramePixelSize = 400
     /// Floor for the adaptive ceiling below — never decode a tile-sized GIF smaller than this.
     /// FINDING 5: below `frameCount` ≈ `maxFramesAtFloorSize`, resolution can no longer shrink to
@@ -396,20 +488,32 @@ private enum AnimatedGifDecoder {
     /// doesn't get to keep them all at 200 px (that was the bug: a 100-frame square GIF hit
     /// ~15.3 MiB, 3.3 MiB over budget); instead `decodedGif` decodes only this many, evenly
     /// subsampled across the animation, with kept frames' delays summed to cover the frames they
-    /// stand in for so total playback duration is unchanged.
+    /// stand in for so total playback duration is unchanged. Unaffected by BUG-39: `minFramePixelSize`
+    /// is still the absolute floor for every tile regardless of `targetDecodePixelCeiling`'s
+    /// output (see that function's clamp), so this constant's math doesn't change — what changes
+    /// is how OFTEN a real GIF actually needs it, since a smaller per-instance ceiling (BUG-39)
+    /// makes `estimatedBytes` in `decodedGif` clear the budget at a higher `frameCount` than
+    /// before, so fewer GIFs fall into this frame-subsampling path at all.
     private static let maxFramesAtFloorSize = maxDecodedBytesPerGif / (4 * minFramePixelSize * minFramePixelSize)
 
     /// Long GIFs get downsampled harder so no single entry can blow the budget:
-    /// side = √(budget / (4 bytes per pixel × frames)), clamped to [200, 400].
-    /// 10 frames → 400 px (clamped, ~6 MB) · 20 frames → 400 px (~12 MB) · 60 frames → 229 px.
+    /// side = √(budget / (4 bytes per pixel × frames)), clamped to [`minFramePixelSize`, `ceiling`].
+    /// Example at the old fixed 400 px ceiling: 10 frames → 400 px (clamped, ~6 MB) · 20 frames →
+    /// 400 px (~12 MB) · 60 frames → 229 px. BUG-39: `ceiling` is now the CALLER-supplied,
+    /// tile-size-derived value from `targetDecodePixelCeiling` rather than always
+    /// `maxFramePixelSize` — for a small/typical tile this formula starts from a smaller ceiling,
+    /// so a given `frameCount` is more likely to fit uncompressed at that smaller size (no need to
+    /// shrink further), or — for frame counts that still don't fit — the frame-count subsampling
+    /// below kicks in at a HIGHER `frameCount` than it used to, because a smaller `ceiling` means
+    /// the per-frame cost was already cheaper going in.
     /// Note this alone only bounds bytes for frameCount ≤ `maxFramesAtFloorSize` (~78): above
-    /// that the 200 px floor stops the math from working out and `decodedGif` additionally
-    /// subsamples the frame count (see `maxFramesAtFloorSize`).
-    private nonisolated static func framePixelCeiling(frameCount: Int) -> Int {
-        guard frameCount > 0 else { return maxFramePixelSize }
+    /// that the `minFramePixelSize` floor stops the math from working out and `decodedGif`
+    /// additionally subsamples the frame count (see `maxFramesAtFloorSize`).
+    private nonisolated static func framePixelCeiling(frameCount: Int, ceiling: Int) -> Int {
+        guard frameCount > 0 else { return ceiling }
         let pixelsPerFrame = Double(maxDecodedBytesPerGif) / (4.0 * Double(frameCount))
         let side = Int(pixelsPerFrame.squareRoot())
-        return min(maxFramePixelSize, max(minFramePixelSize, side))
+        return min(ceiling, max(minFramePixelSize, side))
     }
 
     /// FINDING 5: evenly-spaced source-frame indices to keep when a GIF has more frames than
@@ -430,7 +534,7 @@ private enum AnimatedGifDecoder {
         return indices.isEmpty ? [0] : indices
     }
 
-    private nonisolated static func decodedGif(from data: Data) -> DecodedGif? {
+    private nonisolated static func decodedGif(from data: Data, targetPixelSize: Int) -> DecodedGif? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         guard CGImageSourceGetStatus(source) == .statusComplete else { return nil }
         let count = CGImageSourceGetCount(source)
@@ -451,7 +555,14 @@ private enum AnimatedGifDecoder {
         // therefore only steers the subsample decision; it is NOT what enforces the 12 MiB bound
         // — the running `decodedBytesTotal` check in the decode loop below is the actual,
         // literal enforcement point.
-        let ceilingSide = framePixelCeiling(frameCount: count)
+        //
+        // BUG-39: `targetPixelSize` (from `targetDecodePixelCeiling`, via `decode`'s caller) is
+        // the tile-size-derived ceiling passed in here — `framePixelCeiling` clamps it down
+        // further only if `count` is large enough that even this smaller starting point doesn't
+        // fit the budget. So `ceilingSide` below is no longer "guess 400 px and see if it fits";
+        // it's "start from what this tile actually needs, and shrink further only if the frame
+        // count demands it."
+        let ceilingSide = framePixelCeiling(frameCount: count, ceiling: targetPixelSize)
         let estimatedBytes = count * ceilingSide * ceilingSide * 4
         let frameIndices: [Int]
         let decodeSide: Int

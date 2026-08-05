@@ -104,6 +104,14 @@ struct FolderTile: View {
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
 
+    /// BUG-38 display-time fallback: genre folders are TMDB DISCOVER sources, which
+    /// `TmdbCollectionSourceResolver.importMetadata` never mints a cover for (only
+    /// COLLECTION/COMPANY/NETWORK/PERSON get one) — upstream mobile has the same gap. Resolved
+    /// lazily by `FolderCoverResolver` (shared, in-memory-cached, never persisted) and rendered
+    /// through the exact same `CachedAsyncImage` slot as a real cover. Stays nil for folders that
+    /// already have a cover or a user-chosen emoji — see the `.task` guard below.
+    @State private var fallbackCoverUrl: String?
+
     private var tileWidth: CGFloat {
         folder.posterShape == PosterShape.landscape ? style.width * 16 / 9 : style.width
     }
@@ -119,7 +127,21 @@ struct FolderTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack {
-                let cover: String? = folder.coverImageUrl
+                // BUG-38: falls back to a resolved cover only when the folder has neither an
+                // explicit cover nor a user-chosen emoji (the emoji is a deliberate pick — it
+                // always wins). The emoji check lives HERE too, not just in the `.task` guard
+                // (Codex review): a folder edited in place to gain an emoji keeps this view's
+                // `@State` for one render before the re-keyed task clears it, and the stale
+                // fallback must not cover the fresh emoji even for that frame.
+                // Trimmed-blank checks (Codex review): the editor/import path can persist
+                // whitespace-only values, which Kotlin-side code already treats as absent —
+                // an untrimmed check here would classify them as explicit and leave the tile
+                // blank (unusable URL, no fallback resolution).
+                let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let emoji = folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let hasOwnCover = !(ownCover?.isEmpty ?? true)
+                let hasEmoji = !(emoji?.isEmpty ?? true)
+                let cover: String? = hasOwnCover ? ownCover : (hasEmoji ? nil : fallbackCoverUrl)
                 let gifUrl: String? = folder.focusGifUrl
 
                 // BUG-19: the cover is mounted for the tile's WHOLE lifetime — it used to live in
@@ -136,8 +158,7 @@ struct FolderTile: View {
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
-                    let emoji: String? = folder.coverEmoji
-                    Text(emoji?.isEmpty == false ? emoji! : String(folder.title.prefix(1)))
+                    Text(hasEmoji ? emoji! : String(folder.title.prefix(1)))
                         .font(Theme.Font.hero)
                 }
 
@@ -150,11 +171,46 @@ struct FolderTile: View {
                     // loading/failure case; passing it here would decode the same artwork twice.
                     // The GIF's download+decode is deferred to this tile's FIRST focus, so a
                     // 15-tile Services row doesn't decode 15 GIFs the moment the row appears.
-                    AnimatedGifImage(string: gifUrl, fallback: nil, isAnimating: isFocused)
+                    // BUG-39: `targetSize` is this tile's own rendered point size — already known
+                    // synchronously here from `posterStyle`/`folder.posterShape`, no need to wait
+                    // on a UIKit layout pass — so the decoder can downsample to roughly what's
+                    // actually displayed instead of a fixed worst-case guess.
+                    AnimatedGifImage(
+                        string: gifUrl,
+                        fallback: nil,
+                        isAnimating: isFocused,
+                        targetSize: CGSize(width: tileWidth, height: tileHeight)
+                    )
                 }
             }
             .frame(width: tileWidth, height: tileHeight)
             .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+            // BUG-38: keyed on the folder's Kotlin data-class hash (NOT `isFocused` — see the
+            // BUG-19 comment above on why this tile must never key off focus), so a cloud-sync
+            // edit that keeps the folder's id but changes its sources/cover/emoji re-runs the
+            // task and re-consults the resolver under the new source signature (Codex review —
+            // an unkeyed `.task` on a `ForEach(id: \.id)` row never re-fires for such edits).
+            // `FolderCoverResolver` caches per folder-id+source-signature, so recycled
+            // LazyHStack tiles and unchanged re-renders resolve instantly from that cache.
+            .task(id: folder.hash()) {
+                // Recompute from scratch each (re)run: a folder that GAINED a real cover or an
+                // emoji must drop a previously resolved fallback rather than keep rendering it.
+                fallbackCoverUrl = nil
+                // Trimmed like the render path above — whitespace-only values are "absent".
+                guard folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
+                guard folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
+                let resolved = await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+                    FolderCoverResolver.shared.fallbackCoverUrl(folder: folder) { url, _ in
+                        continuation.resume(returning: url)
+                    }
+                }
+                // Codex review: `.task(id:)` cancellation doesn't abort the Kotlin call —
+                // a superseded task can resume here AFTER its replacement finished and would
+                // otherwise install a cover from the old source set over the new one.
+                guard !Task.isCancelled else { return }
+                guard let resolved, !resolved.isEmpty else { return }
+                fallbackCoverUrl = resolved
+            }
 
             if !folder.hideTitle {
                 Text(folder.title)
