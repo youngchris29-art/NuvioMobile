@@ -24,9 +24,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
@@ -49,8 +52,30 @@ object HomeRepository {
     private var lastErrorMessage: String? = null
     private var heroEnrichmentOverlay: Map<String, TmdbPreviewEnrichment> = emptyMap()
     private var heroEnrichmentAttempted: Set<String> = emptySet()
-    private var heroEnrichmentJob: Job? = null
-    private var heroEnrichmentFetchKey: String? = null
+    /**
+     * Items whose enrichment fetch is running right now. Dedup is PER ITEM, not per batch: the hero
+     * set changes between catalog batches, and a batch-keyed dedup that cancels the running fetch on
+     * every set change never resolves a held publish (BUG-42 deadlock) — it just restarts the work.
+     */
+    private var heroEnrichmentInFlight: Set<String> = emptySet()
+    /**
+     * Serializes every read-modify-write of the three sets above (Codex review): concurrent
+     * per-batch fetch jobs on Dispatchers.Default would otherwise interleave their completions and
+     * silently drop another job's overlay additions — leaving keys stuck in [heroEnrichmentInFlight],
+     * which the dedup then excludes from refetching forever (hero pinned raw past the timeout).
+     */
+    private val heroEnrichmentMutex = Mutex()
+    /** Parent of every in-flight enrichment fetch, so invalidation cancels them all in one call. */
+    private var heroEnrichmentFetchParent: Job = SupervisorJob()
+    private var heroEnrichmentHoldJob: Job? = null
+    /** Bumped by every [releaseHeroEnrichmentHold]; a hold timer only acts if its era is current. */
+    private var heroEnrichmentHoldGeneration: Long = 0
+    /**
+     * True once a held hero publish hit [HERO_ENRICHMENT_HOLD_TIMEOUT_MS]. Sticky until the hold
+     * resolves cleanly (or settings/refresh invalidate it) so a stalled TMDB can never re-arm the
+     * hold publish after publish and keep the hero region empty.
+     */
+    private var heroEnrichmentHoldExpired: Boolean = false
 
     fun refresh(addons: List<ManagedAddon>, force: Boolean = false) {
         val activeAddons = addons.enabledAddons()
@@ -74,6 +99,9 @@ object HomeRepository {
             return
         }
         activeRequestKey = requestKey
+        // A new load is a new hero, so it gets a fresh hold budget: a timeout burnt on the previous
+        // request must not force this one's first hero commit to publish raw metadata.
+        releaseHeroEnrichmentHold()
 
         if (requests.isEmpty()) {
             activeJob?.cancel()
@@ -183,11 +211,7 @@ object HomeRepository {
      * under the new settings instead of continuing to show enrichment fetched under the old ones.
      */
     fun onTmdbSettingsChanged() {
-        heroEnrichmentJob?.cancel()
-        heroEnrichmentJob = null
-        heroEnrichmentOverlay = emptyMap()
-        heroEnrichmentAttempted = emptySet()
-        heroEnrichmentFetchKey = null
+        resetHeroEnrichment()
         applyCurrentSettings()
     }
 
@@ -202,11 +226,7 @@ object HomeRepository {
         collectionHeroJob?.cancel()
         collectionHeroJob = null
         collectionHeroRequestKey = null
-        heroEnrichmentJob?.cancel()
-        heroEnrichmentJob = null
-        heroEnrichmentOverlay = emptyMap()
-        heroEnrichmentAttempted = emptySet()
-        heroEnrichmentFetchKey = null
+        resetHeroEnrichment()
         lastPublishedCatalogHeroEmpty = true
         lastErrorMessage = null
         _uiState.value = HomeUiState()
@@ -260,30 +280,68 @@ object HomeRepository {
         }
 
         val tmdbSettings = TmdbSettingsRepository.snapshot()
-        val enrichedHeroItems = heroItems.map { it.withHeroEnrichment(tmdbSettings) }
+
+        // BUG-42: the hero commits each item's metadata exactly ONCE. Publishing raw catalog
+        // metadata and then re-publishing the TMDB-localized payload rendered the same title twice
+        // (English under French, caught frame-by-frame in a tester video), so a hero whose items
+        // still have enrichment outstanding HOLDS — it keeps whatever was last published — until
+        // the fetch lands or [HERO_ENRICHMENT_HOLD_TIMEOUT_MS] expires. Rows are NOT held: they are
+        // published on this same pass regardless, so catalog loading never serializes behind TMDB.
+        val awaitingEnrichment = heroItemsAwaitingEnrichment(heroItems, tmdbSettings)
+        val holdHeroPublish = awaitingEnrichment.isNotEmpty() && !heroEnrichmentHoldExpired
 
         _uiState.value = HomeUiState(
             isLoading = isLoading,
-            heroItems = enrichedHeroItems,
-            sections = sections,
+            heroItems = if (holdHeroPublish) {
+                _uiState.value.heroItems
+            } else {
+                heroItems.map { it.withTmdbEnrichment(tmdbSettings) }
+            },
+            sections = sections.map { section -> section.withTmdbEnrichment(tmdbSettings) },
             errorMessage = if (sections.isEmpty()) lastErrorMessage else null,
         )
 
-        if (!isLoading && heroItems.isNotEmpty()) {
-            scheduleHeroEnrichment(heroItems)
+        if (awaitingEnrichment.isEmpty()) {
+            releaseHeroEnrichmentHold()
+            return
         }
+        // Scheduled on every publish, loading included — a hold with no fetch behind it can only end
+        // at the timeout, which would put hero first paint behind the whole catalog fan-out.
+        scheduleHeroEnrichment(awaitingEnrichment, tmdbSettings)
+        if (holdHeroPublish) armHeroEnrichmentHold()
     }
 
-    private fun MetaPreview.heroEnrichmentKey(): String = "$type:$id"
+    /**
+     * Codex review: the key is LANGUAGE-QUALIFIED so an enrichment fetched under one TMDB
+     * language can never be served under another — even if a settings-change reset races an
+     * in-flight completion (reset can't take [heroEnrichmentMutex] from its non-suspend callers,
+     * so a straggler write CAN land after the clear; with the language in the key, that straggler
+     * is simply unmatchable dead weight until the next reset instead of stale UI).
+     */
+    private fun MetaPreview.heroEnrichmentKey(settings: TmdbSettings): String =
+        "$type:$id:${settings.language}"
 
     /**
-     * Applies cached TMDB preview enrichment for the hero carousel. Gated on [settings] so a
-     * disabled/removed TMDB config stops showing stale enrichment on the very next publish, and
-     * never touches id/type/poster — those identify and route the card.
+     * BUG-35: row items get the SAME overlay the hero uses, but only where it is already resident —
+     * this adds no fetch of its own. In practice that localizes the handful of row cards that also
+     * won a hero slot; the rest keep the addon's (usually English) metadata. Localizing every row
+     * item means a TMDB call per catalog item per Home load, which is a cost/rate-limit decision,
+     * not an implementation one — widening this needs a product call on fetch volume first.
      */
-    private fun MetaPreview.withHeroEnrichment(settings: TmdbSettings): MetaPreview {
+    private fun HomeCatalogSection.withTmdbEnrichment(settings: TmdbSettings): HomeCatalogSection {
+        if (!settings.enabled || !settings.hasApiKey || heroEnrichmentOverlay.isEmpty()) return this
+        if (items.none { item -> item.heroEnrichmentKey(settings) in heroEnrichmentOverlay }) return this
+        return copy(items = items.map { item -> item.withTmdbEnrichment(settings) })
+    }
+
+    /**
+     * Applies cached TMDB preview enrichment. Gated on [settings] so a disabled/removed TMDB config
+     * stops showing stale enrichment on the very next publish, and never touches id/type/poster —
+     * those identify and route the card.
+     */
+    private fun MetaPreview.withTmdbEnrichment(settings: TmdbSettings): MetaPreview {
         if (!settings.enabled || !settings.hasApiKey) return this
-        val enrichment = heroEnrichmentOverlay[heroEnrichmentKey()] ?: return this
+        val enrichment = heroEnrichmentOverlay[heroEnrichmentKey(settings)] ?: return this
 
         var updated = this
         if (settings.useBasicInfo) {
@@ -303,30 +361,95 @@ object HomeRepository {
     }
 
     /**
-     * Fetches TMDB preview enrichment for hero items missing it, keyed by item so a removed/failed
-     * item never gets retried on every publish. The completion republish sources its requestKey the
-     * same way the settings-driven republishes do, so the seeded hero shuffle always matches whatever
-     * request is currently live — a job that outlives its request can't resurrect an old seed.
+     * Hero items whose enrichment is neither cached nor already known to be unavailable — i.e. the
+     * items a hero publish would have to commit raw. Empty whenever enrichment cannot change the
+     * payload at all (disabled, no key, both TMDB categories off), which is the "publish raw
+     * immediately, exactly as before" path.
      */
-    private fun scheduleHeroEnrichment(items: List<MetaPreview>) {
-        val settings = TmdbSettingsRepository.snapshot()
-        if (!settings.enabled || !settings.hasApiKey) return
-
-        val missing = items.filter { item ->
-            val key = item.heroEnrichmentKey()
+    private fun heroItemsAwaitingEnrichment(
+        items: List<MetaPreview>,
+        settings: TmdbSettings,
+    ): List<MetaPreview> {
+        if (!settings.enabled || !settings.hasApiKey) return emptyList()
+        if (!settings.useBasicInfo && !settings.useArtwork) return emptyList()
+        return items.filter { item ->
+            val key = item.heroEnrichmentKey(settings)
             key !in heroEnrichmentOverlay && key !in heroEnrichmentAttempted
         }
-        if (missing.isEmpty()) return
+    }
 
-        val fetchKey = missing.joinToString("|") { it.heroEnrichmentKey() } + ":" + settings.language
-        if (fetchKey == heroEnrichmentFetchKey && heroEnrichmentJob?.isActive == true) return
+    /**
+     * Bounds the held hero publish. Deliberately NOT restarted while a hold is already running: the
+     * hero set grows with each catalog batch, and re-arming per publish would let the cap slide
+     * forward indefinitely. One timer per hold, so the worst case stays one
+     * [HERO_ENRICHMENT_HOLD_TIMEOUT_MS] window from the first held publish.
+     */
+    private fun armHeroEnrichmentHold() {
+        if (heroEnrichmentHoldJob?.isActive == true) return
+        // Codex review: cancellation racing the delay's completion can let a stale timer resume
+        // AFTER releaseHeroEnrichmentHold() started a new hold era — the generation token makes
+        // such a zombie a no-op instead of expiring the new request's hold.
+        val generation = heroEnrichmentHoldGeneration
+        heroEnrichmentHoldJob = scope.launch {
+            delay(HERO_ENRICHMENT_HOLD_TIMEOUT_MS)
+            if (generation != heroEnrichmentHoldGeneration) return@launch
+            heroEnrichmentHoldExpired = true
+            publishCurrentState(
+                isLoading = _uiState.value.isLoading,
+                requestKey = activeRequestKey ?: completedRequestKey,
+            )
+        }
+    }
 
-        heroEnrichmentJob?.cancel()
-        heroEnrichmentFetchKey = fetchKey
-        heroEnrichmentJob = scope.launch {
+    /** Clears the hold without touching the overlay — the next unresolved hero may hold again. */
+    private fun releaseHeroEnrichmentHold() {
+        heroEnrichmentHoldGeneration += 1
+        heroEnrichmentHoldJob?.cancel()
+        heroEnrichmentHoldJob = null
+        heroEnrichmentHoldExpired = false
+    }
+
+    /** Full invalidation (settings changed, signed out): nothing may survive into the next language. */
+    private fun resetHeroEnrichment() {
+        heroEnrichmentFetchParent.cancel()
+        heroEnrichmentFetchParent = SupervisorJob()
+        heroEnrichmentOverlay = emptyMap()
+        heroEnrichmentAttempted = emptySet()
+        heroEnrichmentInFlight = emptySet()
+        releaseHeroEnrichmentHold()
+    }
+
+    /**
+     * Fetches TMDB preview enrichment for the given items, keyed by item so a removed/failed item
+     * never gets retried on every publish and so overlapping publishes (each catalog batch reshuffles
+     * the hero) never fetch the same item twice. Fetches are additive and are never cancelled by a
+     * later publish — a cancelled fetch would leave its items neither resolved nor attempted, which
+     * is precisely the state a held publish waits on. The completion republish sources its requestKey
+     * the same way the settings-driven republishes do, so the seeded hero shuffle always matches
+     * whatever request is currently live — a job that outlives its request can't resurrect an old seed.
+     */
+    private fun scheduleHeroEnrichment(items: List<MetaPreview>, settings: TmdbSettings) {
+        if (items.isEmpty()) return
+        scope.launch(heroEnrichmentFetchParent) {
+            // Claiming the batch happens under the mutex (not synchronously in the caller) so two
+            // concurrent publishes can never both claim — and both fetch — the same item. All
+            // THREE sets are rechecked here (Codex review): a queued job can reach this lock
+            // after an earlier fetch already moved its item from in-flight into the overlay or
+            // attempted set, and claiming on the in-flight set alone would refetch it.
+            val missing = heroEnrichmentMutex.withLock {
+                val claimable = items.filter { item ->
+                    val key = item.heroEnrichmentKey(settings)
+                    key !in heroEnrichmentInFlight &&
+                        key !in heroEnrichmentOverlay &&
+                        key !in heroEnrichmentAttempted
+                }
+                heroEnrichmentInFlight = heroEnrichmentInFlight + claimable.map { it.heroEnrichmentKey(settings) }
+                claimable
+            }
+            if (missing.isEmpty()) return@launch
             val results = missing.map { item ->
                 async {
-                    item.heroEnrichmentKey() to runCatching {
+                    item.heroEnrichmentKey(settings) to runCatching {
                         TmdbMetadataService.fetchPreviewEnrichment(item.type, item.id, settings)
                     }.getOrNull()
                 }
@@ -335,14 +458,33 @@ object HomeRepository {
             val additions = results.mapNotNull { (key, enrichment) -> enrichment?.let { key to it } }.toMap()
             val nullKeys = results.filter { (_, enrichment) -> enrichment == null }.map { (key, _) -> key }.toSet()
 
-            heroEnrichmentOverlay = heroEnrichmentOverlay + additions
-            heroEnrichmentAttempted = heroEnrichmentAttempted + nullKeys
+            heroEnrichmentMutex.withLock {
+                heroEnrichmentOverlay = heroEnrichmentOverlay + additions
+                heroEnrichmentAttempted = heroEnrichmentAttempted + nullKeys
+                heroEnrichmentInFlight = heroEnrichmentInFlight - additions.keys - nullKeys
 
-            if (additions.isNotEmpty()) {
-                publishCurrentState(
-                    isLoading = _uiState.value.isLoading,
-                    requestKey = activeRequestKey ?: completedRequestKey,
-                )
+                // Republished even when every fetch missed: an all-miss batch is what releases a
+                // held hero publish (the items are now "attempted"), so gating this on additions
+                // would pin the hero on the timeout path for no reason.
+                //
+                // EXCEPT after the hold timed out (Codex review): the raw hero is already on
+                // screen then, and a completion-triggered republish would swap its text in place —
+                // the exact BUG-35/42 double commit this hold exists to prevent, just slower. The
+                // overlay/attempted bookkeeping above still lands, so the NEXT natural publish (a
+                // catalog batch, a refresh, a settings change — all visual transitions anyway)
+                // serves the localized payload.
+                //
+                // The publish itself stays INSIDE the lock (Codex review round 2 on this spot):
+                // two completions finishing close together could otherwise publish out of order —
+                // the earlier batch's state overwriting the later, fully-localized one, and
+                // re-arming the hold. Safe against self-deadlock: publishCurrentState only
+                // ever *launches* the claim coroutine, it never takes this mutex inline.
+                if (!heroEnrichmentHoldExpired) {
+                    publishCurrentState(
+                        isLoading = _uiState.value.isLoading,
+                        requestKey = activeRequestKey ?: completedRequestKey,
+                    )
+                }
             }
         }
     }
@@ -549,6 +691,16 @@ private const val HOME_COLLECTION_HERO_SOURCE_ITEM_LIMIT = 8
 private const val HOME_CATALOG_FETCH_BATCH_SIZE = 4
 private const val HOME_CATALOG_PREVIEW_FETCH_LIMIT = 18
 private const val HOME_CATALOG_PUBLISH_INTERVAL = 2
+
+/**
+ * Hard cap on how long the hero's METADATA commit waits for TMDB enrichment before publishing raw
+ * catalog metadata instead. Hero first paint is a monitored latency metric (BUG-26 / LaunchTrace),
+ * so a slow or dead TMDB must degrade to English text rather than leave the hero region empty:
+ * 2s covers a warm parallel preview fetch of the whole hero set with room to spare, and past it a
+ * localized title is worth less than the blank hero costs. Bounds the hero only — catalog rows
+ * publish on the same pass regardless of enrichment state.
+ */
+private const val HERO_ENRICHMENT_HOLD_TIMEOUT_MS = 2_000L
 
 private fun prioritizeDefinitions(
     definitions: List<HomeCatalogDefinition>,

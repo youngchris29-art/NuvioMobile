@@ -62,6 +62,16 @@ final class HomeViewModel: ObservableObject {
             self.heroItems = state.heroItems
             self.sections = state.sections
             self.errorMessage = state.errorMessage
+            #if DEBUG
+            // BUG-42 moved the hero's metadata commit BEHIND TMDB enrichment (held in
+            // HomeRepository, capped at HERO_ENRICHMENT_HOLD_TIMEOUT_MS), so hero first paint is no
+            // longer implied by `first_rows` — it needs its own milestone to stay measurable
+            // against the BUG-26 baseline. Rows are unaffected: they publish on the same pass.
+            if !self.didTraceFirstHero, !state.heroItems.isEmpty {
+                self.didTraceFirstHero = true
+                LaunchTrace.mark("first_hero n=\(state.heroItems.count)")
+            }
+            #endif
             self.rebuildRows()
         }
 
@@ -166,6 +176,7 @@ final class HomeViewModel: ObservableObject {
     #if DEBUG
     private var didTraceFirstRows = false
     private var lastTracedRowCount = 0
+    private var didTraceFirstHero = false
     #endif
 
     private func onAddonsChanged(_ state: AddonsUiState) {

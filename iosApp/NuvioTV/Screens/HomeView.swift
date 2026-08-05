@@ -732,6 +732,21 @@ final class HomeHeroFocusModel: ObservableObject {
     /// service Detail already leans on — so the hero shows a synopsis instead of blank space.
     /// Fire-and-forget: on any miss (TMDB disabled, no key, no match, network failure) the hero
     /// simply keeps showing what it already had.
+    ///
+    /// BUG-42 scope decision (2026-08-05). The shared publish is now enrichment-FIRST: the hero
+    /// carousel's items, and any row item the hero already fetched, arrive from
+    /// `HomeRepository.publishCurrentState` already localized, so this layer is no longer the
+    /// carousel's enrichment path — it only ever runs for a row poster that took over the hero
+    /// (UX-7), and only for items the shared overlay does not cover. It is kept for exactly that
+    /// surface, and reduced to a strict GAP FILL: it may add a synopsis/backdrop/logo/genres the
+    /// preview never had, but it may NEVER replace a field that is already on screen. Replacing
+    /// the committed title with TMDB's localized one is what produced the raw-then-localized
+    /// double commit this fix removes ("The Devil's Mouth" swapping to "La Bouche du Diable"), and
+    /// the focus takeover has no hold to hide it behind — it must commit the instant focus dwells.
+    /// Consequence to know about: a focused row card outside the hero's fetched set shows its
+    /// addon (usually English) title — matching the card under it — while its filled-in synopsis
+    /// can be localized. Closing that gap means localizing row metadata broadly, which is the
+    /// fetch-volume product call flagged in `HomeRepository.withTmdbEnrichment`, not a change here.
     private func enrichIfNeeded(_ item: MetaPreview) {
         guard nonBlank(item.description_) == nil || nonBlank(item.banner) == nil else { return }
         let settings = TmdbSettingsRepository.shared.snapshot()
@@ -755,7 +770,7 @@ final class HomeHeroFocusModel: ObservableObject {
                       let base = self.focusedItem,
                       base.id == item.id, base.type == item.type
                 else { return }
-                // Field gating mirrors the shared hero path (HomeRepository.withHeroEnrichment):
+                // Field gating mirrors the shared hero path (HomeRepository.withTmdbEnrichment):
                 // artwork fields only under useArtwork, text fields only under useBasicInfo — a
                 // focused-row hero must not bypass the user's TMDB category preferences.
                 let useArtwork = settings.useArtwork
@@ -763,10 +778,11 @@ final class HomeHeroFocusModel: ObservableObject {
                 self.focusedItem = MetaPreview(
                     id: base.id,
                     type: base.type,
-                    // Carousel parity (withHeroEnrichment): the TMDB localized title wins under
-                    // Basic Info, so focusing a card never swaps a localized carousel title back
-                    // to the addon's fallback name.
-                    name: (useBasicInfo ? self.nonBlank(enrichment.localizedTitle) : nil) ?? base.name,
+                    // BUG-42: the committed title is left alone. Carousel parity no longer needs an
+                    // override here — a row item the hero also carries is localized by the SHARED
+                    // publish, so both copies already agree — and swapping a title the viewer is
+                    // reading is the exact double commit this fix removes (see the doc comment).
+                    name: base.name,
                     poster: base.poster,
                     banner: self.nonBlank(base.banner) ?? (useArtwork ? enrichment.backdrop : nil),
                     logo: self.nonBlank(base.logo) ?? (useArtwork ? enrichment.logo : nil),
