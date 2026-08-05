@@ -162,6 +162,16 @@ struct ContentSourcesSettingsPane: View {
                     model.setSearchSource(key: option.key, disabled: !disabled)
                 }
             }
+
+            // BUG-33 defect 1 (P1, twice re-opened): the tester's only way to confirm a
+            // deselected catalog was actually skipped was a device log capture — and the
+            // diagnostic that shipped logged at debug level, which os_log hides by default
+            // (BUG-11). This mirrors it in-app: one caption naming exactly which catalogs the
+            // last search hit, screenshot-able from this exact pane.
+            Text(model.lastSearchFanOut ?? String(localized: "No search performed yet."))
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
         }
     }
 

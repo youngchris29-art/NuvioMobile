@@ -70,11 +70,16 @@ object SearchRepository {
             query = normalizedQuery,
             disabledCatalogKeys = disabledCatalogKeys,
         )
+        // BUG-33 defect 1 instrumentation: same entries + disableCause pass buildSearchRequests
+        // just ran (via logSearchSourceFilter), phrased for a human. Computed here so every
+        // uiState below — including the early "no catalogs left" return — carries it.
+        val fanOutLine = searchFanOutSummary(enumerateSearchCatalogs(activeAddons), disabledCatalogKeys)
         if (requests.isEmpty()) {
             activeJob?.cancel()
             lastRequestKey = null
             _uiState.value = SearchUiState(
                 emptyStateReason = SearchEmptyStateReason.NoSearchCatalogs,
+                lastFanOut = fanOutLine,
             )
             return
         }
@@ -96,7 +101,7 @@ object SearchRepository {
         lastRequestKey = requestKey
 
         activeJob?.cancel()
-        _uiState.value = SearchUiState(isLoading = true)
+        _uiState.value = SearchUiState(isLoading = true, lastFanOut = fanOutLine)
 
         activeJob = scope.launch {
             val resultChannel = Channel<IndexedSearchResult>(Channel.UNLIMITED)
@@ -138,6 +143,7 @@ object SearchRepository {
                         _uiState.value = SearchUiState(
                             isLoading = true,
                             sections = sections,
+                            lastFanOut = fanOutLine,
                         )
                     }
                 }
@@ -160,6 +166,7 @@ object SearchRepository {
                     else -> SearchEmptyStateReason.NoResults
                 },
                 errorMessage = if (allFailed) firstFailure else null,
+                lastFanOut = fanOutLine,
             )
         }
     }
@@ -528,19 +535,34 @@ object SearchRepository {
         }
     }
 
+    /// BUG-33 defect 1: the ONE classification pass behind both [logSearchSourceFilter] (device
+    /// log) and [searchFanOutSummary] (the in-app Settings caption) — pairs every entry with its
+    /// [SearchCatalogEntry.disableCause] so the two surfaces can never disagree about which
+    /// catalogs a search actually hit.
+    private fun classifySearchFanOut(
+        entries: List<SearchCatalogEntry>,
+        disabledCatalogKeys: Set<String>,
+    ): List<Pair<SearchCatalogEntry, SearchSourceDisableCause?>> =
+        entries.map { entry -> entry to entry.disableCause(disabledCatalogKeys) }
+
     /// BUG-33 diagnostics: one line per search whenever the user has disabled at least one
     /// source, so a device log immediately shows requested-vs-filtered without a rebuild.
     /// FILTERED entries carry their match cause (`stored` = the entry's own key, `legacy` = the
     /// bare base key covering a whole collision group).
+    ///
+    /// BUG-33 defect 1 (re-opened twice): this shipped at `log.d`, and Kermit routes debug/info
+    /// lines to os_log's default (non-persisted) tier — invisible in a plain `log show` / Console
+    /// capture (see BUG-11). `log.w` is the lowest level that survives a default capture, and this
+    /// only fires when the user has ≥1 disabled source, so it stays quiet for everyone else.
     private fun logSearchSourceFilter(
         entries: List<SearchCatalogEntry>,
         disabledCatalogKeys: Set<String>,
     ) {
         if (disabledCatalogKeys.isEmpty()) return
-        log.d {
+        log.w {
             val disabled = disabledCatalogKeys.sorted().joinToString(separator = ", ", prefix = "[", postfix = "]")
-            val statuses = entries.joinToString(separator = ", ", prefix = "[", postfix = "]") { entry ->
-                val status = when (entry.disableCause(disabledCatalogKeys)) {
+            val statuses = classifySearchFanOut(entries, disabledCatalogKeys).joinToString(separator = ", ", prefix = "[", postfix = "]") { (entry, cause) ->
+                val status = when (cause) {
                     SearchSourceDisableCause.StoredKey -> "FILTERED(stored)"
                     SearchSourceDisableCause.LegacyBaseKey -> "FILTERED(legacy:${entry.baseKey})"
                     null -> "kept"
@@ -548,6 +570,42 @@ object SearchRepository {
                 "${entry.key}=$status"
             }
             "[SearchSources] disabled=${disabledCatalogKeys.size}$disabled catalogs=${entries.size} $statuses"
+        }
+    }
+
+    /// BUG-33 defect 1 instrumentation: the tester-visible counterpart to
+    /// [logSearchSourceFilter] — same [classifySearchFanOut] pass, phrased in addon + catalog
+    /// display names (never keys) so Settings → Content Sources → Search Sources can show
+    /// exactly which catalogs the last search hit. Example:
+    /// `"searched 3 of 7 catalogs · filtered: TMDB Popular-Films, TMDB Popular-Séries, +1 more"`.
+    ///
+    /// Plain English, not routed through [resourceString]/[StringKey]: this phrase has no
+    /// existing key, and minting one needs three things this task can't safely do without a
+    /// build to verify — a new [StringKey] enum case, its `ComposeResourcesStringProvider`
+    /// mapping (an exhaustive `when`), and the bundled Compose Resources string itself. tvOS
+    /// also never installs a [StringProvider] at all, so [resourceString] always resolves to
+    /// the English fallback there regardless.
+    private fun searchFanOutSummary(
+        entries: List<SearchCatalogEntry>,
+        disabledCatalogKeys: Set<String>,
+    ): String {
+        val classified = classifySearchFanOut(entries, disabledCatalogKeys)
+        val keptCount = classified.count { (_, cause) -> cause == null }
+        val filteredNames = classified.mapNotNull { (entry, cause) ->
+            if (cause == null) return@mapNotNull null
+            "${entry.addon.displayTitle} ${entry.catalog.name}-${entry.catalog.type.displayLabel()}"
+        }
+
+        val catalogWord = if (entries.size == 1) "catalog" else "catalogs"
+        return buildString {
+            append("searched $keptCount of ${entries.size} $catalogWord")
+            if (filteredNames.isNotEmpty()) {
+                append(" · filtered: ")
+                val shown = filteredNames.take(4)
+                append(shown.joinToString(", "))
+                val remaining = filteredNames.size - shown.size
+                if (remaining > 0) append(", +$remaining more")
+            }
         }
     }
 

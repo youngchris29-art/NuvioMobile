@@ -40,6 +40,13 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var sections: [HomeCatalogSection] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var emptyMessage: String?
+    /// BUG-33 defect 1 instrumentation: passthrough of `SearchUiState.lastFanOut` — a
+    /// human-readable "searched N of M catalogs" line set by the shared repo right after the
+    /// last `search()` call. Settings → Content Sources → Search Sources renders the same value
+    /// via its own watcher on `SearchRepository.shared.uiState` (this tab and the Settings tab
+    /// hold independent view-model instances, so each watches the shared state directly rather
+    /// than one passing a value to the other).
+    @Published private(set) var lastFanOut: String?
     /// Recent searches for this profile (most recent first).
     @Published private(set) var history: [String] = []
     /// Shared Discover state: type/catalog/genre options + a paginated item grid.
@@ -65,6 +72,7 @@ final class SearchViewModel: ObservableObject {
             self.emptyMessage = state.sections.isEmpty && !state.isLoading && state.emptyStateReason != nil
                 ? String(localized: "No results.")
                 : nil
+            self.lastFanOut = state.lastFanOut
         }
 
         discoverWatcher = FlowWatcherKt.watch(SearchRepository.shared.discoverUiState) { [weak self] emitted in

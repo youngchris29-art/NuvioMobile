@@ -47,6 +47,13 @@ final class SettingsViewModel: ObservableObject {
     /// FEAT-10: disabled-source keys, mirrored from `SearchViewModel.SearchSourceSettings`
     /// into a published property so the pane's toggles re-render on change.
     @Published private(set) var disabledSearchSourceKeys: Set<String> = SearchViewModel.SearchSourceSettings.disabledKeys
+    /// BUG-33 defect 1 instrumentation: passthrough of `SearchUiState.lastFanOut` — watched
+    /// directly off `SearchRepository.shared.uiState` (mirroring `searchSourceOptions` above)
+    /// rather than through `SearchViewModel`: the Search and Settings tabs hold independent
+    /// `@StateObject` instances in `MainTabView`, so there's no shared instance to read from.
+    /// Nil until the first search of this app session, or after `SearchViewModel.queryChanged`
+    /// clears back to an empty query.
+    @Published private(set) var lastSearchFanOut: String?
     /// Which backend owns the Library tab: "local", "trakt", or "simkl". Chip-row key, not the raw
     /// Kotlin enum — mirrors `tmdbLanguageSelection`'s string-key pattern so the Content Sources
     /// pane can reuse `LanguageSelectRow` without switching over the bridged enum in the view.
@@ -91,6 +98,7 @@ final class SettingsViewModel: ObservableObject {
     private var posterStyleWatcher: FlowWatcher?
     private var cardDepthWatcher: FlowWatcher?
     private var trackingSettingsWatcher: FlowWatcher?
+    private var searchStateWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -173,6 +181,13 @@ final class SettingsViewModel: ObservableObject {
             self.showCatalogType = state.showCatalogType
             self.heroEnabled = state.heroEnabled
         }
+
+        // BUG-33 defect 1 instrumentation: the Search Sources pane's fan-out caption. Watches
+        // the same shared `SearchRepository.uiState` the Search tab's `SearchViewModel` watches.
+        searchStateWatcher = FlowWatcherKt.watch(SearchRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? SearchUiState else { return }
+            self.lastSearchFanOut = state.lastFanOut
+        }
     }
 
     func stop() {
@@ -185,6 +200,7 @@ final class SettingsViewModel: ObservableObject {
         posterStyleWatcher?.cancel(); posterStyleWatcher = nil
         cardDepthWatcher?.cancel(); cardDepthWatcher = nil
         trackingSettingsWatcher?.cancel(); trackingSettingsWatcher = nil
+        searchStateWatcher?.cancel(); searchStateWatcher = nil
     }
 
     // MARK: - Actions
@@ -504,5 +520,7 @@ final class SettingsViewModel: ObservableObject {
         tmdbWatcher?.cancel()
         posterStyleWatcher?.cancel()
         cardDepthWatcher?.cancel()
+        trackingSettingsWatcher?.cancel()
+        searchStateWatcher?.cancel()
     }
 }

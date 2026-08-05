@@ -15,6 +15,13 @@ data class SearchUiState(
     val sections: List<HomeCatalogSection> = emptyList(),
     val emptyStateReason: SearchEmptyStateReason? = null,
     val errorMessage: String? = null,
+    /// BUG-33 defect 1 instrumentation: a compact, human-readable line describing the last
+    /// `search()` call's fan-out — how many search-capable catalogs were queried vs. filtered
+    /// out by Search Sources, and which ones (display names, not keys). Set by `search()`
+    /// right after `buildSearchRequests`; null until the first search of this app session (or
+    /// after `clear()`/`reset()`). Shown verbatim in Settings → Content Sources → Search
+    /// Sources so a tester can screenshot one line instead of a device log capture.
+    val lastFanOut: String? = null,
 )
 
 enum class DiscoverEmptyStateReason {
