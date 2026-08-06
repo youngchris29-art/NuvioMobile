@@ -99,10 +99,9 @@ fun daysUntilExplicitRelease(
     return daysUntilEpisodeRelease(todayIsoDate, releasedDate)
 }
 
-// Fork: public (upstream: internal) — composeApp tests consume these cross-module.
-fun isoCalendarDateOrNull(value: String?): String? = parseEpisodeReleaseLocalDate(value)
+internal fun isoCalendarDateOrNull(value: String?): String? = parseEpisodeReleaseLocalDate(value)
 
-fun isoEpochDay(date: String): Long = coreIsoEpochDay(date)
+internal fun isoEpochDay(date: String): Long = coreIsoEpochDay(date)
 
 fun releasedEpisodes(
     episodes: List<WatchingReleasedEpisode>,
