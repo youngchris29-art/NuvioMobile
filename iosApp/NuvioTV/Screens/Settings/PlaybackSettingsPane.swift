@@ -215,20 +215,20 @@ private struct DefaultPlayerRow: View {
                     VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                         Text("Default Player")
                             .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .rowTextColor()
                         Text(defaultExternalPlayerId.isEmpty
                             ? "Streams play in the built-in player. Hold a stream to open it in an external player instead."
                             : "Streams open in \(selectedName). Hold a stream to play it in NuvioTV instead; if \(selectedName) can\u{2019}t open, playback falls back to the built-in player.")
                             .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .rowTextColor(secondary: true)
                     }
                     Spacer()
                     Text(selectedName)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                 }
                 .padding(Theme.Spacing.lg)
                 .frame(maxWidth: .infinity)
