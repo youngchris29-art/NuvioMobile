@@ -19,12 +19,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.seconds
 
 object AuthRepository {
+    private val SESSION_RESTORE_TIMEOUT = 10.seconds
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("AuthRepository"))
     private val log = Logger.withTag("AuthRepository")
 
@@ -36,6 +40,7 @@ object AuthRepository {
 
     private var initialized = false
     private var validatedRemoteUserId: String? = null
+    private var sessionRestoreTimedOut = false
 
     fun initialize() {
         if (initialized) return
@@ -50,7 +55,24 @@ object AuthRepository {
             )
         }
 
+        // A damaged or wedged stored session must not brick boot: supabase-kt's session restore
+        // can stall without ever leaving Initializing (storage read that never returns, restore
+        // coroutine dying), which would pin the root gate on the splash forever. If we are still
+        // Loading after the timeout, fall back to signed-out — a late successful restore still
+        // flips the gate to Authenticated through the collector below.
         scope.launch {
+            delay(SESSION_RESTORE_TIMEOUT)
+            sessionRestoreTimedOut = true
+            if (_state.compareAndSet(AuthState.Loading, AuthState.Unauthenticated)) {
+                log.w { "Session restore still pending after $SESSION_RESTORE_TIMEOUT; treating as signed out (stored session may be damaged or unreadable)" }
+            }
+        }
+
+        scope.launch {
+            debugSessionRestoreStall()?.let { stall ->
+                log.w { "debug.authRestoreStallSeconds active — delaying session-status collection by $stall to simulate a wedged restore" }
+                delay(stall)
+            }
             SupabaseProvider.client.auth.sessionStatus.collect { status ->
                 if (AuthStorage.loadAnonymousUserId() != null) return@collect
                 when (status) {
@@ -71,7 +93,9 @@ object AuthRepository {
                         _state.value = AuthState.Unauthenticated
                     }
                     is SessionStatus.Initializing -> {
-                        if (AuthStorage.loadAnonymousUserId() == null) {
+                        // Never re-enter Loading once the restore watchdog has fired — that
+                        // would re-brick the gate the watchdog just unbricked.
+                        if (AuthStorage.loadAnonymousUserId() == null && !sessionRestoreTimedOut) {
                             _state.value = AuthState.Loading
                         }
                     }
