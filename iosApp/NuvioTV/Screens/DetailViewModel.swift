@@ -152,14 +152,15 @@ final class DetailViewModel: ObservableObject {
         didRequestTrailer = true
 
         var youtubeUrl = trailer.youtubePlaybackUrl()
-        #if DEBUG
-        // Sim verification knob for the SABR repackaging path: force every Detail hero trailer to a
-        // specific videoId (e.g. rNZ0xKaCdus) so [TrailerRepack]/[TrailerQuality] logs are
-        // deterministic. `defaults write <bundle> debug.trailerSmokeVideoId <id>`.
+        // Sim/device verification knob for the SABR repackaging path: force every Detail hero
+        // trailer to a specific videoId (e.g. rNZ0xKaCdus) so [TrailerRepack]/[TrailerQuality]
+        // logs are deterministic. `defaults write <bundle> debug.trailerSmokeVideoId <id>`.
+        // Phase 0 (BUG-46/UX-9, 2026-08-06): lifted out of `#if DEBUG` — the trailer soak needs
+        // this on release sideloads too (testers, device passes), same rationale as
+        // `TrailerProbe`/`HomeGeometryProbe` being runtime knobs rather than compile-time ones.
         if let forced = UserDefaults.standard.string(forKey: "debug.trailerSmokeVideoId"), !forced.isEmpty {
             youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
         }
-        #endif
         HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { [weak self] source, _ in
             DispatchQueue.main.async {
                 guard let self, let source else { return }

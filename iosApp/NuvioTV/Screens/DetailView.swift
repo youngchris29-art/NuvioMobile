@@ -136,12 +136,14 @@ struct DetailView: View {
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
             // Also pause it while a full-screen trailer plays (no doubled decode/audio).
             if backgroundTrailerEnabled, let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil, !backgroundTrailerStopped {
-                // UX-9: same parity zoom as the inline card (see `TrailerHeroPlayer.parityZoom`) to
-                // hide the letterbox bars baked into our YouTube encodes. Full-screen and already
-                // ignoring the safe area, so the 1.08 overscale just pushes the bars past the
-                // screen edges — the screen bounds themselves do the clipping.
-                TrailerHeroPlayer(urlString: trailer, onFailure: { model.trailerFailed() })
-                    .scaleEffect(TrailerHeroPlayer.parityZoom)
+                // UX-9: the zoom that hides the letterbox bars baked into our YouTube encodes is
+                // measured per stream and applied to the player layer itself now
+                // (`TrailerLetterboxProbe`, floor `TrailerHeroPlayer.parityZoom`) — no
+                // `.scaleEffect` here any more. Full-screen and already ignoring the safe area, so
+                // the overscale just pushes the bars past the screen edges — the screen bounds
+                // themselves do the clipping. The failure report is ignored: Detail has one hero
+                // trailer and no negative cache to scope (that's the inline card's problem).
+                TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() })
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
@@ -924,41 +926,47 @@ struct DetailView: View {
                 HStack(spacing: Theme.Spacing.md) {
                     Text(comment.authorDisplayName)
                         .font(Theme.Font.meta)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .rowTextColor()
                     if let rating = comment.rating?.value {
                         HStack(spacing: 2) {
+                            // BUG-50: the star's fixed gold (Theme.Palette.star) isn't a
+                            // semantic color the row's colorScheme flip can fix, and reads as
+                            // washed-out on the near-white focused platter. `rowAccentTint`
+                            // preserves the gold at rest (active: false, inactiveColor: star)
+                            // while forcing the platter-safe color on focus, same shape as
+                            // BUG-22's row-icon fix.
                             Image(systemName: "star.fill")
-                                .foregroundStyle(Theme.Palette.star)
+                                .rowAccentTint(false, inactiveColor: Theme.Palette.star)
                             Text("\(rating)/10")
                         }
                         .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                     }
                     if let date = commentDate(comment) {
                         Text(date)
                             .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .rowTextColor(secondary: true)
                     }
                     if comment.review {
                         Text("Review")
                             .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.accent)
+                            .rowAccentTint()
                     }
                     Spacer(minLength: 0)
                     if comment.likes > 0 {
                         Label("\(comment.likes)", systemImage: "heart.fill")
                             .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .rowTextColor(secondary: true)
                     }
                 }
                 if hidesForSpoiler {
                     Label("Contains spoilers \u{2014} press to reveal", systemImage: "eye.slash")
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                 } else {
                     Text(comment.comment)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .rowTextColor()
                         .lineLimit(expanded ? nil : 5)
                         .fixedSize(horizontal: false, vertical: true)
                 }

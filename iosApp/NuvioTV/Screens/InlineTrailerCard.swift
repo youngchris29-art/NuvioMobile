@@ -31,8 +31,11 @@ final class TrailerResolutionCache {
         /// A directly-playable progressive/HLS URL for this title, stamped when it was resolved.
         case resolved(String, Date)
         /// This title has no usable inline trailer (none listed, or extraction produced nothing
-        /// AVPlayer can open), stamped when we found that out.
+        /// AVPlayer can open), stamped when we found that out. A statement about the *content*.
         case unavailable(Date)
+        /// A resolved trailer whose *playback* just failed, stamped when it did. A statement about
+        /// this moment, not about the title (BUG-46/B2).
+        case transient(Date)
     }
 
     /// Extracted YouTube URLs carry a signature that outlives a browsing session by hours; three
@@ -41,6 +44,12 @@ final class TrailerResolutionCache {
     /// Negative results expire fast — a momentary addon/network failure shouldn't blacklist a title
     /// for the rest of the session.
     private static let unavailableTTL: TimeInterval = 20 * 60
+    /// BUG-46/B2: playback failures used to land in `.unavailable` alongside "this title has no
+    /// trailer", so once a leaked-decoder storm made a handful of titles fail, browsing was dead
+    /// for 20 minutes and the only cure anyone found was restarting the app. A player failure now
+    /// gets its own short TTL: long enough to stop a focus-in/focus-out retry loop, short enough
+    /// that the user never has to know the word "restart".
+    private static let transientTTL: TimeInterval = 45
     /// A long browsing session touches far more titles than it plays; bound the map and drop the
     /// oldest insertions first (recency of *use* isn't worth tracking for entries this small).
     private static let capacity = 200
@@ -59,26 +68,80 @@ final class TrailerResolutionCache {
         guard let entry = entries[key] else { return nil }
         let age: TimeInterval
         let ttl: TimeInterval
+        let kind: String
         switch entry {
         case let .resolved(_, stamped):
             age = Date().timeIntervalSince(stamped)
             ttl = Self.resolvedTTL
+            kind = "resolved"
         case let .unavailable(stamped):
             age = Date().timeIntervalSince(stamped)
             ttl = Self.unavailableTTL
+            kind = "unavailable"
+        case let .transient(stamped):
+            age = Date().timeIntervalSince(stamped)
+            ttl = Self.transientTTL
+            kind = "transient"
         }
         guard age < ttl else {
+            if TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] cache expire key=%@ kind=%@ age=%.0fs", key, kind, age)
+            }
             remove(key)
             return nil
+        }
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] cache hit key=%@ kind=%@ age=%.0fs", key, kind, age)
         }
         return entry
     }
 
-    func store(_ entry: Entry, for key: String) {
+    /// `causeSite` is Phase 0 instrumentation only (nil for `.resolved` writes): which call site
+    /// decided this title has nothing playable, so the `[TrailerPipeline] cache store` line reads
+    /// as a diagnosis (e.g. "playbackFailed" vs "no trailer listed") instead of a bare kind flag.
+    func store(_ entry: Entry, for key: String, causeSite: String? = nil) {
         if entries[key] == nil { insertionOrder.append(key) }
         entries[key] = entry
         while insertionOrder.count > Self.capacity, let oldest = insertionOrder.first {
             remove(oldest)
+        }
+        if TrailerProbe.enabled {
+            let kind: String
+            switch entry {
+            case .resolved: kind = "resolved"
+            case .unavailable: kind = "unavailable"
+            case .transient: kind = "transient"
+            }
+            let site = causeSite.map { " causeSite=\($0)" } ?? ""
+            NSLog("[TrailerPipeline] cache store key=%@ kind=%@ count=%d%@", key, kind, entries.count, site)
+        }
+    }
+
+    /// BUG-46/B2+B3: forget everything we know about a title, so the next dwell re-resolves from
+    /// scratch. Used when what we cached is provably stale rather than merely old — a `.resolved`
+    /// URL whose `TrailerLocalHLS` token has been evicted, or one that just 404'd from that same
+    /// loopback server. Deliberately *not* followed by a `.transient` write: a stale playlist is
+    /// exactly the case where retrying immediately is the cure.
+    func invalidate(key: String) {
+        guard entries[key] != nil else { return }
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] cache invalidate key=%@", key)
+        }
+        remove(key)
+    }
+
+    /// BUG-46/B2 (storm breaker): drop every entry a *player failure* wrote. Genuine `.unavailable`
+    /// results are left alone — a burst of decoder failures says nothing about which titles have
+    /// trailers listed, and re-extracting those would be pure waste.
+    func clearTransient() {
+        let stale = entries.compactMap { key, entry -> String? in
+            if case .transient = entry { return key }
+            return nil
+        }
+        guard !stale.isEmpty else { return }
+        stale.forEach { remove($0) }
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] cache clearTransient purged=%d count=%d", stale.count, entries.count)
         }
     }
 
@@ -107,6 +170,26 @@ final class InlineTrailerCoordinator: ObservableObject {
 
     private weak var activePlayer: InlineTrailerCardModel?
     private var extracting = false
+    /// Phase 0 instrumentation only: when the latch was last granted, so a refuse can log how
+    /// long it's been held — a latch held far past `extractionTimeoutSeconds` (15s) is candidate
+    /// #4's smoking gun (a stranded `endExtraction()` that never fired).
+    private var extractionStartedAt: Date?
+    /// Sanity-check counter, not a real queue depth (only one extraction is ever granted at a
+    /// time by design) — a value that ever reads >1 would itself be a bug worth knowing about.
+    private var inFlightExtractions = 0
+    /// BUG-46/B4: last resort against a latch that never gets released. B4 makes `endExtraction()`
+    /// structurally unskippable, so this should never fire — sized above the 15s extraction
+    /// deadline so it can only ever mean "something we didn't model stalled".
+    private static let latchWatchdogSeconds: TimeInterval = 20
+    /// BUG-46/B2 (storm breaker): when the last player failures landed. Process-wide, because the
+    /// storm this detects is a shared resource running out, not one card misbehaving.
+    ///
+    /// Deliberately NOT the Phase 0 `TrailerPipelineCounters` ring: that one is only populated when
+    /// `debug.trailerProbe` is on, and the breaker has to work on a tester's release sideload with
+    /// every knob off.
+    private var playbackFailureStamps: [Date] = []
+    private static let stormThreshold = 3
+    private static let stormWindowSeconds: TimeInterval = 60
 
     private init() {}
 
@@ -115,23 +198,86 @@ final class InlineTrailerCoordinator: ObservableObject {
         if let activePlayer, activePlayer !== owner { activePlayer.relinquishPlayback() }
         activePlayer = owner
         playingKey = key
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] claimPlayback key=%@", key)
+        }
     }
 
     func releasePlayback(_ owner: InlineTrailerCardModel) {
         if activePlayer === owner {
+            if TrailerProbe.enabled, let playingKey {
+                NSLog("[TrailerPipeline] releasePlayback key=%@", playingKey)
+            }
             activePlayer = nil
             playingKey = nil
         }
     }
 
-    /// `true` when this caller may extract; balance every `true` with `endExtraction()`.
-    func beginExtraction() -> Bool {
-        guard !extracting else { return false }
+    /// Monotonic id for the current latch holder: `endExtraction` only honors the ticket it
+    /// issued, so a stranded extractor whose latch the watchdog force-cleared can't release a
+    /// NEWER caller's latch when its deferred `endExtraction` finally fires (Codex round 12).
+    private var extractionTicket = 0
+
+    /// A ticket when this caller may extract (pass it to `endExtraction`); nil when refused.
+    func beginExtraction() -> Int? {
+        if extracting, let startedAt = extractionStartedAt,
+           Date().timeIntervalSince(startedAt) > Self.latchWatchdogSeconds {
+            // BUG-46/B4: a latch held past every deadline we impose is stranded, and a stranded
+            // latch means no card in the app ever extracts again — the worst possible failure for
+            // a fail-soft feature. Loud on purpose: this is unreachable by construction now, so if
+            // it ever appears in a log there is a real stall class we haven't modelled.
+            NSLog("[TrailerPipeline] extraction latch STRANDED held=%.1fs — force-clearing",
+                  Date().timeIntervalSince(startedAt))
+            extracting = false
+            extractionStartedAt = nil
+            inFlightExtractions = 0
+        }
+        guard !extracting else {
+            if TrailerProbe.enabled {
+                let heldFor = extractionStartedAt.map { Date().timeIntervalSince($0) } ?? -1
+                NSLog("[TrailerPipeline] beginExtraction refused held=%.1fs", heldFor)
+            }
+            return nil
+        }
         extracting = true
-        return true
+        extractionTicket += 1
+        extractionStartedAt = Date()
+        inFlightExtractions += 1
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] beginExtraction granted ticket=%d inFlight=%d", extractionTicket, inFlightExtractions)
+        }
+        return extractionTicket
     }
 
-    func endExtraction() { extracting = false }
+    func endExtraction(_ ticket: Int) {
+        guard extracting, ticket == extractionTicket else {
+            if TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] endExtraction stale ticket=%d current=%d — ignored", ticket, extractionTicket)
+            }
+            return
+        }
+        let heldFor = extractionStartedAt.map { Date().timeIntervalSince($0) } ?? -1
+        extracting = false
+        extractionStartedAt = nil
+        inFlightExtractions = max(0, inFlightExtractions - 1)
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] endExtraction held=%.1fs inFlight=%d", heldFor, inFlightExtractions)
+        }
+    }
+
+    /// BUG-46/B2 (storm breaker): records a player failure and reports whether the pipeline is in a
+    /// storm — three or more failures inside a minute, which is what a shared-resource collapse
+    /// (the tvOS decoder cap, media services resetting) looks like from up here. The caller's cure
+    /// is to purge what those failures cached, so recovery doesn't have to wait out a TTL.
+    func recordPlaybackFailure() -> Bool {
+        let now = Date()
+        playbackFailureStamps.append(now)
+        playbackFailureStamps.removeAll { now.timeIntervalSince($0) > Self.stormWindowSeconds }
+        guard playbackFailureStamps.count >= Self.stormThreshold else { return false }
+        NSLog("[TrailerPipeline] STORM failures=%d window=%.0fs", playbackFailureStamps.count, Self.stormWindowSeconds)
+        playbackFailureStamps.removeAll()
+        return true
+    }
 }
 
 // MARK: - Per-card state machine
@@ -258,11 +404,35 @@ final class InlineTrailerCardModel: ObservableObject {
         setPhase(.idle)
     }
 
-    /// The player couldn't start (undecodable/stalled). Negative-cache it and collapse; not retried
-    /// for this title until the short TTL lapses.
-    func playbackFailed() {
+    /// The player couldn't start (undecodable/stalled/404). Remember it *as a playback failure* and
+    /// collapse.
+    ///
+    /// BUG-46/B2: what gets remembered is the whole point. This used to write `.unavailable` — the
+    /// same verdict as "this title lists no trailer" — so a run of failures blacklisted real titles
+    /// for 20 minutes and the app looked permanently broken until it was restarted. Now:
+    /// * a 404 from our own loopback repack server means the playlists we cached are gone, not that
+    ///   the title is bad — forget the entry entirely so the next dwell re-repacks (B3 makes that
+    ///   rare; this is the backstop for a googlevideo URL expiring inside a playlist);
+    /// * anything else gets `.transient`, which suppresses a tight refocus retry for 45s and then
+    ///   lets the title prove itself again;
+    /// * three failures inside a minute is a shared-resource storm, so the negative entries those
+    ///   failures wrote are purged outright rather than left to expire one by one.
+    func playbackFailed(_ report: TrailerFailureReport) {
         if let activeKey {
-            TrailerResolutionCache.shared.store(.unavailable(Date()), for: activeKey)
+            let isLoopback404 = report.httpStatus == 404
+                && report.urlString.flatMap(TrailerLocalHLS.token(inPlaybackURL:)) != nil
+            if isLoopback404 {
+                TrailerResolutionCache.shared.invalidate(key: activeKey)
+            } else {
+                TrailerResolutionCache.shared.store(
+                    .transient(Date()),
+                    for: activeKey,
+                    causeSite: "playbackFailed:\(report.cause.tag)"
+                )
+            }
+        }
+        if InlineTrailerCoordinator.shared.recordPlaybackFailure() {
+            TrailerResolutionCache.shared.clearTransient()
         }
         collapse()
     }
@@ -294,20 +464,35 @@ final class InlineTrailerCardModel: ObservableObject {
 
         switch TrailerResolutionCache.shared.entry(for: key) {
         case let .resolved(url, _):
+            // BUG-46/B3: a local repack URL is only as good as the token behind it. Checking here
+            // costs a dictionary lookup and turns "AVPlayer 404s, the card dies" into "re-resolve,
+            // exactly like a cache miss" — no round trip, no failure, no negative cache entry.
+            if let token = TrailerLocalHLS.token(inPlaybackURL: url), !TrailerLocalHLS.shared.hasToken(token) {
+                TrailerResolutionCache.shared.invalidate(key: key)
+                beginResolution(item, key: key)
+                return
+            }
             activeKey = key
             setPhase(.expandedStatic)
             startPlayback(url, key: key)
-        case .unavailable:
-            // Already known to have nothing to play: never morph at all, so a row full of
-            // trailer-less titles never twitches under a browsing thumb.
+        case .unavailable, .transient:
+            // Already known to have nothing to play (or nothing that played, moments ago): never
+            // morph at all, so a row full of trailer-less titles never twitches under a browsing
+            // thumb. `.transient` expires in 45s; `.unavailable` in 20 minutes.
             return
         case nil:
-            activeKey = key
-            setPhase(.expandedStatic)
-            guard resolvingKey != key else { return }
-            resolvingKey = key
-            Task { [weak self] in await self?.resolve(item, key: key) }
+            beginResolution(item, key: key)
         }
+    }
+
+    /// Expand onto static landscape art and start the resolve pipeline for `key`. Shared by the
+    /// cache-miss path and B3's stale-token path, which are the same thing from here on.
+    private func beginResolution(_ item: MetaPreview, key: String) {
+        activeKey = key
+        setPhase(.expandedStatic)
+        guard resolvingKey != key else { return }
+        resolvingKey = key
+        Task { [weak self] in await self?.resolve(item, key: key) }
     }
 
     /// Resolution concluded that there is nothing to play: collapse instead of sitting on static
@@ -340,19 +525,36 @@ final class InlineTrailerCardModel: ObservableObject {
         let trailers = meta.trailers
         guard !trailers.isEmpty,
               let trailer = HeroTrailerSelectorKt.selectHeroTrailer(trailers: trailers) else {
-            TrailerResolutionCache.shared.store(.unavailable(Date()), for: key)
+            TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "noTrailerListed")
             abandonExpansion(key: key)
             return
         }
 
         // Busy: skip rather than queue, and stay neutral on the cache — being second in line says
         // nothing about whether this title has a trailer.
-        guard InlineTrailerCoordinator.shared.beginExtraction() else {
+        guard let extractionTicket = InlineTrailerCoordinator.shared.beginExtraction() else {
             abandonExpansion(key: key)
             return
         }
-        let source = await resolveYouTube(trailer.youtubePlaybackUrl())
-        InlineTrailerCoordinator.shared.endExtraction()
+        let source: TrailerPlaybackSource?
+        // BUG-46/B4: the latch is released by a `defer` in its OWN scope, so no future early return
+        // between here and the end of the extraction can strand it (a stranded latch means nothing
+        // in the app ever extracts again). Deliberately a scoped `do` rather than a function-wide
+        // `defer`: the `TrailerLocalHLS` repack fetches below are not extraction, and holding the
+        // single extraction slot through them would serialize the pipeline for no reason.
+        do {
+            defer { InlineTrailerCoordinator.shared.endExtraction(extractionTicket) }
+            var youtubeUrl = trailer.youtubePlaybackUrl()
+            // Phase 0 (0.5): honor the same `debug.trailerSmokeVideoId` knob
+            // `DetailViewModel.resolveTrailerIfNeeded` uses, so every inline dwell resolves the SAME
+            // known videoId — deterministic `[TrailerRepack]`/`[TrailerZoom]` logs for the soak. The
+            // substitution happens AFTER `key` was derived above, so cache behavior stays per-title
+            // (many distinct keys, one known stream) rather than collapsing every card onto one entry.
+            if let forced = UserDefaults.standard.string(forKey: "debug.trailerSmokeVideoId"), !forced.isEmpty {
+                youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
+            }
+            source = await resolveYouTube(youtubeUrl)
+        }
 
         // AVPlayer-friendly URL only — a local byte-range HLS repackage of the demuxed 1080p pair
         // when the extractor surfaced one (SABR fallback), else the progressive/HLS URL.
@@ -364,7 +566,7 @@ final class InlineTrailerCardModel: ObservableObject {
             playable = nil
         }
         guard let playable, !playable.isEmpty else {
-            TrailerResolutionCache.shared.store(.unavailable(Date()), for: key)
+            TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "notPlayable")
             abandonExpansion(key: key)
             return
         }
@@ -395,10 +597,17 @@ final class InlineTrailerCardModel: ObservableObject {
         }
     }
 
+    /// BUG-46/B4: the Kotlin extractor gets *our* deadline, not its own 30s one. Before this, walking
+    /// away at 15s left an orphan extraction running for another 15s — still holding sockets, still
+    /// scheduled, and overlapping whatever the next dwell started. The Swift latch still wins the
+    /// race (Kotlin completions aren't cancellable from here); the point is that the work stops too.
     private func resolveYouTube(_ youtubeUrl: String) async -> TrailerPlaybackSource? {
         await withCheckedContinuation { continuation in
             let latch = ResumeLatch<TrailerPlaybackSource>(continuation)
-            HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { source, _ in
+            HeroTrailerResolver.shared.resolveYouTube(
+                youtubeUrl: youtubeUrl,
+                timeoutMillis: Int64(Self.extractionTimeoutSeconds * 1000)
+            ) { source, _ in
                 DispatchQueue.main.async { latch.settle(source) }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.extractionTimeoutSeconds) {
@@ -563,14 +772,19 @@ struct InlineTrailerCard: View {
                 // than looping under a resting thumb forever.
                 TrailerHeroPlayer(
                     urlString: url,
-                    onFailure: { model.playbackFailed() },
+                    // BUG-46/B2: the report says *why*, which is what decides whether this title is
+                    // remembered as broken (it usually isn't) — see `playbackFailed`.
+                    onFailure: { report in model.playbackFailed(report) },
                     loops: false,
                     onPlaybackEnded: { model.playbackFinished() }
                 )
-                // UX-9: parity zoom over the baked-in letterbox bars (see `parityZoom` doc) — only
-                // the video surface, not the static artwork underneath: the artwork is already
-                // sized to the tile, with no bars of its own to hide.
-                .scaleEffect(TrailerHeroPlayer.parityZoom)
+                // UX-9: no `.scaleEffect` here any more — the zoom over the baked-in letterbox bars
+                // is measured per stream and applied to the player layer (`TrailerLetterboxProbe`,
+                // floor `TrailerHeroPlayer.parityZoom`), so a bar-free source renders exactly as it
+                // did before. Still only the video surface, never the static artwork underneath:
+                // that is already sized to the tile, with no bars of its own to hide. Layout is
+                // untouched either way — both the old modifier and the layer transform are
+                // render-only, which is what keeps UX-4a's morph and BUG-29's scroll intact.
                 .transition(.asymmetric(insertion: .opacity, removal: .identity))
             }
         }

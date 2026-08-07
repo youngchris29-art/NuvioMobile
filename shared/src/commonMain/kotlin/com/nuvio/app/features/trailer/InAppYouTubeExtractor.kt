@@ -13,7 +13,11 @@ import kotlinx.serialization.json.JsonPrimitive
 internal const val TRAILER_EXTRACTOR_TAG = "InAppYouTubeExtractor"
 internal const val TRAILER_REQUEST_TIMEOUT_MS = 20_000L
 
-private const val EXTRACTOR_TIMEOUT_MS = 30_000L
+/**
+ * Ceiling on a whole extraction. `internal` (it was file-private) so [HeroTrailerResolver] can name
+ * it as the default for callers that don't impose a shorter deadline of their own — BUG-46/B4.
+ */
+internal const val TRAILER_EXTRACTOR_TIMEOUT_MS = 30_000L
 private const val PREFERRED_SEPARATE_CLIENT = "android_vr"
 
 private val VIDEO_ID_REGEX = Regex("^[a-zA-Z0-9_-]{11}$")
@@ -147,11 +151,20 @@ private val CLIENTS = listOf(
 class InAppYouTubeExtractor {
     private val log = Logger.withTag(TRAILER_EXTRACTOR_TAG)
 
-    suspend fun extractPlaybackSource(youtubeUrl: String): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
+    /**
+     * [timeoutMillis] lets a caller impose a deadline shorter than [TRAILER_EXTRACTOR_TIMEOUT_MS];
+     * it can never *raise* the ceiling (BUG-46/B4 — the tvOS inline card gives up at 15s, and an
+     * extraction that outlives the caller only competes with the next one). Defaulted, so the
+     * mobile flavor resolver's existing single-argument call is unchanged.
+     */
+    suspend fun extractPlaybackSource(
+        youtubeUrl: String,
+        timeoutMillis: Long = TRAILER_EXTRACTOR_TIMEOUT_MS,
+    ): TrailerPlaybackSource? = withContext(Dispatchers.Default) {
         if (youtubeUrl.isBlank()) return@withContext null
 
         runCatching {
-            withTimeout(EXTRACTOR_TIMEOUT_MS) {
+            withTimeout(timeoutMillis.coerceIn(1L, TRAILER_EXTRACTOR_TIMEOUT_MS)) {
                 extractPlaybackSourceInternal(youtubeUrl)
             }
         }.onFailure {
