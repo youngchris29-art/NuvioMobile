@@ -143,6 +143,49 @@ final class NuvioTVUITests: XCTestCase {
         press(.down, times: 1)
     }
 
+    /// Types `text` on the tvOS full-screen system keyboard by walking to each letter key in turn
+    /// and selecting it. Best-effort, same spirit as test19DiscoverSurvivesSearch's typing step
+    /// (see its header comment): this harness has no verified key-to-key adjacency map for the
+    /// keyboard grid, so a character the walk can't reach just stops the whole attempt rather than
+    /// guessing blind arrow-press counts. Returns whether every character was found and selected.
+    @discardableResult
+    private func typeOnKeyboard(_ app: XCUIApplication, _ text: String) -> Bool {
+        // tvOS 27's full-screen keyboard exposes `app.keys` elements but their `hasFocus` never
+        // reads true (verified on the 27.0 sim: the walk finds "b" 80+ times and can never focus
+        // it), so the key-walk below is 26.5-only. Hardware keyboard synthesis types into the
+        // focused keyboard on both runtimes — proved by the manual BUG-47 repro — so try that
+        // first and validate it landed by watching the entry field's value; only fall back to
+        // walking keys when synthesis provably changed nothing.
+        let entryField = app.textFields.firstMatch
+        let before = (entryField.exists ? entryField.value as? String : nil) ?? ""
+        app.typeText(text)
+        pause(0.8)
+        let after = (entryField.exists ? entryField.value as? String : nil) ?? ""
+        if after != before && !after.isEmpty { return true }
+        for character in text {
+            let key = app.keys[String(character)]
+            guard key.waitForExistence(timeout: 3) else { return false }
+            if !key.hasFocus {
+                let reached = moveFocus(.right, until: key, max: 12)
+                    || moveFocus(.down, until: key, max: 6)
+                    || moveFocus(.left, until: key, max: 12)
+                    || moveFocus(.up, until: key, max: 6)
+                guard reached else { return false }
+            }
+            guard key.hasFocus else { return false }
+            remote.press(.select)
+            pause(0.25)
+        }
+        return true
+    }
+
+    /// Whichever button currently holds focus, or nil if none does. `hasFocus` isn't a reliable
+    /// NSPredicate key on `XCUIElementQuery`, so this walks the snapshot instead — fine here since
+    /// a "See All" grid's visible button count is small.
+    private func focusedButton(_ app: XCUIApplication) -> XCUIElement? {
+        app.buttons.allElementsBoundByIndex.first { $0.hasFocus }
+    }
+
     // MARK: - UX-2: trailers in thumbnails
 
     func test01InlineTrailerDwell() throws {
@@ -1116,5 +1159,235 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "22c_menu_back_to_top")
         let afterMenuState = heroSrcProbe(app, "22c_probe_after_menu")
         XCTAssertTrue(afterMenuState.contains("foc=1"), "Menu-to-top must land focus on the pinned hero CTA (foc=1), got: \(afterMenuState)")
+    }
+
+    // MARK: - BUG-47: Search "See All" grid must survive a Back mid-navigation
+
+    /// BUG-47 (P0): on tvOS 27, pressing Back (Menu) out of the "See All" grid pushed from Search
+    /// results reproducibly terminated the process. Root cause: `FlowWatcher` cancellation is
+    /// cooperative, so a resume already queued on the main run loop could deliver one more value
+    /// to the watcher callback AFTER `stop()`/`cancel()` returned, driving a `@Published` write
+    /// into a view mid-pop — `CatalogGridViewModel`'s `stopped` guard closes that window. This
+    /// drives the exact repro path three times with different timing, so a regression that only
+    /// shows up under a specific race window (immediate Menu vs. Menu after pagination) still gets
+    /// exercised.
+    ///
+    /// Query typing is best-effort (see `typeOnKeyboard` / test19's header comment on the tvOS
+    /// keyboard grid): if it can't be driven on a given run this still asserts the app survived
+    /// the attempt, but the actual crash probe below needs real results to reach a "See All" card,
+    /// so a failed type makes the rest of the test a no-op pass.
+    func test23SearchSeeAllBackNoCrash() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        openTab(app, named: "Search")
+        pause(1.5)
+
+        let searchField = app.textFields.firstMatch
+        guard searchField.waitForExistence(timeout: 4) else {
+            XCTAssertTrue(app.state == .runningForeground)
+            return
+        }
+        if !searchField.hasFocus {
+            _ = moveFocus(.up, until: searchField, max: 6)
+        }
+        remote.press(.select)
+        pause(2) // full-screen keyboard presentation
+
+        // Broad query so real result rows (and a "See All" card) are likely regardless of which
+        // addons are installed on the signed-in profile.
+        let typed = typeOnKeyboard(app, "batman")
+        remote.press(.menu) // dismiss the keyboard back to the results list either way
+        pause(2.5) // debounce + results fetch
+        shot(app, "23a_search_results")
+        // Prerequisite failures are LOUD: this test is the BUG-47 regression gate, and a silent
+        // skip-return already produced one vacuous green (Codex round 1 — the first run never
+        // opened the grid at all, because `waitForExistence` cannot see a `SeeAllCard` that a
+        // LazyHStack hasn't materialized yet; only walking focus rightward brings it into the
+        // tree, and the "batman" row is ~47 cards long).
+        guard typed else {
+            XCTFail("BUG-47 gate not exercised: the tvOS keyboard grid could not be driven")
+            return
+        }
+
+        let seeAll = seeAllCard(app)
+        press(.down, times: 1) // out of the search field, into the first results row
+
+        for iteration in 1...3 {
+            // On the tvOS 27.0 runtime under Xcode 26.6, `hasFocus` NEVER reads true for these
+            // cards (input lands fine; focus *reporting* is broken — same class as the keyboard's
+            // `app.keys` focus). So the walk is existence-driven, not focus-driven: a lazy
+            // `SeeAllCard` materializes only when the walk nears the row's end, so "it exists"
+            // means "focus is within a couple of cards of it" — a few more presses land on it,
+            // and the row's end stops focus there regardless of what `hasFocus` claims.
+            guard walkRightUntilExists(seeAll, max: 60) else {
+                shot(app, "23x_no_seeall_\(iteration)")
+                XCTFail("BUG-47 gate not exercised: See All never materialized in the \"batman\" row (iteration \(iteration))")
+                return
+            }
+            press(.right, times: 3, gap: 0.6) // land on the row-end See All card
+            remote.press(.select)
+
+            if iteration == 1 {
+                // Back almost immediately — the race window the `stopped` guard closes (device
+                // repro: Menu fired while the grid's first page is still in flight).
+                pause(0.3)
+            } else {
+                pause(2.5)
+                shot(app, "23b_grid_opened_\(iteration)")
+                XCTAssertTrue(app.state == .runningForeground, "app should survive opening the See All grid (iteration \(iteration))")
+                if iteration == 2 {
+                    press(.down, times: 6, gap: 0.3) // paginate first, then back mid-scroll
+                }
+            }
+
+            remote.press(.menu)
+            pause(2)
+            shot(app, "23c_after_menu_\(iteration)")
+            XCTAssertTrue(app.state == .runningForeground, "BUG-47 regression: Menu out of the See All grid must not terminate the process (iteration \(iteration))")
+
+            let backOnResults = seeAll.waitForExistence(timeout: 4) || searchField.waitForExistence(timeout: 2)
+            XCTAssertTrue(backOnResults, "expected to be back on search results after Menu (iteration \(iteration))")
+        }
+    }
+
+    // MARK: - UX-13: "See All" grid keeps its focus position across a detail round trip
+
+    /// Once inside a "See All" grid: walks Right×2 Down×1 (`LazyVGrid` populates left-to-right,
+    /// top-to-bottom, so this lands a couple of rows in rather than the very first cell), records
+    /// the focused poster's accessibility label, opens its detail page, backs out with Menu, and
+    /// asserts the SAME element regains focus. This is the UX-13 contract H1's `detach()` exists
+    /// for: a pop only cancels the in-flight fetch (`CatalogRepository.detach()`), it does not wipe
+    /// `items`/`scrollPositions` the way `clear()` did, so `load()`'s same-target early-return
+    /// keeps the grid — and its focus/scroll state — exactly as the user left it.
+    private func assertGridFocusRestores(_ app: XCUIApplication) throws {
+        press(.right, times: 2, gap: 0.5)
+        press(.down, times: 1, gap: 0.5)
+        pause(0.5)
+
+        guard let focused = focusedButton(app) else {
+            // The tvOS 27.0 runtime under Xcode 26.6 never reports `hasFocus` for any element
+            // (see test23's walk comment), so a focus-identity assertion is unprovable there —
+            // skip rather than fail or pass vacuously; the 26.5 run is the gating one.
+            throw XCTSkip("focus reporting unavailable on this runtime — UX-13 restore asserted on tvOS 26.5")
+        }
+        let label = focused.label
+        shot(app, "24a_grid_focused_\(label)")
+
+        remote.press(.select)
+        pause(3) // detail page load
+        shot(app, "24b_detail_opened")
+        XCTAssertTrue(app.state == .runningForeground)
+
+        remote.press(.menu)
+        pause(2.5)
+        shot(app, "24c_back_on_grid")
+
+        let restored = app.buttons[label]
+        XCTAssertTrue(
+            restored.waitForExistence(timeout: 6) && restored.hasFocus,
+            "UX-13 regression: focus did not return to \"\(label)\" after popping the detail page"
+        )
+    }
+
+    func test24CatalogGridFocusRestore() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+
+        // Prefer Home (more stable than Search — no keyboard round trip needed): land on the same
+        // movies catalog row test01/02/17/21 use and walk out to its trailing "See All" card.
+        press(.down, times: 4)
+        pause(1)
+        let homeSeeAll = seeAllCard(app)
+        if walkRightUntilExists(homeSeeAll, max: 40) {
+            press(.right, times: 3, gap: 0.6)
+            remote.press(.select)
+            pause(2.5)
+            shot(app, "24_home_grid_opened")
+            try assertGridFocusRestores(app)
+            return
+        }
+
+        // Home's harness config has no reachable "See All" on that row — fall back to test23's
+        // Search path into a grid.
+        openTab(app, named: "Search")
+        pause(1.5)
+        let searchField = app.textFields.firstMatch
+        guard searchField.waitForExistence(timeout: 4) else {
+            XCTAssertTrue(app.state == .runningForeground)
+            return
+        }
+        if !searchField.hasFocus {
+            _ = moveFocus(.up, until: searchField, max: 6)
+        }
+        remote.press(.select)
+        pause(2)
+        let typed = typeOnKeyboard(app, "batman")
+        remote.press(.menu)
+        pause(2.5)
+        guard typed else {
+            XCTFail("UX-13 gate not exercised: the tvOS keyboard grid could not be driven")
+            return
+        }
+        // Same lazy-materialization + broken-hasFocus caveats as test23: existence-driven walk.
+        let searchSeeAll = seeAllCard(app)
+        press(.down, times: 1)
+        guard walkRightUntilExists(searchSeeAll, max: 60) else {
+            shot(app, "24x_no_seeall")
+            XCTFail("UX-13 gate not exercised: no reachable See All card on Home or in Search results")
+            return
+        }
+        press(.right, times: 3, gap: 0.6)
+        remote.press(.select)
+        pause(2.5)
+        shot(app, "24_search_grid_opened")
+        try assertGridFocusRestores(app)
+    }
+
+    // MARK: - BUG-45: Home Screen pane focused-toggle contrast probe
+
+    /// Screenshot probe for the BUG-45 class on the Settings → Home Screen pane: the tester's
+    /// `p1vylo0` frame measured the FOCUSED "Nuvio-Style Hero" toggle at 1.05:1 label/platter on
+    /// beta.10 even though `SettingsToggleRow` routes through `rowTextColor()`. This captures
+    /// both toggles focused, on the current build, for pixel measurement — it asserts nothing
+    /// about color itself (the measurement is done on the exported PNGs).
+    func test25HomeScreenPaneContrast() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        let homeScreen = app.buttons["Home Screen"]
+        _ = moveFocus(.down, until: homeScreen, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+
+        // Fixed press counts, no hasFocus: `SettingsToggleRow` buttons do not report focus to
+        // XCUITest even on 26.5 (the first probe run walked straight past both toggles to the
+        // Catalogs row) — itself a data point for BUG-45's focus-propagation hypothesis. The
+        // pane's first focusable row is the Show Hero toggle; one Down is Nuvio-Style Hero.
+        shot(app, "25a_show_hero_focused")
+        press(.down, times: 1)
+        pause(1)
+        shot(app, "25b_nuvio_style_hero_focused")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// The trailing SeeAllCard as an element query. Its composed accessibility label is NOT the
+    /// bare string "See All" (the card's empty caption-alignment slot joins in), so an exact
+    /// `app.buttons["See All"]` subscript never matches on any runtime — every earlier "green"
+    /// that gated on it was skipping (Codex round 1's vacuous-pass finding).
+    private func seeAllCard(_ app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "See All")).firstMatch
+    }
+
+    /// Walks Right until `element` exists in the accessibility tree (a lazily-mounted trailing
+    /// card materializes only as focus nears it), pressing at most `max` times. Deliberately NOT
+    /// focus-driven — see test23's comment on tvOS 27.0 focus reporting.
+    @discardableResult
+    private func walkRightUntilExists(_ element: XCUIElement, max: Int) -> Bool {
+        if element.exists { return true }
+        for _ in 0..<max {
+            remote.press(.right)
+            pause(0.6)
+            if element.exists { return true }
+        }
+        return false
     }
 }
