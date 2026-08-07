@@ -173,11 +173,11 @@ struct CloudItemRow: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(item.name)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .rowTextColor()
                         .lineLimit(2)
                     Text(detailLine)
                         .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -186,7 +186,7 @@ struct CloudItemRow: View {
                 } else if !item.playableFiles.isEmpty {
                     Image(systemName: "play.circle")
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .rowTextColor(secondary: true)
                 }
             }
             .padding(Theme.Spacing.lg)
@@ -254,13 +254,13 @@ struct CloudFilePickerView: View {
                                     .rowAccentTint()
                                 Text(file.name)
                                     .font(Theme.Font.body)
-                                    .foregroundStyle(Theme.Palette.textPrimary)
+                                    .rowTextColor()
                                     .lineLimit(2)
                                 Spacer(minLength: 0)
                                 if let size = file.sizeBytes?.int64Value, size > 0 {
                                     Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
                                         .font(Theme.Font.caption)
-                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .rowTextColor(secondary: true)
                                 }
                             }
                             .padding(Theme.Spacing.lg)

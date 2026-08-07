@@ -306,14 +306,14 @@ struct StreamPickerView: View {
             HStack(spacing: Theme.Spacing.sm) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                     .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .rowTextColor(secondary: true)
                     .frame(width: 20, alignment: .center)
                 Text(group.addonName)
                     .font(Theme.Font.sectionTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .rowTextColor()
                 Text(group.streams.count == 1 ? String(localized: "1 stream") : String(localized: "\(group.streams.count) streams"))
                     .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .rowTextColor(secondary: true)
                 if group.isLoading {
                     ProgressView().scaleEffect(0.7)
                 }
@@ -363,7 +363,7 @@ struct StreamPickerView: View {
                     HStack(spacing: Theme.Spacing.sm) {
                         Text(rowTitle(stream))
                             .font(Theme.Font.body)
-                            .foregroundStyle(Theme.Palette.textPrimary)
+                            .rowTextColor()
                             .lineLimit(2)
                         if resolvingKey == key {
                             ProgressView().scaleEffect(0.7)
@@ -378,7 +378,7 @@ struct StreamPickerView: View {
                         // without a marquee and without inflating every row in the list.
                         Text(desc)
                             .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .rowTextColor(secondary: true)
                             .lineLimit(focusedRow == key ? nil : 3)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
@@ -489,7 +489,7 @@ struct StreamPickerView: View {
             }
             Text(stream.addonName)
                 .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
+                .rowTextColor(secondary: true)
                 .lineLimit(1)
         }
         .frame(width: 150)

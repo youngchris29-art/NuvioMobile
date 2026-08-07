@@ -288,8 +288,16 @@ private struct SwatchLabel: View {
                 )
             Text(label)
                 .font(Theme.Font.caption)
+                // BUG-50: this used to resolve `textPrimary` (near-white) whenever EITHER
+                // `isSelected` or `isFocused` was true — on a focused swatch that reads as
+                // near-white text on this button's own near-white focus platter. `isFocused`
+                // must win outright and use the platter-safe fixed color; the
+                // selected/unselected distinction only matters at rest, same shape as
+                // `RowTextColor`/`ChipButtonStyle.labelColor`.
                 .foregroundStyle(
-                    isSelected || isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary
+                    isFocused
+                        ? Theme.Palette.onFocusPlatter
+                        : (isSelected ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                 )
         }
         .padding(Theme.Spacing.sm)

@@ -111,12 +111,12 @@ private struct AddonRow: View {
                     .rowAccentTint(enabled)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.headline).lineLimit(1)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(subtitle).font(.caption).rowTextColor(secondary: true).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Text(enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .rowTextColor(secondary: true)
             }
             .padding(20)
             .frame(maxWidth: .infinity)

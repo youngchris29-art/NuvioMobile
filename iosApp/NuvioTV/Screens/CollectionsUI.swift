@@ -116,6 +116,21 @@ struct FolderTile: View {
     /// already have a cover or a user-chosen emoji — see the `.task` guard below.
     @State private var fallbackCoverUrl: String?
 
+    /// BUG-38: `CollectionFolder.titleLogoUrl` (shared model, `CollectionModels.kt:194`) was
+    /// populated upstream but never read by any client. Loaded the same way `HeroLogo`
+    /// (HomeView.swift) loads the Home hero's logo — through the shared `ArtworkStore` so it
+    /// benefits from the same memory/disk cache as every other artwork on this tile — rather
+    /// than a bare `AsyncImage`, which would re-fetch on every scroll recycle.
+    @State private var titleLogoImage: UIImage?
+
+    /// Resolved logo URL, or nil when the folder has none (blank/whitespace-only counts as
+    /// absent, same trimming rule the cover/emoji checks below use).
+    private var titleLogoURL: URL? {
+        guard let raw = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        return URL(string: raw)
+    }
+
     private var tileWidth: CGFloat {
         folder.posterShape == PosterShape.landscape ? style.width * 16 / 9 : style.width
     }
@@ -164,6 +179,28 @@ struct FolderTile: View {
                     )
                     Text(hasEmoji ? emoji! : String(folder.title.prefix(1)))
                         .font(Theme.Font.hero)
+                }
+
+                // BUG-38: an overlay ON TOP of whatever cover just rendered above (own cover,
+                // resolved fallback, or the gradient+emoji/initial placeholder) — never a new
+                // cover source, so the precedence chain above is untouched. Lower-leading,
+                // matching the tile's own title text alignment below (`VStack(alignment:
+                // .leading)`). Sits BELOW the focus GIF in z-order (added first here, so the
+                // GIF layer below draws over it) — mirrors mobile's own logo-under-motion
+                // layering and the tile's existing "GIF over cover" order.
+                if let logoImage = titleLogoImage {
+                    Image(uiImage: logoImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: tileWidth * 0.82, maxHeight: tileHeight * 0.36)
+                        .frame(width: tileWidth, height: tileHeight, alignment: .bottomLeading)
+                        .padding(Theme.Spacing.xs)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                        // When the logo replaces the plain-text name below the tile, this image
+                        // becomes the control's only name-bearing content — without an explicit
+                        // label VoiceOver reads an unlabeled image (Codex round 3).
+                        .accessibilityLabel(folder.title)
                 }
 
                 if folder.focusGifEnabled, let gifUrl, !gifUrl.isEmpty {
@@ -215,8 +252,31 @@ struct FolderTile: View {
                 guard let resolved, !resolved.isEmpty else { return }
                 fallbackCoverUrl = resolved
             }
+            // BUG-38: independent of the cover-fallback task above (different cache, different
+            // key) — mirrors `HeroLogo`'s own load: a synchronous `ArtworkStore.cached` check
+            // first (so a warm logo never flashes in), then the async fetch.
+            .task(id: titleLogoURL) {
+                guard let titleLogoURL else {
+                    titleLogoImage = nil
+                    return
+                }
+                if let cached = ArtworkStore.cached(titleLogoURL) {
+                    titleLogoImage = cached
+                    return
+                }
+                titleLogoImage = nil
+                if let fetched = try? await ArtworkStore.fetch(titleLogoURL) {
+                    // `ArtworkStore.fetch` deliberately completes shared work even after this
+                    // task is cancelled, so a superseded request can resume here after its
+                    // replacement — never install a stale folder's logo (Codex round 1).
+                    guard !Task.isCancelled, self.titleLogoURL == titleLogoURL else { return }
+                    withAnimation(.easeIn(duration: 0.25)) { titleLogoImage = fetched }
+                }
+            }
 
-            if !folder.hideTitle {
+            // BUG-38: the logo overlay replaces this plain-text name once it loads — the text
+            // stays as the fallback (no logo URL, load failure, or still loading).
+            if !folder.hideTitle && titleLogoImage == nil {
                 Text(folder.title)
                     .font(Theme.Font.cardTitle)
                     .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
@@ -381,6 +441,13 @@ struct FolderDetailView: View {
 }
 
 /// A focusable pill used for the folder's source tabs.
+///
+/// BUG-49: the old hand-rolled label owned its color AND drew its own capsule fill, both blind
+/// to focus — a focused-but-unselected chip painted near-white text on the chip style's
+/// near-white platter, and any label-side fix would still leave the label's own dark capsule
+/// covering that platter. `ChipButtonStyle(selected:)` already resolves fill and label for all
+/// four focus×selection states (accent at rest when selected, white platter + dark label on
+/// focus), so the chip must not override either.
 private struct TabChip: View {
     let label: String
     let isSelected: Bool
@@ -390,13 +457,9 @@ private struct TabChip: View {
         Button(action: action) {
             Text(label)
                 .font(Theme.Font.body)
-                .foregroundStyle(isSelected ? Theme.Palette.background : Theme.Palette.textPrimary)
                 .padding(.horizontal, Theme.Spacing.lg)
                 .padding(.vertical, Theme.Spacing.sm)
-                .background(
-                    Capsule().fill(isSelected ? Theme.Palette.accent : Theme.Palette.surface)
-                )
         }
-        .buttonStyle(.chip)
+        .buttonStyle(.chip(selected: isSelected))
     }
 }
