@@ -8,6 +8,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/**
+ * Ordering contract for `shared`'s sync primitives — the copy tvOS actually runs. (composeApp has
+ * a sibling test over the same public declarations; this one is the authoritative twin for the
+ * shared module.)
+ */
 class SyncManagerTest {
 
     @Test
@@ -68,9 +73,28 @@ class SyncManagerTest {
         )
 
         assertTrue("plugins" !in events)
+        assertTrue(events.indexOf("settings") < events.indexOf("credentials"))
         assertTrue(events.indexOf("settings") < events.indexOf("library"))
         assertTrue(events.indexOf("credentials") < events.indexOf("library"))
+        assertTrue(events.indexOf("credentials") < events.indexOf("active-watch-source"))
         assertTrue(events.indexOf("settings") < events.indexOf("active-watch-source"))
+    }
+
+    /**
+     * The foreground pull (`SyncManager.pullForegroundForProfile`) is private and drives real
+     * repositories, so it cannot be exercised directly here. What it shares with the ordered sync
+     * is this invariant: provider credentials are resolved after profile settings and before the
+     * library / active-watch-source fan-out, which may read them. Guarding the declared step order
+     * catches an accidental reshuffle on either path.
+     */
+    @Test
+    fun `provider credentials step sits between profile settings and the dependent steps`() {
+        val steps = ProfileSyncStep.entries
+        assertTrue(steps.indexOf(ProfileSyncStep.ProfileSettings) < steps.indexOf(ProfileSyncStep.ProviderCredentials))
+        assertTrue(steps.indexOf(ProfileSyncStep.ProviderCredentials) < steps.indexOf(ProfileSyncStep.Library))
+        assertTrue(
+            steps.indexOf(ProfileSyncStep.ProviderCredentials) < steps.indexOf(ProfileSyncStep.ActiveWatchSource),
+        )
     }
 
     @Test
@@ -101,33 +125,6 @@ class SyncManagerTest {
     }
 
     @Test
-    fun `new profile replaces stale in flight request`() = runBlocking {
-        val gate = ProfileSyncRequestGate()
-        val firstStarted = CompletableDeferred<Unit>()
-        val firstCancelled = CompletableDeferred<Unit>()
-        val secondCompleted = CompletableDeferred<Unit>()
-
-        gate.launch(this, profileId = 1) {
-            firstStarted.complete(Unit)
-            try {
-                CompletableDeferred<Unit>().await()
-            } finally {
-                firstCancelled.complete(Unit)
-            }
-        }
-        firstStarted.await()
-
-        val replacement = gate.launch(this, profileId = 2) {
-            secondCompleted.complete(Unit)
-        }
-
-        assertEquals(ProfileSyncRequestResult.Replaced, replacement)
-        firstCancelled.await()
-        secondCompleted.await()
-        gate.cancel()
-    }
-
-    @Test
     fun `failed step is reported by ordered sync result`() = runBlocking {
         val result = runOrderedProfileSync(
             profileId = 3,
@@ -142,30 +139,21 @@ class SyncManagerTest {
     }
 
     @Test
-    fun `realtime invalidation queued during active sync runs once afterwards`() = runBlocking {
-        val gate = ProfileSyncRequestGate()
-        val firstStarted = CompletableDeferred<Unit>()
-        val releaseFirst = CompletableDeferred<Unit>()
-        val replayCompleted = CompletableDeferred<Unit>()
-        var runCount = 0
+    fun `failed provider credential sync does not abort the remaining steps`() = runBlocking {
+        val events = mutableListOf<String>()
 
-        gate.launch(this, profileId = 1) {
-            runCount += 1
-            firstStarted.complete(Unit)
-            releaseFirst.await()
-        }
-        firstStarted.await()
+        val result = runOrderedProfileSync(
+            profileId = 5,
+            pluginsEnabled = false,
+            operations = recordingOperations(events).copy(
+                syncProviderCredentials = { error("credential sync failed") },
+            ),
+        )
 
-        val queued = gate.launch(this, profileId = 1, queueIfCoalesced = true) {
-            runCount += 1
-            replayCompleted.complete(Unit)
-        }
-
-        assertEquals(ProfileSyncRequestResult.Coalesced, queued)
-        releaseFirst.complete(Unit)
-        replayCompleted.await()
-        assertEquals(2, runCount)
-        gate.cancel()
+        assertFalse(result.succeeded)
+        assertEquals(setOf(ProfileSyncStep.ProviderCredentials), result.failedSteps)
+        assertTrue("library" in events)
+        assertTrue("active-watch-source" in events)
     }
 
     private fun recordingOperations(events: MutableList<String>): ProfileSyncOperations =

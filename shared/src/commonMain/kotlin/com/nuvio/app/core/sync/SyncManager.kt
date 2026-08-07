@@ -42,6 +42,9 @@ enum class ProfileSyncStep {
     Addons,
     Plugins,
     ProfileSettings,
+    // Must stay between ProfileSettings and Library: the library/watch-source steps can read
+    // provider credentials, so those have to be resolved first.
+    ProviderCredentials,
     Library,
     ActiveWatchSource,
     Collections,
@@ -52,6 +55,7 @@ data class ProfileSyncOperations(
     val pullAddons: suspend (Int) -> Unit,
     val pullPlugins: suspend (Int) -> Unit,
     val pullProfileSettings: suspend (Int) -> Unit,
+    val syncProviderCredentials: suspend (Int) -> Unit,
     val pullLibrary: suspend (Int) -> Unit,
     val refreshActiveWatchSource: suspend (Int) -> Unit,
     val pullCollections: suspend (Int) -> Unit,
@@ -96,6 +100,7 @@ suspend fun runOrderedProfileSync(
     }
 
     runStep(ProfileSyncStep.ProfileSettings, operations.pullProfileSettings)
+    runStep(ProfileSyncStep.ProviderCredentials, operations.syncProviderCredentials)
 
     coroutineScope {
         launch {
@@ -228,6 +233,7 @@ object SyncManager {
             }
         },
         pullProfileSettings = { profileId -> ProfileSettingsSync.pull(profileId) },
+        syncProviderCredentials = { profileId -> ProviderCredentialSync.syncFromRemote(profileId) },
         pullLibrary = { profileId -> LibraryRepository.pullFromServer(profileId) },
         refreshActiveWatchSource = { profileId ->
             val result = WatchProgressSourceCoordinator.refreshActiveSource(profileId = profileId, force = true)
@@ -349,6 +355,11 @@ object SyncManager {
             .onFailure { log.e(it) { "Foreground profiles pull failed" } }
         runCatching { ProfileSettingsSync.pull(profileId) }
             .onFailure { log.e(it) { "Foreground profile settings pull failed" } }
+        // Sequential, before the parallel fan-out below: the library and watch-source pulls can
+        // read provider credentials, so those must land first (same ordering constraint as
+        // ProfileSyncStep.ProviderCredentials in runOrderedProfileSync).
+        runCatching { ProviderCredentialSync.syncFromRemote(profileId) }
+            .onFailure { log.e(it) { "Foreground provider credential sync failed" } }
 
         coroutineScope {
             launch {

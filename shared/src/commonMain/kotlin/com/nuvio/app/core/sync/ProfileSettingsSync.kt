@@ -85,6 +85,7 @@ object ProfileSettingsSync {
     fun startObserving() {
         if (observeJob?.isActive == true) return
         ensureRepositoriesLoaded()
+        ProviderCredentialSync.startObserving()
         observeLocalChangesAndPush()
     }
 
@@ -92,6 +93,7 @@ object ProfileSettingsSync {
         observeJob?.cancel()
         observeJob = null
         skipNextPushSignature = null
+        ProviderCredentialSync.clearAccountState()
     }
 
     suspend fun pull(profileId: Int): Boolean {
@@ -124,8 +126,16 @@ object ProfileSettingsSync {
                         log.e(error) { "pull(profileId=$profileId) — failed to decode remote settings blob" }
                         return@withLock false
                     }
-                    val remoteSignature = buildSignature(remoteBlob)
-                    if (remoteSignature == localSignature) {
+                    // Compare CREDENTIAL-STRIPPED signatures: the local export is always
+                    // sanitized now, so a legacy remote blob still carrying credentials would
+                    // never compare equal and every foreground pull would re-apply everything +
+                    // fan out onProfileChanged() with nothing changed (Codex round 6). BUT a
+                    // legacy blob that matches on everything else must still APPLY once — that
+                    // apply is the migration path that imports its credentials (see
+                    // preservingLocalProfileCredentials) — so only the credential-free case may
+                    // short-circuit.
+                    val remoteSignature = buildSignature(withoutBlobCredentials(remoteBlob))
+                    if (remoteSignature == localSignature && !blobCarriesCredentials(remoteBlob)) {
                         log.d { "pull(profileId=$profileId) — remote matches local" }
                         return@withLock false
                     }
@@ -194,7 +204,20 @@ object ProfileSettingsSync {
                 isApplyingRemoteBlob = false
             }
 
-            runCatching { pushToRemoteLocked(profileId, exportSettingsBlob()) }
+            // The seeded blob must keep the legacy blob's credentials (see
+            // restoringLegacyCredentials): once this push lands, later pulls never consult the
+            // legacy namespace again, so a credential-stripped seed would leave the in-memory
+            // migration stash as their only copy — one process death away from losing them.
+            val export = exportSettingsBlob()
+            val seeded = export.copy(
+                features = export.features.copy(
+                    playerSettings = restoringLegacyCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, export.features.playerSettings, legacyBlob.features.playerSettings),
+                    debridSettings = restoringLegacyCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, export.features.debridSettings, legacyBlob.features.debridSettings),
+                    tmdbSettings = restoringLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, export.features.tmdbSettings, legacyBlob.features.tmdbSettings),
+                    mdbListSettings = restoringLegacyCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, export.features.mdbListSettings, legacyBlob.features.mdbListSettings),
+                ),
+            )
+            runCatching { pushToRemoteLocked(profileId, seeded) }
                 .onFailure { error ->
                     // Seed push failed — settings applied locally; the next pull retries the
                     // migration (our namespace is still empty), which is safe to repeat.
@@ -264,6 +287,27 @@ object ProfileSettingsSync {
         }
     }
 
+    /**
+     * One-time cleanup completing the legacy credential migration: rewrites a still
+     * credential-bearing remote blob in sanitized form. Without it the carries-credentials
+     * bypass in [pull] re-applies the whole blob (and fans out onProfileChanged()) on EVERY
+     * foreground sync — `skipNextPushSignature` suppresses exactly the observer push that would
+     * otherwise rewrite it (Codex round 9). Called by ProviderCredentialSync ONLY after the
+     * staged legacy credentials have been successfully seeded into provider rows — rewriting any
+     * earlier would delete the credentials' only remote copy while the seed can still fail
+     * (Codex round 10). A failed rewrite is safe: the next pull re-applies + re-stages from the
+     * unchanged blob, the (insert-if-absent) re-seed no-ops, and the rewrite is retried.
+     */
+    internal suspend fun rewriteLegacyBlobSanitized(profileId: Int) {
+        syncMutex.withLock {
+            if (ProfileRepository.activeProfileId != profileId) return@withLock
+            runCatching { pushToRemoteLocked(profileId, exportSettingsBlob()) }
+                .onFailure { error ->
+                    log.w(error) { "rewriteLegacyBlobSanitized(profileId=$profileId) failed — next pull retries" }
+                }
+        }
+    }
+
     private suspend fun pushToRemoteLocked(profileId: Int, blob: MobileProfileSettingsBlob) {
         val params = buildJsonObject {
             put("p_profile_id", profileId)
@@ -282,11 +326,25 @@ object ProfileSettingsSync {
                 themeSettings = ThemeSettingsStoreProvider.store.exportToSyncPayload(),
                 posterCardStyleSettingsPayload = PosterCardStyleStorage.loadPayload().orEmpty().trim(),
                 cardDepthStyleSettingsPayload = CardDepthStyleStorage.loadPayload().orEmpty().trim(),
-                playerSettings = PlayerSettingsStorage.exportToSyncPayload(),
+                // Provider credentials are stripped here and synced per-provider by
+                // ProviderCredentialSync instead — a whole-blob push must never carry them.
+                playerSettings = withoutProfileCredentials(
+                    PROFILE_PLAYER_SETTINGS_FEATURE,
+                    PlayerSettingsStorage.exportToSyncPayload(),
+                ),
                 streamBadgeSettings = StreamBadgeSettingsStorage.exportToSyncPayload(),
-                debridSettings = DebridSettingsStorage.exportToSyncPayload(),
-                tmdbSettings = TmdbSettingsStorage.exportToSyncPayload(),
-                mdbListSettings = MdbListSettingsStorage.exportToSyncPayload(),
+                debridSettings = withoutProfileCredentials(
+                    PROFILE_DEBRID_SETTINGS_FEATURE,
+                    DebridSettingsStorage.exportToSyncPayload(),
+                ),
+                tmdbSettings = withoutProfileCredentials(
+                    PROFILE_TMDB_SETTINGS_FEATURE,
+                    TmdbSettingsStorage.exportToSyncPayload(),
+                ),
+                mdbListSettings = withoutProfileCredentials(
+                    PROFILE_MDBLIST_SETTINGS_FEATURE,
+                    MdbListSettingsStorage.exportToSyncPayload(),
+                ),
                 metaScreenSettingsPayload = MetaScreenSettingsStorage.loadPayload().orEmpty().trim(),
                 collectionMobileSettingsPayload = CollectionMobileSettingsStorage.loadPayload().orEmpty().trim(),
                 continueWatchingSettingsPayload = ContinueWatchingPreferencesStorage.loadPayload().orEmpty().trim(),
@@ -313,6 +371,19 @@ object ProfileSettingsSync {
         val rawFeatures = remoteJson["features"] as? JsonObject ?: return false
         fun has(key: String) = rawFeatures.containsKey(key)
 
+        // Legacy-blob credential migration (Codex rounds 4+7): a pre-split blob may still carry
+        // credentials. They are STRIPPED from every payload applied below (see
+        // preservingLocalProfileCredentials) and staged instead — ProviderCredentialSync applies
+        // them only into true voids (no provider row, blank local), so a provider row's
+        // clear-tombstone is never resurrected and the staged value never reads as a local edit.
+        val legacy = extractLegacyCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, blob.features.playerSettings) +
+            extractLegacyCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, blob.features.debridSettings) +
+            extractLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob.features.tmdbSettings) +
+            extractLegacyCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, blob.features.mdbListSettings)
+        if (legacy.isNotEmpty()) {
+            ProviderCredentialSync.stageLegacyBlobCredentials(ProfileRepository.activeProfileId, legacy)
+        }
+
         if (has("theme_settings")) {
             ThemeSettingsStoreProvider.store.replaceFromSyncPayload(blob.features.themeSettings)
             ThemeSettingsRepository.onProfileChanged()
@@ -329,7 +400,24 @@ object ProfileSettingsSync {
         }
 
         if (has("player_settings")) {
-            PlayerSettingsStorage.replaceFromSyncPayload(blob.features.playerSettings)
+            // Credentials are owned by ProviderCredentialSync: snapshot the local values BEFORE
+            // replaceFromSyncPayload() wipes this feature's keys, then re-assert them over the
+            // remote payload. `introdb_api_key` is not part of exportToSyncPayload(), so it is
+            // carried separately and written back explicitly.
+            val localPlayerSettings = PlayerSettingsStorage.exportToSyncPayload()
+            val localIntroDbApiKey = PlayerSettingsStorage.loadIntroDbApiKey()
+            PlayerSettingsStorage.replaceFromSyncPayload(
+                preservingLocalProfileCredentials(
+                    PROFILE_PLAYER_SETTINGS_FEATURE,
+                    blob.features.playerSettings,
+                    localPlayerSettings,
+                ),
+            )
+            // Blank local = "no credential" (same rule as preservingLocalProfileCredentials):
+            // re-saving a blank here would clobber an IntroDB key the replace just imported from
+            // a legacy remote blob — the one place that key can come back from on an upgraded
+            // fresh install (Codex round 6).
+            localIntroDbApiKey?.takeUnless(String::isBlank)?.let(PlayerSettingsStorage::saveIntroDbApiKey)
             PlayerSettingsRepository.onProfileChanged()
         }
 
@@ -339,17 +427,35 @@ object ProfileSettingsSync {
         }
 
         if (has("debrid_settings")) {
-            DebridSettingsStorage.replaceFromSyncPayload(blob.features.debridSettings)
+            DebridSettingsStorage.replaceFromSyncPayload(
+                preservingLocalProfileCredentials(
+                    PROFILE_DEBRID_SETTINGS_FEATURE,
+                    blob.features.debridSettings,
+                    DebridSettingsStorage.exportToSyncPayload(),
+                ),
+            )
             DebridSettingsRepository.onProfileChanged()
         }
 
         if (has("tmdb_settings")) {
-            TmdbSettingsStorage.replaceFromSyncPayload(blob.features.tmdbSettings)
+            TmdbSettingsStorage.replaceFromSyncPayload(
+                preservingLocalProfileCredentials(
+                    PROFILE_TMDB_SETTINGS_FEATURE,
+                    blob.features.tmdbSettings,
+                    TmdbSettingsStorage.exportToSyncPayload(),
+                ),
+            )
             TmdbSettingsRepository.onProfileChanged()
         }
 
         if (has("mdblist_settings")) {
-            MdbListSettingsStorage.replaceFromSyncPayload(blob.features.mdbListSettings)
+            MdbListSettingsStorage.replaceFromSyncPayload(
+                preservingLocalProfileCredentials(
+                    PROFILE_MDBLIST_SETTINGS_FEATURE,
+                    blob.features.mdbListSettings,
+                    MdbListSettingsStorage.exportToSyncPayload(),
+                ),
+            )
             MdbListMetadataService.clearCache()
             MdbListSettingsRepository.onProfileChanged()
         }
@@ -405,6 +511,24 @@ object ProfileSettingsSync {
 
     private fun buildSignature(blob: MobileProfileSettingsBlob): String =
         json.encodeToString(MobileProfileSettingsBlob.serializer(), blob)
+
+    // The four credential-bearing features, stripped — for signature comparison only (the
+    // unstripped blob must still be the one applied, or legacy credentials never migrate).
+    private fun withoutBlobCredentials(blob: MobileProfileSettingsBlob): MobileProfileSettingsBlob =
+        blob.copy(
+            features = blob.features.copy(
+                playerSettings = withoutProfileCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, blob.features.playerSettings),
+                debridSettings = withoutProfileCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, blob.features.debridSettings),
+                tmdbSettings = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob.features.tmdbSettings),
+                mdbListSettings = withoutProfileCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, blob.features.mdbListSettings),
+            ),
+        )
+
+    private fun blobCarriesCredentials(blob: MobileProfileSettingsBlob): Boolean =
+        blob.features.playerSettings != withoutProfileCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, blob.features.playerSettings) ||
+            blob.features.debridSettings != withoutProfileCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, blob.features.debridSettings) ||
+            blob.features.tmdbSettings != withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob.features.tmdbSettings) ||
+            blob.features.mdbListSettings != withoutProfileCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, blob.features.mdbListSettings)
 
     private fun currentObservedStateSignature(): String = listOf(
         "theme=${ThemeSettingsRepository.selectedTheme.value.name}",
