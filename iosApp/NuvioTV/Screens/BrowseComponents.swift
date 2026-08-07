@@ -319,6 +319,13 @@ struct CatalogRowView: View {
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
 
+    /// H3 hardening (BUG-47): the previous version fired-and-forgot a detached `Task` per
+    /// expansion. A rapid re-focus while one was still mid-flight (the 450ms deferred correction
+    /// pass) left it running loose against a `proxy`/row that could already be torn down by a pop —
+    /// scrolling into a `ScrollViewReader` whose `ScrollView` no longer exists. Tracking the task
+    /// lets a new expansion supersede the old one and lets `.onDisappear` cancel it outright.
+    @State private var expansionScrollTask: Task<Void, Never>?
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             // Classic keeps the title as a plain sibling above the shelf. PINNED mode instead
@@ -419,6 +426,10 @@ struct CatalogRowView: View {
         .onChange(of: focusedItemId) { _, newId in
             onItemFocusChange?(newId.flatMap { id in section.items.first { $0.id == id } })
         }
+        // H3: the row (and its ScrollViewReader) can disappear mid-flight — a pop while the
+        // deferred 450ms correction pass is still pending. Cancel rather than let it fire against
+        // a torn-down proxy.
+        .onDisappear { expansionScrollTask?.cancel() }
     }
 
     /// Portrait poster by default; a 16:9 landscape card when the user enables landscape catalog
@@ -453,9 +464,19 @@ struct CatalogRowView: View {
         // viewport (no geometry read needed), and every other item gets a correction pass
         // AFTER the 0.35s morph settles, when scrollTo finally sees the expanded frame.
         let anchor: UnitPoint? = itemId == section.items.last?.id ? .trailing : nil
-        Task { @MainActor in
+        // H3: supersede any still-pending correction pass from a previous expansion rather than
+        // letting both race the same proxy.
+        expansionScrollTask?.cancel()
+        if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged fire item=\(itemId)") }
+        expansionScrollTask = Task { @MainActor in
             scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
             try? await Task.sleep(nanoseconds: 450_000_000)
+            // H3: the row may have disappeared (or a newer expansion may have superseded this
+            // task) during the sleep — bail instead of scrolling a proxy that could be gone.
+            guard !Task.isCancelled else {
+                if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged cancelled skip item=\(itemId)") }
+                return
+            }
             scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
         }
     }

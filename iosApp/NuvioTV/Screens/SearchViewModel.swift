@@ -61,12 +61,20 @@ final class SearchViewModel: ObservableObject {
     private var debounce: Task<Void, Never>?
     private var started = false
 
+    /// H2 hardening (BUG-47), mirrors `CatalogGridViewModel.stopped`: `FlowWatcher.cancel()`'s
+    /// cancellation is cooperative, so a resume already queued on the main run loop can deliver one
+    /// more value to a callback AFTER `stop()` returns, driving `@Published` mutations into a view
+    /// mid-pop. One flag for all four watchers — they're always started and stopped together.
+    private var stopped = false
+
     func start() {
         guard !started else { return }
         started = true
+        stopped = false
 
         searchWatcher = FlowWatcherKt.watch(SearchRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let state = emitted as? SearchUiState else { return }
+            guard let self, !self.stopped else { return }
+            guard let state = emitted as? SearchUiState else { return }
             self.isLoading = state.isLoading
             self.sections = state.sections
             self.emptyMessage = state.sections.isEmpty && !state.isLoading && state.emptyStateReason != nil
@@ -76,18 +84,21 @@ final class SearchViewModel: ObservableObject {
         }
 
         discoverWatcher = FlowWatcherKt.watch(SearchRepository.shared.discoverUiState) { [weak self] emitted in
-            guard let self, let state = emitted as? DiscoverUiState else { return }
+            guard let self, !self.stopped else { return }
+            guard let state = emitted as? DiscoverUiState else { return }
             self.discover = state
         }
 
         historyWatcher = FlowWatcherKt.watch(SearchHistoryRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let items = emitted as? [String] else { return }
+            guard let self, !self.stopped else { return }
+            guard let items = emitted as? [String] else { return }
             self.history = items
         }
         SearchHistoryRepository.shared.ensureLoaded()
 
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let state = emitted as? AddonsUiState else { return }
+            guard let self, !self.stopped else { return }
+            guard let state = emitted as? AddonsUiState else { return }
             self.enabledAddons = AddonModelsKt.enabledAddons(state.addons)
             self.refreshDiscoverIfNeeded()
         }
@@ -96,6 +107,8 @@ final class SearchViewModel: ObservableObject {
     }
 
     func stop() {
+        // H2: flip first, before tearing down the watchers — see the `stopped` doc comment.
+        stopped = true
         debounce?.cancel()
         addonWatcher?.cancel()
         searchWatcher?.cancel()

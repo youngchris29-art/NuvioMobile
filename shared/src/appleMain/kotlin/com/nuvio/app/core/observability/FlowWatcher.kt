@@ -1,6 +1,7 @@
 package com.nuvio.app.core.observability
 
 import co.touchlab.kermit.Logger
+import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,7 +34,7 @@ class FlowWatcher internal constructor(
     flow: Flow<*>,
     onEach: (Any?) -> Unit,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + uncaughtCoroutineLogger("FlowWatcher"))
 
     init {
         scope.launch {

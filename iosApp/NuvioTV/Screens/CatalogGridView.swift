@@ -16,6 +16,7 @@ struct CatalogGridView: View {
     }
 
     @Environment(\.posterStyle) private var posterStyle
+    @Environment(\.dismiss) private var dismiss
 
     private var columns: [GridItem] {
         [GridItem(
@@ -66,24 +67,31 @@ struct CatalogGridView: View {
 
     @ViewBuilder
     private var stateView: some View {
-        if model.isLoading {
-            HStack(spacing: Theme.Spacing.md) {
-                ProgressView()
-                Text("Loading\u{2026}")
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            if model.isLoading {
+                HStack(spacing: Theme.Spacing.md) {
+                    ProgressView()
+                    Text("Loading\u{2026}")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+            } else if let message = model.errorMessage {
+                Text(message)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.accent)
+            } else {
+                Text("No titles here yet.")
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
-            .padding(.vertical, Theme.Spacing.sectionGap)
-        } else if let message = model.errorMessage {
-            Text(message)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.accent)
-                .padding(.vertical, Theme.Spacing.sectionGap)
-        } else {
-            Text("No titles here yet.")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .padding(.vertical, Theme.Spacing.sectionGap)
+
+            // A pushed screen with no focusable content strands focus on the ancestor
+            // tab bar, where Menu exits the app instead of popping this screen
+            // (observed on tvOS 27; BUG-47's "crash to the home screen"). Keeping a
+            // focusable control in every non-grid state pins focus inside this screen
+            // so Menu always pops.
+            Button("Go Back") { dismiss() }
         }
+        .padding(.vertical, Theme.Spacing.sectionGap)
     }
 }

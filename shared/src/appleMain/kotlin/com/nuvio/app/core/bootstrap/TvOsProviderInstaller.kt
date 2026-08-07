@@ -197,6 +197,13 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         PlayerLaunchStore.clear()
         StreamLaunchStore.clear()
         StreamContextStore.clear()
+        // In-memory sync bookkeeping is account-scoped too: cascades into
+        // ProviderCredentialSync.clearAccountState(), whose legacy-migration stash is keyed by
+        // profile ID only — left alive, a stash staged before sign-out could seed the NEXT
+        // account's same-numbered profile with the previous account's credentials (Codex round
+        // 13; the Compose cleaner already does this). Observation restarts on the next
+        // ProfileSettingsSync.startObserving() from the sign-in path.
+        ProfileSettingsSync.clearAccountState()
 
         // 2) Persisted keys for every profile slot, from the shared registry.
         val defaults = NSUserDefaults.standardUserDefaults
@@ -305,6 +312,12 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("streamBadges") { StreamBadgeSettingsRepository.onProfileChanged() }
         step("homeCatalogSettings") { HomeCatalogSettingsRepository.onProfileChanged() }
         step("home") { HomeRepository.clear() }
+        // H1 (BUG-47/UX-13) made the See All grid's pop RETAIN CatalogRepository state (detach()
+        // instead of clear()) so a detail round trip restores position. That retention must not
+        // survive a profile switch: without this step the next profile opening the same
+        // CatalogTarget hits load()'s same-request early-return and sees the previous profile's
+        // items (Codex round 3).
+        step("catalog") { CatalogRepository.clear() }
         step("metaScreenSettings") { MetaScreenSettingsRepository.onProfileChanged() }
         step("continueWatchingPreferences") { ContinueWatchingPreferencesRepository.onProfileChanged() }
         step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
