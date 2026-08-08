@@ -8,12 +8,13 @@ import SwiftUI
 /// `.buttonStyle(.borderless)` — on tvOS the borderless style gives the lockup the native focus
 /// treatment (lift, real Siri-Remote-tracking parallax, specular highlight, shadow).
 ///
-/// BUG-36 (beta.10 regression, tester verdict): the focus treatment now hangs off the WHOLE card —
-/// artwork *and* caption — instead of the artwork container alone. Focus used to "zoom only the
-/// inside of the artwork" (the lift landed inside BUG-31's `.clipped()` layer, so the tile's own
-/// edge never moved) and the focused title could disappear behind the lifted artwork. Both
-/// symptoms are structural, and both are fixed by where the treatment is attached, not by tuning
-/// numbers — see `CardFocusTreatment`.
+/// BUG-36 (beta.10 regression, tester verdict): focus used to "zoom only the inside of the
+/// artwork" (the lift landed inside BUG-31's `.clipped()` layer, so the tile's own edge never
+/// moved) and the focused title could disappear behind the lifted artwork. BUG-36's fix hung the
+/// treatment off the WHOLE card; BUG-54 then found the system effect draws its standing platter at
+/// the attached view's bounds — a visible border around artwork + caption on every card — so the
+/// default mode's effect is back on the artwork container with structural guards for both BUG-36
+/// symptoms. See `CardFocusTreatment`, `CardArtworkSystemLift` and `CardCaptionFocusDrop`.
 ///
 /// ```swift
 /// NavigationLink(value: route) { PosterCard(title: item.name, imageURL: item.poster) }
@@ -159,10 +160,10 @@ enum CardFocusMode {
 /// tile. It is now strictly interior to whatever scales, so it crops instead of capturing the lift.
 ///
 /// What scales, per mode:
-/// - `.systemLift` — the whole lockup. `.contentShape(.hoverEffect, CardArtworkShape)` keeps the
-///   platter/specular geometry pinned to the ARTWORK's rounded rect (BUG-31/BUG-25: never let it
-///   fall back to a system rect that extends past the artwork) while the effect itself is attached
-///   to the card, so the caption rides along with the lift instead of standing still under it.
+/// - `.systemLift` — handled at the ARTWORK, not here (BUG-54): the system effect's standing
+///   platter follows the attached view's bounds, so lockup attachment drew a platter around
+///   artwork + caption on every card. See `CardArtworkSystemLift` / `CardCaptionFocusDrop` for
+///   how BUG-36's symptoms stay fixed under artwork attachment.
 /// - `.manualScale` — the whole lockup, via `.scaleEffect`. Same magnitude as before, one level
 ///   up. Reduce Motion is honored explicitly here (the system lift respects it automatically, a
 ///   manual `.scaleEffect` does not) by skipping the animation and snapping straight to the
@@ -188,9 +189,14 @@ struct CardFocusTreatment: ViewModifier {
     func body(content: Content) -> some View {
         switch mode {
         case .systemLift:
+            // BUG-54: nothing happens at the lockup level in this mode anymore. The system hover
+            // effect draws its standing platter at the BOUNDS of the view it's attached to — the
+            // custom `CardArtworkShape` passed to `.contentShape(.hoverEffect, …)` here did not
+            // constrain it (device + sim, 2026-08-08) — so hanging the effect off the lockup put a
+            // visible platter around artwork AND caption on every card, focused or not. The effect
+            // now lives on the artwork container (`CardArtworkSystemLift`), whose bounds are the
+            // artwork, and the caption follows the lift via `CardCaptionFocusDrop`.
             content
-                .contentShape(.hoverEffect, artworkShape)
-                .hoverEffect(.highlight)
         case .manualScale:
             content
                 .scaleEffect(isFocused ? cardRingLiftScale : 1)
@@ -220,6 +226,73 @@ struct CardFocusTreatment: ViewModifier {
     /// Near-white at partial opacity reads as the system's own highlight edge at 10 feet without
     /// impersonating the ring.
     private var stillHighlight: Color { Color.white.opacity(0.85) }
+}
+
+/// BUG-54 (beta.11 device regression, found by Christian): the system focus treatment, back on the
+/// ARTWORK container — where beta.10 had it — instead of the whole lockup.
+///
+/// BUG-36 moved `.hoverEffect(.highlight)` up to the lockup so the caption would travel with the
+/// lift, trusting `.contentShape(.hoverEffect, CardArtworkShape)` to keep the drawn treatment
+/// artwork-shaped. It doesn't: the effect's standing platter follows the attached view's BOUNDS
+/// (the custom shape is ignored for it), so every card grew a visible platter/outline wrapping
+/// poster *and* title — at rest, not just focused (device video + tvOS 26.5 sim, 2026-08-08).
+/// Attaching the effect to the artwork container makes bounds == artwork again, and the opaque
+/// poster hides the platter exactly as it did in beta.10.
+///
+/// BUG-36's two symptoms stay structurally fixed without the lockup attachment:
+/// - Frozen tile edge ("zoom only the inside of the artwork"): the `.compositingGroup()` flattens
+///   the clipped artwork (image, `.clipped()`, corner clip, depth overlay) into a single layer
+///   BEFORE the hover effect sees it, so the lift can only transform the whole flattened tile —
+///   there is no interior hierarchy left for it to land on. beta.10 lacked this, and on hardware
+///   the lift reached the image inside the clip while the tile edge stood still.
+/// - Caption hidden under the lifted artwork: the caption no longer stands still — see
+///   `CardCaptionFocusDrop` below.
+///
+/// Only `.systemLift` needs any of this; the other modes keep the whole-lockup treatment in
+/// `CardFocusTreatment` (they draw artwork-shaped visuals themselves and produce no platter).
+struct CardArtworkSystemLift: ViewModifier {
+    let mode: CardFocusMode
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if case .systemLift = mode {
+            content
+                .compositingGroup()
+                // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so
+                // the lift can't fall back to a system rect that extends past the artwork.
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
+                .hoverEffect(.highlight)
+        } else {
+            content
+        }
+    }
+}
+
+/// BUG-54 companion: in `.systemLift` mode the caption sits OUTSIDE the hover-effect view again,
+/// so the system lift no longer moves it. Instead of standing still under the lifted artwork
+/// (BUG-36's second symptom), the focused caption slides down by the lift's bottom expansion —
+/// half of the scale delta over the artwork height, the same arithmetic `cardRingLiftScale`
+/// approximates for ring mode — which keeps the artwork↔title gap visually constant and matches
+/// the native TV-app caption behavior. `.offset` is render-only, so row layout never reflows.
+/// Other modes return 0: manual scale carries the caption inside the scaled lockup, still mode
+/// never moves anything.
+struct CardCaptionFocusDrop: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let mode: CardFocusMode
+    let isFocused: Bool
+    let artworkHeight: CGFloat
+
+    private var drop: CGFloat {
+        guard case .systemLift = mode, isFocused else { return 0 }
+        return (cardRingLiftScale - 1) / 2 * artworkHeight
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .offset(y: drop)
+            // Reduce Motion: snap, don't animate — same contract as CardFocusTreatment.
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: drop)
+    }
 }
 
 /// FEAT-14: the ring's draw color, factored out of the two call sites below so they can't drift
@@ -293,6 +366,10 @@ struct PosterCard: View {
                             .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
                     }
                 }
+                // BUG-54: in systemLift mode the hover effect hangs HERE, on the artwork container,
+                // so its standing platter (drawn at the attached view's bounds) stays hidden behind
+                // the opaque poster instead of wrapping the caption too. No-op in other modes.
+                .modifier(CardArtworkSystemLift(mode: focusMode, cornerRadius: style.cornerRadius))
 
             if titleVisible {
                 Text(title)
@@ -302,6 +379,11 @@ struct PosterCard: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: resolvedWidth, alignment: .leading)
+                    // BUG-54: the caption follows the system lift's bottom edge — see
+                    // `CardCaptionFocusDrop`.
+                    .modifier(CardCaptionFocusDrop(
+                        mode: focusMode, isFocused: isFocused, artworkHeight: resolvedHeight
+                    ))
             }
         }
         // BUG-36: the focus treatment belongs to the WHOLE card — artwork, ring and caption lift
@@ -390,6 +472,9 @@ struct LandscapeCard: View {
                         .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
                 }
             }
+            // BUG-54: systemLift hover lives on the artwork/progress-bar group — bounds == artwork,
+            // platter hidden behind it. See `PosterCard`'s copy and `CardArtworkSystemLift`.
+            .modifier(CardArtworkSystemLift(mode: focusMode, cornerRadius: style.cornerRadius))
 
             if titleVisible {
                 Text(title)
@@ -399,6 +484,10 @@ struct LandscapeCard: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: width, alignment: .leading)
+                    // BUG-54: caption follows the lift — see `CardCaptionFocusDrop`.
+                    .modifier(CardCaptionFocusDrop(
+                        mode: focusMode, isFocused: isFocused, artworkHeight: height
+                    ))
             }
         }
         // BUG-36: whole-card focus treatment — artwork, progress bar, ring and caption move (or
