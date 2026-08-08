@@ -125,7 +125,18 @@ struct FolderTile: View {
 
     /// Resolved logo URL, or nil when the folder has none (blank/whitespace-only counts as
     /// absent, same trimming rule the cover/emoji checks below use).
+    ///
+    /// Also nil when the folder has its OWN cover (2026-08-08 device pass regression): service
+    /// folders ship covers with the wordmark baked in — and upstream never renders titleLogoUrl
+    /// anywhere — so overlaying the logo doubles the wordmark (filmed: prime video / Disney+ /
+    /// HBO Max all twice on the Services row). The overlay exists to name a tile whose artwork
+    /// doesn't name itself: genre DISCOVER folders (no cover — the tiles BUG-38 was filed about)
+    /// and resolved first-item-art fallbacks keep it; explicit covers suppress it. Gated HERE,
+    /// not at the render site, so the fetch task never loads the image and the plain-text title
+    /// below (`titleLogoImage == nil`) stays visible on suppressed tiles.
     private var titleLogoURL: URL? {
+        let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !(ownCover?.isEmpty ?? true) { return nil }
         guard let raw = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return nil }
         return URL(string: raw)
