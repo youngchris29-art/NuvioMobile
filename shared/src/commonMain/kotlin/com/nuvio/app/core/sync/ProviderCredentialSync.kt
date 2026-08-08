@@ -87,6 +87,21 @@ object ProviderCredentialSync {
      * spellings are NOT mechanical ("debrid_real_debrid_api_key" ↔ "realdebrid"), so this map is
      * explicit and mirrors `ProfileSettingsCredentialPolicy.profileCredentialKeys`.
      */
+    /**
+     * Providers the Nuvio backend refuses in `sync_push_provider_credentials` /
+     * `sync_seed_provider_credentials` payloads. The RPC validates the WHOLE snapshot and rejects
+     * the entire call over one unknown provider (Postgres 22023 "Unsupported provider credential:
+     * debrid:alldebrid", observed live 2026-08-08 on the beta.11 device pass — every push from a
+     * device holding an AllDebrid key failed, so nothing synced at all). AllDebrid is a fork-only
+     * provider (FEAT-6); until the backend learns it, its credential stays device-local. Filtered
+     * at the serialization boundary only: local snapshots still carry it, so change detection and
+     * `applySnapshot` are untouched (a remote snapshot can never contain it, and apply only writes
+     * providers present in the payload, so the local key is never blanked).
+     */
+    private val BACKEND_UNSUPPORTED_PROVIDERS = setOf(
+        ProviderCredentialIds.debrid(DebridProviders.ALLDEBRID_ID),
+    )
+
     private val legacyStorageKeyToProvider = mapOf(
         "tmdb_api_key" to ProviderCredentialIds.TMDB,
         "mdblist_api_key" to ProviderCredentialIds.MDBLIST,
@@ -143,7 +158,12 @@ object ProviderCredentialSync {
                 val baseline = baselineSnapshots.getOrPut(credentialScope) {
                     observedSnapshots[profileId] ?: localSnapshot
                 }
-                credentialScope in pendingScopes || baseline != localSnapshot
+                // Syncable subset only (Codex round 3, 2026-08-08): a device-local-only edit
+                // (BACKEND_UNSUPPORTED_PROVIDERS) must not read as dirty here either, or this
+                // foreground path fires the very whole-snapshot push the handleLocalSnapshot
+                // guard suppressed.
+                credentialScope in pendingScopes ||
+                    baseline.syncableSubset() != localSnapshot.syncableSubset()
             }
             if (shouldPush) {
                 // Upstream-faithful (24971f4a) and knowingly imperfect: the push serializes EVERY
@@ -202,28 +222,44 @@ object ProviderCredentialSync {
             val rows = pullRows(profileId)
             requireCurrentScope(credentialScope)
             val remoteSnapshot = localSnapshot.mergeRemote(rows)
-            val applied = remoteSnapshot != localSnapshot
+            // Staged credentials for BACKEND_UNSUPPORTED_PROVIDERS never ride the seed (filtered
+            // from every outbound payload), so no provider row exists for the pull to return —
+            // yet the success bookkeeping below consumes the stash and sanitizes the legacy blob,
+            // which held the only copy. Apply them LOCALLY instead, folded into the snapshot
+            // `applySnapshot` writes (so the write happens under `isApplyingRemote` and the
+            // baselines below include the value — no spurious follow-up push). Void-fill only,
+            // mirroring the seed's insert-if-absent semantics: a real local credential wins over
+            // a staged legacy one (Codex review, 2026-08-08 device-pass session).
+            val unsupportedStaged = stagedByProvider.filterKeys { it in BACKEND_UNSUPPORTED_PROVIDERS }
+            val mergedSnapshot = if (unsupportedStaged.isEmpty()) remoteSnapshot else remoteSnapshot.copy(
+                values = remoteSnapshot.values.map { slot ->
+                    val legacy = unsupportedStaged[slot.provider]
+                    if (legacy != null && slot.value.isBlank()) slot.copy(value = legacy) else slot
+                },
+            )
+            val applied = mergedSnapshot != localSnapshot
             if (applied) {
                 isApplyingRemote = true
                 try {
-                    applySnapshot(remoteSnapshot, credentialScope)
+                    applySnapshot(mergedSnapshot, credentialScope)
                 } finally {
                     isApplyingRemote = false
                 }
             }
             requireCurrentScope(credentialScope)
             synchronized(stateLock) {
-                observedSnapshots[profileId] = remoteSnapshot
-                baselineSnapshots[credentialScope] = remoteSnapshot
+                observedSnapshots[profileId] = mergedSnapshot
+                baselineSnapshots[credentialScope] = mergedSnapshot
                 pendingScopes.remove(credentialScope)
-                // Migration round-trip succeeded (seed + pull) — the staged values now live in
-                // provider rows, so the stash can go and the legacy blob may be sanitized.
+                // Migration round-trip succeeded (seed + pull, unsupported providers applied
+                // locally above) — every staged value now lives in a provider row or the local
+                // store, so the stash can go and the legacy blob may be sanitized.
                 legacyBlobCredentials.remove(profileId)
             }
             if (staged.isNotEmpty()) {
                 ProfileSettingsSync.rewriteLegacyBlobSanitized(profileId)
             }
-            log.d { "Synchronized ${remoteSnapshot.values.size} credentials for profile $profileId applied=$applied" }
+            log.d { "Synchronized ${mergedSnapshot.values.size} credentials for profile $profileId applied=$applied" }
             applied
         } catch (error: CancellationException) {
             throw error
@@ -262,6 +298,7 @@ object ProviderCredentialSync {
         put("p_profile_id", snapshot.profileId)
         put("p_credentials", buildJsonArray {
             snapshot.values.forEach { credential ->
+                if (credential.provider in BACKEND_UNSUPPORTED_PROVIDERS) return@forEach
                 add(buildJsonObject {
                     put("provider", credential.provider)
                     put("credential_json", credential.credentialJson())
@@ -381,11 +418,16 @@ object ProviderCredentialSync {
                 }
                 return@withLock
             }
-            if (previous == snapshot) return@withLock
+            // Compare only what a push can carry: BACKEND_UNSUPPORTED_PROVIDERS are device-local
+            // by construction, so an edit touching ONLY them must not trigger a push — under
+            // upstream's push-before-pull, a stale device pushing its whole (unchanged-remote)
+            // snapshot over newer remote keys is exactly the overwrite race, widened to fire off
+            // a credential that never even syncs (Codex round 2, 2026-08-08 device-pass session).
+            if (previous.syncableSubset() == snapshot.syncableSubset()) return@withLock
             val baseline = synchronized(stateLock) {
                 baselineSnapshots.getOrPut(credentialScope) { previous }
             }
-            if (baseline == snapshot) return@withLock
+            if (baseline.syncableSubset() == snapshot.syncableSubset()) return@withLock
 
             try {
                 pushSnapshot(snapshot)
@@ -404,6 +446,15 @@ object ProviderCredentialSync {
             }
         }
     }
+
+    /**
+     * The snapshot minus [BACKEND_UNSUPPORTED_PROVIDERS] — i.e. exactly what a push/seed payload
+     * can carry after [credentialParams] filtering. Dirty/baseline comparisons use this so a
+     * device-local-only edit never fires a network push; the STORED snapshots keep the full value
+     * list (the local-only credential still participates in apply/merge bookkeeping).
+     */
+    private fun ProviderCredentialSnapshot.syncableSubset(): ProviderCredentialSnapshot =
+        copy(values = values.filter { it.provider !in BACKEND_UNSUPPORTED_PROVIDERS })
 
     private fun currentScope(profileId: Int): ProviderCredentialScope? {
         val state = AuthRepository.state.value as? AuthState.Authenticated ?: return null
