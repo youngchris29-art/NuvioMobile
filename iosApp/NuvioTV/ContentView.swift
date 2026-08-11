@@ -60,7 +60,7 @@ struct ContentView: View {
             // error and returns false; a declared scheme with no installed handler returns
             // false silently — so this output distinguishes plist problems from the target
             // player simply not registering its URL scheme on tvOS.
-            for scheme in ["infuse", "vlc-x-callback", "outplayer"] {
+            for scheme in ["infuse", "vlc-x-callback", "outplayer", "open-vidhub"] {
                 if let url = URL(string: "\(scheme)://") {
                     print("[ExtPlayerProbe] canOpenURL(\(scheme)://) = \(UIApplication.shared.canOpenURL(url))")
                 }

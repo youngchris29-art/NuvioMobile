@@ -60,8 +60,26 @@ private val iosExternalPlayerSpecs = listOf(
         id = "vidhub",
         name = "VidHub",
         scheme = "open-vidhub",
+        // FEAT-21 (beta.12): modernized from the legacy `/open` method to `/play` — the only
+        // method VidHub's integration docs list as supporting Apple TV (they also cover Mac,
+        // iPhone/iPad, Android; /open is Apple-legacy-only). /play adds `filename`, `position`
+        // (seconds), and `sub`, which /open lacked for the title, so the handoff now carries
+        // the same metadata Infuse gets.
         buildUrl = { request ->
-            "open-vidhub://x-callback-url/open?url=${request.sourceUrl.urlQueryEncode()}"
+            buildString {
+                append("open-vidhub://x-callback-url/play?url=")
+                append(request.sourceUrl.urlQueryEncode())
+                append("&filename=")
+                append(request.buildPlayerTitle(includeEpisodeTitle = true).urlQueryEncode())
+                if (request.resumePositionMs > 0) {
+                    append("&position=")
+                    append(request.resumePositionMs / 1000)
+                }
+                request.subtitles?.firstOrNull()?.let { subtitle ->
+                    append("&sub=")
+                    append(subtitle.url.urlQueryEncode())
+                }
+            }
         },
     ),
 )

@@ -215,7 +215,12 @@ object MetaDetailsRepository {
         _uiState.value = MetaDetailsUiState()
     }
 
-    suspend fun fetch(type: String, id: String): MetaDetails? {
+    // Upstream ccc6b87d (beta.12 port): `cacheResult = false` lets BULK callers (badge
+    // resolution, episode-release sweeps — neither built on tvOS yet) resolve metadata without
+    // permanently caching every item they touch. The default preserves existing behavior for
+    // every current caller; ported now so shared/ stays in sync for when either bulk feature
+    // lands here.
+    suspend fun fetch(type: String, id: String, cacheResult: Boolean = true): MetaDetails? {
         val requestKey = MetaRequestResolution.requestKey(type, id)
         cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
 
@@ -227,13 +232,17 @@ object MetaDetailsRepository {
                 tryFetchMeta(manifest, type, metaLookupId, includeMdbList = false)
             }
             if (result != null) {
-                cachedMetaByRequestKey[requestKey] = CachedMetaEntry(baseMeta = result)
+                if (cacheResult) {
+                    cachedMetaByRequestKey[requestKey] = CachedMetaEntry(baseMeta = result)
+                }
                 return result
             }
         }
 
         return tryFetchTmdbFallbackMeta(type = type, id = id)?.also { result ->
-            cachedMetaByRequestKey[requestKey] = CachedMetaEntry(baseMeta = result)
+            if (cacheResult) {
+                cachedMetaByRequestKey[requestKey] = CachedMetaEntry(baseMeta = result)
+            }
         }
     }
 

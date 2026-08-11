@@ -605,7 +605,7 @@ final class InlineTrailerCardModel: ObservableObject {
     private func fetchMeta(type: String, id: String) async -> MetaDetails? {
         await withCheckedContinuation { continuation in
             let latch = ResumeLatch<MetaDetails>(continuation)
-            MetaDetailsRepository.shared.fetch(type: type, id: id) { details, _ in
+            MetaDetailsRepository.shared.fetch(type: type, id: id, cacheResult: true) { details, _ in
                 // Suspend completions can land off-main; hop before touching the latch.
                 DispatchQueue.main.async { latch.settle(details) }
             }

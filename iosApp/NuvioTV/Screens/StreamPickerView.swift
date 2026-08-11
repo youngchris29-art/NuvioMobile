@@ -55,8 +55,9 @@ struct StreamPickerView: View {
     @State private var didAutoExpand = false
     /// External players installed on this Apple TV (FEAT-5). Probed once per appearance via the
     /// shared `ExternalPlayerPlatform` — `canOpenURL` only returns true for schemes declared in
-    /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer), so testers without
-    /// any of them installed never see the handoff option at all. Empty ⇒ no menu is attached.
+    /// Info.plist's `LSApplicationQueriesSchemes` (Infuse, VLC, Outplayer, VidHub as of FEAT-21),
+    /// so testers without any of them installed never see the handoff option at all. Empty ⇒ no
+    /// menu is attached.
     @State private var externalPlayers: [ExternalPlayerApp] = []
     /// User-chosen default player (Settings → Playback → Default Player). Empty = built-in.
     /// Same device-local key `DefaultPlayerRow` writes; validated against the live probe below
@@ -117,7 +118,7 @@ struct StreamPickerView: View {
     private func fetchEpisodesIfNeeded() {
         guard episodes.isEmpty, fetchedEpisodes.isEmpty,
               ["series", "tv", "show", "tvshow"].contains(type.lowercased()) else { return }
-        MetaDetailsRepository.shared.fetch(type: type, id: parentMetaId) { details, _ in
+        MetaDetailsRepository.shared.fetch(type: type, id: parentMetaId, cacheResult: true) { details, _ in
             let videos = details?.videos ?? []
             guard !videos.isEmpty else { return }
             // Suspend completions can land off-main; hop before mutating view state.
@@ -631,17 +632,34 @@ struct StreamPickerView: View {
 
     /// Builds the shared playback request and opens the target player via its x-callback-url
     /// scheme. Title/season/episode feed `buildPlayerTitle()` so Infuse shows
-    /// "Show — S02E05" instead of a bare debrid CDN filename. Subtitles are omitted for now:
-    /// the addon-subtitle URLs live player-side and Infuse fetches its own — revisit if
-    /// testers ask. Must run on the main thread (UIApplication.open under the hood).
+    /// "Show — S02E05" instead of a bare debrid CDN filename. Must run on the main thread
+    /// (UIApplication.open under the hood).
+    ///
+    /// FEAT-21 (beta.12): the handoff now carries what the internal player would use —
+    /// `resumePositionMs` from the same `progressForVideo` lookup MPV's resume path runs (same
+    /// >10s floor, completed entries excluded), and the stream's addon subtitles, so players
+    /// whose URL builders consume `sub`/`position` (VidHub `/play`, Infuse, VLC) resume and
+    /// subtitle like the built-in player instead of starting cold.
     private func openExternally(urlString: String, stream: StreamItem, playerId: String, fallbackToInternal: Bool = false) {
+        let progress = WatchProgressRepository.shared.progressForVideo(
+            videoId: videoId,
+            parentMetaId: parentMetaId,
+            seasonNumber: season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: episode.map { KotlinInt(int: Int32($0)) }
+        )
+        let resumeMs: Int64 = {
+            guard let progress, !progress.isCompleted, progress.lastPositionMs > 10_000 else { return 0 }
+            return progress.lastPositionMs
+        }()
         let request = ExternalPlayerPlaybackRequest(
             sourceUrl: urlString,
             title: title,
             streamTitle: nil,
             sourceHeaders: [:],
-            resumePositionMs: 0,
-            subtitles: nil,
+            resumePositionMs: resumeMs,
+            subtitles: stream.externalSubtitles.map { sub in
+                SubtitleInput(url: sub.url, name: { let n: String? = sub.name; return n }() ?? sub.language, lang: sub.language)
+            },
             season: season.map { KotlinInt(int: Int32($0)) },
             episode: episode.map { KotlinInt(int: Int32($0)) },
             episodeTitle: nil,

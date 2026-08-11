@@ -17,12 +17,16 @@
 	     Infuse's x-callback-url API is documented on Apple TV (Infuse 7.6.2+). VLC and
 	     Outplayer use their iOS-documented schemes — unverified on tvOS hardware, but a failed
 	     handoff on the default-player route falls back to the built-in player, so the worst
-	     case is a toast, not stranded playback. VidHub stays off (no known tvOS build). -->
+	     case is a toast, not stranded playback. VidHub (FEAT-21, beta.12): its modern
+	     /play x-callback API explicitly lists Apple TV as a supported platform
+	     (vidhub.okaapps.com/3rd-party-app-integration) — the earlier "no known tvOS build"
+	     reason to keep it off is obsolete. -->
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>infuse</string>
 		<string>vlc-x-callback</string>
 		<string>outplayer</string>
+		<string>open-vidhub</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

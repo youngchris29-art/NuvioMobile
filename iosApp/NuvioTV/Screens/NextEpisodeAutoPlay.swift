@@ -400,8 +400,12 @@ final class NextEpisodeEngine: ObservableObject {
         // Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection.
         let manualAutoSelect = settings.streamAutoPlayMode == StreamAutoPlayMode.manual &&
             (settings.streamAutoPlayNextEpisodeEnabled || settings.streamAutoPlayPreferBingeGroup)
+        // Upstream f2c9b9f9 (beta.12 port): the fallback toggle joins the condition — with
+        // "Fallback when binge group fails" OFF, a manual-mode binge-group miss shows the stream
+        // picker instead of auto-selecting the first stream (default ON = legacy behavior).
         let bingeGroupOnlyManualMode = manualAutoSelect &&
-            !settings.streamAutoPlayNextEpisodeEnabled &&
+            (!settings.streamAutoPlayNextEpisodeEnabled ||
+                !settings.streamAutoPlayNextEpisodeFallbackEnabled) &&
             settings.streamAutoPlayPreferBingeGroup
 
         let effectiveMode = manualAutoSelect ? StreamAutoPlayMode.firstStream : settings.streamAutoPlayMode

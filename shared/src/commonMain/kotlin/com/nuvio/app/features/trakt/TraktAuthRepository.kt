@@ -108,6 +108,7 @@ object TraktAuthRepository : TrackingAuthProvider {
     }
 
     override fun clearLocalState() {
+        TraktWatchedShowSnapshotRepository.clear()
         cancelDeviceFlowInternal()
         hasLoaded = false
         currentProfileId = 1
