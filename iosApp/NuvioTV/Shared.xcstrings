@@ -33,6 +33,12 @@
             "state": "translated",
             "value": "Riproduci"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát"
+          }
         }
       }
     },
@@ -67,6 +73,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Riproduci %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phát %1$@"
           }
         }
       }
@@ -103,6 +115,12 @@
             "state": "translated",
             "value": "Riprendi"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiếp tục"
+          }
         }
       }
     },
@@ -137,6 +155,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Riprendi %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiếp tục %1$@"
           }
         }
       }
@@ -173,6 +197,12 @@
             "state": "translated",
             "value": "Questo addon è già installato."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Addon này đã được cài đặt"
+          }
         }
       }
     },
@@ -207,6 +237,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Inserisci un URL addon valido"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy nhập URL addon hợp lệ"
           }
         }
       }
@@ -243,6 +279,12 @@
             "state": "translated",
             "value": "Impossibile caricare il manifest"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải manifest"
+          }
         }
       }
     },
@@ -277,6 +319,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Inserisci l'URL dell'addon."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vui lòng nhập URL addon"
           }
         }
       }
@@ -313,6 +361,12 @@
             "state": "translated",
             "value": "Nel manifest manca \"%1$@\""
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manifest thiếu trường \"%1$@\""
+          }
         }
       }
     },
@@ -347,6 +401,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Eliminazione account fallita"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa tài khoản thất bại"
           }
         }
       }
@@ -383,6 +443,12 @@
             "state": "translated",
             "value": "Accesso fallito"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đăng nhập thất bại"
+          }
         }
       }
     },
@@ -417,6 +483,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Disconnessione fallita"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đăng xuất thất bại"
           }
         }
       }
@@ -453,6 +525,12 @@
             "state": "translated",
             "value": "Registrazione fallita"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đăng ký thất bại"
+          }
         }
       }
     },
@@ -487,6 +565,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile caricare gli elementi del catalogo."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải nội dung"
           }
         }
       }
@@ -523,6 +607,12 @@
             "state": "translated",
             "value": "La libreria cloud è disabilitata."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thư viện đám mây đang tắt"
+          }
         }
       }
     },
@@ -557,6 +647,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "La libreria cloud non è disponibile per %1$@."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thư viện đám mây không khả dụng với %1$@"
           }
         }
       }
@@ -593,6 +689,12 @@
             "state": "translated",
             "value": "Film"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phim"
+          }
         }
       }
     },
@@ -627,6 +729,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Serie"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loạt phim"
           }
         }
       }
@@ -663,6 +771,12 @@
             "state": "translated",
             "value": "Lista Trakt identificata"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách Trakt đã xác thực"
+          }
         }
       }
     },
@@ -697,6 +811,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Collezione TMDB %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ sưu tập TMDB %1$@"
           }
         }
       }
@@ -733,6 +853,12 @@
             "state": "translated",
             "value": "Regista TMDB %1$@"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đạo diễn TMDB %1$@"
+          }
         }
       }
     },
@@ -767,6 +893,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Scopri TMDB"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB Discover"
           }
         }
       }
@@ -803,6 +935,12 @@
             "state": "translated",
             "value": "Inserisci un ID o un URL TMDB valido."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy nhập ID hoặc URL TMDB hợp lệ"
+          }
         }
       }
     },
@@ -837,6 +975,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lista TMDB %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách TMDB %1$@"
           }
         }
       }
@@ -873,6 +1017,12 @@
             "state": "translated",
             "value": "Impossibile caricare la sorgente TMDB"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải nguồn TMDB"
+          }
         }
       }
     },
@@ -907,6 +1057,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Network TMDB %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đơn vị phát hành TMDB %1$@"
           }
         }
       }
@@ -943,6 +1099,12 @@
             "state": "translated",
             "value": "Persona TMDB %1$@"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hồ sơ TMDB %1$@"
+          }
         }
       }
     },
@@ -977,6 +1139,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Produzione TMDB %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãng sản xuất TMDB %1$@"
           }
         }
       }
@@ -1013,6 +1181,12 @@
             "state": "translated",
             "value": "Lista Trakt %1$@"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách Trakt %1$@"
+          }
         }
       }
     },
@@ -1047,6 +1221,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Inserisci l’ID o l’URL di una lista Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy nhập ID hoặc URL danh sách Trakt"
           }
         }
       }
@@ -1083,6 +1263,12 @@
             "state": "translated",
             "value": "Inserisci il nome, l’URL o l’ID di una lista Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhập tên, URL hoặc ID danh sách Trakt"
+          }
         }
       }
     },
@@ -1117,6 +1303,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trakt Lista %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách Trakt %1$@"
           }
         }
       }
@@ -1153,6 +1345,12 @@
             "state": "translated",
             "value": "Impossibile caricare la lista Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải danh sách Trakt"
+          }
         }
       }
     },
@@ -1187,6 +1385,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile caricare la lista Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải danh sách Trakt"
           }
         }
       }
@@ -1223,6 +1427,12 @@
             "state": "translated",
             "value": "Nessuna lista Trakt trovata"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy danh sách Trakt"
+          }
         }
       }
     },
@@ -1257,6 +1467,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Addon non trovato: %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy addon: %1$@"
           }
         }
       }
@@ -1293,6 +1509,12 @@
             "state": "translated",
             "value": "%1$@ cartelle"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ thư mục"
+          }
         }
       }
     },
@@ -1327,6 +1549,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lista film Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách phim Trakt"
           }
         }
       }
@@ -1363,6 +1591,12 @@
             "state": "translated",
             "value": "Lista serie Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách phim bộ Trakt"
+          }
         }
       }
     },
@@ -1397,6 +1631,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "La collezione %1$@ ha un ID vuoto."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ sưu tập %1$@ chưa có ID"
           }
         }
       }
@@ -1433,6 +1673,12 @@
             "state": "translated",
             "value": "La collezione '%1$@' ha un titolo vuoto."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ sưu tập \"%1$@\" chưa có tên"
+          }
         }
       }
     },
@@ -1467,6 +1713,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "L’ID collezione '%1$@' è usato più di una volta."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID bộ sưu tập \"%1$@\" đã tồn tại"
           }
         }
       }
@@ -1503,6 +1755,12 @@
             "state": "translated",
             "value": "Il file JSON è vuoto."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JSON trống"
+          }
         }
       }
     },
@@ -1537,6 +1795,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "La cartella %1$@ in '%2$@' ha un ID vuoto."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thư mục %1$@ trong \"%2$@\" chưa có ID"
           }
         }
       }
@@ -1573,6 +1837,12 @@
             "state": "translated",
             "value": "La cartella '%1$@' in '%2$@' ha un titolo vuoto."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thư mục \"%1$@\" trong \"%2$@\" chưa có tên"
+          }
         }
       }
     },
@@ -1607,6 +1877,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "L’ID cartella '%1$@' è usato più di una volta in '%2$@'."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID thư mục \"%1$@\" đã tồn tại trong \"%2$@\""
           }
         }
       }
@@ -1643,6 +1919,12 @@
             "state": "translated",
             "value": "JSON non valido: %1$@"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JSON không hợp lệ: %1$@"
+          }
         }
       }
     },
@@ -1677,6 +1959,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "La sorgente %1$@ nella cartella '%2$@' presenta campi vuoti."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nguồn %1$@ trong thư mục \"%2$@\" còn thiếu thông tin"
           }
         }
       }
@@ -1713,6 +2001,12 @@
             "state": "translated",
             "value": "Alla sorgente %1$@ nella cartella '%2$@' manca l'ID della lista Trakt."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nguồn %1$@ trong thư mục \"%2$@\" chưa có ID danh sách Trakt"
+          }
         }
       }
     },
@@ -1747,6 +2041,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tutto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tất cả"
           }
         }
       }
@@ -1783,6 +2083,12 @@
             "state": "translated",
             "value": "Add a TMDB API key in Impostazioni to use TMDB sorgentes."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy thêm khóa API TMDB trong phần Cài đặt để sử dụng các nguồn TMDB"
+          }
         }
       }
     },
@@ -1817,6 +2123,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Collezione TMDB non trovata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy bộ sưu tập TMDB"
           }
         }
       }
@@ -1853,6 +2165,12 @@
             "state": "translated",
             "value": "Azienda TMDB non trovata"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy hãng sản xuất trên TMDB"
+          }
         }
       }
     },
@@ -1887,6 +2205,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "La ricerca TMDB non ha restituito dati"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB trả về dữ liệu trống"
           }
         }
       }
@@ -1923,6 +2247,12 @@
             "state": "translated",
             "value": "Lista TMDB non trovata"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy danh sách TMDB"
+          }
         }
       }
     },
@@ -1957,6 +2287,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID collezione TMDB mancante"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thiếu ID bộ sưu tập TMDB"
           }
         }
       }
@@ -1993,6 +2329,12 @@
             "state": "translated",
             "value": "ID lista TMDB mancante"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thiếu ID danh sách TMDB"
+          }
         }
       }
     },
@@ -2027,6 +2369,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID persona TMDB mancante"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thiếu ID hồ sơ TMDB"
           }
         }
       }
@@ -2063,6 +2411,12 @@
             "state": "translated",
             "value": "Network TMDB non trovato"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy đơn vị phát hành trên TMDB"
+          }
         }
       }
     },
@@ -2097,6 +2451,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Crediti della persona TMDB non trovati"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy thông tin đoàn phim của hồ sơ này trên TMDB"
           }
         }
       }
@@ -2133,6 +2493,12 @@
             "state": "translated",
             "value": "Persona TMDB non trovata"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy hồ sơ trên TMDB"
+          }
         }
       }
     },
@@ -2168,6 +2534,12 @@
             "state": "translated",
             "value": "Credenziali Trakt mancanti."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thiếu thông tin xác thực Trakt"
+          }
         }
       }
     },
@@ -2199,6 +2571,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (%2$@)"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ (%2$@)"
@@ -2238,6 +2616,12 @@
             "state": "translated",
             "value": "Inserisci un ID o un URL valido di una lista Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy nhập ID hoặc URL danh sách Trakt hợp lệ"
+          }
         }
       }
     },
@@ -2272,6 +2656,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ elementi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ mục"
           }
         }
       }
@@ -2308,6 +2698,12 @@
             "state": "translated",
             "value": "%1$@ Mi piace"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ lượt thích"
+          }
         }
       }
     },
@@ -2342,6 +2738,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lista Trakt non trovata o non pubblica"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy danh sách Trakt hoặc danh sách đang ở chế độ riêng tư"
           }
         }
       }
@@ -2378,6 +2780,12 @@
             "state": "translated",
             "value": "ID della lista Trakt mancante"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thiếu ID danh sách Trakt"
+          }
         }
       }
     },
@@ -2412,6 +2820,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "La lista Trakt non include un ID numerico"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách Trakt không chứa ID dạng số"
           }
         }
       }
@@ -2448,6 +2862,12 @@
             "state": "translated",
             "value": "Lista pubblica Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách công khai Trakt"
+          }
         }
       }
     },
@@ -2482,6 +2902,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Limite di richieste Trakt raggiunto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã vượt quá giới hạn yêu cầu của Trakt"
           }
         }
       }
@@ -2518,6 +2944,12 @@
             "state": "translated",
             "value": "Richiesta Trakt non riuscita"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yêu cầu tới Trakt thất bại"
+          }
         }
       }
     },
@@ -2552,6 +2984,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "E%1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tập %1$@"
           }
         }
       }
@@ -2588,6 +3026,12 @@
             "state": "translated",
             "value": "S%1$@E%2$@"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "P%1$@-T%2$@"
+          }
         }
       }
     },
@@ -2622,6 +3066,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nessuna linea di sottotitoli trovata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy phụ đề"
           }
         }
       }
@@ -2658,6 +3108,12 @@
             "state": "translated",
             "value": "Nessun sottotitolo trovato"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy phụ đề"
+          }
         }
       }
     },
@@ -2692,6 +3148,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile caricare le righe dei sottotitoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải phụ đề"
           }
         }
       }
@@ -2728,6 +3190,12 @@
             "state": "translated",
             "value": "Prossimo contenuto"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiếp theo"
+          }
         }
       }
     },
@@ -2762,6 +3230,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Prossimo • S%1$@E%2$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiếp theo • P%1$@T%2$@"
           }
         }
       }
@@ -2798,6 +3272,12 @@
             "state": "translated",
             "value": "Aprile"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Tư"
+          }
         }
       }
     },
@@ -2832,6 +3312,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Agosto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Tám"
           }
         }
       }
@@ -2868,6 +3354,12 @@
             "state": "translated",
             "value": "Dicembre"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Mười Hai"
+          }
         }
       }
     },
@@ -2902,6 +3394,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Febbraio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Hai"
           }
         }
       }
@@ -2938,6 +3436,12 @@
             "state": "translated",
             "value": "Gennaio"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Một"
+          }
         }
       }
     },
@@ -2972,6 +3476,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Luglio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Bảy"
           }
         }
       }
@@ -3008,6 +3518,12 @@
             "state": "translated",
             "value": "Giugno"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Sáu"
+          }
         }
       }
     },
@@ -3042,6 +3558,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Marzo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Ba"
           }
         }
       }
@@ -3078,6 +3600,12 @@
             "state": "translated",
             "value": "Maggio"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Năm"
+          }
         }
       }
     },
@@ -3112,6 +3640,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Novembre"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Mười Một"
           }
         }
       }
@@ -3148,6 +3682,12 @@
             "state": "translated",
             "value": "Ottobre"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Mười"
+          }
         }
       }
     },
@@ -3182,6 +3722,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Settembre"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tháng Chín"
           }
         }
       }
@@ -3218,6 +3764,12 @@
             "state": "translated",
             "value": "Apr"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th4"
+          }
         }
       }
     },
@@ -3252,6 +3804,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ago"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th8"
           }
         }
       }
@@ -3288,6 +3846,12 @@
             "state": "translated",
             "value": "Dic"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th12"
+          }
         }
       }
     },
@@ -3322,6 +3886,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Feb"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th2"
           }
         }
       }
@@ -3358,6 +3928,12 @@
             "state": "translated",
             "value": "Gen"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th1"
+          }
         }
       }
     },
@@ -3392,6 +3968,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lug"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th7"
           }
         }
       }
@@ -3428,6 +4010,12 @@
             "state": "translated",
             "value": "Giu"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th6"
+          }
         }
       }
     },
@@ -3462,6 +4050,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Mar"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th3"
           }
         }
       }
@@ -3498,6 +4092,12 @@
             "state": "translated",
             "value": "Mag"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th5"
+          }
         }
       }
     },
@@ -3532,6 +4132,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nov"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th11"
           }
         }
       }
@@ -3568,6 +4174,12 @@
             "state": "translated",
             "value": "Ott"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th10"
+          }
         }
       }
     },
@@ -3602,6 +4214,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Set"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Th9"
           }
         }
       }
@@ -3638,6 +4256,12 @@
             "state": "translated",
             "value": "Connetti un account nelle Impostazioni."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy kết nối tài khoản trong Cài đặt"
+          }
         }
       }
     },
@@ -3672,6 +4296,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Non presente nella cache di Torbox."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa có trong bộ nhớ đệm TorBox"
           }
         }
       }
@@ -3708,6 +4338,12 @@
             "state": "translated",
             "value": "Impossibile aprire questo link."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể mở liên kết này"
+          }
         }
       }
     },
@@ -3742,6 +4378,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Questo link è scaduto. Aggiornamento dei risultati in corso."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liên kết đã hết hạn, đang làm mới"
           }
         }
       }
@@ -3778,6 +4420,12 @@
             "state": "translated",
             "value": "Impossibile caricare i commenti Trakt (%1$@)"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải bình luận Trakt (%1$@)"
+          }
         }
       }
     },
@@ -3812,6 +4460,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile caricare i dettagli da alcun addon."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải thông tin từ bất kỳ addon nào"
           }
         }
       }
@@ -3848,6 +4502,12 @@
             "state": "translated",
             "value": "Nessun addon fornisce metadati per questo contenuto."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có addon nào cung cấp thông tin cho nội dung này"
+          }
         }
       }
     },
@@ -3882,6 +4542,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$@h %2$@m"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ giờ %2$@ phút"
           }
         }
       }
@@ -3918,6 +4584,12 @@
             "state": "translated",
             "value": "%1$@h"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ giờ"
+          }
         }
       }
     },
@@ -3953,6 +4625,12 @@
             "state": "translated",
             "value": "%1$@m"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ phút"
+          }
         }
       }
     },
@@ -3984,6 +4662,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ • %2$@"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ • %2$@"
@@ -4023,6 +4707,12 @@
             "state": "translated",
             "value": "Il catalogo selezionato non è riuscito a restituire elementi per la funzione Scopri."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải nội dung từ danh mục đã chọn"
+          }
         }
       }
     },
@@ -4057,6 +4747,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Download fallito"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tải xuống thất bại"
           }
         }
       }
@@ -4093,6 +4789,12 @@
             "state": "translated",
             "value": "Nessun link diretto disponibile"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có liên kết trực tiếp"
+          }
         }
       }
     },
@@ -4127,6 +4829,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Download precedente sostituito"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã thay thế lượt tải trước"
           }
         }
       }
@@ -4163,6 +4871,12 @@
             "state": "translated",
             "value": "Download avviato"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã bắt đầu tải xuống"
+          }
         }
       }
     },
@@ -4197,6 +4911,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Formato flusso non supportato per i download"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Định dạng nguồn phát không hỗ trợ tải xuống"
           }
         }
       }
@@ -4233,6 +4953,12 @@
             "state": "translated",
             "value": "Player di sistema Android"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trình phát mặc định của Android"
+          }
         }
       }
     },
@@ -4264,6 +4990,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Addon"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "Addon"
@@ -4303,6 +5035,12 @@
             "state": "translated",
             "value": "Trailer"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer"
+          }
         }
       }
     },
@@ -4338,6 +5076,12 @@
             "state": "translated",
             "value": "Sconosciuto"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không xác định"
+          }
         }
       }
     },
@@ -4369,6 +5113,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ - %2$@"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ - %2$@"
@@ -4408,6 +5158,12 @@
             "state": "translated",
             "value": "Libreria Nuvio"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thư viện Nuvio"
+          }
         }
       }
     },
@@ -4443,6 +5199,12 @@
             "state": "translated",
             "value": "Altro"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khác"
+          }
         }
       }
     },
@@ -4474,6 +5236,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anime"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "Anime"
@@ -4513,6 +5281,12 @@
             "state": "translated",
             "value": "Canali"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kênh"
+          }
         }
       }
     },
@@ -4547,6 +5321,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Film"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phim"
           }
         }
       }
@@ -4583,6 +5363,12 @@
             "state": "translated",
             "value": "Film"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phim"
+          }
         }
       }
     },
@@ -4618,6 +5404,12 @@
             "state": "translated",
             "value": "Serie"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loạt phim"
+          }
         }
       }
     },
@@ -4649,6 +5441,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TV"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "TV"
@@ -4688,6 +5486,12 @@
             "state": "translated",
             "value": "Controlli di riproduzione e salvataggio."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Các tùy chọn phát và lưu"
+          }
         }
       }
     },
@@ -4722,6 +5526,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Azioni"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thao tác"
           }
         }
       }
@@ -4758,6 +5568,12 @@
             "state": "translated",
             "value": "Elenco del cast principale."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách diễn viên chính"
+          }
         }
       }
     },
@@ -4792,6 +5608,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Riga dedicata a collezioni o franchise correlati."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ sưu tập hoặc nội dung liên quan"
           }
         }
       }
@@ -4828,6 +5650,12 @@
             "state": "translated",
             "value": "Collezione"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ sưu tập"
+          }
         }
       }
     },
@@ -4862,6 +5690,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sezione commenti di Trakt."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bình luận từ Trakt"
           }
         }
       }
@@ -4898,6 +5732,12 @@
             "state": "translated",
             "value": "Durata, stato, rilascio, lingua e info correlate."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thời lượng, trạng thái, ngày phát hành, ngôn ngữ và thông tin liên quan"
+          }
         }
       }
     },
@@ -4932,6 +5772,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Dettagli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thông tin"
           }
         }
       }
@@ -4968,6 +5814,12 @@
             "state": "translated",
             "value": "Stagioni ed elenco episodi per le serie."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách mùa và tập phim"
+          }
         }
       }
     },
@@ -5002,6 +5854,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Riga dei consigli."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nội dung gợi ý"
           }
         }
       }
@@ -5038,6 +5896,12 @@
             "state": "translated",
             "value": "Altri titoli simili"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Có thể bạn sẽ thích"
+          }
         }
       }
     },
@@ -5072,6 +5936,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sinossi, valutazioni, generi e crediti principali."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tóm tắt, đánh giá, thể loại và thông tin chính"
           }
         }
       }
@@ -5108,6 +5978,12 @@
             "state": "translated",
             "value": "Panoramica"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tổng quan"
+          }
         }
       }
     },
@@ -5142,6 +6018,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Studi e network."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãng sản xuất và đơn vị phát hành"
           }
         }
       }
@@ -5178,6 +6060,12 @@
             "state": "translated",
             "value": "Produzione"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sản xuất"
+          }
         }
       }
     },
@@ -5212,6 +6100,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Riga dei trailer e scorciatoie di riproduzione."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách trailer và phím tắt điều khiển"
           }
         }
       }
@@ -5248,6 +6142,12 @@
             "state": "translated",
             "value": "Corpo della risposta vuoto"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có phản hồi từ máy chủ"
+          }
         }
       }
     },
@@ -5282,6 +6182,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Richiesta non riuscita con HTTP %1$@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yêu cầu thất bại (HTTP %1$@)"
           }
         }
       }
@@ -5318,6 +6224,12 @@
             "state": "translated",
             "value": "%1$@ è ora disponibile"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ đã phát hành"
+          }
         }
       }
     },
@@ -5352,6 +6264,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ • %2$@ è ora disponibile"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ • %2$@ đã phát hành"
           }
         }
       }
@@ -5388,6 +6306,12 @@
             "state": "translated",
             "value": "Un nuovo episodio è ora disponibile"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã có tập mới"
+          }
         }
       }
     },
@@ -5422,6 +6346,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ è ora disponibile"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ đã phát hành"
           }
         }
       }
@@ -5458,6 +6388,12 @@
             "state": "translated",
             "value": "Anteprima dell'avviso di uscita episodio."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đây là thông báo thử nghiệm cho tập mới"
+          }
         }
       }
     },
@@ -5492,6 +6428,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile inviare la notifica di test."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể gửi thông báo thử nghiệm"
           }
         }
       }
@@ -5528,6 +6470,12 @@
             "state": "translated",
             "value": "Notifica di test inviata per %1$@."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã gửi thông báo thử nghiệm cho %1$@"
+          }
         }
       }
     },
@@ -5562,6 +6510,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Errore torrent sconosciuto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lỗi torrent không xác định"
           }
         }
       }
@@ -5598,6 +6552,12 @@
             "state": "translated",
             "value": "Creatore"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhà sáng tạo"
+          }
         }
       }
     },
@@ -5632,6 +6592,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Regista"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đạo diễn"
           }
         }
       }
@@ -5668,6 +6634,12 @@
             "state": "translated",
             "value": "Sceneggiatore"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biên kịch"
+          }
         }
       }
     },
@@ -5703,6 +6675,12 @@
             "state": "translated",
             "value": "PIN errato"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sai mã PIN"
+          }
         }
       }
     },
@@ -5734,6 +6712,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (%2$@)"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ (%2$@)"
@@ -5773,6 +6757,12 @@
             "state": "translated",
             "value": "Il PIN di questo profilo è cambiato. Connettiti per aggiornare il blocco su questo dispositivo."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mã PIN của hồ sơ đã thay đổi. Hãy kết nối Internet để cập nhật mã PIN mới nhất trên thiết bị này"
+          }
         }
       }
     },
@@ -5807,6 +6797,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile rimuovere il blocco PIN. Riprova."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể xóa mã PIN. Hãy thử lại"
           }
         }
       }
@@ -5843,6 +6839,12 @@
             "state": "translated",
             "value": "Connettiti a Internet per rimuovere il blocco PIN."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy kết nối Internet để xóa mã PIN"
+          }
         }
       }
     },
@@ -5877,6 +6879,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Questo PIN non può ancora essere verificato offline su questo dispositivo. Connettiti e sbloccalo prima online."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa thể xác minh mã PIN khi thiết bị ngoại tuyến. Hãy kết nối Internet và thử lại sau"
           }
         }
       }
@@ -5913,6 +6921,12 @@
             "state": "translated",
             "value": "Impossibile impostare il PIN. Riprova."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể đặt mã PIN. Hãy thử lại"
+          }
         }
       }
     },
@@ -5947,6 +6961,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Connettiti a Internet per impostare un PIN."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy kết nối Internet để đặt mã PIN"
           }
         }
       }
@@ -5983,6 +7003,12 @@
             "state": "translated",
             "value": "Questo profilo utilizza gli addon principali."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hồ sơ này đang dùng addon chính"
+          }
         }
       }
     },
@@ -6017,6 +7043,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nessun risultato di ricerca restituito per %1$@."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy kết quả trong %1$@"
           }
         }
       }
@@ -6053,6 +7085,12 @@
             "state": "translated",
             "value": "Cast"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diễn viên"
+          }
         }
       }
     },
@@ -6087,6 +7125,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Commenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bình luận"
           }
         }
       }
@@ -6123,6 +7167,12 @@
             "state": "translated",
             "value": "Episodi"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tập phim"
+          }
         }
       }
     },
@@ -6154,6 +7204,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "Trailer"
@@ -6193,6 +7249,12 @@
             "state": "translated",
             "value": "Le notifiche di sistema sono disabilitate per Nuvio. Abilitale per ricevere avvisi e notifiche di test."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thông báo cho Nuvio hiện đang bị tắt. Hãy bật thông báo để nhận các cảnh báo và gửi thông báo thử nghiệm"
+          }
         }
       }
     },
@@ -6227,6 +7289,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Salva prima una serie nella tua libreria per testare le notifiche."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hãy lưu chương trình vào thư viện trước để kiểm tra thông báo"
           }
         }
       }
@@ -6263,6 +7331,12 @@
             "state": "translated",
             "value": "Inserisci un URL JSON dei badge."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhập URL chuỗi JSON"
+          }
         }
       }
     },
@@ -6297,6 +7371,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Importazione dei badge non riuscita."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhập thất bại"
           }
         }
       }
@@ -6333,6 +7413,12 @@
             "state": "translated",
             "value": "Puoi importare fino a %1$@ URL di badge."
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Có thể thêm tối đa %1$@ URL"
+          }
         }
       }
     },
@@ -6367,6 +7453,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "L’URL dei badge deve iniziare con http:// o https://."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "URL phải bắt đầu bằng http:// hoặc https://"
           }
         }
       }
@@ -6403,6 +7495,12 @@
             "state": "translated",
             "value": "Incorporato (Embedded)"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhúng"
+          }
         }
       }
     },
@@ -6437,6 +7535,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Flusso"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nguồn phát"
           }
         }
       }
@@ -6473,6 +7577,12 @@
             "state": "translated",
             "value": "Caricamento di %1$@ fallito"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải %1$@"
+          }
         }
       }
     },
@@ -6507,6 +7617,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Repository di plugin"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kho Plugin"
           }
         }
       }
@@ -6543,6 +7659,12 @@
             "state": "translated",
             "value": "Stagione %1$@ - %2$@"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phần %1$@ - %2$@"
+          }
         }
       }
     },
@@ -6578,6 +7700,12 @@
             "state": "translated",
             "value": "Autorizzazione negata"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quyền truy cập bị tử chối"
+          }
         }
       }
     },
@@ -6594,6 +7722,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Your Trakt authorization is no longer valid. Reconnect your Trakt account."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ủy quyền Trakt của bạn không còn hiệu lực. Hãy kết nối lại tài khoản Trakt."
           }
         }
       }
@@ -6630,6 +7764,12 @@
             "state": "translated",
             "value": "Completa l'accesso a Trakt nel tuo browser"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hoàn tất đăng nhập Trakt trong trình duyệt"
+          }
         }
       }
     },
@@ -6664,6 +7804,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Connesso a Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã kết nối với Trakt"
           }
         }
       }
@@ -6700,6 +7846,12 @@
             "state": "translated",
             "value": "Disconnesso da Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã ngắt kết nối Trakt"
+          }
         }
       }
     },
@@ -6734,6 +7886,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile aggiungere alla lista Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể thêm vào danh sách Trakt"
           }
         }
       }
@@ -6770,6 +7928,12 @@
             "state": "translated",
             "value": "Impossibile aggiungere alla watchlist Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể thêm vào Danh sách theo dõi"
+          }
         }
       }
     },
@@ -6804,6 +7968,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Autorizzazione Trakt scaduta"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quyền truy cập Trakt đã hết hạn"
           }
         }
       }
@@ -6840,6 +8010,12 @@
             "state": "translated",
             "value": "Corpo della risposta vuoto"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Máy chủ trả về dữ liệu trống"
+          }
         }
       }
     },
@@ -6874,6 +8050,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Limite di liste Trakt raggiunto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã đạt giới hạn danh sách Trakt"
           }
         }
       }
@@ -6910,6 +8092,12 @@
             "state": "translated",
             "value": "Lista Trakt non trovata"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không tìm thấy danh sách Trakt"
+          }
         }
       }
     },
@@ -6944,6 +8132,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "ID Trakt compatibili mancanti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thiếu ID tương thích với Trakt"
           }
         }
       }
@@ -6980,6 +8174,12 @@
             "state": "translated",
             "value": "Limite di richieste Trakt raggiunto"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã vượt quá giới hạn yêu cầu của Trakt"
+          }
         }
       }
     },
@@ -7014,6 +8214,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Richiesta Trakt non riuscita"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yêu cầu tới Trakt thất bại"
           }
         }
       }
@@ -7050,6 +8256,12 @@
             "state": "translated",
             "value": "Callback Trakt non valido"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lỗi xác thực Trakt"
+          }
         }
       }
     },
@@ -7084,6 +8296,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Stato callback Trakt non valido"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lỗi trạng thái xác thực Trakt"
           }
         }
       }
@@ -7120,6 +8338,12 @@
             "state": "translated",
             "value": "Risposta token Trakt non valida"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lỗi phản hồi token Trakt"
+          }
         }
       }
     },
@@ -7154,6 +8378,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile caricare la libreria Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải thư viện Trakt"
           }
         }
       }
@@ -7190,6 +8420,12 @@
             "state": "translated",
             "value": "Lista %1$@"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách %1$@"
+          }
         }
       }
     },
@@ -7224,6 +8460,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile aggiornare le liste Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể cập nhật danh sách Trakt"
           }
         }
       }
@@ -7260,6 +8502,12 @@
             "state": "translated",
             "value": "Trakt non ha restituito un codice di autorizzazione"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể lấy mã xác thực từ Trakt"
+          }
         }
       }
     },
@@ -7294,6 +8542,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Credenziali Trakt mancanti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thiếu thông tin xác thực Trakt"
           }
         }
       }
@@ -7330,6 +8584,12 @@
             "state": "translated",
             "value": "Impossibile caricare i progressi di Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể tải tiến độ xem từ Trakt"
+          }
         }
       }
     },
@@ -7364,6 +8624,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Impossibile completare l'accesso a Trakt"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể hoàn tất đăng nhập Trakt"
           }
         }
       }
@@ -7400,6 +8666,12 @@
             "state": "translated",
             "value": "Utente Trakt"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Người dùng Trakt"
+          }
         }
       }
     },
@@ -7435,6 +8707,12 @@
             "state": "translated",
             "value": "Watchlist"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Danh sách theo dõi"
+          }
         }
       }
     },
@@ -7466,6 +8744,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "B"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "B"
@@ -7505,6 +8789,12 @@
             "state": "translated",
             "value": "GB"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GB"
+          }
         }
       }
     },
@@ -7540,6 +8830,12 @@
             "state": "translated",
             "value": "KB"
           }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KB"
+          }
         }
       }
     },
@@ -7571,6 +8867,12 @@
           }
         },
         "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MB"
+          }
+        },
+        "vi": {
           "stringUnit": {
             "state": "translated",
             "value": "MB"

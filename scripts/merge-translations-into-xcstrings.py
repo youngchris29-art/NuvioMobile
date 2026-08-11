@@ -64,7 +64,7 @@ def main():
         for lang, key, reason in skipped[:20]:
             print(f"  [{lang}] {key!r}: {reason}")
     # Remaining gaps after merge.
-    for lang in ("fr", "es", "de", "it"):
+    for lang in ("fr", "es", "de", "it", "vi"):
         missing = [k for k, e in strings.items() if lang not in e.get("localizations", {})]
         print(f"still missing [{lang}]: {len(missing)}")
 

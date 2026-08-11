@@ -49,6 +49,7 @@ LOCALES = {
     "es": "values-es",
     "de": "values-de",
     "it": "values-it",
+    "vi": "values-vi",
 }
 
 SPOT_CHECK_KEYS = ["debrid_missing_api_key", "date_month_january", "media_movie"]

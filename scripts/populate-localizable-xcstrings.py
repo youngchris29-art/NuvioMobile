@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CATALOG = os.path.join(REPO, "iosApp/NuvioTV/Localizable.xcstrings")
 COMPOSE_RES = os.path.join(REPO, "composeApp/src/commonMain/composeResources")
-LOCALES = ["fr", "es", "de", "it"]
+LOCALES = ["fr", "es", "de", "it", "vi"]
 
 ANDROID_ESCAPES = [("\\'", "'"), ('\\"', '"'), ("\\n", "\n"), ("\\@", "@"), ("\\?", "?")]
 

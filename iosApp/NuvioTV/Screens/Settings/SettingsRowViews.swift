@@ -196,7 +196,10 @@ enum LanguageOptions {
         (String(localized: "Italian"), "it"), (String(localized: "Portuguese"), "pt"),
         (String(localized: "Japanese"), "ja"), (String(localized: "Korean"), "ko"),
         (String(localized: "Chinese"), "zh"), (String(localized: "Russian"), "ru"),
-        (String(localized: "Hindi"), "hi"), (String(localized: "Arabic"), "ar")
+        (String(localized: "Hindi"), "hi"), (String(localized: "Arabic"), "ar"),
+        // FEAT-19 (beta.12): rode along with the Vietnamese UI localization so vi is also
+        // selectable for TMDB metadata and audio/subtitle track preference.
+        (String(localized: "Vietnamese"), "vi")
     ]
     static var audio: [(name: String, code: String)] {
         [(String(localized: "Device"), "device"), (String(localized: "Original"), "original")] + languages
