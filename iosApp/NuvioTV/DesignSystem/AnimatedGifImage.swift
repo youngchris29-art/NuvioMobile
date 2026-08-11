@@ -395,15 +395,24 @@ private enum AnimatedGifDecoder {
     ///     of budget left per frame, so a GIF that used to fit ~20 frames now fits ~65+.
     ///   * portrait tile, scale 1 → 330 px vs 400 px: ~1.5× more frames.
     ///   * landscape tile, scale 1 → 391 px, barely below the 400 px cap: little change.
-    ///   * any of the above at scale 2 (Apple TV 4K) → the ×2 multiplier reaches or exceeds the
-    ///     400 px cap for most tile sizes, so 4K sets see smaller gains than HD ones; they were
-    ///     already decoding close to native resolution for their tile size before this fix.
+    ///   * at scale 2 (Apple TV 4K) the cap itself is scale-aware (beta.12): a 330 pt tile may
+    ///     decode at up to 660 px instead of being clamped to 400 px (~half its real backing
+    ///     store — the "still average" sharpness BUG-39's re-report measured). The per-GIF byte
+    ///     budget still clamps longer GIFs below this ceiling exactly as before.
     private nonisolated static func targetDecodePixelCeiling(for targetSize: CGSize, scale: CGFloat) -> Int {
-        let longEdge = max(targetSize.width, targetSize.height)
-        guard longEdge.isFinite, longEdge > 0 else { return maxFramePixelSize }
         let cappedScale = min(scale, 2.0)
+        // BUG-39 (beta.12): the outer cap is a POINT budget, so it must scale with the panel like
+        // the tile's own backing store does. The old `min(maxFramePixelSize, …)` treated 400 as a
+        // PIXEL cap, which on a scale-2 (4K) panel decoded every GIF at ~half the tile's real
+        // backing resolution — measured luma softness the reporter called "still average". A
+        // scale-1 (HD) panel is byte-identical to the old behavior; on 4K, per-frame cost can rise
+        // up to 4× for SHORT GIFs only — `framePixelCeiling` + the enforced running-total check
+        // still clamp anything longer, so `maxDecodedBytesPerGif` remains the hard bound either way.
+        let pixelCap = Int((CGFloat(maxFramePixelSize) * cappedScale).rounded())
+        let longEdge = max(targetSize.width, targetSize.height)
+        guard longEdge.isFinite, longEdge > 0 else { return pixelCap }
         let pixels = Int((longEdge * cappedScale).rounded())
-        return min(maxFramePixelSize, max(minFramePixelSize, pixels))
+        return min(pixelCap, max(minFramePixelSize, pixels))
     }
 
     private nonisolated static func fetchData(_ url: URL) async throws -> Data {
@@ -453,11 +462,13 @@ private enum AnimatedGifDecoder {
         let delayCentiseconds: Int
     }
 
-    /// Outer safety cap on the per-frame downsample ceiling's long edge, regardless of tile size.
-    /// tvOS lays every app out in a fixed 1920×1080 POINT space, so even the largest realistic
-    /// collection tile (~360–420 pt landscape) tops out around here, and GIF sources are
-    /// palette-quantised and moving, so nothing about them survives extra resolution anyway. (The
-    /// old 800 px ceiling quadrupled every frame's bitmap for no visible gain.)
+    /// Outer safety cap on the per-frame downsample ceiling's long edge, regardless of tile size —
+    /// in POINTS as of beta.12 (BUG-39 re-report): `targetDecodePixelCeiling` multiplies it by the
+    /// capped screen scale, so it is 400 px on an HD panel and 800 px on a 4K one. tvOS lays every
+    /// app out in a fixed 1920×1080 POINT space, so even the largest realistic collection tile
+    /// (~360–420 pt landscape) tops out around here in points — but treating this as a PIXEL cap
+    /// (the pre-beta.12 behavior) decoded every GIF at ~half its backing store on 4K, which is the
+    /// measured softness the reporter kept filing.
     ///
     /// BUG-39: before this fix, EVERY tile decoded up to this fixed value regardless of its own
     /// rendered size — a 220 pt square tile paid the same per-frame bitmap cost as a 420 pt
@@ -615,8 +626,9 @@ private enum AnimatedGifDecoder {
             // actually kept, so total playback duration is preserved even though fewer unique
             // bitmaps end up stored.
             let frameBytes = cgImage.bytesPerRow * cgImage.height
-            // Defensive guard: the ≤400px downsample ceiling on `decodeSide` should make this
-            // unreachable in practice, but the budget is documented as a hard bound, so a
+            // Defensive guard: the scale-aware downsample ceiling on `decodeSide` (≤400px per
+            // point of scale) should make this unreachable in practice, but the budget is
+            // documented as a hard bound, so a
             // pathological first frame that alone exceeds it must fail the whole decode (→ static
             // cover) rather than being kept unconditionally by the `!frames.isEmpty` exemption below.
             if frames.isEmpty && frameBytes > maxDecodedBytesPerGif {
@@ -663,7 +675,26 @@ private enum AnimatedGifDecoder {
         // FINDING B (round 2): `decodedBytesTotal` is the exact, already-enforced sum of every
         // kept frame's actual bitmap bytes (see the budget check above) — use it directly as the
         // cache cost instead of recomputing `bytesPerRow × height` again here.
+        if GifDecodeProbe.enabled {
+            // BUG-39: the reporter's "still average" sharpness is a function of `decodeSide` vs the
+            // tile's real backing store, and of how hard the 12 MiB budget squeezed this particular
+            // GIF — numbers nobody can read off a screenshot. `sourceFrames` vs `keptFrames` also
+            // tells the device pass whether real collection GIFs are long enough that only the
+            // frame-vs-resolution trade (not the ceiling) governs their sharpness.
+            NSLog("[GifDecode] side=%d ceiling=%d sourceFrames=%d keptFrames=%d bytes=%d",
+                  decodeSide, targetPixelSize, count, frames.count, decodedBytesTotal)
+        }
         return DecodedGif(image: animated, cost: max(decodedBytesTotal, 1))
+    }
+
+    /// BUG-39 probe knob, same house pattern as `TrailerProbe`/`HomeGeometryProbe`:
+    ///
+    ///     defaults write com.nuvio.media.NuvioTV debug.gifDecodeProbe -bool YES
+    ///
+    /// Deliberately not `#if DEBUG` — testers run release sideloads and `log show` is the only
+    /// diagnostic channel that comes back from a device pass.
+    private enum GifDecodeProbe {
+        nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.gifDecodeProbe")
     }
 
     /// FINDING 6: floor for any frame's delay (raw OR aggregate) BEFORE it enters the GCD-tick

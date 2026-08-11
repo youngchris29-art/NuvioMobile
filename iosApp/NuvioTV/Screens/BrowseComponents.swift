@@ -302,7 +302,11 @@ struct CatalogRowView: View {
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
     private var inlineTrailersActive: Bool {
-        inlineTrailersEnabled && UIAccessibility.isVideoAutoplayEnabled
+        let active = inlineTrailersEnabled && UIAccessibility.isVideoAutoplayEnabled
+        // BUG-55: both gates default OFF, and a fresh container silently resets the toggle — a
+        // no-trailers session must say WHY in the log, once per state change, not per render.
+        InlineTrailerGateProbe.report(enabled: inlineTrailersEnabled, autoplay: UIAccessibility.isVideoAutoplayEnabled)
+        return active
     }
 
     /// BUG-13: an addon whose manifest declares no `skip` extra always reports `hasMore == false`,

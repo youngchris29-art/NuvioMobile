@@ -66,7 +66,7 @@ struct CollectionRowView: View {
                            spacing: Theme.Spacing.rowGap) {
                     ForEach(collection.folders, id: \.id) { folder in
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
-                            FolderTile(folder: folder)
+                            FolderTile(folder: folder, collectionBackdropUrl: collection.backdropImageUrl)
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
                         }
@@ -104,6 +104,12 @@ struct CollectionRowView: View {
 /// `tileShape` (poster / landscape / square), following the user's Poster Style width.
 struct FolderTile: View {
     let folder: CollectionFolder
+    /// BUG-38 (2026-08-10 re-specification): the parent collection's user-configured
+    /// `backdropImageUrl` — configurable in mobile's collection editor and synced for as long as
+    /// the field has existed, but rendered by NO client until now. Folder-level artwork still
+    /// wins (it's the more specific pick); this only replaces the positional first-item fallback
+    /// that showed the reporter "the first movie from my home list" instead of their own artwork.
+    var collectionBackdropUrl: String? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
@@ -169,9 +175,22 @@ struct FolderTile: View {
                 // blank (unusable URL, no fallback resolution).
                 let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let emoji = folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines)
+                // BUG-38 re-specification: the folder's own configured backdrop, then the parent
+                // collection's — both are the user's deliberate artwork and must beat the
+                // positional first-item fallback. The folder-level field outranks the emoji (a
+                // more specific pick for THIS tile); the collection-level one is shared by every
+                // folder in the row, so a folder-level emoji still wins over it.
+                let folderBackdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let collectionBackdrop = collectionBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let hasOwnCover = !(ownCover?.isEmpty ?? true)
+                let hasFolderBackdrop = !(folderBackdrop?.isEmpty ?? true)
+                let hasCollectionBackdrop = !(collectionBackdrop?.isEmpty ?? true)
                 let hasEmoji = !(emoji?.isEmpty ?? true)
-                let cover: String? = hasOwnCover ? ownCover : (hasEmoji ? nil : fallbackCoverUrl)
+                let cover: String? = hasOwnCover ? ownCover
+                    : hasFolderBackdrop ? folderBackdrop
+                    : hasEmoji ? nil
+                    : hasCollectionBackdrop ? collectionBackdrop
+                    : fallbackCoverUrl
                 let gifUrl: String? = folder.focusGifUrl
 
                 // BUG-19: the cover is mounted for the tile's WHOLE lifetime — it used to live in
@@ -244,13 +263,22 @@ struct FolderTile: View {
             // an unkeyed `.task` on a `ForEach(id: \.id)` row never re-fires for such edits).
             // `FolderCoverResolver` caches per folder-id+source-signature, so recycled
             // LazyHStack tiles and unchanged re-renders resolve instantly from that cache.
-            .task(id: folder.hash()) {
+            // BUG-38 re-specification (Codex gate 0): the collection backdrop participates in the
+            // cover precedence above, so it must participate in this task's identity too — a cloud
+            // sync that clears ONLY the collection backdrop leaves the folder's own hash unchanged,
+            // and without it here the fallback resolution this guard skipped on the first run would
+            // never happen, parking the tile on the gradient placeholder.
+            .task(id: "\(folder.hash())|\(collectionBackdropUrl ?? "")") {
                 // Recompute from scratch each (re)run: a folder that GAINED a real cover or an
                 // emoji must drop a previously resolved fallback rather than keep rendering it.
                 fallbackCoverUrl = nil
                 // Trimmed like the render path above — whitespace-only values are "absent".
                 guard folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
                 guard folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
+                // BUG-38 re-specification: a configured backdrop (folder- or collection-level)
+                // renders instead of the resolved fallback, so don't spend the resolution.
+                guard folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
+                guard collectionBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
                 let resolved = await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
                     FolderCoverResolver.shared.fallbackCoverUrl(folder: folder) { url, _ in
                         continuation.resume(returning: url)

@@ -351,7 +351,12 @@ final class InlineTrailerCardModel: ObservableObject {
     // MARK: Focus
 
     func focusChanged(_ focused: Bool, item: MetaPreview) {
+        // BUG-55: everything below `beginExtraction` already logs, but a dwell that never armed was
+        // invisible — the probe has to start at the very first event the card receives.
         if focused {
+            if TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] focus key=%@", TrailerResolutionCache.key(type: item.type, id: item.id))
+            }
             startDwell(item)
         } else {
             reset()
@@ -379,6 +384,9 @@ final class InlineTrailerCardModel: ObservableObject {
         dwellTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.dwellSeconds * 1_000_000_000))
             guard !Task.isCancelled, let self, self.generation == generationAtStart else { return }
+            if TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] dwell fired key=%@", TrailerResolutionCache.key(type: item.type, id: item.id))
+            }
             self.expand(item)
         }
     }
@@ -460,7 +468,10 @@ final class InlineTrailerCardModel: ObservableObject {
 
     private func expand(_ item: MetaPreview) {
         let key = TrailerResolutionCache.key(type: item.type, id: item.id)
-        guard didFinishForKey != key else { return }
+        guard didFinishForKey != key else {
+            if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand skip=alreadyFinished key=%@", key) }
+            return
+        }
 
         switch TrailerResolutionCache.shared.entry(for: key) {
         case let .resolved(url, _):
@@ -468,19 +479,26 @@ final class InlineTrailerCardModel: ObservableObject {
             // costs a dictionary lookup and turns "AVPlayer 404s, the card dies" into "re-resolve,
             // exactly like a cache miss" — no round trip, no failure, no negative cache entry.
             if let token = TrailerLocalHLS.token(inPlaybackURL: url), !TrailerLocalHLS.shared.hasToken(token) {
+                if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolvedStaleToken key=%@", key) }
                 TrailerResolutionCache.shared.invalidate(key: key)
                 beginResolution(item, key: key)
                 return
             }
+            if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolved key=%@", key) }
             activeKey = key
             setPhase(.expandedStatic)
             startPlayback(url, key: key)
-        case .unavailable, .transient:
-            // Already known to have nothing to play (or nothing that played, moments ago): never
-            // morph at all, so a row full of trailer-less titles never twitches under a browsing
-            // thumb. `.transient` expires in 45s; `.unavailable` in 20 minutes.
+        case .unavailable:
+            // Already known to have nothing to play: never morph at all, so a row full of
+            // trailer-less titles never twitches under a browsing thumb. Expires in 20 minutes.
+            if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand skip=unavailable key=%@", key) }
+            return
+        case .transient:
+            // Nothing that played, moments ago — suppresses a tight refocus retry. Expires in 45s.
+            if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand skip=transient key=%@", key) }
             return
         case nil:
+            if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=miss key=%@", key) }
             beginResolution(item, key: key)
         }
     }
