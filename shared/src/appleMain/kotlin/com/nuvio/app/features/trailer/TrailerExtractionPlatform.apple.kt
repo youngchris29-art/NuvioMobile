@@ -40,6 +40,22 @@ internal actual object TrailerExtractionPlatform {
         install(HttpTimeout)
         followRedirects = true
         expectSuccess = false
+        engine {
+            configureSession {
+                // BUG-46/BUG-55 (beta.12): extraction traffic must be STATELESS. The default
+                // NSURLSession configuration shares the app's persistent cookie jar and disk
+                // URLCache, so YouTube identity cookies (VISITOR_INFO1_LIVE …) minted here
+                // persisted in the app container — the only trailer-path state that survives a
+                // restart but dies with an uninstall, matching BUG-46's escalation exactly
+                // (restart no longer clears it; reinstall does; it returns the same evening once
+                // heavy browsing re-flags the fresh identity). Nothing depends on the jar:
+                // visitorData is re-scraped per watch page and sent explicitly as
+                // x-goog-visitor-id (InAppYouTubeExtractor).
+                HTTPCookieStorage = null
+                HTTPShouldSetCookies = false
+                URLCache = null
+            }
+        }
     }
 
     actual suspend fun performRequest(

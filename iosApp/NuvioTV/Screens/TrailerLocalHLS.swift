@@ -151,13 +151,26 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         }
     }
 
+    /// BUG-46/BUG-55 (beta.12): googlevideo fetches must not ride the app's PERSISTENT cookie
+    /// jar. `URLSession.shared` attaches `NSHTTPCookieStorage` cookies, and a YouTube identity
+    /// cookie that gets rate-flagged is exactly the state that survives an app restart, dies
+    /// with the container (the reporter's uninstall+reinstall "fix"), and comes back the same
+    /// evening — the persisted-state profile BUG-46's escalation described. Ephemeral: no cookie
+    /// send/store, no disk cache; nothing in this pipeline depends on cookie continuity.
+    private static let mediaFetchSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        return URLSession(configuration: config)
+    }()
+
     /// Fetch a track's `indexRange` bytes (the sidx box) and parse the segment table.
     private func fetchSidx(track: Track, completion: @escaping @Sendable (SidxIndex?) -> Void) {
         guard let url = URL(string: track.url) else { completion(nil); return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         request.setValue("bytes=\(track.indexStart)-\(track.indexEnd)", forHTTPHeaderField: "Range")
-        URLSession.shared.dataTask(with: request) { data, response, _ in
+        Self.mediaFetchSession.dataTask(with: request) { data, response, _ in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(status), let data, !data.isEmpty else {
                 NSLog("[TrailerRepack] sidx http %d (%d bytes)", status, data?.count ?? 0)

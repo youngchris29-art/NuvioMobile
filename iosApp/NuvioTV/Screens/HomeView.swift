@@ -559,6 +559,11 @@ struct HomeView: View {
                                                    prefetch: { section.items.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
                                 }
                             )
+                            // BUG-35 (beta.12): localize this row's leading items when it scrolls
+                            // into view. LazyVStack fires onAppear per row as it mounts; the shared
+                            // repo dedups per item+language for the session, so re-appearing rows
+                            // cost nothing (see HomeRepository.requestRowEnrichment).
+                            .onAppear { model.rowAppeared(sectionKey: section.key) }
                         case .collection(let collection):
                             CollectionRowView(collection: collection)
                         }

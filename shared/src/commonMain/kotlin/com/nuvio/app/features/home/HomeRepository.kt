@@ -322,11 +322,10 @@ object HomeRepository {
         "$type:$id:${settings.language}"
 
     /**
-     * BUG-35: row items get the SAME overlay the hero uses, but only where it is already resident —
-     * this adds no fetch of its own. In practice that localizes the handful of row cards that also
-     * won a hero slot; the rest keep the addon's (usually English) metadata. Localizing every row
-     * item means a TMDB call per catalog item per Home load, which is a cost/rate-limit decision,
-     * not an implementation one — widening this needs a product call on fetch volume first.
+     * BUG-35 (beta.12): the fetch-volume product call landed on VISIBILITY-DRIVEN row enrichment —
+     * see [requestRowEnrichment]. This application step is unchanged: row items render whatever
+     * the shared overlay already holds (hero-fetched or row-fetched alike), and a section with no
+     * resident overlay entries passes through untouched.
      */
     private fun HomeCatalogSection.withTmdbEnrichment(settings: TmdbSettings): HomeCatalogSection {
         if (!settings.enabled || !settings.hasApiKey || heroEnrichmentOverlay.isEmpty()) return this
@@ -420,6 +419,30 @@ object HomeRepository {
     }
 
     /**
+     * BUG-35 (beta.12): localize a row's LEADING items when the row actually scrolls into view.
+     * tvOS calls this from each catalog row's `onAppear`, which bounds fetch volume by what the
+     * user actually looks at instead of the whole catalog fan-out (the deferred fetch-volume
+     * product call, resolved): ≤ [HOME_ROW_ENRICHMENT_PREFIX] items per row, deduped per
+     * item+language for the whole session by the same overlay/attempted/in-flight sets the hero
+     * uses, fetched through the same mutex-guarded pipeline, republished by its existing
+     * completion path. Rows are never HELD like the hero — the caption text updating in place as
+     * the localized payload lands is the accepted row-level trade (BUG-42's double-commit
+     * objection was about the full-bleed hero, which keeps its once-only hold).
+     */
+    fun requestRowEnrichment(sectionKey: String) {
+        val settings = TmdbSettingsRepository.snapshot()
+        if (!settings.enabled || !settings.hasApiKey) return
+        // Same gate the hero path applies (heroItemsAwaitingEnrichment): with both output
+        // categories off, a fetch could not change a single rendered field — don't spend it.
+        if (!settings.useBasicInfo && !settings.useArtwork) return
+        val section = _uiState.value.sections.find { it.key == sectionKey } ?: return
+        // No pre-filter against the overlay sets here: this is a non-suspend caller, and
+        // [scheduleHeroEnrichment] re-checks all three sets under the mutex before claiming —
+        // an already-resident prefix just claims nothing and the launch returns immediately.
+        scheduleHeroEnrichment(section.items.take(HOME_ROW_ENRICHMENT_PREFIX), settings)
+    }
+
+    /**
      * Fetches TMDB preview enrichment for the given items, keyed by item so a removed/failed item
      * never gets retried on every publish and so overlapping publishes (each catalog batch reshuffles
      * the hero) never fetch the same item twice. Fetches are additive and are never cancelled by a
@@ -484,6 +507,22 @@ object HomeRepository {
                         isLoading = _uiState.value.isLoading,
                         requestKey = activeRequestKey ?: completedRequestKey,
                     )
+                } else {
+                    // BUG-35 (beta.12, Codex gate 4-5): once the hero hold has expired, the full
+                    // republish above stays suppressed so the raw hero on screen never swaps its
+                    // text in place — but row enrichment (requestRowEnrichment) rides this same
+                    // completion, and skipping entirely left row batches updating only the overlay,
+                    // invisible until an unrelated publish. Sections-only update: hero untouched
+                    // (exact objects last published), rows re-run the overlay application, which
+                    // never touches id/type/poster and is idempotent for already-localized items.
+                    val settingsNow = TmdbSettingsRepository.snapshot()
+                    // CAS update, not read-copy-write (Codex gate 4-5 round 3): a catalog batch
+                    // publishing between a plain read and write would be clobbered by the stale
+                    // copy. `update` retries on contention, and the transform touches ONLY
+                    // `sections`, so whatever state won the race keeps its loading/error/hero.
+                    _uiState.update { state ->
+                        state.copy(sections = state.sections.map { section -> section.withTmdbEnrichment(settingsNow) })
+                    }
                 }
             }
         }
@@ -686,6 +725,14 @@ object HomeRepository {
 }
 
 private const val HOME_HERO_ITEM_LIMIT = 8
+
+/**
+ * BUG-35 (beta.12): how many leading items of a row [HomeRepository.requestRowEnrichment]
+ * localizes when the row scrolls into view. Covers the on-screen cards (~7 on Home) plus the
+ * first step of a horizontal scroll; per-item+language session dedup means a row re-appearing
+ * costs nothing. Worst-case fetch volume is this × rows-actually-seen, not × the catalog fan-out.
+ */
+private const val HOME_ROW_ENRICHMENT_PREFIX = 12
 private const val HOME_COLLECTION_HERO_SOURCE_LIMIT = 6
 private const val HOME_COLLECTION_HERO_SOURCE_ITEM_LIMIT = 8
 private const val HOME_CATALOG_FETCH_BATCH_SIZE = 4

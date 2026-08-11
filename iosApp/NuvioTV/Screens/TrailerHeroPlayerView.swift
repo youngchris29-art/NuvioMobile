@@ -589,6 +589,16 @@ final class TrailerLetterboxProbe {
 
     /// Idempotent: stops sampling and detaches the video output. Called from every teardown path.
     func stop() {
+        // UX-9 (beta.12, Codex gate 4-5): a probe torn down BEFORE it gathered enough samples
+        // (focus left, surface dismantled) used to vanish silently — the fast-scrub soak's
+        // many-pipeline-lines-zero-zoom-lines exactly. `timer != nil` keeps cache-hit surfaces
+        // (probe never armed) quiet; `finished` is already true when `finish()` reaches here,
+        // so a completed measurement never double-logs.
+        if timer != nil, !finished, TrailerProbe.enabled {
+            finished = true
+            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d surface=%@ — floor kept, not cached",
+                  samples.count, ticks, surface)
+        }
         timer?.invalidate()
         timer = nil
         detachOutput()
@@ -697,7 +707,18 @@ final class TrailerLetterboxProbe {
         stop()
         // Fewer than three usable samples is a stream that stalled or stayed dark; keep the floor
         // and cache nothing, so the next play of this URL measures again.
-        guard collected.count >= 3, size.width > 0, size.height > 0 else { return }
+        guard collected.count >= 3, size.width > 0, size.height > 0 else {
+            // UX-9 (beta.12): this bail used to be SILENT even with the probe armed — a beta.12
+            // soak produced 154 [TrailerPipeline] lines and zero [TrailerZoom] lines, with no way
+            // to tell whether the measurement never ran or kept failing. A letterboxed source
+            // whose measurement can't complete stays at the 1.08 floor (the reporter's Lucky
+            // case), so the WHY has to be readable off a log pull.
+            if TrailerProbe.enabled {
+                NSLog("[TrailerZoom] insufficient samples=%d frame=%dx%d ticks=%d surface=%@ — floor kept, not cached",
+                      collected.count, Int(size.width), Int(size.height), ticks, surface)
+            }
+            return
+        }
 
         // A bar counts only if it is present in EVERY sample — hence `min`, not an average. A single
         // frame can be letterboxed by its own content (a black-bordered shot, a fade), and averaging

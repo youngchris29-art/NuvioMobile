@@ -206,6 +206,12 @@ final class HomeViewModel: ObservableObject {
         HomeRepository.shared.refresh(addons: ready, force: true)
     }
 
+    /// BUG-35 (beta.12): a catalog row scrolled into view — ask the shared repo to localize its
+    /// leading items (bounded, session-deduped; see `HomeRepository.requestRowEnrichment`).
+    func rowAppeared(sectionKey: String) {
+        HomeRepository.shared.requestRowEnrichment(sectionKey: sectionKey)
+    }
+
     deinit {
         addonWatcher?.cancel()
         homeWatcher?.cancel()
