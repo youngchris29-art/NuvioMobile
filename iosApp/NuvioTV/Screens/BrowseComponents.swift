@@ -86,13 +86,16 @@ enum HomeGeometryProbe {
 ///
 /// What happens instead: the title stays exactly where round 8 put it at a true rest, and slides
 /// DOWN by however much the viewport's top edge has eaten into it, clamped to
-/// `heroPinnedRowTitleMaxSlide`. Render-time only — `visualEffect` runs at draw time, so there is
-/// no layout pass, no `@State` write, and no view identity involved (the BUG-19 rule is untouched;
-/// nothing here can churn identity per scroll frame). At 0pt of rest error nothing moves and the
-/// look is byte-identical to beta.10; across the whole 0–67pt envelope the title parks against the
-/// clip edge instead of disappearing behind it; past the clamp (a row scrolled well above the
-/// focused one) it releases and scrolls away like any other content, i.e. it behaves as a sticky
-/// header for exactly as long as its row is still on screen.
+/// `heroPinnedRowTitleMaxSlide`. BUG-61 (beta.12) changed the HOW, not the WHAT: the slide is now
+/// measured via `onGeometryChange` and applied as an eased offset (see `PinnedRowTitleTracking`)
+/// instead of a draw-time `visualEffect`, because the draw-time recompute snapped the title in one
+/// frame whenever a focus-driven reveal shifted layout discretely. The `@State` this introduces is
+/// change-gated and confined to the title's own subtree — rows resting clear of the clip edge
+/// measure a constant 0 and write nothing, so the BUG-19 no-identity-churn rule still holds. At
+/// 0pt of rest error nothing moves and the look is byte-identical to beta.10; across the whole
+/// 0–67pt envelope the title parks against the clip edge instead of disappearing behind it; past
+/// the clamp (a row scrolled well above the focused one) it releases and scrolls away like any
+/// other content, i.e. it behaves as a sticky header for exactly as long as its row is on screen.
 ///
 /// Contract note for `CollectionRowView` (CollectionsUI.swift, same overlay pattern via the same
 /// environment values): the contract is UNCHANGED — the title is still an overlay on the shelf at
@@ -117,11 +120,35 @@ enum PinnedRowTitle {
         proxy.bounds(of: .scrollView(axis: .vertical)) ?? proxy.bounds(of: .named(rowsScrollSpace))
     }
 
+    /// BUG-53/BUG-60 device calibration (beta.12): the whole cluster's remaining dial — how far a
+    /// title may ride over its row's artwork — is a function of the DEVICE's rest error, which the
+    /// sim cannot reproduce (sim rests park the title clear of the art; the 40–67pt device error
+    /// parks it 8–35pt onto it, and under the focused card's system lift). Rather than shipping a
+    /// blind constant into the most regression-prone surface, the clamp is overridable at runtime.
+    /// Simulator:
+    ///
+    ///     xcrun simctl spawn <udid> defaults write com.nuvio.media.NuvioTV debug.pinnedTitleMaxSlide -float 40
+    ///
+    /// Physical Apple TV (Codex gate 1: `defaults write` on the Mac never reaches the device's
+    /// sandbox) — pass it as a LAUNCH ARGUMENT; `UserDefaults.standard` consults the argument
+    /// domain (`-key value` argv pairs) before every other domain, so this same read picks it up:
+    ///
+    ///     xcrun devicectl device process launch --terminate-existing --device <udid> \
+    ///         com.nuvio.media.NuvioTV -debug.pinnedTitleMaxSlide 40
+    ///
+    /// so the manual device pass can bisect the visible trade (title clipping at the top vs title
+    /// riding over art) live, without rebuild cycles. Unset/0 = the shipped constant. Read once at
+    /// launch, same as every other probe knob.
+    nonisolated static let maxSlideOverride: CGFloat? = {
+        let v = UserDefaults.standard.double(forKey: "debug.pinnedTitleMaxSlide")
+        return v > 0 ? CGFloat(v) : nil
+    }()
+
     /// How far the title must ride DOWN to stay fully inside the rows viewport, clamped.
     /// `proxy` must be the TITLE's own geometry (local origin = the title's top-left).
     nonisolated static func slide(_ proxy: GeometryProxy) -> CGFloat {
         guard let visible = visibleBounds(proxy) else { return 0 }
-        return min(max(visible.minY, 0), Theme.Size.heroPinnedRowTitleMaxSlide)
+        return min(max(visible.minY, 0), maxSlideOverride ?? Theme.Size.heroPinnedRowTitleMaxSlide)
     }
 
     /// Signed clearance between the title's top and the viewport's top edge BEFORE sliding —
@@ -144,11 +171,56 @@ extension View {
 private struct PinnedRowTitleTracking: ViewModifier {
     let rowKey: String
 
+    /// BUG-61 (beta.12): the original `visualEffect` recomputed the slide at draw time with no
+    /// transaction of its own, so a focus-driven reveal — whose layout shift lands in ONE frame —
+    /// snapped the title to its new offset while everything around it eased (measured: ~33pt in
+    /// 60ms; the probe recorded 10–13 distinct offsets per walk). The slide target is now
+    /// measured via `onGeometryChange` into local state and applied through an explicit eased
+    /// transaction, so the title moves on the same kind of curve as the content it tracks.
+    ///
+    /// Cost note (the BUG-19/BUG-41 rule this must not break): `onGeometryChange` fires only when
+    /// the measured value CHANGES, and rows resting clear of the clip edge measure a constant 0 —
+    /// so per-frame state writes are confined to the one row actually crossing the edge during a
+    /// scroll, and the invalidation is this modifier's tiny subtree (the title Text), not the row.
+    @State private var slide: CGFloat = 0
+    /// First measurement seeds the offset directly — a row that mounts mid-scroll with a nonzero
+    /// slide must start there, not visibly settle into it.
+    @State private var hasSeeded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func body(content: Content) -> some View {
         content
+            // ALL offsetting stays inside `visualEffect` (Codex gate 1, round 2): a plain
+            // `.offset` participates in the coordinate conversions the geometry observer below
+            // uses, so measuring a view shifted by the state it feeds is a feedback loop that
+            // settles half-clipped (measured clip = true clip − applied slide). `visualEffect`
+            // applies at render time and is invisible to geometry — the original design's whole
+            // point — and its effects are animatable, so the eased `slide` state still
+            // interpolates inside the `withAnimation` transaction below.
+            //
+            // Pre-seed branch: `onGeometryChange` only reports AFTER the first geometry pass, so
+            // a title mounting already-clipped would render one frame at offset 0 and then snap.
+            // Until the first measurement lands, the draw-time computation carries the offset;
+            // the seed stores the same value into `slide`, so the handoff renders no change.
             .visualEffect { effect, proxy in
-                effect.offset(y: PinnedRowTitle.slide(proxy))
+                effect.offset(y: hasSeeded ? slide : PinnedRowTitle.slide(proxy))
             }
+            .onGeometryChange(for: CGFloat.self, of: { proxy in
+                PinnedRowTitle.slide(proxy)
+            }, action: { newValue in
+                // Seeding must be recorded even when the first measurement equals the initial 0 —
+                // otherwise the first REAL change would take the unanimated seed path and snap,
+                // which is the exact defect this modifier exists to remove.
+                let isFirst = !hasSeeded
+                if isFirst || reduceMotion {
+                    // Store BEFORE flipping `hasSeeded` so the frame that switches paths already
+                    // carries the measured value in `slide`.
+                    slide = newValue
+                    hasSeeded = true
+                } else if slide != newValue {
+                    withAnimation(.easeOut(duration: 0.22)) { slide = newValue }
+                }
+            })
             .modifier(PinnedRowTitleProbe(rowKey: rowKey, enabled: HomeGeometryProbe.enabled))
     }
 }
