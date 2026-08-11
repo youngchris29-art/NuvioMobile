@@ -544,6 +544,29 @@ class SearchSourceFilterTest {
     }
 
     @Test
+    fun `see all targets carry the search query`() {
+        // BUG-48: a search section's CatalogTarget.Addon used to drop the query it was built
+        // from, so See All fetched the addon's UNFILTERED catalog — empty for search-only
+        // catalogs (the grid behind BUG-47's tab-bar eject), wrong titles for browsable ones.
+        val requests = SearchRepository.buildSearchRequests(
+            addons = listOf(cinemeta, marvel),
+            query = "Iron Man",
+        )
+        assertTrue(requests.isNotEmpty())
+        requests.forEach { request ->
+            val target = request.toCatalogTarget(manifestTransportUrl = "https://example.test/manifest.json")
+            assertEquals("Iron Man", target.search, "the See All target must fetch the SEARCHED catalog")
+            assertEquals(request.type, target.contentType)
+            assertEquals(request.catalogId, target.catalogId)
+            // And the query participates in request identity (UX-13 cross-push restoration keys
+            // on CatalogRequest equality): the same catalog under a different query is a
+            // different target.
+            val other = request.copy(query = "Batman").toCatalogTarget("https://example.test/manifest.json")
+            assertTrue(target != other, "targets for different queries must not compare equal")
+        }
+    }
+
+    @Test
     fun `options and requests agree on the key universe under collisions`() {
         val addons = listOf(cinemeta, twins, marvel, marvelMirror)
         val optionKeys = SearchRepository.searchCatalogOptions(addons).map { it.key }

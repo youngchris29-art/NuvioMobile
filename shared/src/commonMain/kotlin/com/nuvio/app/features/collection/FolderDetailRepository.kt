@@ -2,6 +2,7 @@ package com.nuvio.app.features.collection
 
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
+import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.catalog.CATALOG_PAGE_SIZE
 import com.nuvio.app.features.catalog.CatalogPage
@@ -18,6 +19,7 @@ import com.nuvio.app.features.home.filterReleasedItems
 import com.nuvio.app.features.home.stableKey
 import com.nuvio.app.features.trakt.TraktPublicListSourceResolver
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -92,8 +94,54 @@ object FolderDetailRepository {
     val uiState: StateFlow<FolderDetailUiState> = _uiState.asStateFlow()
 
     private val loadJobs = mutableMapOf<Int, Job>()
+
+    /// UX-14 (Codex gate 2, round 8): [loadJobs] is mutated from callers on the main thread
+    /// ([detach]/[clear]/[initialize]) and read from completion blocks on Dispatchers.Default —
+    /// and the ownership check + publication must be ATOMIC against a concurrent replacement, or
+    /// a cancelled job can pass the check and still publish stale (even cross-profile) state.
+    /// Every [loadJobs] access, and every publication guarded by it, holds this lock.
+    private val loadJobsLock = kotlinx.atomicfu.locks.SynchronizedObject()
+
     private var activeCollectionId: String? = null
     private var activeFolderId: String? = null
+
+    /// UX-14 (Codex gate 2, rounds 2–6): EXACTLY the inputs [initialize] derives tab structure
+    /// from, captured when state was built. The early-return reuses retained state only while the
+    /// live inputs still compare equal — so a real edit/sync/addon change re-initializes, while
+    /// anything the screen does NOT read (sibling folders, a startup refresh flipping an addon's
+    /// `isRefreshing`, addon rename) must NOT discard the retained scroll position this feature
+    /// exists to preserve. Per addon only `manifestUrl`/`enabled`/`manifest` matter (the source
+    /// resolver may consult ANY addon's manifest catalogs, so the list isn't narrowed to the
+    /// folder's own addons). `viewMode` is deliberately absent: tvOS renders every mode as the
+    /// tabbed grid (v1 simplification, see FolderDetailView).
+    private data class RetainedInputs(
+        val folder: CollectionFolder,
+        val collectionTitle: String,
+        val showAllTab: Boolean,
+        val addonCatalogInputs: List<Triple<String, Boolean, AddonManifest?>>,
+        /// Round 7: loadTabPage filters every page through this setting, so retained ITEMS are a
+        /// function of it too — flipping it between visits must refetch.
+        val hideUnreleasedContent: Boolean,
+    )
+
+    private var activeInputsSnapshot: RetainedInputs? = null
+
+    private fun retainedInputs(collection: Collection, folder: CollectionFolder): RetainedInputs =
+        RetainedInputs(
+            folder = folder,
+            collectionTitle = collection.title,
+            showAllTab = collection.showAllTab,
+            addonCatalogInputs = AddonRepository.uiState.value.addons.map {
+                Triple(it.manifestUrl, it.enabled, it.manifest)
+            },
+            hideUnreleasedContent = HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent,
+        )
+
+    private fun liveRetainedInputs(collectionId: String, folderId: String): RetainedInputs? {
+        val collection = CollectionRepository.getCollection(collectionId) ?: return null
+        val folder = collection.folders.find { it.id == folderId } ?: return null
+        return retainedInputs(collection, folder)
+    }
 
     fun initialize(collectionId: String, folderId: String) {
         val current = _uiState.value
@@ -101,8 +149,20 @@ object FolderDetailRepository {
             activeCollectionId == collectionId &&
             activeFolderId == folderId &&
             current.folder?.id == folderId &&
-            current.tabs.isNotEmpty()
+            current.tabs.isNotEmpty() &&
+            // UX-14 (Codex gate 2): with [detach] replacing [clear] on tvOS screen covers, this
+            // early-return is also what a GENUINE re-entry hits — so the live derivation inputs
+            // must still equal the snapshot state was built from (see [RetainedInputs] for what
+            // counts and what deliberately doesn't). Any relevant edit/sync/addon change falls
+            // through to a full re-init; item staleness on re-entry is the same accepted trade
+            // UX-13 made for catalog grids.
+            activeInputsSnapshot != null &&
+            liveRetainedInputs(collectionId, folderId) == activeInputsSnapshot
         ) {
+            // UX-14: a pop-back re-initialize after [detach]. Any tab whose load was in flight
+            // when the screen was covered still SAYS it's loading, but its job was cancelled —
+            // without this it would spin forever with no retry path.
+            resumeInterruptedTabLoads()
             return
         }
 
@@ -121,6 +181,7 @@ object FolderDetailRepository {
             _uiState.value = FolderDetailUiState(isLoading = false)
             return
         }
+        activeInputsSnapshot = retainedInputs(collection, folder)
 
         val sources = folder.resolvedSources
         val showAll = collection.showAllTab && sources.size > 1
@@ -241,11 +302,46 @@ object FolderDetailRepository {
     }
 
     fun clear() {
-        loadJobs.values.forEach { it.cancel() }
-        loadJobs.clear()
+        kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
+            loadJobs.values.forEach { it.cancel() }
+            loadJobs.clear()
+        }
         activeCollectionId = null
         activeFolderId = null
+        activeInputsSnapshot = null
         _uiState.value = FolderDetailUiState()
+    }
+
+    /// UX-14 (beta.12): cancel in-flight work but KEEP the loaded state and active keys — the
+    /// pop-friendly sibling of [clear], mirroring `CatalogRepository.detach()`'s UX-13 contract.
+    /// tvOS calls this from `FolderDetailView`'s `onDisappear`, which also fires when a pushed
+    /// title screen merely COVERS the folder grid; with [clear] there, popping back re-ran
+    /// [initialize] from scratch and rebuilt the grid at the top. Keeping state lets
+    /// [initialize]'s same-key early-return preserve the items — and therefore the lazy grid's
+    /// scroll position — when the user backs out of a title. A real exit path that must wipe
+    /// (sign-out, mobile's route pop) stays on [clear].
+    fun detach() {
+        kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
+            loadJobs.values.forEach { it.cancel() }
+            loadJobs.clear()
+        }
+    }
+
+    /// UX-14 companion to [detach]: restart any tab load that state says is running but whose
+    /// job no longer is (cancelled by [detach] while the screen was covered). `reset` only when
+    /// the tab never delivered items — a loading-MORE interruption keeps its pages.
+    private fun resumeInterruptedTabLoads() {
+        // Liveness reads under the lock; the restarts happen outside it (loadTabPage takes the
+        // same lock internally, and keeping the loop short avoids holding it across launches).
+        val stalled = kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
+            _uiState.value.tabs.mapIndexedNotNull { index, tab ->
+                if (tab.isAllTab) return@mapIndexedNotNull null // "All" aggregates per-source tabs
+                val stateSaysLoading = tab.isLoading || tab.isLoadingMore
+                val jobIsLive = loadJobs[index]?.isActive == true
+                if (stateSaysLoading && !jobIsLive) index to tab.items.isEmpty() else null
+            }
+        }
+        stalled.forEach { (index, resetNeeded) -> loadTabPage(index, reset = resetNeeded) }
     }
 
     fun loadMoreSelectedTab() {
@@ -306,8 +402,15 @@ object FolderDetailRepository {
             }
         }
 
-        loadJobs.remove(index)?.cancel()
-        val job = scope.launch {
+        kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
+            loadJobs.remove(index)?.cancel()
+        }
+        // UX-14 (Codex gate 2, rounds 5+8): LAZY start so the job is registered in [loadJobs]
+        // BEFORE it can run — the ownership guards in onSuccess/onFailure below compare against
+        // this map (via `registeredJob`, the self-reference a `val` initializer can't legally
+        // hold), and an eagerly-started job could in principle complete before the map write.
+        var registeredJob: Job? = null
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             runCatching {
                 val source = currentTab.source
                 when {
@@ -330,6 +433,14 @@ object FolderDetailRepository {
                     )
                 }.withUnreleasedFilter()
             }.onSuccess { page ->
+                // UX-14 (Codex gate 2, rounds 5+8): cancellation is cooperative — a job cancelled
+                // by [detach]/[clear]/a same-index reload just after its final suspension still
+                // runs this non-suspending block. Publishing then would overwrite a resumed
+                // request or leak a cleared profile's items back into state. Only the job
+                // currently registered for this index may publish, and the check + publication
+                // hold the registry lock so a concurrent replacement can't slip between them.
+                kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
+                if (loadJobs[index] !== registeredJob) return@onSuccess
                 updateTab(index) { tab ->
                     val mergedItems = if (reset) {
                         page.items
@@ -356,20 +467,37 @@ object FolderDetailRepository {
                     )
                 }
                 rebuildAllTab()
+                } // synchronized(loadJobsLock)
             }.onFailure { error ->
-                log.e(error) { "Failed to load source ${currentTab.catalogId}" }
-                updateTab(index) { tab ->
-                    tab.copy(
-                        isLoading = false,
-                        isLoadingMore = false,
-                        nextSkip = if (reset) null else tab.nextSkip,
-                        error = error.message,
-                    )
+                // UX-14 (Codex gate 2): a [detach]-cancelled load is NOT a failure. Writing
+                // flags/error here raced the pop-back [initialize] — once the flags read false,
+                // [resumeInterruptedTabLoads] saw nothing to resume and the tab sat empty with a
+                // cancellation message and no retry path. Leaving state untouched keeps the tab
+                // "loading with no live job", which is exactly the shape the resume path restarts.
+                // (Same contract as CatalogRepository's fetch handlers.)
+                if (error is CancellationException) return@onFailure
+                // Rounds 5+8: same locked publication guard as onSuccess — a superseded job's
+                // failure must not stamp an error onto a tab a NEWER job now owns.
+                kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
+                    if (loadJobs[index] !== registeredJob) return@onFailure
+                    log.e(error) { "Failed to load source ${currentTab.catalogId}" }
+                    updateTab(index) { tab ->
+                        tab.copy(
+                            isLoading = false,
+                            isLoadingMore = false,
+                            nextSkip = if (reset) null else tab.nextSkip,
+                            error = error.message,
+                        )
+                    }
+                    rebuildAllTab()
                 }
-                rebuildAllTab()
             }
         }
-        loadJobs[index] = job
+        registeredJob = job
+        kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
+            loadJobs[index] = job
+        }
+        job.start()
     }
 
     private fun rebuildAllTab() {

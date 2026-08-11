@@ -194,6 +194,7 @@ object CatalogRepository {
                         type = target.contentType,
                         catalogId = target.catalogId,
                         genre = target.genre,
+                        search = target.search,
                         skip = requestedSkip.takeIf { it > 0 },
                     )
 

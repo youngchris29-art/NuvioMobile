@@ -656,12 +656,7 @@ object SearchRepository {
             title = resourceString("$catalogName • ${type.displayLabel()}", StringKey.discover_catalog_context, catalogName, type.displayLabel()),
             subtitle = addon.displayTitle,
             addonName = addon.displayTitle,
-            target = CatalogTarget.Addon(
-                manifestUrl = manifest.transportUrl,
-                contentType = type,
-                catalogId = catalogId,
-                supportsPagination = supportsPagination,
-            ),
+            target = toCatalogTarget(manifestTransportUrl = manifest.transportUrl),
             items = items,
             availableItemCount = page.rawItemCount,
             hasMore = supportsPagination && page.nextSkip != null,
@@ -821,6 +816,20 @@ internal data class SearchCatalogRequest(
     /// Swift exposure) — it exists so the results section key can stay unique per install.
     val key: String,
 )
+
+/// BUG-48 (beta.12): the See All target for a search-result section. The section was built FROM
+/// this request's query, so the target must carry the SAME query — building it without one (the
+/// old inline construction) made the pushed grid fetch the addon's unfiltered catalog: empty for
+/// search-only catalogs (the grid behind BUG-47's eject), silently wrong titles for browsable
+/// ones. Internal + pure so common tests can pin the threading without a network round-trip.
+internal fun SearchCatalogRequest.toCatalogTarget(manifestTransportUrl: String): CatalogTarget.Addon =
+    CatalogTarget.Addon(
+        manifestUrl = manifestTransportUrl,
+        contentType = type,
+        catalogId = catalogId,
+        search = query,
+        supportsPagination = supportsPagination,
+    )
 
 /// BUG-33: the results list is `ForEach(model.sections, id: \.key)` (SearchView.swift), so two
 /// duplicate installs of the same catalog must not produce the same section key or the rails

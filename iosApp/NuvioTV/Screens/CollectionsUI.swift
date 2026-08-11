@@ -371,7 +371,12 @@ final class FolderDetailViewModel: ObservableObject {
     func stop() {
         watcher?.cancel()
         watcher = nil
-        FolderDetailRepository.shared.clear()
+        // UX-14: `onDisappear` also fires when a pushed title screen merely COVERS this grid —
+        // `clear()` here meant popping back rebuilt the grid at the top. `detach()` cancels
+        // in-flight loads but keeps the repository's state, so `initialize()`'s same-key
+        // early-return preserves the items (and the lazy grid's scroll position) on pop-back.
+        // Same UX-13 contract as CatalogGridViewModel.stop() → CatalogRepository.detach().
+        FolderDetailRepository.shared.detach()
     }
 
     func selectTab(_ index: Int) {

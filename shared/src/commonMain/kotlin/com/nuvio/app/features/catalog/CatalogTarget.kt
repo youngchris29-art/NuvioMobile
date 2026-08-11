@@ -12,6 +12,15 @@ sealed interface CatalogTarget {
         override val contentType: String,
         val catalogId: String,
         val genre: String? = null,
+        /// BUG-48 (beta.12): the search term the catalog was queried with, threaded through to
+        /// `fetchCatalogPage` so an expanded search-result row fetches the SEARCHED catalog. It
+        /// was silently dropped here before: search-only addon catalogs returned nothing
+        /// unfiltered (the empty grid behind BUG-47's tab-bar eject on tvOS), and browsable ones
+        /// showed unfiltered titles under a searched row's name. Part of the data class, so
+        /// request identity/equality — including UX-13's cross-push restoration keying, which
+        /// compares `CatalogRequest`s — distinguishes queries for free. Null = a plain
+        /// (non-search) catalog fetch, byte-identical to prior behavior.
+        val search: String? = null,
         override val supportsPagination: Boolean = false,
     ) : CatalogTarget
 

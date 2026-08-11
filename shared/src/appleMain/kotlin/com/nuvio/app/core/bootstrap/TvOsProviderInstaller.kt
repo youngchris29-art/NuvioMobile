@@ -17,6 +17,7 @@ import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.catalog.CatalogRepository
 import com.nuvio.app.features.collection.CollectionMobileSettingsRepository
 import com.nuvio.app.features.collection.CollectionRepository
+import com.nuvio.app.features.collection.FolderDetailRepository
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
@@ -175,6 +176,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         EpisodeReleaseNotificationsRepository.clearLocalState()
         CollectionMobileSettingsRepository.clearLocalState()
         CollectionRepository.clearLocalState()
+        // UX-14 (beta.12, Codex gate 2): FolderDetailRepository now RETAINS state across screen
+        // covers (detach() replaced clear() in the tvOS pop path), so the account wipe is the
+        // teardown that guarantees the next profile can never hit initialize()'s same-key
+        // early-return against the previous profile's cached folder items.
+        FolderDetailRepository.clear()
         ThemeSettingsRepository.clearLocalState()
         PosterCardStyleRepository.clearLocalState()
         CardDepthStyleRepository.clearLocalState()
@@ -326,6 +332,12 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("mdbListSettings") { MdbListSettingsRepository.onProfileChanged() }
         step("searchHistory") { SearchHistoryRepository.onProfileChanged() }
         step("collections") { CollectionRepository.onProfileChanged() }
+        // UX-14 (beta.12) made the folder grid's pop RETAIN FolderDetailRepository state
+        // (detach() instead of clear()) so backing out of a title restores position — the exact
+        // H1/UX-13 shape the catalog step above covers, with the exact same profile-boundary
+        // hole (Codex gate 2 round 3): two profiles sharing collection/folder ids would let
+        // initialize()'s same-key early-return show the previous profile's items.
+        step("folderDetail") { FolderDetailRepository.clear() }
         step("collectionMobileSettings") { CollectionMobileSettingsRepository.onProfileChanged() }
         step("downloads") { DownloadsRepository.onProfileChanged() }
         // Debrid keys/settings are profile-scoped too (tvOS-specific step; upstream keeps debrid
