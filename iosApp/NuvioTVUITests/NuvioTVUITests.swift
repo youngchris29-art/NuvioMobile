@@ -307,6 +307,53 @@ final class NuvioTVUITests: XCTestCase {
 
     // MARK: - Settings: new rows + hero sources
 
+    /// SCRATCH utility (not part of the suite contract): re-enables Show Hero through the real
+    /// Settings UI so the change pushes to the signed-in account via profile settings sync —
+    /// prefs injection cannot do this (sync pulls the account value back on every launch).
+    /// Run explicitly via -only-testing when a repro session left the profile hero-off.
+    func test00zRestoreShowHeroOn() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        press(.down, times: 1)   // Home Screen category (activates on focus)
+        pause(1.5)
+        // Enter the pane, then walk UP until the FOCUSED row is Show Hero (the pane's first row;
+        // entering can land focus on any row — the previous attempt selected whatever had focus
+        // and collaterally toggled Trailers on Focus OFF). 26.5 reports hasFocus reliably.
+        press(.right, times: 1)
+        pause(1.0)
+        func focusedButton() -> XCUIElement {
+            app.buttons.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        }
+        for _ in 0..<6 {
+            if focusedButton().label.contains("Show Hero") { break }
+            press(.up, times: 1)
+            pause(0.8)
+        }
+        shot(app, "00z_before_toggle")
+        XCTAssertTrue(focusedButton().label.contains("Show Hero"),
+                      "focus must be on the Show Hero row before toggling, got: \(focusedButton().label)")
+        if focusedButton().label.contains("Off") {
+            remote.press(.select)
+            pause(2.0)
+        }
+        shot(app, "00z_after_toggle")
+        XCTAssertTrue(app.staticTexts["Hero Sources"].waitForExistence(timeout: 6),
+                      "Show Hero must be ON (Hero Sources group renders only then)")
+
+        // Repair the collateral from the previous attempt: Trailers on Focus back ON.
+        press(.down, times: 1)
+        pause(0.8)
+        if focusedButton().label.contains("Trailers on Focus"), focusedButton().label.contains("Off") {
+            remote.press(.select)
+            pause(1.5)
+        }
+        shot(app, "00z_trailers_restored")
+        // Give the settings sync a moment to push the changes to the account.
+        pause(5.0)
+    }
+
     func test04SettingsRows() throws {
         // Fresh launch (2026-08-02): this test asserts Settings pane CONTENT, so it must not
         // inherit a prior test's pane scroll/focus or the springboard black-screen state (see
