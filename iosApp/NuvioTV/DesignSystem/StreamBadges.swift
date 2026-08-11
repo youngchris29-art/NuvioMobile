@@ -48,15 +48,21 @@ struct StreamBadgeChipView: View {
             ? Color(hexString: badge.tagColor)
             : (isFocused ? Theme.Palette.surfaceElevated : nil)
         let border = Color(hexString: badge.borderColor)
+        // BUG-43 (beta.12): the fallback text sits on the background THIS chip actually draws —
+        // the pack fill only when `filled`; otherwise the clear/dark row (empty hex routes the
+        // decision through its dark semantic default). Computing against `tagColor` regardless
+        // gave a non-filled badge with a light `tagColor` near-black fallback text on a dark
+        // row — invisible in the opposite direction from the reported defect.
+        let effectiveBgHex = filled ? badge.tagColor : ""
         let fallbackDecision = Self.effectiveTextChipColors(
             textColorHex: badge.textColor,
-            tagColorHex: badge.tagColor,
+            tagColorHex: effectiveBgHex,
             isFocused: isFocused
         )
         let fallbackForeground = Self.resolvedForeground(
             fallbackDecision,
             textColorHex: badge.textColor,
-            tagColorHex: badge.tagColor
+            tagColorHex: effectiveBgHex
         )
 
         return BadgeImageView(url: badge.imageURL) {

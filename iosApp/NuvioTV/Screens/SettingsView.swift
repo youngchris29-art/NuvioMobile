@@ -183,9 +183,20 @@ struct SettingsView: View {
                             .font(Theme.Font.body)
                         Spacer(minLength: 0)
                     }
-                    .rowAccentTint(
-                        category == selectedCategory,
-                        inactiveColor: Theme.Palette.textPrimary
+                    // BUG-45 (beta.12): the label color is driven by the sidebar's OWN
+                    // `@FocusState`, not `rowAccentTint`'s `@Environment(\.isFocused)`. The
+                    // sidebar is the one surface where the focused row is ALWAYS also the
+                    // selected one (focusing live-selects, see onChange below), so when that
+                    // environment read fails to reflect focus here, the "selected" accent paints
+                    // on the focus platter — and on the White theme (accent ≈ platter) the
+                    // measured result was a label with ZERO pixels (luma range 3 across the whole
+                    // row interior on camera, 2026-08-10). `focusedCategory` is ground truth from
+                    // the same `.focused(...)` binding that drives the pane preview — it cannot
+                    // disagree with the platter the style draws.
+                    .foregroundStyle(
+                        category == focusedCategory ? Theme.Palette.onFocusPlatter
+                            : category == selectedCategory ? Theme.Palette.accent
+                            : Theme.Palette.textPrimary
                     )
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.vertical, settingsStyle == "minimal" ? Theme.Spacing.sm : Theme.Spacing.md)

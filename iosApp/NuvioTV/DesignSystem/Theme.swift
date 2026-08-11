@@ -91,10 +91,13 @@ enum Theme {
                 r = Double((value >> 16) & 0xFF) / 255.0
                 g = Double((value >> 8) & 0xFF) / 255.0
                 b = Double(value & 0xFF) / 255.0
-            default: // 8: RRGGBBAA
-                r = Double((value >> 24) & 0xFF) / 255.0
-                g = Double((value >> 16) & 0xFF) / 255.0
-                b = Double((value >> 8) & 0xFF) / 255.0
+            default: // 8: AARRGGBB — Android/Compose convention, matching `Color(hexString:)`.
+                // BUG-43: reading these bytes as RRGGBBAA fed the contrast guards a luminance
+                // computed from the WRONG channels (alpha in, blue out) for every 8-digit pack
+                // color — see the parity note in `Color(hexString:)`.
+                r = Double((value >> 16) & 0xFF) / 255.0
+                g = Double((value >> 8) & 0xFF) / 255.0
+                b = Double(value & 0xFF) / 255.0
             }
             return 0.2126 * r + 0.7152 * g + 0.0722 * b
         }
@@ -371,11 +374,18 @@ extension Color {
             g = Double((value >> 8) & 0xFF) / 255.0
             b = Double(value & 0xFF) / 255.0
             a = 1.0
-        default: // 8: RRGGBBAA
-            r = Double((value >> 24) & 0xFF) / 255.0
-            g = Double((value >> 16) & 0xFF) / 255.0
-            b = Double((value >> 8) & 0xFF) / 255.0
-            a = Double(value & 0xFF) / 255.0
+        default: // 8: AARRGGBB — see the BUG-43 note below.
+            // BUG-43 (beta.12): every 8-digit hex this app parses is a CROSS-PLATFORM string
+            // (badge packs, synced avatar colors) authored in the Android/Compose convention,
+            // which mobile reads as AARRGGBB (`StreamBadgeChip.kt`: `8 -> hex`,
+            // `6 -> "FF$hex"`). Reading RRGGBBAA here turned an opaque `#FF1A1A1A` chip
+            // (dark on mobile) into a ~10%-alpha light ghost on tvOS — the "language badge
+            // renders in the light theme" report — and fed garbage luminance into the BUG-28/43
+            // contrast guards, which is why the guard-side fix alone never took.
+            a = Double((value >> 24) & 0xFF) / 255.0
+            r = Double((value >> 16) & 0xFF) / 255.0
+            g = Double((value >> 8) & 0xFF) / 255.0
+            b = Double(value & 0xFF) / 255.0
         }
         self.init(.sRGB, red: r, green: g, blue: b, opacity: a)
     }

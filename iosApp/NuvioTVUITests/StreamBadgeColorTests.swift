@@ -44,10 +44,10 @@ final class StreamBadgeColorTests: XCTestCase {
             r = Double((value >> 16) & 0xFF) / 255.0
             g = Double((value >> 8) & 0xFF) / 255.0
             b = Double(value & 0xFF) / 255.0
-        default: // 8: RRGGBBAA
-            r = Double((value >> 24) & 0xFF) / 255.0
-            g = Double((value >> 16) & 0xFF) / 255.0
-            b = Double((value >> 8) & 0xFF) / 255.0
+        default: // 8: AARRGGBB (BUG-43 — Android/Compose pack convention, matching mobile)
+            r = Double((value >> 16) & 0xFF) / 255.0
+            g = Double((value >> 8) & 0xFF) / 255.0
+            b = Double(value & 0xFF) / 255.0
         }
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
     }
@@ -224,6 +224,34 @@ final class StreamBadgeColorTests: XCTestCase {
     func testMissingTextColor_lightTagColor_focused_ignoresPackEntirely() {
         let decision = effectiveTextChipColors(textColorHex: "", tagColorHex: "F5F5F5", isFocused: true)
         XCTAssertEqual(decision, ChipColorDecision(fg: .focusedFixed, bg: .focusedFixed, showBorder: false))
+    }
+
+    // MARK: - BUG-43 (beta.12): 8-digit hex is AARRGGBB, matching mobile's pack convention
+
+    /// `#FF1A1A1A` is an OPAQUE NEAR-BLACK in the Android/Compose convention every pack is
+    /// authored in (`StreamBadgeChip.kt`: `8 -> hex` as AARRGGBB). The old RRGGBBAA read scored
+    /// its luminance from the wrong channels (alpha counted as red, blue dropped), which fed the
+    /// contrast guards garbage — the mechanism behind BUG-43's "shipped fix didn't take."
+    func testEightDigitHex_readsAsArgb_opaqueDarkScoresDark() {
+        let lum = luminance(fromHexString: "#FF1A1A1A")
+        XCTAssertNotNil(lum)
+        XCTAssertLessThan(lum!, 0.15, "an opaque dark ARGB color must score dark")
+    }
+
+    /// Symmetric pin: `#FFF5F5F5` (opaque near-white in ARGB) must score light, so the
+    /// missing-`textColor` guard trips exactly as it does for the 6-digit "F5F5F5".
+    func testEightDigitHex_readsAsArgb_opaqueLightScoresLight() {
+        let lum = luminance(fromHexString: "#FFF5F5F5")
+        XCTAssertNotNil(lum)
+        XCTAssertGreaterThan(lum!, 0.85, "an opaque light ARGB color must score light")
+    }
+
+    /// End-to-end through the decision function: an 8-digit opaque LIGHT pack fill with no
+    /// `textColor` must take the computed-dark-text branch, same as its 6-digit twin.
+    func testEightDigitLightTagColor_unfocused_appliesContrastGuard() {
+        let decision = effectiveTextChipColors(textColorHex: "", tagColorHex: "#FFF5F5F5", isFocused: false)
+        XCTAssertEqual(decision.fg, .computedOnBg)
+        XCTAssertEqual(decision.bg, .pack)
     }
 }
 
