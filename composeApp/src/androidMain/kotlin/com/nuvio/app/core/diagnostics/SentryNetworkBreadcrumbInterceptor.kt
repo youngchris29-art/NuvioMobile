@@ -60,11 +60,12 @@ class SentryNetworkBreadcrumbInterceptor : Interceptor {
         breadcrumb.setCategory("http.client")
         breadcrumb.setLevel(levelFor(statusCode, error))
         breadcrumb.setData("host", url.host)
-        breadcrumb.setData("path", url.encodedPath)
+        breadcrumb.setData("path", NetworkBreadcrumbSanitizer.sanitizePath(url.encodedPath))
         breadcrumb.setData("elapsed_ms", elapsedMs)
         if (error != null) {
+            // Only the exception class: OkHttp error messages frequently embed
+            // the full request URL, which can carry signed path tokens.
             breadcrumb.setData("error_type", error.javaClass.name)
-            error.message?.let { breadcrumb.setData("error_message", it.take(240)) }
         }
         Sentry.addBreadcrumb(breadcrumb)
     }
@@ -79,12 +80,12 @@ class SentryNetworkBreadcrumbInterceptor : Interceptor {
         }
     }
 
-    private fun scrubbedUrl(url: HttpUrl): String =
-        url.newBuilder()
-            .query(null)
-            .fragment(null)
-            .build()
-            .toString()
+    private fun scrubbedUrl(url: HttpUrl): String {
+        val host = if (":" in url.host) "[${url.host}]" else url.host
+        val port = if (url.port != HttpUrl.defaultPort(url.scheme)) ":${url.port}" else ""
+        return "${url.scheme}://$host$port" +
+            NetworkBreadcrumbSanitizer.sanitizePath(url.encodedPath)
+    }
 
     private fun elapsedMs(startedAtNs: Long): Long =
         (System.nanoTime() - startedAtNs) / 1_000_000L
