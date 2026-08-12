@@ -288,7 +288,8 @@ enum Theme {
         static let heroPinnedRowsGap: CGFloat = 10
         /// Top content inset INSIDE the pinned rows ScrollView. Small: the real protection
         /// against device rest-position error lives per-row in `heroPinnedRowTopPad` (below) —
-        /// this only sets where row 1 rests at true top (8 + 72 ≈ the 80 the round-2 fix used).
+        /// this only sets where row 1 rests at true top (8 + 88; with the original 72 reach,
+        /// 8 + 72 ≈ the 80 the round-2 fix used).
         static let heroPinnedRowsHeadroom: CGFloat = 8
         /// Per-row top band in the PINNED rows list (replaces the LazyVStack's sectionGap in
         /// pinned mode, which drops to 0), AND the `rowCardTopReach` each row card extends its
@@ -300,8 +301,18 @@ enum Theme {
         /// OUTSIDE the card frame can never fix that (the reveal target excludes it — rounds
         /// 2–3 proved it on device); the card frames themselves reach up through this band, so
         /// the reveal always includes the section title. Also the row-to-row visual gap in
-        /// pinned mode (72 vs classic's 48 sectionGap — slightly airier by design).
-        static let heroPinnedRowTopPad: CGFloat = 72
+        /// pinned mode (88 vs classic's 48 sectionGap — slightly airier by design).
+        ///
+        /// BUG-53 (2026-08-11 device pass): 72 → 88. On the beta.12 build rests are
+        /// deterministic — every settled rest parks the slid title bottom EXACTLY at the
+        /// artwork top, zero slack — so the system `hoverEffect(.highlight)` lift (~10–16pt)
+        /// on a row's leftmost cards clipped the title. Widening the band (and with it the
+        /// reach — deliberately coupled: a reach larger than the band would overlap the
+        /// previous row's focus frames) to 88 gives the parked title a 16pt cushion above
+        /// the art. Reach is the most regression-prone dial (the sim bisected reach 100 =
+        /// focus resolution dies outright; 72 was the long-proven value): any focus
+        /// hesitation or missed navigation on device means reverting to 72.
+        static let heroPinnedRowTopPad: CGFloat = 88
         /// Downward card reach in pinned mode (device round 5): scrolling DOWN, the reveal
         /// rests short in the mirror direction, leaving the focused card's caption — and up to
         /// ~40pt of art — below the fold. Extending the focus frame down by this much makes the
@@ -310,12 +321,13 @@ enum Theme {
         static let heroPinnedRowBottomReach: CGFloat = 44
         /// Top inset of the section title OVERLAID inside a pinned row's reach band (the title
         /// floats over the transparent region the cards' focus frames cover, so the engine's
-        /// reveal always shows it). Band above the art = shelf padding (24) + top reach (72)
-        /// = 96; the title (~40) sits LOW in the band at this inset (a ~12pt gap to the art)
-        /// so that the distance from the button frame's top to the title's top (~48pt)
-        /// exceeds the device's measured ~45pt reveal residual — a full-residual rest still
-        /// shows the whole title. Reach stays at 72: the sim freeze bisected to reach 100
-        /// (focus resolution dies), and 72 is the proven-navigable value.
+        /// reveal always shows it). Band above the art = shelf padding (24) + top reach (88)
+        /// = 112; the title (~40) sits at this inset with a ~24pt static gap to the art
+        /// (~12pt back when the reach was 72/band 96) so that the distance from the button
+        /// frame's top to the title's top exceeds the device's measured reveal residual — a
+        /// full-residual rest still shows the whole title. Reach history: 72 was the
+        /// long-proven value (the sim freeze bisected to reach 100, where focus resolution
+        /// dies); raised to 88 for BUG-53 — see `heroPinnedRowTopPad`.
         ///
         /// BUG-37 CORRECTION (2026-08-05): that "~48pt" was the inset read against the wrong
         /// anchor. The overlay is attached to the SHELF (the horizontal ScrollView), whose top is
@@ -331,11 +343,14 @@ enum Theme {
         /// viewport when the device rests short of the reveal target.
         ///
         /// No static inset can cover the envelope. The whole band above the art is
-        /// shelf padding (24) + reach (72) = 96pt and the title is ~40pt tall, so the largest
-        /// static button-top→title-top margin the band can offer is 96 − 40 − 24 = 32pt — under
-        /// the 40–67pt measured error either way, whether the title hangs off the shelf (today)
-        /// or off the card frame. Widening the band means a reach above 72, and the sim bisected
-        /// 100 as the value where focus resolution dies outright, so that door is shut too.
+        /// shelf padding (24) + reach (88) = 112pt and the title is ~40pt tall, so the largest
+        /// static button-top→title-top margin the band can offer is 112 − 40 − 24 = 48pt —
+        /// at the time of measurement (reach 72, band 96, margin 32pt) under the 40–67pt error
+        /// either way, whether the title hangs off the shelf (today) or off the card frame.
+        /// Widening the band further means a reach approaching 100, the sim-bisected value
+        /// where focus resolution dies outright, so that door is shut too. (The 40–67pt
+        /// envelope itself no longer reproduces on beta.12 — rests are deterministic — but
+        /// the slide stays: it is what parks the title at the clip edge at every rest.)
         /// Hence a render-time slide (`pinnedRowTitleTracking`, BrowseComponents) with this
         /// clamp: 72 covers the full 0–67pt envelope on top of the 24pt static margin, and bounds
         /// how far a deeply-clipped row's title may ride over its own artwork (worst case ~62pt
