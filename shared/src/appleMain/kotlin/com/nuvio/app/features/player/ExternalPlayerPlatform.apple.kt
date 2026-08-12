@@ -1,6 +1,8 @@
 package com.nuvio.app.features.player
 
+import platform.Foundation.NSLog
 import platform.Foundation.NSURL
+import platform.Foundation.NSUserDefaults
 import platform.UIKit.UIApplication
 
 private data class IosExternalPlayerSpec(
@@ -65,19 +67,35 @@ private val iosExternalPlayerSpecs = listOf(
         // iPhone/iPad, Android; /open is Apple-legacy-only). /play adds `filename`, `position`
         // (seconds), and `sub`, which /open lacked for the title, so the handoff now carries
         // the same metadata Infuse gets.
+        //
+        // 2026-08-12 device pass: on the tvOS VidHub build, /play opened the app but never
+        // started playback (post-onboarding retest included), despite the docs' Apple TV
+        // support table. `debug.vidhubMethod` bisects the handoff live from launch args
+        // without a rebuild: "open" = legacy method, "minimal" = /play with url only,
+        // anything else/unset = the full documented /play.
         buildUrl = { request ->
-            buildString {
-                append("open-vidhub://x-callback-url/play?url=")
-                append(request.sourceUrl.urlQueryEncode())
-                append("&filename=")
-                append(request.buildPlayerTitle(includeEpisodeTitle = true).urlQueryEncode())
-                if (request.resumePositionMs > 0) {
-                    append("&position=")
-                    append(request.resumePositionMs / 1000)
+            when (NSUserDefaults.standardUserDefaults.stringForKey("debug.vidhubMethod")) {
+                // url-only, replicating the pre-beta.12 shipped builder byte-for-byte so the
+                // bisect tests the legacy method exactly as it used to go out. (VidHub's docs
+                // do list `sub` on /open, but a diagnostic branch adds nothing new.)
+                "open" -> "open-vidhub://x-callback-url/open?url=" + request.sourceUrl.urlQueryEncode()
+                "minimal" -> buildString {
+                    append("open-vidhub://x-callback-url/play?url=")
+                    append(request.sourceUrl.urlQueryEncode())
                 }
-                request.subtitles?.firstOrNull()?.let { subtitle ->
-                    append("&sub=")
-                    append(subtitle.url.urlQueryEncode())
+                else -> buildString {
+                    append("open-vidhub://x-callback-url/play?url=")
+                    append(request.sourceUrl.urlQueryEncode())
+                    append("&filename=")
+                    append(request.buildPlayerTitle(includeEpisodeTitle = true).urlQueryEncode())
+                    if (request.resumePositionMs > 0) {
+                        append("&position=")
+                        append(request.resumePositionMs / 1000)
+                    }
+                    request.subtitles?.firstOrNull()?.let { subtitle ->
+                        append("&sub=")
+                        append(subtitle.url.urlQueryEncode())
+                    }
                 }
             }
         },
@@ -102,7 +120,16 @@ actual object ExternalPlayerPlatform {
         if (!UIApplication.sharedApplication.canOpenURL(spec.schemeProbeUrl())) {
             return ExternalPlayerOpenResult.NoPlayerAvailable
         }
-        val url = NSURL.URLWithString(spec.buildUrl(request))
+        val urlString = spec.buildUrl(request)
+        // Knob-gated, console-only: the string embeds tokenized debrid URLs, so it must never
+        // log unconditionally (the Sentry breadcrumb scrub in d5b29180 exists for this reason).
+        if (NSUserDefaults.standardUserDefaults.boolForKey("debug.extPlayerProbe")) {
+            // Single-arg NSLog with % escaped: K/N strings do not bridge through NSLog's C
+            // varargs — NSLog("%@", kotlinString) SIGSEGVs (field-proven 2026-08-01).
+            val line = "[ExtPlayerProbe] open player=" + spec.id + " url=" + urlString
+            NSLog(line.replace("%", "%%"))
+        }
+        val url = NSURL.URLWithString(urlString)
             ?: return ExternalPlayerOpenResult.Failed
         UIApplication.sharedApplication.openURL(
             url = url,
