@@ -97,8 +97,8 @@ struct TrailerThumbCard: View {
                 }
             }
             .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
-            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: Theme.Radius.card))
-            .hoverEffect(.highlight)
+            // BUG-31: goes still under "No Zoom on Focus" (which this tile used to ignore).
+            .tileFocusLift(cornerRadius: Theme.Radius.card)
 
             Text(trailer.displayName ?? trailer.name)
                 .font(Theme.Font.cardTitle)

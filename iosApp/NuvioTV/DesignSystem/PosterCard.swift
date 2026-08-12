@@ -220,12 +220,63 @@ struct CardFocusTreatment: ViewModifier {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
         }
     }
+}
 
-    /// Still mode's ring-less focus border. Deliberately NOT the accent color — the accent ring is
-    /// its own opt-in setting, and a user who left it off shouldn't get one by turning zoom off.
-    /// Near-white at partial opacity reads as the system's own highlight edge at 10 feet without
-    /// impersonating the ring.
-    private var stillHighlight: Color { Color.white.opacity(0.85) }
+/// Still mode's ring-less focus border. Deliberately NOT the accent color — the accent ring is
+/// its own opt-in setting, and a user who left it off shouldn't get one by turning zoom off.
+/// Near-white at partial opacity reads as the system's own highlight edge at 10 feet without
+/// impersonating the ring. File-scope (was `CardFocusTreatment`-private) so `TileFocusLift`
+/// draws the identical edge.
+private let stillHighlight = Color.white.opacity(0.85)
+
+/// BUG-31 (beta.12 device pass): "No Zoom on Focus" only ever reached the content cards —
+/// utility tiles that keep the whole-tile system lift (the See All tile, episode cards, the
+/// detail-page trailer thumbnail) applied `.hoverEffect(.highlight)` unconditionally, so with
+/// the toggle ON every poster went still while these kept zooming. This is their still-aware
+/// stand-in: zoom ON keeps the system treatment these tiles always had (with the highlight
+/// geometry pinned to the tile's own corner radius, the BUG-31/BUG-25 contract); zoom OFF
+/// draws still mode's neutral border + shadow (same color/weight/timing as
+/// `CardFocusTreatment`'s `.still`) on the tile's own rounded rect, and nothing scales.
+/// Utility tiles never wear the accent ring (see `SeeAllCard`'s header note), so the border
+/// here is always the neutral one.
+struct TileFocusLift: ViewModifier {
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if noZoomOnFocus {
+            let shape = RoundedRectangle(cornerRadius: cornerRadius)
+            content
+                // Behind the (opaque) tile face, so only the spill reads — same weight as
+                // `.still`'s shadow.
+                .background {
+                    if isFocused {
+                        shape
+                            .fill(Color.black)
+                            .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
+                    }
+                }
+                .overlay {
+                    if isFocused {
+                        shape.strokeBorder(stillHighlight, lineWidth: ringWidth)
+                    }
+                }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+        } else {
+            content
+                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
+                .hoverEffect(.highlight)
+        }
+    }
+}
+
+extension View {
+    /// See `TileFocusLift`.
+    func tileFocusLift(cornerRadius: CGFloat) -> some View {
+        modifier(TileFocusLift(cornerRadius: cornerRadius))
+    }
 }
 
 /// BUG-54 (beta.11 device regression, found by Christian): the system focus treatment, back on the

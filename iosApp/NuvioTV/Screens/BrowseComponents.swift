@@ -583,9 +583,11 @@ struct CatalogRowView: View {
 /// Shaped like the row's RESTING cards — portrait per the user's Poster Style, or 16:9 landscape
 /// when landscape catalog rows are on — so the shelf reads as one continuous strip and vertical
 /// focus travel always lands on card-sized frames. When captions are visible, an empty caption
-/// slot keeps the tile's art aligned with its neighbors' art. Standard system lift
-/// (`.hoverEffect(.highlight)`); in FEAT-14 ring mode the tile deliberately keeps the system
-/// treatment — the accent ring marks CONTENT cards, and a utility tile reads fine without it.
+/// slot keeps the tile's art aligned with its neighbors' art. Standard system lift via
+/// `tileFocusLift` (BUG-31: it goes still with "No Zoom on Focus", which this tile used to
+/// ignore — the row's posters froze while See All kept zooming); in FEAT-14 ring mode the tile
+/// deliberately keeps the system treatment — the accent ring marks CONTENT cards, and a
+/// utility tile reads fine without it.
 struct SeeAllCard: View {
     @Environment(\.posterStyle) private var style
 
@@ -612,7 +614,7 @@ struct SeeAllCard: View {
                 in: RoundedRectangle(cornerRadius: style.cornerRadius)
             )
             .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
-            .hoverEffect(.highlight)
+            .tileFocusLift(cornerRadius: style.cornerRadius)
 
             if style.showTitle {
                 // Empty caption slot: neighbors are art + caption, so without this the

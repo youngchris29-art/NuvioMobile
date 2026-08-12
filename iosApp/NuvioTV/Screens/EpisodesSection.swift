@@ -259,9 +259,9 @@ private struct EpisodeThumbCard: View {
             }
             .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
             // Whole-card system lift — see PosterCard: still, scrim, and badges move as one.
-            // BUG-31/BUG-25: pin the highlight geometry to the card's own corner radius.
-            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: Theme.Radius.card))
-            .hoverEffect(.highlight)
+            // BUG-31/BUG-25: highlight geometry pinned to the card's own corner radius; goes
+            // still under "No Zoom on Focus" (which this tile used to ignore).
+            .tileFocusLift(cornerRadius: Theme.Radius.card)
 
             Text(heading)
                 .font(Theme.Font.cardTitle)
