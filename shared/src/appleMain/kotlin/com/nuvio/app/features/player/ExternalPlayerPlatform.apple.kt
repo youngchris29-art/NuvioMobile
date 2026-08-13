@@ -72,6 +72,7 @@ private val iosExternalPlayerSpecs = listOf(
         // started playback (post-onboarding retest included), despite the docs' Apple TV
         // support table. `debug.vidhubMethod` bisects the handoff live from launch args
         // without a rebuild: "open" = legacy method, "minimal" = /play with url only,
+        // "bare" = undocumented vidhub://play (seen in bobsupra/NuvioTVOS, unverified there),
         // anything else/unset = the full documented /play.
         buildUrl = { request ->
             when (NSUserDefaults.standardUserDefaults.stringForKey("debug.vidhubMethod")) {
@@ -83,6 +84,10 @@ private val iosExternalPlayerSpecs = listOf(
                     append("open-vidhub://x-callback-url/play?url=")
                     append(request.sourceUrl.urlQueryEncode())
                 }
+                // Bare scheme, no x-callback-url host. Launch still gates on the open-vidhub
+                // probe (spec.scheme), so this fires even if vidhub:// isn't registered —
+                // the ContentView probe logs canOpenURL(vidhub://) to interpret a no-op.
+                "bare" -> "vidhub://play?url=" + request.sourceUrl.urlQueryEncode()
                 else -> buildString {
                     append("open-vidhub://x-callback-url/play?url=")
                     append(request.sourceUrl.urlQueryEncode())

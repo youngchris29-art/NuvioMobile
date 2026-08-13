@@ -27,6 +27,7 @@
 		<string>vlc-x-callback</string>
 		<string>outplayer</string>
 		<string>open-vidhub</string>
+		<string>vidhub</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
