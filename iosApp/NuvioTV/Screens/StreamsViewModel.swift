@@ -158,11 +158,13 @@ final class StreamsViewModel: ObservableObject {
     }
 
     /// Full re-fetch — used when a debrid resolve reports the picked link went stale
-    /// (mobile shows the same "Refreshing results" toast and reloads).
+    /// (mobile shows the same "Refreshing results" toast and reloads). Uses the repository's
+    /// reload() so the addon fetch carries forceRefresh=true and bypasses the HTTP cache —
+    /// a stale-link retry that re-reads a cached stream list would just re-pick the dead link.
     func reload() {
         lastState = nil
         StreamsRepository.shared.clear()
-        StreamsRepository.shared.load(
+        StreamsRepository.shared.reload(
             type: type,
             videoId: videoId,
             parentMetaId: parentMetaId,

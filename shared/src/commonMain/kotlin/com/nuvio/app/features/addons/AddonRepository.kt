@@ -251,7 +251,7 @@ object AddonRepository {
 
         val manifest = try {
             withContext(Dispatchers.Default) {
-                val payload = httpGetText(manifestUrl)
+                val payload = fetchAddonResponseText(manifestUrl)
                 AddonManifestParser.parse(
                     manifestUrl = manifestUrl,
                     payload = payload,
@@ -333,11 +333,17 @@ object AddonRepository {
 
     fun refreshAll() {
         _uiState.value.addons.filter { it.enabled }.distinctBy { it.manifestUrl }.forEach { addon ->
-            refreshAddon(addon.manifestUrl)
+            refreshAddon(
+                manifestUrl = addon.manifestUrl,
+                forceRefresh = true,
+            )
         }
     }
 
-    fun refreshAddon(manifestUrl: String) {
+    fun refreshAddon(
+        manifestUrl: String,
+        forceRefresh: Boolean = false,
+    ) {
         val existingJob = activeRefreshJobs[manifestUrl]
         if (existingJob?.isActive == true) return
 
@@ -346,7 +352,10 @@ object AddonRepository {
         refreshJob = scope.launch {
             try {
                 val result = runCatching {
-                    val payload = httpGetText(manifestUrl)
+                    val payload = fetchAddonResponseText(
+                        url = manifestUrl,
+                        forceRefresh = forceRefresh,
+                    )
                     AddonManifestParser.parse(
                         manifestUrl = manifestUrl,
                         payload = payload,

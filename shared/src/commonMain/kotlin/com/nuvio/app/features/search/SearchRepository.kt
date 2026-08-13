@@ -48,7 +48,12 @@ object SearchRepository {
     private var discoverSources: List<DiscoverCatalogOption> = emptyList()
     private var lastDiscoverHideUnreleasedContent: Boolean? = null
 
-    fun search(query: String, addons: List<ManagedAddon>, disabledCatalogKeys: Set<String> = emptySet()) {
+    fun search(
+        query: String,
+        addons: List<ManagedAddon>,
+        disabledCatalogKeys: Set<String> = emptySet(),
+        forceRefresh: Boolean = false,
+    ) {
         val normalizedQuery = query.trim()
         if (normalizedQuery.isBlank()) {
             clear()
@@ -97,7 +102,10 @@ object SearchRepository {
                 },
             )
         }
-        if (requestKey == lastRequestKey) return
+        // Upstream (981b8bc7) also refetches a completed same-key search when not forced; tvOS
+        // keeps the plain same-key reuse — search here only re-fires from the typing debounce on
+        // screen re-entry, where a refetch would just flash-blank retained results.
+        if (!forceRefresh && requestKey == lastRequestKey) return
         lastRequestKey = requestKey
 
         activeJob?.cancel()
@@ -107,7 +115,7 @@ object SearchRepository {
             val resultChannel = Channel<IndexedSearchResult>(Channel.UNLIMITED)
             val jobs = requests.mapIndexed { index, request ->
                 launch {
-                    runCatching { request.toSection() }
+                    runCatching { request.toSection(forceRefresh = forceRefresh) }
                         .fold(
                             onSuccess = { section ->
                                 resultChannel.send(
@@ -187,7 +195,10 @@ object SearchRepository {
         _discoverUiState.value = DiscoverUiState()
     }
 
-    fun refreshDiscover(addons: List<ManagedAddon>) {
+    fun refreshDiscover(
+        addons: List<ManagedAddon>,
+        forceRefresh: Boolean = false,
+    ) {
         val activeAddons = addons.enabledAddons().filter { it.manifest != null }
         if (activeAddons.isEmpty()) {
             activeDiscoverJob?.cancel()
@@ -203,10 +214,15 @@ object SearchRepository {
         val sources = buildDiscoverSources(activeAddons)
         val current = _discoverUiState.value
         val hideUnreleasedContent = HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent
+        // Upstream (981b8bc7) drops canReuseDiscoverState and reuses only while a fetch is in
+        // flight; tvOS keeps the completed-state reuse for non-forced calls because SearchViewModel
+        // re-arms refreshDiscover on every screen re-entry — without it, each Search-tab visit
+        // would blank and refetch the Discover grid.
         if (
+            !forceRefresh &&
             sources == discoverSources &&
             lastDiscoverHideUnreleasedContent == hideUnreleasedContent &&
-            current.canReuseDiscoverState(sources)
+            (current.canReuseDiscoverState(sources) || activeDiscoverJob?.isActive == true)
         ) {
             log.d {
                 "Reusing discover state type=${current.selectedType} catalog=${current.selectedCatalogKey} " +
@@ -252,7 +268,10 @@ object SearchRepository {
                 "genre=${selectedGenre ?: "<all>"} sources=${sources.size}"
         }
 
-        loadDiscoverFeed(reset = true)
+        loadDiscoverFeed(
+            reset = true,
+            forceRefresh = forceRefresh,
+        )
     }
 
     fun selectDiscoverType(type: String) {
@@ -638,13 +657,14 @@ object SearchRepository {
                 }
         }
 
-    private suspend fun SearchCatalogRequest.toSection(): HomeCatalogSection {
+    private suspend fun SearchCatalogRequest.toSection(forceRefresh: Boolean): HomeCatalogSection {
         val manifest = requireNotNull(addon.manifest)
         val page = fetchCatalogPage(
             manifestUrl = manifest.transportUrl,
             type = type,
             catalogId = catalogId,
             search = query,
+            forceRefresh = forceRefresh,
         ).withUnreleasedFilter()
         val items = page.items
         require(items.isNotEmpty()) {
@@ -663,7 +683,10 @@ object SearchRepository {
         )
     }
 
-    private fun loadDiscoverFeed(reset: Boolean) {
+    private fun loadDiscoverFeed(
+        reset: Boolean,
+        forceRefresh: Boolean = false,
+    ) {
         activeDiscoverJob?.cancel()
         val current = _discoverUiState.value
         val selectedCatalog = current.selectedCatalog ?: return
@@ -700,6 +723,7 @@ object SearchRepository {
                     catalogId = selectedCatalog.catalogId,
                     genre = current.selectedGenre,
                     skip = requestedSkip.takeIf { it > 0 },
+                    forceRefresh = forceRefresh,
                 ).withUnreleasedFilter()
             }.fold(
                 onSuccess = { page ->

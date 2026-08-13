@@ -65,7 +65,11 @@ object CatalogRepository {
             fetchInternalLibrary(request)
             return
         }
-        fetchPage(request = request, reset = true)
+        fetchPage(
+            request = request,
+            reset = true,
+            forceRefresh = force,
+        )
     }
 
     fun loadMore() {
@@ -77,7 +81,11 @@ object CatalogRepository {
         // permanently (Codex round 2).
         val fetchStillRunning = activeJob?.isActive == true && current.isLoading
         if (fetchStillRunning || current.nextSkip == null) return
-        fetchPage(request = request, reset = false)
+        fetchPage(
+            request = request,
+            reset = false,
+            forceRefresh = false,
+        )
     }
 
     fun clear() {
@@ -173,6 +181,7 @@ object CatalogRepository {
     private fun fetchPage(
         request: CatalogRequest,
         reset: Boolean,
+        forceRefresh: Boolean,
     ) {
         activeJob?.cancel()
         val generation = fetchGeneration.incrementAndGet()
@@ -196,6 +205,7 @@ object CatalogRepository {
                         genre = target.genre,
                         search = target.search,
                         skip = requestedSkip.takeIf { it > 0 },
+                        forceRefresh = forceRefresh,
                     )
 
                     is CatalogTarget.CollectionSource -> fetchCollectionSourcePage(

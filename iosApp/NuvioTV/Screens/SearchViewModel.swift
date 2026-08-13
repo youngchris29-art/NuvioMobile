@@ -148,7 +148,8 @@ final class SearchViewModel: ObservableObject {
                 addons: self.enabledAddons,
                 // FEAT-10: sources switched off in Settings → Content Sources → Search
                 // Sources. Read fresh per query so a settings change applies immediately.
-                disabledCatalogKeys: Self.SearchSourceSettings.disabledKeys
+                disabledCatalogKeys: Self.SearchSourceSettings.disabledKeys,
+                forceRefresh: false
             )
         }
     }
@@ -173,7 +174,7 @@ final class SearchViewModel: ObservableObject {
         let signature = enabledAddons.map { $0.manifestUrl }.sorted().joined(separator: "|")
         guard signature != lastDiscoverAddonSignature else { return }
         lastDiscoverAddonSignature = signature
-        SearchRepository.shared.refreshDiscover(addons: enabledAddons)
+        SearchRepository.shared.refreshDiscover(addons: enabledAddons, forceRefresh: false)
     }
 
     func selectDiscoverType(_ type: String) {
