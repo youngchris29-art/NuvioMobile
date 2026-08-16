@@ -16,7 +16,12 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
-private const val CLIENT_NAME = "Nuvio tvOS" // was "Nuvio Mobile" upstream — identify this platform correctly
+// Must match upstream's literal: the backend's `register_current_device` RPC rejects unknown
+// client names with `PostgrestRestException: Unsupported Nuvio client (22023)` — the fork's
+// earlier "Nuvio tvOS" rename made EVERY launch's registration fail (caught + retried each 15 min,
+// so the Apple TV never showed up in the account's device list). The platform ("tvOS 27.x") and
+// device name fields already identify this build honestly.
+private const val CLIENT_NAME = "Nuvio Mobile"
 private val REGISTRATION_INTERVAL = 15.minutes
 
 internal data class DeviceClientMetadata(
