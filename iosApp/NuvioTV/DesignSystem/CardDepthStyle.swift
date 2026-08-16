@@ -18,6 +18,12 @@ enum CardDepthSurface {
 /// edge highlight plus a top sheen — a direct port of the Compose `cardDepthVisual`. Disabled by
 /// default; the master toggle and each surface can be switched independently.
 struct CardDepthStyle: Equatable {
+    /// BUG-57: top-stop opacity for the partial-coverage (Top/Half) rail — the configured edge
+    /// strength (0…1) lifted ×1.5, capped so Bold doesn't blow out. Pure so it is unit-testable;
+    /// Full never calls it (its closed 1 pt stroke is unchanged).
+    static func partialCoverageRailBoost(edge: Double) -> Double {
+        min(max(edge, 0) * 1.5, 0.9)
+    }
     var enabled = false
     /// 0…100. Opacity of the inset edge highlight at the top of the card. Default mirrors the shared
     /// `DefaultCardDepthEdgeStrength` (28).
@@ -170,27 +176,45 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// coverage 0 ("Top") the top still painted at full edge opacity, the SIDES still painted at ~1/3
     /// opacity through mid-height, and only the bottom reached zero, so the card read as a gray
     /// hairline around all four edges. The stops are unchanged; the coverage cut is now GEOMETRIC.
+    ///
+    /// BUG-57 (u/mrStevenx3, the same reporter, on beta.11's arc): "Top is still not correct … Full
+    /// works well." Sim A/B at 1:1 (2026-08-16, Bold edge): what Top left on screen was a 1 pt
+    /// hairline at ≤56 % white over the top edge and corner shoulders — from a couch that reads as
+    /// NOTHING, while Full's closed hairline still reads as an outline because a closed shape
+    /// registers where a short arc does not. The partial modes therefore draw a heavier rail:
+    /// 2 pt instead of 1, with the top stop lifted (×1.5, capped) so a "lit from above" edge is
+    /// actually visible at the same setting; the geometric mask is unchanged (still no side rails,
+    /// no bottom). Full is untouched — same 1 pt closed stroke, pixel-identical to before.
     @ViewBuilder
     private func edgeHighlight(edge: Double, coverage: Double) -> some View {
-        let stroke = shape.strokeBorder(
+        if coverage >= 1 {
+            // Full: no mask at all, so the full-perimeter look is pixel-identical to pre-BUG-31.
+            edgeStroke(top: edge, mid: edge, bottom: edge, lineWidth: 1)
+        } else {
+            let lift = CardDepthStyle.partialCoverageRailBoost(edge: edge)
+            edgeStroke(
+                top: lift,
+                mid: edge * (0.33 + 0.67 * coverage),
+                bottom: edge * coverage,
+                lineWidth: 2
+            )
+            .mask { coverageMask(coverage) }
+        }
+    }
+
+    private func edgeStroke(top: Double, mid: Double, bottom: Double, lineWidth: CGFloat) -> some View {
+        shape.strokeBorder(
             LinearGradient(
                 stops: [
-                    .init(color: .white.opacity(edge), location: 0),
-                    .init(color: .white.opacity(edge * (0.33 + 0.67 * coverage)), location: 0.5),
-                    .init(color: .white.opacity(edge * coverage), location: 1),
+                    .init(color: .white.opacity(top), location: 0),
+                    .init(color: .white.opacity(mid), location: 0.5),
+                    .init(color: .white.opacity(bottom), location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             ),
-            lineWidth: 1
+            lineWidth: lineWidth
         )
-
-        if coverage >= 1 {
-            // Full: no mask at all, so the full-perimeter look is pixel-identical to pre-BUG-31.
-            stroke
-        } else {
-            stroke.mask { coverageMask(coverage) }
-        }
     }
 
     /// Vertical mask that makes the edge honor `coverage` geometrically: opaque through a short top
