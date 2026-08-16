@@ -1416,6 +1416,100 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
+    // MARK: - BUG-58: theme swatch label must stay legible while focused
+
+    /// BUG-58 (beta.11 regression from the BUG-50 sweep): the focused theme swatch's name was
+    /// painted `onFocusPlatter` (near-black) on the assumption that the `.borderless` swatch
+    /// button draws the white system focus platter. It doesn't — the label landed straight on
+    /// the dark pane and vanished ("Amber" disappears while it has focus; Christian's device
+    /// clip, 2026-08-16). This walks focus onto a swatch and MEASURES the label band under it in
+    /// the screenshot: it must contain bright (textPrimary-class) pixels. Pre-fix the band's
+    /// brightest pixel was the pane background (~0.05 luma); post-fix it is the label (~0.9).
+    /// Skips (loudly) if the swatch never reports focus (tvOS 27.0 runtime gotcha) rather than
+    /// passing vacuously.
+    func test26ThemeSwatchFocusedLabelLegible() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+
+        // Violet is neither the account's selected theme (Ocean) nor an edge swatch, so its
+        // at-rest label is textSecondary and the focused read is purely the isFocused branch.
+        let violet = app.buttons["Violet"]
+        if !moveFocus(.right, until: violet, max: 8) { _ = moveFocus(.left, until: violet, max: 8) }
+        guard violet.exists, violet.hasFocus else {
+            throw XCTSkip("Violet swatch never reported focus — cannot measure the focused label")
+        }
+        pause(1) // let the focus lift + label color animation settle
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = "26a_violet_swatch_focused"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        // Label band = the bottom third of the swatch button (circle 56pt + caption below it),
+        // inset horizontally so the neighbouring swatches' labels never leak in.
+        let frame = violet.frame
+        let band = CGRect(
+            x: frame.minX + frame.width * 0.15,
+            y: frame.minY + frame.height * 0.62,
+            width: frame.width * 0.70,
+            height: frame.height * 0.36
+        )
+        let stats = try lumaStats(in: screenshot.image, pointRect: band, windowSize: app.frame.size)
+        let report = XCTAttachment(string: "band=\(band) max=\(stats.max) brightFraction=\(stats.brightFraction)")
+        report.name = "26b_label_band_luma"
+        report.lifetime = .keepAlways
+        add(report)
+        print("[BUG58] focused Violet label band: max luma \(stats.max), bright fraction \(stats.brightFraction)")
+        XCTAssertGreaterThan(
+            stats.max, 0.7,
+            "focused swatch label is not legible — brightest pixel under the focused swatch is \(stats.max) (BUG-58 regression: label painted platter-black on the dark pane)"
+        )
+        XCTAssertGreaterThan(
+            stats.brightFraction, 0.005,
+            "focused swatch label band has almost no bright pixels (\(stats.brightFraction))"
+        )
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// Max relative luma and the fraction of pixels above 0.7 luma inside `pointRect` (in the
+    /// app window's point space) of a full-screen screenshot. Scales points→pixels from the
+    /// screenshot/window width ratio (sim screenshots are exactly 2 px/pt).
+    private func lumaStats(in image: UIImage, pointRect: CGRect, windowSize: CGSize) throws -> (max: Double, brightFraction: Double) {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = Double(cg.width) / Double(windowSize.width)
+        let px = CGRect(
+            x: pointRect.minX * scale, y: pointRect.minY * scale,
+            width: pointRect.width * scale, height: pointRect.height * scale
+        ).integral.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !px.isEmpty, let cropped = cg.cropping(to: px) else {
+            throw XCTSkip("label band \(pointRect) is off-screen")
+        }
+        let w = cropped.width, h = cropped.height
+        var buffer = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(
+            data: &buffer, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw XCTSkip("could not build a bitmap context") }
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var maxLuma = 0.0
+        var bright = 0
+        for i in stride(from: 0, to: buffer.count, by: 4) {
+            let l = (0.2126 * Double(buffer[i]) + 0.7152 * Double(buffer[i + 1]) + 0.0722 * Double(buffer[i + 2])) / 255.0
+            if l > maxLuma { maxLuma = l }
+            if l > 0.7 { bright += 1 }
+        }
+        return (maxLuma, Double(bright) / Double(w * h))
+    }
+
     /// The trailing SeeAllCard as an element query. Its composed accessibility label is NOT the
     /// bare string "See All" (the card's empty caption-alignment slot joins in), so an exact
     /// `app.buttons["See All"]` subscript never matches on any runtime — every earlier "green"

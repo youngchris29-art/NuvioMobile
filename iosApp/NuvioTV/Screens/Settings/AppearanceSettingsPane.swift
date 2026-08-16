@@ -288,16 +288,16 @@ private struct SwatchLabel: View {
                 )
             Text(label)
                 .font(Theme.Font.caption)
-                // BUG-50: this used to resolve `textPrimary` (near-white) whenever EITHER
-                // `isSelected` or `isFocused` was true — on a focused swatch that reads as
-                // near-white text on this button's own near-white focus platter. `isFocused`
-                // must win outright and use the platter-safe fixed color; the
-                // selected/unselected distinction only matters at rest, same shape as
-                // `RowTextColor`/`ChipButtonStyle.labelColor`.
+                // BUG-58 (beta.11 regression from the BUG-50 sweep, device-verified from
+                // Christian's clip 2026-08-16): the sweep assumed this `.borderless` button drew
+                // the white system focus platter and painted the focused label
+                // `onFocusPlatter` (near-black). It doesn't — `.borderless` on tvOS is
+                // platter-free (lift only), so the "on-platter" black text landed straight on
+                // the dark pane and the focused swatch's name vanished ("Amber" disappears while
+                // it has focus). Same shape as ProfileSelectionView's borderless avatar tiles:
+                // focus BRIGHTENS the label; selection reads primary at rest.
                 .foregroundStyle(
-                    isFocused
-                        ? Theme.Palette.onFocusPlatter
-                        : (isSelected ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                    (isFocused || isSelected) ? Theme.Palette.textPrimary : Theme.Palette.textSecondary
                 )
         }
         .padding(Theme.Spacing.sm)
