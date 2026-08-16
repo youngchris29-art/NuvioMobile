@@ -257,11 +257,12 @@ private final class AnimatedGifLoader: ObservableObject {
 ///
 /// BUG-19 cost arithmetic (the old numbers made this cache a no-op). Entry cost is now the TRUE
 /// sum of every unique decoded frame's bitmap (`AnimatedGifDecoder.decodedGif`), and the decoder
-/// caps that sum at `maxDecodedBytesPerGif` = 12 MB by shrinking the per-frame downsample ceiling
-/// for long GIFs. So:
+/// caps that sum at the per-GIF budget (`maxDecodedBytesPerGif` = 12 MiB on HD, 18 MiB on 4K —
+/// `decodeBudgetBytes`) by trading resolution and unique frames for long GIFs
+/// (`GifDecodePlanner`). So:
 ///
-///   * worst case per entry ...... 12 MB (still possible for a large/landscape tile near the
-///     400 px absolute cap, e.g. a 60-frame GIF decoded to ~229 px/side)
+///   * worst case per entry ...... 12 MiB HD / 18 MiB 4K (any long GIF on a large/landscape
+///     tile — the planner spends the whole budget when the frame count demands it)
 ///   * typical square "Services"-style tile (BUG-39: decodes near its own ~220 px tile size, not
 ///     a blanket 400 px) ... 20 frames × 220×220 RGBA (~194 KB) ≈ 3.9 MB — well under budget, so
 ///     a GIF like this now keeps EVERY source frame instead of being frame-subsampled
@@ -270,7 +271,9 @@ private final class AnimatedGifLoader: ObservableObject {
 /// (See `AnimatedGifDecoder.targetDecodePixelCeiling` for the full per-tile-size breakdown; the
 /// old fixed-400px numbers this comment used to cite are now only the worst case, not the norm.)
 ///
-///   totalCostLimit 144 MB = 12 worst-case entries, or many more typical-size ones.
+///   totalCostLimit 144 MB = 12 worst-case HD entries / 8 worst-case 4K entries, or many more
+///   typical-size ones. (Eviction only costs a re-decode from the disk-cached bytes on the next
+///   focus; the loader keeps a mounted tile's frames alive regardless.)
 ///   countLimit 24 covers the Services + Genres rows' visible+prefetched tiles together (the old
 ///   limit of 12 was per the Kotlin reference's `MaxCachedGifImages`, which is a phone-sized row).
 ///
@@ -357,14 +360,14 @@ private enum AnimatedGifDecoder {
             return await existing.value
         }
 
-        let targetPixelSize = targetDecodePixelCeiling(for: targetSize, scale: UIScreen.main.scale)
+        let limits = decodeLimits(for: targetSize, scale: UIScreen.main.scale)
 
         // `Task.detached` (not `Task`): a plain `Task` created here would INHERIT @MainActor, which
         // is what put `fetchData`'s await, the frame expansion and the cache write on the main
         // thread. Only the CGImage decode hopped off before.
         let work = Task<UIImage?, Never>.detached(priority: .userInitiated) {
             guard let data = try? await fetchData(url) else { return nil }
-            guard let result = decodedGif(from: data, targetPixelSize: targetPixelSize) else { return nil }
+            guard let result = decodedGif(from: data, limits: limits) else { return nil }
             AnimatedGifCache.shared.setObject(result.image, forKey: url as NSURL, cost: result.cost)
             return result.image
         }
@@ -406,13 +409,50 @@ private enum AnimatedGifDecoder {
         // PIXEL cap, which on a scale-2 (4K) panel decoded every GIF at ~half the tile's real
         // backing resolution — measured luma softness the reporter called "still average". A
         // scale-1 (HD) panel is byte-identical to the old behavior; on 4K, per-frame cost can rise
-        // up to 4× for SHORT GIFs only — `framePixelCeiling` + the enforced running-total check
-        // still clamp anything longer, so `maxDecodedBytesPerGif` remains the hard bound either way.
+        // up to 4× for SHORT GIFs only — `GifDecodePlanner` + the enforced running-total check
+        // still clamp anything longer, so the per-GIF budget remains the hard bound either way.
         let pixelCap = Int((CGFloat(maxFramePixelSize) * cappedScale).rounded())
         let longEdge = max(targetSize.width, targetSize.height)
         guard longEdge.isFinite, longEdge > 0 else { return pixelCap }
         let pixels = Int((longEdge * cappedScale).rounded())
         return min(pixelCap, max(minFramePixelSize, pixels))
+    }
+
+    /// BUG-39 (beta.12, frame-vs-resolution trade): everything `decodedGif` needs to know about
+    /// the display target, derived on the main actor (needs `UIScreen.main.scale`) and handed to
+    /// the detached decode as one Sendable value.
+    ///
+    ///   * `ceiling` — `targetDecodePixelCeiling`: the tile's full backing store, the most any
+    ///     frame is ever decoded at.
+    ///   * `preferredMinSide` — the tile's long edge in POINTS (1 px per point = what an HD panel
+    ///     shows), clamped to `[minFramePixelSize, ceiling]`. The planner keeps every frame down
+    ///     to this side before it starts dropping frames; below it, sharpness is what the device
+    ///     pass measured as "still average" (a 391 pt landscape tile drawing 200 px frames).
+    ///   * `budgetBytes` — `decodeBudgetBytes(scale:)`, the per-GIF hard bound.
+    private nonisolated static func decodeLimits(for targetSize: CGSize, scale: CGFloat) -> GifDecodePlanner.Limits {
+        let ceiling = targetDecodePixelCeiling(for: targetSize, scale: scale)
+        let longEdge = max(targetSize.width, targetSize.height)
+        let pointSide = longEdge.isFinite && longEdge > 0 ? Int(longEdge.rounded()) : ceiling
+        return GifDecodePlanner.Limits(
+            ceiling: ceiling,
+            preferredMinSide: min(ceiling, max(minFramePixelSize, pointSide)),
+            minSide: minFramePixelSize,
+            budgetBytes: decodeBudgetBytes(scale: scale)
+        )
+    }
+
+    /// BUG-39 (beta.12): the per-GIF decoded-bitmap budget, scale-aware. `maxDecodedBytesPerGif`
+    /// (12 MiB) was sized for the HD panel; a scale-2 (4K) tile has 4× the backing pixels, and
+    /// the device pass showed the budget — not the ceiling — is what clamps real 80–90-frame
+    /// collection GIFs to 200 px there. Growing it linearly with the capped scale (12 MiB HD →
+    /// 18 MiB 4K) is deliberately HALF the pixel-proportional (scale²) growth: the Apple TV 4K
+    /// boxes carry ~1.5–2× the HD box's RAM, so the row-of-tiles worst case
+    /// (`AnimatedGifCache` doc: 15 × per-GIF budget) grows no faster than the hardware under it.
+    /// HD panels are byte-identical to before.
+    private nonisolated static func decodeBudgetBytes(scale: CGFloat) -> Int {
+        let cappedScale = max(1.0, min(scale.isFinite ? scale : 1.0, 2.0))
+        let growth = 1.0 + 0.5 * (cappedScale - 1.0)
+        return Int((Double(maxDecodedBytesPerGif) * growth).rounded())
     }
 
     private nonisolated static func fetchData(_ url: URL) async throws -> Data {
@@ -478,58 +518,170 @@ private enum AnimatedGifDecoder {
     /// size than before, but most tiles now decode well below it. See that function's doc for the
     /// concrete before/after numbers.
     private static let maxFramePixelSize = 400
-    /// Floor for the adaptive ceiling below — never decode a tile-sized GIF smaller than this.
-    /// FINDING 5: below `frameCount` ≈ `maxFramesAtFloorSize`, resolution can no longer shrink to
-    /// hold the budget, so `decodedGif` shrinks the UNIQUE FRAME COUNT instead (see
-    /// `subsampledIndices`) — the floor never lets a single GIF exceed `maxDecodedBytesPerGif`.
+    /// Absolute floor for any frame's decoded long edge — never decode a tile-sized GIF smaller
+    /// than this. When even `GifDecodePlanner`'s frame-rate floor can't hold the budget at this
+    /// side, the planner drops MORE unique frames rather than going below it (see
+    /// `subsampledIndices`) — the floor never lets a single GIF exceed the budget.
     private static let minFramePixelSize = 200
-    /// Hard budget for ONE decoded GIF's total bitmap memory. FINDING B (round 2): actually
-    /// enforced against the REAL running total of `bytesPerRow × height` for every frame as it
-    /// decodes (see the budget check in `decodedGif`) — the pixel-ceiling/frame-subsampling
-    /// combination below only steers the up-front resolution/frame-count guess and can undercount
-    /// padded/aligned CGImage row strides, so it alone is not a hard bound; the decode-time check
-    /// is what makes this literally true for the stored cache entry. A row of tiles keeps its
-    /// decoded frames alive while mounted (that's the point of the fix), so the per-GIF number,
-    /// not just the cache total, is what bounds a 15-tile row: 15 × 12 MB = 180 MB is a real
-    /// worst case now, and in practice the `LazyHStack` unmounts scrolled-away tiles well before
-    /// that.
+    /// Base (HD-panel) hard budget for ONE decoded GIF's total bitmap memory; `decodeBudgetBytes`
+    /// scales it for 4K. FINDING B (round 2): actually enforced against the REAL running total of
+    /// `bytesPerRow × height` for every frame as it decodes (see the budget check in
+    /// `decodedGif`) — the planner's up-front resolution/frame-count choice estimates row strides
+    /// (`GifDecodePlanner.frameBytes`) and could still be off by a few bytes per row, so it alone
+    /// is not the hard bound; the decode-time check is what makes this literally true for the
+    /// stored cache entry. A row of tiles keeps its decoded frames alive while mounted (that's the
+    /// point of the fix), so the per-GIF number, not just the cache total, is what bounds a
+    /// 15-tile row: 15 × 12 MiB = 180 MiB (HD) / 15 × 18 MiB = 270 MiB (4K) is a real worst case
+    /// now, and in practice the `LazyHStack` unmounts scrolled-away tiles well before that.
     private static let maxDecodedBytesPerGif = 12 * 1024 * 1024
-    /// FINDING 5: the most unique frames that fit inside `maxDecodedBytesPerGif` at the floor
-    /// size — 12 MiB / (4 bytes/px × 200×200) ≈ 78. A GIF with more source frames than this
-    /// doesn't get to keep them all at 200 px (that was the bug: a 100-frame square GIF hit
-    /// ~15.3 MiB, 3.3 MiB over budget); instead `decodedGif` decodes only this many, evenly
-    /// subsampled across the animation, with kept frames' delays summed to cover the frames they
-    /// stand in for so total playback duration is unchanged. Unaffected by BUG-39: `minFramePixelSize`
-    /// is still the absolute floor for every tile regardless of `targetDecodePixelCeiling`'s
-    /// output (see that function's clamp), so this constant's math doesn't change — what changes
-    /// is how OFTEN a real GIF actually needs it, since a smaller per-instance ceiling (BUG-39)
-    /// makes `estimatedBytes` in `decodedGif` clear the budget at a higher `frameCount` than
-    /// before, so fewer GIFs fall into this frame-subsampling path at all.
-    private static let maxFramesAtFloorSize = maxDecodedBytesPerGif / (4 * minFramePixelSize * minFramePixelSize)
 
-    /// Long GIFs get downsampled harder so no single entry can blow the budget:
-    /// side = √(budget / (4 bytes per pixel × frames)), clamped to [`minFramePixelSize`, `ceiling`].
-    /// Example at the old fixed 400 px ceiling: 10 frames → 400 px (clamped, ~6 MB) · 20 frames →
-    /// 400 px (~12 MB) · 60 frames → 229 px. BUG-39: `ceiling` is now the CALLER-supplied,
-    /// tile-size-derived value from `targetDecodePixelCeiling` rather than always
-    /// `maxFramePixelSize` — for a small/typical tile this formula starts from a smaller ceiling,
-    /// so a given `frameCount` is more likely to fit uncompressed at that smaller size (no need to
-    /// shrink further), or — for frame counts that still don't fit — the frame-count subsampling
-    /// below kicks in at a HIGHER `frameCount` than it used to, because a smaller `ceiling` means
-    /// the per-frame cost was already cheaper going in.
-    /// Note this alone only bounds bytes for frameCount ≤ `maxFramesAtFloorSize` (~78): above
-    /// that the `minFramePixelSize` floor stops the math from working out and `decodedGif`
-    /// additionally subsamples the frame count (see `maxFramesAtFloorSize`).
-    private nonisolated static func framePixelCeiling(frameCount: Int, ceiling: Int) -> Int {
-        guard frameCount > 0 else { return ceiling }
-        let pixelsPerFrame = Double(maxDecodedBytesPerGif) / (4.0 * Double(frameCount))
-        let side = Int(pixelsPerFrame.squareRoot())
-        return min(ceiling, max(minFramePixelSize, side))
+    /// BUG-39 (beta.12, frame-vs-resolution trade) — the pure planning half of `decodedGif`: given
+    /// a GIF's frame count, aspect ratio and per-frame delays, plus the display `Limits`, pick the
+    /// decode side (long edge, px) and how many unique frames to keep so the result fits the
+    /// budget with the LEAST visible loss.
+    ///
+    /// Why a planner at all: the pre-beta.12 code assumed square frames (`side² × 4`), so a
+    /// landscape tile's frames (391×220 pt → 200×114 px at the floor) used only ~59% of the budget
+    /// (device pass: `bytes=7113600` of 12 MiB); and once frames stopped fitting it dropped
+    /// straight to the 200 px floor before giving up a single frame — resolution was always
+    /// sacrificed first, unboundedly, and there was no notion of "too soft to be worth it".
+    ///
+    /// The tiered trade, cheapest visible loss first:
+    ///   1. every frame at the full backing store (`ceiling`), if it fits;
+    ///   2. else every frame at the largest side that fits, but no lower than `preferredMinSide`
+    ///      (1 px per point — HD parity — the sharpness floor below which the reporter's
+    ///      complaint starts);
+    ///   3. else hold `preferredMinSide` and DROP FRAMES, evenly across the animation, down to
+    ///      `minKeptFrames` (the GIF's own total duration ÷ `maxSubsampledFrameDelayCentiseconds`
+    ///      — an ~8 fps floor, so a 10 cs/frame source keeps ~80% of its frames, a 5 cs/frame
+    ///      source can lose half and still play smoothly);
+    ///   4. else hold `minKeptFrames` and shrink the side again, down to `minSide` (200 px);
+    ///   5. else (pathological length) hold `minSide` and drop frames further — the pre-beta.12
+    ///      behavior, now the last resort instead of the second.
+    /// Kept frames' delays are summed over the frames they stand in for (`decodedGif`), so total
+    /// playback duration is unchanged in every tier.
+    ///
+    /// Pure Swift on purpose (no ImageIO/UIKit): `NuvioTVUITests/GifDecodePlanTests.swift`
+    /// mirrors it exactly — keep the two in sync by hand.
+    nonisolated enum GifDecodePlanner {
+        struct Limits: Sendable {
+            let ceiling: Int
+            let preferredMinSide: Int
+            let minSide: Int
+            let budgetBytes: Int
+
+            /// ImageIO thumbnails never upscale past the source, so a GIF authored smaller than
+            /// the tile can't be decoded at `ceiling` no matter what — cap the ceiling at the
+            /// source's long edge or the planner would trade away frames for resolution that
+            /// doesn't exist. (`plan` re-clamps `preferredMinSide`/`minSide` under the new ceiling.)
+            func clamped(toSourceLongEdge edge: Int?) -> Limits {
+                guard let edge, edge > 0, edge < ceiling else { return self }
+                return Limits(ceiling: edge, preferredMinSide: preferredMinSide, minSide: minSide, budgetBytes: budgetBytes)
+            }
+        }
+
+        struct Plan: Equatable, Sendable {
+            /// `kCGImageSourceThumbnailMaxPixelSize` for every kept frame.
+            let side: Int
+            /// Unique source frames to decode (`≤ sourceCount`); `subsampledIndices` picks which.
+            let keepCount: Int
+            /// The frame-rate floor the plan honored (diagnostic — surfaces in the probe line).
+            let minKeptFrames: Int
+        }
+
+        /// Frame-rate floor for tier 3: after subsampling, no kept frame should stand in for more
+        /// than this much source time (~8 fps). Below that, a movie-clip loop reads as a slideshow,
+        /// which is a worse 10-foot artifact than moderate softness — so the planner spends
+        /// resolution again (tier 4) before it goes past this.
+        static let maxSubsampledFrameDelayCentiseconds = 12
+        /// Estimated `CGImage` row-stride alignment. Thumbnail bitmaps come back with padded
+        /// `bytesPerRow`; estimating with 32-byte alignment keeps the plan at or slightly above
+        /// the real cost, so the decode-time hard check almost never has to truncate.
+        static let estimatedRowAlignmentBytes = 32
+
+        /// Estimated decoded bytes of one frame whose long edge is `side` px at `aspect`
+        /// (source width ÷ height, > 0). Landscape sources have their width on the long edge,
+        /// portrait ones their height.
+        static func frameBytes(side: Int, aspect: Double) -> Int {
+            let width: Int
+            let height: Int
+            if aspect >= 1 {
+                width = side
+                height = max(1, Int((Double(side) / aspect).rounded()))
+            } else {
+                width = max(1, Int((Double(side) * aspect).rounded()))
+                height = side
+            }
+            let row = width * 4
+            let alignedRow = (row + estimatedRowAlignmentBytes - 1) / estimatedRowAlignmentBytes * estimatedRowAlignmentBytes
+            return alignedRow * height
+        }
+
+        /// The fewest unique frames the plan may keep for a GIF whose clamped per-frame delays
+        /// (centiseconds) are `delays`: its total duration spread no thinner than
+        /// `maxSubsampledFrameDelayCentiseconds` per kept frame, at least 1, at most `count`.
+        static func minKeptFrames(count: Int, delays: [Int]) -> Int {
+            guard count > 0 else { return 0 }
+            let total = delays.reduce(0, +)
+            let byRate = (total + maxSubsampledFrameDelayCentiseconds - 1) / maxSubsampledFrameDelayCentiseconds
+            return min(count, max(1, byRate))
+        }
+
+        /// Largest side in `[lo, hi]` at which `frames` frames fit the budget, or nil if even
+        /// `lo` doesn't.
+        static func largestSide(fitting frames: Int, aspect: Double, lo: Int, hi: Int, budget: Int) -> Int? {
+            guard hi >= lo, frames > 0 else { return nil }
+            let pixelsPerFrame = Double(budget) / (4.0 * Double(frames))
+            // Long-edge estimate from the unpadded pixel area; the loop below corrects for
+            // rounding and row alignment.
+            let estimate = aspect >= 1
+                ? (pixelsPerFrame * aspect).squareRoot()
+                : (pixelsPerFrame / aspect).squareRoot()
+            var side = min(hi, Int(estimate))
+            while side >= lo {
+                if frames * frameBytes(side: side, aspect: aspect) <= budget { return side }
+                side -= 1
+            }
+            return nil
+        }
+
+        /// How many frames fit the budget at `side` (may be 0).
+        static func framesFitting(side: Int, aspect: Double, budget: Int) -> Int {
+            budget / max(frameBytes(side: side, aspect: aspect), 1)
+        }
+
+        static func plan(count: Int, aspect rawAspect: Double, delays: [Int], limits: Limits) -> Plan {
+            let aspect = rawAspect.isFinite && rawAspect > 0 ? rawAspect : 1.0
+            let ceiling = max(limits.ceiling, 1)
+            let minSide = max(1, min(limits.minSide, ceiling))
+            let preferred = max(minSide, min(limits.preferredMinSide, ceiling))
+            let budget = max(limits.budgetBytes, 1)
+            let minKept = minKeptFrames(count: count, delays: delays)
+            guard count > 0 else { return Plan(side: ceiling, keepCount: 0, minKeptFrames: 0) }
+
+            // Tiers 1–2: all frames, side in [preferred, ceiling].
+            if let side = largestSide(fitting: count, aspect: aspect, lo: preferred, hi: ceiling, budget: budget) {
+                return Plan(side: side, keepCount: count, minKeptFrames: minKept)
+            }
+            // Tier 3: hold the preferred side, drop frames down to the rate floor.
+            let keepAtPreferred = min(count, framesFitting(side: preferred, aspect: aspect, budget: budget))
+            if keepAtPreferred >= minKept {
+                return Plan(side: preferred, keepCount: keepAtPreferred, minKeptFrames: minKept)
+            }
+            // Tier 4: hold the rate floor, shrink the side down to the absolute floor.
+            if let side = largestSide(fitting: minKept, aspect: aspect, lo: minSide, hi: preferred, budget: budget) {
+                return Plan(side: side, keepCount: minKept, minKeptFrames: minKept)
+            }
+            // Tier 5: absolute floor, keep whatever fits (at least 1 — the decode-time hard check
+            // fails the whole GIF if even one frame overflows).
+            let keepAtFloor = max(1, min(count, framesFitting(side: minSide, aspect: aspect, budget: budget)))
+            return Plan(side: minSide, keepCount: keepAtFloor, minKeptFrames: minKept)
+        }
     }
 
-    /// FINDING 5: evenly-spaced source-frame indices to keep when a GIF has more frames than
-    /// `maxFramesAtFloorSize` can afford at the resolution floor. Spreads the kept frames across
-    /// the whole animation (not just the first N) so subsampling doesn't visibly favor the start.
+    /// FINDING 5: evenly-spaced source-frame indices to keep when `GifDecodePlanner` decides to
+    /// keep fewer unique frames than the source has. Spreads the kept frames across the whole
+    /// animation (not just the first N) so subsampling doesn't visibly favor the start.
     private nonisolated static func subsampledIndices(totalCount: Int, keepCount: Int) -> [Int] {
         guard keepCount < totalCount, keepCount > 0 else { return Array(0..<totalCount) }
         let stride = Double(totalCount) / Double(keepCount)
@@ -545,7 +697,18 @@ private enum AnimatedGifDecoder {
         return indices.isEmpty ? [0] : indices
     }
 
-    private nonisolated static func decodedGif(from data: Data, targetPixelSize: Int) -> DecodedGif? {
+    /// Source pixel size of the first frame, from the container's own properties — no decode.
+    /// `nil` if ImageIO can't say (the planner then assumes square and an unclamped ceiling,
+    /// which is the pre-beta.12 behavior).
+    private nonisolated static func sourcePixelSize(_ source: CGImageSource) -> (width: Int, height: Int)? {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0 else { return nil }
+        return (width, height)
+    }
+
+    private nonisolated static func decodedGif(from data: Data, limits: GifDecodePlanner.Limits) -> DecodedGif? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         guard CGImageSourceGetStatus(source) == .statusComplete else { return nil }
         let count = CGImageSourceGetCount(source)
@@ -553,44 +716,33 @@ private enum AnimatedGifDecoder {
 
         let delays = parseFrameDurations(data)
 
-        // FINDING 5: decide UP FRONT whether decoding every source frame at the adaptive-ceiling
-        // side would exceed `maxDecodedBytesPerGif`. This only happens once `framePixelCeiling`
-        // has bottomed out at `minFramePixelSize` (for smaller frame counts the ceiling formula
-        // already keeps side×side×4×frameCount ≤ budget by construction) — in that regime the
-        // fix is to decode FEWER unique frames, not smaller ones.
+        // BUG-39 (beta.12): decide UP FRONT how to spend the budget — see `GifDecodePlanner` for
+        // the tiered resolution-vs-frames trade. The planner is fed the same clamped per-source
+        // delays the summation loops below use, so its frame-rate floor and the kept frames'
+        // aggregate delays agree.
         //
-        // FINDING B (round 2): `side² × 4` below is only an ESTIMATE used to pick a resolution/
-        // frame-count strategy up front — it assumes an unpadded bitmap row. `CGImage` row
-        // strides are actually padded/aligned, so the real per-frame cost (`bytesPerRow ×
-        // height`, computed as each frame decodes) can run higher than this guess. This estimate
-        // therefore only steers the subsample decision; it is NOT what enforces the 12 MiB bound
-        // — the running `decodedBytesTotal` check in the decode loop below is the actual,
-        // literal enforcement point.
-        //
-        // BUG-39: `targetPixelSize` (from `targetDecodePixelCeiling`, via `decode`'s caller) is
-        // the tile-size-derived ceiling passed in here — `framePixelCeiling` clamps it down
-        // further only if `count` is large enough that even this smaller starting point doesn't
-        // fit the budget. So `ceilingSide` below is no longer "guess 400 px and see if it fits";
-        // it's "start from what this tile actually needs, and shrink further only if the frame
-        // count demands it."
-        let ceilingSide = framePixelCeiling(frameCount: count, ceiling: targetPixelSize)
-        let estimatedBytes = count * ceilingSide * ceilingSide * 4
-        let frameIndices: [Int]
-        let decodeSide: Int
-        if estimatedBytes > maxDecodedBytesPerGif {
-            frameIndices = subsampledIndices(totalCount: count, keepCount: max(maxFramesAtFloorSize, 1))
-            decodeSide = minFramePixelSize
-        } else {
-            frameIndices = Array(0..<count)
-            decodeSide = ceilingSide
+        // FINDING B (round 2): the planner's `frameBytes` is still an ESTIMATE of `bytesPerRow ×
+        // height` (row alignment guessed, not measured), so it only steers the choice; it is NOT
+        // what enforces the budget — the running `decodedBytesTotal` check in the decode loop
+        // below is the actual, literal enforcement point.
+        let clampedDelays = (0..<count).map { i -> Int in
+            let raw = i < delays.count ? delays[i] : defaultFrameDelayCentiseconds
+            return min(max(raw, minExpandedFrameDelayCentiseconds), maxRawFrameDelayCentiseconds)
         }
+        let sourceSize = sourcePixelSize(source)
+        let aspect = sourceSize.map { Double($0.width) / Double($0.height) } ?? 1.0
+        let planLimits = limits.clamped(toSourceLongEdge: sourceSize.map { max($0.width, $0.height) })
+        let plan = GifDecodePlanner.plan(count: count, aspect: aspect, delays: clampedDelays, limits: planLimits)
+        let frameIndices = subsampledIndices(totalCount: count, keepCount: plan.keepCount)
+        let decodeSide = plan.side
+        let budgetBytes = max(limits.budgetBytes, 1)
 
         var frames: [GifFrame] = []
         frames.reserveCapacity(frameIndices.count)
         // FINDING B (round 2): the actual, ENFORCED running total of decoded bitmap bytes — the
         // sum of `bytesPerRow × height` for every frame actually kept, updated as each frame
-        // decodes (see the budget check below). This, not `estimatedBytes` above, is what makes
-        // the "12 MiB is an enforced bound" doc comment on `maxDecodedBytesPerGif` literally true.
+        // decodes (see the budget check below). This, not the planner's estimate, is what makes
+        // the "the budget is an enforced bound" doc comment on `maxDecodedBytesPerGif` literally true.
         var decodedBytesTotal = 0
 
         // BUG-19: `CGImageSourceCreateImageAtIndex` returns LAZILY-decoded images — the actual
@@ -631,10 +783,10 @@ private enum AnimatedGifDecoder {
             // documented as a hard bound, so a
             // pathological first frame that alone exceeds it must fail the whole decode (→ static
             // cover) rather than being kept unconditionally by the `!frames.isEmpty` exemption below.
-            if frames.isEmpty && frameBytes > maxDecodedBytesPerGif {
+            if frames.isEmpty && frameBytes > budgetBytes {
                 return nil
             }
-            if !frames.isEmpty && decodedBytesTotal + frameBytes > maxDecodedBytesPerGif {
+            if !frames.isEmpty && decodedBytesTotal + frameBytes > budgetBytes {
                 var extraDelay = 0
                 for skipped in index..<count {
                     let raw = skipped < delays.count ? delays[skipped] : defaultFrameDelayCentiseconds
@@ -677,12 +829,14 @@ private enum AnimatedGifDecoder {
         // cache cost instead of recomputing `bytesPerRow × height` again here.
         if GifDecodeProbe.enabled {
             // BUG-39: the reporter's "still average" sharpness is a function of `decodeSide` vs the
-            // tile's real backing store, and of how hard the 12 MiB budget squeezed this particular
-            // GIF — numbers nobody can read off a screenshot. `sourceFrames` vs `keptFrames` also
-            // tells the device pass whether real collection GIFs are long enough that only the
-            // frame-vs-resolution trade (not the ceiling) governs their sharpness.
-            NSLog("[GifDecode] side=%d ceiling=%d sourceFrames=%d keptFrames=%d bytes=%d",
-                  decodeSide, targetPixelSize, count, frames.count, decodedBytesTotal)
+            // tile's real backing store, and of how hard the budget squeezed this particular GIF —
+            // numbers nobody can read off a screenshot. beta.12 device data on the pre-trade code:
+            // `side=200 ceiling=782 sourceFrames=90 keptFrames=78 bytes=7113600`. The trade adds
+            // `preferred` (the 1 px/pt sharpness floor), `minKept` (the ~8 fps frame floor),
+            // `aspect` and `budget` so the device pass can read WHICH tier the planner landed in.
+            NSLog("[GifDecode] side=%d ceiling=%d preferred=%d sourceFrames=%d keptFrames=%d minKept=%d source=%dx%d budget=%d bytes=%d",
+                  decodeSide, planLimits.ceiling, limits.preferredMinSide, count, frames.count,
+                  plan.minKeptFrames, sourceSize?.width ?? 0, sourceSize?.height ?? 0, budgetBytes, decodedBytesTotal)
         }
         return DecodedGif(image: animated, cost: max(decodedBytesTotal, 1))
     }
