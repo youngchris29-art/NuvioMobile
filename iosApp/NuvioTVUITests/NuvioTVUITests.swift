@@ -1484,7 +1484,7 @@ final class NuvioTVUITests: XCTestCase {
         guard let cg = image.cgImage, windowSize.width > 0 else {
             throw XCTSkip("screenshot has no CGImage / zero window size")
         }
-        let scale = Double(cg.width) / Double(windowSize.width)
+        let scale = CGFloat(cg.width) / windowSize.width
         let px = CGRect(
             x: pointRect.minX * scale, y: pointRect.minY * scale,
             width: pointRect.width * scale, height: pointRect.height * scale
