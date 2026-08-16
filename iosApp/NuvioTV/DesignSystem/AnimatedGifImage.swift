@@ -271,9 +271,14 @@ private final class AnimatedGifLoader: ObservableObject {
 /// (See `AnimatedGifDecoder.targetDecodePixelCeiling` for the full per-tile-size breakdown; the
 /// old fixed-400px numbers this comment used to cite are now only the worst case, not the norm.)
 ///
-///   totalCostLimit 144 MB = 12 worst-case HD entries / 8 worst-case 4K entries, or many more
-///   typical-size ones. (Eviction only costs a re-decode from the disk-cached bytes on the next
-///   focus; the loader keeps a mounted tile's frames alive regardless.)
+///   totalCostLimit = `worstCaseEntries` (16) × the per-GIF budget — 192 MB on HD, 302 MB on 4K
+///   (`ensureCostLimit`, set from the first decode's budget). BUG-39 (beta.12) device data showed
+///   why it must scale AND cover a whole row: the Living Room's Collections row is 13 GIF tiles
+///   and every one plans to within 1.5% of the 4K budget (~18.6 MB), so the old fixed 144 MB held
+///   only ~7 of them and the walk BACK re-decoded every tile (one GIF 11× in 11 s at the row
+///   end). Eviction only costs a re-decode from the disk-cached bytes, but that is a static-cover
+///   flash per step — exactly BUG-19's symptom class. `NSCache` still purges on memory pressure,
+///   so this is a ceiling, not a footprint.
 ///   countLimit 24 covers the Services + Genres rows' visible+prefetched tiles together (the old
 ///   limit of 12 was per the Kotlin reference's `MaxCachedGifImages`, which is a phone-sized row).
 ///
@@ -288,9 +293,23 @@ private enum AnimatedGifCache {
     nonisolated(unsafe) static let shared: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.countLimit = 24
-        cache.totalCostLimit = 144 * 1024 * 1024   // decoded bytes; see arithmetic above
+        cache.totalCostLimit = worstCaseEntries * 12 * 1024 * 1024   // HD baseline; see `ensureCostLimit`
         return cache
     }()
+
+    /// How many budget-sized entries the cache should hold — one full collections row (13 GIF
+    /// tiles measured on device) with headroom. Was 12 (the 144 MB HD figure's basis) before the
+    /// beta.12 device read showed a real row overflowing it.
+    private static let worstCaseEntries = 16
+
+    /// BUG-39 (beta.12): raise the cost limit to `worstCaseEntries` × the scale-aware per-GIF
+    /// budget the decoder actually uses (`AnimatedGifDecoder.decodeBudgetBytes`). Called from
+    /// `decode` on the main actor before every decode; only ever grows, so it is idempotent and
+    /// cheap. Kept out of the static initializer because the budget needs `UIScreen.main.scale`.
+    static func ensureCostLimit(forPerGifBudget budget: Int) {
+        let wanted = worstCaseEntries * max(budget, 1)
+        if shared.totalCostLimit < wanted { shared.totalCostLimit = wanted }
+    }
 
     /// Synchronous lookup — safe from any context (`NSCache` is thread-safe).
     static func cached(_ url: URL?) -> UIImage? {
@@ -361,13 +380,14 @@ private enum AnimatedGifDecoder {
         }
 
         let limits = decodeLimits(for: targetSize, scale: UIScreen.main.scale)
+        AnimatedGifCache.ensureCostLimit(forPerGifBudget: limits.budgetBytes)
 
         // `Task.detached` (not `Task`): a plain `Task` created here would INHERIT @MainActor, which
         // is what put `fetchData`'s await, the frame expansion and the cache write on the main
         // thread. Only the CGImage decode hopped off before.
         let work = Task<UIImage?, Never>.detached(priority: .userInitiated) {
             guard let data = try? await fetchData(url) else { return nil }
-            guard let result = decodedGif(from: data, limits: limits) else { return nil }
+            guard let result = decodedGif(from: data, limits: limits, probeTag: url.lastPathComponent) else { return nil }
             AnimatedGifCache.shared.setObject(result.image, forKey: url as NSURL, cost: result.cost)
             return result.image
         }
@@ -708,7 +728,7 @@ private enum AnimatedGifDecoder {
         return (width, height)
     }
 
-    private nonisolated static func decodedGif(from data: Data, limits: GifDecodePlanner.Limits) -> DecodedGif? {
+    private nonisolated static func decodedGif(from data: Data, limits: GifDecodePlanner.Limits, probeTag: String = "") -> DecodedGif? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         guard CGImageSourceGetStatus(source) == .statusComplete else { return nil }
         let count = CGImageSourceGetCount(source)
@@ -834,9 +854,12 @@ private enum AnimatedGifDecoder {
             // `side=200 ceiling=782 sourceFrames=90 keptFrames=78 bytes=7113600`. The trade adds
             // `preferred` (the 1 px/pt sharpness floor), `minKept` (the ~8 fps frame floor),
             // `aspect` and `budget` so the device pass can read WHICH tier the planner landed in.
-            NSLog("[GifDecode] side=%d ceiling=%d preferred=%d sourceFrames=%d keptFrames=%d minKept=%d source=%dx%d budget=%d bytes=%d",
+            // `file=` (URL last path component) tells a device read whether repeated lines are one
+            // GIF re-decoding (cache miss) or a row of same-shaped GIFs — the 2026-08-16 read
+            // could not distinguish 11 look-alike Genres tiles from a thrashing tile without it.
+            NSLog("[GifDecode] side=%d ceiling=%d preferred=%d sourceFrames=%d keptFrames=%d minKept=%d source=%dx%d budget=%d bytes=%d file=%@",
                   decodeSide, planLimits.ceiling, limits.preferredMinSide, count, frames.count,
-                  plan.minKeptFrames, sourceSize?.width ?? 0, sourceSize?.height ?? 0, budgetBytes, decodedBytesTotal)
+                  plan.minKeptFrames, sourceSize?.width ?? 0, sourceSize?.height ?? 0, budgetBytes, decodedBytesTotal, probeTag)
         }
         return DecodedGif(image: animated, cost: max(decodedBytesTotal, 1))
     }
