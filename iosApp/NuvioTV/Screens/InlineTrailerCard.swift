@@ -808,6 +808,23 @@ struct InlineTrailerCard: View {
         }
         .frame(width: artworkWidth, height: artworkHeight)
         .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
+        // FEAT-18 (u/mrStevenx3, asked twice): "the title (logo) disappears while the trailer is
+        // playing, whereas in Nuvio it remains visible." With Hide Labels on there is NO caption
+        // under the tile, so a playing trailer carried no title at all (reporter's frame,
+        // p2qudtq t22). Draw the title ON the tile — logo art with a text fallback, over its own
+        // bottom scrim — the way Nuvio's TV app does. Only when the caption slot is hidden: users
+        // whose caption survives playback would otherwise get the title twice. Anchored to the
+        // BOTTOM of the tile so it can never meet the pinned row title band that slides down
+        // onto the artwork top in Nuvio-style Home (BUG-53/BUG-61 geometry stays untouched), and
+        // placed AFTER `.clipShape` for the same reason as the ring below (the letterboxed
+        // player's zoom transform is clipped only by this view's shape — UX-9/BUG-59).
+        .overlay(alignment: .bottomLeading) {
+            if showsInTileTitle {
+                InlineTrailerTitleOverlay(item: item, tileWidth: artworkWidth, tileHeight: artworkHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
+                    .transition(.opacity)
+            }
+        }
         // FEAT-14: the dwell-morph swaps the focused `PosterCard` out for this landscape tile, and
         // that card's own ring dies with it — so with the setting on, the ring visibly vanished
         // the moment a trailer started (device finding, 2026-08-02). This tile needs its own ring.
@@ -839,6 +856,12 @@ struct InlineTrailerCard: View {
     /// same slot. Landscape rows keep their own title (nothing is faded there).
     private var showsOverlayTitle: Bool { fadesBaseCard && posterStyle.showTitle }
 
+    /// FEAT-18: the in-tile title/logo — only while the tile is up AND no caption is drawn under
+    /// it (Hide Labels on, in either row shape). `model.isExpanded` rather than `playingURL`: the
+    /// still landscape art that precedes the video is part of the same "trailer focus view", and
+    /// gating on playback would make the title blink in a beat after the morph.
+    private var showsInTileTitle: Bool { model.isExpanded && !posterStyle.showTitle }
+
     /// UX-4a (Christian's spec, 2026-07-30): the poster KEEPS ITS HEIGHT and only grows
     /// WIDER when the trailer starts — a 16:9 tile at the poster's full height. The old
     /// morph shrank the card to a short 360×203 landscape tile, which read as "too small"
@@ -855,6 +878,88 @@ struct InlineTrailerCard: View {
     private var artworkHeight: CGFloat {
         if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeHeight }
         return posterStyle.height
+    }
+}
+
+// MARK: - FEAT-18: in-tile title / logo
+
+/// The title drawn over the bottom-left of a playing (or about-to-play) inline trailer tile:
+/// the item's logo art when it exists (same resolver + cache as the Home hero — `heroLogoURL`,
+/// `ArtworkStore`), the name as text otherwise, both over a bottom-up scrim so a bright frame
+/// can't wash them out (the UX-6 legibility lesson). Sized relative to the tile, never the hero:
+/// the logo may take at most ~55 % of the width and ~30 % of the height. `.allowsHitTesting`
+/// is irrelevant here (the whole tile is inside a button label), and nothing in this view
+/// changes the tile's layout size — it is a pure overlay on an already-measured frame (BUG-29's
+/// row-scroll math depends on that).
+struct InlineTrailerTitleOverlay: View {
+    let item: MetaPreview
+    let tileWidth: CGFloat
+    let tileHeight: CGFloat
+    private let url: URL?
+    @State private var image: UIImage?
+
+    init(item: MetaPreview, tileWidth: CGFloat, tileHeight: CGFloat) {
+        self.item = item
+        self.tileWidth = tileWidth
+        self.tileHeight = tileHeight
+        self.url = heroLogoURL(for: item)
+        _image = State(initialValue: ArtworkStore.cached(url))
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            // Scrim: transparent through the top half, dark enough at the foot for white text
+            // or a light logo on any frame. Cheap gradient, no material — materials over a
+            // moving video would sample the player every frame.
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .clear, location: 0.45),
+                    .init(color: .black.opacity(0.72), location: 1),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+
+            Group {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(
+                            maxWidth: tileWidth * 0.55,
+                            maxHeight: tileHeight * 0.30,
+                            alignment: .bottomLeading
+                        )
+                        .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
+                } else {
+                    Text(item.name)
+                        .font(Theme.Font.sectionTitle)
+                        .foregroundStyle(Theme.Palette.textPrimary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.7)
+                        .shadow(color: .black.opacity(0.6), radius: 4, y: 1)
+                        .frame(maxWidth: tileWidth * 0.8, alignment: .leading)
+                }
+            }
+            .padding(.leading, Theme.Spacing.md)
+            .padding(.bottom, Theme.Spacing.md)
+        }
+        .frame(width: tileWidth, height: tileHeight, alignment: .bottomLeading)
+        .accessibilityHidden(true) // the button label already carries the item name
+        .task(id: url) {
+            guard let url else {
+                image = nil
+                return
+            }
+            if let hit = ArtworkStore.cached(url) {
+                image = hit
+                return
+            }
+            image = nil
+            if let fetched = try? await ArtworkStore.fetch(url) {
+                withAnimation(.easeIn(duration: 0.25)) { image = fetched }
+            }
+        }
     }
 }
 
