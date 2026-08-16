@@ -133,7 +133,16 @@ final class NuvioTVUITests: XCTestCase {
 
     /// From Home content, walk up to the tab bar, right to the wanted tab, and enter it.
     private func openTab(_ app: XCUIApplication, named title: String) {
-        press(.up, times: 8, gap: 0.5)
+        // Climb until a tab-bar button reports focus (tabs DO report focus, test13) — a fixed
+        // Up×8 could not leave a long Settings pane (beta.13 wave 2 finding: test27/29 ended in
+        // the sidebar), while Up past the tab bar is a no-op, so overshooting is harmless.
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<40 {
+            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            remote.press(.up)
+            pause(0.35)
+        }
+        press(.up, times: 1, gap: 0.5)
         let tab = app.buttons[title]
         if !moveFocus(.right, until: tab, max: 6) {
             _ = moveFocus(.left, until: tab, max: 8)
@@ -1414,6 +1423,309 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         shot(app, "25b_nuvio_style_hero_focused")
         XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - Appearance baseline restore (state-aware; safe to run any time)
+
+    /// Puts the signed-in sim profile's SYNCED appearance state back to the suite's baseline:
+    /// Ocean theme, Landscape Rows OFF, Hide Titles OFF, Card Depth OFF, plus the two local
+    /// focus toggles OFF. Every step is state-aware (reads the row's accessibility value / the
+    /// swatch's selection), so it is idempotent. Run it after any failed appearance test — a
+    /// mis-landed walk in test27/28 once flipped Landscape Rows and the theme on the real
+    /// account (beta.13 wave 2), and every later screenshot lied about the layout.
+    func test30AppearanceBaselineRestore() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        try restoreAppearanceBaseline(app)
+        shot(app, "30_baseline_restored")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    private func restoreAppearanceBaseline(_ app: XCUIApplication) throws {
+        let appearance = app.buttons["Appearance"]
+        openTab(app, named: "Settings")
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+        let sidebarX = appearance.frame.maxX
+        // Theme → Ocean (swatches report focus; selecting the already-selected theme is a no-op).
+        let ocean = app.buttons["Ocean"]
+        let swatches = ["Crimson", "Ocean", "Violet", "Emerald", "Amber", "Rose", "White"]
+        for _ in 0..<30 { // climb to the swatch row; NEVER past it (the tab bar is next)
+            if swatches.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            remote.press(.up)
+            pause(0.4)
+        }
+        // Right FIRST: Ocean is the 2nd swatch, and Left from Crimson leaves the row for the
+        // sidebar (whose focus SWITCHES panes) — the recording of the 2026-08-16 failure.
+        if !moveFocus(.right, until: ocean, max: 6) { _ = moveFocus(.left, until: ocean, max: 6) }
+        if ocean.exists && ocean.hasFocus {
+            remote.press(.select)
+            pause(2.5) // theme change re-identifies the tree; focus may land back on the sidebar
+            if appearance.hasFocus { press(.right, times: 1); pause(1) }
+        }
+        try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+        try ensureToggleRow(app, labelPrefix: "No Zoom on Focus", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+        try ensureToggleRow(app, labelPrefix: "Hide Titles", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+        try ensureToggleRow(app, labelPrefix: "Landscape Rows", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+        try ensureToggleRow(app, labelPrefix: "Card Depth", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+    }
+
+    // MARK: - UX-8: Hide Discover toggle round-trip
+
+    /// Settings → Content Sources → "Hide Discover" ON ⇒ the Search tab must show NO Discover
+    /// header; OFF again ⇒ it must come back (test19's existence check, inverted then restored).
+    /// Toggle rows never report focus (test25), so `ensureToggleRow` walks by counted rows and
+    /// asserts the row's accessibility value flipped — a mis-landed walk fails loudly.
+    func test29HideDiscoverToggle() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        let contentSources = app.buttons["Content Sources"]
+        func openContentSources() {
+            openTab(app, named: "Settings")
+            _ = moveFocus(.down, until: contentSources, max: 10)
+            remote.press(.select)
+            pause(1.5)
+            press(.right, times: 1)
+            pause(1)
+        }
+        openContentSources()
+        let sidebarX = contentSources.frame.maxX
+        try ensureToggleRow(app, labelPrefix: "Hide Discover", on: true, sidebarMaxX: sidebarX, category: "Content Sources")
+        shot(app, "29a_hide_discover_on")
+
+        openTab(app, named: "Search")
+        pause(2.5)
+        shot(app, "29b_search_without_discover")
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 6), "Search tab not reached")
+        XCTAssertFalse(app.staticTexts["Discover"].exists, "Discover header still on Search with Hide Discover ON")
+
+        openContentSources()
+        try ensureToggleRow(app, labelPrefix: "Hide Discover", on: false, sidebarMaxX: sidebarX, category: "Content Sources")
+        openTab(app, named: "Search")
+        pause(2.5)
+        shot(app, "29c_search_with_discover_again")
+        XCTAssertTrue(app.staticTexts["Discover"].waitForExistence(timeout: 8), "Discover did not return after Hide Discover OFF")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - FEAT-18: in-tile title while the focus trailer plays (Hide Titles on)
+
+    /// Screenshot probe (asserts liveness + that the settings walk landed): the reporter runs
+    /// Hide Titles (`p2qudtq` t22 — no captions under any card), so the playing trailer tile
+    /// carried no title. FEAT-18 draws the logo/name ON the tile in that configuration. Walk:
+    /// Hide Titles ON through the real pane (synced poster-style payload — restored at the end),
+    /// Home, dwell on the first movies-row card past the morph + resolve, capture; then restore.
+    /// Compare 28b (still art + overlay) / 28c (playing + overlay) — the bottom-left of the wide
+    /// tile must carry a logo or the title text over a dark foot scrim.
+    func test28InlineTrailerTitleOverlayWithHiddenLabels() throws {
+        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-debug.trailerProbe", "YES"], forceFreshLaunch: true)
+        try restoreAppearanceBaseline(app) // portrait rows, no ring — the reporter's row shape
+        let appearance = app.buttons["Appearance"]
+        func openAppearance() {
+            openTab(app, named: "Settings")
+            _ = moveFocus(.down, until: appearance, max: 10)
+            remote.press(.select)
+            pause(1.5)
+            press(.right, times: 1)
+            pause(1)
+        }
+        openAppearance()
+        let sidebarX = appearance.frame.maxX
+        try ensureToggleRow(app, labelPrefix: "Hide Titles", on: true, sidebarMaxX: sidebarX, category: "Appearance")
+        shot(app, "28a_hide_titles_toggled_on")
+
+        openTab(app, named: "Home")
+        press(.down, times: 3)          // openTab already stepped into content: hero → CW → Streaming → first movies row
+        press(.left, times: 6, gap: 0.3) // first card of the row
+        pause(2.5) // dwell (1s) + morph
+        shot(app, "28b_expanded_still_with_title_overlay")
+        pause(6)
+        shot(app, "28c_playing_with_title_overlay")
+
+        openAppearance()
+        try ensureToggleRow(app, labelPrefix: "Hide Titles", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+        shot(app, "28d_hide_titles_restored_off")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - BUG-57: Card Depth "Top" vs "Full" coverage A/B (reporter's config)
+
+    /// Screenshot probe (asserts liveness + landed walks): drives the REAL Appearance pane — the
+    /// only valid A/B for a profile-synced payload (prefs injection is overwritten by sync at
+    /// launch, beta.12 lesson) — into the reporter's configuration (u/mrStevenx3, `p2qudtq`
+    /// t73.5: Accent Focus Ring ON, No Zoom on Focus ON), turns Card Depth on with the Bold edge,
+    /// and captures Home rows at Edge Coverage = Top ("En haut" — the reporter's "upwards") and
+    /// again at Full. Restores: depth section reset, both toggles back OFF (state-aware, so a
+    /// re-run after a failure cannot invert leftover state). Human/agent compares 27b vs 27d
+    /// against the mobile app's Top rendering (a full-perimeter outline whose alpha ramps
+    /// top→bottom, `composeApp/.../CardDepthEffect.kt`).
+    func test27CardDepthCoverageAB() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        let appearance = app.buttons["Appearance"]
+        func openAppearance() {
+            openTab(app, named: "Settings")
+            _ = moveFocus(.down, until: appearance, max: 10)
+            remote.press(.select)
+            pause(1.5)
+            press(.right, times: 1)
+            pause(1)
+        }
+        // Chip rows keep the column you arrive in — walk to the row, then Left/Right by chip
+        // (chips DO report focus).
+        func selectChip(_ name: String, rowPrefix: String, sidebarX: CGFloat) throws {
+            try walkToRowByTreeIndex(app, targetLabelPrefix: rowPrefix, sidebarMaxX: sidebarX, category: "Appearance")
+            let chip = app.buttons[name]
+            // Chips report focus: prove the walk landed on the row before sliding along it.
+            let rowChips = ["Subtle", "Balanced", "Bold", "Off", "Soft", "Bright", "Top", "Half", "Full"]
+            guard rowChips.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) else {
+                XCTFail("walk to chip row '\(rowPrefix)' did not land on a chip row"); return
+            }
+            // Right FIRST: Left from the leftmost chip leaves the row for the sidebar (pane
+            // switch), while Right past the last chip is a no-op.
+            if !moveFocus(.right, until: chip, max: 4) { _ = moveFocus(.left, until: chip, max: 4) }
+            guard chip.exists && chip.hasFocus else { XCTFail("chip \(name) never focused"); return }
+            remote.press(.select)
+            pause(0.8)
+        }
+
+        try restoreAppearanceBaseline(app) // Ocean, portrait rows, everything OFF — a known start
+        openAppearance()
+        let sidebarX = appearance.frame.maxX
+        try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: true, sidebarMaxX: sidebarX, category: "Appearance")
+        try ensureToggleRow(app, labelPrefix: "No Zoom on Focus", on: true, sidebarMaxX: sidebarX, category: "Appearance")
+        shot(app, "27a_ring_and_nozoom_on")
+        try ensureToggleRow(app, labelPrefix: "Card Depth", on: true, sidebarMaxX: sidebarX, category: "Appearance")
+        XCTAssertTrue(app.buttons["Top"].waitForExistence(timeout: 2), "Edge Coverage chips never appeared — Card Depth not on")
+        // The chip rows are labelled by their first chip in the AX tree — anchor on "Subtle"
+        // (edge row) and "Top" (coverage row).
+        try selectChip("Bold", rowPrefix: "Subtle", sidebarX: sidebarX)
+        try selectChip("Top", rowPrefix: "Top", sidebarX: sidebarX)
+        shot(app, "27a2_depth_bold_top_selected")
+
+        openTab(app, named: "Home")
+        press(.down, times: 3, gap: 1.0)
+        pause(3)
+        shot(app, "27b_home_rows_depth_TOP")
+        press(.right, times: 1)
+        pause(1.5)
+        shot(app, "27b2_home_rows_depth_TOP_second_card")
+
+        openAppearance()
+        try selectChip("Full", rowPrefix: "Top", sidebarX: sidebarX)
+        shot(app, "27c_depth_full_selected")
+        openTab(app, named: "Home")
+        press(.down, times: 3, gap: 1.0)
+        pause(3)
+        shot(app, "27d_home_rows_depth_FULL")
+
+        // Restore everything (depth OFF, both focus toggles OFF, theme) through the shared
+        // state-aware baseline — the same routine test30 runs standalone.
+        try restoreAppearanceBaseline(app)
+        shot(app, "27e_restored")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// Moves focus to the pane row whose label starts with `targetLabelPrefix` — a row that does
+    /// NOT report focus to XCUITest (SettingsToggleRow, test25) — by COUNTING ROWS in the AX
+    /// tree. Precondition: focus is on the pane's FIRST row (just pressed Right from the
+    /// sidebar). Rows are grouped by frame.minY (chip rows hold several buttons side by side but
+    /// are ONE row for Down/Up), so Downs = row-index distance. Lazy culling means the target
+    /// may not be in the tree from the top: then hop to the LAST materialised row (its label is
+    /// known and it is on-screen after the hop, so it is re-findable), re-capture, repeat.
+    /// Landing on a chip row leaves focus in the same column it came from — callers that need a
+    /// specific chip walk Left/Right afterwards with `moveFocus` (chips report focus).
+    private func walkToRowByTreeIndex(_ app: XCUIApplication, targetLabelPrefix: String, sidebarMaxX: CGFloat, category: String) throws {
+        let tabNames: Set<String> = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        func rows() -> [[XCUIElement]] {
+            let pane = app.buttons.allElementsBoundByIndex
+                // Past the sidebar, and NOT the tab bar (its buttons also sit right of the sidebar
+                // and once counted as "row 0" of the pane — beta.13 wave 2 finding).
+                .filter { $0.frame.minX > sidebarMaxX + 20 && $0.frame.width > 0 && !tabNames.contains($0.label) && $0.frame.minY > 90 }
+                .sorted { $0.frame.minY < $1.frame.minY }
+            var out: [[XCUIElement]] = []
+            for b in pane {
+                if let last = out.last?.first, abs(last.frame.minY - b.frame.minY) < 6 {
+                    out[out.count - 1].append(b)
+                } else {
+                    out.append([b])
+                }
+            }
+            return out
+        }
+        // Where is focus NOW? Right from the sidebar lands on the pane row NEAREST the sidebar
+        // item's Y (tvOS focus engine), not on the first row — so never assume row 0. Toggle
+        // rows don't report focus, but chip/swatch buttons do: press Up one row at a time until
+        // some pane button reports focus and take its row as the anchor; past the top Up is a
+        // no-op, so if nothing ever reports we are at row 0 anyway.
+        func inPane(_ e: XCUIElement) -> Bool { e.frame.minX > sidebarMaxX + 20 && !tabNames.contains(e.label) && e.frame.minY > 90 }
+        // Anchor: the row containing the focused element (by FRAME, not label — the Appearance
+        // pane repeats labels: two "Reset to Defaults", "Off"/"Default" chips). Toggle rows don't
+        // report focus, but chips/swatches do; Up one row at a time until something reports.
+        func focusedRowIndex(_ r: [[XCUIElement]]) -> Int? {
+            guard let f = focusedButton(app), inPane(f) else { return nil }
+            let y = f.frame.minY
+            return r.firstIndex(where: { row in abs(row[0].frame.minY - y) < 6 })
+        }
+        var anchorLabel: String? = nil // set after a hop; looked up with lastIndex (hops only go down)
+        if focusedButton(app).map(inPane) != true {
+            for _ in 0..<24 {
+                if let f = focusedButton(app), tabNames.contains(f.label) {
+                    remote.press(.down); pause(0.8)
+                    if let g = focusedButton(app), inPane(g) { break }
+                    continue
+                }
+                if let f = focusedButton(app), f.frame.minX <= sidebarMaxX + 20 {
+                    let cat = app.buttons[category]
+                    if f.label != category {
+                        if !moveFocus(.down, until: cat, max: 8) { _ = moveFocus(.up, until: cat, max: 8) }
+                        pause(1)
+                    }
+                    remote.press(.right); pause(0.8)
+                    if let g = focusedButton(app), inPane(g) { break }
+                    continue
+                }
+                remote.press(.up); pause(0.35)
+                if let f = focusedButton(app), inPane(f) { break }
+            }
+        }
+        for _ in 0..<10 {
+            let r = rows()
+            guard !r.isEmpty else { throw XCTSkip("no pane buttons in the AX tree") }
+            let from = focusedRowIndex(r)
+                ?? anchorLabel.flatMap { label in r.lastIndex(where: { row in row.contains { $0.label == label } }) }
+                ?? 0
+            if let targetIndex = r.firstIndex(where: { row in row.contains { $0.label.hasPrefix(targetLabelPrefix) } }) {
+                let delta = targetIndex - from
+                if delta > 0 { press(.down, times: delta, gap: 0.6) }
+                if delta < 0 { press(.up, times: -delta, gap: 0.6) }
+                pause(0.8)
+                return
+            }
+            // Hop to the LAST row whose label is unique in this capture (so it is re-findable).
+            let labels = r.map { $0[0].label }
+            guard let hop = (0..<r.count).reversed().first(where: { i in i > from && labels.filter { $0 == labels[i] }.count == 1 }) else { break }
+            press(.down, times: hop - from, gap: 0.6)
+            anchorLabel = labels[hop]
+            pause(0.8)
+        }
+        XCTFail("row '\(targetLabelPrefix)…' never materialised in the pane")
+    }
+
+    /// State-aware toggle: walks to the `SettingsToggleRow` whose label starts with
+    /// `labelPrefix` and presses Select ONLY if its "On ·"/"Off ·" subtitle disagrees with
+    /// `on`. Idempotent, so a re-run after a failed run cannot invert leftover state. Asserts
+    /// the resulting label loudly. Precondition/postcondition as `walkToRowByTreeIndex`.
+    private func ensureToggleRow(_ app: XCUIApplication, labelPrefix: String, on: Bool, sidebarMaxX: CGFloat, category: String) throws {
+        let row = { app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix)).firstMatch }
+        try walkToRowByTreeIndex(app, targetLabelPrefix: labelPrefix, sidebarMaxX: sidebarMaxX, category: category)
+        guard row().exists else { XCTFail("toggle '\(labelPrefix)' missing"); return }
+        func isOn() -> Bool { (row().value as? String) == "On" }
+        if isOn() != on {
+            remote.press(.select)
+            pause(1.5)
+        }
+        XCTAssertEqual(isOn(), on, "toggle '\(labelPrefix)' did not end up \(on ? "ON" : "OFF"): value=\(String(describing: row().value))")
     }
 
     // MARK: - BUG-58: theme swatch label must stay legible while focused

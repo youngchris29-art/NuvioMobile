@@ -141,6 +141,9 @@ struct SettingsToggleRow: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.settingsRow)
+        // VoiceOver reads the state (the checkmark glyph alone says nothing); the UITest harness
+        // keys its state-aware toggle helper off this same value (beta.13 wave 2).
+        .accessibilityValue(isOn ? Text("On") : Text("Off"))
     }
 }
 
