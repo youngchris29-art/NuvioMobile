@@ -44,6 +44,7 @@ data class SyncHomeCatalogPayload(
     @SerialName("show_catalog_type") val showCatalogType: Boolean = true,
     @SerialName("hide_unreleased_content") val hideUnreleasedContent: Boolean = false,
     @SerialName("hide_catalog_underline") val hideCatalogUnderline: Boolean = false,
+    @SerialName("hide_discover") val hideDiscover: Boolean = false,
     val items: List<SyncCatalogItem> = emptyList(),
 )
 
@@ -61,6 +62,7 @@ private data class RemoteHomeCatalogSettings(
     val hasShowCatalogType: Boolean,
     val hasHideUnreleasedContent: Boolean,
     val hasHideCatalogUnderline: Boolean,
+    val hasHideDiscover: Boolean,
 )
 
 private data class PullToken(
@@ -79,6 +81,7 @@ object HomeCatalogSettingsSyncService {
     private const val HIDE_UNRELEASED_CONTENT_KEY = "hide_unreleased_content"
     private const val SHOW_CATALOG_TYPE_KEY = "show_catalog_type"
     private const val HIDE_CATALOG_UNDERLINE_KEY = "hide_catalog_underline"
+    private const val HIDE_DISCOVER_KEY = "hide_discover"
 
     @Volatile
     var isSyncingFromRemote: Boolean = false
@@ -223,6 +226,7 @@ object HomeCatalogSettingsSyncService {
             hasShowCatalogType = blob.settingsJson.containsKey(SHOW_CATALOG_TYPE_KEY),
             hasHideUnreleasedContent = blob.settingsJson.containsKey(HIDE_UNRELEASED_CONTENT_KEY),
             hasHideCatalogUnderline = blob.settingsJson.containsKey(HIDE_CATALOG_UNDERLINE_KEY),
+            hasHideDiscover = blob.settingsJson.containsKey(HIDE_DISCOVER_KEY),
         )
     }
 
@@ -238,6 +242,9 @@ object HomeCatalogSettingsSyncService {
         val hideUnderlineSource = rows
             .filter { it.hasHideCatalogUnderline }
             .maxByOrNull { it.updatedAt.orEmpty() }
+        val hideDiscoverSource = rows
+            .filter { it.hasHideDiscover }
+            .maxByOrNull { it.updatedAt.orEmpty() }
 
         return copy(
             payload = payload.copy(
@@ -247,6 +254,8 @@ object HomeCatalogSettingsSyncService {
                     ?: payload.hideUnreleasedContent,
                 hideCatalogUnderline = hideUnderlineSource?.payload?.hideCatalogUnderline
                     ?: payload.hideCatalogUnderline,
+                hideDiscover = hideDiscoverSource?.payload?.hideDiscover
+                    ?: payload.hideDiscover,
             ),
         )
     }
@@ -283,6 +292,11 @@ object HomeCatalogSettingsSyncService {
                 decoded.hideCatalogUnderline
             } else {
                 localPayload.hideCatalogUnderline
+            },
+            hideDiscover = if (settingsJson.containsKey(HIDE_DISCOVER_KEY)) {
+                decoded.hideDiscover
+            } else {
+                localPayload.hideDiscover
             },
         )
     }.getOrNull()

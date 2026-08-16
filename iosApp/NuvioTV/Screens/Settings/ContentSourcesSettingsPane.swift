@@ -138,6 +138,19 @@ struct ContentSourcesSettingsPane: View {
     /// (SettingsViewModel's addon watcher), the disabled set is local to this Apple TV.
     @ViewBuilder
     private var searchSourcesSection: some View {
+        // UX-8 (u/mrStevenx3, restated three times, finally "completely hide the Discover
+        // section"): one container-level toggle. Synced per profile — deliberately NOT under the
+        // "this Apple TV only" caption below, which describes the per-catalog rows.
+        SettingsToggleRow(
+            title: String(localized: "Hide Discover"),
+            subtitle: model.hideDiscover
+                ? String(localized: "On \u{00B7} Search shows only the search field and recent searches")
+                : String(localized: "Off \u{00B7} Search shows the Discover section (types, catalogs, genres) below the field"),
+            isOn: model.hideDiscover
+        ) {
+            model.setHideDiscover(!model.hideDiscover)
+        }
+
         Text("Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.")
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)

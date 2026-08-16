@@ -41,7 +41,11 @@ struct SearchView: View {
 
                         if queryIsEmpty {
                             historyChips
-                            discoverSection
+                            // UX-8: the user can hide the whole Discover section (synced per
+                            // profile) — the page is then the search field + recent searches.
+                            if !model.hideDiscover {
+                                discoverSection
+                            }
                         } else {
                             searchResults
                         }

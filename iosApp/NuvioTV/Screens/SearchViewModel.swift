@@ -51,6 +51,10 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var history: [String] = []
     /// Shared Discover state: type/catalog/genre options + a paginated item grid.
     @Published private(set) var discover: DiscoverUiState?
+    /// UX-8: the user hid the whole Discover section (synced home-catalog setting). Seeded from
+    /// the repository snapshot so the very first frame is right, then live via the watcher.
+    @Published private(set) var hideDiscover = HomeCatalogSettingsRepository.shared.snapshot().hideDiscover
+    private var catalogSettingsWatcher: FlowWatcher?
 
     private var addonWatcher: FlowWatcher?
     private var searchWatcher: FlowWatcher?
@@ -96,6 +100,20 @@ final class SearchViewModel: ObservableObject {
         }
         SearchHistoryRepository.shared.ensureLoaded()
 
+        // UX-8: follow the synced Hide Discover flag. When it flips back OFF while the screen is
+        // up, re-arm so the section rebuilds (refreshDiscoverIfNeeded early-returns on a matching
+        // addon signature and would otherwise leave `discover` stale/nil).
+        catalogSettingsWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, !self.stopped else { return }
+            guard let state = emitted as? HomeCatalogSettingsUiState else { return }
+            let wasHidden = self.hideDiscover
+            self.hideDiscover = state.hideDiscover
+            if wasHidden && !state.hideDiscover {
+                self.lastDiscoverAddonSignature = nil
+                self.refreshDiscoverIfNeeded()
+            }
+        }
+
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
             guard let self, !self.stopped else { return }
             guard let state = emitted as? AddonsUiState else { return }
@@ -114,10 +132,12 @@ final class SearchViewModel: ObservableObject {
         searchWatcher?.cancel()
         discoverWatcher?.cancel()
         historyWatcher?.cancel()
+        catalogSettingsWatcher?.cancel()
         addonWatcher = nil
         searchWatcher = nil
         discoverWatcher = nil
         historyWatcher = nil
+        catalogSettingsWatcher = nil
         started = false
         // Re-arm Discover for the next start(): refreshDiscoverIfNeeded() early-returns when
         // the signature already matches, so without this the section would never rebuild.
@@ -171,6 +191,9 @@ final class SearchViewModel: ObservableObject {
 
     /// (Re)build the Discover catalog options when the enabled-addon set changes.
     private func refreshDiscoverIfNeeded() {
+        // UX-8: nothing to build while the section is hidden — skips the addon fan-out too. The
+        // catalog-settings watcher re-arms `lastDiscoverAddonSignature` when the flag clears.
+        guard !hideDiscover else { return }
         let signature = enabledAddons.map { $0.manifestUrl }.sorted().joined(separator: "|")
         guard signature != lastDiscoverAddonSignature else { return }
         lastDiscoverAddonSignature = signature
@@ -203,5 +226,6 @@ final class SearchViewModel: ObservableObject {
         searchWatcher?.cancel()
         discoverWatcher?.cancel()
         historyWatcher?.cancel()
+        catalogSettingsWatcher?.cancel()
     }
 }

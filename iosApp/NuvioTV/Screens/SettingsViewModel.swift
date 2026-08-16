@@ -18,6 +18,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var heroEnabled = true
     /// Home rows append the media type to catalog titles (synced; default on).
     @Published private(set) var showCatalogType = true
+    /// UX-8: hide the entire Discover section on the Search screen (synced; default off).
+    @Published private(set) var hideDiscover = false
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
     @Published private(set) var tmdbEnabled = false
     @Published private(set) var tmdbHasKey = false
@@ -180,6 +182,7 @@ final class SettingsViewModel: ObservableObject {
             self.catalogs = state.items
             self.showCatalogType = state.showCatalogType
             self.heroEnabled = state.heroEnabled
+            self.hideDiscover = state.hideDiscover
         }
 
         // BUG-33 defect 1 instrumentation: the Search Sources pane's fan-out caption. Watches
@@ -314,6 +317,13 @@ final class SettingsViewModel: ObservableObject {
     /// Cross-device synced; the shared HomeRepository composes the titles either way.
     func setShowCatalogType(_ enabled: Bool) {
         HomeCatalogSettingsRepository.shared.setShowCatalogType(enabled: enabled)
+    }
+
+    /// UX-8 (u/mrStevenx3, asked three ways): hide the whole Discover section on the Search
+    /// screen — the bare search field remains. Per-profile, cross-device synced (shared
+    /// home-catalog namespace, same channel as Show Catalog Type).
+    func setHideDiscover(_ enabled: Bool) {
+        HomeCatalogSettingsRepository.shared.setHideDiscover(enabled: enabled)
     }
 
     /// Clearing the key also disables enrichment (handled inside the repo).

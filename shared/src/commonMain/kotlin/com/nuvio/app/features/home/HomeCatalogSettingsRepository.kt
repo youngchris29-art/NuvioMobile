@@ -34,6 +34,8 @@ data class HomeCatalogSettingsUiState(
     val showCatalogType: Boolean = true,
     val hideUnreleasedContent: Boolean = false,
     val hideCatalogUnderline: Boolean = false,
+    /** UX-8: hide the whole Discover section on the Search screen (tvOS-authored, shared-namespace synced). */
+    val hideDiscover: Boolean = false,
     val items: List<HomeCatalogSettingsItem> = emptyList(),
 ) {
     val signature: String
@@ -45,6 +47,8 @@ data class HomeCatalogSettingsUiState(
             append(hideUnreleasedContent)
             append('|')
             append(hideCatalogUnderline)
+            append('|')
+            append(hideDiscover)
             append('|')
             append(
                 items.joinToString(separator = "|") { item ->
@@ -66,6 +70,7 @@ data class HomeCatalogSettingsSnapshot(
     val showCatalogType: Boolean,
     val hideUnreleasedContent: Boolean,
     val hideCatalogUnderline: Boolean,
+    val hideDiscover: Boolean,
     val preferences: Map<String, HomeCatalogPreference>,
 )
 
@@ -84,6 +89,7 @@ private data class StoredHomeCatalogSettingsPayload(
     val showCatalogType: Boolean = true,
     val hideUnreleasedContent: Boolean = false,
     val hideCatalogUnderline: Boolean = false,
+    val hideDiscover: Boolean = false,
     val items: List<StoredHomeCatalogPreference> = emptyList(),
 )
 
@@ -106,6 +112,7 @@ object HomeCatalogSettingsRepository {
     private var showCatalogType = true
     private var hideUnreleasedContent = false
     private var hideCatalogUnderline = false
+    private var hideDiscover = false
 
     fun onProfileChanged() {
         hasLoaded = false
@@ -114,6 +121,7 @@ object HomeCatalogSettingsRepository {
         showCatalogType = true
         hideUnreleasedContent = false
         hideCatalogUnderline = false
+        hideDiscover = false
         definitions = emptyList()
         collectionDefinitions = emptyList()
         _uiState.value = HomeCatalogSettingsUiState()
@@ -128,6 +136,7 @@ object HomeCatalogSettingsRepository {
         showCatalogType = true
         hideUnreleasedContent = false
         hideCatalogUnderline = false
+        hideDiscover = false
         _uiState.value = HomeCatalogSettingsUiState()
     }
 
@@ -162,6 +171,7 @@ object HomeCatalogSettingsRepository {
             showCatalogType = showCatalogType,
             hideUnreleasedContent = hideUnreleasedContent,
             hideCatalogUnderline = hideCatalogUnderline,
+            hideDiscover = hideDiscover,
             preferences = preferences.mapValues { (_, value) ->
                 HomeCatalogPreference(
                     customTitle = value.customTitle,
@@ -210,6 +220,16 @@ object HomeCatalogSettingsRepository {
         HomeCatalogSettingsSyncService.triggerPush()
     }
 
+    /** UX-8: hide the entire Discover section on the Search screen. Per-profile, synced (shared namespace). */
+    fun setHideDiscover(enabled: Boolean) {
+        ensureLoaded()
+        if (hideDiscover == enabled) return
+        hideDiscover = enabled
+        publish()
+        persist()
+        HomeCatalogSettingsSyncService.triggerPush()
+    }
+
     fun setHeroSourceEnabled(key: String, enabled: Boolean) {
         updatePreference(key, pushRemote = false) { preference ->
             if (!enabled) {
@@ -240,6 +260,7 @@ object HomeCatalogSettingsRepository {
         showCatalogType = true
         hideUnreleasedContent = false
         hideCatalogUnderline = false
+        hideDiscover = false
         preferences.clear()
         normalizePreferences()
         publish()
@@ -290,6 +311,7 @@ object HomeCatalogSettingsRepository {
             showCatalogType = parsedPayload.showCatalogType
             hideUnreleasedContent = parsedPayload.hideUnreleasedContent
             hideCatalogUnderline = parsedPayload.hideCatalogUnderline
+            hideDiscover = parsedPayload.hideDiscover
             preferences = parsedPayload.items.associateBy { it.key }.toMutableMap()
             publish()
             return
@@ -393,6 +415,7 @@ object HomeCatalogSettingsRepository {
             showCatalogType = showCatalogType,
             hideUnreleasedContent = hideUnreleasedContent,
             hideCatalogUnderline = hideCatalogUnderline,
+            hideDiscover = hideDiscover,
             items = items,
         )
     }
@@ -405,6 +428,7 @@ object HomeCatalogSettingsRepository {
                     showCatalogType = showCatalogType,
                     hideUnreleasedContent = hideUnreleasedContent,
                     hideCatalogUnderline = hideCatalogUnderline,
+                    hideDiscover = hideDiscover,
                     items = preferences.values.sortedBy { it.order },
                 ),
             ),
@@ -502,6 +526,7 @@ object HomeCatalogSettingsRepository {
             showCatalogType = showCatalogType,
             hideUnreleasedContent = hideUnreleasedContent,
             hideCatalogUnderline = hideCatalogUnderline,
+            hideDiscover = hideDiscover,
             items = items,
         )
     }
@@ -511,6 +536,7 @@ object HomeCatalogSettingsRepository {
         showCatalogType = payload.showCatalogType
         hideUnreleasedContent = payload.hideUnreleasedContent
         hideCatalogUnderline = payload.hideCatalogUnderline
+        hideDiscover = payload.hideDiscover
         if (payload.items.isNotEmpty()) {
             val existingHeroState = preferences.mapValues { it.value.heroSourceEnabled }
             val remotePreferences = payload.items.associate { item ->
