@@ -7109,6 +7109,40 @@
         }
       }
     },
+    "Hide Discover": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entdecken ausblenden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ocultar Descubrir"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Masquer Découvrir"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nascondi Scopri"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ẩn Khám phá"
+          }
+        }
+      }
+    },
     "Hide Hero Artwork While Browsing": {
       "extractionState": "manual",
       "localizations": {
@@ -10989,6 +11023,40 @@
         }
       }
     },
+    "Off · Search shows the Discover section (types, catalogs, genres) below the field": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Die Suche zeigt den Bereich „Entdecken“ (Typen, Kataloge, Genres) unter dem Feld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · La búsqueda muestra la sección Descubrir (tipos, catálogos, géneros) debajo del campo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · La recherche affiche la section Découvrir (types, catalogues, genres) sous le champ"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivato · La ricerca mostra la sezione Scopri (tipi, cataloghi, generi) sotto il campo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt · Tìm kiếm hiển thị mục Khám phá (loại, danh mục, thể loại) bên dưới ô tìm kiếm"
+          }
+        }
+      }
+    },
     "Off · Trailers only play when selected": {
       "localizations": {
         "de": {
@@ -11667,6 +11735,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật · Poster phát trailer tắt tiếng sau một lúc được chọn"
+          }
+        }
+      }
+    },
+    "On · Search shows only the search field and recent searches": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Die Suche zeigt nur das Suchfeld und die letzten Suchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · La búsqueda muestra solo el campo de búsqueda y las búsquedas recientes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · La recherche n’affiche que le champ de recherche et les recherches récentes"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivato · La ricerca mostra solo il campo di ricerca e le ricerche recenti"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật · Tìm kiếm chỉ hiển thị ô tìm kiếm và các tìm kiếm gần đây"
           }
         }
       }
