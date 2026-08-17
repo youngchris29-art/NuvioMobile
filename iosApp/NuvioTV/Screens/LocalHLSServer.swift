@@ -123,9 +123,14 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         case mediaName:
             return map.mediaPlaylist()
         default:
-            // sub-N.m3u8 — a one-segment VOD playlist covering the whole timeline (cue times are
-            // playlist times; no X-TIMESTAMP-MAP needed at origin zero).
             guard let rendition = subtitles.first(where: { $0.playlistName == name }) else { return nil }
+            // esub-K.m3u8 — embedded track: one WebVTT file per video segment (same boundaries and
+            // EXTINFs as media.m3u8, no init map), produced by the remux worker as it goes.
+            if case .embedded(let sink) = rendition.source {
+                return map.embeddedSubtitlePlaylist { SubtitleRendition.embeddedSegmentName(sink: sink, segment: $0) }
+            }
+            // sub-N.m3u8 — addon file: a one-segment VOD playlist covering the whole timeline (cue
+            // times are playlist times; no X-TIMESTAMP-MAP needed at origin zero).
             let total = map.totalDurationSec
             return [
                 "#EXTM3U",
@@ -298,13 +303,16 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
 
-        // sub-N.vtt — external subtitle, downloaded + converted on first request.
-        if name.hasSuffix(".vtt") {
+        // sub-N.vtt — external subtitle, downloaded + converted on first request. (esub-K-NNNNN.vtt,
+        // an embedded track's per-segment file, is produced by the remux like a video segment and
+        // falls through to the JIT path below.)
+        if name.hasSuffix(".vtt"), SubtitleRendition.parseEmbeddedSegmentName(name) == nil {
             serveSubtitle(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             return
         }
 
-        // init.mp4 / seg-NNNNN.m4s — produced just-in-time by the remux; block until present.
+        // init.mp4 / seg-NNNNN.m4s / esub-K-NNNNN.vtt — produced just-in-time by the remux; block
+        // until present.
         serveSegmentJIT(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection,
                         deadline: Date().addingTimeInterval(blockTimeout), mode: nil, live: live)
     }
@@ -313,7 +321,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// SRT→WebVTT and cache. Failures 404 — a missing subtitle track must never disturb playback
     /// (AVPlayer keeps playing; the menu entry just doesn't render cues).
     private func serveSubtitle(name: String, rangeHeader: String?, isHead: Bool, on connection: NWConnection) {
-        guard let rendition = subtitles.first(where: { $0.fileName == name }) else {
+        guard let rendition = subtitles.first(where: { !$0.isEmbedded && $0.fileName == name }),
+              let sourceURL = rendition.sourceURL else {
             send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8),
                  on: connection, requestPath: name)
             return
@@ -332,7 +341,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
 
-        var request = URLRequest(url: rendition.sourceURL)
+        var request = URLRequest(url: sourceURL)
         request.timeoutInterval = 10
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             guard let self else { connection.cancel(); return }
@@ -345,7 +354,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
                 self.serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             } else {
                 self.lock.lock(); self.vttFailed.insert(rendition.index); self.lock.unlock()
-                print("[HLS] subtitle \(rendition.index) failed (http \(status), \(rendition.sourceURL.host ?? "?"))")
+                print("[HLS] subtitle \(rendition.index) failed (http \(status), \(sourceURL.host ?? "?"))")
                 self.send(status: "404 Not Found", contentType: "text/plain", body: Data("Unavailable".utf8),
                           on: connection, requestPath: name)
             }
@@ -429,8 +438,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         }
     }
 
-    /// Parse the 1-based index from `seg-NNNNN.m4s`, or nil for `init.mp4` / anything else.
+    /// Parse the 1-based segment index from `seg-NNNNN.m4s` or `esub-K-NNNNN.vtt`, or nil for
+    /// `init.mp4` / anything else.
     static func segmentIndex(_ name: String) -> Int? {
+        if let embedded = SubtitleRendition.parseEmbeddedSegmentName(name) { return embedded.segment }
         guard name.hasPrefix("seg-"), name.hasSuffix(".m4s") else { return nil }
         return Int(name.dropFirst(4).dropLast(4))
     }

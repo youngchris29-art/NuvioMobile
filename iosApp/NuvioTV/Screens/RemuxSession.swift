@@ -108,6 +108,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private var _audioCodecToken: String?
     private var _audioTracks: [RemuxAudioTrack] = []
     private var _subtitleTracks: [RemuxSubtitleTrack] = []
+    private var _subtitleSinkIndices: Set<Int> = []
     private var _estimatedBandwidth = 20_000_000
     private var onStateChange: (@Sendable (State) -> Void)?
     private let queue = DispatchQueue(label: "media.nuvio.remux", qos: .userInitiated)
@@ -184,6 +185,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
     /// Every subtitle stream the source carries (text + bitmap), populated with the signaling.
     var subtitleTracks: [RemuxSubtitleTrack] { lock.lock(); defer { lock.unlock() }; return _subtitleTracks }
+    /// Sink indices (position among the text tracks, in stream order) that actually got a decoder —
+    /// only these become renditions; a track without a decoder would never get its files written.
+    var subtitleSinkIndices: Set<Int> { lock.lock(); defer { lock.unlock() }; return _subtitleSinkIndices }
 
     /// Rough peak bandwidth for the master EXT-X-STREAM-INF (single variant — advisory, no ABR).
     var estimatedBandwidth: Int { lock.lock(); defer { lock.unlock() }; return _estimatedBandwidth }
@@ -440,6 +444,36 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         // unproduced holes can still reposition it, until stop().
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
+        // --- Embedded text-subtitle sinks (info-panel W2) ---------------------------------------------
+        // One sink per text subtitle stream, keyed by input stream index; sink order = the order the
+        // coordinator lists embedded renditions in (RemuxSubtitleTrack text tracks, in stream order).
+        // A track libavcodec can't decode is skipped (its rendition is still listed — the server then
+        // serves header-only VTTs for it — so the master's sink numbering stays aligned).
+        var subSinks: [Int: EmbeddedSubtitleSink] = [:]
+        do {
+            let vtb = input.pointee.streams[videoIn]!.pointee.time_base
+            let videoTBSec = Double(vtb.num) / Double(vtb.den)
+            let originSec = Double(map.boundaryTicks[0]) * videoTBSec
+            let starts = map.segments.map { Double($0.startTicks) * videoTBSec - originSec }
+            var sinkIndex = 0
+            for track in foundSubtitles where track.isText {
+                defer { sinkIndex += 1 }
+                guard let s = input.pointee.streams[track.streamIndex], let par = s.pointee.codecpar else { continue }
+                if let sink = EmbeddedSubtitleSink(sinkIndex: sinkIndex, streamIndex: track.streamIndex,
+                                                   codecpar: par, timeBase: s.pointee.time_base,
+                                                   originSec: originSec, segmentStartsSec: starts,
+                                                   totalDurationSec: map.totalDurationSec, outputDir: outputDir) {
+                    subSinks[track.streamIndex] = sink
+                } else {
+                    print("[Remux] subtitle stream #\(track.streamIndex) (\(track.codec)): no decoder — not extracted")
+                }
+            }
+            if !subSinks.isEmpty {
+                print("[Remux] embedded subtitle sinks: \(subSinks.count) (\(subSinks.values.map { "#\($0.streamIndex)→esub-\($0.sinkIndex)" }.sorted().joined(separator: ", ")))")
+            }
+        }
+        lock.lock(); _subtitleSinkIndices = Set(subSinks.values.map(\.sinkIndex)); lock.unlock()
+
         guard let pkt = av_packet_alloc() else { return fail("packet_alloc") }
         defer { var p: UnsafeMutablePointer<AVPacket>? = pkt; av_packet_free(&p) }
 
@@ -606,6 +640,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     print("[Remux] reposition scan ended (\(r))")
                     return false
                 }
+                // Subtitle pre-roll: cues read between the seek point and the boundary keyframe may
+                // still be active inside the target segment — feed them, don't drop them.
+                if let sink = subSinks[Int(pkt.pointee.stream_index)] { sink.ingest(pkt) }
                 if Int(pkt.pointee.stream_index) == videoIn,
                    (pkt.pointee.flags & AV_PKT_FLAG_KEY) != 0,
                    pkt.pointee.pts != noTS, pkt.pointee.pts + tolerance > targetTicks {
@@ -625,6 +662,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
             if !isFirstRun {
                 interrupts.repositionPending = false        // must not abort our own seek/scan
                 avformat_flush(input)                        // clear sticky EOF/queued packets
+                for sink in subSinks.values { sink.resetForReposition() }   // before the scan feeds them
                 let target = map.segments[startSeg - 1].startTicks
                 print("[Remux] seeking to segment \(startSeg) (pts \(target))")
                 if av_seek_frame(input, Int32(videoIn), target, AVSEEK_FLAG_BACKWARD) < 0 || !scanToBoundary(target) {
@@ -746,6 +784,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     }
                 }
                 let inIdx = Int(pkt.pointee.stream_index)
+                if let sink = subSinks[inIdx] {          // embedded text subtitle → VTT sink
+                    sink.ingest(pkt)
+                    av_packet_unref(pkt)
+                    continue
+                }
                 guard let outIdx = run.indexMap[inIdx],
                       let inS = input.pointee.streams[inIdx],
                       let outS = run.ctx.pointee.streams[outIdx] else {
@@ -784,6 +827,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                         print("[Remux] fragment flush/finalize failed at segment \(currentSeg) boundary")
                         av_packet_unref(pkt); runEnd = .error; break
                     }
+                    for sink in subSinks.values { sink.finalizeSegment(currentSeg) }
                     currentSeg += 1
                     nextBoundary += 1
                     publishProducing(currentSeg)
@@ -885,6 +929,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                     // final segment before its fragment is flushed.
                     if let tx = audioTx { tailOK = tx.drain(write: writeTranscodedAudio) }
                     tailOK = tailOK && flushFragment() && run.writer.finalizeCurrent()
+                    if tailOK { for sink in subSinks.values { sink.finalizeSegment(currentSeg) } }
                 }
                 let shortLinear = currentSeg != map.count && !everRepositioned
                 destroyRun(run)

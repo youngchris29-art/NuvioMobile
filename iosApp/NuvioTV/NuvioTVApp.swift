@@ -20,6 +20,12 @@ struct NuvioTVApp: App {
         // never runs). Runs once, before any repository is accessed.
         TvOsProviderInstallerKt.installTvOsSharedProviders()
 
+        // Native (AVPlayer) engine is ON by default since beta.13 (info-panel work; see
+        // docs/tvos-native-player-info-panel-plan.md). Registered — not written — so a user's explicit
+        // OFF survives, and every `bool(forKey:)` reader (PlayerScreen routing, SettingsViewModel)
+        // sees the same default without its own fallback logic.
+        UserDefaults.standard.register(defaults: [PlayerTuning.nativeDVKey: true])
+
         // FEAT-11: seed the shared hero-trailer audio state from the user's configured default
         // (PlaybackSettingsPane's "Trailer Sound by Default" toggle, same `trailer_audio_default_on`
         // key) so the very first trailer of a launch already respects it — DetailView otherwise

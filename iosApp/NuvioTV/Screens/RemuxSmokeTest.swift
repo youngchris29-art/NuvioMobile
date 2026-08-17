@@ -122,7 +122,15 @@ nonisolated enum RemuxSmokeTest {
                         let names = group?.options.map(\.displayName) ?? []
                         print("[RemuxSmoke] legible options: \(names.count)\(names.isEmpty ? "" : " — \(names.joined(separator: ", "))")")
                         if let group, let first = group.options.first {
-                            await MainActor.run { item.select(first, in: group) }
+                            await MainActor.run {
+                                item.select(first, in: group)
+                                // Cue sink: proves the selected rendition's VTT parses + time-maps
+                                // (embedded per-segment files included). First 6 cues logged.
+                                let output = AVPlayerItemLegibleOutput()
+                                output.setDelegate(smokeCueSink, queue: .main)
+                                item.add(output)
+                                smokeLegibleOutput = output
+                            }
                             print("[RemuxSmoke] selected subtitle: \(first.displayName)")
                         }
                     }
@@ -158,6 +166,21 @@ nonisolated enum RemuxSmokeTest {
             }
         }
     }
+
+    /// Logs the first few cues AVPlayer renders for the smoke run's selected subtitle.
+    final class SmokeCueSink: NSObject, AVPlayerItemLegibleOutputPushDelegate {
+        var seen = 0
+        func legibleOutput(_ output: AVPlayerItemLegibleOutput,
+                           didOutputAttributedStrings strings: [NSAttributedString],
+                           nativeSampleBuffers: [Any], forItemTime itemTime: CMTime) {
+            let text = strings.map(\.string).joined(separator: "|")
+            guard !text.isEmpty, seen < 6 else { return }
+            seen += 1
+            print("[RemuxSmoke] cue @\(String(format: "%.1f", CMTimeGetSeconds(itemTime)))s \"\(text)\"")
+        }
+    }
+    @MainActor private static let smokeCueSink = SmokeCueSink()
+    @MainActor private static var smokeLegibleOutput: AVPlayerItemLegibleOutput?
 
     @MainActor
     private static func schedule(_ coordinator: NativePlaybackCoordinator, attempt: Int) {

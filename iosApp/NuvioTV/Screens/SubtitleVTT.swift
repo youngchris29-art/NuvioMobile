@@ -10,15 +10,43 @@ import Foundation
 // the playlist origin, and a lone VTT segment at playlist t=0 with no X-TIMESTAMP-MAP is interpreted
 // on the playlist timeline directly.
 
-/// One subtitle rendition offered in the master playlist.
+/// One subtitle rendition offered in the master playlist — an addon/stream-attached file served as
+/// a single VTT, or a text track EMBEDDED in the source (info-panel W2), produced by the remux worker
+/// as per-segment WebVTT files aligned to the video segment map (`EmbeddedSubtitleSink`).
 nonisolated struct SubtitleRendition: Sendable {
-    let index: Int          // sub-<index>.m3u8 / .vtt
+    enum Source: Sendable {
+        case remote(URL)                 // sub-<index>.m3u8 → one whole-file sub-<index>.vtt
+        case embedded(sink: Int)         // esub-<sink>.m3u8 → esub-<sink>-NNNNN.vtt per segment
+    }
+    let index: Int          // position in the master's SUBTITLES group
     let name: String        // menu display name (unique within the group)
-    let language: String?   // RFC 5646-ish tag when the addon provided one
-    let sourceURL: URL
+    let language: String?   // RFC 5646-ish tag when known
+    let source: Source
+    var forced: Bool = false
+    var hearingImpaired: Bool = false
 
-    var playlistName: String { "sub-\(index).m3u8" }
+    var isEmbedded: Bool { if case .embedded = source { return true }; return false }
+    var sourceURL: URL? { if case .remote(let url) = source { return url }; return nil }
+    var playlistName: String {
+        switch source {
+        case .remote: return "sub-\(index).m3u8"
+        case .embedded(let sink): return "esub-\(sink).m3u8"
+        }
+    }
+    /// Whole-file VTT name (remote source only).
     var fileName: String { "sub-\(index).vtt" }
+    /// Per-segment VTT name for an embedded rendition (`esub-<sink>-NNNNN.vtt`).
+    static func embeddedSegmentName(sink: Int, segment: Int) -> String {
+        String(format: "esub-%d-%05d.vtt", sink, segment)
+    }
+    /// Parse `esub-<sink>-NNNNN.vtt` → (sink, segment).
+    static func parseEmbeddedSegmentName(_ name: String) -> (sink: Int, segment: Int)? {
+        guard name.hasPrefix("esub-"), name.hasSuffix(".vtt") else { return nil }
+        let core = name.dropFirst(5).dropLast(4)
+        let parts = core.split(separator: "-")
+        guard parts.count == 2, let sink = Int(parts[0]), let seg = Int(parts[1]) else { return nil }
+        return (sink, seg)
+    }
 }
 
 /// Master-playlist flags for one subtitle rendition, decided by the coordinator's language plan
@@ -47,9 +75,98 @@ nonisolated enum SubtitleVTT {
                 while !seenNames.insert("\(name) \(n)").inserted { n += 1 }
                 name = "\(name) \(n)"
             }
-            out.append(SubtitleRendition(index: out.count, name: name, language: tag, sourceURL: url))
+            out.append(SubtitleRendition(index: out.count, name: name, language: tag, source: .remote(url)))
         }
         return out
+    }
+
+    /// Renditions for the source's embedded TEXT subtitle tracks (in `tracks` order = sink index),
+    /// numbered after `existing` (the addon renditions) and named uniquely against them:
+    /// "English", "English (SDH)", "English (Forced)", "English · Commentary".
+    static func embeddedRenditions(tracks: [RemuxSubtitleTrack], availableSinks: Set<Int>,
+                                   after existing: [SubtitleRendition]) -> [SubtitleRendition] {
+        var seenNames = Set(existing.map(\.name))
+        var out: [SubtitleRendition] = []
+        var sink = -1
+        for track in tracks where track.isText {
+            sink += 1
+            guard availableSinks.contains(sink) else { continue }   // no decoder → no rendition
+            let tag = track.language.flatMap { languageTag($0) }
+            var base: String
+            if let tag, let localized = Locale.current.localizedString(forIdentifier: tag) {
+                base = localized.prefix(1).uppercased() + localized.dropFirst()
+            } else {
+                base = String(localized: "Subtitles")
+            }
+            if let title = track.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty,
+               title.lowercased() != base.lowercased() {
+                // "English (SDH)" / "English Commentary" already name the language — use as-is;
+                // "Commentary" / "Signs & Songs" get the language prefixed.
+                base = title.lowercased().hasPrefix(base.lowercased())
+                    ? String(title.prefix(48))
+                    : base + " \u{00B7} \(String(title.prefix(40)))"
+            }
+            if track.hearingImpaired, !base.localizedCaseInsensitiveContains("SDH") { base += " (SDH)" }
+            if track.forced, !base.localizedCaseInsensitiveContains("forced") { base += " (\(String(localized: "Forced")))" }
+            var name = base
+            if !seenNames.insert(name).inserted {
+                var n = 2
+                while !seenNames.insert("\(base) \(n)").inserted { n += 1 }
+                name = "\(base) \(n)"
+            }
+            out.append(SubtitleRendition(index: existing.count + out.count, name: name, language: tag,
+                                         source: .embedded(sink: sink),
+                                         forced: track.forced, hearingImpaired: track.hearingImpaired))
+        }
+        return out
+    }
+
+    /// WebVTT timestamp for a playlist time in seconds.
+    static func vttTime(_ seconds: Double) -> String {
+        let clamped = max(0, seconds)
+        let total = Int(clamped)
+        let millis = Int(((clamped - Double(total)) * 1000).rounded())
+        return String(format: "%02d:%02d:%02d.%03d", total / 3600, (total % 3600) / 60, total % 60, min(millis, 999))
+    }
+
+    /// Cue text from a plain-text subtitle rectangle (`AVSubtitleRect.text`): markup cleanup and
+    /// WebVTT escaping only — no ASS field split (plain sentences may contain any number of commas).
+    static func vttCueText(fromPlainText raw: String) -> String {
+        let cleaned = raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { cleanCueText(String($0)) }
+            .joined(separator: "\n")
+        return escapeVTT(cleaned)
+    }
+
+    private static func escapeVTT(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: "-->", with: "→")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Cue text from a decoded ASS dialogue line as libavcodec's subtitle decoders emit it in
+    /// `AVSubtitleRect.ass` ("ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text"):
+    /// take the Text field, unescape ASS line breaks, strip `{\override}` blocks and `<font>`, and
+    /// escape the two characters WebVTT reserves.
+    static func vttCueText(fromASSLine line: String) -> String {
+        // The text is everything after the 8th comma (Text itself may contain commas).
+        var text = line
+        var commas = 0
+        var cut = line.startIndex
+        for i in line.indices where line[i] == "," {
+            commas += 1
+            if commas == 8 { cut = line.index(after: i); break }
+        }
+        if commas >= 8 { text = String(line[cut...]) }
+        text = text.replacingOccurrences(of: "\\N", with: "\n")
+            .replacingOccurrences(of: "\\n", with: "\n")
+            .replacingOccurrences(of: "\\h", with: "\u{00A0}")
+        let cleaned = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { cleanCueText(String($0)) }
+            .joined(separator: "\n")
+        return escapeVTT(cleaned)
     }
 
     /// A usable RFC 5646-ish tag ("en", "eng", "pt-BR") or nil when the value is a display word.

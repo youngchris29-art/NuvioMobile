@@ -2,11 +2,11 @@ import SwiftUI
 
 #if DEBUG
 /// UI-level player smoke: when `debug.mpvSmokeURL` holds a source URL, the root view presents the
-/// real `PlayerScreen` (engine routing included) shortly after launch — with the native engine
-/// toggle off this exercises the full libmpv path: event-driven property cache, track-list walks
-/// on the event queue, progress saves, and the `[MPVStats]` first-90s diagnostics. With
-/// `player.nativeDolbyVision -bool YES` compatible files land on the native AVPlayer screen instead
-/// (handy for headed info-panel checks).
+/// real `PlayerScreen` (engine routing included) shortly after launch. The native engine is ON by
+/// default (beta.13+), so compatible files land on the native AVPlayer screen — handy for headed
+/// info-panel checks; write `player.nativeDolbyVision -bool NO` first to force the full libmpv
+/// path: event-driven property cache, track-list walks on the event queue, progress saves, and
+/// the `[MPVStats]` first-90s diagnostics.
 ///
 /// Sim workflow (mirrors `debug.remuxSmokeURL` — see RemuxSmokeTest.swift):
 ///   xcrun simctl spawn <dev> defaults write com.nuvio.media.NuvioTV debug.mpvSmokeURL -string '<url>'

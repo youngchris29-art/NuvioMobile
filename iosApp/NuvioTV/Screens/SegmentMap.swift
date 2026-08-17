@@ -117,6 +117,24 @@ nonisolated struct SegmentMap: Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// Media playlist for an embedded subtitle rendition (info-panel W2): the same segment grid and
+    /// EXTINFs as the video playlist, one WebVTT file per segment, no init map.
+    func embeddedSubtitlePlaylist(fileName: (Int) -> String) -> String {
+        var lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:7",
+            "#EXT-X-TARGETDURATION:\(targetDurationSec)",
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            "#EXT-X-MEDIA-SEQUENCE:1",
+        ]
+        for seg in segments {
+            lines.append(String(format: "#EXTINF:%.6f,", seg.durationSec))
+            lines.append(fileName(seg.number))
+        }
+        lines.append("#EXT-X-ENDLIST")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
     /// The master playlist: one variant pointing at `mediaName`, carrying the full RFC 6381 CODECS and
     /// (for DV) SUPPLEMENTAL-CODECS so Dolby Vision engages. Muxed A/V, so CODECS lists video + audio;
     /// the only audio EXT-X-MEDIA entry is a URI-less label for the muxed track (name/language).
@@ -167,7 +185,14 @@ nonisolated struct SegmentMap: Sendable {
             for (i, sub) in subtitles.enumerated() {
                 let flags = i < subtitleFlags.count ? subtitleFlags[i] : .legacy
                 var media = "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"\(sub.name.replacingOccurrences(of: "\"", with: ""))\""
-                media += ",DEFAULT=\(flags.isDefault ? "YES" : "NO"),AUTOSELECT=\(flags.autoselect || flags.isDefault ? "YES" : "NO"),FORCED=NO"
+                // AUTOSELECT/DEFAULT come from the coordinator's language plan (which already keeps
+                // forced renditions auto-selectable unless subtitles are off); SDH tracks carry the
+                // accessibility characteristics tvOS lists them under.
+                let autoselect = flags.autoselect || flags.isDefault
+                media += ",DEFAULT=\(flags.isDefault ? "YES" : "NO"),AUTOSELECT=\(autoselect ? "YES" : "NO"),FORCED=\(sub.forced ? "YES" : "NO")"
+                if sub.hearingImpaired {
+                    media += ",CHARACTERISTICS=\"public.accessibility.transcribes-spoken-dialog,public.accessibility.describes-music-and-sound\""
+                }
                 if let language = sub.language { media += ",LANGUAGE=\"\(language)\"" }
                 media += ",URI=\"\(sub.playlistName)\""
                 lines.append(media)

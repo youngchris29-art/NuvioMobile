@@ -43,7 +43,7 @@ struct PlaybackSettingsPane: View {
                     model.setEnhancedRenderer(!model.enhancedRenderer)
                 }
                 SettingsToggleRow(
-                    title: String(localized: "Native player for Dolby Vision (beta)"),
+                    title: String(localized: "Native player (Dolby Vision & HDR)"),
                     subtitle: String(localized: "Play Dolby Vision, HDR10 and other compatible MKVs through the native AVPlayer engine for true DV output on Apple TV 4K; everything else stays on the mpv player. Profile 7 discs convert to 8.1 on the fly, and TrueHD/DTS-only audio plays as AAC 5.1."),
                     isOn: model.nativeDolbyVision
                 ) {

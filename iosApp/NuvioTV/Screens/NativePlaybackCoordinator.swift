@@ -106,6 +106,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// non-empty list arrives (results and completion are equivalent for gating).
     private var subsFetchDone = false
     private var subsRequestKey = ""
+    /// Embedded text tracks offered as renditions this session (Info tab row).
+    private var embeddedSubtitleCount = 0
 
     init(context: PlaybackContext) {
         self.context = context
@@ -226,17 +228,29 @@ final class NativePlaybackCoordinator: ObservableObject {
         let plan = languagePlan
         // No DEFAULT when forced-only (addon subs carry no forced flag) or when the shared plan
         // deferred to player defaults; matches stay AUTOSELECT so the system may still pick them.
-        var defaultTaken = plan.forcedOnly || plan.leaveToPlayer
+        var defaultTaken = plan.leaveToPlayer
         return renditions.map { rendition in
-            guard !plan.subtitlesOff else { return SubtitleRenditionFlags(autoselect: false, isDefault: false) }
+            // FORCED renditions are always auto-selectable: HLS requires AUTOSELECT=YES with
+            // FORCED=YES (an invalid master is an admission failure), and forced tracks — foreign
+            // dialogue / signs — are meant to show per the player's own rules even when the viewer
+            // has no subtitle language preference (standard forced-subtitle behaviour). Never DEFAULT
+            // outside a forced-only plan.
+            guard !plan.subtitlesOff else { return SubtitleRenditionFlags(autoselect: rendition.forced, isDefault: false) }
             // Deferred to player defaults: every rendition stays auto-selectable, none is DEFAULT.
             guard !plan.leaveToPlayer else { return .legacy }
             let matches = plan.subtitleTargets.contains { target in
                 PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: rendition.language ?? "", targetLanguage: target)
             }
-            let isDefault = matches && !defaultTaken
+            // Forced-only plan: only a FORCED rendition in the target language may start on
+            // (embedded tracks carry the flag; addon files never do). Normal plan: only FULL
+            // renditions — a forced (signs/foreign-dialogue-only) track must not win DEFAULT just
+            // because it's listed first.
+            let eligible = plan.forcedOnly ? rendition.forced : !rendition.forced
+            let isDefault = matches && eligible && !defaultTaken
             if isDefault { defaultTaken = true }
-            return SubtitleRenditionFlags(autoselect: matches, isDefault: isDefault)
+            // Forced renditions stay auto-selectable (the player applies them per its own rules)
+            // whenever subtitles aren't off outright.
+            return SubtitleRenditionFlags(autoselect: matches || rendition.forced, isDefault: isDefault)
         }
     }
 
@@ -409,8 +423,24 @@ final class NativePlaybackCoordinator: ObservableObject {
         // External subtitles (D5): stream-attached files plus the addon-fetched list (the same
         // source the mpv player side-loads — streams rarely attach their own), offered as WebVTT
         // renditions in the synthesized master. The server downloads/converts on first selection.
-        let subtitleRenditions = SubtitleVTT.renditions(from: context.externalSubtitles + addonSubtitles)
-        print("[NativePlayer] subtitle renditions: \(subtitleRenditions.count)"
+        // Embedded text tracks (info-panel W2) come first — they're the file's own — then addon files.
+        let embeddedRenditions = SubtitleVTT.embeddedRenditions(tracks: remux.subtitleTracks,
+                                                                availableSinks: remux.subtitleSinkIndices, after: [])
+        let addonRenditions = SubtitleVTT.renditions(from: context.externalSubtitles + addonSubtitles)
+            .map { r in SubtitleRendition(index: r.index + embeddedRenditions.count, name: r.name,
+                                          language: r.language, source: r.source) }
+        var subtitleRenditions = embeddedRenditions + addonRenditions
+        // Names must be unique within the group (AVPlayer keys options by name) — addon names are
+        // deduped among themselves; dedupe them against the embedded ones too.
+        var seen = Set<String>()
+        subtitleRenditions = subtitleRenditions.map { r in
+            var name = r.name, n = 2
+            while !seen.insert(name).inserted { name = "\(r.name) \(n)"; n += 1 }
+            return name == r.name ? r : SubtitleRendition(index: r.index, name: name, language: r.language,
+                                                          source: r.source, forced: r.forced, hearingImpaired: r.hearingImpaired)
+        }
+        embeddedSubtitleCount = embeddedRenditions.count
+        print("[NativePlayer] subtitle renditions: \(subtitleRenditions.count) (\(embeddedRenditions.count) embedded)"
               + (subtitleRenditions.isEmpty ? "" : " — \(subtitleRenditions.prefix(6).map(\.name).joined(separator: ", "))\(subtitleRenditions.count > 6 ? ", …" : "")"))
         // A device that already fell back to the reduced master form keeps it across an
         // audio-switch rebuild (same video stream — the full form would just fail again).
@@ -708,14 +738,15 @@ final class NativePlaybackCoordinator: ObservableObject {
         } else {
             add(String(localized: "Addon subtitles"), String(localized: "searching…"))
         }
-        // Subtitle tracks inside the file. Text tracks become renditions (W2); bitmap tracks
-        // (PGS/VobSub) can't be shown by the native player — say so rather than look broken.
+        // Subtitle tracks inside the file. Text tracks are offered as renditions (Subtitles tab);
+        // bitmap tracks (PGS/VobSub) can't be shown by the native player — say so rather than look
+        // broken.
         if let subs = remux?.subtitleTracks, !subs.isEmpty {
             let text = subs.filter(\.isText).count, bitmap = subs.count - text
             if text > 0 {
-                // W2 turns these into renditions; until then be explicit that they aren't offered.
-                add(String(localized: "Embedded subtitles"),
-                    String(localized: "\(text) text · not yet offered natively"))
+                add(String(localized: "Embedded subtitles"), embeddedSubtitleCount == text
+                    ? String(localized: "\(text) · in the Subtitles tab")
+                    : String(localized: "\(embeddedSubtitleCount) of \(text) · in the Subtitles tab"))
             }
             if bitmap > 0 {
                 add(String(localized: "Bitmap subtitles"),

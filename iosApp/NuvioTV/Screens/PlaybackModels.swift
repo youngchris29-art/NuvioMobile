@@ -16,8 +16,8 @@ enum PlayerTuning {
     /// (never applied on the simulator, where libplacebo's vo asserts). Applies to the next playback.
     static let enhancedRendererKey = "player.enhancedRenderer"
     /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output.
-    /// Opt-in until the info-panel W2 (embedded subtitles) lands, then registered default-ON
-    /// (docs/tvos-native-player-info-panel-plan.md); gates all engine routing.
+    /// ON by default since beta.13 (registered in NuvioTVApp.init; docs/tvos-native-player-info-panel-plan.md);
+    /// gates all engine routing.
     static let nativeDVKey = "player.nativeDolbyVision"
     /// Sub-setting of the native-DV beta: keep DV Profile 7 FEL files on mpv instead of converting
     /// them to 8.1 (the conversion discards FEL enhancement data; MEL converts losslessly and is
