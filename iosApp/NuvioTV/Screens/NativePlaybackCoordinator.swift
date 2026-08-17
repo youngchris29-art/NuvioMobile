@@ -92,8 +92,20 @@ final class NativePlaybackCoordinator: ObservableObject {
     @Published private(set) var languagePlan = LanguagePlan()
     /// Shared player settings snapshot behind the plan (also drives the addon-subtitle startup mode).
     private var playerSettings: PlayerSettingsUiState?
-    /// The current item's legible selection group, cached async after readyToPlay (Info tab row).
-    private var legibleGroup: AVMediaSelectionGroup?
+    /// The current item's legible selection group, cached async after readyToPlay (Info tab row +
+    /// the top panel's Subtitles tab).
+    @Published private(set) var legibleGroup: AVMediaSelectionGroup?
+    /// Bumped whenever AVPlayer's media selection may have changed (notification, tick sync, or a
+    /// panel pick) so the top panel recomputes its checkmarks — the notification alone proved
+    /// unreliable in the sim.
+    @Published private(set) var selectionVersion = 0
+    /// Subtitle renditions of the current session keyed by NAME (source, forced, SDH) — the top
+    /// panel's Subtitles tab groups/labels its rows from this.
+    private(set) var subtitleRenditionsByName: [String: SubtitleRendition] = [:]
+    /// Paused per `timeControlStatus` (drives the swipe-down hint re-show).
+    @Published private(set) var isPaused = false
+    private var hasStartedPlaying = false
+    private var timeControlObserver: NSKeyValueObservation?
     /// The audio track (stream index) AVPlayer's audible media selection currently names — the
     /// server honours rendition-file requests only for THIS track (info-panel W3), so an in-flight
     /// request for the previous rendition can't switch the worker back. Written on the media-
@@ -102,7 +114,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     private var mediaSelectionObserver: NSObjectProtocol?
     /// The current item's audible selection group, cached once loaded so every playback tick can
     /// read the selected option synchronously (the notification alone proved unreliable in the sim).
-    private var audibleGroup: AVMediaSelectionGroup?
+    @Published private(set) var audibleGroup: AVMediaSelectionGroup?
     /// Master audio renditions of the current session (option display name → stream index).
     private var audioRenditionsByName: [String: Int] = [:]
     /// Trakt scrobble session — start once, stop once.
@@ -319,6 +331,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         pollTask?.cancel(); pollTask = nil
         observeTask?.cancel(); observeTask = nil
         if let o = mediaSelectionObserver { NotificationCenter.default.removeObserver(o); mediaSelectionObserver = nil }
+        timeControlObserver?.invalidate(); timeControlObserver = nil
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1, flush: true)
@@ -414,6 +427,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                                                           source: r.source, forced: r.forced, hearingImpaired: r.hearingImpaired)
         }
         embeddedSubtitleCount = embeddedRenditions.count
+        subtitleRenditionsByName = Dictionary(subtitleRenditions.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
         print("[NativePlayer] subtitle renditions: \(subtitleRenditions.count) (\(embeddedRenditions.count) embedded)"
               + (subtitleRenditions.isEmpty ? "" : " — \(subtitleRenditions.prefix(6).map(\.name).joined(separator: ", "))\(subtitleRenditions.count > 6 ? ", …" : "")"))
         // A device that already fell back to the reduced master form keeps it across an
@@ -469,6 +483,19 @@ final class NativePlaybackCoordinator: ObservableObject {
             self.playerItem = item
             self.player = player
             self.audibleGroup = nil
+            // `isPaused` means a pause DURING playback: the pre-playback `.paused` state a fresh
+            // player reports before it ever plays is ignored (it would masquerade as a user pause).
+            self.hasStartedPlaying = false
+            self.timeControlObserver = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+                let status = player.timeControlStatus
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if status == .playing { self.hasStartedPlaying = true }
+                    guard self.hasStartedPlaying else { return }
+                    let paused = status == .paused
+                    if self.isPaused != paused { self.isPaused = paused }
+                }
+            }
             self.observeMediaSelection(item: item, player: player)
             self.phase = .playing
             self.observePlayback(player: player, item: item)
@@ -638,6 +665,7 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     private func handleMediaSelectionChange(item: AVPlayerItem, player: AVPlayer) {
         guard playerItem === item else { return }
+        selectionVersion &+= 1
         if audibleGroup == nil {
             Task { @MainActor [weak self] in
                 let group = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
@@ -686,7 +714,95 @@ final class NativePlaybackCoordinator: ObservableObject {
             let group = (try? await item.asset.loadMediaSelectionGroup(for: .legible)) ?? nil
             guard let self, self.playerItem === item else { return }
             self.legibleGroup = group
+            self.selectionVersion &+= 1
         }
+    }
+
+    // MARK: - Top panel: media selection API (Subtitles / Audio tabs)
+
+    /// Select a legible option (nil = Off). AVPlayer honours manual picks over the criteria.
+    func select(subtitle option: AVMediaSelectionOption?) {
+        guard let item = playerItem, let group = legibleGroup else { return }
+        item.select(option, in: group)
+        print("[NativePlayer] subtitle selection → \(option.map(Self.renditionName(of:)) ?? "Off")")
+        selectionVersion &+= 1
+    }
+
+    /// Select an audible option; the remux worker is switched by `syncAudioSelection` on the
+    /// next tick / media-selection notification, exactly as for a pick from the native popover.
+    func select(audio option: AVMediaSelectionOption) {
+        guard let item = playerItem, let group = audibleGroup, let player else { return }
+        item.select(option, in: group)
+        selectionVersion &+= 1
+        syncAudioSelection(item: item, player: player)
+    }
+
+    var currentSubtitleOption: AVMediaSelectionOption? {
+        guard let item = playerItem, let group = legibleGroup else { return nil }
+        return item.currentMediaSelection.selectedMediaOption(in: group)
+    }
+
+    var currentAudioOption: AVMediaSelectionOption? {
+        guard let item = playerItem, let group = audibleGroup else { return nil }
+        return item.currentMediaSelection.selectedMediaOption(in: group)
+    }
+
+    /// The rendition NAME of an option (its common-metadata title); `displayName` is AVFoundation's
+    /// localized language, which is not unique.
+    static func renditionName(of option: AVMediaSelectionOption) -> String {
+        AVMetadataItem.metadataItems(from: option.commonMetadata,
+                                     filteredByIdentifier: .commonIdentifierTitle).first?.stringValue ?? option.displayName
+    }
+
+    /// Whether the top panel should list this subtitle option under "Show only preferred languages".
+    func subtitleOptionAllowed(_ option: AVMediaSelectionOption) -> Bool {
+        guard languagePlan.onlyPreferredLanguages else { return true }
+        let allowed = languagePlan.subtitleFilterLanguages
+        guard !allowed.isEmpty, let tag = option.extendedLanguageTag else { return true }
+        return allowed.contains { PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: tag, targetLanguage: $0) }
+    }
+
+    /// True once the addon subtitle fetch has completed (top panel empty-state copy).
+    var addonSubtitlesFetched: Bool { subsFetchDone }
+
+    /// Metadata chips for the Info tab (the dynamic half — the screen prepends context-derived
+    /// year/runtime/rating and appends genres). Bare values, Infuse-style.
+    func infoChips() -> [PlayerPanelChip] {
+        var chips: [PlayerPanelChip] = []
+        if lastDurationSec > 0 { chips.append(PlayerPanelChip(text: Self.runtimeString(lastDurationSec), isRuntime: true)) }
+        if let s = remux?.videoSignaling {
+            if s.height >= 2000 { chips.append(PlayerPanelChip(text: "4K")) }
+            else if s.height >= 1000 { chips.append(PlayerPanelChip(text: "1080p")) }
+            else if s.height >= 700 { chips.append(PlayerPanelChip(text: "720p")) }
+            else if s.height > 0 { chips.append(PlayerPanelChip(text: "SD")) }
+            if s.supplementalCodecs != nil { chips.append(PlayerPanelChip(text: "Dolby Vision")) }
+            else if s.videoRange == "PQ" { chips.append(PlayerPanelChip(text: "HDR10")) }
+            else if s.videoRange == "HLG" { chips.append(PlayerPanelChip(text: "HLG")) }
+            let codec = s.codecs.lowercased()
+            if codec.hasPrefix("hvc1") || codec.hasPrefix("hev1") || codec.hasPrefix("dvh1") || codec.hasPrefix("dvhe") {
+                chips.append(PlayerPanelChip(text: "HEVC"))
+            } else if codec.hasPrefix("avc1") || codec.hasPrefix("avc3") {
+                chips.append(PlayerPanelChip(text: "H.264"))
+            }
+            if s.frameRate > 0 { chips.append(PlayerPanelChip(text: String(format: "%.6g fps", s.frameRate))) }
+        }
+        if let audio = audioTracks.first(where: \.selected)?.name {
+            // Drop the leading language ("English · ") — the chip is about the format.
+            let parts = audio.components(separatedBy: " \u{00B7} ")
+            chips.append(PlayerPanelChip(text: parts.count > 1 ? parts.dropFirst().joined(separator: " \u{00B7} ") : audio))
+        }
+        if let event = playerItem?.accessLog()?.events.last, event.indicatedBitrate > 0 {
+            chips.append(PlayerPanelChip(text: String(format: "%.1f Mbps", event.indicatedBitrate / 1_000_000)))
+        } else if let bandwidth = remux?.estimatedBandwidth, bandwidth > 0 {
+            chips.append(PlayerPanelChip(text: String(format: "%.1f Mbps", Double(bandwidth) / 1_000_000)))
+        }
+        return chips
+    }
+
+    private static func runtimeString(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let h = total / 3600, m = (total % 3600) / 60
+        return h > 0 ? String(localized: "\(h) h \(m) min") : String(localized: "\(m) min")
     }
 
     // MARK: - Audio track display names

@@ -41,6 +41,8 @@ struct StreamPickerView: View {
     let poster: String?
     let episodeStill: String?
     let synopsis: String?
+    /// Title-level facts for the player's Info tab chips (nil when the caller has no meta).
+    let meta: PlaybackMeta?
 
     @StateObject private var model: StreamsViewModel
     @State private var selected: PlaybackContext?
@@ -84,8 +86,10 @@ struct StreamPickerView: View {
         episodes: [MetaVideo] = [],
         poster: String? = nil,
         episodeStill: String? = nil,
-        synopsis: String? = nil
+        synopsis: String? = nil,
+        meta: PlaybackMeta? = nil
     ) {
+        self.meta = meta
         self.poster = poster
         self.episodeStill = episodeStill
         self.synopsis = synopsis
@@ -122,7 +126,9 @@ struct StreamPickerView: View {
             bingeGroup: { let bg: String? = stream?.behaviorHints.bingeGroup; return bg }(),
             episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
             synopsis: synopsis,
-            episodeStill: episodeStill
+            episodeStill: episodeStill,
+            meta: meta,
+            fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }()
         )
     }
 

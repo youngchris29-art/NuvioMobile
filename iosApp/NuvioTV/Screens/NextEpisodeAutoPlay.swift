@@ -233,7 +233,9 @@ final class NextEpisodeEngine: ObservableObject {
             bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
             episodes: context.episodes,
             synopsis: context.synopsis,
-            episodeStill: context.episodeStill
+            episodeStill: context.episodeStill,
+            meta: context.meta,
+            fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }()
         )
         onPlayNext(switched)
     }
@@ -554,7 +556,9 @@ final class NextEpisodeEngine: ObservableObject {
             episodes: context.episodes,
             // The next episode's own still/overview only — never the previous episode's.
             synopsis: Self.nonEmpty(next.overview),
-            episodeStill: Self.nonEmpty(next.thumbnail)
+            episodeStill: Self.nonEmpty(next.thumbnail),
+            meta: context.meta,
+            fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }()
         )
     }
 
@@ -601,67 +605,5 @@ final class NextEpisodeEngine: ObservableObject {
             return "S\(s)E\(e) \u{00B7} \(episode.title)"
         }
         return episode.title
-    }
-}
-
-/// Bottom-trailing "Up Next" card shown by the player near the end of an episode.
-struct UpNextCard: View {
-    @ObservedObject var engine: NextEpisodeEngine
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Up Next")
-                .font(.caption).bold()
-                .foregroundStyle(.white.opacity(0.7))
-            Text(engine.nextEpisodeTitle)
-                .font(.title3).bold()
-                .foregroundStyle(.white)
-                .lineLimit(1)
-
-            switch engine.phase {
-            case .searching:
-                HStack(spacing: 10) {
-                    ProgressView().scaleEffect(0.8)
-                    Text("Finding stream\u{2026}")
-                        .font(.callout)
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-            case .counting(let seconds):
-                HStack(spacing: 10) {
-                    Image(systemName: "chevron.down.circle.fill")
-                    Text("Playing in \(seconds)\u{2026} press \u{2193} to play now")
-                        .font(.callout)
-                }
-                .foregroundStyle(.white.opacity(0.9))
-                if let source = engine.sourceName {
-                    Text(source)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(1)
-                }
-            case .stillWatching:
-                HStack(spacing: 10) {
-                    Image(systemName: "chevron.down.circle.fill")
-                    Text("Still watching? Press \u{2193} to continue")
-                        .font(.callout)
-                }
-                .foregroundStyle(.white.opacity(0.9))
-            case .noStream:
-                Text("No stream found for the next episode.")
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.85))
-            case .hidden:
-                EmptyView()
-            }
-        }
-        .padding(24)
-        .frame(maxWidth: 620, alignment: .leading)
-        // Liquid Glass over the playing video; the dark tint keeps text readable on bright scenes.
-        .glassEffect(.regular.tint(.black.opacity(0.45)), in: RoundedRectangle(cornerRadius: 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Theme.Palette.accent.opacity(0.5), lineWidth: 1.5)
-        )
-        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
     }
 }

@@ -90,7 +90,8 @@ struct EpisodesSection: View {
                 episodes: route.meta.videos,
                 poster: route.meta.poster,
                 episodeStill: route.episodeStill,
-                synopsis: route.synopsis
+                synopsis: route.synopsis,
+                meta: PlaybackMeta(details: route.meta)
             )
         }
     }

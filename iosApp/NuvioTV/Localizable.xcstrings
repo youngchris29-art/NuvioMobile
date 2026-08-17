@@ -648,6 +648,74 @@
         }
       }
     },
+    "%lld h %lld min": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Std. %lld Min."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld h %lld min"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld h %lld min"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld h %lld min"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld giờ %lld phút"
+          }
+        }
+      }
+    },
+    "%lld min": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Min."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld min"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld min"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld min"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld phút"
+          }
+        }
+      }
+    },
     "%lld of %lld enabled": {
       "localizations": {
         "de": {
@@ -984,40 +1052,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld · trong thẻ Phụ đề"
-          }
-        }
-      }
-    },
-    "%lld — switch via the Audio menu in the transport bar": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld – wechseln über das Audio-Menü in der Kontrollleiste"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld — cambiar a través del menú Audio en la barra de transporte"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld — changez via le menu Audio de la barre de lecture"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld — cambia dal menu Audio nella barra di trasporto"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld — chuyển qua menu Âm thanh trên thanh điều khiển"
           }
         }
       }
@@ -6293,6 +6327,40 @@
         }
       }
     },
+    "Embedded": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intégré"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Integrado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eingebettet"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incorporato (Embedded)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nhúng"
+          }
+        }
+      }
+    },
     "Embedded subtitles": {
       "localizations": {
         "de": {
@@ -6531,6 +6599,40 @@
         }
       }
     },
+    "Enhance Dialogue and sound options are in the player's Audio button.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dialog verbessern und Klangoptionen findest du im Audio-Button des Players."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mejorar diálogos y opciones de sonido: botón Audio del reproductor."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Amélioration des dialogues et options sonores : bouton Audio du lecteur."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Migliora dialoghi e opzioni audio: pulsante Audio del lettore."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tăng cường lời thoại và tùy chọn âm thanh nằm trong nút Âm thanh của trình phát."
+          }
+        }
+      }
+    },
     "Enhanced Video Renderer": {
       "localizations": {
         "de": {
@@ -6735,6 +6837,40 @@
         }
       }
     },
+    "Finding next episode…": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nächste Folge wird gesucht…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscando el siguiente episodio…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherche de l’épisode suivant…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricerca del prossimo episodio…"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang tìm tập tiếp theo…"
+          }
+        }
+      }
+    },
     "Finding streams…": {
       "localizations": {
         "de": {
@@ -6765,40 +6901,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang tìm nguồn phát…"
-          }
-        }
-      }
-    },
-    "Finding stream…": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Suche Stream…"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Buscando stream…"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Recherche du stream…"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ricerca del flusso…"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Đang tìm luồng…"
           }
         }
       }
@@ -7037,6 +7139,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Từ Trakt"
+          }
+        }
+      }
+    },
+    "From addons": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Von Addons"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "De addons"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Depuis les addons"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dagli addon"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Từ addon"
           }
         }
       }
@@ -10477,6 +10613,40 @@
         }
       }
     },
+    "No subtitles for this title": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Untertitel für diesen Titel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay subtítulos para este título"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun sous-titre pour ce titre"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessun sottotitolo per questo titolo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có phụ đề cho nội dung này"
+          }
+        }
+      }
+    },
     "No titles here yet.": {
       "localizations": {
         "de": {
@@ -13129,40 +13299,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang phát"
-          }
-        }
-      }
-    },
-    "Playing in %lld… press ↓ to play now": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wird in %lld abgespielt… drücke ↓ zum sofortigen Abspielen"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reproduciendo en %lld… pulsa ↓ para reproducir ahora"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lecture dans %lld… appuyez sur ↓ pour lire maintenant"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Riproduzione in %lld… premi ↓ per riprodurre ora"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phát sau %lld… nhấn ↓ để phát ngay"
           }
         }
       }
@@ -17282,6 +17418,40 @@
         }
       }
     },
+    "Speakers & Headphones": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lautsprecher & Kopfhörer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altavoces y auriculares"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enceintes et casques"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altoparlanti e cuffie"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loa và tai nghe"
+          }
+        }
+      }
+    },
     "Specials": {
       "localizations": {
         "de": {
@@ -17520,36 +17690,36 @@
         }
       }
     },
-    "Still watching? Press ↓ to continue": {
+    "Still watching?": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Schaust du noch? Drücke ↓ zum Fortfahren"
+            "value": "Schaust du noch?"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "¿Aún ves? Pulsa ↓ para continuar"
+            "value": "¿Sigues ahí?"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Toujours en train de regarder ? Appuyez sur ↓ pour continuer"
+            "value": "Toujours là ?"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Stai ancora guardando? Premi ↓ per continuare"
+            "value": "Stai ancora guardando?"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Vẫn đang xem? Nhấn ↓ để tiếp tục"
+            "value": "Bạn vẫn đang xem?"
           }
         }
       }
@@ -18026,6 +18196,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nhẹ nhàng"
+          }
+        }
+      }
+    },
+    "Swipe down for info": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach unten streichen für Infos"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desliza hacia abajo para ver la información"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Balayez vers le bas pour les infos"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scorri verso il basso per le info"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vuốt xuống để xem thông tin"
           }
         }
       }
@@ -19798,36 +20002,36 @@
         }
       }
     },
-    "Up Next": {
+    "Up next · %@ · playing in %llds": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Nächstes"
+            "value": "Als Nächstes · %@ · startet in %lld s"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "A continuación"
+            "value": "A continuación · %@ · empieza en %lld s"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "À suivre"
+            "value": "À suivre · %@ · lecture dans %lld s"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Prossimamente"
+            "value": "Prossimo · %@ · inizia tra %lld s"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tiếp theo"
+            "value": "Tiếp theo · %@ · phát sau %lld giây"
           }
         }
       }

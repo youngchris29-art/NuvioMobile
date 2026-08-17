@@ -249,7 +249,7 @@ struct DetailView: View {
         }
         .fullScreenCover(isPresented: $showStreams) {
             StreamPickerView(type: preview.type, videoId: preview.id, title: title,
-                             poster: posterUrl, synopsis: overview)
+                             poster: posterUrl, synopsis: overview, meta: playbackMeta)
         }
         .fullScreenCover(item: $seriesPlay) { route in
             StreamPickerView(
@@ -262,7 +262,8 @@ struct DetailView: View {
                 episodes: route.meta.videos,
                 poster: route.meta.poster,
                 episodeStill: route.episodeStill,
-                synopsis: route.synopsis
+                synopsis: route.synopsis,
+                meta: playbackMeta
             )
         }
         .fullScreenCover(item: $model.trailerPlayback, onDismiss: {
@@ -438,6 +439,17 @@ struct DetailView: View {
         } else {
             Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
         }
+    }
+
+    /// Title facts handed to the player for its Info tab chips (same sources as `metaLine`).
+    private var playbackMeta: PlaybackMeta {
+        PlaybackMeta(
+            year: { let s: String? = model.meta?.releaseInfo ?? preview.releaseInfo; return (s ?? "").isEmpty ? nil : s }(),
+            runtime: { let s: String? = model.meta?.runtime; return (s ?? "").isEmpty ? nil : s }(),
+            imdbRating: { let s: String? = model.meta?.imdbRating ?? preview.imdbRating; return (s ?? "").isEmpty ? nil : s }(),
+            ageRating: { let s: String? = model.meta?.ageRating; return (s ?? "").isEmpty ? nil : s }(),
+            genres: genres
+        )
     }
 
     private var metaLine: some View {

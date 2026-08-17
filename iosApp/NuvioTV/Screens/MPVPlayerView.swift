@@ -984,7 +984,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Show a skip prompt while the playhead is inside a segment (leaving a 1s tail so the button
     /// disappears cleanly at the end).
     private func updateSkipPrompt(position: Double) {
-        let active = skipSegments.first { position >= $0.start && position < $0.end - 1 }
+        let active = skipSegments.first { position >= $0.start && position < $0.end - PlayerChipStyle.lastSecondExclusion }
         let prompt = active.map { SkipPrompt(label: skipLabel(for: $0.type), targetSec: $0.end) }
         if prompt != state.skipPrompt { state.skipPrompt = prompt }
     }
@@ -1318,6 +1318,15 @@ struct MPVPlayerScreen: View {
     @State private var showPauseInfo = false
     @State private var pauseInfoTask: Task<Void, Never>?
 
+    /// Up-next chip label (mirrors the native screen's `UpNextAction` titles); nil = no chip.
+    private var upNextChipAction: String? {
+        switch upNext.phase {
+        case .counting: return UpNextAction.playNext.title
+        case .stillWatching: return UpNextAction.continueWatching.title
+        default: return nil
+        }
+    }
+
     init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil) {
         self.context = context
         self.onPlayNext = onPlayNext
@@ -1360,30 +1369,28 @@ struct MPVPlayerScreen: View {
                     .transition(.opacity)
             }
 
-            if upNext.phase != .hidden {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        UpNextCard(engine: upNext)
-                            .padding(60)
+            // Transient prompts, bottom-trailing — same chip family as the native screen's
+            // contextual actions (PlayerChipStyle). libmpv owns the remote, so these are drawn
+            // non-focusable and fire on D-pad Down (see `pressesBegan`); up-next wins over a skip.
+            if let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
+                VStack(alignment: .trailing, spacing: Theme.Spacing.sm) {
+                    PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
+                    if let action = upNextChipAction {
+                        PlayerActionChip(label: action, symbol: PlayerChipStyle.nextSymbol, showsPressHint: true)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(PlayerChipStyle.edgePadding)
                 .transition(.opacity)
             } else if let prompt = state.skipPrompt {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        SkipPromptPill(label: prompt.label)
-                            .padding(60)
-                    }
-                }
-                .transition(.opacity)
+                PlayerActionChip(label: prompt.label, symbol: PlayerChipStyle.skipSymbol, showsPressHint: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(PlayerChipStyle.edgePadding)
+                    .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: state.skipPrompt)
-        .animation(.easeInOut(duration: 0.25), value: upNext.phase)
+        .animation(PlayerChipStyle.animation, value: state.skipPrompt)
+        .animation(PlayerChipStyle.animation, value: upNext.phase)
         .animation(.easeInOut(duration: 0.25), value: showPauseInfo)
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
         .fullScreenCover(isPresented: $state.showTracks, onDismiss: { state.reclaimFocus?() }) {
@@ -1500,26 +1507,6 @@ private struct ProgressBar: View {
                     .frame(width: max(0, geo.size.width * fraction))
             }
         }
-    }
-}
-
-/// Bottom-trailing "Skip Intro/Outro" pill. The chevron hints the press-down gesture that triggers
-/// the skip (the libmpv player owns the remote, so a focusable button would fight it).
-private struct SkipPromptPill: View {
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text(label).font(.title3).bold()
-            Image(systemName: "chevron.down.circle.fill")
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 30)
-        .padding(.vertical, 16)
-        // Neutral Liquid Glass (HIG revamp): a skip prompt is an action, not a selection, so it
-        // doesn't wear the brand accent — matches the pause card / stream info treatment.
-        .glassEffect(.regular.tint(.black.opacity(0.45)), in: .capsule)
-        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
     }
 }
 

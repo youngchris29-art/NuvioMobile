@@ -14,11 +14,12 @@ import SwiftUI
 // with the system player UI:
 //  - Skip Intro/Outro/Recap ride `contextualActions` (the same system affordance TV+/Netflix use;
 //    segments come from the shared `SkipIntroRepository`, evaluated against playback ticks).
-//  - "Play Next Episode" appears as a contextual action while the up-next countdown card is showing
-//    (the card itself stays non-focusable; the action is the interactive part).
-//  - Info is a `customInfoViewControllers` tab in the swipe-down panel: what's-playing header plus
-//    router decision, remux signaling, segment map shape, and live access-log stats. The system Info
-//    tab is left unpopulated (no `externalMetadata`) so it hides and this one is the only Info tab.
+//  - "Play Next Episode" / "Continue Watching" are contextual actions too; the countdown is a small
+//    app-drawn caption (`PlayerChipCaption`, shared with the mpv screen) above them.
+//  - Info · Subtitles · Audio live in an app-drawn swipe-down top panel (Infuse-style) presented by
+//    `NativePlayerHostController` over the system player — tvOS 26 has no system swipe-down panel
+//    (a `customInfoViewControllers` tab would render as an "Info" pill under the seek bar). The
+//    native transport-bar Subtitles/Audio popovers stay (Enhance Dialogue etc. have no public API).
 struct NativePlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)?
@@ -29,9 +30,15 @@ struct NativePlayerScreen: View {
 
     @StateObject private var coordinator: NativePlaybackCoordinator
     @StateObject private var upNext: NextEpisodeEngine
-    @StateObject private var info = NativeStreamInfoModel()
+    @StateObject private var panelModel: PlayerTopPanelModel
+    @State private var panelAdapter: NativePlayerPanelAdapter?
     @State private var skipSegments: [SkipSegment] = []
     @State private var skipPrompt: SkipPrompt?
+    /// "Swipe down for info" hint (start + after a pause); hidden while the panel is open.
+    @State private var showSwipeHint = false
+    @State private var swipeHintTask: Task<Void, Never>?
+    @State private var swipeHintReason: SwipeHintReason?
+    @State private var panelOpen = false
     @Environment(\.dismiss) private var dismiss
 
     init(context: PlaybackContext,
@@ -44,6 +51,8 @@ struct NativePlayerScreen: View {
         self.routingNote = routingNote
         _coordinator = StateObject(wrappedValue: NativePlaybackCoordinator(context: context))
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context, onPlayNext: onPlayNext ?? { _ in }))
+        _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
+            info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))
     }
 
     var body: some View {
@@ -63,15 +72,15 @@ struct NativePlayerScreen: View {
                     AVPlayerContainer(
                         player: player,
                         skipPrompt: skipPrompt,
-                        upNextReady: upNextActionAvailable,
+                        upNextAction: upNextAction,
                         allowedSubtitleLanguages: coordinator.languagePlan.onlyPreferredLanguages
                             ? coordinator.languagePlan.subtitleFilterLanguages : nil,
-                        infoHeader: NativeInfoHeader(context: context),
-                        infoModel: info,
+                        panelModel: panelModel,
                         onSkip: { [weak coordinator] target in
                             coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
                         },
-                        onPlayNow: { [weak upNext] in _ = upNext?.playNow() }
+                        onPlayNow: { [weak upNext] in _ = upNext?.playNow() },
+                        onPanelOpenChanged: { open in panelOpen = open }
                     )
                     .ignoresSafeArea()
                 }
@@ -82,28 +91,46 @@ struct NativePlayerScreen: View {
                 }
             }
 
-            // Countdown card (visual). The interactive part is the "Play Next Episode" contextual
-            // action the container installs while this is showing.
-            if upNext.phase != .hidden {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        UpNextCard(engine: upNext).padding(60)
-                    }
-                }
-                .transition(.opacity)
+            // Up-next status/countdown caption (visual only). The interactive part is the
+            // "Play Next Episode" contextual action the container installs — its title stays static
+            // (a per-second UIAction title change re-animates the transport bar), so the countdown
+            // lives here, in the shared chip caption both engines draw. Inset above the system's
+            // contextual-action pill; the extra bottom offset is device-tuned for tvOS 26.
+            if showSwipeHint, !panelOpen, coordinator.phase == .playing {
+                PlayerSwipeHint().transition(.opacity)
+            }
+
+            if let caption = upNext.phase.chipCaption(nextTitle: upNext.nextEpisodeTitle) {
+                PlayerChipCaption(text: caption.text, symbol: caption.symbol, showsProgress: caption.progress)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, PlayerChipStyle.edgePadding)
+                    .padding(.bottom, PlayerChipStyle.edgePadding + Self.contextualActionClearance)
+                    .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: upNext.phase)
+        .animation(PlayerChipStyle.animation, value: upNext.phase)
+        .animation(PlayerChipStyle.animation, value: showSwipeHint)
+        .onChange(of: coordinator.phase) { _, phase in
+            if phase == .playing { flashSwipeHint(after: 1, reason: .start) }
+        }
+        .onChange(of: coordinator.isPaused) { _, paused in
+            // Re-show the hint once per pause (after the pause has settled), like Infuse. Resuming
+            // only cancels a PAUSE hint — the start hint must survive the initial paused→playing
+            // transition, which happens right after readyToPlay.
+            if paused {
+                if coordinator.phase == .playing { flashSwipeHint(after: 1.5, reason: .pause) }
+            } else if swipeHintReason == .pause {
+                hideSwipeHint()
+            }
+        }
         .onAppear {
-            let note = routingNote
-            coordinator.onTick = { [weak coordinator, weak upNext, weak info] position, duration in
+            let adapter = NativePlayerPanelAdapter(coordinator: coordinator, model: panelModel,
+                                                   context: context, routingNote: routingNote)
+            panelAdapter = adapter
+            coordinator.onTick = { [weak upNext, weak adapter] position, duration in
                 upNext?.onProgress(positionSec: position, durationSec: duration)
                 updateSkipPrompt(position: position)
-                if let coordinator, let info {
-                    info.rows = coordinator.streamInfoRows(routingNote: note)
-                }
+                adapter?.onTick()
             }
             coordinator.start()
             // Only orchestrate up-next when a presenter can swap contexts (series autoplay).
@@ -111,15 +138,43 @@ struct NativePlayerScreen: View {
             fetchSkipSegments()
         }
         .onDisappear {
+            swipeHintTask?.cancel()
             coordinator.stop()
             upNext.stop()
         }
     }
 
-    private var upNextActionAvailable: Bool {
+    private enum SwipeHintReason { case start, pause }
+
+    private func flashSwipeHint(after delay: Double, reason: SwipeHintReason) {
+        swipeHintTask?.cancel()
+        swipeHintReason = reason
+        swipeHintTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            showSwipeHint = true
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            showSwipeHint = false
+        }
+    }
+
+    private func hideSwipeHint() {
+        swipeHintTask?.cancel()
+        showSwipeHint = false
+    }
+
+    /// Vertical room the system contextual-action pill occupies above the bottom inset on tvOS 26,
+    /// so the caption sits above it rather than on top of it. Device-tuned.
+    private static let contextualActionClearance: CGFloat = 96
+
+    /// Which up-next contextual action to offer: "Play Next Episode" during the countdown,
+    /// "Continue Watching" once the still-watching guard has paused autoplay, none otherwise.
+    private var upNextAction: UpNextAction? {
         switch upNext.phase {
-        case .counting, .stillWatching: return true
-        default: return false
+        case .counting: return .playNext
+        case .stillWatching: return .continueWatching
+        default: return nil
         }
     }
 
@@ -147,7 +202,7 @@ struct NativePlayerScreen: View {
     /// Offer the skip while inside a segment; the last second is excluded so the action
     /// disappears cleanly at the end (same rule as the mpv screen).
     private func updateSkipPrompt(position: Double) {
-        let active = skipSegments.first { position >= $0.start && position < $0.end - 1 }
+        let active = skipSegments.first { position >= $0.start && position < $0.end - PlayerChipStyle.lastSecondExclusion }
         let prompt = active.map { SkipPrompt(label: Self.skipLabel(for: $0.type), targetSec: $0.end) }
         if prompt != skipPrompt { skipPrompt = prompt }
     }
@@ -161,49 +216,56 @@ struct NativePlayerScreen: View {
     }
 }
 
-/// One label/value row of the Info tab.
-struct NativeInfoRow: Identifiable, Equatable {
-    let label: String
-    let value: String
-    var id: String { label }
+/// Up-next contextual action variants (static titles — see the caption note in `NativePlayerScreen`).
+enum UpNextAction: String {
+    case playNext, continueWatching
+
+    var title: String {
+        switch self {
+        case .playNext: return String(localized: "Play Next Episode")
+        case .continueWatching: return String(localized: "Continue Watching")
+        }
+    }
 }
 
-/// Backing model for the Info tab — refreshed on playback ticks while the panel may be open.
-@MainActor
-final class NativeStreamInfoModel: ObservableObject {
-    @Published var rows: [NativeInfoRow] = []
-}
-
-/// AVPlayerViewController wrapper: full native tvOS player UI plus our integrations — contextual
-/// actions (skip intro / play next) and the Info panel tab.
 private struct AVPlayerContainer: UIViewControllerRepresentable {
     let player: AVPlayer
     let skipPrompt: SkipPrompt?
-    let upNextReady: Bool
+    let upNextAction: UpNextAction?
     /// "Show only preferred languages" (Settings → Playback → Subtitles): restrict the panel's
     /// Subtitles list to these BCP-47 tags. nil = show every rendition.
     let allowedSubtitleLanguages: [String]?
-    let infoHeader: NativeInfoHeader
-    let infoModel: NativeStreamInfoModel
+    let panelModel: PlayerTopPanelModel
     let onSkip: (Double) -> Void
     let onPlayNow: () -> Void
+    let onPanelOpenChanged: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.player = player
-        // The info tab is installed once — its SwiftUI content observes `infoModel` and stays live.
-        let host = UIHostingController(rootView: NativeStreamInfoView(header: infoHeader, model: infoModel))
-        host.title = String(localized: "Info")
-        // AVPlayerViewController sizes the panel from the hosted SwiftUI content's measured height
-        // (preferredContentSize is ignored) — so the content must measure eagerly: no ScrollView,
-        // no LazyVGrid (see NativeStreamInfoView).
-        controller.customInfoViewControllers = [host]
-        return controller
+    func makeUIViewController(context: Context) -> NativePlayerHostController {
+        let host = NativePlayerHostController()
+        host.playerVC.player = player
+        // No `customInfoViewControllers`: on tvOS 26 that renders as an "Info" pill under the seek
+        // bar. Info lives in the app-drawn swipe-down panel presented by the host instead.
+        let model = panelModel
+        let openChanged = onPanelOpenChanged
+        host.onOpenPanel = { [weak host] in
+            guard let host else { return }
+            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model))
+            model.onClose = { [weak panel] in panel?.close(animated: true) }
+            host.present(panel: panel)
+            openChanged(true)
+        }
+        host.onPanelClosed = { openChanged(false) }
+        return host
     }
 
-    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+    static func dismantleUIViewController(_ host: NativePlayerHostController, coordinator: Coordinator) {
+        host.closePanel(animated: false)
+    }
+
+    func updateUIViewController(_ host: NativePlayerHostController, context: Context) {
+        let controller = host.playerVC
         if controller.player !== player { controller.player = player }
         // Only assign on change — it's a panel-content property, not part of the transport-bar
         // signature below, and reassigning identical arrays each SwiftUI tick is pointless work.
@@ -215,7 +277,7 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         // actions every SwiftUI update makes the transport bar re-animate them. The skip target is
         // part of the signature so back-to-back segments with the same label still refresh the
         // captured seek position.
-        let signature = "\(skipPrompt.map { "\($0.label)@\($0.targetSec)" } ?? "-")|\(upNextReady)"
+        let signature = "\(skipPrompt.map { "\($0.label)@\($0.targetSec)" } ?? "-")|\(upNextAction?.rawValue ?? "-")"
         guard signature != context.coordinator.actionsSignature else { return }
         context.coordinator.actionsSignature = signature
 
@@ -224,12 +286,12 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             let target = prompt.targetSec
             let skip = onSkip
             actions.append(UIAction(title: prompt.label,
-                                    image: UIImage(systemName: "forward.frame.fill")) { _ in skip(target) })
+                                    image: UIImage(systemName: PlayerChipStyle.skipSymbol)) { _ in skip(target) })
         }
-        if upNextReady {
+        if let upNextAction {
             let playNow = onPlayNow
-            actions.append(UIAction(title: String(localized: "Play Next Episode"),
-                                    image: UIImage(systemName: "forward.end.fill")) { _ in playNow() })
+            actions.append(UIAction(title: upNextAction.title,
+                                    image: UIImage(systemName: PlayerChipStyle.nextSymbol)) { _ in playNow() })
         }
         controller.contextualActions = actions
     }
@@ -237,132 +299,5 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     final class Coordinator {
         var actionsSignature = ""
         var allowedSubtitleLanguages: [String]?
-    }
-}
-
-/// Static header data for the Info tab (what's playing), captured once from the PlaybackContext.
-struct NativeInfoHeader {
-    let title: String
-    /// "S1 · E4 · Episode name" for series, else the stream's own label (release name / addon line).
-    let subtitle: String?
-    let synopsis: String?
-    let poster: String?
-    /// True when `poster` is an episode still (16:9) rather than a 2:3 poster.
-    let landscapeArtwork: Bool
-
-    init(context: PlaybackContext) {
-        title = context.title
-        var parts: [String] = []
-        if let s = context.season, let e = context.episode {
-            parts.append(String(localized: "S\(s) · E\(e)"))
-        }
-        if let st = context.streamTitle, !st.isEmpty { parts.append(st) }
-        subtitle = parts.isEmpty ? nil : parts.joined(separator: " · ")
-        synopsis = context.synopsis.flatMap { $0.isEmpty ? nil : $0 }
-        let still = context.episodeStill.flatMap { $0.isEmpty ? nil : $0 }
-        poster = still ?? context.poster.flatMap { $0.isEmpty ? nil : $0 }
-        landscapeArtwork = still != nil
-    }
-}
-
-/// Content of the Info tab (AVPlayerViewController swipe-down panel — the system Info tab is
-/// deliberately not populated via `externalMetadata`, so this is THE Info tab; see
-/// docs/tvos-native-player-info-panel-plan.md §5b). What's-playing header on top, then the
-/// live stream rows. Sized for 10-foot reading; the panel chrome is Apple's.
-private struct NativeStreamInfoView: View {
-    let header: NativeInfoHeader
-    @ObservedObject var model: NativeStreamInfoModel
-
-
-    var body: some View {
-        // Eagerly-measured layout on purpose: AVPlayerViewController takes the panel height from
-        // this view's measured size at presentation. A ScrollView/LazyVGrid measures short (lazy
-        // rows don't exist yet) and the panel then clips the bottom rows.
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            headerView
-            Divider().overlay(Theme.Palette.outline)
-            rowsView
-        }
-        .padding(.horizontal, Theme.Spacing.sectionGap)
-        .padding(.top, Theme.Spacing.lg)
-        .padding(.bottom, Theme.Spacing.md)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    /// Header art height; poster (2:3) or episode still (16:9) scale into it. Kept small — the panel
-    /// has a fixed height, and the header must leave room for the two-column rows below.
-    private static let artHeight: CGFloat = 140
-
-    private var headerView: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.lg) {
-            if header.poster != nil {
-                CachedAsyncImage(string: header.poster, contentMode: .fill)
-                    .frame(width: header.landscapeArtwork ? Self.artHeight * 16 / 9 : Self.artHeight * 2 / 3,
-                           height: Self.artHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-                    .accessibilityHidden(true)
-            }
-            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                Text(header.title)
-                    .font(Theme.Font.screenTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                    .lineLimit(1)
-                if let subtitle = header.subtitle {
-                    Text(subtitle)
-                        .font(Theme.Font.sectionTitle)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .lineLimit(1)
-                }
-                if let synopsis = header.synopsis {
-                    Text(synopsis)
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)   // measure both lines
-                        .padding(.top, Theme.Spacing.xxs)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    /// Two columns of label/value pairs — the row count (a dozen live diagnostics) doesn't fit the
-    /// panel's height in one column once the header is above it. Non-lazy `Grid` so the height
-    /// measures correctly (see `body`).
-    private var rowsView: some View {
-        let rows = model.rows
-        let half = (rows.count + 1) / 2
-        return Grid(alignment: .topLeading, horizontalSpacing: Theme.Spacing.xl, verticalSpacing: Theme.Spacing.xs) {
-            ForEach(0..<max(half, 1), id: \.self) { i in
-                GridRow {
-                    if i < rows.count { rowView(rows[i]) } else { Color.clear.frame(height: 1) }
-                    if i + half < rows.count { rowView(rows[i + half]) } else { Color.clear.frame(height: 1) }
-                }
-            }
-            if rows.isEmpty {
-                GridRow {
-                    Text("No stream details yet.")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .gridCellColumns(2)
-                }
-            }
-        }
-    }
-
-    private func rowView(_ row: NativeInfoRow) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
-            Text(row.label)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
-                .frame(width: 260, alignment: .leading)
-            Text(row.value)
-                .font(Theme.Font.body.monospacedDigit())
-                .foregroundStyle(Theme.Palette.textPrimary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

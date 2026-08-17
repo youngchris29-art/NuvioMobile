@@ -52,8 +52,38 @@ struct PlaybackContext: Identifiable {
     /// which stays the catalog/series poster (the progress recorder persists `poster` as the
     /// parent artwork — a still must never leak into it). nil → the header shows `poster`.
     var episodeStill: String? = nil
+    /// Catalog metadata for the player's Info tab chip row (year · runtime · rating · genres). nil
+    /// when the launch path has no meta at hand — the chips simply omit them.
+    var meta: PlaybackMeta? = nil
+    /// Declared file size of the playing stream (addon `behaviorHints.videoSize`), for the Info chips.
+    var fileSizeBytes: Int64? = nil
 
     var id: String { "\(videoId)|\(url.absoluteString)" }
+}
+
+/// Title-level catalog facts shown as chips in the player's Info tab.
+struct PlaybackMeta: Equatable {
+    var year: String? = nil
+    var runtime: String? = nil
+    var imdbRating: String? = nil
+    var ageRating: String? = nil
+    var genres: [String] = []
+
+    /// From a full catalog record (Detail / episode shelf launch paths).
+    init(details: MetaDetails) {
+        func nonEmpty(_ s: String?) -> String? { (s ?? "").isEmpty ? nil : s }
+        year = nonEmpty(details.releaseInfo)
+        runtime = nonEmpty(details.runtime)
+        imdbRating = nonEmpty(details.imdbRating)
+        ageRating = nonEmpty(details.ageRating)
+        genres = details.genres
+    }
+
+    init(year: String? = nil, runtime: String? = nil, imdbRating: String? = nil,
+         ageRating: String? = nil, genres: [String] = []) {
+        self.year = year; self.runtime = runtime; self.imdbRating = imdbRating
+        self.ageRating = ageRating; self.genres = genres
+    }
 }
 
 /// An external subtitle file to side-load into the player.
