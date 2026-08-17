@@ -102,8 +102,10 @@ struct PlayerTopPanel: View {
     }
 }
 
-/// One checkmark row of the Subtitles / Audio tab (system focus, `.borderless` — the focused row
-/// brightens/lifts like every other borderless tvOS button; no custom ring).
+/// One checkmark row of the Subtitles / Audio tab. DEFAULT tvOS button style on purpose: it draws
+/// the white focus platter (the classic panel's focused-row look) and recolors the label itself.
+/// `.borderless` would only brighten the label — invisible on an already-bright label (BUG-58
+/// lesson) — and no explicit foreground color is set here so the platter's dark text wins.
 struct PlayerPanelOptionRow: View {
     let option: PlayerPanelOption
     let identifierPrefix: String
@@ -119,21 +121,18 @@ struct PlayerPanelOptionRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(option.title)
                         .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textPrimary)
                         .lineLimit(1)
                     if let detail = option.detail {
                         Text(detail)
                             .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, Theme.Spacing.xxs)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.borderless)
         .accessibilityIdentifier("\(identifierPrefix).\(option.id)")
         .accessibilityValue(Text(verbatim: option.isSelected ? "selected" : ""))
     }
