@@ -478,6 +478,40 @@
         }
       }
     },
+    "%lld PGS/VobSub · not shown natively": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld PGS/VobSub · im nativen Player nicht angezeigt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld PGS/VobSub · no se muestran en el reproductor nativo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld PGS/VobSub · non affichés par le lecteur natif"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld PGS/VobSub · non mostrati dal lettore nativo"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld PGS/VobSub · không hiển thị trong trình phát gốc"
+          }
+        }
+      }
+    },
     "%lld add-on%@ installed": {
       "localizations": {
         "de": {
@@ -716,6 +750,40 @@
         }
       }
     },
+    "%lld of %lld · in the Subtitles tab": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld von %lld · im Tab „Untertitel“"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld de %lld · en la pestaña Subtítulos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sur %lld · dans l’onglet Sous-titres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld di %lld · nella scheda Sottotitoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld trong %lld · trong thẻ Phụ đề"
+          }
+        }
+      }
+    },
     "%lld playable files": {
       "localizations": {
         "de": {
@@ -750,6 +818,40 @@
         }
       }
     },
+    "%lld stall(s)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Aussetzer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld interrupción(es)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld interruption(s)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld interruzione/i"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld lần gián đoạn"
+          }
+        }
+      }
+    },
     "%lld streams": {
       "localizations": {
         "de": {
@@ -780,6 +882,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld luồng"
+          }
+        }
+      }
+    },
+    "%lld · %lld in the Audio tab (%lld unsupported)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · %lld im Tab „Audio“ (%lld nicht unterstützt)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · %lld en la pestaña Audio (%lld no compatibles)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · %lld dans l’onglet Audio (%lld non pris en charge)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · %lld nella scheda Audio (%lld non supportate)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · %lld trong thẻ Âm thanh (%lld không hỗ trợ)"
+          }
+        }
+      }
+    },
+    "%lld · in the Audio tab": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · im Tab „Audio“"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · en la pestaña Audio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · dans l’onglet Audio"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · nella scheda Audio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · trong thẻ Âm thanh"
+          }
+        }
+      }
+    },
+    "%lld · in the Subtitles tab": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · im Tab „Untertitel“"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · en la pestaña Subtítulos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · dans l’onglet Sous-titres"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · nella scheda Sottotitoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld · trong thẻ Phụ đề"
           }
         }
       }
@@ -2922,6 +3126,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cân đối"
+          }
+        }
+      }
+    },
+    "Bitmap subtitles": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bitmap-Untertitel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtítulos de mapa de bits"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sous-titres bitmap"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sottotitoli bitmap"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phụ đề bitmap"
+          }
+        }
+      }
+    },
+    "Bitrate": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bitrate"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tasa de bits"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Débit"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bitrate"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tốc độ bit"
           }
         }
       }
@@ -6021,6 +6293,40 @@
         }
       }
     },
+    "Embedded subtitles": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eingebettete Untertitel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtítulos integrados"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sous-titres intégrés"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sottotitoli incorporati"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phụ đề nhúng"
+          }
+        }
+      }
+    },
     "Emerald": {
       "localizations": {
         "de": {
@@ -6493,6 +6799,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đang tìm luồng…"
+          }
+        }
+      }
+    },
+    "Forced": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forcé"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forzado"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erzwungen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forzati"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phụ đề bắt buộc"
           }
         }
       }
@@ -7752,6 +8092,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bitrate công bố"
+          }
+        }
+      }
+    },
+    "Info": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Info"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Info"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Infos"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Info"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thông tin"
           }
         }
       }
@@ -9350,6 +9724,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Native"
+          }
+        }
+      }
+    },
+    "Native player (Dolby Vision & HDR)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nativer Player (Dolby Vision & HDR)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproductor nativo (Dolby Vision y HDR)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecteur natif (Dolby Vision et HDR)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lettore nativo (Dolby Vision e HDR)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trình phát gốc (Dolby Vision & HDR)"
           }
         }
       }
@@ -14489,6 +14897,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiếng Nga"
+          }
+        }
+      }
+    },
+    "S%lld · E%lld": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S%lld · E%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "T%lld · E%lld"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S%lld · É%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "S%lld · E%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "M%lld · T%lld"
           }
         }
       }
@@ -20440,6 +20882,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "debug_ux6 dark=%lld"
+          }
+        }
+      }
+    },
+    "declared %@ Mb/s": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "deklariert %@ Mb/s"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "declarado %@ Mb/s"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "déclaré %@ Mb/s"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dichiarato %@ Mb/s"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "khai báo %@ Mb/s"
           }
         }
       }
