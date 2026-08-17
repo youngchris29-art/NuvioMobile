@@ -231,7 +231,9 @@ final class NextEpisodeEngine: ObservableObject {
                 SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
             },
             bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
-            episodes: context.episodes
+            episodes: context.episodes,
+            synopsis: context.synopsis,
+            episodeStill: context.episodeStill
         )
         onPlayNext(switched)
     }
@@ -524,6 +526,12 @@ final class NextEpisodeEngine: ObservableObject {
         }
     }
 
+    /// Kotlin-bridged optional strings: blank counts as missing (addons send "" for no still).
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
     private func makeNextContext(stream: StreamItem, url: URL, next: MetaVideo) -> PlaybackContext {
         PlaybackContext(
             url: url,
@@ -543,7 +551,10 @@ final class NextEpisodeEngine: ObservableObject {
                 SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
             },
             bingeGroup: { let bg: String? = stream.behaviorHints.bingeGroup; return bg }(),
-            episodes: context.episodes
+            episodes: context.episodes,
+            // The next episode's own still/overview only — never the previous episode's.
+            synopsis: Self.nonEmpty(next.overview),
+            episodeStill: Self.nonEmpty(next.thumbnail)
         )
     }
 

@@ -60,6 +60,35 @@ final class NativePlaybackCoordinator: ObservableObject {
     private var pendingResumeSec: Double?
     /// Subtitle selection carried across an audio-switch rebuild (media selection dies with the item).
     private var pendingSubtitleName: String?
+    /// The viewer had subtitles OFF when the rebuild started — re-assert Off after the new item's
+    /// legible group loads, otherwise the language criteria would auto-enable them again.
+    private var pendingSubtitleOff = false
+
+    /// Language preferences (Settings → Playback → Preferred Audio/Subtitle Language + the
+    /// forced/only-preferred subtitle options), resolved through the shared KMP helpers so the
+    /// native and mpv engines agree. Drives AVPlayer's media-selection criteria, the master's
+    /// AUTOSELECT/DEFAULT flags, and the panel's `allowedSubtitleOptionLanguages`.
+    struct LanguagePlan: Equatable {
+        var audioTargets: [String] = []
+        var subtitleTargets: [String] = []
+        /// The full preferred-subtitle list (primary + secondary + device), before the shared
+        /// plan narrows it for forced-only auto-selection — this is what "Show only preferred
+        /// languages" filters the panel's Subtitles list by.
+        var subtitleFilterLanguages: [String] = []
+        /// Preferred Subtitle Language is "none": never auto-enable subtitles.
+        var subtitlesOff = false
+        /// Shared plan says forced-only (audio already in a preferred language + "Use forced subtitles").
+        var forcedOnly = false
+        /// "Use forced subtitles" is on but the audio language is unknown: the shared plan returns
+        /// nil to leave player defaults untouched (mpv parity) — no DEFAULT rendition, no legible
+        /// criteria; the system's own behaviour + the user decide.
+        var leaveToPlayer = false
+        /// "Show only preferred languages" — restrict the panel's Subtitles list.
+        var onlyPreferredLanguages = false
+    }
+    @Published private(set) var languagePlan = LanguagePlan()
+    /// Shared player settings snapshot behind the plan (also drives the addon-subtitle startup mode).
+    private var playerSettings: PlayerSettingsUiState?
     /// The current item's legible selection group, cached async after readyToPlay so the switch
     /// teardown can capture the active subtitle synchronously.
     private var legibleGroup: AVMediaSelectionGroup?
@@ -90,12 +119,22 @@ final class NativePlaybackCoordinator: ObservableObject {
         // Addon-subtitle results. The completion signal is polled from `completedRequest` in
         // pollForFirstSegment — no watcher races; this watcher only mirrors the list (its
         // StateFlow replay also delivers results prefetched before this coordinator existed).
+        // Settings first: the addon-subtitle watcher below filters by them.
+        resolveLanguagePlan(selectedAudioLanguage: nil)
         subsRequestKey = SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId)
         addonSubsWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.addonSubtitles) { [weak self] emitted in
             guard let subs = emitted as? [AddonSubtitle] else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.addonSubtitles = subs.map {
+                // "Only preferred languages" / PREFERRED_ONLY startup mode (shared settings, the
+                // latter cloud-synced from mobile): drop non-preferred renditions at the source with
+                // the same shared filter the mobile runtime and the mpv screen apply. (FAST_STARTUP
+                // is deliberately NOT honoured on tvOS — there is no manual subtitle search here, so
+                // skipping the automatic fetch would mean no addon subtitles at all.)
+                let kept = self.playerSettings.map {
+                    PlayerTrackSelectionKt.filterAddonSubtitlesForSettings(subtitles: subs, settings: $0)
+                } ?? subs
+                self.addonSubtitles = kept.map {
                     SubtitleFile(url: $0.url, language: $0.language, name: $0.display)
                 }
                 if !subs.isEmpty {
@@ -106,6 +145,99 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
         launchRemux(audioStreamIndex: nil)
+    }
+
+    /// Resolve the language plan from the shared player settings (same helpers + semantics as the
+    /// mpv screen's `autoSelectPreferredTracks`). Called at start (audio unknown) and again once
+    /// the remux has picked the audio track, because the forced-only decision depends on it.
+    private func resolveLanguagePlan(selectedAudioLanguage: String?) {
+        PlayerSettingsRepository.shared.ensureLoaded()
+        guard let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState else { return }
+        playerSettings = settings
+        let deviceLanguages = DeviceLanguagePreferences.shared.preferredLanguageCodes()
+        let audioTargets = PlayerLanguagePreferencesKt.resolvePreferredAudioLanguageTargets(
+            preferredAudioLanguage: settings.preferredAudioLanguage,
+            secondaryPreferredAudioLanguage: settings.secondaryPreferredAudioLanguage,
+            deviceLanguages: deviceLanguages,
+            contentOriginalLanguage: nil
+        )
+        let subTargets = PlayerLanguagePreferencesKt.resolvePreferredSubtitleLanguageTargets(
+            preferredSubtitleLanguage: settings.preferredSubtitleLanguage,
+            secondaryPreferredSubtitleLanguage: settings.secondaryPreferredSubtitleLanguage,
+            deviceLanguages: deviceLanguages
+        )
+        var plan = LanguagePlan()
+        plan.audioTargets = audioTargets
+        plan.subtitleFilterLanguages = subTargets
+        plan.onlyPreferredLanguages = settings.subtitleStyle.showOnlyPreferredLanguages
+        // Always consult the shared plan: even with no subtitle targets (primary "none", no
+        // secondary) it can yield a forced-only plan in the audio's language when "Use forced
+        // subtitles" is on and the audio matches a preferred audio language (mpv parity).
+        if let shared = PlayerTrackSelectionKt.resolveSubtitleAutoSelectionPlan(
+            selectedAudioLanguage: selectedAudioLanguage,
+            preferredAudioTargets: audioTargets,
+            preferredSubtitleTargets: subTargets,
+            useForcedSubtitles: settings.subtitleStyle.useForcedSubtitles
+        ) {
+            plan.subtitleTargets = shared.targets
+            plan.forcedOnly = shared.mode == .forcedOnly
+            plan.subtitlesOff = shared.targets.isEmpty   // nothing to auto-select → never auto-enable
+        } else {
+            // Forced on but audio language unknown: leave player defaults untouched (mpv parity).
+            plan.leaveToPlayer = true
+            plan.subtitleTargets = subTargets
+        }
+        if plan != languagePlan {
+            languagePlan = plan
+            print("[NativePlayer] language plan: audio=\(plan.audioTargets) subs=\(plan.subtitlesOff ? "off" : plan.subtitleTargets.description)"
+                  + (plan.forcedOnly ? " forced-only" : "") + (plan.leaveToPlayer ? " player-default" : "")
+                  + (plan.onlyPreferredLanguages ? " only-preferred" : ""))
+        }
+    }
+
+    /// Install the plan on a player: AVPlayer applies these when the item's selection groups load
+    /// (and again after an audio-switch rebuild). Empty preferred languages fall back to the
+    /// system's own behaviour, so "subtitles off" is additionally enforced by the master's
+    /// AUTOSELECT=NO flags (see `subtitleAutoselect`).
+    private func applyLanguagePlan(to player: AVPlayer) {
+        let plan = languagePlan
+        if !plan.audioTargets.isEmpty {
+            player.setMediaSelectionCriteria(
+                AVPlayerMediaSelectionCriteria(preferredLanguages: plan.audioTargets, preferredMediaCharacteristics: nil),
+                forMediaCharacteristic: .audible)
+        }
+        if plan.subtitlesOff || plan.leaveToPlayer {
+            player.setMediaSelectionCriteria(nil, forMediaCharacteristic: .legible)
+        } else {
+            player.setMediaSelectionCriteria(
+                AVPlayerMediaSelectionCriteria(
+                    preferredLanguages: plan.subtitleTargets,
+                    preferredMediaCharacteristics: plan.forcedOnly ? [.containsOnlyForcedSubtitles] : nil),
+                forMediaCharacteristic: .legible)
+        }
+    }
+
+    /// AUTOSELECT/DEFAULT decision for one subtitle rendition (master playlist flags).
+    /// - subtitles off → nothing auto-selectable, so neither the system's accessibility prefs nor
+    ///   AVPlayer's defaults can switch captions on;
+    /// - otherwise renditions in a preferred language are AUTOSELECT=YES and the first match is
+    ///   DEFAULT=YES (mpv parity: preferred subtitles start on), the rest AUTOSELECT=NO.
+    private func subtitleFlags(for renditions: [SubtitleRendition]) -> [SubtitleRenditionFlags] {
+        let plan = languagePlan
+        // No DEFAULT when forced-only (addon subs carry no forced flag) or when the shared plan
+        // deferred to player defaults; matches stay AUTOSELECT so the system may still pick them.
+        var defaultTaken = plan.forcedOnly || plan.leaveToPlayer
+        return renditions.map { rendition in
+            guard !plan.subtitlesOff else { return SubtitleRenditionFlags(autoselect: false, isDefault: false) }
+            // Deferred to player defaults: every rendition stays auto-selectable, none is DEFAULT.
+            guard !plan.leaveToPlayer else { return .legacy }
+            let matches = plan.subtitleTargets.contains { target in
+                PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: rendition.language ?? "", targetLanguage: target)
+            }
+            let isDefault = matches && !defaultTaken
+            if isDefault { defaultTaken = true }
+            return SubtitleRenditionFlags(autoselect: matches, isDefault: isDefault)
+        }
     }
 
     /// True once the repo has completed the fetch for THIS content (deduplicated prefetches
@@ -120,11 +252,32 @@ final class NativePlaybackCoordinator: ObservableObject {
         return false
     }
 
+    /// First playable track whose language matches the highest-priority target with any hit
+    /// (same rule as the mpv screen's `firstTrackId(matching:)`). Pure — runs on the remux worker.
+    nonisolated private static func preferredAudioStream(in tracks: [RemuxAudioTrack], targets: [String]) -> Int? {
+        for target in targets {
+            for track in tracks where track.playable {
+                if PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: track.language ?? "",
+                                                                          targetLanguage: target) {
+                    return track.streamIndex
+                }
+            }
+        }
+        return nil
+    }
+
     /// Spin up a remux session and the first-segment poll — the shared tail of `start()` and an
     /// audio-switch rebuild.
     private func launchRemux(audioStreamIndex: Int?) {
-        let remux = RemuxSession(config: .init(url: context.url, segmentDurationSec: 6,
-                                               audioStreamIndex: audioStreamIndex))
+        // Initial session: let the worker pick the first playable track in a preferred language
+        // (Settings → Playback → Preferred Audio Language) — the muxed stream carries exactly one
+        // audio rendition, so AVPlayer's own audible criteria can't fix a wrong first pick.
+        let audioTargets = languagePlan.audioTargets
+        var config = RemuxSession.Config(url: context.url, segmentDurationSec: 6, audioStreamIndex: audioStreamIndex)
+        if audioStreamIndex == nil, !audioTargets.isEmpty {
+            config.preferredAudioPicker = { tracks in Self.preferredAudioStream(in: tracks, targets: audioTargets) }
+        }
+        let remux = RemuxSession(config: config)
         self.remux = remux
         remux.start { state in
             guard case .failed(let stage) = state else { return }
@@ -149,6 +302,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         pendingResumeSec = lastPositionSec > 1 ? lastPositionSec : nil
         if let item = playerItem, let group = legibleGroup {
             pendingSubtitleName = item.currentMediaSelection.selectedMediaOption(in: group)?.displayName
+            pendingSubtitleOff = pendingSubtitleName == nil
         }
 
         observeTask?.cancel(); observeTask = nil
@@ -263,6 +417,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         var signaling = remux.videoSignaling ?? VideoSignaling(codecs: "")
         if signalingAttempt > 0 { signaling.supplementalCodecs = nil }
         let selectedAudio = remux.audioTracks.first(where: \.selected)
+        // The forced-only decision needs the audio the viewer will hear (shared plan semantics).
+        resolveLanguagePlan(selectedAudioLanguage: selectedAudio.flatMap { track in
+            PlayerTrackSelectionKt.resolveAudioTrackLanguageTarget(track: AudioTrack(
+                index: 0, id: String(track.streamIndex),
+                label: track.title ?? track.language ?? "",
+                language: track.language, isSelected: true))
+        })
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: signaling,
                                     audioCodec: remux.audioCodecToken,
@@ -270,6 +431,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     audioLanguage: selectedAudio?.language,
                                     bandwidth: remux.estimatedBandwidth,
                                     subtitles: subtitleRenditions,
+                                    subtitleFlags: subtitleFlags(for: subtitleRenditions),
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server
@@ -284,6 +446,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             // don't exist yet, tripping CFNetwork's request timeout.
             item.preferredForwardBufferDuration = 24
             let player = AVPlayer(playerItem: item)
+            self.applyLanguagePlan(to: player)
             self.playerItem = item
             self.player = player
             self.phase = .playing
@@ -450,6 +613,12 @@ final class NativePlaybackCoordinator: ObservableObject {
                     item.select(option, in: group)
                     print("[NativePlayer] restored subtitle selection: \(want)")
                 }
+            } else if self.pendingSubtitleOff {
+                self.pendingSubtitleOff = false
+                if let group, item.currentMediaSelection.selectedMediaOption(in: group) != nil {
+                    item.select(nil, in: group)
+                    print("[NativePlayer] restored subtitle selection: Off")
+                }
             }
         }
     }
@@ -515,14 +684,20 @@ final class NativePlaybackCoordinator: ObservableObject {
                 add(String(localized: "Resolution"), "\(s.width)\u{00D7}\(s.height)\(fps)")
             }
         }
-        let audioName = audioTracks.first(where: \.selected)?.name
-        add(String(localized: "Audio"), [audioName, remux?.audioCodecToken].compactMap { $0 }.joined(separator: " \u{00B7} "))
+        // The display name already carries language · codec · layout · title; the RFC 6381 token
+        // adds nothing a viewer needs and pushes the row onto a second line.
+        add(String(localized: "Audio"), audioTracks.first(where: \.selected)?.name ?? remux?.audioCodecToken)
         // The transport-bar Audio menu only exists with >1 track — say so here, so a single-track
         // source doesn't read as a broken selector.
         if audioTracks.count == 1 {
             add(String(localized: "Audio tracks"), String(localized: "1 (this file has no alternate audio)"))
         } else if audioTracks.count > 1 {
-            add(String(localized: "Audio tracks"), String(localized: "\(audioTracks.count) — switch via the Audio menu in the transport bar"))
+            add(String(localized: "Audio tracks"), String(localized: "\(audioTracks.count) · Audio menu in the transport bar"))
+        }
+        // What the viewer currently sees: the item's legible selection (system Subtitles tab).
+        if let item = playerItem, let group = legibleGroup {
+            let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+            add(String(localized: "Subtitles"), selected?.displayName ?? String(localized: "Off"))
         }
         // Same self-explanation for subtitles: an empty system menu should read as "the addons
         // had nothing for this title", not as a broken selector.
@@ -533,20 +708,40 @@ final class NativePlaybackCoordinator: ObservableObject {
         } else {
             add(String(localized: "Addon subtitles"), String(localized: "searching…"))
         }
+        // Subtitle tracks inside the file. Text tracks become renditions (W2); bitmap tracks
+        // (PGS/VobSub) can't be shown by the native player — say so rather than look broken.
+        if let subs = remux?.subtitleTracks, !subs.isEmpty {
+            let text = subs.filter(\.isText).count, bitmap = subs.count - text
+            if text > 0 {
+                // W2 turns these into renditions; until then be explicit that they aren't offered.
+                add(String(localized: "Embedded subtitles"),
+                    String(localized: "\(text) text · not yet offered natively"))
+            }
+            if bitmap > 0 {
+                add(String(localized: "Bitmap subtitles"),
+                    String(localized: "\(bitmap) PGS/VobSub · not shown natively"))
+            }
+        }
         if let map = remux?.segmentMap {
             add(String(localized: "Segments"), "\(map.count) \u{00D7} \(map.targetDurationSec)s \u{00B7} \(Self.timeString(map.totalDurationSec))")
         }
-        if let bandwidth = remux?.estimatedBandwidth, bandwidth > 0 {
-            add(String(localized: "Declared bandwidth"), String(format: "%.1f Mb/s", Double(bandwidth) / 1_000_000))
+        // Bandwidth + transfer stats share rows: the Info tab has a fixed panel height, and the
+        // two-column grid fits ten rows, not twelve.
+        let event = playerItem?.accessLog()?.events.last
+        var bitrate: [String] = []
+        if let event, event.indicatedBitrate > 0 {
+            bitrate.append(String(format: "%.1f Mb/s", event.indicatedBitrate / 1_000_000))
         }
-        if let event = playerItem?.accessLog()?.events.last {
-            if event.indicatedBitrate > 0 {
-                add(String(localized: "Indicated bitrate"), String(format: "%.1f Mb/s", event.indicatedBitrate / 1_000_000))
+        if let bandwidth = remux?.estimatedBandwidth, bandwidth > 0 {
+            bitrate.append(String(localized: "declared \(String(format: "%.1f", Double(bandwidth) / 1_000_000)) Mb/s"))
+        }
+        add(String(localized: "Bitrate"), bitrate.joined(separator: " \u{00B7} "))
+        if let event, event.numberOfBytesTransferred > 0 {
+            var transfer = String(format: "%.0f MB", Double(event.numberOfBytesTransferred) / 1_048_576)
+            if event.numberOfStalls > 0 {
+                transfer += " \u{00B7} " + String(localized: "\(event.numberOfStalls) stall(s)")
             }
-            if event.numberOfBytesTransferred > 0 {
-                add(String(localized: "Transferred"), String(format: "%.0f MB", Double(event.numberOfBytesTransferred) / 1_048_576))
-            }
-            if event.numberOfStalls > 0 { add(String(localized: "Stalls"), "\(event.numberOfStalls)") }
+            add(String(localized: "Transferred"), transfer)
         }
         return rows
     }

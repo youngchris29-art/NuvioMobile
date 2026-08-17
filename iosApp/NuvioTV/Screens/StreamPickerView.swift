@@ -35,6 +35,12 @@ struct StreamPickerView: View {
     /// All episodes of the parent series (from `MetaDetails.videos`); enables next-episode
     /// autoplay in the player. Empty for movies or launch paths without the series meta.
     let episodes: [MetaVideo]
+    /// Info-tab header inputs (optional; launch paths without meta at hand pass nil and the header
+    /// omits them). `poster` is the catalog/series poster (also persisted as the parent artwork by
+    /// the progress recorder); `episodeStill` is the 16:9 episode image shown in preference to it.
+    let poster: String?
+    let episodeStill: String?
+    let synopsis: String?
 
     @StateObject private var model: StreamsViewModel
     @State private var selected: PlaybackContext?
@@ -75,8 +81,14 @@ struct StreamPickerView: View {
         parentMetaId: String? = nil,
         season: Int? = nil,
         episode: Int? = nil,
-        episodes: [MetaVideo] = []
+        episodes: [MetaVideo] = [],
+        poster: String? = nil,
+        episodeStill: String? = nil,
+        synopsis: String? = nil
     ) {
+        self.poster = poster
+        self.episodeStill = episodeStill
+        self.synopsis = synopsis
         self.type = type
         self.videoId = videoId
         self.title = title
@@ -98,7 +110,7 @@ struct StreamPickerView: View {
             videoId: videoId,
             season: season,
             episode: episode,
-            poster: nil,
+            poster: poster,
             background: nil,
             providerName: stream?.addonName,
             providerAddonId: stream?.addonId,
@@ -108,7 +120,9 @@ struct StreamPickerView: View {
                 SubtitleFile(url: sub.url, language: sub.language, name: { let n: String? = sub.name; return n }())
             },
             bingeGroup: { let bg: String? = stream?.behaviorHints.bingeGroup; return bg }(),
-            episodes: episodes.isEmpty ? fetchedEpisodes : episodes
+            episodes: episodes.isEmpty ? fetchedEpisodes : episodes,
+            synopsis: synopsis,
+            episodeStill: episodeStill
         )
     }
 

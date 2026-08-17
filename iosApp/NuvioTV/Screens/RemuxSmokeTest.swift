@@ -201,6 +201,13 @@ nonisolated enum RemuxSmokeTest {
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
                         let pos = CMTimeGetSeconds(player.currentTime())
                         verdict = "READY pos=\(String(format: "%.1f", pos))"
+                        // debug.avplayerProbeSelections=1: also exercise media selection on the
+                        // probed master — list the audible/legible groups, switch to the alternate
+                        // audio rendition, select the first subtitle, and log the cues that arrive.
+                        // Used by the info-panel W0 spike (demuxed audio + segmented WebVTT).
+                        if UserDefaults.standard.bool(forKey: "debug.avplayerProbeSelections") {
+                            verdict += " " + (await exerciseSelections(player: player, item: item))
+                        }
                         break
                     }
                     if item.status == .failed {
@@ -219,6 +226,66 @@ nonisolated enum RemuxSmokeTest {
                 try? await Task.sleep(nanoseconds: 12_000_000_000)
             }
         }
+    }
+
+    /// Media-selection exercise for the probe loop (see `debug.avplayerProbeSelections`). Returns a
+    /// compact verdict fragment; details go to the console as `[ProbeLoop]` lines.
+    @MainActor
+    private static func exerciseSelections(player: AVPlayer, item: AVPlayerItem) async -> String {
+        var parts: [String] = []
+        let asset = item.asset
+        let audible = (try? await asset.loadMediaSelectionGroup(for: .audible)) ?? nil
+        let legible = (try? await asset.loadMediaSelectionGroup(for: .legible)) ?? nil
+        func describe(_ g: AVMediaSelectionGroup?) -> String {
+            guard let g else { return "none" }
+            return g.options.map { "\($0.displayName)[\($0.extendedLanguageTag ?? "-")]" }.joined(separator: ", ")
+        }
+        print("[ProbeLoop] audible options: \(describe(audible))")
+        print("[ProbeLoop] legible options: \(describe(legible))")
+        parts.append("aud=\(audible?.options.count ?? 0) leg=\(legible?.options.count ?? 0)")
+
+        // Cue sink: any legible output proves the WebVTT segments parse + time-map correctly.
+        final class CueSink: NSObject, AVPlayerItemLegibleOutputPushDelegate {
+            var seen: [String] = []
+            func legibleOutput(_ output: AVPlayerItemLegibleOutput,
+                               didOutputAttributedStrings strings: [NSAttributedString],
+                               nativeSampleBuffers: [Any], forItemTime itemTime: CMTime) {
+                let text = strings.map(\.string).joined(separator: "|")
+                guard !text.isEmpty else { return }
+                let line = "\(String(format: "%.1f", CMTimeGetSeconds(itemTime)))s \"\(text)\""
+                seen.append(line)
+                print("[ProbeLoop] cue @\(line)")
+            }
+        }
+        let sink = CueSink()
+        let output = AVPlayerItemLegibleOutput()
+        output.setDelegate(sink, queue: .main)
+        item.add(output)
+
+        if let legible, let first = legible.options.first {
+            item.select(first, in: legible)
+            print("[ProbeLoop] selected subtitle: \(first.displayName)")
+        }
+        // Switch to the alternate audio rendition; a demuxed master switches without an item
+        // replacement — position must keep advancing and the selection must stick.
+        if let audible, audible.options.count > 1 {
+            let current = item.currentMediaSelection.selectedMediaOption(in: audible)
+            if let alt = audible.options.first(where: { $0 != current }) {
+                let before = CMTimeGetSeconds(player.currentTime())
+                item.select(alt, in: audible)
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                let after = CMTimeGetSeconds(player.currentTime())
+                let now = item.currentMediaSelection.selectedMediaOption(in: audible)
+                let stuck = now == alt
+                print("[ProbeLoop] audio switch → \(alt.displayName): selected=\(stuck) pos \(String(format: "%.1f→%.1f", before, after)) rate=\(player.rate) status=\(item.status.rawValue)")
+                parts.append("switch=\(stuck ? "ok" : "lost") adv=\(String(format: "%.1f", after - before))")
+            }
+        }
+        // Let cues accumulate a little longer, then summarize.
+        try? await Task.sleep(nanoseconds: 6_000_000_000)
+        parts.append("cues=\(sink.seen.count)")
+        item.remove(output)
+        return parts.joined(separator: " ")
     }
 
     private static func report(base: URL, message: String) {

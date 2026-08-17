@@ -21,6 +21,15 @@ nonisolated struct SubtitleRendition: Sendable {
     var fileName: String { "sub-\(index).vtt" }
 }
 
+/// Master-playlist flags for one subtitle rendition, decided by the coordinator's language plan
+/// (AUTOSELECT: may the system pick it automatically; DEFAULT: start with it on).
+nonisolated struct SubtitleRenditionFlags: Sendable, Equatable {
+    let autoselect: Bool
+    let isDefault: Bool
+    /// Legacy behaviour (no plan): AUTOSELECT=YES, DEFAULT=NO.
+    static let legacy = SubtitleRenditionFlags(autoselect: true, isDefault: false)
+}
+
 nonisolated enum SubtitleVTT {
     /// Build the rendition list from the addon-provided files: parse language tags, synthesize
     /// unique menu names, drop duplicates, cap the count (a debrid title can carry dozens).

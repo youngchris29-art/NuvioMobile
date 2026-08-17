@@ -57,6 +57,20 @@ nonisolated struct RemuxAudioTrack: Equatable, Sendable {
     var selected: Bool
 }
 
+/// One subtitle stream of the source, as the remux worker inspected it. Text tracks (SRT/ASS/SSA/
+/// mov_text/WebVTT) are candidates for WebVTT renditions (info-panel plan W2); bitmap tracks
+/// (PGS/VobSub/DVB) can't be shown by the native player and are only counted, so the Info tab can
+/// explain their absence.
+nonisolated struct RemuxSubtitleTrack: Equatable, Sendable {
+    let streamIndex: Int
+    let codec: String        // canonical FFmpeg name: "subrip", "ass", "hdmv_pgs_subtitle", ...
+    let language: String?
+    let title: String?
+    let isText: Bool
+    let forced: Bool
+    let hearingImpaired: Bool
+}
+
 nonisolated final class RemuxSession: @unchecked Sendable {
     enum State: Equatable, Sendable {
         case idle
@@ -72,6 +86,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         /// passes the index picked from `audioTracks` into the rebuilt session). nil = automatic:
         /// first stream-copyable track, else first transcodable one.
         var audioStreamIndex: Int? = nil
+        /// Automatic-pick hook: given every audio track (with playability), return the stream index
+        /// to mux, or nil for the built-in default (first copyable, else first transcodable). The
+        /// coordinator uses it to honour Settings → Playback → Preferred Audio Language before the
+        /// stream carries a single rendition. Runs on the remux worker thread — keep it pure.
+        var preferredAudioPicker: (@Sendable ([RemuxAudioTrack]) -> Int?)? = nil
     }
 
     let config: Config
@@ -88,6 +107,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private var _hasAudio = false
     private var _audioCodecToken: String?
     private var _audioTracks: [RemuxAudioTrack] = []
+    private var _subtitleTracks: [RemuxSubtitleTrack] = []
     private var _estimatedBandwidth = 20_000_000
     private var onStateChange: (@Sendable (State) -> Void)?
     private let queue = DispatchQueue(label: "media.nuvio.remux", qos: .userInitiated)
@@ -161,6 +181,9 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     /// Every audio stream the source carries, with playability and which one this session muxes —
     /// the data behind the player's Audio menu (D4). Populated with the signaling, before the map.
     var audioTracks: [RemuxAudioTrack] { lock.lock(); defer { lock.unlock() }; return _audioTracks }
+
+    /// Every subtitle stream the source carries (text + bitmap), populated with the signaling.
+    var subtitleTracks: [RemuxSubtitleTrack] { lock.lock(); defer { lock.unlock() }; return _subtitleTracks }
 
     /// Rough peak bandwidth for the master EXT-X-STREAM-INF (single variant — advisory, no ABR).
     var estimatedBandwidth: Int { lock.lock(); defer { lock.unlock() }; return _estimatedBandwidth }
@@ -239,6 +262,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
 
         var videoIn = -1, audioCopyIn = -1, audioTranscodeIn = -1
         var foundAudio: [RemuxAudioTrack] = []
+        var foundSubtitles: [RemuxSubtitleTrack] = []
         for i in 0..<Int(input.pointee.nb_streams) {
             guard let s = input.pointee.streams[i], let par = s.pointee.codecpar else { continue }
             switch par.pointee.codec_type {
@@ -259,8 +283,23 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 } else if audioTranscodeIn < 0, transcodable {
                     audioTranscodeIn = i
                 }
+            case AVMEDIA_TYPE_SUBTITLE:
+                let disposition = Int32(s.pointee.disposition)
+                foundSubtitles.append(RemuxSubtitleTrack(
+                    streamIndex: i,
+                    codec: avcodec_get_name(par.pointee.codec_id).map { String(cString: $0) } ?? "",
+                    language: Self.metadataValue(s.pointee.metadata, "language"),
+                    title: Self.metadataValue(s.pointee.metadata, "title"),
+                    isText: Self.isTextSubtitle(par.pointee.codec_id),
+                    forced: disposition & AV_DISPOSITION_FORCED != 0,
+                    hearingImpaired: disposition & AV_DISPOSITION_HEARING_IMPAIRED != 0))
             default: break
             }
+        }
+        if !foundSubtitles.isEmpty {
+            print("[Remux] subtitle streams (\(foundSubtitles.count)): " + foundSubtitles.map {
+                "#\($0.streamIndex) \($0.codec)\($0.isText ? "" : " (bitmap)")\($0.language.map { " [\($0)]" } ?? "")"
+            }.joined(separator: ", "))
         }
         // Prefer a stream-copyable track (bit-exact, zero CPU); with none present, transcode a
         // TrueHD/DTS track to AAC (Phase 4 v2 — AVPlayer can't decode them and this FFmpeg build
@@ -270,6 +309,15 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         // the session.
         var audioIn = audioCopyIn >= 0 ? audioCopyIn : audioTranscodeIn
         var audioTranscodes = audioCopyIn < 0 && audioTranscodeIn >= 0
+        // Language preference (initial session only — an explicit D4 pick below wins).
+        if config.audioStreamIndex == nil, foundAudio.count > 1,
+           let preferred = config.preferredAudioPicker?(foundAudio),
+           foundAudio.contains(where: { $0.streamIndex == preferred && $0.playable }),
+           let par = input.pointee.streams[preferred]?.pointee.codecpar {
+            audioIn = preferred
+            audioTranscodes = !isCopyableAudio(par.pointee.codec_id)
+            print("[Remux] preferred-language audio pick → stream \(preferred)")
+        }
         if let want = config.audioStreamIndex {
             if foundAudio.contains(where: { $0.streamIndex == want && $0.playable }),
                let wantPar = input.pointee.streams[want]?.pointee.codecpar {
@@ -355,6 +403,7 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         _hasAudio = audioIn >= 0
         _audioCodecToken = audioToken
         _audioTracks = foundAudio
+        _subtitleTracks = foundSubtitles
         _estimatedBandwidth = bandwidth
         lock.unlock()
         print("[Remux] signaling CODECS=\(signaling.codecs)"
@@ -975,6 +1024,22 @@ nonisolated final class RemuxSession: @unchecked Sendable {
     private func isCopyableAudio(_ id: AVCodecID) -> Bool {
         switch id {
         case AV_CODEC_ID_AAC, AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3, AV_CODEC_ID_FLAC, AV_CODEC_ID_ALAC, AV_CODEC_ID_MP3:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Text-based subtitle codecs the native path can turn into WebVTT (W2) — everything
+    /// avcodec decodes to an ASS/text `AVSubtitle`; the rest (PGS, VobSub, DVB, XSUB, ARIB,
+    /// EIA-608 …) is bitmap/caption data the native player can't show.
+    static func isTextSubtitle(_ id: AVCodecID) -> Bool {
+        switch id {
+        case AV_CODEC_ID_SUBRIP, AV_CODEC_ID_ASS, AV_CODEC_ID_SSA, AV_CODEC_ID_MOV_TEXT,
+             AV_CODEC_ID_WEBVTT, AV_CODEC_ID_TEXT, AV_CODEC_ID_SRT, AV_CODEC_ID_TTML,
+             AV_CODEC_ID_MICRODVD, AV_CODEC_ID_SAMI, AV_CODEC_ID_SUBVIEWER, AV_CODEC_ID_SUBVIEWER1,
+             AV_CODEC_ID_MPL2, AV_CODEC_ID_HDMV_TEXT_SUBTITLE, AV_CODEC_ID_REALTEXT, AV_CODEC_ID_STL,
+             AV_CODEC_ID_VPLAYER, AV_CODEC_ID_JACOSUB, AV_CODEC_ID_PJS:
             return true
         default:
             return false

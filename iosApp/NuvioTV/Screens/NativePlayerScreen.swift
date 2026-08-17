@@ -16,14 +16,15 @@ import SwiftUI
 //    segments come from the shared `SkipIntroRepository`, evaluated against playback ticks).
 //  - "Play Next Episode" appears as a contextual action while the up-next countdown card is showing
 //    (the card itself stays non-focusable; the action is the interactive part).
-//  - Stream Info is a `customInfoViewControllers` tab in the swipe-down panel: router decision,
-//    remux signaling, segment map shape, and live access-log stats.
+//  - Info is a `customInfoViewControllers` tab in the swipe-down panel: what's-playing header plus
+//    router decision, remux signaling, segment map shape, and live access-log stats. The system Info
+//    tab is left unpopulated (no `externalMetadata`) so it hides and this one is the only Info tab.
 struct NativePlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)?
     /// Called with the last known position when the native path can't play — dispatcher → mpv.
     var onFallback: ((Double) -> Void)?
-    /// Router decision label (e.g. "Native · DV P7 FEL → 8.1") for the Stream Info tab.
+    /// Router decision label (e.g. "Native · DV P7 FEL → 8.1") for the Info tab.
     var routingNote: String?
 
     @StateObject private var coordinator: NativePlaybackCoordinator
@@ -64,6 +65,9 @@ struct NativePlayerScreen: View {
                         skipPrompt: skipPrompt,
                         upNextReady: upNextActionAvailable,
                         audioTracks: coordinator.audioTracks,
+                        allowedSubtitleLanguages: coordinator.languagePlan.onlyPreferredLanguages
+                            ? coordinator.languagePlan.subtitleFilterLanguages : nil,
+                        infoHeader: NativeInfoHeader(context: context),
                         infoModel: info,
                         onSkip: { [weak coordinator] target in
                             coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
@@ -161,26 +165,30 @@ struct NativePlayerScreen: View {
     }
 }
 
-/// One label/value row of the Stream Info tab.
+/// One label/value row of the Info tab.
 struct NativeInfoRow: Identifiable, Equatable {
     let label: String
     let value: String
     var id: String { label }
 }
 
-/// Backing model for the Stream Info tab — refreshed on playback ticks while the panel may be open.
+/// Backing model for the Info tab — refreshed on playback ticks while the panel may be open.
 @MainActor
 final class NativeStreamInfoModel: ObservableObject {
     @Published var rows: [NativeInfoRow] = []
 }
 
 /// AVPlayerViewController wrapper: full native tvOS player UI plus our integrations — contextual
-/// actions (skip intro / play next) and the Stream Info panel tab.
+/// actions (skip intro / play next) and the Info panel tab.
 private struct AVPlayerContainer: UIViewControllerRepresentable {
     let player: AVPlayer
     let skipPrompt: SkipPrompt?
     let upNextReady: Bool
     let audioTracks: [NativeAudioTrack]
+    /// "Show only preferred languages" (Settings → Playback → Subtitles): restrict the panel's
+    /// Subtitles list to these BCP-47 tags. nil = show every rendition.
+    let allowedSubtitleLanguages: [String]?
+    let infoHeader: NativeInfoHeader
     let infoModel: NativeStreamInfoModel
     let onSkip: (Double) -> Void
     let onPlayNow: () -> Void
@@ -192,14 +200,23 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
         let controller = AVPlayerViewController()
         controller.player = player
         // The info tab is installed once — its SwiftUI content observes `infoModel` and stays live.
-        let host = UIHostingController(rootView: NativeStreamInfoView(model: infoModel))
-        host.title = String(localized: "Stream Info")
+        let host = UIHostingController(rootView: NativeStreamInfoView(header: infoHeader, model: infoModel))
+        host.title = String(localized: "Info")
+        // AVPlayerViewController sizes the panel from the hosted SwiftUI content's measured height
+        // (preferredContentSize is ignored) — so the content must measure eagerly: no ScrollView,
+        // no LazyVGrid (see NativeStreamInfoView).
         controller.customInfoViewControllers = [host]
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
+        // Only assign on change — it's a panel-content property, not part of the transport-bar
+        // signature below, and reassigning identical arrays each SwiftUI tick is pointless work.
+        if context.coordinator.allowedSubtitleLanguages != allowedSubtitleLanguages {
+            context.coordinator.allowedSubtitleLanguages = allowedSubtitleLanguages
+            controller.allowedSubtitleOptionLanguages = allowedSubtitleLanguages
+        }
         // Reinstall contextual actions only when their meaning changes — reassigning identical
         // actions every SwiftUI update makes the transport bar re-animate them. The skip target is
         // part of the signature so back-to-back segments with the same label still refresh the
@@ -246,37 +263,133 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
 
     final class Coordinator {
         var actionsSignature = ""
+        var allowedSubtitleLanguages: [String]?
     }
 }
 
-/// Content of the Stream Info tab (AVPlayerViewController swipe-down panel). Plain label/value
-/// rows, sized for 10-foot reading.
+/// Static header data for the Info tab (what's playing), captured once from the PlaybackContext.
+struct NativeInfoHeader {
+    let title: String
+    /// "S1 · E4 · Episode name" for series, else the stream's own label (release name / addon line).
+    let subtitle: String?
+    let synopsis: String?
+    let poster: String?
+    /// True when `poster` is an episode still (16:9) rather than a 2:3 poster.
+    let landscapeArtwork: Bool
+
+    init(context: PlaybackContext) {
+        title = context.title
+        var parts: [String] = []
+        if let s = context.season, let e = context.episode {
+            parts.append(String(localized: "S\(s) · E\(e)"))
+        }
+        if let st = context.streamTitle, !st.isEmpty { parts.append(st) }
+        subtitle = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        synopsis = context.synopsis.flatMap { $0.isEmpty ? nil : $0 }
+        let still = context.episodeStill.flatMap { $0.isEmpty ? nil : $0 }
+        poster = still ?? context.poster.flatMap { $0.isEmpty ? nil : $0 }
+        landscapeArtwork = still != nil
+    }
+}
+
+/// Content of the Info tab (AVPlayerViewController swipe-down panel — the system Info tab is
+/// deliberately not populated via `externalMetadata`, so this is THE Info tab; see
+/// docs/tvos-native-player-info-panel-plan.md §5b). What's-playing header on top, then the
+/// live stream rows. Sized for 10-foot reading; the panel chrome is Apple's.
 private struct NativeStreamInfoView: View {
+    let header: NativeInfoHeader
     @ObservedObject var model: NativeStreamInfoModel
 
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                ForEach(model.rows) { row in
-                    HStack(alignment: .firstTextBaseline, spacing: 28) {
-                        Text(row.label)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 340, alignment: .leading)
-                        Text(row.value)
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                    }
+        // Eagerly-measured layout on purpose: AVPlayerViewController takes the panel height from
+        // this view's measured size at presentation. A ScrollView/LazyVGrid measures short (lazy
+        // rows don't exist yet) and the panel then clips the bottom rows.
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            headerView
+            Divider().overlay(Theme.Palette.outline)
+            rowsView
+        }
+        .padding(.horizontal, Theme.Spacing.sectionGap)
+        .padding(.top, Theme.Spacing.lg)
+        .padding(.bottom, Theme.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// Header art height; poster (2:3) or episode still (16:9) scale into it. Kept small — the panel
+    /// has a fixed height, and the header must leave room for the two-column rows below.
+    private static let artHeight: CGFloat = 140
+
+    private var headerView: some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.lg) {
+            if header.poster != nil {
+                CachedAsyncImage(string: header.poster, contentMode: .fill)
+                    .frame(width: header.landscapeArtwork ? Self.artHeight * 16 / 9 : Self.artHeight * 2 / 3,
+                           height: Self.artHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                Text(header.title)
+                    .font(Theme.Font.screenTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .lineLimit(1)
+                if let subtitle = header.subtitle {
+                    Text(subtitle)
+                        .font(Theme.Font.sectionTitle)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(1)
                 }
-                if model.rows.isEmpty {
-                    Text("No stream details yet.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                if let synopsis = header.synopsis {
+                    Text(synopsis)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)   // measure both lines
+                        .padding(.top, Theme.Spacing.xxs)
                 }
             }
-            .padding(.horizontal, 48)
-            .padding(.vertical, 36)
+            Spacer(minLength: 0)
         }
+    }
+
+    /// Two columns of label/value pairs — the row count (a dozen live diagnostics) doesn't fit the
+    /// panel's height in one column once the header is above it. Non-lazy `Grid` so the height
+    /// measures correctly (see `body`).
+    private var rowsView: some View {
+        let rows = model.rows
+        let half = (rows.count + 1) / 2
+        return Grid(alignment: .topLeading, horizontalSpacing: Theme.Spacing.xl, verticalSpacing: Theme.Spacing.xs) {
+            ForEach(0..<max(half, 1), id: \.self) { i in
+                GridRow {
+                    if i < rows.count { rowView(rows[i]) } else { Color.clear.frame(height: 1) }
+                    if i + half < rows.count { rowView(rows[i + half]) } else { Color.clear.frame(height: 1) }
+                }
+            }
+            if rows.isEmpty {
+                GridRow {
+                    Text("No stream details yet.")
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .gridCellColumns(2)
+                }
+            }
+        }
+    }
+
+    private func rowView(_ row: NativeInfoRow) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
+            Text(row.label)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(width: 260, alignment: .leading)
+            Text(row.value)
+                .font(Theme.Font.body.monospacedDigit())
+                .foregroundStyle(Theme.Palette.textPrimary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

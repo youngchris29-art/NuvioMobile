@@ -87,7 +87,10 @@ struct EpisodesSection: View {
                 parentMetaId: route.meta.id,
                 season: route.episode.season?.value,
                 episode: route.episode.episode?.value,
-                episodes: route.meta.videos
+                episodes: route.meta.videos,
+                poster: route.meta.poster,
+                episodeStill: route.episodeStill,
+                synopsis: route.synopsis
             )
         }
     }
@@ -213,6 +216,19 @@ private struct EpisodeRoute: Identifiable {
     let meta: MetaDetails
     let episode: MetaVideo
     var id: String { episode.id }
+
+    /// Episode still for the player's Info header — blank addon values count as missing.
+    var episodeStill: String? {
+        let t: String? = episode.thumbnail
+        return (t ?? "").isEmpty ? nil : t
+    }
+    /// Episode overview, else the series synopsis (never an empty header for a blank overview).
+    var synopsis: String? {
+        let o: String? = episode.overview
+        if let o, !o.isEmpty { return o }
+        let d: String? = meta.description_
+        return d
+    }
 }
 
 /// One 16:9 episode thumbnail in the horizontal shelf: still + watched/rating badges over a bottom

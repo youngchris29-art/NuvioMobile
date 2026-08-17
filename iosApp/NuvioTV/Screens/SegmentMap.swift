@@ -126,7 +126,8 @@ nonisolated struct SegmentMap: Sendable {
                         audioLanguage: String? = nil,
                         bandwidth: Int,
                         mediaName: String = "media.m3u8",
-                        subtitles: [SubtitleRendition] = []) -> String {
+                        subtitles: [SubtitleRendition] = [],
+                        subtitleFlags: [SubtitleRenditionFlags] = []) -> String {
         var codecTokens: [String] = []
         if !signaling.codecs.isEmpty { codecTokens.append(signaling.codecs) }
         if let audioCodec, !audioCodec.isEmpty { codecTokens.append(audioCodec) }
@@ -158,12 +159,15 @@ nonisolated struct SegmentMap: Sendable {
             lines.append(media)
             streamInf += ",AUDIO=\"aud\""
         }
-        // External-subtitle renditions (D5): WebVTT sidecars served by LocalHLSServer. AUTOSELECT
-        // lets tvOS pick per the user's language/accessibility preferences; nothing is DEFAULT.
+        // External-subtitle renditions (D5): WebVTT sidecars served by LocalHLSServer. AUTOSELECT /
+        // DEFAULT follow the coordinator's language plan (Preferred Subtitle Language: "none" ⇒ no
+        // rendition is auto-selectable, so captions never switch on by themselves; a preferred
+        // language ⇒ matches are AUTOSELECT and the first match is DEFAULT). Legacy: AUTOSELECT only.
         if !subtitles.isEmpty {
-            for sub in subtitles {
+            for (i, sub) in subtitles.enumerated() {
+                let flags = i < subtitleFlags.count ? subtitleFlags[i] : .legacy
                 var media = "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"\(sub.name.replacingOccurrences(of: "\"", with: ""))\""
-                media += ",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO"
+                media += ",DEFAULT=\(flags.isDefault ? "YES" : "NO"),AUTOSELECT=\(flags.autoselect || flags.isDefault ? "YES" : "NO"),FORCED=NO"
                 if let language = sub.language { media += ",LANGUAGE=\"\(language)\"" }
                 media += ",URI=\"\(sub.playlistName)\""
                 lines.append(media)

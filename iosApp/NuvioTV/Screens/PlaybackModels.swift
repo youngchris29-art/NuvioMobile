@@ -15,8 +15,9 @@ enum PlayerTuning {
     /// Opt into mpv's `gpu-next` (libplacebo) video output for better HDR tone-mapping. Device-only
     /// (never applied on the simulator, where libplacebo's vo asserts). Applies to the next playback.
     static let enhancedRendererKey = "player.enhancedRenderer"
-    /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output (beta).
-    /// Off by default while the native path is under construction; gates all engine routing.
+    /// Route Dolby Vision / native-friendly files to the AVPlayer engine for true DV output.
+    /// Opt-in until the info-panel W2 (embedded subtitles) lands, then registered default-ON
+    /// (docs/tvos-native-player-info-panel-plan.md); gates all engine routing.
     static let nativeDVKey = "player.nativeDolbyVision"
     /// Sub-setting of the native-DV beta: keep DV Profile 7 FEL files on mpv instead of converting
     /// them to 8.1 (the conversion discards FEL enhancement data; MEL converts losslessly and is
@@ -44,6 +45,13 @@ struct PlaybackContext: Identifiable {
     var bingeGroup: String? = nil
     /// All episodes of the parent series (empty for movies) — enables next-episode autoplay.
     var episodes: [MetaVideo] = []
+    /// Title/episode synopsis for the native player's Info tab header (nil when the launch path
+    /// has no meta at hand — the header simply omits it).
+    var synopsis: String? = nil
+    /// 16:9 episode still for the native player's Info tab header. Kept apart from `poster`,
+    /// which stays the catalog/series poster (the progress recorder persists `poster` as the
+    /// parent artwork — a still must never leak into it). nil → the header shows `poster`.
+    var episodeStill: String? = nil
 
     var id: String { "\(videoId)|\(url.absoluteString)" }
 }

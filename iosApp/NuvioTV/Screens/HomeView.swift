@@ -458,7 +458,12 @@ struct HomeView: View {
                     title: target.entry.title,
                     parentMetaId: target.entry.parentMetaId,
                     season: target.entry.seasonNumber?.value,
-                    episode: target.entry.episodeNumber?.value
+                    episode: target.entry.episodeNumber?.value,
+                    // Info header: series poster + the entry's episode still / pause synopsis when
+                    // present (blank values count as missing).
+                    poster: target.entry.poster,
+                    episodeStill: { let still: String? = target.entry.episodeThumbnail; return (still ?? "").isEmpty ? nil : still }(),
+                    synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }()
                 )
             }
         }

@@ -53,6 +53,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// External-subtitle renditions (D5): each is an EXT-X-MEDIA SUBTITLES entry; the VTT payloads
     /// download + convert just-in-time on first request and are cached here for the session.
     private let subtitles: [SubtitleRendition]
+    /// Per-rendition AUTOSELECT/DEFAULT (parallel to `subtitles`; empty = legacy flags).
+    private let subtitleFlags: [SubtitleRenditionFlags]
     private var vttCache = [Int: Data]()
     private var vttFailed = Set<Int>()
     let masterName = "master.m3u8"
@@ -84,6 +86,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling, audioCodec: String?,
          audioName: String? = nil, audioLanguage: String? = nil, bandwidth: Int,
          subtitles: [SubtitleRendition] = [],
+         subtitleFlags: [SubtitleRenditionFlags] = [],
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
          requestReposition: @escaping @Sendable (Int) -> Void) {
         self.rootDir = rootDir
@@ -94,6 +97,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.audioLanguage = audioLanguage
         self.bandwidth = bandwidth
         self.subtitles = subtitles
+        self.subtitleFlags = subtitleFlags
         self.producingInfo = producingInfo
         self.requestReposition = requestReposition
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -114,7 +118,8 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             lock.lock(); let signaling = _signaling; lock.unlock()
             return map.masterPlaylist(signaling: signaling, audioCodec: audioCodec,
                                       audioName: audioName, audioLanguage: audioLanguage,
-                                      bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles)
+                                      bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles,
+                                      subtitleFlags: subtitleFlags)
         case mediaName:
             return map.mediaPlaylist()
         default:

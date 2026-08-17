@@ -248,7 +248,8 @@ struct DetailView: View {
             if interacted { cancelAutoPlayTrailer() }
         }
         .fullScreenCover(isPresented: $showStreams) {
-            StreamPickerView(type: preview.type, videoId: preview.id, title: title)
+            StreamPickerView(type: preview.type, videoId: preview.id, title: title,
+                             poster: posterUrl, synopsis: overview)
         }
         .fullScreenCover(item: $seriesPlay) { route in
             StreamPickerView(
@@ -258,7 +259,10 @@ struct DetailView: View {
                 parentMetaId: route.meta.id,
                 season: route.action.seasonNumber?.value,
                 episode: route.action.episodeNumber?.value,
-                episodes: route.meta.videos
+                episodes: route.meta.videos,
+                poster: route.meta.poster,
+                episodeStill: route.episodeStill,
+                synopsis: route.synopsis
             )
         }
         .fullScreenCover(item: $model.trailerPlayback, onDismiss: {
@@ -1153,6 +1157,26 @@ private struct SeriesPlayRoute: Identifiable {
     let meta: MetaDetails
     let action: SeriesPrimaryAction
     var id: String { action.videoId }
+
+    /// The resolved episode (by season/episode number) — the Info header shows ITS still +
+    /// overview, not the series poster/synopsis, matching the EpisodesSection launch path.
+    private var episode: MetaVideo? {
+        guard let s = action.seasonNumber?.value, let e = action.episodeNumber?.value else { return nil }
+        return meta.videos.first { $0.season?.value == s && $0.episode?.value == e }
+    }
+    /// Episode still (action's, else the resolved episode's); blank addon values count as missing.
+    var episodeStill: String? {
+        let still: String? = action.episodeThumbnail
+        if let still, !still.isEmpty { return still }
+        let epStill: String? = episode?.thumbnail
+        return (epStill ?? "").isEmpty ? nil : epStill
+    }
+    var synopsis: String? {
+        let overview: String? = episode?.overview
+        if let overview, !overview.isEmpty { return overview }
+        let d: String? = meta.description_
+        return d
+    }
 
     /// "S1E1 · Pilot"-style picker title (falls back to the action label).
     var pickerTitle: String {
