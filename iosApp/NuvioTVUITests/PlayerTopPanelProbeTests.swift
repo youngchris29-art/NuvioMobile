@@ -69,11 +69,25 @@ final class PlayerTopPanelProbeTests: XCTestCase {
         XCTAssertEqual(audioRows.element(boundBy: 1).value as? String, "selected", "second audio row not selected")
         sleep(2)   // screenshot: audio selected
 
+        // 4b. Engines with a fourth "Playback" tab (mpv): back up to the tab row (two rows deep),
+        // Right → Playback, check its controls.
+        remote.press(.up)
+        remote.press(.up)
+        sleep(1)
+        remote.press(.right)
+        sleep(1)
+        if app.buttons["player.panel.tab.playback"].exists {
+            XCTAssertEqual(app.buttons["player.panel.tab.playback"].value as? String, "selected")
+            XCTAssertTrue(app.buttons["player.panel.speed.1.0"].waitForExistence(timeout: 3), "no speed buttons")
+            XCTAssertTrue(app.buttons["player.panel.diagnostics"].exists, "no diagnostics toggle")
+            sleep(3)   // screenshot: Playback tab
+        }
+
         // 5. Menu closes the panel and does NOT pop the player.
         remote.press(.menu)
         sleep(2)
         XCTAssertFalse(panel.exists, "panel still present after Menu")
-        XCTAssertTrue(app.otherElements["player.native"].exists, "player was popped by Menu")
+        XCTAssertTrue(app.otherElements["player.native"].exists || app.otherElements["player.mpv"].exists, "player was popped by Menu")
         sleep(2)   // screenshot: closed
 
         // 6. Down while the transport bar is visible also opens the panel.
@@ -83,6 +97,6 @@ final class PlayerTopPanelProbeTests: XCTestCase {
         XCTAssertTrue(panel.waitForExistence(timeout: 5), "panel did not open with transport bar visible")
         remote.press(.menu)
         sleep(2)
-        XCTAssertTrue(app.otherElements["player.native"].exists, "player gone at end")
+        XCTAssertTrue(app.otherElements["player.native"].exists || app.otherElements["player.mpv"].exists, "player gone at end")
     }
 }

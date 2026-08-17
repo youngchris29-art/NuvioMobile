@@ -2,6 +2,8 @@ import SwiftUI
 
 enum PlayerPanelTab: String, CaseIterable, Identifiable {
     case info, subtitles, audio
+    /// Engine-specific fourth tab (the mpv player's Playback: speed · timing · episodes · sources).
+    case playback
     var id: String { rawValue }
 
     var title: String {
@@ -9,8 +11,15 @@ enum PlayerPanelTab: String, CaseIterable, Identifiable {
         case .info: return String(localized: "Info")
         case .subtitles: return String(localized: "Subtitles")
         case .audio: return String(localized: "Audio")
+        case .playback: return String(localized: "Playback")
         }
     }
+}
+
+/// Content for the optional fourth tab; supplied by the engine that has one.
+struct PlayerPanelExtraTab {
+    let content: AnyView
+    init<V: View>(@ViewBuilder content: () -> V) { self.content = AnyView(content()) }
 }
 
 /// The app-drawn swipe-down top panel (Infuse-style rendition of the classic tvOS player panel):
@@ -23,6 +32,7 @@ enum PlayerPanelTab: String, CaseIterable, Identifiable {
 /// uses system focus (docs/design/hig-hybrid-contract.md) — no custom rings.
 struct PlayerTopPanel: View {
     @ObservedObject var model: PlayerTopPanelModel
+    var extraTab: PlayerPanelExtraTab? = nil
     @State private var tab: PlayerPanelTab = .info
     @State private var shown = false
     @FocusState private var focusedTab: PlayerPanelTab?
@@ -77,7 +87,7 @@ struct PlayerTopPanel: View {
 
     private var tabRow: some View {
         HStack(spacing: Theme.Spacing.md) {
-            ForEach(PlayerPanelTab.allCases) { item in
+            ForEach(tabs) { item in
                 Button(item.title) { tab = item }
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(item == tab ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
@@ -89,6 +99,10 @@ struct PlayerTopPanel: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var tabs: [PlayerPanelTab] {
+        extraTab == nil ? [.info, .subtitles, .audio] : PlayerPanelTab.allCases
+    }
+
     @ViewBuilder
     private var content: some View {
         switch tab {
@@ -98,6 +112,8 @@ struct PlayerTopPanel: View {
             PlayerSubtitlesTab(model: model)
         case .audio:
             PlayerAudioTab(model: model)
+        case .playback:
+            if let extraTab { extraTab.content } else { EmptyView() }
         }
     }
 }

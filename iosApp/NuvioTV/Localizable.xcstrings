@@ -10681,40 +10681,6 @@
         }
       }
     },
-    "None found": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keine gefunden"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ninguno encontrado"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aucun trouvé"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nessuno trovato"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Không tìm thấy"
-          }
-        }
-      }
-    },
     "Not cached on your debrid service.": {
       "localizations": {
         "de": {
@@ -13197,40 +13163,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phát"
-          }
-        }
-      }
-    },
-    "Playback Settings": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wiedergabeeinstellungen"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Configuración de reproducción"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Paramètres de lecture"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Impostazioni riproduzione"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cài đặt phát"
           }
         }
       }
@@ -18064,40 +17996,6 @@
         }
       }
     },
-    "Sub %@ · Audio %@": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "UT %@ · Audio %@"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sub %@ · Audio %@"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sub %@ · Audio %@"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sub %@ · Audio %@"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phụ đề %@ · Âm thanh %@"
-          }
-        }
-      }
-    },
     "Subtitle Delay": {
       "localizations": {
         "de": {
@@ -18230,40 +18128,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vuốt xuống để xem thông tin"
-          }
-        }
-      }
-    },
-    "Swipe up for audio, subtitles & playback settings": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wische nach oben für Audio-, Untertitel- & Wiedergabeeinstellungen"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desliza hacia arriba para audio, subtítulos y configuración de reproducción"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Balayez vers le haut pour les paramètres audio, sous-titres et lecture"
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scorri verso l'alto per audio, sottotitoli e impostazioni di riproduzione"
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vuốt lên để mở âm thanh, phụ đề & cài đặt phát"
           }
         }
       }

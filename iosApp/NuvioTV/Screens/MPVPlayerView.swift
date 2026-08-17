@@ -35,7 +35,8 @@ final class MPVPlaybackState: ObservableObject {
 
     @Published var audioTracks: [PlayerTrack] = []
     @Published var subtitleTracks: [PlayerTrack] = []
-    @Published var showTracks: Bool = false
+    /// The swipe-down top panel (Info · Subtitles · Audio · Playback) is presented.
+    @Published var panelOpen: Bool = false
     /// Addon subtitle fetch in flight — the picker shows "Searching…" instead of hiding the row.
     @Published var subtitleSearchInFlight: Bool = false
 
@@ -79,7 +80,7 @@ final class MPVPlaybackState: ObservableObject {
 }
 
 /// libmpv-backed player for tvOS. Siri-remote transport: select/play-pause toggles, left/right seek
-/// ±10s, up opens audio/subtitle tracks, Menu exits. Publishes position/duration/paused/buffering and
+/// ±10s, down (or a down swipe) opens the top panel, Menu exits. Publishes position/duration/paused/buffering and
 /// track lists to `state`, and records watch progress (resume position) via `WatchProgressRepository`.
 final class MPVTVPlayerViewController: UIViewController {
 
@@ -159,6 +160,8 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Called when the user presses Menu, so the SwiftUI cover can dismiss.
     var onExit: (() -> Void)?
+    /// Open the swipe-down top panel (D-pad Down with nothing else to do, or a down swipe).
+    var onOpenPanel: (() -> Void)?
 
     init(context: PlaybackContext, state: MPVPlaybackState) {
         self.context = context
@@ -189,8 +192,19 @@ final class MPVTVPlayerViewController: UIViewController {
         state.setAudioDelay = { [weak self] seconds in self?.setAudioDelay(seconds) }
         state.replay = { [weak self] in self?.replay() }
         state.reclaimFocus = { [weak self] in self?.becomeFirstResponder() }
+        view.accessibilityIdentifier = "player.mpv"
+
+        // Touch-surface swipe down → top panel (presses arrive as `.downArrow`; real swipes don't).
+        let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipeDown))
+        swipeDown.direction = .down
+        view.addGestureRecognizer(swipeDown)
 
         setupMpv()
+    }
+
+    @objc private func handleSwipeDown() {
+        guard presentedViewController == nil else { return }
+        onOpenPanel?()
     }
 
     override func viewDidLayoutSubviews() {
@@ -416,10 +430,9 @@ final class MPVTVPlayerViewController: UIViewController {
             // Don't rebuild the lists while the picker is open — reassigning them rebuilds the
             // SwiftUI list and snaps focus back to the top. Exception: the picker is showing its
             // empty state (first open raced the walk), where populating beats focus preservation.
-            if !(self.state.showTracks && self.state.hasTracks) {
-                if self.state.audioTracks != audio { self.state.audioTracks = audio }
-                if self.state.subtitleTracks != newSubs { self.state.subtitleTracks = newSubs }
-            }
+            // The panel diffs its rows by stable ids, so refreshing while it is open is safe.
+            if self.state.audioTracks != audio { self.state.audioTracks = audio }
+            if self.state.subtitleTracks != newSubs { self.state.subtitleTracks = newSubs }
             self.autoSelectPreferredTracks(audioInfos: audioInfos, subInfos: subInfos)
         }
     }
@@ -934,7 +947,7 @@ final class MPVTVPlayerViewController: UIViewController {
             state.isEnded = snap.eof
         }
 
-        if state.showStreamInfo {
+        if state.showStreamInfo || state.panelOpen {
             refreshStreamInfoAsync()
         }
 
@@ -1009,12 +1022,6 @@ final class MPVTVPlayerViewController: UIViewController {
                 beginSeek(-1); handled = true
             case .rightArrow:
                 beginSeek(1); handled = true
-            case .upArrow:
-                // Open instantly with the cached lists (kept fresh by track-count observation);
-                // the async walk fills them in if this open raced the first track events.
-                refreshTracksAsync()
-                state.showTracks = true
-                handled = true
             case .downArrow:
                 if state.upNextPlayNow?() == true {
                     handled = true
@@ -1027,6 +1034,12 @@ final class MPVTVPlayerViewController: UIViewController {
                     seekAbsolute(target)
                     state.skipPrompt = nil
                     flashControls()
+                    handled = true
+                } else if presentedViewController == nil {
+                    // Same gesture as the native player: Down opens the top panel. Track lists
+                    // are refreshed on open (the async walk fills them if this raced the events).
+                    refreshTracksAsync()
+                    onOpenPanel?()
                     handled = true
                 }
             case .menu:
@@ -1288,11 +1301,28 @@ final class MPVTVPlayerViewController: UIViewController {
 private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let context: PlaybackContext
     let state: MPVPlaybackState
+    let panelModel: PlayerTopPanelModel
+    /// Builds the engine-specific fourth tab at open time (its views observe live state).
+    let makeExtraTab: () -> PlayerPanelExtraTab
     let onExit: () -> Void
 
     func makeUIViewController(context ctx: Context) -> MPVTVPlayerViewController {
         let controller = MPVTVPlayerViewController(context: context, state: state)
         controller.onExit = onExit
+        let state = state, model = panelModel, makeExtraTab = makeExtraTab
+        controller.onOpenPanel = { [weak controller] in
+            guard let controller, controller.presentedViewController == nil else { return }
+            let panel = PlayerPanelHostController(rootView: PlayerTopPanel(model: model, extraTab: makeExtraTab()))
+            panel.modalPresentationStyle = .overFullScreen
+            panel.modalTransitionStyle = .crossDissolve
+            model.onClose = { [weak panel] in panel?.close(animated: true) }
+            panel.onClosed = { [weak state] in
+                state?.panelOpen = false
+                state?.reclaimFocus?()     // libmpv's controller must be first responder again
+            }
+            state.panelOpen = true
+            controller.present(panel, animated: !UIAccessibility.isReduceMotionEnabled)
+        }
         return controller
     }
 
@@ -1317,6 +1347,8 @@ struct MPVPlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showPauseInfo = false
     @State private var pauseInfoTask: Task<Void, Never>?
+    @StateObject private var panelModel: PlayerTopPanelModel
+    @State private var panelAdapter: MPVPlayerPanelAdapter?
 
     /// Up-next chip label (mirrors the native screen's `UpNextAction` titles); nil = no chip.
     private var upNextChipAction: String? {
@@ -1336,12 +1368,23 @@ struct MPVPlayerScreen: View {
             context: context,
             onPlayNext: onPlayNext ?? { _ in }
         ))
+        _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
+            info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))
     }
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            MPVPlayerRepresentable(context: context, state: state) { dismiss() }
-                .ignoresSafeArea()
+            MPVPlayerRepresentable(
+                context: context, state: state, panelModel: panelModel,
+                makeExtraTab: { [state, upNext, onPlayNext, panelModel] in
+                    PlayerPanelExtraTab {
+                        MPVPlaybackTab(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil,
+                                       onClose: { panelModel.onClose?() })
+                    }
+                },
+                onExit: { dismiss() }
+            )
+            .ignoresSafeArea()
 
             if state.isBuffering {
                 ProgressView()
@@ -1393,9 +1436,6 @@ struct MPVPlayerScreen: View {
         .animation(PlayerChipStyle.animation, value: upNext.phase)
         .animation(.easeInOut(duration: 0.25), value: showPauseInfo)
         .animation(.easeInOut(duration: 0.25), value: state.showStreamInfo)
-        .fullScreenCover(isPresented: $state.showTracks, onDismiss: { state.reclaimFocus?() }) {
-            TrackPickerView(state: state, engine: upNext, canSwitchStreams: onPlayNext != nil)
-        }
         .fullScreenCover(
             isPresented: Binding(
                 get: { state.isEnded && upNext.phase == .hidden },
@@ -1412,6 +1452,9 @@ struct MPVPlayerScreen: View {
         }
         .onAppear {
             if let routingNote { state.routingNote = routingNote }
+            if panelAdapter == nil {
+                panelAdapter = MPVPlayerPanelAdapter(state: state, model: panelModel, context: context)
+            }
             // Start the orchestration whenever a presenter can swap contexts — autoplay needs
             // episodes, but source switching works for movies too (the engine no-ops the rest).
             if onPlayNext != nil {
@@ -1476,7 +1519,7 @@ private struct PlayerControlsOverlay: View {
                     .font(.callout).monospacedDigit()
             }
 
-            Label("Swipe up for audio, subtitles & playback settings", systemImage: "chevron.up")
+            Label("Swipe down for info", systemImage: "chevron.down")
                 .font(.caption).foregroundStyle(.white.opacity(0.7))
         }
         .foregroundStyle(.white)
@@ -1645,391 +1688,3 @@ private struct StreamInfoOverlayView: View {
     }
 }
 
-/// Playback-settings panel presented over the player: audio/subtitle tracks, playback speed,
-/// subtitle & audio delay, episode jump, source switching, and the stream-info toggle. A normal
-/// SwiftUI focus context so its buttons receive focus (unlike an overlay sibling to the UIKit player).
-private struct TrackPickerView: View {
-    @ObservedObject var state: MPVPlaybackState
-    @ObservedObject var engine: NextEpisodeEngine
-    /// True when the presenter can swap playback contexts (episode jump / source switching).
-    let canSwitchStreams: Bool
-    @Environment(\.dismiss) private var dismiss
-
-    private static let speeds: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-
-    var body: some View {
-        NavigationStack {
-            menuList
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Thick material instead of flat black (HIG revamp): the paused frame reads
-                // through the blur, like the native player's swipe-down panel.
-                .background(Theme.Surface.panel, ignoresSafeAreaEdges: .all)
-        }
-    }
-
-    // MARK: - Level 1: compact category menu (drill into each for its options)
-
-    private var menuList: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Playback Settings")
-                    .font(.largeTitle).bold().foregroundStyle(.white)
-                    .padding(.bottom, 16)
-
-                if !state.audioTracks.isEmpty {
-                    menuLink(title: String(localized: "Audio"), value: currentAudioLabel) {
-                        destination { audioDestination }
-                    }
-                }
-                if !state.subtitleTracks.isEmpty {
-                    menuLink(title: String(localized: "Subtitles"), value: currentSubtitleLabel) {
-                        destination { subtitleDestination }
-                    }
-                } else {
-                    // No tracks (yet): keep the row visible with the addon-fetch status so an
-                    // empty selector reads as "searching/none found", not as a missing feature.
-                    HStack(spacing: 16) {
-                        Text("Subtitles").foregroundStyle(.white.opacity(0.5))
-                        Spacer(minLength: 0)
-                        Text(state.subtitleSearchInFlight ? String(localized: "Searching addon subtitles…") : String(localized: "None found"))
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
-                    .font(.body)
-                    .padding(.vertical, 10)
-                }
-                menuLink(title: String(localized: "Playback Speed"), value: currentSpeedLabel) {
-                    destination { speedSection }
-                }
-                menuLink(title: String(localized: "Timing"), value: currentTimingLabel) {
-                    destination { timingSection }
-                }
-                if canSwitchStreams, !engine.episodes.isEmpty {
-                    menuLink(title: String(localized: "Episodes"), value: currentEpisodeLabel) {
-                        destination { episodesSection }
-                    }
-                }
-                if canSwitchStreams {
-                    menuLink(title: String(localized: "Sources"), value: "") {
-                        destination { sourcesSection }
-                    }
-                }
-                menuLink(title: String(localized: "Diagnostics"), value: state.showStreamInfo ? String(localized: "On") : String(localized: "Off")) {
-                    destination { diagnosticsSection }
-                }
-            }
-            .padding(60)
-            .frame(maxWidth: 1000, alignment: .leading)
-        }
-    }
-
-    /// A focusable level-1 row: title + current value + chevron, pushing the category's options.
-    private func menuLink<D: View>(
-        title: String,
-        value: String,
-        @ViewBuilder destination: () -> D
-    ) -> some View {
-        NavigationLink {
-            destination()
-        } label: {
-            HStack(spacing: 16) {
-                Text(title).foregroundStyle(.white)
-                Spacer(minLength: 0)
-                if !value.isEmpty {
-                    Text(value)
-                        .foregroundStyle(.white.opacity(0.6))
-                        .lineLimit(1)
-                }
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-            .font(.title3)
-            .padding(.vertical, 14)
-            .padding(.horizontal, 24)
-            .frame(maxWidth: 900, alignment: .leading)
-        }
-        .buttonStyle(.card)
-    }
-
-    /// Wraps a category's options view in the same scroll/pad/background as the menu, so each
-    /// drilled-in screen looks consistent.
-    private func destination<C: View>(@ViewBuilder content: () -> C) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                content()
-            }
-            .padding(60)
-            .frame(maxWidth: 1000, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.Surface.panel, ignoresSafeAreaEdges: .all)
-    }
-
-    // MARK: - Track destinations + current-value summaries
-
-    private var audioDestination: some View {
-        section(title: String(localized: "Audio"), tracks: state.audioTracks) { id in
-            state.selectAudio?(id)
-            dismiss()
-        }
-    }
-
-    private var subtitleDestination: some View {
-        section(title: String(localized: "Subtitles"), tracks: state.subtitleTracks) { id in
-            state.selectSubtitle?(id)
-            dismiss()
-        }
-    }
-
-    private var currentAudioLabel: String {
-        state.audioTracks.first(where: { $0.isSelected })?.label ?? "\u{2014}"
-    }
-
-    private var currentSubtitleLabel: String {
-        state.subtitleTracks.first(where: { $0.isSelected })?.label ?? String(localized: "Off")
-    }
-
-    private var currentSpeedLabel: String {
-        String(format: "%g\u{00D7}", state.playbackSpeed)
-    }
-
-    private var currentTimingLabel: String {
-        func fmt(_ v: Double) -> String { v == 0 ? "0s" : String(format: "%+.2gs", v) }
-        return String(localized: "Sub \(fmt(state.subtitleDelaySec)) \u{00B7} Audio \(fmt(state.audioDelaySec))")
-    }
-
-    private var currentEpisodeLabel: String {
-        if let ep = sortedEpisodes.first(where: { isCurrentEpisode($0) }) {
-            return episodeChipLabel(ep)
-        }
-        return ""
-    }
-
-    // MARK: - Episodes (jump to any aired episode)
-
-    private var episodesSection: some View {
-        let watchedKeys = watchedEpisodeKeys
-        return VStack(alignment: .leading, spacing: 16) {
-            Text("Episodes").font(.title2).bold().foregroundStyle(.white)
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 12) {
-                    ForEach(Array(sortedEpisodes.enumerated()), id: \.offset) { _, episode in
-                        let isCurrent = isCurrentEpisode(episode)
-                        Button {
-                            guard !isCurrent else { return }
-                            engine.jumpToEpisode(episode)
-                            dismiss()
-                        } label: {
-                            HStack(spacing: 8) {
-                                if isCurrent {
-                                    Image(systemName: "play.fill")
-                                } else if let s = episode.season?.value, let e = episode.episode?.value,
-                                          watchedKeys.contains("\(s):\(e)") {
-                                    Image(systemName: "checkmark")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(Color(red: 0.22, green: 0.78, blue: 0.36))
-                                }
-                                Text(episodeChipLabel(episode))
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            Text("Jumping finds a stream automatically and switches playback.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
-        }
-    }
-
-    /// "season:episode" keys for episodes to mark watched in the jump list — explicit Watched
-    /// marks OR effectively-completed progress (same rule as the Detail screen's badges).
-    private var watchedEpisodeKeys: Set<String> {
-        WatchedRepository.shared.ensureLoaded()
-        WatchProgressRepository.shared.ensureLoaded()
-        var keys: Set<String> = []
-        for episode in sortedEpisodes {
-            guard let s = episode.season?.value, let e = episode.episode?.value else { continue }
-            let season = KotlinInt(int: Int32(s))
-            let number = KotlinInt(int: Int32(e))
-            let marked = WatchedRepository.shared.isWatched(
-                id: engine.parentMetaId, type: engine.contentType, season: season, episode: number
-            )
-            let completed = WatchProgressRepository.shared.progressForVideo(
-                videoId: "\(engine.parentMetaId):\(s):\(e)",
-                parentMetaId: engine.parentMetaId,
-                seasonNumber: season,
-                episodeNumber: number
-            )?.isEffectivelyCompleted == true
-            if marked || completed { keys.insert("\(s):\(e)") }
-        }
-        return keys
-    }
-
-    private var sortedEpisodes: [MetaVideo] {
-        engine.episodes
-            .compactMap { video -> (MetaVideo, Int, Int)? in
-                guard let s = video.season?.value, let e = video.episode?.value else { return nil }
-                return (video, s, e)
-            }
-            .sorted { a, b in a.1 == b.1 ? a.2 < b.2 : a.1 < b.1 }
-            .map { $0.0 }
-    }
-
-    private func isCurrentEpisode(_ episode: MetaVideo) -> Bool {
-        guard let s = episode.season?.value, let e = episode.episode?.value else { return false }
-        return s == engine.currentSeason && e == engine.currentEpisode
-    }
-
-    private func episodeChipLabel(_ episode: MetaVideo) -> String {
-        if let s = episode.season?.value, let e = episode.episode?.value {
-            return "S\(s)E\(e)"
-        }
-        return episode.title
-    }
-
-    // MARK: - Sources (switch the current video's stream)
-
-    private var sourcesSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 16) {
-                Text("Sources").font(.title2).bold().foregroundStyle(.white)
-                if engine.sourcesLoading { ProgressView() }
-            }
-            if engine.sources.isEmpty && !engine.sourcesLoading {
-                Text("No alternate sources found yet.")
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.7))
-            }
-            ForEach(Array(engine.sources.prefix(12).enumerated()), id: \.offset) { _, stream in
-                sourceRow(stream)
-            }
-            Text("Switching resumes from your last saved position.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
-        }
-        .onAppear { engine.loadSources() }
-    }
-
-    private func sourceRow(_ stream: StreamItem) -> some View {
-        let urlString: String? = stream.playableDirectUrl
-        let isCurrent = urlString == engine.currentUrlString
-        return Button {
-            guard !isCurrent else { return }
-            if engine.playSource(stream) { dismiss() }
-        } label: {
-            HStack(spacing: 16) {
-                Image(systemName: isCurrent ? "play.circle.fill" : "arrow.triangle.2.circlepath")
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(stream.streamLabel).lineLimit(1)
-                    Text(stream.addonName)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.6))
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if isCurrent {
-                    Text("Playing")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.7))
-                }
-            }
-            .padding(.vertical, 8)
-            .frame(maxWidth: 900, alignment: .leading)
-        }
-        .buttonStyle(.bordered)
-    }
-
-    private func section(title: String, tracks: [PlayerTrack], onSelect: @escaping (Int) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.title2).bold().foregroundStyle(.white)
-            ForEach(tracks) { track in
-                Button { onSelect(track.id) } label: {
-                    HStack(spacing: 16) {
-                        Image(systemName: track.isSelected ? "checkmark.circle.fill" : "circle")
-                        Text(track.label).lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: 900, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-    }
-
-    private var speedSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Playback Speed").font(.title2).bold().foregroundStyle(.white)
-            HStack(spacing: 12) {
-                ForEach(Self.speeds, id: \.self) { speed in
-                    Button { state.setSpeed?(speed) } label: {
-                        HStack(spacing: 8) {
-                            if state.playbackSpeed == speed {
-                                Image(systemName: "checkmark.circle.fill")
-                            }
-                            Text(String(format: "%g\u{00D7}", speed))
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-        }
-    }
-
-    private var timingSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Timing").font(.title2).bold().foregroundStyle(.white)
-            delayRow(title: String(localized: "Subtitle Delay"), value: state.subtitleDelaySec, step: 0.5, limit: 30) {
-                state.setSubtitleDelay?($0)
-            }
-            delayRow(title: String(localized: "Audio Delay"), value: state.audioDelaySec, step: 0.25, limit: 10) {
-                state.setAudioDelay?($0)
-            }
-            Text("Positive values delay the track; negative values play it earlier.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
-        }
-    }
-
-    private func delayRow(
-        title: String, value: Double, step: Double, limit: Double,
-        apply: @escaping (Double) -> Void
-    ) -> some View {
-        HStack(spacing: 16) {
-            Text(title)
-                .foregroundStyle(.white)
-                .frame(width: 320, alignment: .leading)
-            Button { apply(max(-limit, value - step)) } label: { Image(systemName: "minus") }
-            Text(value == 0 ? "0.00 s" : String(format: "%+.2f s", value))
-                .foregroundStyle(.white)
-                .monospacedDigit()
-                .frame(width: 180)
-            Button { apply(min(limit, value + step)) } label: { Image(systemName: "plus") }
-            if value != 0 {
-                Button("Reset") { apply(0) }
-            }
-        }
-        .buttonStyle(.bordered)
-        .font(.title3)
-    }
-
-    private var diagnosticsSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Diagnostics").font(.title2).bold().foregroundStyle(.white)
-            Button {
-                state.showStreamInfo.toggle()
-                dismiss()
-            } label: {
-                HStack(spacing: 16) {
-                    Image(systemName: state.showStreamInfo ? "checkmark.circle.fill" : "info.circle")
-                    Text(state.showStreamInfo ? String(localized: "Hide Stream Info") : String(localized: "Show Stream Info"))
-                    Spacer(minLength: 0)
-                }
-                .padding(.vertical, 8)
-                .frame(maxWidth: 900, alignment: .leading)
-            }
-            .buttonStyle(.bordered)
-        }
-    }
-}
