@@ -72,16 +72,18 @@ nonisolated enum RemuxSmokeTest {
     }
 
     /// debug.remuxSmokeAudioSwitchSec=N (float): N seconds after playback is up (re-armed while
-    /// still preparing), log the audio-track list and switch to the first non-selected playable
-    /// track (D4 session rebuild), then re-observe — the log shows teardown, the rebuilt session
-    /// muxing the new stream index, and the position resume.
+    /// still preparing), log the audible media-selection options and switch to the first alternate
+    /// (info-panel W3: an AVPlayer rendition switch — the remux flips its produced track when the
+    /// new rendition's files are requested; no item rebuild). Logs whether the selection stuck,
+    /// position continuity, and the remux's active track.
     @MainActor
     private static func scheduleAudioSwitchIfRequested(_ coordinator: NativePlaybackCoordinator, retries: Int = 40) {
         let delay = UserDefaults.standard.double(forKey: "debug.remuxSmokeAudioSwitchSec")
         guard delay > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak coordinator] in
             guard let coordinator else { return }
-            guard coordinator.phase == .playing, coordinator.lastPositionSec > 0.5 else {
+            guard coordinator.phase == .playing, coordinator.lastPositionSec > 0.5,
+                  let player = coordinator.player, let item = player.currentItem else {
                 if retries > 0 {          // still preparing/buffering — try again shortly
                     scheduleAudioSwitchIfRequested(coordinator, retries: retries - 1)
                 } else {
@@ -93,14 +95,23 @@ nonisolated enum RemuxSmokeTest {
             print("[RemuxSmoke] audio tracks: " + (tracks.isEmpty ? "none" : tracks.map {
                 "#\($0.streamIndex)\($0.selected ? "*" : "")=\($0.name)\($0.playable ? "" : " (unplayable)")"
             }.joined(separator: " | ")))
-            guard let target = tracks.first(where: { !$0.selected && $0.playable }) else {
-                print("[RemuxSmoke] no alternate playable audio track — switch not exercised")
-                return
+            Task { @MainActor in
+                guard let group = try? await item.asset.loadMediaSelectionGroup(for: .audible), group.options.count > 1 else {
+                    print("[RemuxSmoke] no alternate audible option — switch not exercised")
+                    return
+                }
+                let current = item.currentMediaSelection.selectedMediaOption(in: group)
+                guard let alt = group.options.first(where: { $0 != current }) else { return }
+                let before = CMTimeGetSeconds(player.currentTime())
+                print("[RemuxSmoke] SWITCHING AUDIO → \(alt.displayName) at pos \(String(format: "%.1f", before))s")
+                item.select(alt, in: group)
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                let after = CMTimeGetSeconds(player.currentTime())
+                let stuck = item.currentMediaSelection.selectedMediaOption(in: group) == alt
+                let active = coordinator.audioTracks.first(where: \.selected)
+                print("[RemuxSmoke] audio switch result: selected=\(stuck) pos \(String(format: "%.1f→%.1f", before, after))"
+                      + " rate=\(player.rate) status=\(item.status.rawValue) remuxActive=\(active.map { "#\($0.streamIndex) \($0.name)" } ?? "?")")
             }
-            let before = coordinator.lastPositionSec
-            print("[RemuxSmoke] SWITCHING AUDIO → #\(target.streamIndex) (\(target.name)) at pos \(String(format: "%.1f", before))s")
-            coordinator.selectAudioTrack(streamIndex: target.streamIndex)
-            observe(coordinator, attempt: 0)
         }
     }
 

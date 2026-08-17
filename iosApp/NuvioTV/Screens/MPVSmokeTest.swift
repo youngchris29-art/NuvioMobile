@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 #if DEBUG
@@ -17,10 +18,19 @@ import SwiftUI
 struct MPVSmokeModifier: ViewModifier {
     @State private var context: PlaybackContext?
     @State private var armed = false
+    /// `debug.avplayerUIURL`: present a bare AVPlayerViewController on an arbitrary URL (e.g. Apple's
+    /// reference HLS stream) — a control for what the SIMULATOR's system panel shows (Subtitles /
+    /// Audio tabs) independent of our synthesized master.
+    @State private var bareURL: URL?
 
     func body(content: Content) -> some View {
         content
             .onAppear {
+                if !armed, let raw = UserDefaults.standard.string(forKey: "debug.avplayerUIURL"), let url = URL(string: raw) {
+                    armed = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { bareURL = url }
+                    return
+                }
                 guard !armed,
                       let raw = UserDefaults.standard.string(forKey: "debug.mpvSmokeURL"),
                       let url = URL(string: raw) else { return }
@@ -44,6 +54,22 @@ struct MPVSmokeModifier: ViewModifier {
                 PlayerScreen(context: ctx, onPlayNext: { _ in })
                     .ignoresSafeArea()
             }
+            .fullScreenCover(item: $bareURL) { url in
+                BareAVPlayerView(url: url).ignoresSafeArea()
+            }
     }
+}
+
+extension URL: @retroactive Identifiable { public var id: String { absoluteString } }
+
+private struct BareAVPlayerView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let vc = AVPlayerViewController()
+        vc.player = AVPlayer(url: url)
+        vc.player?.play()
+        return vc
+    }
+    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {}
 }
 #endif

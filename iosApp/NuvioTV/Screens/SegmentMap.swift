@@ -16,6 +16,22 @@ import Foundation
 //
 // Pure Swift, no libav* types — unit-testable with canned keyframe arrays (the highest-value test
 // surface: an off-by-one here is an unrecoverable mid-movie stall on device).
+/// One audio rendition of the master's `aud` group (info-panel W3): a playable source audio track,
+/// served as its own audio-only fMP4 representation (`aud-<streamIndex>.m3u8`), produced by the remux
+/// worker only while it is the active track.
+nonisolated struct AudioRendition: Sendable {
+    let streamIndex: Int
+    let name: String
+    let language: String?
+    let channels: Int
+    let codecToken: String?      // RFC 6381, for the variant's CODECS union
+    let isDefault: Bool          // the track production starts with (DEFAULT=YES)
+
+    var playlistName: String { "aud-\(streamIndex).m3u8" }
+    var initName: String { "aud-\(streamIndex)-init.mp4" }
+    var segmentPrefix: String { "aud-\(streamIndex)-" }
+}
+
 nonisolated struct SegmentMap: Sendable {
     struct Segment: Sendable, Equatable {
         let number: Int          // 1-based; the media file is `seg-{number:05d}.m4s`
@@ -139,16 +155,18 @@ nonisolated struct SegmentMap: Sendable {
     /// (for DV) SUPPLEMENTAL-CODECS so Dolby Vision engages. Muxed A/V, so CODECS lists video + audio;
     /// the only audio EXT-X-MEDIA entry is a URI-less label for the muxed track (name/language).
     func masterPlaylist(signaling: VideoSignaling,
-                        audioCodec: String?,
-                        audioName: String? = nil,
-                        audioLanguage: String? = nil,
+                        audioRenditions: [AudioRendition] = [],
                         bandwidth: Int,
                         mediaName: String = "media.m3u8",
                         subtitles: [SubtitleRendition] = [],
                         subtitleFlags: [SubtitleRenditionFlags] = []) -> String {
+        // CODECS lists every codec the variant can carry — video plus the union of the audio
+        // renditions' tokens (mixed groups, e.g. "hvc1…,ec-3,mp4a.40.2", are the standard form).
         var codecTokens: [String] = []
         if !signaling.codecs.isEmpty { codecTokens.append(signaling.codecs) }
-        if let audioCodec, !audioCodec.isEmpty { codecTokens.append(audioCodec) }
+        for token in audioRenditions.compactMap(\.codecToken) where !token.isEmpty && !codecTokens.contains(token) {
+            codecTokens.append(token)
+        }
         var streamInf = "#EXT-X-STREAM-INF:BANDWIDTH=\(max(bandwidth, 1))"
         if signaling.width > 0, signaling.height > 0 {
             streamInf += ",RESOLUTION=\(signaling.width)x\(signaling.height)"
@@ -168,15 +186,19 @@ nonisolated struct SegmentMap: Sendable {
         }
 
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
-        // Label the muxed audio (URI-less EXT-X-MEDIA = "this rendition lives inside the variant"),
-        // so the system audio panel shows the track's language/name instead of "unknown".
-        if let audioName, !audioName.isEmpty {
-            var media = "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"\(audioName.replacingOccurrences(of: "\"", with: ""))\""
-            media += ",DEFAULT=YES,AUTOSELECT=YES"
-            if let audioLanguage, !audioLanguage.isEmpty { media += ",LANGUAGE=\"\(audioLanguage)\"" }
+        // Demuxed audio (info-panel W3): the variant is video-only; every playable source track is
+        // its own AUDIO rendition with a URI, so the system Audio tab lists them all and switching is
+        // AVPlayer's own seamless rendition change. Only the active track's segments exist at any
+        // time — a request for another track's files makes the remux switch (LocalHLSServer).
+        for r in audioRenditions {
+            var media = "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"\(r.name.replacingOccurrences(of: "\"", with: ""))\""
+            media += ",DEFAULT=\(r.isDefault ? "YES" : "NO"),AUTOSELECT=YES"
+            if let language = r.language, !language.isEmpty { media += ",LANGUAGE=\"\(language)\"" }
+            if r.channels > 0 { media += ",CHANNELS=\"\(r.channels)\"" }
+            media += ",URI=\"\(r.playlistName)\""
             lines.append(media)
-            streamInf += ",AUDIO=\"aud\""
         }
+        if !audioRenditions.isEmpty { streamInf += ",AUDIO=\"aud\"" }
         // External-subtitle renditions (D5): WebVTT sidecars served by LocalHLSServer. AUTOSELECT /
         // DEFAULT follow the coordinator's language plan (Preferred Subtitle Language: "none" ⇒ no
         // rendition is auto-selectable, so captions never switch on by themselves; a preferred

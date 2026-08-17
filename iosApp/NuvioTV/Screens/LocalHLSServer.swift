@@ -45,10 +45,18 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// Master-playlist signaling; mutable so the coordinator can retry with reduced signaling when a
     /// strict AVPlayer rejects the full DV form at the master stage.
     private var _signaling: VideoSignaling
-    private let audioCodec: String?
-    /// Display label for the muxed audio rendition (URI-less EXT-X-MEDIA in the master).
-    private let audioName: String?
-    private let audioLanguage: String?
+    /// Audio renditions of the master's `aud` group (info-panel W3): every playable source track,
+    /// each an audio-only representation produced only while it is the remux's active track.
+    private let audioRenditions: [AudioRendition]
+    /// The track whose files the remux is producing right now (its stream index).
+    private let activeAudio: @Sendable () -> Int
+    /// The track AVPlayer's audible media selection currently names (nil = unknown). Only requests
+    /// for THIS track may switch the worker — a lingering request for the previous rendition, or
+    /// alternate probing, must not flip production back and forth.
+    private let selectedAudio: @Sendable () -> Int?
+    /// Ask the remux to produce another track's rendition, restarting at the given segment (nil =
+    /// where it is). Fired once by the first request for a non-active track's file.
+    private let requestAudioTrack: @Sendable (Int, Int?) -> Void
     private let bandwidth: Int
     /// External-subtitle renditions (D5): each is an EXT-X-MEDIA SUBTITLES entry; the VTT payloads
     /// download + convert just-in-time on first request and are cached here for the session.
@@ -83,8 +91,12 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
 
     var port: UInt16? { lock.lock(); defer { lock.unlock() }; return _port }
 
-    init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling, audioCodec: String?,
-         audioName: String? = nil, audioLanguage: String? = nil, bandwidth: Int,
+    init(rootDir: URL, map: SegmentMap, signaling: VideoSignaling,
+         audioRenditions: [AudioRendition] = [],
+         activeAudio: @escaping @Sendable () -> Int = { -1 },
+         selectedAudio: @escaping @Sendable () -> Int? = { nil },
+         requestAudioTrack: @escaping @Sendable (Int, Int?) -> Void = { _, _ in },
+         bandwidth: Int,
          subtitles: [SubtitleRendition] = [],
          subtitleFlags: [SubtitleRenditionFlags] = [],
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
@@ -92,9 +104,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.rootDir = rootDir
         self.map = map
         self._signaling = signaling
-        self.audioCodec = audioCodec
-        self.audioName = audioName
-        self.audioLanguage = audioLanguage
+        self.audioRenditions = audioRenditions
+        self.activeAudio = activeAudio
+        self.selectedAudio = selectedAudio
+        self.requestAudioTrack = requestAudioTrack
         self.bandwidth = bandwidth
         self.subtitles = subtitles
         self.subtitleFlags = subtitleFlags
@@ -116,13 +129,17 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         switch name {
         case masterName:
             lock.lock(); let signaling = _signaling; lock.unlock()
-            return map.masterPlaylist(signaling: signaling, audioCodec: audioCodec,
-                                      audioName: audioName, audioLanguage: audioLanguage,
+            return map.masterPlaylist(signaling: signaling, audioRenditions: audioRenditions,
                                       bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles,
                                       subtitleFlags: subtitleFlags)
         case mediaName:
             return map.mediaPlaylist()
         default:
+            // aud-T.m3u8 — an audio rendition: same segment grid as the video playlist, its own
+            // init map and segment names.
+            if let audio = audioRenditions.first(where: { $0.playlistName == name }) {
+                return map.mediaPlaylist(initName: audio.initName, segmentPrefix: audio.segmentPrefix)
+            }
             guard let rendition = subtitles.first(where: { $0.playlistName == name }) else { return nil }
             // esub-K.m3u8 — embedded track: one WebVTT file per video segment (same boundaries and
             // EXTINFs as media.m3u8, no init map), produced by the remux worker as it goes.
@@ -311,8 +328,21 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             return
         }
 
-        // init.mp4 / seg-NNNNN.m4s / esub-K-NNNNN.vtt — produced just-in-time by the remux; block
-        // until present.
+        // init.mp4 / seg-NNNNN.m4s / esub-K-NNNNN.vtt / aud-T-init.mp4 / aud-T-NNNNN.m4s — produced
+        // just-in-time by the remux; block until present. A file of a NON-active audio track makes
+        // the remux switch tracks (info-panel W3) — AVPlayer only requests a rendition's files once
+        // the viewer picked it, so the request IS the switch signal (W0 spike).
+        // Only the SELECTED track (AVPlayer's audible media selection, relayed by the coordinator)
+        // may switch production; a stale request for another rendition just waits out the JIT
+        // window (and 503s), so overlapping old/new requests can't ping-pong the worker.
+        if let audio = RemuxAudioTrack.parseFileName(name), audio.track != activeAudio(),
+           selectedAudio() == audio.track,
+           !FileManager.default.fileExists(atPath: rootDir.appendingPathComponent(name).path) {
+            requestAudioTrack(audio.track, audio.segment)
+            serveSegmentJIT(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection,
+                            deadline: Date().addingTimeInterval(blockTimeout), mode: .repositioned, live: live)
+            return
+        }
         serveSegmentJIT(name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection,
                         deadline: Date().addingTimeInterval(blockTimeout), mode: nil, live: live)
     }
@@ -438,10 +468,11 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         }
     }
 
-    /// Parse the 1-based segment index from `seg-NNNNN.m4s` or `esub-K-NNNNN.vtt`, or nil for
-    /// `init.mp4` / anything else.
+    /// Parse the 1-based segment index from `seg-NNNNN.m4s`, `esub-K-NNNNN.vtt` or `aud-T-NNNNN.m4s`,
+    /// or nil for init segments / anything else.
     static func segmentIndex(_ name: String) -> Int? {
         if let embedded = SubtitleRendition.parseEmbeddedSegmentName(name) { return embedded.segment }
+        if let audio = RemuxAudioTrack.parseFileName(name) { return audio.segment }
         guard name.hasPrefix("seg-"), name.hasSuffix(".m4s") else { return nil }
         return Int(name.dropFirst(4).dropLast(4))
     }

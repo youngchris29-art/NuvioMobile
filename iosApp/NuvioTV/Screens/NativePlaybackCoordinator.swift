@@ -20,6 +20,16 @@ struct NativeAudioTrack: Identifiable, Equatable {
     var id: Int { streamIndex }
 }
 
+/// Lock-guarded holder for the selected audio stream index (main-thread writes, server-queue reads).
+nonisolated final class SelectedAudioBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Int?
+    var value: Int? {
+        get { lock.lock(); defer { lock.unlock() }; return _value }
+        set { lock.lock(); _value = newValue; lock.unlock() }
+    }
+}
+
 @MainActor
 final class NativePlaybackCoordinator: ObservableObject {
     enum Phase: Equatable {
@@ -29,10 +39,11 @@ final class NativePlaybackCoordinator: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .preparing
-    /// Source audio tracks for the player's Audio menu (D4) — populated once the remux inspects the
-    /// streams, emptied during an audio-switch rebuild.
+    /// Source audio tracks (Info tab rows) — populated once the remux inspects the streams; the
+    /// `selected` flag follows the track the remux is producing (the system Audio tab drives
+    /// switching — info-panel W3 — through the master's audio renditions).
     @Published private(set) var audioTracks: [NativeAudioTrack] = []
-    /// Caption under the preparing spinner — first spin-up vs an audio-switch rebuild.
+    /// Caption under the preparing spinner.
     @Published private(set) var preparingLabel = String(localized: "Preparing Dolby Vision\u{2026}")
     private(set) var player: AVPlayer?
 
@@ -55,14 +66,6 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// 0 = full signaling (RFC 6381 + DV supplemental + range); 1 = minimal (bare sample-entry tag).
     /// A strict AVPlayer that rejects the full form at the master stage gets one retry at minimal.
     private var signalingAttempt = 0
-    /// Resume target for the next readyToPlay — set by an audio-switch rebuild so playback continues
-    /// where it was; takes precedence over the saved watch progress.
-    private var pendingResumeSec: Double?
-    /// Subtitle selection carried across an audio-switch rebuild (media selection dies with the item).
-    private var pendingSubtitleName: String?
-    /// The viewer had subtitles OFF when the rebuild started — re-assert Off after the new item's
-    /// legible group loads, otherwise the language criteria would auto-enable them again.
-    private var pendingSubtitleOff = false
 
     /// Language preferences (Settings → Playback → Preferred Audio/Subtitle Language + the
     /// forced/only-preferred subtitle options), resolved through the shared KMP helpers so the
@@ -89,10 +92,20 @@ final class NativePlaybackCoordinator: ObservableObject {
     @Published private(set) var languagePlan = LanguagePlan()
     /// Shared player settings snapshot behind the plan (also drives the addon-subtitle startup mode).
     private var playerSettings: PlayerSettingsUiState?
-    /// The current item's legible selection group, cached async after readyToPlay so the switch
-    /// teardown can capture the active subtitle synchronously.
+    /// The current item's legible selection group, cached async after readyToPlay (Info tab row).
     private var legibleGroup: AVMediaSelectionGroup?
-    /// Trakt scrobble sessions span audio-switch rebuilds — start once, stop once.
+    /// The audio track (stream index) AVPlayer's audible media selection currently names — the
+    /// server honours rendition-file requests only for THIS track (info-panel W3), so an in-flight
+    /// request for the previous rendition can't switch the worker back. Written on the media-
+    /// selection notification, read from the server's connection queue.
+    private let selectedAudioBox = SelectedAudioBox()
+    private var mediaSelectionObserver: NSObjectProtocol?
+    /// The current item's audible selection group, cached once loaded so every playback tick can
+    /// read the selected option synchronously (the notification alone proved unreliable in the sim).
+    private var audibleGroup: AVMediaSelectionGroup?
+    /// Master audio renditions of the current session (option display name → stream index).
+    private var audioRenditionsByName: [String: Int] = [:]
+    /// Trakt scrobble session — start once, stop once.
     private var traktStarted = false
     /// Subtitles fetched from installed subtitle addons (OpenSubtitles etc.) — the same source the
     /// mpv player side-loads. Fetched at start(); playback start is gated (briefly, capped) on the
@@ -146,7 +159,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
         }
         SubtitleRepository.shared.fetchAddonSubtitles(type: context.contentType, videoId: context.videoId)
-        launchRemux(audioStreamIndex: nil)
+        launchRemux()
     }
 
     /// Resolve the language plan from the shared player settings (same helpers + semantics as the
@@ -203,6 +216,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// AUTOSELECT=NO flags (see `subtitleAutoselect`).
     private func applyLanguagePlan(to player: AVPlayer) {
         let plan = languagePlan
+        // Applied once per item, at setup: re-applying after a MANUAL audio/subtitle pick would let
+        // AVPlayer snap back to the preferences.
         if !plan.audioTargets.isEmpty {
             player.setMediaSelectionCriteria(
                 AVPlayerMediaSelectionCriteria(preferredLanguages: plan.audioTargets, preferredMediaCharacteristics: nil),
@@ -280,15 +295,15 @@ final class NativePlaybackCoordinator: ObservableObject {
         return nil
     }
 
-    /// Spin up a remux session and the first-segment poll — the shared tail of `start()` and an
-    /// audio-switch rebuild.
-    private func launchRemux(audioStreamIndex: Int?) {
-        // Initial session: let the worker pick the first playable track in a preferred language
-        // (Settings → Playback → Preferred Audio Language) — the muxed stream carries exactly one
-        // audio rendition, so AVPlayer's own audible criteria can't fix a wrong first pick.
+    /// Spin up the remux session and the first-segment poll.
+    private func launchRemux() {
+        // Initial track: let the worker start on the first playable track in a preferred language
+        // (Settings → Playback → Preferred Audio Language). Only the active track's rendition is
+        // produced, so starting on the right one avoids an immediate switch (the master marks it
+        // DEFAULT and the audible criteria agree).
         let audioTargets = languagePlan.audioTargets
-        var config = RemuxSession.Config(url: context.url, segmentDurationSec: 6, audioStreamIndex: audioStreamIndex)
-        if audioStreamIndex == nil, !audioTargets.isEmpty {
+        var config = RemuxSession.Config(url: context.url, segmentDurationSec: 6)
+        if !audioTargets.isEmpty {
             config.preferredAudioPicker = { tracks in Self.preferredAudioStream(in: tracks, targets: audioTargets) }
         }
         let remux = RemuxSession(config: config)
@@ -300,51 +315,10 @@ final class NativePlaybackCoordinator: ObservableObject {
         pollForFirstSegment(remux: remux)
     }
 
-    // MARK: - Audio track switching (D4)
-
-    /// Switch the muxed audio track: tear the player/server/remux pipeline down and rebuild it on the
-    /// requested stream index, resuming at the current position (plan decision D4 — one audio track
-    /// per session; muxing every track as parallel renditions would cost N segment pipelines for no
-    /// gain). The subtitle selection is carried over; watch progress, the Trakt session, and the
-    /// fetched addon-subtitle list survive. A rebuild failure lands in the normal pre-playback
-    /// failure path → mpv at the same position.
-    func selectAudioTrack(streamIndex: Int) {
-        guard phase == .playing, let current = remux else { return }
-        guard let track = audioTracks.first(where: { $0.streamIndex == streamIndex }),
-              track.playable, !track.selected else { return }
-        print("[NativePlayer] audio switch → stream \(streamIndex) (\(track.name)) at \(String(format: "%.1f", lastPositionSec))s")
-        pendingResumeSec = lastPositionSec > 1 ? lastPositionSec : nil
-        if let item = playerItem, let group = legibleGroup {
-            pendingSubtitleName = item.currentMediaSelection.selectedMediaOption(in: group)?.displayName
-            pendingSubtitleOff = pendingSubtitleName == nil
-        }
-
-        observeTask?.cancel(); observeTask = nil
-        pollTask?.cancel(); pollTask = nil
-        player?.pause()
-        server?.stop(); server = nil
-        current.stop()
-        if UserDefaults.standard.bool(forKey: "debug.keepRemuxOutput") {
-            print("[NativePlayer] kept remux output at \(current.outputDir.path)")
-        } else {
-            current.scheduleCleanup()
-        }
-        remux = nil
-        player = nil
-        playerItem = nil
-        servedURL = nil
-        legibleGroup = nil
-        // signalingAttempt intentionally survives: if this device already proved it needs the
-        // reduced (no SUPPLEMENTAL-CODECS) master form, the rebuilt server starts there directly.
-        audioTracks = []
-        preparingLabel = String(localized: "Switching Audio\u{2026}")
-        phase = .preparing
-        launchRemux(audioStreamIndex: streamIndex)
-    }
-
     func stop() {
         pollTask?.cancel(); pollTask = nil
         observeTask?.cancel(); observeTask = nil
+        if let o = mediaSelectionObserver { NotificationCenter.default.removeObserver(o); mediaSelectionObserver = nil }
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
         if lastDurationSec > 0 {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1, flush: true)
@@ -447,6 +421,20 @@ final class NativePlaybackCoordinator: ObservableObject {
         var signaling = remux.videoSignaling ?? VideoSignaling(codecs: "")
         if signalingAttempt > 0 { signaling.supplementalCodecs = nil }
         let selectedAudio = remux.audioTracks.first(where: \.selected)
+        // Audio renditions (info-panel W3): every playable track, the initially produced one DEFAULT.
+        var audioNames = Set<String>()
+        let audioRenditions = remux.audioTracks.filter(\.playable).map { track -> AudioRendition in
+            // NAME must be unique within the group (two untitled tracks with the same language,
+            // codec and layout otherwise collide) — suffix duplicates.
+            let base = Self.audioTrackDisplayName(track)
+            var name = base, n = 2
+            while !audioNames.insert(name).inserted { name = "\(base) \(n)"; n += 1 }
+            return AudioRendition(streamIndex: track.streamIndex, name: name,
+                                  language: track.language, channels: track.channels,
+                                  codecToken: track.codecToken, isDefault: track.selected)
+        }
+        audioRenditionsByName = Dictionary(uniqueKeysWithValues: audioRenditions.map { ($0.name, $0.streamIndex) })
+        selectedAudioBox.value = selectedAudio?.streamIndex
         // The forced-only decision needs the audio the viewer will hear (shared plan semantics).
         resolveLanguagePlan(selectedAudioLanguage: selectedAudio.flatMap { track in
             PlayerTrackSelectionKt.resolveAudioTrackLanguageTarget(track: AudioTrack(
@@ -456,9 +444,10 @@ final class NativePlaybackCoordinator: ObservableObject {
         })
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: signaling,
-                                    audioCodec: remux.audioCodecToken,
-                                    audioName: selectedAudio.map(Self.audioTrackDisplayName),
-                                    audioLanguage: selectedAudio?.language,
+                                    audioRenditions: audioRenditions,
+                                    activeAudio: { remux.activeAudioStream },
+                                    selectedAudio: { [box = selectedAudioBox] in box.value },
+                                    requestAudioTrack: { remux.selectAudio(streamIndex: $0, atSegment: $1) },
                                     bandwidth: remux.estimatedBandwidth,
                                     subtitles: subtitleRenditions,
                                     subtitleFlags: subtitleFlags(for: subtitleRenditions),
@@ -479,6 +468,8 @@ final class NativePlaybackCoordinator: ObservableObject {
             self.applyLanguagePlan(to: player)
             self.playerItem = item
             self.player = player
+            self.audibleGroup = nil
+            self.observeMediaSelection(item: item, player: player)
             self.phase = .playing
             self.observePlayback(player: player, item: item)
         }
@@ -520,7 +511,10 @@ final class NativePlaybackCoordinator: ObservableObject {
         let item = AVPlayerItem(url: retryURL)
         item.preferredForwardBufferDuration = 24
         playerItem = item
+        legibleGroup = nil
+        audibleGroup = nil            // per-item groups; the retry item gets its own observer too
         player.replaceCurrentItem(with: item)
+        observeMediaSelection(item: item, player: player)
         observePlayback(player: player, item: item)
     }
 
@@ -539,10 +533,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     readied = true
                     print("[NativePlayer] item readyToPlay")
                     let duration = CMTimeGetSeconds(item.duration)
-                    // An audio-switch rebuild resumes exactly where it left off; otherwise the saved
-                    // watch progress decides.
-                    let resume = self.pendingResumeSec ?? self.recorder.resumePositionSec()
-                    self.pendingResumeSec = nil
+                    let resume = self.recorder.resumePositionSec()
                     if let resume {
                         await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
                         self.lastPositionSec = resume
@@ -592,6 +583,9 @@ final class NativePlaybackCoordinator: ObservableObject {
                         self.lastPositionSec = pos
                         self.lastDurationSec = dur
                         self.recorder.record(positionSec: pos, durationSec: dur, isPaused: paused, speed: 1, flush: false)
+                        self.refreshActiveAudioTrack()
+                        if self.audibleGroup == nil { self.handleMediaSelectionChange(item: item, player: player) }
+                        else { self.syncAudioSelection(item: item, player: player) }
                         self.onTick?(pos, dur)
                     }
 
@@ -628,28 +622,70 @@ final class NativePlaybackCoordinator: ObservableObject {
         }
     }
 
-    /// Cache the item's legible media-selection group (so an audio-switch teardown can read the
-    /// active subtitle synchronously) and restore a subtitle choice carried over from the previous
-    /// item. Options are matched by display name — the rendition NAME we synthesized, unique enough
-    /// within one session's master.
+    /// Follow AVPlayer's audible selection (system Audio tab): remember the selected track for the
+    /// server (only its rendition-file requests may switch the worker) and kick the worker's switch
+    /// proactively. The subtitle selection is deliberately left alone — like the mpv screen (which
+    /// auto-selects once) and the old rebuild path (which restored the previous choice), an audio
+    /// switch must not override an explicit subtitle pick or Off.
+    private func observeMediaSelection(item: AVPlayerItem, player: AVPlayer) {
+        if let old = mediaSelectionObserver { NotificationCenter.default.removeObserver(old) }
+        mediaSelectionObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.mediaSelectionDidChangeNotification, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handleMediaSelectionChange(item: item, player: player) }
+        }
+    }
+
+    private func handleMediaSelectionChange(item: AVPlayerItem, player: AVPlayer) {
+        guard playerItem === item else { return }
+        if audibleGroup == nil {
+            Task { @MainActor [weak self] in
+                let group = (try? await item.asset.loadMediaSelectionGroup(for: .audible)) ?? nil
+                guard let self, self.playerItem === item, let group else { return }
+                self.audibleGroup = group
+                self.syncAudioSelection(item: item, player: player)
+            }
+        } else {
+            syncAudioSelection(item: item, player: player)
+        }
+    }
+
+    /// Compare AVPlayer's audible selection with what we last relayed; on a change, relay it to the
+    /// server/worker. Cheap — called on every tick and on the media-selection notification.
+    private func syncAudioSelection(item: AVPlayerItem, player: AVPlayer) {
+        guard let group = audibleGroup,
+              let option = item.currentMediaSelection.selectedMediaOption(in: group),
+              let stream = Self.renditionStream(for: option, byName: audioRenditionsByName,
+                                                tracks: remux?.audioTracks ?? []),
+              selectedAudioBox.value != stream else { return }
+        selectedAudioBox.value = stream
+        print("[NativePlayer] audio selection → stream \(stream) (\(option.displayName))")
+        remux?.selectAudio(streamIndex: stream, atSegment: nil)
+    }
+
+    /// Map an audible option back to our track. `displayName` is AVFoundation's LOCALIZED language
+    /// ("French"), not the rendition NAME — the NAME is the option's common-metadata title. Fall back
+    /// to the language tag when it identifies exactly one playable track.
+    private static func renditionStream(for option: AVMediaSelectionOption, byName: [String: Int],
+                                        tracks: [RemuxAudioTrack]) -> Int? {
+        let title = AVMetadataItem.metadataItems(from: option.commonMetadata,
+                                                 filteredByIdentifier: .commonIdentifierTitle).first?.stringValue
+        if let title, let stream = byName[title] { return stream }
+        if let stream = byName[option.displayName] { return stream }
+        if let tag = option.extendedLanguageTag {
+            let matches = tracks.filter { $0.playable && $0.language.map {
+                PlayerLanguagePreferencesKt.languageMatchesPreference(trackLanguage: $0, targetLanguage: tag) } == true }
+            if matches.count == 1 { return matches[0].streamIndex }
+        }
+        return nil
+    }
+
+    /// Cache the item's legible media-selection group (Info tab's "Subtitles" row).
     private func loadLegibleSelection(item: AVPlayerItem) {
         Task { @MainActor [weak self] in
             let group = (try? await item.asset.loadMediaSelectionGroup(for: .legible)) ?? nil
             guard let self, self.playerItem === item else { return }
             self.legibleGroup = group
-            if let want = self.pendingSubtitleName {
-                self.pendingSubtitleName = nil
-                if let group, let option = group.options.first(where: { $0.displayName == want }) {
-                    item.select(option, in: group)
-                    print("[NativePlayer] restored subtitle selection: \(want)")
-                }
-            } else if self.pendingSubtitleOff {
-                self.pendingSubtitleOff = false
-                if let group, item.currentMediaSelection.selectedMediaOption(in: group) != nil {
-                    item.select(nil, in: group)
-                    print("[NativePlayer] restored subtitle selection: Off")
-                }
-            }
         }
     }
 
@@ -699,7 +735,18 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Rows for the native player's Stream Info tab: routing decision, remux signaling, segment-map
     /// shape, and live transfer stats from the item's access log. Called on playback ticks.
+    /// Follow the remux's active track (the system Audio tab switches it — W3); the published list
+    /// only changes when the active track does.
+    private func refreshActiveAudioTrack() {
+        guard let remux, remux.activeAudioStream != audioTracks.first(where: \.selected)?.streamIndex else { return }
+        audioTracks = remux.audioTracks.map {
+            NativeAudioTrack(streamIndex: $0.streamIndex, name: Self.audioTrackDisplayName($0),
+                             playable: $0.playable, selected: $0.selected)
+        }
+    }
+
     func streamInfoRows(routingNote: String?) -> [NativeInfoRow] {
+        refreshActiveAudioTrack()
         var rows: [NativeInfoRow] = []
         func add(_ label: String, _ value: String?) {
             if let value, !value.isEmpty { rows.append(NativeInfoRow(label: label, value: value)) }
@@ -717,12 +764,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         // The display name already carries language · codec · layout · title; the RFC 6381 token
         // adds nothing a viewer needs and pushes the row onto a second line.
         add(String(localized: "Audio"), audioTracks.first(where: \.selected)?.name ?? remux?.audioCodecToken)
-        // The transport-bar Audio menu only exists with >1 track — say so here, so a single-track
-        // source doesn't read as a broken selector.
         if audioTracks.count == 1 {
             add(String(localized: "Audio tracks"), String(localized: "1 (this file has no alternate audio)"))
         } else if audioTracks.count > 1 {
-            add(String(localized: "Audio tracks"), String(localized: "\(audioTracks.count) · Audio menu in the transport bar"))
+            let unplayable = audioTracks.filter { !$0.playable }.count
+            add(String(localized: "Audio tracks"), unplayable == 0
+                ? String(localized: "\(audioTracks.count) · in the Audio tab")
+                : String(localized: "\(audioTracks.count) · \(audioTracks.count - unplayable) in the Audio tab (\(unplayable) unsupported)"))
         }
         // What the viewer currently sees: the item's legible selection (system Subtitles tab).
         if let item = playerItem, let group = legibleGroup {
