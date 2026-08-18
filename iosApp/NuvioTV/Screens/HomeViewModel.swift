@@ -59,19 +59,45 @@ final class HomeViewModel: ObservableObject {
         homeWatcher = FlowWatcherKt.watch(HomeRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? HomeUiState else { return }
             self.isLoading = state.isLoading
+            // BUG-42 (beta.13): release-safe hero commit probe — one line per hero-bearing publish,
+            // naming the head so a device log shows whether it ever moved after first paint.
+            if HomeHeroProbe.enabled, state.heroItems.isEmpty, !self.heroItems.isEmpty {
+                // An A → empty → B sequence must not hide the A→B change from the probe.
+                NSLog("[HomeHero] publish n=0 (hero emptied) %@ sinceLaunch=%dms", HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs)
+            }
+            if HomeHeroProbe.enabled, !state.heroItems.isEmpty {
+                let head = state.heroItems.first.map { "\($0.type):\($0.id)" } ?? "-"
+                let previousHead = self.lastNonEmptyHeroHead
+                let headChanged = previousHead != nil && previousHead != head
+                self.lastNonEmptyHeroHead = head
+                // `inRows` = the head is one of the published catalog items (catalog hero) vs not
+                // (collection-fallback hero) — tells the two hero sources apart in a log pull.
+                let headItem = state.heroItems.first
+                let inRows = state.sections.contains { section in
+                    section.items.contains { $0.type == headItem?.type && $0.id == headItem?.id }
+                }
+                let ids = state.heroItems.map { "\($0.type):\($0.id)" }.joined(separator: ",")
+                NSLog("[HomeHero] publish n=%d head=%@ headChanged=%d inRows=%d sections=%d loading=%d %@ sinceLaunch=%dms ids=%@",
+                      state.heroItems.count, head, headChanged ? 1 : 0, inRows ? 1 : 0, state.sections.count,
+                      state.isLoading ? 1 : 0, HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs, ids)
+            }
             self.heroItems = state.heroItems
             self.sections = state.sections
             self.errorMessage = state.errorMessage
-            #if DEBUG
             // BUG-42 moved the hero's metadata commit BEHIND TMDB enrichment (held in
             // HomeRepository, capped at HERO_ENRICHMENT_HOLD_TIMEOUT_MS), so hero first paint is no
             // longer implied by `first_rows` — it needs its own milestone to stay measurable
             // against the BUG-26 baseline. Rows are unaffected: they publish on the same pass.
+            // beta.13: also emitted on release builds behind `debug.homeHeroProbe`, so the check
+            // this row prescribed three times can finally run on the reporter's build class.
             if !self.didTraceFirstHero, !state.heroItems.isEmpty {
                 self.didTraceFirstHero = true
+                #if DEBUG
                 LaunchTrace.mark("first_hero n=\(state.heroItems.count)")
+                #else
+                if HomeHeroProbe.enabled { NSLog("[HomeHero] first_hero n=%d sinceLaunch=%dms", state.heroItems.count, HomeHeroProbe.sinceLaunchMs) }
+                #endif
             }
-            #endif
             self.rebuildRows()
         }
 
@@ -173,10 +199,14 @@ final class HomeViewModel: ObservableObject {
         #endif
     }
 
+    /// BUG-42 (beta.13): outside `#if DEBUG` — the first-hero milestone is also emitted on release
+    /// builds behind `debug.homeHeroProbe`.
+    private var didTraceFirstHero = false
+    /// BUG-42 probe: last non-empty head, so a change through an empty intermediate still logs.
+    private var lastNonEmptyHeroHead: String?
     #if DEBUG
     private var didTraceFirstRows = false
     private var lastTracedRowCount = 0
-    private var didTraceFirstHero = false
     #endif
 
     private func onAddonsChanged(_ state: AddonsUiState) {
@@ -202,6 +232,10 @@ final class HomeViewModel: ObservableObject {
         // collections on the Home path (tvOS previously synced catalogs solely from Settings'
         // onAppear), so rebuildRows() forced every collection row above every catalog row until
         // the user happened to open Settings — the "collections are scrambled" report.
+        if HomeHeroProbe.enabled {
+            let catalogs = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
+            NSLog("[HomeHero] addonsChanged ready=%d catalogs=%d sinceLaunch=%dms", ready.count, catalogs, HomeHeroProbe.sinceLaunchMs)
+        }
         HomeCatalogSettingsRepository.shared.syncCatalogs(addons: ready)
         HomeRepository.shared.refresh(addons: ready, force: true)
     }

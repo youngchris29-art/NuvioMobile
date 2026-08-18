@@ -15,6 +15,7 @@ struct NuvioTVApp: App {
         #if DEBUG
         LaunchTrace.mark("app_init")  // BUG-26: cold-start attribution zero point
         #endif
+        _ = HomeHeroProbe.t0  // BUG-42: anchor the release-safe hero probe's clock at process init
         // Wire the shared provider seams for tvOS (profiles, sync platform "tv", account-data
         // cleaner, sync-backend load). The phone app does this in composeApp's App() (which tvOS
         // never runs). Runs once, before any repository is accessed.

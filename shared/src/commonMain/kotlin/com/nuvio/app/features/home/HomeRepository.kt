@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import kotlin.random.Random
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 
 object HomeRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("HomeRepository"))
@@ -46,6 +48,36 @@ object HomeRepository {
     private var currentDefinitions: List<HomeCatalogDefinition> = emptyList()
     private var cachedSections: Map<String, HomeCatalogSection> = emptyMap()
     private var cachedCollectionHeroItems: List<MetaPreview> = emptyList()
+    /** BUG-42: the catalog hero RANKING last computed (the carousel is its first
+     *  HOME_HERO_ITEM_LIMIT entries — see [stableHeroSelection]). Kept across
+     *  request keys AND forced refreshes on purpose: at launch the addon set arrives progressively
+     *  and tvOS's HomeViewModel calls `refresh(force = true)` on every step (as do the Settings
+     *  panes and the back-online path) — none of those means "give me a new hero", and every one
+     *  of them is exactly when the head must NOT move. Reset only by [clear] (profile switch /
+     *  sign-out); a new process reshuffles by itself. Items that leave the pool still drop out. */
+    private var lastCatalogHeroSelection: List<MetaPreview> = emptyList()
+    /** Guards [lastCatalogHeroSelection]/[heroResetRequested] AND serializes every publish (see
+     *  [publishCurrentState]): publishes run on the repo's Default scope while an explicit reset or
+     *  [clear] arrives from the main thread (Codex gate 8). */
+    private val heroSelectionLock = SynchronizedObject()
+    /** BUG-42 probe support (read by tvOS's `[HomeHero] publish` line): how many times the ranking
+     *  was reset (clear/explicit reset) and its current size — tells "reshuffled from empty" apart
+     *  from "items dropped out of the pool" in a log pull. */
+    private var heroRankingResets = 0
+    /** BUG-42: true until the first [refresh] of this session (or after [clear]). Before it, no
+     *  catalog load exists yet — `isLoading` is false only because the addon manifests haven't
+     *  arrived — and the collection fallback must not fill the hero just to be replaced by the
+     *  catalog hero a second later (sim run 2026-08-18: `rank=0` heroes on the first publishes). */
+    private var awaitingFirstRefresh = true
+    /** Bounds [awaitingFirstRefresh]: a collection-only profile (no add-on with a loaded manifest)
+     *  never gets a [refresh], so the gate lifts itself after this grace and the collection hero
+     *  publishes (Codex gate 8). Catalog-bearing profiles refresh well inside it. */
+    private var firstRefreshGraceJob: Job? = null
+    /** Generation for [firstRefreshGraceJob]: bumped by [clear] so a grace that already passed its
+     *  cancellation check can't lift the NEXT profile's gate (Codex gate 8). */
+    private var firstRefreshGraceGeneration = 0
+    val heroRankingDebug: String
+        get() = synchronized(heroSelectionLock) { "resets=$heroRankingResets rank=${lastCatalogHeroSelection.size} resetReq=$heroResetRequested awaitingFirst=$awaitingFirstRefresh" }
     private var collectionHeroJob: Job? = null
     private var collectionHeroRequestKey: String? = null
     private var lastPublishedCatalogHeroEmpty: Boolean = true
@@ -91,6 +123,17 @@ object HomeRepository {
         // A new load is a new hero, so it gets a fresh hold budget: a timeout burnt on the previous
         // request must not force this one's first hero commit to publish raw metadata.
         releaseHeroEnrichmentHold()
+
+        // BUG-42: the launch gate lifts only on a CATALOG-BEARING refresh — a manifest-less or
+        // catalog-less add-on becoming ready first must not let the collection fallback in ahead
+        // of the catalog hero (Codex gate 8). Collection-only profiles are covered by the grace.
+        if (requests.isNotEmpty()) {
+            awaitingFirstRefresh = false
+            firstRefreshGraceJob?.cancel()
+            firstRefreshGraceJob = null
+        } else {
+            armFirstRefreshGrace()
+        }
 
         if (requests.isEmpty()) {
             activeJob?.cancel()
@@ -175,7 +218,61 @@ object HomeRepository {
         }
     }
 
+    /**
+     * BUG-42: an EXPLICIT Hero Sources change (Settings) is the one thing that should redraw the
+     * hero from scratch; background settings sync and addon-set growth go through
+     * [applyCurrentSettings]/[refresh] and keep the head (see [lastCatalogHeroSelection]).
+     */
+    fun resetHeroSelection() {
+        synchronized(heroSelectionLock) {
+            lastCatalogHeroSelection = emptyList()
+            heroResetRequested = true
+            heroRankingResets++
+        }
+    }
+
+    /**
+     * BUG-42: reset + a settings mutation + its republish as ONE unit — no publish from the load
+     * scope can slip between the preference write and the reset (Codex gate 8). [block] runs with
+     * the reset already applied and may itself publish (the lock is reentrant).
+     */
+    fun resetHeroSelectionAround(block: () -> Unit) {
+        synchronized(heroSelectionLock) {
+            lastCatalogHeroSelection = emptyList()
+            heroResetRequested = true
+            heroRankingResets++
+            block()
+        }
+    }
+
+    private fun armFirstRefreshGrace() {
+        if (!awaitingFirstRefresh || firstRefreshGraceJob?.isActive == true) return
+        val generation = firstRefreshGraceGeneration
+        firstRefreshGraceJob = scope.launch {
+            delay(FIRST_REFRESH_GRACE_MS)
+            // Check-and-lift under the publish lock, in the same generation it was armed for.
+            val lifted = synchronized(heroSelectionLock) {
+                if (generation != firstRefreshGraceGeneration || !awaitingFirstRefresh) return@synchronized false
+                awaitingFirstRefresh = false
+                true
+            }
+            if (!lifted) return@launch
+            publishCurrentState(
+                isLoading = _uiState.value.isLoading,
+                requestKey = currentRequestKey,
+            )
+        }
+    }
+
+    /** BUG-42: set by [resetHeroSelection]; while true, an empty catalog hero mid-load is NOT held
+     *  (the user just changed Hero Sources and must see the change), cleared on the next non-empty
+     *  catalog hero or when the load completes. Guarded by [heroSelectionLock]. */
+    private var heroResetRequested = false
+
+
+
     fun applyCurrentSettings() {
+        armFirstRefreshGrace()
         publishCurrentState(
             isLoading = _uiState.value.isLoading,
             requestKey = currentRequestKey,
@@ -197,11 +294,18 @@ object HomeRepository {
         applyCurrentSettings()
     }
 
-    fun clear() {
+    fun clear() = synchronized(heroSelectionLock) {
         activeJob?.cancel()
         activeJob = null
         activeRequestKey = null
         currentRequestKey = null
+        lastCatalogHeroSelection = emptyList() // BUG-42: a new account/profile gets a new hero
+        heroResetRequested = false
+        heroRankingResets++
+        awaitingFirstRefresh = true
+        firstRefreshGraceGeneration++
+        firstRefreshGraceJob?.cancel()
+        firstRefreshGraceJob = null
         currentDefinitions = emptyList()
         cachedSections = emptyMap()
         cachedCollectionHeroItems = emptyList()
@@ -214,7 +318,20 @@ object HomeRepository {
         _uiState.value = HomeUiState()
     }
 
+    /**
+     * BUG-42: the whole publish runs under [heroSelectionLock] — publishes come from the repo's
+     * Default scope while [resetHeroSelection]/[clear] arrive from the main thread, and a
+     * straggling publish must not write an older selection (or an older-generation UI state) after
+     * either of them. Synchronous body, no suspension, nothing inside takes the lock again.
+     */
     private fun publishCurrentState(
+        isLoading: Boolean,
+        requestKey: String?,
+    ) = synchronized(heroSelectionLock) {
+        publishCurrentStateLocked(isLoading = isLoading, requestKey = requestKey)
+    }
+
+    private fun publishCurrentStateLocked(
         isLoading: Boolean,
         requestKey: String?,
     ) {
@@ -240,22 +357,61 @@ object HomeRepository {
 
         val catalogHeroItems = if (snapshot.heroEnabled) {
             val heroRandom = Random((requestKey?.hashCode() ?: 0).absoluteValue + 1)
-            currentDefinitions
+            val pool = currentDefinitions
                 .filter { definition -> preferences[definition.key]?.heroSourceEnabled != false }
                 .mapNotNull { definition -> cachedSections[definition.cacheKey] }
                 .map { section -> section.withReleaseFilter() }
                 .flatMap { section -> section.items }
-                .distinctBy { item -> "${item.type}:${item.id}" }
-                .shuffled(heroRandom)
+                .distinctBy { item -> item.stableKey() }
+            // BUG-42: keep what is already on screen at the head; only newcomers are shuffled in.
+            // `keepFrom`: WHILE THE LOAD IS IN FLIGHT the previous selection keeps itself — the
+            // launch window is exactly when addon-set growth, profile-settings sync (row enables,
+            // hero-source slots, unreleased filter) and re-fetches all land, and every one of them
+            // used to be a chance for the head to change under the user. Once loading completes,
+            // one reconcile against everything cached (hero-source or not, unfiltered) drops items
+            // whose catalog is truly gone. See stableHeroSelection.
+            // Release-filtered like the rows: an unreleased title the user just asked to hide must
+            // not linger on the hero either (Codex gate 8).
+            val everythingCached = cachedSections.values
+                .map { section -> section.withReleaseFilter() }
+                .flatMap { section -> section.items }
+            val previousSelection = lastCatalogHeroSelection
+            val previousStillReleased = if (todayIsoDate == null) {
+                previousSelection
+            } else {
+                previousSelection.filterReleasedItems(todayIsoDate)
+            }
+            // Fresh cached instances FIRST so a kept item carries current metadata; the previous
+            // instances only vouch for identity while the load is in flight.
+            val keepFrom = if (isLoading || awaitingFirstRefresh) everythingCached + previousStillReleased else everythingCached
+            stableHeroSelection(
+                previous = previousSelection,
+                pool = pool,
+                limit = HOME_HERO_ITEM_LIMIT,
+                random = heroRandom,
+                keepFrom = keepFrom,
+                key = MetaPreview::stableKey,
+            ).also { ranking -> lastCatalogHeroSelection = ranking }
                 .take(HOME_HERO_ITEM_LIMIT)
         } else {
             emptyList()
         }
         lastPublishedCatalogHeroEmpty = snapshot.heroEnabled && catalogHeroItems.isEmpty()
-        val heroItems = if (snapshot.heroEnabled) {
-            catalogHeroItems.ifEmpty { cachedCollectionHeroItems }
-        } else {
-            emptyList()
+        val resetRequested = heroResetRequested
+        val heroItems = when {
+            !snapshot.heroEnabled -> emptyList()
+            catalogHeroItems.isNotEmpty() -> catalogHeroItems.also { heroResetRequested = false }
+            // BUG-42: the collection fallback is for Homes whose CATALOGS yield no hero — not for
+            // the first few hundred ms of a load before the hero-source catalogs have landed. Filling
+            // it in mid-load and then replacing all eight items when the catalog hero arrived was the
+            // "one cover, then another" the sim probe caught (`inRows=0` first head). While a load is
+            // in flight, keep whatever is on screen (usually nothing on a cold launch) — unless the
+            // user just reset the selection explicitly, in which case the stale hero must go now.
+            (isLoading || awaitingFirstRefresh) && !resetRequested -> _uiState.value.heroItems
+            // Release-filtered like everything else on Home (an unreleased title the user just hid
+            // must not survive on the collection hero either).
+            else -> (if (todayIsoDate == null) cachedCollectionHeroItems else cachedCollectionHeroItems.filterReleasedItems(todayIsoDate))
+                .also { if (!isLoading && !awaitingFirstRefresh) heroResetRequested = false }
         }
 
         val tmdbSettings = TmdbSettingsRepository.snapshot()
@@ -576,12 +732,29 @@ object HomeRepository {
         if (!refreshSources && collectionHeroRequestKey == nextRequestKey) return
 
         collectionHeroJob?.cancel()
+        // BUG-42: a SAME-key re-resolve (forced refresh) keeps the previously resolved collection
+        // hero on screen until the new one lands — publishing an EMPTY hero here and the resolved
+        // list a moment later was a second commit (backdrop → blank → backdrop) on every
+        // collection-only Home. A CHANGED key (different collections/settings) invalidates the
+        // cached items: they are dropped now, and the next publish fills the hero once.
+        // Only a CHANGE of key with something actually cached is an invalidation — a first resolve,
+        // or a re-key after clear() emptied the cache, has nothing to invalidate (and must not
+        // release the mid-load hold: sim run 2026-08-18 showed exactly that regression).
+        val keyChanged = collectionHeroRequestKey != null &&
+            collectionHeroRequestKey != nextRequestKey &&
+            cachedCollectionHeroItems.isNotEmpty()
+        if (keyChanged) cachedCollectionHeroItems = emptyList()
         collectionHeroRequestKey = nextRequestKey
-        cachedCollectionHeroItems = emptyList()
-        publishCurrentState(
-            isLoading = _uiState.value.isLoading,
-            requestKey = requestKey,
-        )
+        if (keyChanged) {
+            // The old collection's art must leave now, not when the network answers — also through
+            // the mid-load hold (an explicit collection/settings change is an invalidation, not
+            // incremental loading).
+            synchronized(heroSelectionLock) { heroResetRequested = true }
+            publishCurrentState(
+                isLoading = _uiState.value.isLoading,
+                requestKey = requestKey,
+            )
+        }
 
         collectionHeroJob = scope.launch {
             val sources = collectionHeroSources(collections)
@@ -713,6 +886,8 @@ object HomeRepository {
 }
 
 private const val HOME_HERO_ITEM_LIMIT = 8
+/** BUG-42: see `HomeRepository.awaitingFirstRefresh`. */
+private const val FIRST_REFRESH_GRACE_MS = 5_000L
 
 /**
  * BUG-35 (beta.12): how many leading items of a row [HomeRepository.requestRowEnrichment]

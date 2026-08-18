@@ -1425,6 +1425,32 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
+    // MARK: - BUG-42: the hero commits its artwork once on a cold launch
+
+    /// Cold-launches with the release-safe `debug.homeHeroProbe` knob and lets the hero settle.
+    /// The oracle is the `[HomeHero]` log stream (harness style — see the type doc): a healthy
+    /// launch has exactly ONE `paint … first=1` line (`kind=primary`, or `kind=seededPrimary`
+    /// when the backdrop was already in the memory cache) and NO `publish … headChanged=1` /
+    /// `hero emptied` line before any focus moves; `paint kind=fallbackHeld first=1` means the
+    /// real backdrop missed the 600 ms first-paint deadline (poster shown), allowed but worth
+    /// counting.
+    ///
+    ///     xcrun simctl spawn booted log show --last 5m \
+    ///       --predicate 'eventMessage CONTAINS "[HomeHero]"'
+    ///
+    /// Two launches so the second one starts with a warm artwork disk cache (the reporter's
+    /// every-day case) as well as the first's cold one.
+    func test31HeroCommitsOnce() throws {
+        for launch in 1...2 {
+            let app = launchToHome(extraArguments: ["-debug.homeHeroProbe", "YES"], forceFreshLaunch: true)
+            pause(4.0)
+            shot(app, "31_launch\(launch)_hero_settled")
+            XCTAssertTrue(app.state == .runningForeground, "app must be alive after hero first paint (launch \(launch))")
+            app.terminate()
+            pause(1.0)
+        }
+    }
+
     // MARK: - Appearance baseline restore (state-aware; safe to run any time)
 
     /// Puts the signed-in sim profile's SYNCED appearance state back to the suite's baseline:

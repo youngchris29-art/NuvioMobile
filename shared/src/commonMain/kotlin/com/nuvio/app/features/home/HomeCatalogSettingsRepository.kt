@@ -231,14 +231,25 @@ object HomeCatalogSettingsRepository {
     }
 
     fun setHeroSourceEnabled(key: String, enabled: Boolean) {
-        updatePreference(key, pushRemote = false) { preference ->
-            if (!enabled) {
-                preference.copy(heroSourceEnabled = false)
-            } else if (selectedHeroSourceCount(excludingKey = key) >= HERO_SOURCE_SELECTION_LIMIT) {
-                preference
-            } else {
-                preference.copy(heroSourceEnabled = true)
-            }
+        ensureLoaded()
+        val current = preferences[key] ?: defaultPreferenceForMissingKey(key) ?: return
+        val updated = when {
+            current.heroSourceEnabled == enabled -> current
+            !enabled -> current.copy(heroSourceEnabled = false)
+            // Rejected at the limit: nothing changes, so the hero must not reshuffle either.
+            selectedHeroSourceCount(excludingKey = key) >= HERO_SOURCE_SELECTION_LIMIT -> current
+            else -> current.copy(heroSourceEnabled = true)
+        }
+        if (updated == current) return
+        // BUG-42: an ACCEPTED explicit Hero Sources change is the one thing that redraws the hero.
+        // Reset, store, and republish as one unit so no load-scope publish can interleave.
+        HomeRepository.resetHeroSelectionAround {
+            preferences[key] = updated
+            publish()
+            persist()
+            HomeRepository.applyCurrentSettings()
+            // Deliberately local-only (no HomeCatalogSettingsSyncService.triggerPush()) — same as
+            // the pushRemote = false this used to pass.
         }
     }
 
@@ -256,16 +267,18 @@ object HomeCatalogSettingsRepository {
 
     fun resetToDefaults() {
         ensureLoaded()
-        heroEnabled = true
-        showCatalogType = true
-        hideUnreleasedContent = false
-        hideCatalogUnderline = false
-        hideDiscover = false
-        preferences.clear()
-        normalizePreferences()
-        publish()
-        persist()
-        HomeRepository.applyCurrentSettings()
+        HomeRepository.resetHeroSelectionAround { // BUG-42: atomic with the mutation + republish
+            heroEnabled = true
+            showCatalogType = true
+            hideUnreleasedContent = false
+            hideCatalogUnderline = false
+            hideDiscover = false
+            preferences.clear()
+            normalizePreferences()
+            publish()
+            persist()
+            HomeRepository.applyCurrentSettings()
+        }
         HomeCatalogSettingsSyncService.triggerPush()
     }
 

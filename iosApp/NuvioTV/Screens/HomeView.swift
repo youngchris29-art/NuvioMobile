@@ -1402,6 +1402,19 @@ struct HomeHeroBackdrop: View {
     }
 }
 
+/// BUG-42 (beta.13): release-safe hero commit probe — `defaults write com.nuvio.media.NuvioTV
+/// debug.homeHeroProbe -bool YES`, greppable `[HomeHero]`. Same house pattern as
+/// `HomeGeometryProbe`/`TrailerProbe` (deliberately not `#if DEBUG`: the reporter is on a release
+/// sideload and the console is the only thing that comes back from a device pass). Two lines:
+/// `publish` (from `HomeViewModel`, per hero-bearing state) and `paint` (from
+/// `HeroCrossfadeImage.crossfade`, per image swap). A healthy cold launch shows exactly ONE
+/// `paint first=1` and NO `publish … headChanged=1`.
+enum HomeHeroProbe {
+    nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.homeHeroProbe")
+    nonisolated static let t0 = Date()
+    static var sinceLaunchMs: Int { Int(Date().timeIntervalSince(t0) * 1000) }
+}
+
 /// UX-7 flash-free backdrop swapper: unlike `HomeHeroBackdrop`'s old approach, this view is NEVER
 /// re-identified as `url` changes — see the BUG-19 note on `HomeHeroBackdrop`. Instead it holds up
 /// to two decoded images itself and crossfades between them in place, so churn as fast as a row
@@ -1432,6 +1445,12 @@ struct HeroCrossfadeImage: View {
         _current = State(initialValue: ArtworkStore.cached(resolved))
     }
 
+    /// BUG-42 probe: an init-seeded first frame IS the first paint (no `crossfade` runs for it).
+    /// Logged from the task, not `init` — SwiftUI may re-run `init` on parent updates while keeping
+    /// the `@State`, so only the first task on a view that has painted nothing yet counts.
+    @State private var paintCount = 0
+    @State private var didLogSeededPaint = false
+
     var body: some View {
         ZStack {
             // Content-mode/frame/clipping are the caller's job (parity with what
@@ -1456,6 +1475,17 @@ struct HeroCrossfadeImage: View {
         // one) — keyed on the primary alone, a terminally-failed primary never retried the newly
         // available fallback.
         .task(id: "\(url ?? "")|\(fallbackURL ?? "")") {
+            // BUG-42: is this the hero's very first paint (nothing on screen yet)? Later swaps keep
+            // the "show the cached poster now, upgrade later" rule below — it exists so a stalled
+            // metahub fetch can't pin the PREVIOUS title's art. On first paint there is no previous
+            // art to pin, and the poster→backdrop crossfade IS the "one cover, then another loads
+            // over it" the reporter filmed. So on first paint the poster waits for the primary up
+            // to `firstPaintFallbackDeadline` before it is allowed to show.
+            let firstPaint = current == nil && previous == nil
+            if !firstPaint, paintCount == 0, !didLogSeededPaint, HomeHeroProbe.enabled {
+                didLogSeededPaint = true
+                NSLog("[HomeHero] paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0", HomeHeroProbe.sinceLaunchMs)
+            }
             guard let url, !url.isEmpty, let resolvedURL = URL(string: url) else {
                 // This title genuinely has no artwork: fade down to the flat background rather
                 // than keep presenting the PREVIOUS title's backdrop under the new title's text.
@@ -1463,7 +1493,7 @@ struct HeroCrossfadeImage: View {
                 return
             }
             if let hit = ArtworkStore.cached(resolvedURL) {
-                crossfade(to: hit)
+                crossfade(to: hit, kind: "cachedPrimary", first: firstPaint)
                 return
             }
             let resolvedFallback: URL? = {
@@ -1476,9 +1506,16 @@ struct HeroCrossfadeImage: View {
             // fetch pins the PREVIOUS title's backdrop for a whole URLSession timeout while a
             // perfectly good cached poster sits hidden.
             var showedArt = false
+            // BUG-42: on first paint the resident poster is held back (see above); it becomes the
+            // deadline's fallback instead of the immediate paint.
+            var heldFallback: UIImage? = nil
             if let resolvedFallback, let fallbackHit = ArtworkStore.cached(resolvedFallback) {
-                crossfade(to: fallbackHit)
-                showedArt = true
+                if firstPaint {
+                    heldFallback = fallbackHit
+                } else {
+                    crossfade(to: fallbackHit, kind: "fallbackCached", first: false)
+                    showedArt = true
+                }
             }
             // Race BOTH candidates rather than awaiting the primary serially — a stalled primary
             // must not pin stale/blank art for a whole URLSession timeout while a fetchable
@@ -1489,20 +1526,74 @@ struct HeroCrossfadeImage: View {
             // `cancelAll()` on the primary's win: `ArtworkStore` coalesces in-flight fetches, so
             // the drained fallback just parks in cache.
             var primaryLanded = false
-            await withTaskGroup(of: (Bool, UIImage?).self) { group in
-                group.addTask { (true, try? await ArtworkStore.fetch(resolvedURL)) }
+            // BUG-42: how long a FETCHED poster waits for the real backdrop before it is allowed
+            // to paint. First paint: 600 ms from task start — long enough for a warm CDN hit,
+            // short enough that a dead metahub entry never leaves the hero blank past the rows
+            // (BUG-26 launch timing). Later swaps: 150 ms from the moment the fetched poster
+            // ARRIVES (not from task start — on a slow network both fetches outlive a start-anchored
+            // window and the flash comes back; Codex gate 8): the two fetches routinely complete
+            // 1–4 ms apart (sim log 2026-08-18), and without a grace the poster painted, then the
+            // backdrop painted over it a frame later — the reporter's "one cover then another" on
+            // every hero move. A CACHED poster on a later swap still paints immediately
+            // (stale-art protection).
+            let firstPaintDeadline: UInt64 = 600_000_000
+            let laterSwapGrace: UInt64 = 150_000_000
+            enum Arrival { case primary(UIImage?), fallback(UIImage?), deadline }
+            await withTaskGroup(of: Arrival.self) { group in
+                group.addTask { .primary(try? await ArtworkStore.fetch(resolvedURL)) }
                 if let resolvedFallback {
-                    group.addTask { (false, try? await ArtworkStore.fetch(resolvedFallback)) }
+                    group.addTask { .fallback(try? await ArtworkStore.fetch(resolvedFallback)) }
                 }
-                for await (isPrimary, image) in group {
+                if firstPaint {
+                    group.addTask {
+                        try? await Task.sleep(nanoseconds: firstPaintDeadline)
+                        return .deadline
+                    }
+                }
+                var deadlinePassed = false
+                var graceArmed = firstPaint
+                // BUG-42: once the FIRST paint has been committed with the poster (deadline hit),
+                // a late backdrop must not paint over it — that IS the double commit. The item's
+                // next visit finds the backdrop cached and paints it once, from the start.
+                var firstPaintCommittedWithFallback = false
+                for await arrival in group {
                     guard !Task.isCancelled else { return }
-                    guard let image else { continue }
-                    showedArt = true
-                    if isPrimary {
+                    switch arrival {
+                    case let .primary(image):
+                        guard let image else { continue }
+                        showedArt = true
                         primaryLanded = true
-                        crossfade(to: image)
-                    } else if !primaryLanded {
-                        crossfade(to: image)
+                        if firstPaintCommittedWithFallback {
+                            if HomeHeroProbe.enabled {
+                                NSLog("[HomeHero] paint suppressed kind=primaryAfterFirstPaintFallback sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs)
+                            }
+                            continue
+                        }
+                        crossfade(to: image, kind: "primary", first: firstPaint)
+                    case let .fallback(image):
+                        guard let image else { continue }
+                        if primaryLanded { continue }
+                        if deadlinePassed {
+                            showedArt = true
+                            if firstPaint { firstPaintCommittedWithFallback = true }
+                            crossfade(to: image, kind: "fallbackFetched", first: firstPaint)
+                        } else {
+                            heldFallback = image
+                            if !graceArmed {
+                                graceArmed = true
+                                group.addTask {
+                                    try? await Task.sleep(nanoseconds: laterSwapGrace)
+                                    return .deadline
+                                }
+                            }
+                        }
+                    case .deadline:
+                        deadlinePassed = true
+                        if !primaryLanded, let held = heldFallback {
+                            showedArt = true
+                            if firstPaint { firstPaintCommittedWithFallback = true }
+                            crossfade(to: held, kind: "fallbackHeld", first: firstPaint)
+                        }
                     }
                 }
             }
@@ -1536,8 +1627,14 @@ struct HeroCrossfadeImage: View {
         }
     }
 
-    private func crossfade(to image: UIImage) {
+    /// `first` = this task started with nothing on screen (the hero's first paint); `hadArt` on the
+    /// log line says whether THIS swap replaced an image (a second commit) or filled a blank.
+    private func crossfade(to image: UIImage, kind: String = "swap", first: Bool = false) {
         guard image !== current else { return }
+        paintCount += 1
+        if HomeHeroProbe.enabled {
+            NSLog("[HomeHero] paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1)
+        }
         previous = current
         current = image
         if reduceMotion || previous == nil {
