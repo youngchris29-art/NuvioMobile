@@ -72,6 +72,18 @@ extension View {
 ///   copy covers the ring at the corners. This is the failure the manual-scale swap above fixes.
 private let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
 
+/// BUG-64 (beta.13, u/mrStevenx3 on beta.12): with the ring ON "the film ends up hidden behind
+/// the border" — an inside `strokeBorder` paints its whole 4 pt on top of the artwork, and in ring
+/// mode nothing lifts the picture out from under it (manual scale moves ring and art together;
+/// No Zoom moves nothing). Fix: whenever the ring setting is ON, the artwork is drawn INSET by
+/// `ringWidth` inside the same card frame, focused or not, so the stroke lands in a reserved band
+/// around the picture instead of over it. Static rather than focus-animated on purpose — a
+/// focus-time inset would shrink the picture at the moment it should feel lifted, and an
+/// always-reserved band costs 4 pt of artwork nobody notices at 10 feet. The card frame, its
+/// clip, the depth overlay and the ring itself all keep the OUTER geometry, so BUG-36's "ring
+/// scales with the card as one layer" contract and the graveyard above are untouched.
+private func ringInset(_ accentFocusRing: Bool) -> CGFloat { accentFocusRing ? ringWidth : 0 }
+
 /// FEAT-14: approximates the magnitude of the system `.hoverEffect(.highlight)` lift, used by
 /// `CardFocusTreatment`'s manual scale so ring mode's focused size roughly matches the size a
 /// focused card would have under the default (non-ring) hover treatment.
@@ -389,9 +401,10 @@ struct PosterCard: View {
     }
 
     var body: some View {
+        let inset = ringInset(accentFocusRing) // BUG-64
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
             CachedAsyncImage(string: imageURL)
-                .frame(width: resolvedWidth, height: resolvedHeight)
+                .frame(width: resolvedWidth - 2 * inset, height: resolvedHeight - 2 * inset)
                 // BUG-31: CachedAsyncImage is `.fill` with no clip of its own, and this frame is
                 // always exactly 2:3 — so off-ratio artwork overflows it and the hover lift copies
                 // the overflow too, drawing a ghost-doubled subject. Clip inside the frame first.
@@ -401,7 +414,9 @@ struct PosterCard: View {
                 // frozen tile edge. The treatment now sits on the whole card (below), leaving the
                 // clip purely as a crop.
                 .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+                // BUG-64: the inner corner nests inside the ring's outer corner (concentric radii).
+                .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))
+                .frame(width: resolvedWidth, height: resolvedHeight)
                 // BUG-36: the card-depth overlay stays anchored to the ARTWORK's frame — its edge
                 // coverage mask measures 0…1 down *this* box (see `CardDepthStyle.coverageMask`),
                 // so hoisting it to the lockup would stretch "Top" across the caption slot too.
@@ -487,16 +502,19 @@ struct LandscapeCard: View {
     }
 
     var body: some View {
+        let inset = ringInset(accentFocusRing) // BUG-64
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: imageURL)
-                    .frame(width: width, height: height)
+                    .frame(width: width - 2 * inset, height: height - 2 * inset)
                     // BUG-31: same fill-overflow → hover-lift ghosting as PosterCard; artwork whose
                     // ratio isn't 16:9 spills out of this fixed frame unless clipped here.
                     // BUG-36: and like PosterCard, this clip stays on the image's own frame so it
                     // crops the artwork instead of capturing the card's focus treatment.
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+                    // BUG-64: inner corner nests inside the ring's outer corner.
+                    .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))
+                    .frame(width: width, height: height)
                     // BUG-36: depth (and its coverage mask) stays anchored to the artwork frame.
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: depthSurface)
 
@@ -510,6 +528,9 @@ struct LandscapeCard: View {
                         }
                     }
                     .frame(height: 6)
+                    // BUG-64: the bar sits inside the reserved ring band like the artwork does.
+                    .padding(.horizontal, inset)
+                    .padding(.bottom, inset)
                 }
             }
             .frame(width: width, height: height)

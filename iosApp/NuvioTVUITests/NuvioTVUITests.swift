@@ -1451,6 +1451,108 @@ final class NuvioTVUITests: XCTestCase {
         }
     }
 
+    // MARK: - BUG-64: the accent focus ring must not cover the poster
+
+    /// Reporter's exact configuration (u/mrStevenx3, p4afwfo): Accent Focus Ring ON + No Zoom on
+    /// Focus ON — "the film ends up hidden behind the border". Both are LOCAL @AppStorage keys, so
+    /// the argument domain sets them without touching the synced profile (same trick as test01's
+    /// `-inline_trailers_enabled`). Focus a poster in the first movies row and measure two bands of
+    /// the focused card: the OUTER 4 pt band (must carry the ring — mean colour far from the ring-
+    /// OFF baseline of the same card) and an INNER band 6…14 pt in (must be the poster — mean colour
+    /// close to the ring-OFF baseline). Pre-BUG-64 the inner band was painted by the stroke too.
+    func test32AccentRingArtworkInset() throws {
+        // No Zoom via the argument domain (local key); the ring is flipped through the REAL
+        // Appearance toggle inside ONE launch so both measurements are of the same card (two
+        // launches focused different cards and the first version of this test skipped itself).
+        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES"], forceFreshLaunch: true)
+        let appearance = app.buttons["Appearance"]
+        func openAppearance() {
+            openTab(app, named: "Settings")
+            _ = moveFocus(.down, until: appearance, max: 10)
+            remote.press(.select)
+            pause(1.5)
+            press(.right, times: 1)
+            pause(1)
+        }
+        func focusedPosterShot(_ name: String) throws -> (CGRect, UIImage) {
+            openTab(app, named: "Home")
+            press(.down, times: 3)
+            press(.left, times: 6, gap: 0.3)
+            pause(1.5)
+            guard let card = focusedButton(app), card.frame.width > 80, card.frame.height > card.frame.width else {
+                throw XCTSkip("no focused poster card reported (27.0 runtime never reports hasFocus)")
+            }
+            let screenshot = XCUIScreen.main.screenshot()
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            return (card.frame, screenshot.image)
+        }
+        openAppearance()
+        let sidebarX = appearance.frame.maxX
+        try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+        let (frameOff, imageOff) = try focusedPosterShot("32a_ring_off")
+        openAppearance()
+        try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: true, sidebarMaxX: sidebarX, category: "Appearance")
+        let (frameOn, imageOn) = try focusedPosterShot("32b_ring_on")
+        // Restore the local toggle (it is real prefs on this sim, not the argument domain).
+        openAppearance()
+        try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: false, sidebarMaxX: sidebarX, category: "Appearance")
+
+        // The poster caption sits below the artwork; the artwork is the top 2:3 of the card frame.
+        func bands(_ f: CGRect) -> (outer: CGRect, inner: CGRect) {
+            let artH = f.width * 1.5
+            let outer = CGRect(x: f.minX, y: f.minY + artH * 0.3, width: 4, height: artH * 0.4)         // left ring band
+            let inner = CGRect(x: f.minX + 6, y: f.minY + artH * 0.3, width: 8, height: artH * 0.4)     // 6…14 pt in
+            return (outer, inner)
+        }
+        let bOff = bands(frameOff), bOn = bands(frameOn)
+        let outerOff = try meanRGB(in: imageOff, pointRect: bOff.outer, windowSize: app.frame.size)
+        let outerOn = try meanRGB(in: imageOn, pointRect: bOn.outer, windowSize: app.frame.size)
+        let innerOff = try meanRGB(in: imageOff, pointRect: bOff.inner, windowSize: app.frame.size)
+        let innerOn = try meanRGB(in: imageOn, pointRect: bOn.inner, windowSize: app.frame.size)
+        func dist(_ a: (Double, Double, Double), _ b: (Double, Double, Double)) -> Double {
+            (abs(a.0 - b.0) + abs(a.1 - b.1) + abs(a.2 - b.2)) / 3
+        }
+        let outerDelta = dist(outerOff, outerOn), innerDelta = dist(innerOff, innerOn)
+        let report = XCTAttachment(string: "outerDelta=\(outerDelta) innerDelta=\(innerDelta) outerOff=\(outerOff) outerOn=\(outerOn) innerOff=\(innerOff) innerOn=\(innerOn) frames off=\(frameOff) on=\(frameOn)")
+        report.name = "32c_band_deltas"
+        report.lifetime = .keepAlways
+        add(report)
+        NSLog("[BUG64] outerDelta=%.3f innerDelta=%.3f off=%@ on=%@", outerDelta, innerDelta, NSCoder.string(for: frameOff), NSCoder.string(for: frameOn))
+        // The two focus treatments report slightly different accessibility frames for the same
+        // card (~5 pt); the bands are computed per frame, so a small drift is fine — a different
+        // CARD (different column / row) is not.
+        guard abs(frameOff.width - frameOn.width) < 12, abs(frameOff.minX - frameOn.minX) < 12, abs(frameOff.minY - frameOn.minY) < 12 else {
+            throw XCTSkip("focused card differs between the two measurements (\(frameOff) vs \(frameOn))")
+        }
+        XCTAssertGreaterThan(outerDelta, 0.08, "ring band did not change colour with the ring ON — is the ring drawn at all?")
+        XCTAssertLessThan(innerDelta, outerDelta * 0.5, "the band 6…14 pt inside the card edge changed almost as much as the ring band — the stroke is still painted over the poster (BUG-64)")
+    }
+
+    /// Mean RGB (0…1) inside `pointRect` of a full-screen screenshot — the colour cousin of
+    /// `lumaStats`.
+    private func meanRGB(in image: UIImage, pointRect: CGRect, windowSize: CGSize) throws -> (Double, Double, Double) {
+        guard let cg = image.cgImage, windowSize.width > 0 else { throw XCTSkip("screenshot has no CGImage / zero window size") }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let px = CGRect(x: pointRect.minX * scale, y: pointRect.minY * scale, width: pointRect.width * scale, height: pointRect.height * scale)
+            .integral.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !px.isEmpty, let cropped = cg.cropping(to: px) else { throw XCTSkip("band \(pointRect) is off-screen") }
+        let w = cropped.width, h = cropped.height
+        var buffer = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(data: &buffer, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { throw XCTSkip("could not build a bitmap context") }
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var r = 0.0, g = 0.0, b = 0.0
+        for i in stride(from: 0, to: buffer.count, by: 4) {
+            r += Double(buffer[i]); g += Double(buffer[i + 1]); b += Double(buffer[i + 2])
+        }
+        let n = Double(w * h) * 255.0
+        return (r / n, g / n, b / n)
+    }
+
     // MARK: - Appearance baseline restore (state-aware; safe to run any time)
 
     /// Puts the signed-in sim profile's SYNCED appearance state back to the suite's baseline:
