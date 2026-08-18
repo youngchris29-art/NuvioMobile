@@ -27,21 +27,52 @@ struct EpisodesSection: View {
             Text("Episodes").font(.title2).bold()
 
             if seasons.count > 1 {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 16) {
-                        ForEach(seasons, id: \.self) { season in
-                            Button {
-                                selectedSeason = season
-                            } label: {
-                                Text(Self.seasonLabel(season))
-                                    .padding(.horizontal, 20).padding(.vertical, 8)
+                // FEAT-24 (u/mrStevenx3, p4afwfo): season POSTERS instead of "Season 1 / Season 2"
+                // text, "comme le fait l'application mobile Nuvio". The data was already here —
+                // `MetaVideo.seasonPoster` is filled by the TMDB season fetch (`useSeasonPosters`,
+                // default ON) — tvOS just never drew it. Mobile's rule (DetailSeriesContent.kt):
+                // posters when any season has one, text chips otherwise; the poster's fallback is
+                // the show poster. No new setting this cycle (mobile's Posters/Text toggle stays
+                // out until someone asks), so no new strings either.
+                let posterBySeason = Self.seasonPosters(grouped)
+                if posterBySeason.values.contains(where: { $0 != nil }) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
+                            ForEach(seasons, id: \.self) { season in
+                                Button {
+                                    selectedSeason = season
+                                } label: {
+                                    SeasonPosterCard(
+                                        label: Self.seasonLabel(season),
+                                        imageURL: posterBySeason[season] ?? nil ?? meta.poster ?? meta.background,
+                                        isSelected: season == current
+                                    )
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityIdentifier("season_poster_\(season)")
                             }
-                            .buttonStyle(.chip(selected: season == current))
                         }
+                        .padding(.vertical, Theme.Spacing.md)
                     }
-                    .padding(.vertical, 4)
+                    .scrollClipDisabled()
+                    .focusSection()
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 16) {
+                            ForEach(seasons, id: \.self) { season in
+                                Button {
+                                    selectedSeason = season
+                                } label: {
+                                    Text(Self.seasonLabel(season))
+                                        .padding(.horizontal, 20).padding(.vertical, 8)
+                                }
+                                .buttonStyle(.chip(selected: season == current))
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .focusSection()
                 }
-                .focusSection()
             }
 
             ScrollViewReader { proxy in
@@ -179,6 +210,18 @@ struct EpisodesSection: View {
 
     private static func seasonLabel(_ season: Int) -> String {
         season <= 0 ? String(localized: "Specials") : String(localized: "Season \(season)")
+    }
+
+    /// FEAT-24: first non-blank `seasonPoster` among each season's episodes (mobile's rule).
+    nonisolated private static func seasonPosters(_ grouped: [Int: [MetaVideo]]) -> [Int: String?] {
+        var result: [Int: String?] = [:]
+        for (season, episodes) in grouped {
+            let poster = episodes.lazy
+                .compactMap { $0.seasonPoster?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            result[season] = poster
+        }
+        return result
     }
 
     private static func episodeVideoId(metaId: String, episode: MetaVideo) -> String {
@@ -336,5 +379,51 @@ struct WatchedCheckBadge: View {
             .padding(7)
             .background(Color(red: 0.22, green: 0.78, blue: 0.36).opacity(0.95), in: Circle())
             .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+    }
+}
+
+/// FEAT-24: one season in the poster selector — 2:3 artwork with the season label under it, the
+/// selected season outlined in the accent (the same "selected vs focused" split the text chips
+/// draw with colour). Same idioms as `TrailerThumbCard`: `.borderless` button, `tileFocusLift`
+/// (goes still under No Zoom on Focus), `Theme.Font.cardTitle` caption.
+private struct SeasonPosterCard: View {
+    let label: String
+    let imageURL: String?
+    let isSelected: Bool
+    @Environment(\.isFocused) private var isFocused
+
+    private static let width: CGFloat = 120
+    private static let height: CGFloat = 180
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            ZStack {
+                if let imageURL, !imageURL.isEmpty {
+                    CachedAsyncImage(string: imageURL)
+                } else {
+                    Theme.Palette.surface
+                    Text(label)
+                        .font(Theme.Font.cardTitle)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .padding(Theme.Spacing.sm)
+                }
+            }
+            .frame(width: Self.width, height: Self.height)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(isSelected ? Theme.Palette.accent : Color.white.opacity(0.10), lineWidth: isSelected ? 3 : 1)
+            }
+            .tileFocusLift(cornerRadius: Theme.Radius.card)
+
+            Text(label)
+                .font(Theme.Font.cardTitle)
+                .foregroundStyle(isFocused || isSelected ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                .lineLimit(1)
+                .frame(width: Self.width, alignment: .leading)
+        }
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

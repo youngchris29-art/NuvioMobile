@@ -1553,6 +1553,47 @@ final class NuvioTVUITests: XCTestCase {
         return (r / n, g / n, b / n)
     }
 
+    // MARK: - FEAT-24: season posters in the season selector
+
+    /// Opens the first title of the row directly under the hero (a series row on this account —
+    /// the same walk test17 uses), scrolls to the Episodes section and looks for the poster
+    /// selector (`season_poster_<n>` identifiers). Skips loudly when the opened title is not a
+    /// multi-season series or TMDB season posters are off, rather than failing on data.
+    func test33SeasonPosterRow() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        press(.down, times: 3)          // hero → CW → Streaming → first catalog row
+        let anyPoster = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'season_poster_'"))
+        let anyChip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Season '"))
+        // Rows are a mix of movie and series catalogs on this account; walk down until a title
+        // with a season selector opens (≤ 5 rows), backing out of anything else.
+        var found = false
+        for row in 0..<5 {
+            press(.left, times: 6, gap: 0.3)
+            pause(1.0)
+            remote.press(.select)
+            pause(7)
+            shot(app, "33a_row\(row)_detail_opened")
+            press(.down, times: 3, gap: 1.0)
+            pause(1.5)
+            if anyPoster.count > 0 || anyChip.count > 0 { found = true; break }
+            // Not a series: back to Home (Menu pops the pushed Detail) and try the next row.
+            remote.press(.menu)
+            pause(2)
+            press(.down, times: 1)
+        }
+        guard found else { throw XCTSkip("no multi-season series found in the first five rows — nothing to verify") }
+        shot(app, "33b_detail_episodes")
+        if anyPoster.count == 0 {
+            throw XCTSkip("season selector rendered as text chips — no TMDB season posters for this title (useSeasonPosters off or none returned)")
+        }
+        // The Down walk lands on the episode row (below the selector); the selector is one Up away.
+        if !moveFocus(.up, until: anyPoster.firstMatch, max: 3) { _ = moveFocus(.down, until: anyPoster.firstMatch, max: 3) }
+        pause(1)
+        shot(app, "33c_season_posters_focused")
+        XCTAssertGreaterThanOrEqual(anyPoster.count, 2, "poster selector should show one card per season")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
     // MARK: - Appearance baseline restore (state-aware; safe to run any time)
 
     /// Puts the signed-in sim profile's SYNCED appearance state back to the suite's baseline:
