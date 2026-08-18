@@ -77,6 +77,11 @@ object TmdbSettingsRepository {
         publish()
         TmdbSettingsStorage.saveLanguage(normalized)
         invalidateHeroEnrichment()
+        // BUG-63: `MetaDetailsRepository` keys `baseMeta` by type:id only, and the TMDB
+        // enrichment (trailers included) is baked into it — without this a language flip keeps
+        // serving the old language's trailer list until the next launch. Same call
+        // `invalidateReleaseDateMetadata` already makes below.
+        MetaDetailsRepository.clear()
     }
 
     /**
@@ -92,6 +97,7 @@ object TmdbSettingsRepository {
         language = derived
         publish()
         invalidateHeroEnrichment()
+        MetaDetailsRepository.clear() // BUG-63, same reason as setLanguage
     }
 
     /** True when a metadata language is explicitly stored (vs derived from the device language). */
@@ -232,6 +238,11 @@ object TmdbSettingsRepository {
         }
         if (wasLoaded && (previousEnabled != enabled || previousApiKey != apiKey || previousLanguage != language)) {
             invalidateHeroEnrichment()
+        }
+        // BUG-63: a profile switch can change the language through this path (not the setters);
+        // the detail/trailer cache is keyed without language, so drop it here too.
+        if (wasLoaded && previousLanguage != language) {
+            MetaDetailsRepository.clear()
         }
     }
 

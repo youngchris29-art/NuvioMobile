@@ -148,7 +148,10 @@ final class DetailViewModel: ObservableObject {
         guard !didRequestTrailer else { return }
         let trailers = meta.trailers
         guard !trailers.isEmpty,
-              let trailer = HeroTrailerSelectorKt.selectHeroTrailer(trailers: trailers) else { return }
+              let trailer = HeroTrailerSelectorKt.selectHeroTrailer(
+                  trailers: trailers,
+                  preferredLanguage: TmdbSettingsRepository.shared.snapshot().language
+              ) else { return }
         didRequestTrailer = true
 
         var youtubeUrl = trailer.youtubePlaybackUrl()

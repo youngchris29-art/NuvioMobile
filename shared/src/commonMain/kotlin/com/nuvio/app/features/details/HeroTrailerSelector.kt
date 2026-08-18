@@ -1,17 +1,47 @@
 package com.nuvio.app.features.details
 
 fun selectHeroTrailer(trailers: List<MetaTrailer>): MetaTrailer? =
-    trailers
+    selectHeroTrailer(trailers, preferredLanguage = null)
+
+/**
+ * BUG-63: same selection, but with the Metadata Language as a tie-breaker BELOW the
+ * official/type tiers: preferred language > English > untagged > anything else. This is a
+ * preference, not a filter — a title whose only trailer is English still plays it.
+ *
+ * Deliberately an OVERLOAD rather than a default parameter: Kotlin/Native exports no default
+ * arguments, so a default would rename the Objective-C selector the tvOS app already calls
+ * (`HeroTrailerSelectorKt.selectHeroTrailer(trailers:)` in `DetailViewModel.swift` /
+ * `InlineTrailerCard.swift`). `preferredLanguage` accepts either a bare code (`fr`) or a TMDB
+ * locale (`fr-FR`, `pt-BR`); only the base language is compared.
+ */
+fun selectHeroTrailer(trailers: List<MetaTrailer>, preferredLanguage: String?): MetaTrailer? {
+    val preferredBase = preferredLanguage?.trim()?.substringBefore("-")?.lowercase()?.takeIf { it.isNotBlank() }
+    return trailers
         .asSequence()
         .filter { it.isPlayableYouTubeTrailerCandidate() }
         .maxWithOrNull(
             compareBy<MetaTrailer>(
                 { it.heroTrailerPriority() },
+                { it.languagePriority(preferredBase) },
                 { it.publishedAt.orEmpty() },
                 { it.size ?: 0 },
                 { it.name },
             ),
         )
+}
+
+private fun MetaTrailer.languagePriority(preferredBase: String?): Int {
+    // No preference (the one-argument overload) → this tier is a constant, so the legacy
+    // publishedAt/size/name ordering is preserved exactly.
+    if (preferredBase == null) return 0
+    val tag = language?.substringBefore("-")?.lowercase()
+    return when {
+        preferredBase != null && tag == preferredBase -> 3
+        tag == "en" -> 2
+        tag == null -> 1
+        else -> 0
+    }
+}
 
 fun MetaTrailer.youtubePlaybackUrl(): String =
     key.takeIf { it.startsWith("http://") || it.startsWith("https://") }

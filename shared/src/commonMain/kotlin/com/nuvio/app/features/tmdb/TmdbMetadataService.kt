@@ -1197,13 +1197,54 @@ object TmdbMetadataService {
         return result
     }
 
+    /**
+     * BUG-63 (tvOS beta.12 field report): `/videos` with only `language=fr-FR` returns ONLY the
+     * French-tagged videos — most titles carry an `en-US` YouTube trailer and nothing else, so a
+     * non-English Metadata Language made "no trailer" the common case (the reporter proved it by
+     * flipping the setting).
+     *
+     * Two-part answer, one request in the English case and two otherwise:
+     * 1. `include_video_language` (`fr,fr-FR,en,null`) — the documented twin of the
+     *    `include_image_language` list the artwork fetches in this file already send. TMDB
+     *    documents it for appended videos; whether the standalone `/videos` endpoints honor it is
+     *    not something we can rely on, so —
+     * 2. for a non-English language we ALSO fetch `language=en-US` and merge, preferred-language
+     *    results first, de-duplicated by video key. Untagged/English trailers are therefore always
+     *    present; the Metadata Language wins at *selection* time (`selectHeroTrailer`), never by
+     *    filtering here, so Detail's Trailers & Extras row still lists everything.
+     */
     private suspend fun fetchTmdbVideos(
+        endpoint: String,
+        language: String,
+    ): List<TmdbVideoResult> {
+        if (language.substringBefore("-").equals("en", ignoreCase = true)) {
+            return fetchTmdbVideosSingle(endpoint, language)
+        }
+        // Both in flight at once: the inline focus card's meta deadline is short (5 s), and the
+        // second request must not cost a full extra round trip.
+        val (preferred, english) = coroutineScope {
+            val preferredDeferred = async { fetchTmdbVideosSingle(endpoint, language) }
+            val englishDeferred = async { fetchTmdbVideosSingle(endpoint, ENGLISH_VIDEO_FALLBACK_LANGUAGE) }
+            preferredDeferred.await() to englishDeferred.await()
+        }
+        if (english.isEmpty()) return preferred
+        val seen = HashSet<String>()
+        return (preferred + english).filter { video ->
+            val key = video.key?.trim().orEmpty()
+            key.isNotEmpty() && seen.add(key)
+        }
+    }
+
+    private suspend fun fetchTmdbVideosSingle(
         endpoint: String,
         language: String,
     ): List<TmdbVideoResult> {
         val response = fetch<TmdbVideosResponse>(
             endpoint = endpoint,
-            query = mapOf("language" to language),
+            query = mapOf(
+                "language" to language,
+                "include_video_language" to includeVideoLanguages(language),
+            ),
         )
         return response?.results.orEmpty()
     }
@@ -1558,7 +1599,25 @@ private data class TmdbVideoResult(
     val type: String? = null,
     val official: Boolean? = null,
     @SerialName("published_at") val publishedAt: String? = null,
+    // BUG-63: the video's own language tag, so selection can prefer the Metadata Language
+    // without the fetch having to filter to it.
+    @SerialName("iso_639_1") val language: String? = null,
 )
+
+/**
+ * `include_video_language` value for a normalized TMDB language (`fr-FR`, `pt-BR`, `en-US`…):
+ * `fr,fr-FR,en,null` — same shape and precedence as the `include_image_language` builder used
+ * by the artwork fetches. Duplicates collapse (English → `en,null`), order is preserved.
+ */
+private const val ENGLISH_VIDEO_FALLBACK_LANGUAGE = "en-US"
+
+internal fun includeVideoLanguages(language: String): String {
+    val normalized = language.trim()
+    val base = normalized.substringBefore("-")
+    return linkedSetOf(base, normalized, "en", "null")
+        .filter { it.isNotBlank() }
+        .joinToString(",")
+}
 
 private fun TmdbVideoResult.toMetaTrailer(
     seasonNumber: Int?,
@@ -1578,6 +1637,7 @@ private fun TmdbVideoResult.toMetaTrailer(
         publishedAt = publishedAt,
         seasonNumber = seasonNumber,
         displayName = displayName,
+        language = language?.trim()?.lowercase()?.takeIf { it.isNotBlank() },
     )
 }
 

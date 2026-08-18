@@ -4,6 +4,7 @@ enum class AppLanguage(
     val code: String,
 ) {
     DEVICE("device"),
+    ARABIC("ar"),
     BULGARIAN("bg"),
     CZECH("cs"),
     ENGLISH("en"),

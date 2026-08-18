@@ -261,6 +261,9 @@ object ProfileRepository {
             val result = SupabaseProvider.client.postgrest.rpc("verify_profile_pin", params)
             result.decodeSingle<PinVerifyResult>().also { verifyResult ->
                 if (verifyResult.unlocked) {
+                    // Upstream 5327166f: refresh the cached profile before remembering the PIN so
+                    // a server-side profile change since the last pull isn't cached against.
+                    pullProfiles()
                     rememberVerifiedPin(profileIndex = profileIndex, pin = pin)
                 }
             }

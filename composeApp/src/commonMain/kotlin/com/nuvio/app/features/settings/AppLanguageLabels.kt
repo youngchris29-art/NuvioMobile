@@ -1,6 +1,7 @@
 package com.nuvio.app.features.settings
 
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.lang_arabic
 import nuvio.composeapp.generated.resources.lang_bulgarian
 import nuvio.composeapp.generated.resources.lang_czech
 import nuvio.composeapp.generated.resources.lang_english
@@ -28,6 +29,7 @@ import org.jetbrains.compose.resources.StringResource
 val AppLanguage.labelRes: StringResource
     get() = when (this) {
         AppLanguage.DEVICE -> Res.string.settings_appearance_app_language_device
+        AppLanguage.ARABIC -> Res.string.lang_arabic
         AppLanguage.BULGARIAN -> Res.string.lang_bulgarian
         AppLanguage.CZECH -> Res.string.lang_czech
         AppLanguage.ENGLISH -> Res.string.lang_english

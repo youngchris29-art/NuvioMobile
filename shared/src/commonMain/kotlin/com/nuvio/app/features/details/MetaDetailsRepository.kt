@@ -47,6 +47,33 @@ object MetaDetailsRepository {
     val uiState: StateFlow<MetaDetailsUiState> = _uiState.asStateFlow()
     private var activeRequestKey: String? = null
     private val cachedMetaByRequestKey = mutableMapOf<String, CachedMetaEntry>()
+    /**
+     * BUG-63: bumped by [clear]. Every load captures the generation it started under and writes
+     * to the cache only if nothing cleared it in between — otherwise a request that was in flight
+     * across a Metadata Language flip (or any other `clear()`) would repopulate the map with the
+     * old language's meta/trailers right after the invalidation.
+     */
+    private var cacheGeneration = 0
+
+    /** A request may publish to the UI only if it is still the active key AND nothing `clear()`ed
+     *  the repo since it started — otherwise an old-language load could overwrite a newer one. */
+    private fun isLiveRequest(requestKey: String, generation: Int): Boolean =
+        generation == cacheGeneration && MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)
+
+    /**
+     * The generation check and the map write happen together on the main dispatcher (the same
+     * one [clear] and [load] run on), so a `clear()` can never slip between the check and the
+     * write from a `Dispatchers.Default` enrichment. `build` sees the CURRENT cached entry.
+     */
+    private suspend fun putCache(
+        requestKey: String,
+        generation: Int,
+        build: (existing: CachedMetaEntry?) -> CachedMetaEntry?,
+    ) = withContext(Dispatchers.Main.immediate) {
+        if (generation != cacheGeneration) return@withContext
+        val entry = build(cachedMetaByRequestKey[requestKey])
+        if (entry == null) cachedMetaByRequestKey.remove(requestKey) else cachedMetaByRequestKey[requestKey] = entry
+    }
 
     fun load(type: String, id: String) {
         log.d { "load() called — type=$type id=$id" }
@@ -82,10 +109,12 @@ object MetaDetailsRepository {
                 meta = cachedBaseMeta,
                 requestKey = requestKey,
             )
+            val cachedPathGeneration = cacheGeneration
 
             scope.launch {
                 val enrichedMeta = withContext(Dispatchers.Default) {
                     enrichForMetaScreen(
+                        generation = cachedPathGeneration,
                         requestKey = requestKey,
                         meta = cachedBaseMeta,
                         fallbackItemId = id,
@@ -95,7 +124,7 @@ object MetaDetailsRepository {
                     )
                 }
                 // Skip if a newer load() has taken over the shared repo.
-                if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
+                if (isLiveRequest(requestKey, cachedPathGeneration)) {
                     _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter(), requestKey = requestKey)
                 }
             }
@@ -115,6 +144,7 @@ object MetaDetailsRepository {
 
         activeRequestKey = requestKey
         _uiState.value = MetaDetailsUiState(isLoading = true, requestKey = requestKey)
+        val generation = cacheGeneration
 
         scope.launch {
             val metaLookupId = resolveMetaLookupId(itemId = id, itemType = type)
@@ -124,6 +154,7 @@ object MetaDetailsRepository {
                 val tmdbMeta = tryFetchTmdbFallbackMeta(type = type, id = id)
                 if (tmdbMeta != null) {
                     publishLoadedMeta(
+                        generation = generation,
                         requestKey = requestKey,
                         meta = tmdbMeta,
                         fallbackItemId = id,
@@ -136,7 +167,7 @@ object MetaDetailsRepository {
 
                 log.w { "No addon provides meta for type=$type id=$id" }
                 // Skip if a newer load() has taken over the shared repo.
-                if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
+                if (isLiveRequest(requestKey, generation)) {
                     _uiState.value = MetaDetailsUiState(
                         errorMessage = resourceString(
                             "No addon provides meta for this content.",
@@ -159,6 +190,7 @@ object MetaDetailsRepository {
                 }
                 if (result != null) {
                     publishLoadedMeta(
+                        generation = generation,
                         requestKey = requestKey,
                         meta = result,
                         fallbackItemId = metaLookupId,
@@ -173,6 +205,7 @@ object MetaDetailsRepository {
             val tmdbMeta = tryFetchTmdbFallbackMeta(type = type, id = id)
             if (tmdbMeta != null) {
                 publishLoadedMeta(
+                    generation = generation,
                     requestKey = requestKey,
                     meta = tmdbMeta,
                     fallbackItemId = id,
@@ -184,7 +217,7 @@ object MetaDetailsRepository {
             }
 
             // Skip if a newer load() has taken over the shared repo.
-            if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
+            if (isLiveRequest(requestKey, generation)) {
                 _uiState.value = MetaDetailsUiState(
                     errorMessage = resourceString(
                         "Could not load details from any addon.",
@@ -209,10 +242,20 @@ object MetaDetailsRepository {
             ?: cachedEntry.baseMeta
     }
 
+    /**
+     * Every mutation of the cache/generation runs on the main dispatcher (see [putCache]). Callers
+     * on main (Settings, Detail) get the clear synchronously — `Main.immediate` runs the block
+     * inline; a caller on another dispatcher (e.g. a profile sync bumping the TMDB language from
+     * `SyncManager`'s Default scope) gets it hopped onto main, so it can never interleave with a
+     * generation-checked write.
+     */
     fun clear() {
-        activeRequestKey = null
-        cachedMetaByRequestKey.clear()
-        _uiState.value = MetaDetailsUiState()
+        scope.launch(Dispatchers.Main.immediate) {
+            activeRequestKey = null
+            cacheGeneration++
+            cachedMetaByRequestKey.clear()
+            _uiState.value = MetaDetailsUiState()
+        }
     }
 
     // Upstream ccc6b87d (beta.12 port): `cacheResult = false` lets BULK callers (badge
@@ -223,6 +266,7 @@ object MetaDetailsRepository {
     suspend fun fetch(type: String, id: String, cacheResult: Boolean = true): MetaDetails? {
         val requestKey = MetaRequestResolution.requestKey(type, id)
         cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
+        val generation = cacheGeneration
 
         val metaLookupId = resolveMetaLookupId(itemId = id, itemType = type)
         val manifests = findReadyMetaManifests(type = type, id = metaLookupId)
@@ -233,7 +277,7 @@ object MetaDetailsRepository {
             }
             if (result != null) {
                 if (cacheResult) {
-                    cachedMetaByRequestKey[requestKey] = CachedMetaEntry(baseMeta = result)
+                    putCache(requestKey, generation) { CachedMetaEntry(baseMeta = result) }
                 }
                 return result
             }
@@ -241,7 +285,7 @@ object MetaDetailsRepository {
 
         return tryFetchTmdbFallbackMeta(type = type, id = id)?.also { result ->
             if (cacheResult) {
-                cachedMetaByRequestKey[requestKey] = CachedMetaEntry(baseMeta = result)
+                putCache(requestKey, generation) { CachedMetaEntry(baseMeta = result) }
             }
         }
     }
@@ -356,6 +400,7 @@ object MetaDetailsRepository {
         }
 
     private suspend fun publishLoadedMeta(
+        generation: Int,
         requestKey: String,
         meta: MetaDetails,
         fallbackItemId: String,
@@ -364,17 +409,17 @@ object MetaDetailsRepository {
         metaScreenSettingsFingerprint: String,
     ) {
         val cachedEntry = CachedMetaEntry(baseMeta = meta)
-        cachedMetaByRequestKey[requestKey] = cachedEntry
+        putCache(requestKey, generation) { cachedEntry }
 
         if (!shouldEnrichForMetaScreen(meta, fallbackItemId, mdbListSettings)) {
             // Skip if a newer load() has taken over the shared repo (caching above still stands).
-            if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
+            if (isLiveRequest(requestKey, generation)) {
                 _uiState.value = MetaDetailsUiState(meta = meta.withUnreleasedFilter(), requestKey = requestKey)
             }
             return
         }
 
-        if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
+        if (isLiveRequest(requestKey, generation)) {
             _uiState.value = MetaDetailsUiState(
                 isLoading = true,
                 meta = meta,
@@ -383,6 +428,7 @@ object MetaDetailsRepository {
         }
         val enrichedMeta = withContext(Dispatchers.Default) {
             enrichForMetaScreen(
+                generation = generation,
                 requestKey = requestKey,
                 meta = meta,
                 fallbackItemId = fallbackItemId,
@@ -391,16 +437,19 @@ object MetaDetailsRepository {
                 settingsFingerprint = metaScreenSettingsFingerprint,
             )
         }
-        cachedMetaByRequestKey[requestKey] = cachedEntry.copy(
-            metaScreenMeta = enrichedMeta,
-            metaScreenSettingsFingerprint = metaScreenSettingsFingerprint,
-        )
-        if (MetaRequestResolution.isActiveRequest(activeRequestKey, requestKey)) {
+        putCache(requestKey, generation) {
+            cachedEntry.copy(
+                metaScreenMeta = enrichedMeta,
+                metaScreenSettingsFingerprint = metaScreenSettingsFingerprint,
+            )
+        }
+        if (isLiveRequest(requestKey, generation)) {
             _uiState.value = MetaDetailsUiState(meta = enrichedMeta.withUnreleasedFilter(), requestKey = requestKey)
         }
     }
 
     private suspend fun enrichForMetaScreen(
+        generation: Int,
         requestKey: String,
         meta: MetaDetails,
         fallbackItemId: String,
@@ -421,16 +470,18 @@ object MetaDetailsRepository {
             fallbackItemType = fallbackItemType,
         )
 
-        cachedMetaByRequestKey[requestKey] = cachedMetaByRequestKey[requestKey]
-            ?.copy(
-                metaScreenMeta = enrichedMeta,
-                metaScreenSettingsFingerprint = settingsFingerprint,
-            )
-            ?: CachedMetaEntry(
-                baseMeta = meta,
-                metaScreenMeta = enrichedMeta,
-                metaScreenSettingsFingerprint = settingsFingerprint,
-            )
+        putCache(requestKey, generation) { existing ->
+            existing
+                ?.copy(
+                    metaScreenMeta = enrichedMeta,
+                    metaScreenSettingsFingerprint = settingsFingerprint,
+                )
+                ?: CachedMetaEntry(
+                    baseMeta = meta,
+                    metaScreenMeta = enrichedMeta,
+                    metaScreenSettingsFingerprint = settingsFingerprint,
+                )
+        }
 
         return enrichedMeta
     }

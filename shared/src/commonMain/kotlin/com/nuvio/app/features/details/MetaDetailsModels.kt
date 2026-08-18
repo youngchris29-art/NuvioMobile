@@ -61,6 +61,9 @@ data class MetaTrailer(
     val publishedAt: String? = null,
     val seasonNumber: Int? = null,
     val displayName: String? = null,
+    /** BUG-63: ISO 639-1 tag of the video itself (TMDB `iso_639_1`), lowercase; null when the
+     *  source (addon meta) doesn't say. Used only to *prefer* the Metadata Language at selection. */
+    val language: String? = null,
 )
 
 data class MetaPerson(

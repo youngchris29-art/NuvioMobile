@@ -56,8 +56,25 @@ final class TrailerResolutionCache {
 
     private var entries: [String: Entry] = [:]
     private var insertionOrder: [String] = []
+    /// BUG-63: what's cached is a *language-dependent* answer (the trailer list TMDB returned for
+    /// the Metadata Language of the moment), but the key is `type:id`. Rather than leak the
+    /// language into every key (and every probe line), remember which language the whole map was
+    /// built under and drop it wholesale when that changes — a language flip is rare and total.
+    private var languageScope: String?
 
     private init() {}
+
+    private func reconcileLanguageScope() {
+        let current = TmdbSettingsRepository.shared.snapshot().language
+        guard let scope = languageScope else { languageScope = current; return }
+        guard scope != current else { return }
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] cache purge reason=language from=%@ to=%@ dropped=%d", scope, current, entries.count)
+        }
+        entries.removeAll()
+        insertionOrder.removeAll()
+        languageScope = current
+    }
 
     /// `nonisolated` so view bodies (e.g. `CatalogRowView`'s play/pause gate) can build a key without
     /// hopping actors — it's pure string interpolation and touches no state.
@@ -65,6 +82,7 @@ final class TrailerResolutionCache {
 
     /// Non-expired entry for `key`, evicting it if its TTL has passed.
     func entry(for key: String) -> Entry? {
+        reconcileLanguageScope()
         guard let entry = entries[key] else { return nil }
         let age: TimeInterval
         let ttl: TimeInterval
@@ -100,6 +118,7 @@ final class TrailerResolutionCache {
     /// decided this title has nothing playable, so the `[TrailerPipeline] cache store` line reads
     /// as a diagnosis (e.g. "playbackFailed" vs "no trailer listed") instead of a bare kind flag.
     func store(_ entry: Entry, for key: String, causeSite: String? = nil) {
+        reconcileLanguageScope()
         if entries[key] == nil { insertionOrder.append(key) }
         entries[key] = entry
         while insertionOrder.count > Self.capacity, let oldest = insertionOrder.first {
@@ -527,6 +546,17 @@ final class InlineTrailerCardModel: ObservableObject {
 
         let type = item.type
         let id = item.id
+        // BUG-63: everything below is an answer for THIS Metadata Language. If the setting flips
+        // while we're awaiting meta or extraction, the result belongs to the old language — the
+        // cache has already been purged for the new one, so don't repopulate it (and don't play).
+        let languageAtStart = TmdbSettingsRepository.shared.snapshot().language
+        func languageStillCurrent() -> Bool {
+            let now = TmdbSettingsRepository.shared.snapshot().language
+            if now != languageAtStart, TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] resolve dropped reason=languageChanged key=%@ from=%@ to=%@", key, languageAtStart, now)
+            }
+            return now == languageAtStart
+        }
         // Detail's `stop()` clears the shared repo, so `peek` can miss right after backing out of a
         // title — harmless, `fetch` refills from its own cache.
         var meta = MetaDetailsRepository.shared.peek(type: type, id: id)
@@ -540,9 +570,14 @@ final class InlineTrailerCardModel: ObservableObject {
             return
         }
 
+        guard languageStillCurrent() else { abandonExpansion(key: key); return }
         let trailers = meta.trailers
         guard !trailers.isEmpty,
-              let trailer = HeroTrailerSelectorKt.selectHeroTrailer(trailers: trailers) else {
+              // BUG-63: prefer the Metadata Language among the (now language-inclusive) list.
+              let trailer = HeroTrailerSelectorKt.selectHeroTrailer(
+                  trailers: trailers,
+                  preferredLanguage: TmdbSettingsRepository.shared.snapshot().language
+              ) else {
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "noTrailerListed")
             abandonExpansion(key: key)
             return
@@ -583,6 +618,7 @@ final class InlineTrailerCardModel: ObservableObject {
         } else {
             playable = nil
         }
+        guard languageStillCurrent() else { abandonExpansion(key: key); return }
         guard let playable, !playable.isEmpty else {
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "notPlayable")
             abandonExpansion(key: key)
