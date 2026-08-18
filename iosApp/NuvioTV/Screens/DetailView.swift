@@ -143,7 +143,7 @@ struct DetailView: View {
                 // the overscale just pushes the bars past the screen edges — the screen bounds
                 // themselves do the clipping. The failure report is ignored: Detail has one hero
                 // trailer and no negative cache to scope (that's the inline card's problem).
-                TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() })
+                TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() }, zoomKey: model.trailerZoomKey)
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
@@ -281,7 +281,7 @@ struct DetailView: View {
             // frame, since the controls-free surface has no replay affordance.
             FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                 model.trailerPlayback = nil
-            })
+            }, zoomKey: model.trailerZoomKey)
                 .ignoresSafeArea()
                 .overlay(alignment: .bottom) {
                     if trailerPlaybackIsAutoPlay {

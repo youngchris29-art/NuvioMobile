@@ -578,6 +578,12 @@ final class InlineTrailerCardModel: ObservableObject {
                   trailers: trailers,
                   preferredLanguage: TmdbSettingsRepository.shared.snapshot().language
               ) else {
+            // BUG-63: say how many the meta listed and under which language, so a device log can
+            // tell "TMDB has none" from "wrong language" (the two look identical from the tile).
+            if TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] noTrailerListed key=%@ listed=%d language=%@",
+                      key, trailers.count, languageAtStart)
+            }
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "noTrailerListed")
             abandonExpansion(key: key)
             return
@@ -603,7 +609,12 @@ final class InlineTrailerCardModel: ObservableObject {
             // known videoId — deterministic `[TrailerRepack]`/`[TrailerZoom]` logs for the soak. The
             // substitution happens AFTER `key` was derived above, so cache behavior stays per-title
             // (many distinct keys, one known stream) rather than collapsing every card onto one entry.
-            if let forced = UserDefaults.standard.string(forKey: "debug.trailerSmokeVideoId"), !forced.isEmpty {
+            // BUG-59 (beta.13): honored ONLY while `debug.trailerProbe` is also on. This knob
+            // persists in the container and, alone, would silently point EVERY tile at one
+            // videoId (one shared zoom, one shared trailer) — the profile of the "all trailers
+            // extremely zoomed until I reinstalled" report. Pairing it with the probe knob means
+            // a forgotten `defaults write` can no longer hijack a release, and the soak sets both.
+            if TrailerProbe.enabled, let forced = TrailerProbe.smokeVideoId {
                 youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
             }
             source = await resolveYouTube(youtubeUrl)
@@ -829,6 +840,8 @@ struct InlineTrailerCard: View {
                     // BUG-46/B2: the report says *why*, which is what decides whether this title is
                     // remembered as broken (it usually isn't) — see `playbackFailed`.
                     onFailure: { report in model.playbackFailed(report) },
+                    // BUG-59: the measured zoom is remembered per TITLE, not per playback URL.
+                    zoomKey: TrailerResolutionCache.key(type: item.type, id: item.id),
                     loops: false,
                     onPlaybackEnded: { model.playbackFinished() }
                 )

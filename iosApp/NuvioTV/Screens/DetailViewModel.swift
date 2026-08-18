@@ -60,6 +60,8 @@ final class DetailViewModel: ObservableObject {
     private let preview: MetaPreview
     private var type: String { preview.type }
     private var id: String { preview.id }
+    /// BUG-59: the identity the trailer surfaces remember their measured zoom under.
+    var trailerZoomKey: String { TrailerResolutionCache.key(type: type, id: id) }
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -161,7 +163,9 @@ final class DetailViewModel: ObservableObject {
         // Phase 0 (BUG-46/UX-9, 2026-08-06): lifted out of `#if DEBUG` — the trailer soak needs
         // this on release sideloads too (testers, device passes), same rationale as
         // `TrailerProbe`/`HomeGeometryProbe` being runtime knobs rather than compile-time ones.
-        if let forced = UserDefaults.standard.string(forKey: "debug.trailerSmokeVideoId"), !forced.isEmpty {
+        // BUG-59 (beta.13): honored only together with `debug.trailerProbe` — see the same guard
+        // in `InlineTrailerCardModel.resolve` for why.
+        if TrailerProbe.enabled, let forced = TrailerProbe.smokeVideoId {
             youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
         }
         HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { [weak self] source, _ in

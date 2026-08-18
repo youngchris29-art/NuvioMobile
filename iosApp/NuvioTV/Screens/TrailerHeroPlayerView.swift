@@ -71,6 +71,12 @@ struct TrailerFailureReport {
 struct TrailerHeroPlayer: UIViewRepresentable {
     let urlString: String
     var onFailure: (TrailerFailureReport) -> Void = { _ in }
+    /// BUG-59: identity the measured zoom is remembered under — the TITLE (`type:id`, the same
+    /// key `TrailerResolutionCache` uses), not the playback URL. Loopback repack URLs change per
+    /// process (port) and per re-extraction (token), so a URL-keyed memo forgot everything it
+    /// learned on every relaunch. `nil` falls back to the URL (unit tests / callers without a
+    /// title).
+    var zoomKey: String? = nil
     /// `true` (the default, and what the Detail hero uses) keeps the endless `AVPlayerLooper` this
     /// view was written for. `false` plays the item exactly once and reports the end through
     /// `onPlaybackEnded` — the inline catalog card uses that to collapse itself back to a poster
@@ -107,7 +113,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         // This stays set anyway: it is what keeps the un-zoomed aspect-fill crop honest.
         view.clipsToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
-        context.coordinator.attach(to: view, urlString: urlString, loops: loops)
+        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey)
         return view
     }
 
@@ -159,7 +165,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             self.onPlaybackEnded = onPlaybackEnded
         }
 
-        func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true) {
+        func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true, zoomKey: String? = nil) {
             attachedURLString = urlString
             attachedView = view
             guard let url = URL(string: urlString) else { fail(.badURL); return }
@@ -235,7 +241,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             // the same reason the presentationSize probe below is — and the probe reads
             // `player.currentItem` on every sample rather than capturing `item`, so the `loops`
             // path measures the copies `AVPlayerLooper` actually plays.
-            letterboxProbe = TrailerLetterboxProbe(view: view, player: queue, urlString: urlString, surface: "hero")
+            letterboxProbe = TrailerLetterboxProbe(view: view, player: queue, urlString: urlString, zoomKey: zoomKey, surface: "hero")
             letterboxProbe?.start()
 
             #if DEBUG
@@ -352,6 +358,8 @@ struct TrailerHeroPlayer: UIViewRepresentable {
 struct FullScreenTrailerPlayer: View {
     let urlString: String
     var onPlaybackEnded: () -> Void = {}
+    /// BUG-59: see `TrailerHeroPlayer.zoomKey`.
+    var zoomKey: String? = nil
 
     /// Stable across body re-evals (@State keeps the instance); bridges the play/pause command
     /// to the representable's player without making the surface observable.
@@ -361,7 +369,7 @@ struct FullScreenTrailerPlayer: View {
         // UX-9: no `.scaleEffect` any more — the zoom is measured per stream and applied to the
         // player layer itself (`TrailerLetterboxProbe`), with `parityZoom` as its floor, so this
         // surface still renders exactly as before for a bar-free 16:9 source.
-        FullScreenTrailerSurface(urlString: urlString, control: control, onPlaybackEnded: onPlaybackEnded)
+        FullScreenTrailerSurface(urlString: urlString, zoomKey: zoomKey, control: control, onPlaybackEnded: onPlaybackEnded)
             .ignoresSafeArea()
             .onPlayPauseCommand { control.togglePause() }
     }
@@ -383,6 +391,7 @@ final class FullScreenTrailerControl {
 
 private struct FullScreenTrailerSurface: UIViewRepresentable {
     let urlString: String
+    let zoomKey: String?
     let control: FullScreenTrailerControl
     let onPlaybackEnded: () -> Void
 
@@ -402,7 +411,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             view.playerLayer.player = player
             control.player = player
             context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
-            context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString)
+            context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey)
             // Phase 0 (BUG-46): full-screen plays share `TrailerPipelineCounters` with the
             // inline/hero surfaces (`TrailerHeroPlayer.Coordinator`) so a full-screen "Watch
             // Trailer" doesn't misread as a leak in the inline/hero attach/teardown numbers.
@@ -444,8 +453,8 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         /// UX-9: same probe the inline/hero surfaces use, so all three get their zoom from one
         /// implementation (and share its per-URL session cache — a title watched full-screen right
         /// after its inline preview starts already measured).
-        func startLetterboxProbe(view: TrailerPlayerUIView, player: AVPlayer, urlString: String) {
-            letterboxProbe = TrailerLetterboxProbe(view: view, player: player, urlString: urlString, surface: "full")
+        func startLetterboxProbe(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String?) {
+            letterboxProbe = TrailerLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, surface: "full")
             letterboxProbe?.start()
         }
 
@@ -464,37 +473,127 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
 
 // MARK: - UX-9: measured letterbox zoom
 
-/// Session memo of measured zooms, keyed by the exact playback URL string.
+/// BUG-59 (beta.13): the measured zoom is remembered per TITLE and PERSISTED — the beta.12 memo was
+/// per playback URL and process-lifetime, and every loopback repack URL carries the process's port
+/// and the extraction's token, so a relaunch or a re-extraction forgot everything: nearly every
+/// focus started at the 1.08 floor and the ~90% letterbox the reporter counted is exactly that.
 ///
-/// Re-focusing a card (or opening the same trailer full-screen) starts at the measured zoom with no
-/// ramp; only the first play of a stream in a session ever ramps. Capacity mirrors
-/// `TrailerResolutionCache` for the same reason — a marathon browse touches far more titles than it
-/// plays, and these entries are a `CGFloat` each.
+/// What is stored: `{zoom, token, at}` under the title key, capped at 300 entries (LRU by `at`),
+/// as one JSON blob in `UserDefaults` under `trailerZoom.v1`. Reads CLAMP every value into
+/// `[1.0, TrailerLetterboxProbe.maxZoom]`, drop entries older than 30 days, and drop the whole
+/// blob if its `version` differs — that last rule is the escape hatch for the "every trailer was
+/// extremely zoomed until I reinstalled" report: a bad blob can never outlive a version bump. The
+/// `token` (`TrailerLocalHLS` repack token, nil for direct URLs) says WHICH stream the zoom was
+/// measured on: a match applies it as final; a mismatch applies it as the interim and re-measures.
 ///
 /// NSLock-guarded rather than `@MainActor`, matching `TrailerPipelineCounters`: the probe reads it
-/// from `TrailerHeroPlayer.Coordinator.attach`, which is not actor-isolated.
+/// from `TrailerHeroPlayer.Coordinator.attach`, which is not actor-isolated. Writes to
+/// `UserDefaults` are coalesced (one encode per store; the blob is a few KB).
 final class TrailerZoomCache: @unchecked Sendable {
     static let shared = TrailerZoomCache()
 
-    private let lock = NSLock()
-    private var values: [String: CGFloat] = [:]
-    private var insertionOrder: [String] = []
-    private static let capacity = 200
-
-    private init() {}
-
-    func zoom(for url: String) -> CGFloat? {
-        lock.lock(); defer { lock.unlock() }
-        return values[url]
+    struct Entry: Codable {
+        let zoom: CGFloat
+        let token: String?
+        let at: TimeInterval
+    }
+    private struct Blob: Codable {
+        let version: Int
+        let entries: [String: Entry]
     }
 
-    func store(_ zoom: CGFloat, for url: String) {
+    static let storageKey = "trailerZoom.v1"
+    static let version = 1
+    private static let capacity = 300
+    private static let maxAge: TimeInterval = 30 * 24 * 60 * 60
+
+    private let lock = NSLock()
+    private var values: [String: Entry] = [:]
+    private var loaded = false
+    private let defaults: UserDefaults
+
+    private init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    /// Test seam: an isolated instance over a throwaway suite.
+    static func makeIsolated(suiteName: String) -> TrailerZoomCache {
+        let suite = UserDefaults(suiteName: suiteName) ?? .standard
+        suite.removePersistentDomain(forName: suiteName)
+        return TrailerZoomCache(defaults: suite)
+    }
+
+    func entry(for key: String) -> Entry? {
         lock.lock(); defer { lock.unlock() }
-        if values[url] == nil { insertionOrder.append(url) }
-        values[url] = zoom
-        while insertionOrder.count > Self.capacity, let oldest = insertionOrder.first {
-            values[oldest] = nil
-            insertionOrder.removeFirst()
+        loadIfNeeded()
+        return values[key]
+    }
+
+    /// Kept for callers that only have a URL (and as the shape the pre-BUG-59 probe used).
+    func zoom(for key: String) -> CGFloat? { entry(for: key)?.zoom }
+
+    func store(_ zoom: CGFloat, for key: String, token: String) {
+        lock.lock(); defer { lock.unlock() }
+        loadIfNeeded()
+        values[key] = Entry(zoom: Self.sanitized(zoom), token: token, at: Date().timeIntervalSince1970)
+        if values.count > Self.capacity {
+            let overflow = values.count - Self.capacity
+            for (key, _) in values.sorted(by: { $0.value.at < $1.value.at }).prefix(overflow) {
+                values[key] = nil
+            }
+        }
+        persist()
+    }
+
+    /// Everything we remember, gone — the device pass's reset button (`defaults delete`-equivalent
+    /// from inside the app) and what a future version bump does implicitly.
+    func removeAll() {
+        lock.lock(); defer { lock.unlock() }
+        values.removeAll()
+        loaded = true
+        defaults.removeObject(forKey: Self.storageKey)
+    }
+
+    var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        loadIfNeeded()
+        return values.count
+    }
+
+    /// Clamp into the only range a real measurement can produce; anything else is corruption.
+    static func sanitized(_ zoom: CGFloat) -> CGFloat {
+        guard zoom.isFinite else { return TrailerHeroPlayer.parityZoom }
+        return min(max(zoom, 1.0), TrailerLetterboxProbe.maxZoom)
+    }
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        loaded = true
+        guard let data = defaults.data(forKey: Self.storageKey) else {
+            if TrailerProbe.enabled { NSLog("[TrailerZoom] store loaded n=0 version=%d (empty)", Self.version) }
+            return
+        }
+        guard let blob = try? JSONDecoder().decode(Blob.self, from: data), blob.version == Self.version else {
+            // Unknown/older shape: never trust it (see the type doc), start clean.
+            defaults.removeObject(forKey: Self.storageKey)
+            if TrailerProbe.enabled { NSLog("[TrailerZoom] store loaded n=0 version=%d (dropped stale blob)", Self.version) }
+            return
+        }
+        let cutoff = Date().timeIntervalSince1970 - Self.maxAge
+        var kept: [String: Entry] = [:]
+        for (key, entry) in blob.entries where entry.at >= cutoff && entry.zoom.isFinite {
+            kept[key] = Entry(zoom: Self.sanitized(entry.zoom), token: entry.token, at: entry.at)
+        }
+        values = kept
+        if TrailerProbe.enabled {
+            NSLog("[TrailerZoom] store loaded n=%d version=%d (dropped %d expired)", kept.count, Self.version, blob.entries.count - kept.count)
+        }
+    }
+
+    private func persist() {
+        let blob = Blob(version: Self.version, entries: values)
+        if let data = try? JSONEncoder().encode(blob) {
+            defaults.set(data, forKey: Self.storageKey)
         }
     }
 }
@@ -511,6 +610,16 @@ final class TrailerZoomCache: @unchecked Sendable {
 ///
 /// One-shot per stream: five samples, a measurement, the output detached, timer gone. Everything
 /// after that is a cache read.
+///
+/// BUG-59 (beta.13) — why it measures EARLIER and applies PARTIAL results now: the beta.12 probe
+/// could not produce a number before ~2–3.5 s (first sample at 1.0 s, 0.5 s ticks, ≥3 samples) and
+/// the inline focus tile is usually gone by then — `stop()` logged "abandoned … floor kept, not
+/// cached" and the next visit started at 1.08 again, on ~90 % of titles by the reporter's count.
+/// Now: the video output is attached eagerly, sampling starts at 0.25 s on 0.25 s ticks, an
+/// INTERIM zoom is applied after the 2nd usable sample, and the FINAL zoom (the one that gets
+/// remembered) still requires ≥3 samples spanning ≥1 s of item time. Safe because the min-across-
+/// samples rule below can only make a bar *thinner* and dark-centred frames are never samples: a
+/// fade-in can cost a false negative (bar=0 → floor) but never an over-zoom.
 final class TrailerLetterboxProbe {
     /// Ceiling on the measured zoom. DERIVED, not tuned: the widest format anyone bakes into a 16:9
     /// container is ~2.55:1, and 2.55 / (16/9) = 1.435. (The 2.39:1 scope trailers UX-9 was filed
@@ -521,12 +630,23 @@ final class TrailerLetterboxProbe {
     private static let cardAspect: Double = 16.0 / 9.0
 
     private static let sampleTarget = 5
-    /// Trailers open on black, so sampling starts a beat in.
-    private static let firstSampleSeconds: Double = 1.0
-    private static let tickInterval: TimeInterval = 0.5
+    /// BUG-59: sample from the first quarter second (was 1.0 s — see the type doc). Black opening
+    /// frames are rejected as samples anyway, so starting early costs nothing.
+    private static let firstSampleSeconds: Double = 0.25
+    private static let tickInterval: TimeInterval = 0.25
     /// Give up after this many ticks (12s) if playback never delivers enough frames — the surface
-    /// simply keeps the `parityZoom` floor, and nothing is cached, so a later play measures again.
-    private static let maxTicks = 24
+    /// keeps whatever it has (interim, else the `parityZoom` floor), and nothing is cached, so a
+    /// later play measures again.
+    private static let maxTicks = 48
+    /// BUG-59: apply an interim zoom after this many usable samples; keep sampling for the final.
+    private static let interimSampleCount = 2
+    /// The final (persisted) measurement needs at least this many samples…
+    private static let finalMinSamples = 3
+    /// …spanning at least this much item time, so two adjacent frames of one shot can never be
+    /// remembered as the answer for the whole trailer. 0.95 rather than 1.0: four 0.25 s ticks
+    /// legitimately span "1.0 s" of item time that reads 0.9999 (sim run 2026-08-18: five
+    /// samples, `span=1.00s`, refused).
+    private static let finalMinSpanSeconds: Double = 0.95
     /// Mean 8-bit luma at or below this reads as a black bar. Well above sensor/encoder noise on a
     /// true black bar, well below any real picture content.
     private static let blackLuma: Double = 16
@@ -547,6 +667,13 @@ final class TrailerLetterboxProbe {
     private weak var view: TrailerPlayerUIView?
     private weak var player: AVPlayer?
     private let urlString: String
+    /// BUG-59: what the measurement is remembered under (the title key, else the URL).
+    private let zoomKey: String
+    /// Stream identity stored with the measurement so a persisted entry knows whether it was
+    /// measured on THIS stream: the `TrailerLocalHLS` repack token for loopback URLs, else a
+    /// stable digest of a direct URL (`streamIdentity(of:)`). Never nil, so two different direct
+    /// streams of one title (hero trailer vs a Trailers & Extras pick) can't read as "a match".
+    private let token: String
     /// `hero` (inline card + Detail hero) or `full` — log disambiguation only.
     private let surface: String
 
@@ -555,31 +682,69 @@ final class TrailerLetterboxProbe {
     private var timer: Timer?
     private var ticks = 0
     private var samples: [Bars] = []
+    /// Item time (seconds) of each entry in `samples`, for the final-measurement span guard.
+    private var sampleTimes: [Double] = []
     private var frameSize: CGSize = .zero
     /// One measurement per probe: `tick()` can reach the sample target and the tick ceiling in the
     /// same pass, and a second `finish()` would re-log and re-animate an identical zoom.
     private var finished = false
+    /// BUG-59: whatever non-final zoom is currently on screen — a persisted value measured on a
+    /// different stream of this title, or an early measurement of this one. Log/teardown state.
+    private var interimZoom: CGFloat?
+    /// BUG-59: true once THIS stream's own samples produced an interim; a persisted-mismatch value
+    /// applied in `start()` does not count, so fresh samples always get to correct it.
+    private var interimMeasured = false
 
-    init(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, surface: String) {
+    init(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String? = nil, surface: String) {
         self.view = view
         self.player = player
         self.urlString = urlString
+        self.zoomKey = zoomKey ?? urlString
+        self.token = Self.streamIdentity(of: urlString)
         self.surface = surface
     }
 
-    /// Applies the starting zoom (cached measurement, else the parity floor) and, when there is
-    /// nothing cached, arms the sampler. Main-thread only.
+    /// Repack token for a loopback URL; for a direct progressive/HLS URL, `host/path` plus the
+    /// `id` and `itag` query items when present (stable across googlevideo's rotating `expire`/
+    /// signature params, distinct across videos and renditions), else the whole URL.
+    static func streamIdentity(of urlString: String) -> String {
+        if let token = TrailerLocalHLS.token(inPlaybackURL: urlString) { return "repack:\(token)" }
+        guard let comps = URLComponents(string: urlString) else { return "url:\(urlString)" }
+        let stable = (comps.queryItems ?? [])
+            .filter { $0.name == "id" || $0.name == "itag" }
+            .sorted { $0.name < $1.name }
+            .map { "\($0.name)=\($0.value ?? "")" }
+            .joined(separator: "&")
+        let base = "\(comps.host ?? "")\(comps.path)"
+        return stable.isEmpty ? "url:\(urlString)" : "direct:\(base)?\(stable)"
+    }
+
+    /// Applies the starting zoom and decides whether to measure. Main-thread only.
+    ///
+    /// * Persisted entry whose token matches this stream (or a direct URL with no token on either
+    ///   side) → apply as final, no probe.
+    /// * Persisted entry measured on a DIFFERENT stream of the same title → apply it as the
+    ///   interim (it is almost always right — same film, same bars) and re-measure.
+    /// * Nothing → parity floor, measure.
     func start() {
-        if let cached = TrailerZoomCache.shared.zoom(for: urlString) {
-            apply(cached, animated: false)
+        if let cached = TrailerZoomCache.shared.entry(for: zoomKey) {
+            // A blob entry with no token (never written by this build, but decodable) never matches.
+            let tokenMatches = cached.token == token
+            apply(cached.zoom, animated: false)
             if TrailerProbe.enabled {
-                NSLog("[TrailerZoom] cached applied=%.3f surface=%@ cardFrame=%@", cached, surface, cardFrameDescription())
+                NSLog("[TrailerZoom] persisted-hit key=%@ zoom=%.3f token=%@ surface=%@ cardFrame=%@",
+                      zoomKey, cached.zoom, tokenMatches ? "match" : "mismatch", surface, cardFrameDescription())
             }
-            return
+            if tokenMatches { return }
+            interimZoom = cached.zoom
+        } else {
+            // Parity floor first, un-animated: until the measurement lands, every surface renders
+            // exactly what it rendered before UX-9.
+            apply(TrailerHeroPlayer.parityZoom, animated: false)
         }
-        // Parity floor first, un-animated: until the measurement lands, every surface renders
-        // exactly what it rendered before UX-9.
-        apply(TrailerHeroPlayer.parityZoom, animated: false)
+        // BUG-59: attach the output NOW rather than on the first tick, so the very first tick can
+        // already read a frame (the item exists before `play()` on both surfaces).
+        attachOutputIfNeeded()
         let timer = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
             self?.tick()
         }
@@ -596,8 +761,9 @@ final class TrailerLetterboxProbe {
         // so a completed measurement never double-logs.
         if timer != nil, !finished, TrailerProbe.enabled {
             finished = true
-            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d surface=%@ — floor kept, not cached",
-                  samples.count, ticks, surface)
+            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d interimApplied=%d surface=%@ key=%@ — %@ kept, not cached",
+                  samples.count, ticks, interimZoom == nil ? 0 : 1, surface, zoomKey,
+                  interimZoom == nil ? "floor" : "interim")
         }
         timer?.invalidate()
         timer = nil
@@ -606,26 +772,29 @@ final class TrailerLetterboxProbe {
 
     // MARK: Sampling
 
+    /// Re-attach on item changes rather than capturing one item: with `loops == true` the
+    /// AVPlayerLooper plays *copies* of the template, so the item we were handed at attach
+    /// never produces a frame (same trap the `[TrailerQuality]` probe documents).
+    private func attachOutputIfNeeded() {
+        guard let player, let item = player.currentItem else { return }
+        guard sampledItem !== item else { return }
+        detachOutput()
+        let attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ]
+        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: attributes)
+        item.add(output)
+        self.output = output
+        sampledItem = item
+        samples.removeAll()
+        sampleTimes.removeAll()
+    }
+
     private func tick() {
         ticks += 1
         defer { if ticks >= Self.maxTicks { finish() } }
-        guard let player, let item = player.currentItem else { return }
-
-        // Re-attach on item changes rather than capturing one item: with `loops == true` the
-        // AVPlayerLooper plays *copies* of the template, so the item we were handed at attach
-        // never produces a frame (same trap the `[TrailerQuality]` probe documents).
-        if sampledItem !== item {
-            detachOutput()
-            let attributes: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-            ]
-            let output = AVPlayerItemVideoOutput(pixelBufferAttributes: attributes)
-            item.add(output)
-            self.output = output
-            sampledItem = item
-            samples.removeAll()
-        }
-        guard let output else { return }
+        attachOutputIfNeeded()
+        guard let player, let item = player.currentItem, let output else { return }
 
         let time = item.currentTime()
         let seconds = CMTimeGetSeconds(time)
@@ -634,8 +803,59 @@ final class TrailerLetterboxProbe {
               let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
 
         frameSize = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
-        if let bars = Self.bars(in: buffer) { samples.append(bars) }
+        if let bars = Self.bars(in: buffer) {
+            samples.append(bars)
+            sampleTimes.append(seconds)
+        }
+        if samples.count >= Self.interimSampleCount, !interimMeasured {
+            applyInterim()
+        }
         if samples.count >= Self.sampleTarget { finish() }
+    }
+
+    /// BUG-59: the zoom the samples so far imply, applied without being remembered. Skipped (and
+    /// retried on the next sample) when the measurement is CLAMPED at `maxZoom`: two early frames
+    /// of a fade-in read as huge bars, and the sim run that shipped this showed exactly that —
+    /// `interim applied=1.450` settling to `final … 1.343`, a visible bounce. A capped reading is a
+    /// fade signature, not a bar; the min-across-samples final will discard it anyway.
+    private func applyInterim() {
+        guard let result = Self.measure(samples), frameSize.width > 0 else { return }
+        guard CGFloat(result.measured) < Self.maxZoom else { return }
+        let zoom = result.zoom
+        interimMeasured = true
+        interimZoom = zoom
+        apply(zoom, animated: true)
+        if TrailerProbe.enabled {
+            let span = (sampleTimes.last ?? 0) - (sampleTimes.first ?? 0)
+            NSLog("[TrailerZoom] interim samples=%d span=%.2fs applied=%.3f surface=%@ key=%@",
+                  samples.count, span, zoom, surface, zoomKey)
+        }
+    }
+
+    /// The zoom a set of samples implies (nil when it implies nothing usable), plus the measured
+    /// pre-clamp value for the log. Shared by the interim and final paths so they can never
+    /// disagree about the formula.
+    private static func measure(_ collected: [Bars]) -> (zoom: CGFloat, measured: Double)? {
+        guard !collected.isEmpty else { return nil }
+        // A bar counts only if it is present in EVERY sample — hence `min`, not an average. A single
+        // frame can be letterboxed by its own content (a black-bordered shot, a fade), and averaging
+        // would let that fake a permanent bar.
+        func edge(_ keyPath: KeyPath<Bars, Double>) -> Double {
+            let value = collected.map { $0[keyPath: keyPath] }.min() ?? 0
+            return value >= minBarFraction ? value : 0
+        }
+        let top = edge(\.top), bottom = edge(\.bottom), left = edge(\.left), right = edge(\.right)
+        let verticalContent = 1 - top - bottom
+        let horizontalContent = 1 - left - right
+        guard verticalContent > 0, horizontalContent > 0 else { return nil }
+        // The zoom derives from the DETECTED BARS alone — never from the coded frame's aspect.
+        // `.resizeAspectFill` already crops away any *native* aspect mismatch (a barless 1920×800
+        // stream fills the card with zero help), so an aspect-ratio formula would over-crop
+        // exactly those streams by up to ~35% (Codex round 3). Letterbox → 1/(1-top-bottom);
+        // pillarbox → 1/(1-left-right); barless → 1.0 and the parity floor applies.
+        let measured = max(1 / verticalContent, 1 / horizontalContent)
+        let zoom = min(max(CGFloat(measured), TrailerHeroPlayer.parityZoom), maxZoom)
+        return (zoom, measured)
     }
 
     /// Deliberately NOT requesting a downscaled (e.g. 160x90) output buffer: `AVPlayerItemVideoOutput`
@@ -703,51 +923,43 @@ final class TrailerLetterboxProbe {
         guard !finished else { return }
         finished = true
         let collected = samples
+        let times = sampleTimes
         let size = frameSize
+        let span = (times.last ?? 0) - (times.first ?? 0)
         stop()
-        // Fewer than three usable samples is a stream that stalled or stayed dark; keep the floor
-        // and cache nothing, so the next play of this URL measures again.
-        guard collected.count >= 3, size.width > 0, size.height > 0 else {
+        // Too few samples, or samples too close together, is a stream that stalled, stayed dark, or
+        // was left too early: keep what is on screen (interim, else floor) and cache nothing, so the
+        // next play of this title measures again.
+        guard collected.count >= Self.finalMinSamples, span >= Self.finalMinSpanSeconds,
+              size.width > 0, size.height > 0 else {
             // UX-9 (beta.12): this bail used to be SILENT even with the probe armed — a beta.12
             // soak produced 154 [TrailerPipeline] lines and zero [TrailerZoom] lines, with no way
             // to tell whether the measurement never ran or kept failing. A letterboxed source
             // whose measurement can't complete stays at the 1.08 floor (the reporter's Lucky
             // case), so the WHY has to be readable off a log pull.
             if TrailerProbe.enabled {
-                NSLog("[TrailerZoom] insufficient samples=%d frame=%dx%d ticks=%d surface=%@ — floor kept, not cached",
-                      collected.count, Int(size.width), Int(size.height), ticks, surface)
+                NSLog("[TrailerZoom] insufficient samples=%d span=%.2fs frame=%dx%d ticks=%d interimApplied=%d surface=%@ key=%@ — %@ kept, not cached",
+                      collected.count, span, Int(size.width), Int(size.height), ticks,
+                      interimZoom == nil ? 0 : 1, surface, zoomKey, interimZoom == nil ? "floor" : "interim")
             }
             return
         }
 
-        // A bar counts only if it is present in EVERY sample — hence `min`, not an average. A single
-        // frame can be letterboxed by its own content (a black-bordered shot, a fade), and averaging
-        // would let that fake a permanent bar.
-        func edge(_ keyPath: KeyPath<Bars, Double>) -> Double {
-            let value = collected.map { $0[keyPath: keyPath] }.min() ?? 0
-            return value >= Self.minBarFraction ? value : 0
+        guard let result = Self.measure(collected) else { return }
+        let zoom = result.zoom
+        let measured = result.measured
+        let bars = collected.reduce(Bars(top: 1, bottom: 1, left: 1, right: 1)) { acc, next in
+            Bars(top: min(acc.top, next.top), bottom: min(acc.bottom, next.bottom),
+                 left: min(acc.left, next.left), right: min(acc.right, next.right))
         }
-        let top = edge(\.top), bottom = edge(\.bottom), left = edge(\.left), right = edge(\.right)
 
-        let verticalContent = 1 - top - bottom
-        let horizontalContent = 1 - left - right
-        guard verticalContent > 0, horizontalContent > 0 else { return }
-
-        // The zoom derives from the DETECTED BARS alone — never from the coded frame's aspect.
-        // `.resizeAspectFill` already crops away any *native* aspect mismatch (a barless 1920×800
-        // stream fills the card with zero help), so an aspect-ratio formula would over-crop
-        // exactly those streams by up to ~35% (Codex round 3). Letterbox → 1/(1-top-bottom);
-        // pillarbox → 1/(1-left-right); barless → 1.0 and the parity floor applies.
-        let measured = max(1 / verticalContent, 1 / horizontalContent)
-        let zoom = min(max(CGFloat(measured), TrailerHeroPlayer.parityZoom), Self.maxZoom)
-
-        TrailerZoomCache.shared.store(zoom, for: urlString)
+        TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token)
         apply(zoom, animated: true)
 
         if TrailerProbe.enabled {
-            NSLog("[TrailerZoom] frame=%dx%d bars top=%.3f bottom=%.3f left=%.3f right=%.3f samples=%d measured=%.3f applied=%.3f surface=%@ cardFrame=%@",
-                  Int(size.width), Int(size.height), top, bottom, left, right, collected.count,
-                  measured, zoom, surface, cardFrameDescription())
+            NSLog("[TrailerZoom] final frame=%dx%d bars top=%.3f bottom=%.3f left=%.3f right=%.3f samples=%d span=%.2fs measured=%.3f applied=%.3f persisted=1 surface=%@ key=%@ cardFrame=%@",
+                  Int(size.width), Int(size.height), bars.top, bars.bottom, bars.left, bars.right, collected.count,
+                  span, measured, zoom, surface, zoomKey, cardFrameDescription())
         }
     }
 

@@ -158,4 +158,46 @@ final class TrailerSoakTests: XCTestCase {
         shot(app, "soak_dwell_final_settle")
         XCTAssertTrue(app.state == .runningForeground, "app must survive the dwell-play-leave soak and still be responsive on the final card")
     }
+
+    // MARK: - Profile 3: short dwell × 2 launches (BUG-59 zoom learn + persisted-hit)
+
+    /// BUG-59 (beta.13): the reporter's browsing shape — sit on a card for ~1.5 s after playback
+    /// starts, move on — then relaunch and revisit the same cards. Read from the harvested log:
+    ///
+    ///   * launch 1: a `[TrailerZoom] interim` line within ~0.75 s of each `[TrailerPipeline] play`
+    ///     and NO `insufficient` lines with `interimApplied=0` (the pre-fix "floor kept" signature);
+    ///     `final … persisted=1` where the dwell was long enough (span ≥ 1 s).
+    ///   * launch 2: `[TrailerZoom] persisted-hit key=… token=match` BEFORE any sample line for the
+    ///     revisited cards, and `store loaded n=` > 0 at launch.
+    ///
+    ///     xcrun simctl spawn booted log show --last 10m \
+    ///       --predicate 'eventMessage CONTAINS "[TrailerZoom]"'
+    ///
+    /// The forced smoke videoId is on (paired with `-debug.trailerProbe`, which is now REQUIRED
+    /// for it to be honored), so every card shares one stream and the numbers are comparable.
+    func testShortDwellZoomProfile() throws {
+        for launch in 1...2 {
+            let app = launchToHome(extraArguments: trailerSoakLaunchArguments())
+            press(.down, times: 4)
+            shot(app, "soak_zoom_launch\(launch)_row_focused")
+            // Outbound: learn. The sim's local-HLS startup after extraction is ~2–3 s, so the dwell
+            // has to outlast that AND leave ≥1 s of playing time for the span-guarded final.
+            for i in 1...5 {
+                press(.right, times: 1, gap: 1.4) // clears the 1.0 s dwell + morph settle
+                pause(6.0)
+                if i == 3 { shot(app, "soak_zoom_launch\(launch)_card\(i)") }
+            }
+            // Inbound: revisit the SAME cards — each re-dwell should log `persisted-hit … token=match`
+            // before any sample line (same store, same title, same forced stream). Four moves, not
+            // five: the fifth would land on the row's first card, which the outbound pass never
+            // dwelt on.
+            for _ in 1...4 {
+                press(.left, times: 1, gap: 1.4)
+                pause(3.0)
+            }
+            XCTAssertTrue(app.state == .runningForeground, "app must survive the short-dwell zoom profile (launch \(launch))")
+            app.terminate()
+            pause(1.0)
+        }
+    }
 }
