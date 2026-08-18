@@ -610,10 +610,18 @@ private enum AnimatedGifDecoder {
         }
 
         /// Frame-rate floor for tier 3: after subsampling, no kept frame should stand in for more
-        /// than this much source time (~8 fps). Below that, a movie-clip loop reads as a slideshow,
+        /// than this much source time (~20 fps). Below that, a movie-clip loop reads as a slideshow,
         /// which is a worse 10-foot artifact than moderate softness — so the planner spends
         /// resolution again (tier 4) before it goes past this.
-        static let maxSubsampledFrameDelayCentiseconds = 12
+        ///
+        /// BUG-39 (beta.13): was 12 cs (~8 fps). The beta.12 device read on the Living Room 4K
+        /// said "sharper and smooth enough"; the reporter's AppleTV11,1 said "beaucoup plus
+        /// saccadés" — the tier-3 subsample of a 5 cs source (90 → 53 frames on an IRREGULAR
+        /// 5/10 cs cadence) is judder, and it was trading the smoothness that closed BUG-19 for
+        /// the last ~20 % of resolution. At 5 cs every ≥5 cs source keeps ALL its frames (uniform
+        /// cadence) and tier 4 lowers the side instead: the device case lands ≈300 px / 90 frames
+        /// rather than 391 px / 53 — still 1.5× beta.11's 200 px.
+        static let maxSubsampledFrameDelayCentiseconds = 5
         /// Estimated `CGImage` row-stride alignment. Thumbnail bitmaps come back with padded
         /// `bytesPerRow`; estimating with 32-byte alignment keeps the plan at or slightly above
         /// the real cost, so the decode-time hard check almost never has to truncate.

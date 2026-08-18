@@ -24,7 +24,7 @@ final class GifDecodePlanTests: XCTestCase {
     }
     private struct Plan: Equatable { let side: Int; let keepCount: Int; let minKeptFrames: Int }
 
-    private let maxSubsampledFrameDelayCentiseconds = 12
+    private let maxSubsampledFrameDelayCentiseconds = 5 // BUG-39 (beta.13): was 12
     private let estimatedRowAlignmentBytes = 32
 
     private func frameBytes(side: Int, aspect: Double) -> Int {
@@ -157,32 +157,61 @@ final class GifDecodePlanTests: XCTestCase {
     // MARK: - The device-measured case
 
     /// The pre-trade code decoded this GIF at 200×114 px × 78 frames (`side=200 ceiling=782
-    /// sourceFrames=90 keptFrames=78 bytes=7113600` on the Living Room 4K). Tier 4 now lands it at
-    /// 328 px wide × 75 frames: 2.7× the pixels per frame, ~5 fewer unique frames than before out of
-    /// 90 (still ≥ 8 fps for a 10 cs source), and the plan actually spends the budget.
+    /// sourceFrames=90 keptFrames=78 bytes=7113600` on the Living Room 4K). BUG-39 (beta.13): with
+    /// the frame-rate floor at 5 cs a 10 cs source keeps ALL 90 frames (uniform cadence) and tier 4
+    /// spends the budget on the side instead — 301 px wide × 90 frames, still 2.3× the pixels per
+    /// frame of the 200 px baseline. (beta.12 shipped 328 px × 75 frames; the reporter called the
+    /// subsample "beaucoup plus saccadés".)
     func testDeviceCase_90frameLandscape_10cs_4K() {
         let l = decodeLimits(for: landscapeTile, scale: 2)
         let p = plan(count: 90, aspect: deviceGifAspect, delays: Array(repeating: 10, count: 90), limits: l)
-        XCTAssertEqual(p, Plan(side: 328, keepCount: 75, minKeptFrames: 75))
-        XCTAssertLessThanOrEqual(75 * frameBytes(side: 328, aspect: deviceGifAspect), l.budgetBytes)
+        XCTAssertEqual(p, Plan(side: 301, keepCount: 90, minKeptFrames: 90))
+        XCTAssertLessThanOrEqual(90 * frameBytes(side: 301, aspect: deviceGifAspect), l.budgetBytes)
         // And it did not leave more than one frame's worth of budget unspent.
-        XCTAssertGreaterThan(75 * frameBytes(side: 329, aspect: deviceGifAspect), l.budgetBytes - frameBytes(side: 329, aspect: deviceGifAspect))
+        XCTAssertGreaterThan(90 * frameBytes(side: 302, aspect: deviceGifAspect), l.budgetBytes - frameBytes(side: 302, aspect: deviceGifAspect))
     }
 
-    /// Same GIF, faster source (5 cs/frame): the rate floor allows dropping to 38 frames, so tier 3
-    /// holds the full 1 px/pt side (391) and keeps 53 — every kept frame still ≤ 12 cs.
-    func testDeviceCase_90frameLandscape_5cs_4K_holdsPreferredSide() {
+    /// Same GIF, faster source (5 cs/frame — 20 fps): sits exactly ON the new floor, so not one
+    /// frame may be dropped; tier 4 lands the same 301 px × 90. (beta.12: 391 px × 53 frames on an
+    /// irregular 5/10 cs cadence — the judder BUG-39 was re-reported for.)
+    func testDeviceCase_90frameLandscape_5cs_4K_keepsAllFrames_tier4() {
         let l = decodeLimits(for: landscapeTile, scale: 2)
         let p = plan(count: 90, aspect: deviceGifAspect, delays: Array(repeating: 5, count: 90), limits: l)
-        XCTAssertEqual(p, Plan(side: 391, keepCount: 53, minKeptFrames: 38))
+        XCTAssertEqual(p, Plan(side: 301, keepCount: 90, minKeptFrames: 90))
     }
 
-    /// HD panel, same GIF: aspect-awareness alone lifts it from 200 to 270 px wide (the old
-    /// square-frame estimate wasted ~40% of the budget on landscape frames).
+    /// HD panel, same GIF: 245 px wide × all 90 frames (aspect-awareness alone lifted the old 200;
+    /// beta.12 was 270 × 75).
     func testDeviceCase_90frameLandscape_10cs_HD() {
         let l = decodeLimits(for: landscapeTile, scale: 1)
         let p = plan(count: 90, aspect: deviceGifAspect, delays: Array(repeating: 10, count: 90), limits: l)
-        XCTAssertEqual(p, Plan(side: 270, keepCount: 75, minKeptFrames: 75))
+        XCTAssertEqual(p, Plan(side: 245, keepCount: 90, minKeptFrames: 90))
+    }
+
+    /// BUG-39: tier 3 (drop frames while holding the preferred side) now only ever engages for
+    /// sources FASTER than the 5 cs floor — a 4 cs (25 fps) source may lose a fifth of its frames.
+    func testTier3_only_for_sub5csSources() {
+        let l = decodeLimits(for: landscapeTile, scale: 2)
+        // 120 frames × 4 cs at the device aspect: too big for 391 px with every frame; the floor is
+        // 480 cs / 5 = 96 kept frames.
+        let p = plan(count: 120, aspect: deviceGifAspect, delays: Array(repeating: 4, count: 120), limits: l)
+        XCTAssertEqual(p.minKeptFrames, 96)
+        XCTAssertLessThan(p.keepCount, 120)
+        XCTAssertGreaterThanOrEqual(p.keepCount, 96)
+    }
+
+    /// BUG-39: the common GIF cadences (5 cs = 20 fps, 10 cs = 10 fps) never lose a frame before
+    /// the side has been driven all the way down to the floor (tier 5).
+    func testAllFramesKept_forCommonDelays() {
+        let l = decodeLimits(for: landscapeTile, scale: 2)
+        for delay in [5, 6, 8, 10, 12] {
+            for count in [30, 60, 90, 150] {
+                let p = plan(count: count, aspect: deviceGifAspect, delays: Array(repeating: delay, count: count), limits: l)
+                if p.side > l.minSide {
+                    XCTAssertEqual(p.keepCount, count, "delay=\(delay) count=\(count) dropped frames above the floor side: \(p)")
+                }
+            }
+        }
     }
 
     // MARK: - Tiers
@@ -190,20 +219,20 @@ final class GifDecodePlanTests: XCTestCase {
     func testTier1_shortGif_fullCeiling_allFrames() {
         let l = decodeLimits(for: landscapeTile, scale: 2)
         let p = plan(count: 10, aspect: deviceGifAspect, delays: Array(repeating: 10, count: 10), limits: l)
-        XCTAssertEqual(p, Plan(side: 782, keepCount: 10, minKeptFrames: 9))
+        XCTAssertEqual(p, Plan(side: 782, keepCount: 10, minKeptFrames: 10))
     }
 
     func testTier2_squareTile_allFramesAboveHDParity() {
         let l = decodeLimits(for: squareTile, scale: 2)   // ceiling 440, preferred 220
         let p = plan(count: 60, aspect: 1.0, delays: Array(repeating: 10, count: 60), limits: l)
-        XCTAssertEqual(p, Plan(side: 280, keepCount: 60, minKeptFrames: 50))
+        XCTAssertEqual(p, Plan(side: 280, keepCount: 60, minKeptFrames: 60))
         XCTAssertGreaterThanOrEqual(p.side, l.preferredMinSide)
     }
 
     func testTier2_portraitTile_aspectBelowOne() {
         let l = decodeLimits(for: portraitTile, scale: 2)   // ceiling 660, preferred 330
         let p = plan(count: 40, aspect: 2.0 / 3.0, delays: Array(repeating: 8, count: 40), limits: l)
-        XCTAssertEqual(p, Plan(side: 420, keepCount: 40, minKeptFrames: 27))
+        XCTAssertEqual(p, Plan(side: 420, keepCount: 40, minKeptFrames: 40))
         // Portrait: the long edge is the HEIGHT, so bytes are width(=side×aspect) × side.
         XCTAssertEqual(frameBytes(side: 420, aspect: 2.0 / 3.0), 1120 * 420)
     }
@@ -211,7 +240,7 @@ final class GifDecodePlanTests: XCTestCase {
     func testTier5_pathologicalLength_floorSide_keepsWhatFits() {
         let l = decodeLimits(for: landscapeTile, scale: 2)
         let p = plan(count: 400, aspect: deviceGifAspect, delays: Array(repeating: 10, count: 400), limits: l)
-        XCTAssertEqual(p, Plan(side: 200, keepCount: 206, minKeptFrames: 334))
+        XCTAssertEqual(p, Plan(side: 200, keepCount: 206, minKeptFrames: 400))
         XCTAssertLessThanOrEqual(206 * frameBytes(side: 200, aspect: deviceGifAspect), l.budgetBytes)
     }
 
@@ -262,16 +291,17 @@ final class GifDecodePlanTests: XCTestCase {
         let l = decodeLimits(for: landscapeTile, scale: 2).clamped(toSourceLongEdge: 300)
         XCTAssertEqual(l.ceiling, 300)
         let p = plan(count: 90, aspect: deviceGifAspect, delays: Array(repeating: 10, count: 90), limits: l)
-        XCTAssertEqual(p, Plan(side: 300, keepCount: 90, minKeptFrames: 75))
+        XCTAssertEqual(p, Plan(side: 300, keepCount: 90, minKeptFrames: 90))
         // A source larger than the ceiling leaves the limits untouched.
         XCTAssertEqual(decodeLimits(for: landscapeTile, scale: 2).clamped(toSourceLongEdge: 1280).ceiling, 782)
         XCTAssertEqual(decodeLimits(for: landscapeTile, scale: 2).clamped(toSourceLongEdge: nil).ceiling, 782)
     }
 
-    func testMinKeptFrames_isDurationOverTwelveCentiseconds() {
-        XCTAssertEqual(minKeptFrames(count: 90, delays: Array(repeating: 10, count: 90)), 75)
-        XCTAssertEqual(minKeptFrames(count: 90, delays: Array(repeating: 5, count: 90)), 38)
-        XCTAssertEqual(minKeptFrames(count: 5, delays: Array(repeating: 100, count: 5)), 5)   // never above count
-        XCTAssertEqual(minKeptFrames(count: 5, delays: Array(repeating: 2, count: 5)), 1)     // never below 1
+    func testMinKeptFrames_isDurationOverFiveCentiseconds() {
+        XCTAssertEqual(minKeptFrames(count: 90, delays: Array(repeating: 10, count: 90)), 90)  // ≥ floor: keep all
+        XCTAssertEqual(minKeptFrames(count: 90, delays: Array(repeating: 5, count: 90)), 90)   // exactly the floor
+        XCTAssertEqual(minKeptFrames(count: 90, delays: Array(repeating: 4, count: 90)), 72)   // 360 cs / 5
+        XCTAssertEqual(minKeptFrames(count: 5, delays: Array(repeating: 100, count: 5)), 5)    // never above count
+        XCTAssertEqual(minKeptFrames(count: 5, delays: Array(repeating: 2, count: 5)), 2)      // 10 cs / 5
     }
 }
