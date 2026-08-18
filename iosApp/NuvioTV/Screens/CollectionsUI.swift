@@ -66,7 +66,7 @@ struct CollectionRowView: View {
                            spacing: Theme.Spacing.rowGap) {
                     ForEach(collection.folders, id: \.id) { folder in
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
-                            FolderTile(folder: folder, collectionBackdropUrl: collection.backdropImageUrl)
+                            FolderTile(folder: folder, collectionBackdropUrl: collection.backdropImageUrl, collectionId: collection.id)
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
                         }
@@ -102,6 +102,42 @@ struct CollectionRowView: View {
 
 /// A single folder tile: cover art (or emoji / initial fallback) shaped per the folder's
 /// `tileShape` (poster / landscape / square), following the user's Poster Style width.
+/// BUG-38 (beta.13): release-safe cover-resolution probe — `defaults write com.nuvio.media.NuvioTV
+/// debug.collectionCoverProbe -bool YES`, greppable `[CollectionCover]`. One line per folder tile
+/// naming which artwork fields the synced payload actually carried, which one the tile drew, the
+/// folder's source kinds, and — the part nothing else can answer — the raw JSON keys on that folder
+/// that this build does NOT read (`CollectionRepository.unknownFolderKeysFromRawPayload`). A cover
+/// another client wrote under a spelling we don't decode shows up there by name. Same house
+/// pattern as `HomeGeometryProbe`/`TrailerProbe` (not `#if DEBUG`: the reporter runs release).
+enum CollectionCoverProbe {
+    nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.collectionCoverProbe")
+    @MainActor private static var logged = Set<String>()
+
+    @MainActor static func report(folder: CollectionFolder, collectionId: String, collectionBackdropUrl: String?, shown: String) {
+        guard enabled else { return }
+        func present(_ value: String?) -> Int { (value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) ? 0 : 1 }
+        let unknown = (CollectionRepository.shared.unknownFolderKeysFromRawPayload()["\(collectionId)|\(folder.id)"] as? [String]) ?? []
+        let sourceKinds = folder.resolvedSources.map { source -> String in
+            if source.isTmdb { return "tmdb:\(source.tmdbSourceType ?? "?")" }
+            if source.isTrakt { return "trakt" }
+            return "addon"
+        }
+        let line = String(
+            format: "[CollectionCover] collection=%@ folder=%@ title=%@ own=%d heroBackdrop=%d collectionBackdrop=%d logo=%d emoji=%d gif=%d shape=%@ sources=[%@] unknownKeys=[%@] shown=%@",
+            collectionId, folder.id, folder.title, present(folder.coverImageUrl), present(folder.heroBackdropUrl),
+            present(collectionBackdropUrl), present(folder.titleLogoUrl), present(folder.coverEmoji),
+            present(folder.focusGifUrl), folder.tileShape, sourceKinds.joined(separator: ","),
+            unknown.joined(separator: ","), shown
+        )
+        // De-duplicated on the WHOLE line: the locally persisted payload renders first and the
+        // cloud pull re-renders — a synced change to any field (or to the unknown keys) must log
+        // again, only a byte-identical re-render is quiet.
+        guard !logged.contains(line) else { return }
+        logged.insert(line)
+        NSLog("%@", line)
+    }
+}
+
 struct FolderTile: View {
     let folder: CollectionFolder
     /// BUG-38 (2026-08-10 re-specification): the parent collection's user-configured
@@ -110,6 +146,8 @@ struct FolderTile: View {
     /// wins (it's the more specific pick); this only replaces the positional first-item fallback
     /// that showed the reporter "the first movie from my home list" instead of their own artwork.
     var collectionBackdropUrl: String? = nil
+    /// BUG-38 probe: folder ids are unique per COLLECTION, so the diagnostics key on both.
+    var collectionId: String = ""
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
@@ -140,12 +178,37 @@ struct FolderTile: View {
     /// and resolved first-item-art fallbacks keep it; explicit covers suppress it. Gated HERE,
     /// not at the render site, so the fetch task never loads the image and the plain-text title
     /// below (`titleLogoImage == nil`) stays visible on suppressed tiles.
+    ///
+    /// BUG-38 (beta.13, re-report on beta.12: "the title images still don't show"): the gate above
+    /// keyed on ANY own cover, which also suppressed a logo the user configured next to a cover of
+    /// their own. Only covers MINTED for a TMDB company/network source carry a baked-in wordmark
+    /// (`TmdbCollectionSourceResolver.importMetadata` uses `logoPath` for exactly those two source
+    /// types), so the suppression now keys on that: a folder with a company/network source keeps
+    /// the beta.11 behaviour; every other folder with both a cover and a title logo shows the logo.
     private var titleLogoURL: URL? {
         let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !(ownCover?.isEmpty ?? true) { return nil }
+        if let ownCover, !ownCover.isEmpty, coverIsMintedWordmark(ownCover) { return nil }
         guard let raw = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return nil }
         return URL(string: raw)
+    }
+
+    /// True when the folder draws from a TMDB company/network source — the two source kinds whose
+    /// minted cover IS the wordmark (BUG-52) — AND the cover is still a TMDB image (a cover the user
+    /// replaced with their own URL is not the minted wordmark, whatever the source). Read from
+    /// `resolvedSources`, so legacy `catalogSources` (addon-only) never count.
+    ///
+    /// Known limitation (no provenance field exists on `CollectionFolder`): a company/network cover
+    /// the user swapped for ANOTHER tmdb.org image still counts as minted (logo stays hidden), and a
+    /// minted cover whose source was later removed no longer counts (logo shows over the wordmark).
+    /// Both are rarer than the case this fixes — a user cover plus a title logo on any other folder —
+    /// and strictly no worse than beta.12's "any own cover hides the logo".
+    private func coverIsMintedWordmark(_ coverURL: String) -> Bool {
+        guard let host = URL(string: coverURL)?.host?.lowercased(), host.hasSuffix("tmdb.org") else { return false }
+        return folder.resolvedSources.contains { source in
+            guard source.isTmdb, let type = source.tmdbSourceType?.uppercased() else { return false }
+            return type == "COMPANY" || type == "NETWORK"
+        }
     }
 
     private var tileWidth: CGFloat {
@@ -192,6 +255,12 @@ struct FolderTile: View {
                     : hasCollectionBackdrop ? collectionBackdrop
                     : fallbackCoverUrl
                 let gifUrl: String? = folder.focusGifUrl
+                let shownKind = hasOwnCover ? "own"
+                    : hasFolderBackdrop ? "folderBackdrop"
+                    : hasEmoji ? "emoji"
+                    : hasCollectionBackdrop ? "collectionBackdrop"
+                    : (fallbackCoverUrl == nil ? "none" : "fallback")
+                let _ = CollectionCoverProbe.report(folder: folder, collectionId: collectionId, collectionBackdropUrl: collectionBackdropUrl, shown: shownKind)
 
                 // BUG-19: the cover is mounted for the tile's WHOLE lifetime — it used to live in
                 // the `else` branch of an `isFocused` test, so every D-pad step destroyed one

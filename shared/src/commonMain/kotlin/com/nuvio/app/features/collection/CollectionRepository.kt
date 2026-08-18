@@ -190,6 +190,32 @@ object CollectionRepository {
         }
     }
 
+    /**
+     * BUG-38 (tvOS beta.13 diagnostics): for every folder in the raw synced payload, the JSON keys
+     * that this build's [CollectionFolder] does NOT read (`ignoreUnknownKeys = true` drops them
+     * silently — a cover/backdrop/logo written by another client under a different spelling is
+     * exactly what looks like "my covers don't show"). Keyed `"<collectionId>|<folderId>"` (folder
+     * ids are unique per collection, not globally); folders with no unknown keys are omitted. Read
+     * by tvOS's `[CollectionCover]` probe.
+     */
+    fun unknownFolderKeysFromRawPayload(): Map<String, List<String>> {
+        val known = CollectionFolder.serializer().descriptor.let { d -> (0 until d.elementsCount).map(d::getElementName).toSet() }
+        val result = mutableMapOf<String, List<String>>()
+        val collections = rawCollectionsJson as? JsonArray ?: return result
+        for (collection in collections) {
+            val collectionObj = collection as? kotlinx.serialization.json.JsonObject ?: continue
+            val collectionId = (collectionObj["id"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: continue
+            val folders = collectionObj["folders"] as? JsonArray ?: continue
+            for (folder in folders) {
+                val obj = folder as? kotlinx.serialization.json.JsonObject ?: continue
+                val id = (obj["id"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: continue
+                val unknown = obj.keys.filter { it !in known }.sorted()
+                if (unknown.isNotEmpty()) result["$collectionId|$id"] = unknown
+            }
+        }
+        return result
+    }
+
     internal fun applyFromRemote(collections: List<Collection>, rawJson: JsonElement) {
         rawCollectionsJson = rawJson
         val normalized = normalizeCollections(collections, source = "remote sync")
