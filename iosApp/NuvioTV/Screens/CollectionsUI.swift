@@ -179,36 +179,20 @@ struct FolderTile: View {
     /// not at the render site, so the fetch task never loads the image and the plain-text title
     /// below (`titleLogoImage == nil`) stays visible on suppressed tiles.
     ///
-    /// BUG-38 (beta.13, re-report on beta.12: "the title images still don't show"): the gate above
-    /// keyed on ANY own cover, which also suppressed a logo the user configured next to a cover of
-    /// their own. Only covers MINTED for a TMDB company/network source carry a baked-in wordmark
-    /// (`TmdbCollectionSourceResolver.importMetadata` uses `logoPath` for exactly those two source
-    /// types), so the suppression now keys on that: a folder with a company/network source keeps
-    /// the beta.11 behaviour; every other folder with both a cover and a title logo shows the logo.
+    /// BUG-38 (beta.13): a refined gate keyed on TMDB company/network sources was tried and REVERTED
+    /// on the 2026-08-18 device pass — the fork's curated Services folders (Netflix / Prime /
+    /// Disney+ / HBO Max) are addon-sourced with a wordmark cover AND a titleLogoUrl, so the refined
+    /// gate doubled every wordmark on the row (BUG-52 back, seen live). No provenance field exists to
+    /// tell "cover already names the folder" from "user cover next to a logo", and the doubled
+    /// wordmark is the worse failure, so any own cover keeps suppressing the logo. The
+    /// `[CollectionCover]` probe (`debug.collectionCoverProbe`) is what answers the reporter's
+    /// "title images don't show" — it names the payload keys this build reads and doesn't.
     private var titleLogoURL: URL? {
         let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let ownCover, !ownCover.isEmpty, coverIsMintedWordmark(ownCover) { return nil }
+        if !(ownCover?.isEmpty ?? true) { return nil }
         guard let raw = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return nil }
         return URL(string: raw)
-    }
-
-    /// True when the folder draws from a TMDB company/network source — the two source kinds whose
-    /// minted cover IS the wordmark (BUG-52) — AND the cover is still a TMDB image (a cover the user
-    /// replaced with their own URL is not the minted wordmark, whatever the source). Read from
-    /// `resolvedSources`, so legacy `catalogSources` (addon-only) never count.
-    ///
-    /// Known limitation (no provenance field exists on `CollectionFolder`): a company/network cover
-    /// the user swapped for ANOTHER tmdb.org image still counts as minted (logo stays hidden), and a
-    /// minted cover whose source was later removed no longer counts (logo shows over the wordmark).
-    /// Both are rarer than the case this fixes — a user cover plus a title logo on any other folder —
-    /// and strictly no worse than beta.12's "any own cover hides the logo".
-    private func coverIsMintedWordmark(_ coverURL: String) -> Bool {
-        guard let host = URL(string: coverURL)?.host?.lowercased(), host.hasSuffix("tmdb.org") else { return false }
-        return folder.resolvedSources.contains { source in
-            guard source.isTmdb, let type = source.tmdbSourceType?.uppercased() else { return false }
-            return type == "COMPANY" || type == "NETWORK"
-        }
     }
 
     private var tileWidth: CGFloat {
