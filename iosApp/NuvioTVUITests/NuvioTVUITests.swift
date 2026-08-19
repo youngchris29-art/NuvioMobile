@@ -1897,6 +1897,56 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertEqual(isOn(), on, "toggle '\(labelPrefix)' did not end up \(on ? "ON" : "OFF"): value=\(String(describing: row().value))")
     }
 
+    // MARK: - Home "Upcoming" row (next airing episodes of followed shows)
+
+    /// The Upcoming row renders under Continue Watching with one card per followed show carrying
+    /// an S00E00 code and a TODAY / TOMORROW / IN N DAYS pill, and selecting a card pushes the
+    /// show's Detail page. Data-dependent: the signed-in profile must follow a show with an
+    /// episode inside the 14-day horizon — if the row never appears the test SKIPS loudly (not
+    /// a vacuous pass); if it appears its cards must carry the badges.
+    func test34UpcomingRow() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(2)
+
+        // Walk down one row at a time until the row title is in the tree (LazyVStack — the row
+        // materializes as it nears the viewport). CW sits above it; catalog rows below.
+        let title = app.staticTexts["Upcoming"]
+        var downs = 0
+        while !title.exists && downs < 8 {
+            press(.down, times: 1)
+            downs += 1
+            pause(1.0)
+        }
+        guard title.exists else {
+            shot(app, "34_no_upcoming_row")
+            throw XCTSkip("no Upcoming row within \(downs) rows — does the profile follow a show airing in the next 14 days?")
+        }
+        // One more Down lands focus in the row itself once the title is visible above it.
+        press(.down, times: 1)
+        pause(1.5)
+        shot(app, "34a_upcoming_row")
+
+        // Cards are NavigationLinks whose composed label carries the badges. `hasFocus` is not
+        // trustworthy on the 27.0 runtime, so assert on existence of a badge-bearing card.
+        let badgeCard = app.buttons.matching(NSPredicate(
+            format: "label MATCHES[c] '.*S[0-9]{2}E[0-9]{2}.*' AND (label CONTAINS[c] 'TODAY' OR label CONTAINS[c] 'TOMORROW' OR label MATCHES[c] '.*IN [0-9]+ DAYS.*')"
+        )).firstMatch
+        XCTAssertTrue(badgeCard.waitForExistence(timeout: 5), "no Upcoming card with an S00E00 code + air-date pill in the tree")
+
+        // Select → the show's Detail page (a pushed screen: the root tab bar leaves the tree's
+        // visible band). Menu pops back.
+        remote.press(.select)
+        pause(4)
+        shot(app, "34b_detail_from_upcoming")
+        let homeTab = app.buttons["Home"]
+        XCTAssertTrue(!homeTab.exists || homeTab.frame.minY <= 0, "selecting an Upcoming card should push Detail (tab bar off-screen)")
+        remote.press(.menu)
+        pause(2)
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
     // MARK: - BUG-58: theme swatch label must stay legible while focused
 
     /// BUG-58 (beta.11 regression from the BUG-50 sweep): the focused theme swatch's name was

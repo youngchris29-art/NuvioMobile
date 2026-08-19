@@ -7994,6 +7994,40 @@
         }
       }
     },
+    "IN %lld DAYS": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IN %lld TAGEN"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EN %lld DÍAS"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DANS %lld JOURS"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TRA %lld GIORNI"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SAU %lld NGÀY"
+          }
+        }
+      }
+    },
     "Icon-Only Detail Buttons": {
       "localizations": {
         "de": {
@@ -11499,6 +11533,40 @@
         }
       }
     },
+    "Off · No Upcoming row on Home": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Keine „Demnächst“-Reihe auf dem Startbildschirm"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · Sin fila «Próximamente» en Inicio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · Pas de rangée « À venir » sur l’accueil"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disattivato · Nessuna riga «In arrivo» nella Home"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt · Không có hàng “Sắp phát sóng” trên Trang chủ"
+          }
+        }
+      }
+    },
     "Off · No rotating banner — the top of Home shows the focused title's artwork and description": {
       "localizations": {
         "de": {
@@ -11938,6 +12006,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật · Banner xoay vòng từ tối đa 2 danh mục của bạn, chuyển sang phim đang chọn khi bạn duyệt"
+          }
+        }
+      }
+    },
+    "On · A row under Continue Watching with your shows' next episodes airing in the next 14 days": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Eine Reihe unter „Weiterschauen“ mit den nächsten Folgen deiner Serien, die in den nächsten 14 Tagen ausgestrahlt werden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · Una fila debajo de «Continuar viendo» con los próximos episodios de tus series que se emiten en los próximos 14 días"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · Une rangée sous « Reprendre la lecture » avec les prochains épisodes de vos séries diffusés dans les 14 prochains jours"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivato · Una riga sotto «Continua a guardare» con i prossimi episodi delle tue serie in onda nei prossimi 14 giorni"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật · Một hàng bên dưới “Tiếp tục xem” với các tập tiếp theo của chương trình bạn xem sẽ phát sóng trong 14 ngày tới"
           }
         }
       }
@@ -18574,6 +18676,74 @@
         }
       }
     },
+    "TODAY": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HEUTE"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HOY"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AUJOURD’HUI"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OGGI"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HÔM NAY"
+          }
+        }
+      }
+    },
+    "TOMORROW": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MORGEN"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MAÑANA"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DEMAIN"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DOMANI"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NGÀY MAI"
+          }
+        }
+      }
+    },
     "TV": {
       "localizations": {
         "de": {
@@ -19896,6 +20066,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiếp theo · %@ · phát sau %lld giây"
+          }
+        }
+      }
+    },
+    "Upcoming": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "À venir"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Próximamente"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Demnächst"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In uscita"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sắp ra mắt"
+          }
+        }
+      }
+    },
+    "Upcoming Episodes": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kommende Folgen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Próximos episodios"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Épisodes à venir"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prossimi episodi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tập sắp phát sóng"
           }
         }
       }

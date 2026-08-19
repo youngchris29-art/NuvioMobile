@@ -48,6 +48,7 @@ import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
+import com.nuvio.app.features.upcoming.UpcomingEpisodesRepository
 import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
@@ -174,6 +175,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         WatchedRepository.clearLocalState()
         ContinueWatchingPreferencesRepository.clearLocalState()
         EpisodeReleaseNotificationsRepository.clearLocalState()
+        // Home "Upcoming" row: in-memory per-show cache only (no persisted store, hence no
+        // AccountDataStores entry) — cleared here so the next account never sees this one's shows.
+        UpcomingEpisodesRepository.clearLocalState()
         CollectionMobileSettingsRepository.clearLocalState()
         CollectionRepository.clearLocalState()
         // UX-14 (beta.12, Codex gate 2): FolderDetailRepository now RETAINS state across screen
@@ -328,6 +332,7 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("continueWatchingPreferences") { ContinueWatchingPreferencesRepository.onProfileChanged() }
         step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
         step("episodeReleaseAlerts") { EpisodeReleaseNotificationsRepository.onProfileChanged() }
+        step("upcomingEpisodes") { UpcomingEpisodesRepository.onProfileChanged() }
         step("tmdbSettings") { TmdbSettingsRepository.onProfileChanged() }
         step("mdbListSettings") { MdbListSettingsRepository.onProfileChanged() }
         step("searchHistory") { SearchHistoryRepository.onProfileChanged() }

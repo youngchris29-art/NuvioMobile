@@ -16,8 +16,24 @@ struct HomeScreenSettingsPane: View {
     /// classic layout is the default). Local-only.
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
+    /// Mirrors HomeView's `home_upcoming_row_enabled` key: the "Upcoming" row of followed shows'
+    /// next airing episodes, directly under Continue Watching. Default ON. Local-only.
+    @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
+
     var body: some View {
         settingsSection(String(localized: "Home Rows")) {
+            // Catalog-independent: the Upcoming row is fed by watch progress + Library, so its
+            // switch must stay reachable when no catalog add-on is installed (Codex round 1).
+            SettingsToggleRow(
+                title: String(localized: "Upcoming Episodes"),
+                subtitle: upcomingRowEnabled
+                    ? String(localized: "On \u{00B7} A row under Continue Watching with your shows' next episodes airing in the next 14 days")
+                    : String(localized: "Off \u{00B7} No Upcoming row on Home"),
+                isOn: upcomingRowEnabled
+            ) {
+                upcomingRowEnabled.toggle()
+            }
+
             if model.catalogs.isEmpty {
                 Text("Install add-ons to customize your Home rows.")
                     .font(Theme.Font.body)

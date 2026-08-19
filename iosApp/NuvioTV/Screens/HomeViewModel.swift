@@ -33,6 +33,9 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var sections: [HomeCatalogSection] = []
     @Published private(set) var rows: [HomeRow] = []
     @Published private(set) var continueWatching: [WatchProgressEntry] = []
+    /// Home "Upcoming" row: next airing episode per followed show (shared
+    /// `UpcomingEpisodesRepository`). Empty while the row is disabled or nothing is airing.
+    @Published private(set) var upcoming: [UpcomingEpisodeItem] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var errorMessage: String?
 
@@ -42,6 +45,7 @@ final class HomeViewModel: ObservableObject {
     private var addonWatcher: FlowWatcher?
     private var homeWatcher: FlowWatcher?
     private var progressWatcher: FlowWatcher?
+    private var upcomingWatcher: FlowWatcher?
     private var collectionsWatcher: FlowWatcher?
     private var catalogSettingsWatcher: FlowWatcher?
     private var collections: [NuvioCollection] = []
@@ -144,7 +148,32 @@ final class HomeViewModel: ObservableObject {
         progressWatcher = nil
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
+        stopUpcoming()
         started = false
+    }
+
+    /// Upcoming row (gated by the `home_upcoming_row_enabled` toggle, so it is started separately
+    /// from `start()`). Idempotent; re-entering Home also nudges a cheap refresh so a calendar
+    /// rollover while the app sat in the background re-labels TODAY / TOMORROW.
+    func startUpcoming() {
+        if upcomingWatcher == nil {
+            upcomingWatcher = FlowWatcherKt.watch(UpcomingEpisodesRepository.shared.uiState) { [weak self] emitted in
+                guard let self, let state = emitted as? UpcomingEpisodesUiState else { return }
+                self.upcoming = state.items
+            }
+            UpcomingEpisodesRepository.shared.ensureStarted()
+        } else {
+            UpcomingEpisodesRepository.shared.refresh(force: false)
+        }
+    }
+
+    /// Tears the sweep down too (not just the Swift watcher) — off means no library/progress
+    /// observation and no metadata fetches, which is what the Settings row promises.
+    func stopUpcoming() {
+        upcomingWatcher?.cancel()
+        upcomingWatcher = nil
+        UpcomingEpisodesRepository.shared.stop()
+        upcoming = []
     }
 
     /// Interleaves catalog sections and collection rows per the Home Rows settings order (enabled
@@ -249,5 +278,6 @@ final class HomeViewModel: ObservableObject {
     deinit {
         addonWatcher?.cancel()
         homeWatcher?.cancel()
+        upcomingWatcher?.cancel()
     }
 }

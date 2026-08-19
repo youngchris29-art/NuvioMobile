@@ -486,6 +486,13 @@ struct LandscapeCard: View {
     /// Card-depth surface this landscape card belongs to — Continue Watching by default; catalog rows
     /// rendered in landscape mode pass `.posters` so the depth toggles map to the right setting.
     var depthSurface: CardDepthSurface = .continueWatching
+    /// Upcoming row: optional second caption line under the title (the show's year). Dims like
+    /// the title's unfocused state and rides the same caption focus drop.
+    var subtitle: String? = nil
+    /// Upcoming/Continue Watching: optional `S02E05` badge drawn bottom-leading on the artwork.
+    var overlayLeading: String? = nil
+    /// Upcoming row: optional `TODAY` / `IN 4 DAYS` pill drawn bottom-trailing on the artwork.
+    var overlayTrailing: String? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
@@ -518,6 +525,24 @@ struct LandscapeCard: View {
                     // BUG-36: depth (and its coverage mask) stays anchored to the artwork frame.
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: depthSurface)
 
+                if overlayLeading != nil || overlayTrailing != nil {
+                    // Upcoming/CW artwork badges: sit above the progress bar (when present) and
+                    // inside the BUG-64 ring band, exactly like the bar itself. Static text —
+                    // never focusable, never hit-testable.
+                    HStack(alignment: .bottom, spacing: Theme.Spacing.xs) {
+                        if let overlayLeading {
+                            CardEpisodeCodeBadge(text: overlayLeading)
+                        }
+                        Spacer(minLength: 0)
+                        if let overlayTrailing {
+                            CardAirDatePill(text: overlayTrailing)
+                        }
+                    }
+                    .padding(.horizontal, Theme.Spacing.sm + inset)
+                    .padding(.bottom, (progress != nil ? 6 : 0) + Theme.Spacing.sm + inset)
+                    .allowsHitTesting(false)
+                }
+
                 if let progress {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
@@ -549,17 +574,25 @@ struct LandscapeCard: View {
             .modifier(CardArtworkSystemLift(mode: focusMode, cornerRadius: style.cornerRadius))
 
             if titleVisible {
-                Text(title)
-                    .font(Theme.Font.cardTitle)
-                    .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .padding(.horizontal, Theme.Spacing.xs)
-                    .frame(width: width, alignment: .leading)
-                    // BUG-54: caption follows the lift — see `CardCaptionFocusDrop`.
-                    .modifier(CardCaptionFocusDrop(
-                        mode: focusMode, isFocused: isFocused, artworkHeight: height
-                    ))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(Theme.Font.cardTitle)
+                        .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, Theme.Spacing.xs)
+                .frame(width: width, alignment: .leading)
+                // BUG-54: caption follows the lift — see `CardCaptionFocusDrop`.
+                .modifier(CardCaptionFocusDrop(
+                    mode: focusMode, isFocused: isFocused, artworkHeight: height
+                ))
             }
         }
         // BUG-36: whole-card focus treatment — artwork, progress bar, ring and caption move (or
@@ -574,5 +607,42 @@ struct LandscapeCard: View {
         // SwiftUI-drawn treatments need an explicit zIndex to draw above row neighbors the way the
         // system lift does implicitly; the default path's stacking is untouched.
         .zIndex(focusMode.raisesFocusedCard && isFocused ? 1 : 0)
+    }
+}
+
+/// `S02E05` badge drawn on landscape-card artwork (Upcoming + Continue Watching rows). Fixed-dark
+/// scrim with fixed-white text — like `BadgeOverflowChip`, the background never flips with
+/// focus/theme, so the foreground is deliberately not semantic (BUG-28 class).
+struct CardEpisodeCodeBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Font.caption.weight(.semibold))
+            .tracking(0.5)
+            .foregroundStyle(Color.white.opacity(0.92))
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Spacing.xs)
+            .padding(.vertical, Theme.Spacing.xxs)
+            .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.Radius.chip))
+    }
+}
+
+/// `TODAY` / `TOMORROW` / `IN 4 DAYS` pill drawn on Upcoming-row artwork. Same fixed-dark
+/// treatment as `CardEpisodeCodeBadge`, capsule-shaped and a touch more opaque so it reads as
+/// the card's primary status at 10 feet.
+struct CardAirDatePill: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Font.caption.weight(.semibold))
+            .textCase(.uppercase)
+            .tracking(0.5)
+            .foregroundStyle(Color.white)
+            .lineLimit(1)
+            .padding(.horizontal, Theme.Spacing.sm)
+            .padding(.vertical, Theme.Spacing.xxs)
+            .background(Color.black.opacity(0.65), in: Capsule())
     }
 }

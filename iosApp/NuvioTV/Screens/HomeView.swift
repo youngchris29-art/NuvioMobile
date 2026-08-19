@@ -42,6 +42,10 @@ struct HomeView: View {
     /// (`heroPinned*`), and the Settings row for this toggle is already hidden while Show Hero is
     /// off, so honoring a stored value the user cannot see or change would be invisible state.
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
+    /// Home "Upcoming" row (next airing episodes of followed shows) — Settings › Home Screen ›
+    /// Home Rows toggle, default ON. Local-only like `hero_nuvio_style`. Off = the shared
+    /// repository is not even started, so no metadata sweep runs.
+    @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
     /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
     /// the entire preference map on every call, so it cannot be read from `body` at render
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
@@ -472,6 +476,7 @@ struct HomeView: View {
             LaunchTrace.mark("home_appear")  // BUG-26: profile gate passed, Home mounting
             #endif
             model.start()
+            if upcomingRowEnabled { model.startUpcoming() }
             heroSettings.start()
             prefetchHeroArt()
             // UX-7: when a row-focused poster reverts (grace period elapsed, or the CTA
@@ -483,6 +488,9 @@ struct HomeView: View {
         .onDisappear {
             model.stop()
             heroSettings.stop()
+        }
+        .onChange(of: upcomingRowEnabled) { _, enabled in
+            if enabled { model.startUpcoming() } else { model.stopUpcoming() }
         }
     }
 
@@ -545,6 +553,19 @@ struct HomeView: View {
                         onItemFocusChange: { entry in
                             reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
                                            prefetch: { model.continueWatching.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0) } })
+                        }
+                    )
+                }
+
+                // Upcoming: next airing episode per followed show, directly under Continue
+                // Watching and above every settings-ordered row (like CW, not part of
+                // `model.rows`). Hidden while empty or toggled off.
+                if upcomingRowEnabled, !model.upcoming.isEmpty {
+                    UpcomingRow(
+                        items: model.upcoming,
+                        onItemFocusChange: { item in
+                            reportRowFocus(item?.toMetaPreview(), source: "upcoming",
+                                           prefetch: { model.upcoming.prefix(8).flatMap { heroBackdropPrefetchURLs(for: $0.toMetaPreview()) } })
                         }
                     )
                 }
@@ -1284,7 +1305,8 @@ struct ContinueWatchingRow: View {
                                 LandscapeCard(
                                     title: entry.title,
                                     imageURL: imageURL(entry),
-                                    progress: fraction(entry)
+                                    progress: fraction(entry),
+                                    overlayLeading: episodeCode(entry)
                                 )
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
@@ -1345,6 +1367,13 @@ struct ContinueWatchingRow: View {
         if let bg, !bg.isEmpty { return bg }
         let poster: String? = entry.poster
         return poster
+    }
+
+    /// `S02E05` artwork badge for series entries (nil for movies — no badge). Same code shape as
+    /// the Upcoming row so the two shelves read as one system.
+    private func episodeCode(_ entry: WatchProgressEntry) -> String? {
+        guard let season = entry.seasonNumber?.intValue, let episode = entry.episodeNumber?.intValue else { return nil }
+        return String(format: "S%02dE%02d", season, episode)
     }
 }
 
