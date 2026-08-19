@@ -574,25 +574,46 @@ struct LandscapeCard: View {
             .modifier(CardArtworkSystemLift(mode: focusMode, cornerRadius: style.cornerRadius))
 
             if titleVisible {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(Theme.Font.cardTitle)
-                        .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .lineLimit(1)
+                Text(title)
+                    .font(Theme.Font.cardTitle)
+                    .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    // The subtitle is an OVERLAY hanging below the title, not a second layout
+                    // line, so the card — and with it the focusable frame of the button/link
+                    // wrapping it — keeps exactly the single-caption height. Measured on the
+                    // pinned-hero Home (sim, 2026-08-19, `debug.homeScrollProbe`): the focus
+                    // engine's scroll-to-reveal CENTERS a 378.5pt link frame (rest top +68 in
+                    // the rows viewport) but parks a 408pt one at −(viewport − H)/2 = −53.5,
+                    // under the clip edge, so the pinned "Upcoming" title slid onto the art and
+                    // under the focused card's lift (Christian's device photo). Poster cards
+                    // (505.5) sit at −5 by the same formula, which is why only this row showed
+                    // it. The line draws into the shelf's own 24pt bottom padding / pinned
+                    // bottom reach, so nothing below is disturbed.
+                    .overlay(alignment: .topLeading) {
+                        if let subtitle, !subtitle.isEmpty {
+                            // A hidden twin of the title spaces the overlay: same font, same
+                            // single line, same proposal width → the subtitle lands exactly one
+                            // caption line below, and the stack may exceed the title's height.
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(title)
+                                    .font(Theme.Font.cardTitle)
+                                    .lineLimit(1)
+                                    .hidden()
+                                Text(subtitle)
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                }
-                .padding(.horizontal, Theme.Spacing.xs)
-                .frame(width: width, alignment: .leading)
-                // BUG-54: caption follows the lift — see `CardCaptionFocusDrop`.
-                .modifier(CardCaptionFocusDrop(
-                    mode: focusMode, isFocused: isFocused, artworkHeight: height
-                ))
+                    .padding(.horizontal, Theme.Spacing.xs)
+                    .frame(width: width, alignment: .leading)
+                    // BUG-54: caption follows the lift — see `CardCaptionFocusDrop`.
+                    .modifier(CardCaptionFocusDrop(
+                        mode: focusMode, isFocused: isFocused, artworkHeight: height
+                    ))
             }
         }
         // BUG-36: whole-card focus treatment — artwork, progress bar, ring and caption move (or

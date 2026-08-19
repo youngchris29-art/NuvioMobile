@@ -1910,30 +1910,45 @@ final class NuvioTVUITests: XCTestCase {
         press(.down, times: 1)
         pause(2)
 
-        // Walk down one row at a time until the row title is in the tree (LazyVStack — the row
-        // materializes as it nears the viewport). CW sits above it; catalog rows below.
+        // Cards are NavigationLinks whose composed label carries the badges — the row's own
+        // signature (the title alone can be in the tree a row early: the LazyVStack mounts the
+        // next row while the previous one is focused, more so in pinned mode).
+        let badgePredicate = NSPredicate(
+            format: "label MATCHES[c] '.*S[0-9]{2}E[0-9]{2}.*' AND (label CONTAINS[c] 'TODAY' OR label CONTAINS[c] 'TOMORROW' OR label MATCHES[c] '.*IN [0-9]+ DAYS.*')"
+        )
         let title = app.staticTexts["Upcoming"]
+        let badgeCards = app.buttons.matching(badgePredicate)
+        let badgeCard = badgeCards.firstMatch
+
+        // Walk down one row at a time until a badge card HOLDS focus — ANY of them: vertical
+        // focus travel keeps the column, so entering the row from CW's 4th card lands on the
+        // row's 4th card (26.5 runtime reports focus; on 27.0 `hasFocus` never reads true —
+        // fall back to "title + card exist" like the other existence-driven walks). CW sits
+        // above; catalog rows below.
         var downs = 0
-        while !title.exists && downs < 8 {
+        var cardFocused = false
+        var mounted = false
+        while downs < 9 {
             press(.down, times: 1)
             downs += 1
             pause(1.0)
+            if badgeCards.allElementsBoundByIndex.contains(where: { $0.hasFocus }) { cardFocused = true; break }
+            // 27.0-runtime fallback (no focus reports): the row mounts one step before focus
+            // reaches it (it is the row after the one focused), so stop at the first step where
+            // it exists and take exactly one more Down — never walk on past it.
+            if title.exists && badgeCard.exists { mounted = true; break }
         }
-        guard title.exists else {
-            shot(app, "34_no_upcoming_row")
-            throw XCTSkip("no Upcoming row within \(downs) rows — does the profile follow a show airing in the next 14 days?")
+        if !cardFocused {
+            guard mounted else {
+                shot(app, "34_no_upcoming_row")
+                throw XCTSkip("no Upcoming row within \(downs) rows — does the profile follow a show airing in the next 14 days?")
+            }
+            press(.down, times: 1)
+            pause(1.0)
         }
-        // One more Down lands focus in the row itself once the title is visible above it.
-        press(.down, times: 1)
         pause(1.5)
         shot(app, "34a_upcoming_row")
-
-        // Cards are NavigationLinks whose composed label carries the badges. `hasFocus` is not
-        // trustworthy on the 27.0 runtime, so assert on existence of a badge-bearing card.
-        let badgeCard = app.buttons.matching(NSPredicate(
-            format: "label MATCHES[c] '.*S[0-9]{2}E[0-9]{2}.*' AND (label CONTAINS[c] 'TODAY' OR label CONTAINS[c] 'TOMORROW' OR label MATCHES[c] '.*IN [0-9]+ DAYS.*')"
-        )).firstMatch
-        XCTAssertTrue(badgeCard.waitForExistence(timeout: 5), "no Upcoming card with an S00E00 code + air-date pill in the tree")
+        XCTAssertTrue(badgeCard.exists, "no Upcoming card with an S00E00 code + air-date pill in the tree")
 
         // Select → the show's Detail page (a pushed screen: the root tab bar leaves the tree's
         // visible band). Menu pops back.
