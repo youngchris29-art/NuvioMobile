@@ -180,9 +180,15 @@
     <string name="collections_editor_tmdb_keywords">Kulcsszó ID-k</string>
     <string name="collections_editor_tmdb_keywords_helper">Használj TMDB kulcsszőszámokat. A gyorsgombok feltöltik a gyakori példákat.</string>
     <string name="collections_editor_tmdb_keywords_placeholder">9715 szuperhős esetén</string>
+    <string name="collections_editor_tmdb_without_keywords">Kizárt kulcsszó azonosítók (ID)</string>
+    <string name="collections_editor_tmdb_without_keywords_helper">Az ezeknek a TMDB kulcsszószámoknak megfelelő címek kizárása.</string>
+    <string name="collections_editor_tmdb_without_keywords_placeholder">9715</string>
     <string name="collections_editor_tmdb_companies">Gyártó cég ID-k</string>
     <string name="collections_editor_tmdb_companies_helper">Használj stúdió/gyártó cég ID-kat. A gyorsgombok feltöltik a gyakori példákat.</string>
     <string name="collections_editor_tmdb_companies_placeholder">420 a Marvel Studios esetén</string>
+    <string name="collections_editor_tmdb_without_companies">Kizárt gyártó azonosítók (ID)</string>
+    <string name="collections_editor_tmdb_without_companies_helper">Az ezekhez a TMDB gyártószámokhoz kapcsolódó címek kizárása.</string>
+    <string name="collections_editor_tmdb_without_companies_placeholder">420</string>
     <string name="collections_editor_tmdb_networks">Csatorna ID-k</string>
     <string name="collections_editor_tmdb_networks_helper">Csak sorozatokhoz. Használj csatorna ID-kat, mint a Netflix 213 vagy az HBO 49.</string>
     <string name="collections_editor_tmdb_networks_placeholder">213 a Netflix esetén</string>
@@ -256,6 +262,9 @@
     <string name="collections_editor_tmdb_watch_providers">Streaming szolgáltató ID-k</string>
     <string name="collections_editor_tmdb_watch_providers_helper">Használj TMDB szolgáltató ID-kat. Több megadásakor az ÉS kapcsolathoz használj vesszőt, a VAGY kapcsolathoz függőleges vonalat (|).</string>
     <string name="collections_editor_tmdb_watch_providers_placeholder">8|337|350</string>
+    <string name="collections_editor_tmdb_without_watch_providers">Kizárt szolgáltató azonosítók (ID)</string>
+    <string name="collections_editor_tmdb_without_watch_providers_helper">A kiválasztott régióban az ezeknél a TMDB szolgáltatóknál elérhető címek kizárása.</string>
+    <string name="collections_editor_tmdb_without_watch_providers_placeholder">8|337|350</string>
     <string name="collections_editor_tmdb_quick_watch_providers">Gyors szolgáltatóválasztás</string>
     <string name="collections_editor_tmdb_watch_provider_netflix">Netflix</string>
     <string name="collections_editor_tmdb_watch_provider_prime">Prime Video</string>
@@ -1350,6 +1359,9 @@
     <string name="store_empty_unavailable_message">A jelenlegi kiegészítőid még nem jelenítenek meg itt semmit.</string>
     <string name="collections_editor_tmdb_genres_movie_placeholder">28,12</string>
     <string name="collections_editor_tmdb_genres_series_placeholder">18,35</string>
+    <string name="collections_editor_tmdb_without_genres">Kizárt műfaj azonosítók (ID)</string>
+    <string name="collections_editor_tmdb_without_genres_helper">Az ezeknek a TMDB műfajszámoknak megfelelő címek kizárása.</string>
+    <string name="collections_editor_tmdb_without_genres_placeholder">16 az animációhoz</string>
     <string name="collections_editor_tmdb_date_from_placeholder">2020-01-01</string>
     <string name="collections_editor_tmdb_date_to_placeholder">2024-12-31</string>
     <string name="collections_editor_tmdb_rating_min_placeholder">7.0</string>

@@ -18,6 +18,7 @@ import kotlin.uuid.Uuid
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +42,10 @@ object AuthRepository {
     private var initialized = false
     private var validatedRemoteUserId: String? = null
     private var sessionRestoreTimedOut = false
+    private var sessionStatusJob: Job? = null
+    // Fork: the restore watchdog is a second launch upstream doesn't have; reinitialize() must
+    // cancel it too or a stale watchdog fires into the NEW client's restore.
+    private var restoreWatchdogJob: Job? = null
 
     fun initialize() {
         if (initialized) return
@@ -60,7 +65,7 @@ object AuthRepository {
         // coroutine dying), which would pin the root gate on the splash forever. If we are still
         // Loading after the timeout, fall back to signed-out — a late successful restore still
         // flips the gate to Authenticated through the collector below.
-        scope.launch {
+        restoreWatchdogJob = scope.launch {
             delay(SESSION_RESTORE_TIMEOUT)
             sessionRestoreTimedOut = true
             if (_state.compareAndSet(AuthState.Loading, AuthState.Unauthenticated)) {
@@ -68,7 +73,7 @@ object AuthRepository {
             }
         }
 
-        scope.launch {
+        sessionStatusJob = scope.launch {
             debugSessionRestoreStall()?.let { stall ->
                 log.w { "debug.authRestoreStallSeconds active — delaying session-status collection by $stall to simulate a wedged restore" }
                 delay(stall)
@@ -79,8 +84,17 @@ object AuthRepository {
                     is SessionStatus.Authenticated -> {
                         val user = status.session.user
                         // Anonymous Supabase sessions are QR-login scaffolding
-                        // (TvLoginRepository), never a signed-in account — ignore them.
-                        if (user?.isAnonymous == true) return@collect
+                        // (TvLoginRepository), never a signed-in account. A RESTORED one (the
+                        // scaffolding got persisted, e.g. the app quit mid-pairing) used to be
+                        // silently ignored here, pinning the gate on the splash until the 10s
+                        // watchdog — surface it as signed out immediately instead. During live
+                        // pairing the state is already Unauthenticated, so this is a no-op there.
+                        if (user?.isAnonymous == true) {
+                            if (_state.compareAndSet(AuthState.Loading, AuthState.Unauthenticated)) {
+                                log.i { "Restored session is anonymous QR scaffolding — treating as signed out" }
+                            }
+                            return@collect
+                        }
                         val userId = user?.id.orEmpty()
                         if (!validateRemoteSession(userId)) return@collect
                         _state.value = AuthState.Authenticated(
@@ -105,6 +119,54 @@ object AuthRepository {
                 }
             }
         }
+    }
+
+    /**
+     * Step 1 of a server switch (see ServerConnectionController.switchServer): drop the current
+     * session and every piece of account-scoped local state, BEFORE the new server is saved.
+     * Returns failure if any step threw; the controller then aborts the switch.
+     */
+    suspend fun prepareForServerSwitch(): Result<Unit> {
+        _error.value = null
+        val anonymousClear = runCatching { AuthStorage.clearAnonymousUserId() }
+        validatedRemoteUserId = null
+        val sessionClear = runCatching { SupabaseProvider.client.auth.clearSession() }
+        // Fork: run the FULL account-data wipe (same semantics as signOut()). Upstream only clears
+        // the session here; on this fork the wipe is what erases per-profile payloads, sync
+        // cursors, provider credentials and Trakt/Simkl tokens — nothing from server A may sync
+        // into server B. Mobile's LocalAccountDataCleaner is installed by the fork's composeApp
+        // too, so the divergence applies to every frontend of this fork.
+        val localCleanup = runCatching { AccountDataCleanerProvider.cleaner.wipe() }
+        _state.value = AuthState.Unauthenticated
+        val failure = anonymousClear.exceptionOrNull()
+            ?: sessionClear.exceptionOrNull()
+            ?: localCleanup.exceptionOrNull()
+        val cancellation = sessionClear.exceptionOrNull() as? CancellationException
+        if (cancellation != null) throw cancellation
+        return if (failure == null) {
+            Result.success(Unit)
+        } else {
+            log.e(failure) { "Server-switch preparation did not complete cleanly" }
+            Result.failure(failure)
+        }
+    }
+
+    /**
+     * Step 3 of a server switch (after SupabaseProvider.reset()): tear down the collectors that
+     * captured the previous client and run [initialize] again against the new one. Observers of
+     * [state] (Swift AuthViewModel, Compose) keep working — same StateFlow instance.
+     */
+    fun reinitialize() {
+        sessionStatusJob?.cancel()
+        sessionStatusJob = null
+        restoreWatchdogJob?.cancel()
+        restoreWatchdogJob = null
+        // Fork: a watchdog that fired for the OLD client must not suppress Loading for the new one.
+        sessionRestoreTimedOut = false
+        initialized = false
+        validatedRemoteUserId = null
+        _state.value = AuthState.Loading
+        initialize()
     }
 
     private suspend fun validateRemoteSession(userId: String): Boolean {

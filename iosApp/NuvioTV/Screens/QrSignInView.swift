@@ -103,7 +103,13 @@ struct QrSignInView: View {
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
                         .fill(Theme.Surface.panel)
                         .frame(width: 460, height: 460)
-                    ProgressView()
+                    if unsupportedByServer {
+                        Image(systemName: "qrcode")
+                            .font(Theme.Font.hero)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                    } else {
+                        ProgressView()
+                    }
                 }
             }
         }
@@ -116,7 +122,23 @@ struct QrSignInView: View {
                 .font(Theme.Font.screenTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
 
-            if let error = errorMessage {
+            if unsupportedByServer {
+                // Self-hosted server without the `tv_login` capability: nothing to retry — point
+                // the user at the email form instead (the Welcome screen already leads with it).
+                Text("QR sign-in isn\u{2019}t available on this server. Use email and password instead.")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .frame(maxWidth: 700, alignment: .leading)
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Close", systemImage: "xmark.circle")
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.lg)
+                        .padding(.vertical, Theme.Spacing.xs)
+                }
+                .buttonStyle(.glass)
+            } else if let error = errorMessage {
                 Text(error)
                     .font(Theme.Font.body)
                     .foregroundStyle(.red)
@@ -143,7 +165,7 @@ struct QrSignInView: View {
 
                 if let code = shortCode {
                     VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                        Text("Or go to nuvio.tv/tv-login and enter:")
+                        Text(String(localized: "Or go to \(approvalHostPath) and enter:"))
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Palette.textSecondary)
                         // The backend's pairing code is a long hex string (not a short human
@@ -166,17 +188,54 @@ struct QrSignInView: View {
                 }
             }
 
-            Button {
-                dismiss()
-            } label: {
-                Label("Cancel", systemImage: "xmark.circle")
-                    .font(Theme.Font.meta)
-                    .padding(.horizontal, Theme.Spacing.lg)
-                    .padding(.vertical, Theme.Spacing.xs)
+            if !unsupportedByServer {
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.lg)
+                        .padding(.vertical, Theme.Spacing.xs)
+                }
+                .buttonStyle(.glass)
             }
-            .buttonStyle(.glass)
         }
         .frame(maxWidth: 800, alignment: .leading)
+    }
+
+    /// True when the active (self-hosted) server doesn't advertise `tv_login` — the repo
+    /// publishes this instead of starting a flow, so there is nothing to retry.
+    private var unsupportedByServer: Bool {
+        guard let state = model.state else { return false }
+        let unsupported: Bool = state.unsupportedByServer
+        return unsupported
+    }
+
+    /// "host/path" of the approval page for the manual-entry hint (e.g. `nuvio.tv/tv-login`, or
+    /// `backend.example.com/tv-login` on a self-hosted server). Prefers the live `webUrl` from
+    /// the flow (query stripped); before the flow has started, derives it from the active
+    /// server's TV-login base URL.
+    private var approvalHostPath: String {
+        let webUrl: String? = model.state?.webUrl
+        if let webUrl, let fromFlow = Self.hostPath(from: webUrl) {
+            return fromFlow
+        }
+        if let active = ServerConfigurationRepository.shared.active.value_ as? ServerConfiguration,
+           let fromConfig = Self.hostPath(from: active.tvLoginWebBaseUrl) {
+            return fromConfig
+        }
+        return Self.hostPath(from: ServerConfigurationKt.OFFICIAL_TV_LOGIN_WEB_BASE_URL) ?? "nuvio.tv/tv-login"
+    }
+
+    /// `host[:port]` + path (no scheme, no query/fragment, no trailing slash).
+    private static func hostPath(from urlString: String) -> String? {
+        guard let components = URLComponents(string: urlString),
+              let host = components.host, !host.isEmpty else { return nil }
+        var result = host
+        if let port = components.port { result += ":\(port)" }
+        var path = components.path
+        while path.hasSuffix("/") { path.removeLast() }
+        return result + path
     }
 
     private var errorMessage: String? {

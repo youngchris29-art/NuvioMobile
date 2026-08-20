@@ -7,6 +7,8 @@ import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.enabledAddons
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -29,6 +31,13 @@ object CollectionRepository {
         encodeDefaults = true
     }
 
+    // Serializes every read-map-assign mutation of _collections/rawCollectionsJson plus its
+    // persist(): a remote pull (applyFromRemote, sync dispatcher) interleaving with a UI-driven
+    // updateCollection could otherwise re-assign a stale snapshot — e.g. resurrect a collection
+    // the pull just removed — and then persist and push the resurrection. Reentrant, so locked
+    // mutators may call ensureLoaded()/initialize(). (Codex round 5.)
+    private val mutationLock = SynchronizedObject()
+
     private val _collections = MutableStateFlow<List<Collection>>(emptyList())
     val collections: StateFlow<List<Collection>> = _collections.asStateFlow()
     private val _localChangeEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -37,7 +46,7 @@ object CollectionRepository {
 
     private var hasLoaded = false
 
-    fun initialize() {
+    fun initialize(): Unit = synchronized(mutationLock) {
         if (hasLoaded) return
         hasLoaded = true
         val payload = CollectionStorage.loadPayload()
@@ -57,13 +66,13 @@ object CollectionRepository {
         }
     }
 
-    fun onProfileChanged() {
+    fun onProfileChanged(): Unit = synchronized(mutationLock) {
         hasLoaded = false
         _collections.value = emptyList()
         rawCollectionsJson = JsonArray(emptyList())
     }
 
-    fun clearLocalState() {
+    fun clearLocalState(): Unit = synchronized(mutationLock) {
         hasLoaded = false
         _collections.value = emptyList()
         rawCollectionsJson = JsonArray(emptyList())
@@ -72,29 +81,44 @@ object CollectionRepository {
     fun getCollection(id: String): Collection? =
         _collections.value.find { it.id == id }
 
-    fun addCollection(collection: Collection) {
+    fun addCollection(collection: Collection): Unit = synchronized(mutationLock) {
         ensureLoaded()
         val decorated = CollectionMobileSettingsRepository.applyToCollection(collection)
         _collections.value = _collections.value.upsertCollectionById(decorated)
         persist()
     }
 
-    fun updateCollection(collection: Collection) {
+    /**
+     * Returns false when the update did not land: the collection no longer exists (a sync pull
+     * removed it mid-edit — the map would otherwise silently change nothing and report success),
+     * or the payload did not durably persist (in-memory state is still updated in that case).
+     */
+    fun updateCollection(collection: Collection): Boolean = synchronized(mutationLock) {
         ensureLoaded()
         val decorated = CollectionMobileSettingsRepository.applyToCollection(collection)
+        var found = false
         _collections.value = _collections.value.deduplicatedById().map {
-            if (it.id == collection.id) decorated else it
+            if (it.id == collection.id) {
+                found = true
+                decorated
+            } else {
+                it
+            }
+        }
+        if (!found) {
+            log.w { "updateCollection — ${collection.id} no longer exists; edit dropped" }
+            return false
         }
         persist()
     }
 
-    fun removeCollection(collectionId: String) {
+    fun removeCollection(collectionId: String): Unit = synchronized(mutationLock) {
         ensureLoaded()
         _collections.value = _collections.value.filter { it.id != collectionId }
         persist()
     }
 
-    fun setCollections(collections: List<Collection>) {
+    fun setCollections(collections: List<Collection>): Unit = synchronized(mutationLock) {
         ensureLoaded()
         val normalized = normalizeCollections(collections, source = "setCollections")
         _collections.value = CollectionMobileSettingsRepository.applyToCollections(normalized)
@@ -109,7 +133,7 @@ object CollectionRepository {
         moveByIndex(index, index + 1)
     }
 
-    fun moveByIndex(fromIndex: Int, toIndex: Int) {
+    fun moveByIndex(fromIndex: Int, toIndex: Int): Unit = synchronized(mutationLock) {
         ensureLoaded()
         val list = _collections.value.toMutableList()
         if (fromIndex == toIndex) return
@@ -120,13 +144,13 @@ object CollectionRepository {
         persist()
     }
 
-    fun exportToJson(): String {
+    fun exportToJson(): String = synchronized(mutationLock) {
         ensureLoaded()
-        return mergedCollectionsJson().toString()
+        mergedCollectionsJson().toString()
     }
 
-    fun importFromJson(jsonString: String): Result<List<Collection>> {
-        return runCatching {
+    fun importFromJson(jsonString: String): Result<List<Collection>> = synchronized(mutationLock) {
+        runCatching {
             val validation = validateJson(jsonString)
             if (!validation.valid) {
                 throw IllegalArgumentException(validation.error.orEmpty())
@@ -216,14 +240,14 @@ object CollectionRepository {
         return result
     }
 
-    internal fun applyFromRemote(collections: List<Collection>, rawJson: JsonElement) {
+    internal fun applyFromRemote(collections: List<Collection>, rawJson: JsonElement): Unit = synchronized(mutationLock) {
         rawCollectionsJson = rawJson
         val normalized = normalizeCollections(collections, source = "remote sync")
         _collections.value = CollectionMobileSettingsRepository.applyToCollections(normalized)
         persist(sync = false)
     }
 
-    internal fun onMobileSettingsChanged() {
+    internal fun onMobileSettingsChanged(): Unit = synchronized(mutationLock) {
         if (!hasLoaded) return
         _collections.value = CollectionMobileSettingsRepository.applyToCollections(
             _collections.value.deduplicatedById(),
@@ -244,16 +268,22 @@ object CollectionRepository {
         if (!hasLoaded) initialize()
     }
 
-    private fun persist(sync: Boolean = true) {
+    /** Test seam: lets tests force a storage-write failure without a platform hook. */
+    internal var payloadWriter: (String) -> Boolean = { CollectionStorage.savePayload(it) }
+
+    /** Returns false when the payload did not durably persist (logged; in-memory state is kept). */
+    private fun persist(sync: Boolean = true): Boolean =
         runCatching {
-            CollectionStorage.savePayload(mergedCollectionsJson().toString())
-            if (sync) {
+            val saved = payloadWriter(mergedCollectionsJson().toString())
+            if (!saved) log.e { "Failed to persist collections — storage write did not land" }
+            if (saved && sync) {
                 _localChangeEvents.tryEmit(Unit)
             }
-        }.onFailure { e ->
+            saved
+        }.getOrElse { e ->
             log.e(e) { "Failed to persist collections" }
+            false
         }
-    }
 
     private fun mergedCollectionsJson(): JsonArray =
         CollectionJsonPreserver.merge(json, rawCollectionsJson, _collections.value).also {

@@ -6,11 +6,16 @@ import SwiftUI
 /// mode remain one Select-press away as clearly secondary options. Shown whenever
 /// `AuthRepository` reports `Unauthenticated` — existing guest installs never see this (their
 /// stored anonymous id authenticates immediately).
+///
+/// Self-hosted servers: a "Connect to a Server" action opens the discovery flow, and when the
+/// active server doesn't advertise `tv_login` the email form becomes the primary (default-focused)
+/// action instead of QR — the layout is otherwise unchanged for the official backend.
 struct WelcomeView: View {
     @ObservedObject var model: AuthViewModel
+    @StateObject private var server = ActiveServerObserver()
 
     private enum AuthSheet: String, Identifiable {
-        case signIn, signUp, qr
+        case signIn, signUp, qr, server
         var id: String { rawValue }
     }
 
@@ -33,11 +38,24 @@ struct WelcomeView: View {
                         .scaledToFit()
                         .frame(height: 130)
                         .accessibilityLabel("Nuvio")
-                    Text("Sign in with your phone — scan a QR code, no typing on the remote.")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 900)
+                    if server.supportsTvLogin {
+                        Text("Sign in with your phone — scan a QR code, no typing on the remote.")
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 900)
+                    } else {
+                        Text("Sign in with your email and password to get started.")
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 900)
+                    }
+                    if server.isCustom {
+                        Text("Connected to \(server.displayHost)")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                    }
                 }
 
                 VStack(spacing: Theme.Spacing.xl) {
@@ -51,26 +69,51 @@ struct WelcomeView: View {
                     // arrowing down to "Sign In with Email" and back — this label went invisible
                     // white-on-near-white, same failure as BUG-14's Detail Play button.
                     // `prominentAccentLabel()` handles both states.
-                    Button {
-                        model.clearError()
-                        sheet = .qr
-                    } label: {
-                        VStack(spacing: Theme.Spacing.sm) {
-                            Image(systemName: "qrcode")
-                                .font(Theme.Font.hero)
-                            Text("Sign In with Your Phone")
-                                .font(Theme.Font.sectionTitle)
-                            Text("Scan a QR code to sign in — no typing required")
-                                .font(Theme.Font.caption)
-                                .opacity(0.85)
+                    if server.supportsTvLogin {
+                        Button {
+                            model.clearError()
+                            sheet = .qr
+                        } label: {
+                            VStack(spacing: Theme.Spacing.sm) {
+                                Image(systemName: "qrcode")
+                                    .font(Theme.Font.hero)
+                                Text("Sign In with Your Phone")
+                                    .font(Theme.Font.sectionTitle)
+                                Text("Scan a QR code to sign in — no typing required")
+                                    .font(Theme.Font.caption)
+                                    .opacity(0.85)
+                            }
+                            .prominentAccentLabel()
+                            .frame(maxWidth: 640)
+                            .padding(.vertical, Theme.Spacing.xl)
                         }
-                        .prominentAccentLabel()
-                        .frame(maxWidth: 640)
-                        .padding(.vertical, Theme.Spacing.xl)
+                        .buttonStyle(.glassProminent)
+                        .tint(Theme.Palette.accent)
+                        .prefersDefaultFocus(true, in: focusNamespace)
+                    } else {
+                        // Self-hosted server without `tv_login`: email sign-in is the only
+                        // account path, so it takes the primary slot and default focus.
+                        Button {
+                            model.clearError()
+                            sheet = .signIn
+                        } label: {
+                            VStack(spacing: Theme.Spacing.sm) {
+                                Image(systemName: "envelope")
+                                    .font(Theme.Font.hero)
+                                Text("Sign In with Email")
+                                    .font(Theme.Font.sectionTitle)
+                                Text("This server signs in with email and password")
+                                    .font(Theme.Font.caption)
+                                    .opacity(0.85)
+                            }
+                            .prominentAccentLabel()
+                            .frame(maxWidth: 640)
+                            .padding(.vertical, Theme.Spacing.xl)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .tint(Theme.Palette.accent)
+                        .prefersDefaultFocus(true, in: focusNamespace)
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(Theme.Palette.accent)
-                    .prefersDefaultFocus(true, in: focusNamespace)
 
                     VStack(spacing: Theme.Spacing.md) {
                         Text("Or continue another way")
@@ -79,27 +122,34 @@ struct WelcomeView: View {
 
                         GlassEffectContainer(spacing: Theme.Spacing.md) {
                             HStack(spacing: Theme.Spacing.md) {
-                                Button {
-                                    model.clearError()
-                                    sheet = .signIn
-                                } label: {
-                                    Text("Sign In with Email")
-                                        .font(Theme.Font.meta)
-                                        .padding(.horizontal, Theme.Spacing.lg)
-                                        .padding(.vertical, Theme.Spacing.xs)
+                                // Both email routes require `email_password_auth` — discovery
+                                // accepts QR-only servers (tv_login=true, email_password_auth=false),
+                                // and offering email sign-in/sign-up against one would just fail.
+                                if server.supportsTvLogin && server.supportsEmailPassword {
+                                    Button {
+                                        model.clearError()
+                                        sheet = .signIn
+                                    } label: {
+                                        Text("Sign In with Email")
+                                            .font(Theme.Font.meta)
+                                            .padding(.horizontal, Theme.Spacing.lg)
+                                            .padding(.vertical, Theme.Spacing.xs)
+                                    }
+                                    .buttonStyle(.glass)
                                 }
-                                .buttonStyle(.glass)
 
-                                Button {
-                                    model.clearError()
-                                    sheet = .signUp
-                                } label: {
-                                    Text("Create Account")
-                                        .font(Theme.Font.meta)
-                                        .padding(.horizontal, Theme.Spacing.lg)
-                                        .padding(.vertical, Theme.Spacing.xs)
+                                if server.supportsEmailPassword {
+                                    Button {
+                                        model.clearError()
+                                        sheet = .signUp
+                                    } label: {
+                                        Text("Create Account")
+                                            .font(Theme.Font.meta)
+                                            .padding(.horizontal, Theme.Spacing.lg)
+                                            .padding(.vertical, Theme.Spacing.xs)
+                                    }
+                                    .buttonStyle(.glass)
                                 }
-                                .buttonStyle(.glass)
 
                                 Button {
                                     model.continueAsGuest()
@@ -108,6 +158,24 @@ struct WelcomeView: View {
                                         .font(Theme.Font.meta)
                                         .padding(.horizontal, Theme.Spacing.lg)
                                         .padding(.vertical, Theme.Spacing.xs)
+                                }
+                                .buttonStyle(.glass)
+
+                                Button {
+                                    model.clearError()
+                                    sheet = .server
+                                } label: {
+                                    if server.isCustom {
+                                        Text("Server: \(server.displayHost)")
+                                            .font(Theme.Font.meta)
+                                            .padding(.horizontal, Theme.Spacing.lg)
+                                            .padding(.vertical, Theme.Spacing.xs)
+                                    } else {
+                                        Text("Connect to a Server")
+                                            .font(Theme.Font.meta)
+                                            .padding(.horizontal, Theme.Spacing.lg)
+                                            .padding(.vertical, Theme.Spacing.xs)
+                                    }
                                 }
                                 .buttonStyle(.glass)
                             }
@@ -119,9 +187,12 @@ struct WelcomeView: View {
             .padding(Theme.Spacing.screen)
         }
         .fullScreenCover(item: $sheet) { mode in
-            if mode == .qr {
+            switch mode {
+            case .qr:
                 QrSignInView()
-            } else {
+            case .server:
+                ServerConnectionView()
+            case .signIn, .signUp:
                 AuthView(model: model, isSignUp: mode == .signUp)
             }
         }

@@ -60,7 +60,7 @@ data class AvatarCatalogItem(
 )
 
 fun avatarStorageUrl(storagePath: String): String =
-    "${com.nuvio.app.core.network.SupabaseConfig.URL}/storage/v1/object/public/avatars/$storagePath"
+    "${com.nuvio.app.core.network.ServerConfigurationRepository.active.value.backendUrl}/storage/v1/object/public/avatars/$storagePath"
 
 fun normalizedAvatarUrl(url: String?): String? =
     url?.trim()?.takeIf { it.isValidAvatarUrl() }

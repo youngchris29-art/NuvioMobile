@@ -22,6 +22,8 @@ struct SettingsView: View {
     @State private var confirmingSimklDisconnect = false
     /// Provider id pending a debrid disconnect confirmation (drives the alert).
     @State private var debridDisconnectId: String?
+    /// "Use the official server?" confirmation (self-hosted → api.nuvio.tv switch-back).
+    @State private var confirmingUseOfficial = false
     /// Which category's sections are shown in the detail pane (split-view, tvOS-Settings style).
     @State private var selectedCategory: SettingsCategory = .accountServices
     @FocusState private var focusedCategory: SettingsCategory?
@@ -127,6 +129,17 @@ struct SettingsView: View {
                     : "Local data on this Apple TV will be cleared. Your synced data stays in your Nuvio account."
             )
         }
+        .alert("Use the official server?", isPresented: $confirmingUseOfficial) {
+            Button("Switch", role: .destructive) {
+                // Fire-and-forget into the shared controller: clears the session + local data,
+                // saves the official config, resets the Supabase client and re-inits auth — the
+                // root gate drops to Welcome (which unmounts Settings).
+                ServerConnectionController.shared.useOfficial()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You\u{2019}ll be signed out of the self-hosted server and local data on this Apple TV will be cleared. Nuvio will reconnect to api.nuvio.tv.")
+        }
     }
 
     /// The detail pane's content for the currently selected sidebar category. Only the selected
@@ -143,7 +156,8 @@ struct SettingsView: View {
                 confirmingSignOut: $confirmingSignOut,
                 confirmingTraktDisconnect: $confirmingTraktDisconnect,
                 confirmingSimklDisconnect: $confirmingSimklDisconnect,
-                debridDisconnectId: $debridDisconnectId
+                debridDisconnectId: $debridDisconnectId,
+                confirmingUseOfficial: $confirmingUseOfficial
             )
         case .playback:
             PlaybackSettingsPane(model: model)

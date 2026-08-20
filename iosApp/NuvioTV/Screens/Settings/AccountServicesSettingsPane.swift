@@ -10,6 +10,8 @@ struct AccountServicesSettingsPane: View {
     @ObservedObject var simkl: SimklViewModel
     @ObservedObject var debrid: DebridViewModel
     @EnvironmentObject private var auth: AuthViewModel
+    /// Active backend (official vs self-hosted) for the Server section.
+    @StateObject private var server = ActiveServerObserver()
 
     /// Drives the shared sign-in/sign-out confirmation alert owned by SettingsView.
     @Binding var confirmingSignOut: Bool
@@ -19,6 +21,10 @@ struct AccountServicesSettingsPane: View {
     @Binding var confirmingSimklDisconnect: Bool
     /// Provider id pending a debrid disconnect confirmation (drives the alert owned by SettingsView).
     @Binding var debridDisconnectId: String?
+    /// Drives the shared "Use the official server?" confirmation alert owned by SettingsView.
+    @Binding var confirmingUseOfficial: Bool
+    /// Presents the self-hosted server discovery flow as a full-screen cover.
+    @State private var showServerConnection = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
@@ -42,6 +48,10 @@ struct AccountServicesSettingsPane: View {
                 }
             }
 
+            settingsSection(String(localized: "Server")) {
+                serverSection
+            }
+
             settingsSection(String(localized: "Trakt")) {
                 traktSection
             }
@@ -57,6 +67,42 @@ struct AccountServicesSettingsPane: View {
         // BUG-21 follow-up: verify each connected provider's stored credential the moment the
         // pane opens, so an expired token reads "Session expired" instead of "Connected".
         .onAppear { debrid.revalidateConnected() }
+        .fullScreenCover(isPresented: $showServerConnection) {
+            ServerConnectionView()
+        }
+    }
+
+    /// The Server section: which backend this Apple TV talks to, plus the self-hosted discovery
+    /// entry point and (when on a custom server) the way back to api.nuvio.tv. Both switches are
+    /// destructive (sign-out + local wipe) — the "Use Official Server" confirm is a `.alert` on
+    /// SettingsView; the connect flow confirms inside `ServerConnectionView`.
+    @ViewBuilder
+    private var serverSection: some View {
+        SettingsInfoRow(
+            title: String(localized: "Server"),
+            value: server.isCustom
+                ? server.displayHost
+                : String(localized: "Official Nuvio (\(server.displayHost))"),
+            systemImage: "server.rack"
+        )
+        SettingsActionRow(
+            title: server.isCustom
+                ? String(localized: "Connect to Another Server")
+                : String(localized: "Connect to a Self-Hosted Server"),
+            subtitle: String(localized: "Point this Apple TV at a self-hosted Nuvio backend. Switching servers signs you out and clears local data on this Apple TV."),
+            systemImage: "network"
+        ) {
+            showServerConnection = true
+        }
+        if server.isCustom {
+            SettingsActionRow(
+                title: String(localized: "Use Official Server"),
+                subtitle: String(localized: "Switch back to api.nuvio.tv. You\u{2019}ll be signed out and local data on this Apple TV will be cleared."),
+                systemImage: "arrow.uturn.backward"
+            ) {
+                confirmingUseOfficial = true
+            }
+        }
     }
 
     /// The Trakt section body — four states: keys missing / connected / awaiting code approval /

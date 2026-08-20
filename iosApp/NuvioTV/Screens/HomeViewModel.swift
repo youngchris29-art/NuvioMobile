@@ -135,7 +135,49 @@ final class HomeViewModel: ObservableObject {
         AddonRepository.shared.initialize()
         WatchProgressRepository.shared.ensureLoaded()
         CollectionRepository.shared.initialize()
+        #if DEBUG
+        applyCollectionsSeedIfRequested()
+        #endif
     }
+
+    #if DEBUG
+    /// Sim-only knob for headless UI tests of the TMDB filter editor (`TmdbFilterEditorView`):
+    /// launch with `-debug.collectionsSeedJsonB64 '<base64 of json>'` (an exported-collections
+    /// JSON array, same shape as `CollectionRepository.exportToJson()`; base64 because the
+    /// launch-argument domain of NSUserDefaults parses bracket/brace-led values as old-style
+    /// plists and drops raw JSON) — `-debug.collectionsSeedJson` with raw JSON is accepted too
+    /// for hand use. The payload is imported ONCE per launch, right after
+    /// `CollectionRepository.initialize()`, so a folder with a tmdb DISCOVER source exists without
+    /// a signed-in account. In a signed-in session the next foreground pull may overwrite it
+    /// (remote wins) — use in guest mode. Invalid JSON is rejected by the shared `validateJson`
+    /// (logged, nothing imported).
+    private static var didApplyCollectionsSeed = false
+    private func applyCollectionsSeedIfRequested() {
+        guard !Self.didApplyCollectionsSeed else { return }
+        let defaults = UserDefaults.standard
+        var seed = defaults.string(forKey: "debug.collectionsSeedJson") ?? ""
+        if seed.isEmpty, let b64 = defaults.string(forKey: "debug.collectionsSeedJsonB64"), !b64.isEmpty {
+            seed = Data(base64Encoded: b64).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            if seed.isEmpty { NSLog("[CollectionsSeed] imported=false error=base64 payload did not decode") }
+        }
+        guard !seed.isEmpty else { return }
+        let json = seed
+        Self.didApplyCollectionsSeed = true
+        let validation = CollectionRepository.shared.validateJson(jsonString: json)
+        guard validation.valid else {
+            NSLog("[CollectionsSeed] imported=false error=%@", validation.error ?? "invalid JSON")
+            return
+        }
+        // Kotlin `Result<List<Collection>>` crosses the bridge as the unboxed value: the array on
+        // success, an opaque failure object otherwise (never throws — runCatching inside).
+        let result = CollectionRepository.shared.importFromJson(jsonString: json)
+        if let imported = result as? [NuvioCollection] {
+            NSLog("[CollectionsSeed] imported=true collections=%d folders=%d", imported.count, imported.reduce(0) { $0 + $1.folders.count })
+        } else {
+            NSLog("[CollectionsSeed] imported=false result=%@", String(describing: result))
+        }
+    }
+    #endif
 
     func stop() {
         addonWatcher?.cancel()

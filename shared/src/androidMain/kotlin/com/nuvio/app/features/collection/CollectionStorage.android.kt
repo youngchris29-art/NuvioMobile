@@ -17,10 +17,13 @@ actual object CollectionStorage {
     actual fun loadPayload(): String? =
         preferences?.getString(ProfileScopedKey.of(payloadKey), null)
 
-    actual fun savePayload(payload: String) {
-        preferences
-            ?.edit()
-            ?.putString(ProfileScopedKey.of(payloadKey), payload)
-            ?.apply()
+    actual fun savePayload(payload: String): Boolean {
+        val store = preferences ?: return false
+        // commit() (not apply()) — the durable-write contract needs a real result: apply()
+        // persists asynchronously and reports nothing, so a failed disk write would have been
+        // reported as saved (Codex whole-tree round, 2026-08-19).
+        return store.edit()
+            .putString(ProfileScopedKey.of(payloadKey), payload)
+            .commit()
     }
 }

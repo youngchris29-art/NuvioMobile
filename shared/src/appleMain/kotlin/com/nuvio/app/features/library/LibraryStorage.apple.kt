@@ -14,8 +14,9 @@ actual object LibraryStorage {
     actual fun loadPayload(profileId: Int): String? =
         PayloadFileStore.load(subdirectory, payloadKey(profileId))
 
-    actual fun savePayload(profileId: Int, payload: String) =
+    actual fun savePayload(profileId: Int, payload: String) {
         PayloadFileStore.save(subdirectory, payloadKey(profileId), payload)
+    }
 
     /** Sign-out cleanup (called by TvOsAccountDataCleaner). */
     fun deleteAll() = PayloadFileStore.deleteAll(subdirectory)

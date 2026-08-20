@@ -47,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.auth.AuthRepository
+import com.nuvio.app.core.build.AppFeaturePolicy
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.PI
@@ -187,6 +189,7 @@ fun AuthScreen(
     modifier: Modifier = Modifier,
 ) {
     val authError by AuthRepository.error.collectAsStateWithLifecycle()
+    val serverConnectionState by ServerConnectionController.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     var isSignUp by rememberSaveable { mutableStateOf(false) }
@@ -196,6 +199,8 @@ fun AuthScreen(
     var isLoading by rememberSaveable { mutableStateOf(false) }
     var emailFieldBounds by remember { mutableStateOf<Rect?>(null) }
     var passwordFieldBounds by remember { mutableStateOf<Rect?>(null) }
+    var showServerSheet by rememberSaveable { mutableStateOf(false) }
+    var showOfficialServerDialog by rememberSaveable { mutableStateOf(false) }
 
     fun submitAuth() {
         if (email.isBlank() || password.length < 6 || isLoading) return
@@ -214,6 +219,26 @@ fun AuthScreen(
     }
 
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+
+    LaunchedEffect(serverConnectionState.activeServer.isCustom) {
+        if (!serverConnectionState.activeServer.isCustom) {
+            showOfficialServerDialog = false
+        }
+    }
+
+    // A successful switch resets the controller (discoveredServer = null) while this screen stays
+    // mounted for a signed-out user — without clearing the local flags the entry sheet would
+    // immediately re-present over the freshly switched server. Keyed on the durable
+    // switchGeneration counter (not an isSwitching edge): the collector is conflated and a fast
+    // switch may never surface the transient `isSwitching = true` state.
+    var seenSwitchGeneration by remember { mutableStateOf(serverConnectionState.switchGeneration) }
+    LaunchedEffect(serverConnectionState.switchGeneration) {
+        if (serverConnectionState.switchGeneration != seenSwitchGeneration) {
+            seenSwitchGeneration = serverConnectionState.switchGeneration
+            showServerSheet = false
+            showOfficialServerDialog = false
+        }
+    }
 
     Box(
         modifier = modifier
@@ -313,6 +338,65 @@ fun AuthScreen(
                 }
             }
         }
+
+        if (AppFeaturePolicy.customServerConnectionsEnabled) {
+            ServerConnectionMenu(
+                activeServer = serverConnectionState.activeServer,
+                onUseOfficial = {
+                    ServerConnectionController.resetDiscovery()
+                    showOfficialServerDialog = true
+                },
+                onConnectCustom = {
+                    ServerConnectionController.resetDiscovery()
+                    showServerSheet = true
+                },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 8.dp, top = statusBarTop + 4.dp),
+            )
+        }
+    }
+
+    if (
+        AppFeaturePolicy.customServerConnectionsEnabled &&
+        showServerSheet &&
+        serverConnectionState.discoveredServer == null
+    ) {
+        ServerConnectionSheet(
+            state = serverConnectionState,
+            onDiscover = ServerConnectionController::discover,
+            onDismiss = {
+                showServerSheet = false
+                ServerConnectionController.resetDiscovery()
+            },
+        )
+    }
+
+    serverConnectionState.discoveredServer?.let { server ->
+        if (AppFeaturePolicy.customServerConnectionsEnabled) {
+            ServerTrustDialog(
+                server = server,
+                isSwitching = serverConnectionState.isSwitching,
+                switchFailure = serverConnectionState.switchFailure,
+                onConfirm = ServerConnectionController::connectDiscovered,
+                onDismiss = {
+                    showServerSheet = false
+                    ServerConnectionController.resetDiscovery()
+                },
+            )
+        }
+    }
+
+    if (AppFeaturePolicy.customServerConnectionsEnabled && showOfficialServerDialog) {
+        OfficialServerDialog(
+            isSwitching = serverConnectionState.isSwitching,
+            switchFailure = serverConnectionState.switchFailure,
+            onConfirm = ServerConnectionController::useOfficial,
+            onDismiss = {
+                showOfficialServerDialog = false
+                ServerConnectionController.resetDiscovery()
+            },
+        )
     }
 }
 

@@ -13,7 +13,9 @@ typealias NuvioCollection = Collection
 // Collections (browse-only, Phase 5b): renders collections curated on mobile — the cloud sync
 // already delivers them (SyncManager.pullAllForProfile → CollectionSyncService.pullFromServer).
 // A collection appears on Home as a row of folder tiles; a folder opens a tabbed paginated grid
-// backed entirely by the shared `FolderDetailRepository`. Editing stays on mobile.
+// backed entirely by the shared `FolderDetailRepository`. Structural editing stays on mobile; the
+// one on-device edit is a tmdb source's Discover filters (`TmdbFilterEditorView`, from the
+// folder grid's Edit Filters button).
 
 /// Navigation value for a collection folder's detail grid. Hashes on the stable ids; carries the
 /// titles for the destination's initial render (same wrapper approach as `TitleRoute`).
@@ -386,6 +388,17 @@ struct FolderTile: View {
 /// `initialize(collectionId:folderId:)` — one folder screen at a time, `clear()` on exit.
 @MainActor
 final class FolderDetailViewModel: ObservableObject {
+    /// The selected tab's tmdb source when its Discover filters can be edited on-device
+    /// (`TmdbFilterEditorView`). Identifiable so it can drive `.fullScreenCover(item:)`.
+    struct EditableSource: Identifiable {
+        let collectionId: String
+        let folderId: String
+        /// Index into `folder.resolvedSources` (what `TmdbSourceFilterEditor.begin` takes).
+        let sourceIndex: Int
+        let title: String
+        var id: String { "\(collectionId)|\(folderId)|\(sourceIndex)" }
+    }
+
     @Published private(set) var folderTitle: String
     @Published private(set) var collectionTitle = ""
     @Published private(set) var tabs: [FolderTab] = []
@@ -394,6 +407,9 @@ final class FolderDetailViewModel: ObservableObject {
     @Published private(set) var isLoading = true
     @Published private(set) var canLoadMore = false
     @Published private(set) var tabIsLoading = false
+    /// Non-nil when the selected tab is a filter-consuming tmdb source (DISCOVER / COMPANY /
+    /// NETWORK — LIST/COLLECTION/PERSON/DIRECTOR ignore Discover filters at resolve time).
+    @Published private(set) var editableSource: EditableSource?
 
     private let collectionId: String
     private let folderId: String
@@ -417,8 +433,64 @@ final class FolderDetailViewModel: ObservableObject {
             self.isLoading = state.isLoading
             self.canLoadMore = state.selectedTabCanLoadMore
             self.tabIsLoading = state.selectedTab?.isLoading ?? false
+            self.editableSource = Self.editableSource(
+                in: state,
+                collectionId: self.collectionId,
+                folderId: self.folderId
+            )
         }
         FolderDetailRepository.shared.initialize(collectionId: collectionId, folderId: folderId)
+    }
+
+    /// Re-runs `initialize` for the same folder after the filter editor saved: the repository's
+    /// retained-inputs guard (UX-14) sees the changed `folder` and does a full refetch; when
+    /// nothing changed (Cancel) it early-returns and keeps the grid as-is.
+    func reload() {
+        let previousTab = selectedTabIndex
+        FolderDetailRepository.shared.initialize(collectionId: collectionId, folderId: folderId)
+        // A full re-init rebuilds the tabs with index 0 selected; put the user back on the tab
+        // whose filters they just edited (tabs are built synchronously inside initialize).
+        let tabCount = (FolderDetailRepository.shared.uiState.value_ as? FolderDetailUiState)?.tabs.count ?? 0
+        if previousTab > 0, previousTab < tabCount {
+            FolderDetailRepository.shared.selectTab(index: Int32(previousTab))
+        }
+    }
+
+    /// Maps the selected tab back to its `resolvedSources` index. FolderDetailRepository builds
+    /// one tab per source, with an "All" tab first when `showAllTab` (`tabIndex = showAll ?
+    /// sourceIndex + 1 : sourceIndex`, FolderDetailRepository.kt:278). Addon sources whose
+    /// catalog can't be materialised are skipped while building tabs, which would shift the
+    /// indices — so the offset result is verified against the folder's sources and corrected by
+    /// identity when it doesn't line up.
+    private static func editableSource(
+        in state: FolderDetailUiState,
+        collectionId: String,
+        folderId: String
+    ) -> EditableSource? {
+        let tabs = state.tabs
+        let tabIndex = Int(state.selectedTabIndex)
+        guard tabs.indices.contains(tabIndex) else { return nil }
+        let tab = tabs[tabIndex]
+        guard !tab.isAllTab, let source = tab.source, source.isTmdb else { return nil }
+        // Same fallback as the shared `CollectionSource.tmdbType()`: unknown/missing → DISCOVER.
+        let rawType: String? = source.tmdbSourceType
+        let type = (rawType ?? "DISCOVER").uppercased()
+        if ["LIST", "COLLECTION", "PERSON", "DIRECTOR"].contains(type) { return nil }
+
+        var sourceIndex = tabIndex - (state.showAllTab ? 1 : 0)
+        if let resolved = state.folder?.resolvedSources {
+            let aligned = resolved.indices.contains(sourceIndex) && resolved[sourceIndex] == source
+            if !aligned, let match = resolved.firstIndex(where: { $0 == source }) {
+                sourceIndex = match
+            }
+        }
+        guard sourceIndex >= 0 else { return nil }
+        return EditableSource(
+            collectionId: collectionId,
+            folderId: folderId,
+            sourceIndex: sourceIndex,
+            title: tab.label
+        )
     }
 
     func stop() {
@@ -450,6 +522,9 @@ struct FolderDetailView: View {
     @StateObject private var model: FolderDetailViewModel
 
     @Environment(\.posterStyle) private var posterStyle
+    @Environment(\.dismiss) private var dismiss
+    /// Drives the TMDB filter editor cover for the selected tab's tmdb source.
+    @State private var editing: FolderDetailViewModel.EditableSource?
 
     init(route: FolderRoute) {
         _model = StateObject(wrappedValue: FolderDetailViewModel(route: route))
@@ -465,15 +540,32 @@ struct FolderDetailView: View {
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                        if !model.collectionTitle.isEmpty {
-                            Text(model.collectionTitle)
-                                .font(Theme.Font.caption)
-                                .foregroundStyle(Theme.Palette.textSecondary)
+                    HStack(alignment: .center, spacing: Theme.Spacing.lg) {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                            if !model.collectionTitle.isEmpty {
+                                Text(model.collectionTitle)
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                            }
+                            Text(model.folderTitle)
+                                .font(Theme.Font.screenTitle)
+                                .foregroundStyle(Theme.Palette.textPrimary)
                         }
-                        Text(model.folderTitle)
-                            .font(Theme.Font.screenTitle)
-                            .foregroundStyle(Theme.Palette.textPrimary)
+                        Spacer()
+                        // On-device TMDB Discover filter editing for the selected tmdb tab
+                        // (upstream 0fc4616b's exclusion filters + the existing include fields).
+                        // Only shown for filter-consuming sources; doubles as the empty state's
+                        // focus anchor (BUG-47) when the source currently matches nothing.
+                        if let source = model.editableSource {
+                            Button {
+                                editing = source
+                            } label: {
+                                Label("Edit Filters", systemImage: "line.3.horizontal.decrease.circle")
+                                    .font(Theme.Font.meta)
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("folder.editFilters")
+                        }
                     }
 
                     if model.tabs.count > 1 {
@@ -500,10 +592,20 @@ struct FolderDetailView: View {
                             }
                             .padding(.top, Theme.Spacing.xl)
                         } else {
-                            Text("Nothing here yet.")
-                                .font(Theme.Font.body)
-                                .foregroundStyle(Theme.Palette.textSecondary)
-                                .padding(.top, Theme.Spacing.xl)
+                            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                                Text("Nothing here yet.")
+                                    .font(Theme.Font.body)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                // BUG-47 class: a pushed screen with no focusable content strands
+                                // focus on the ancestor tab bar, where Menu exits the app instead
+                                // of popping. The Edit Filters button anchors focus when present;
+                                // otherwise keep a Go Back control here (same as CatalogGridView).
+                                if model.editableSource == nil {
+                                    Button("Go Back") { dismiss() }
+                                        .buttonStyle(.bordered)
+                                }
+                            }
+                            .padding(.top, Theme.Spacing.xl)
                         }
                     } else {
                         LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
@@ -534,6 +636,12 @@ struct FolderDetailView: View {
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+        // House pattern for full-screen flows (`ProfileEditTarget`, DetailView's players). On
+        // dismiss — Save, Cancel, or Menu — re-run initialize: the repository's retained-inputs
+        // guard refetches only when the folder actually changed.
+        .fullScreenCover(item: $editing, onDismiss: { model.reload() }) { source in
+            TmdbFilterEditorView(target: source)
+        }
     }
 }
 

@@ -2,6 +2,10 @@ package com.nuvio.app.core.bootstrap
 
 import com.nuvio.app.core.account.AccountDataCleanerProvider
 import com.nuvio.app.core.account.AccountDataStores
+import com.nuvio.app.core.build.FeaturePolicy
+import com.nuvio.app.core.build.FeaturePolicyProvider
+import com.nuvio.app.core.network.ServerAuthRequirement
+import com.nuvio.app.core.network.ServerConfigurationRepository
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.sync.ProfileSettingsSync
@@ -14,9 +18,11 @@ import com.nuvio.app.core.ui.PosterCardStyleRepository
 import com.nuvio.app.features.addons.AddonProfileContext
 import com.nuvio.app.features.addons.AddonProfileProvider
 import com.nuvio.app.features.addons.AddonRepository
+import com.nuvio.app.features.auth.ServerConnectionController
 import com.nuvio.app.features.catalog.CatalogRepository
 import com.nuvio.app.features.collection.CollectionMobileSettingsRepository
 import com.nuvio.app.features.collection.CollectionRepository
+import com.nuvio.app.features.collection.CollectionSyncService
 import com.nuvio.app.features.collection.FolderDetailRepository
 import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.details.MetaDetailsRepository
@@ -72,8 +78,10 @@ import platform.Foundation.NSUserDefaults
  *  - [ActiveProfileProvider] and [AddonProfileProvider] → real [ProfileRepository]  ✅ wired below.
  *  - `core.i18n` StringProvider → left null; the shared helpers already return English fallbacks,
  *    which is correct for tvOS until localization is ported.
- *  - `core.build.FeaturePolicyProvider` → already defaults to `DefaultFeaturePolicy` (the tvOS
- *    baseline), so no install is needed.
+ *  - `core.build.FeaturePolicyProvider` → `DefaultFeaturePolicy` is the tvOS baseline; this
+ *    installer wraps it to flip `customServerConnectionsEnabled` (self-hosted servers), and
+ *    `installTvOsPlugins()` wraps again for `pluginsEnabled`. Each wrap delegates to whatever
+ *    policy is current, so the overrides compose.
  *  - `core.account.AccountDataCleanerProvider` → left no-op: its real backing
  *    (`LocalAccountDataCleaner`) is a composeApp god-object not reachable from `:shared`. It only
  *    matters for full account sign-out wipes, which tvOS doesn't offer yet.
@@ -84,6 +92,17 @@ import platform.Foundation.NSUserDefaults
  * Idempotent; safe to call more than once.
  */
 fun installTvOsSharedProviders() {
+    // FIRST, before any other seam: allow self-hosted servers on tvOS. ServerConfigurationRepository
+    // reads this flag when it first loads the persisted selection, and SupabaseProvider.client /
+    // SupabaseEndpointConfig / avatarStorageUrl all read that repository — if anything below
+    // touched them before this flip, a saved custom server would silently fall back to the
+    // official backend until the next launch. Delegation keeps every other flag on its current
+    // value (same pattern as installTvOsPlugins()).
+    val basePolicy = FeaturePolicyProvider.policy
+    FeaturePolicyProvider.policy = object : FeaturePolicy by basePolicy {
+        override val customServerConnectionsEnabled: Boolean = true
+    }
+
     // Active profile id → real ProfileRepository. `core.storage.ProfileScopedKey` reads this, so
     // persisted per-profile data (watch progress, library, collections, settings) is keyed to the
     // active profile instead of the hard-coded default id 1.
@@ -121,15 +140,30 @@ fun installTvOsSharedProviders() {
     // (PluginRepository, P2pSettingsRepository) that tvOS doesn't ship.
     AccountDataCleanerProvider.cleaner = TvOsAccountDataCleaner
 
-    // Load the sync-backend selection (defaults to the hosted backend from SupabaseConfig).
-    // AuthRepository.initialize()'s collector waits for this `isLoaded` flag — without it the auth
-    // state never leaves Loading. composeApp does this at App() startup; tvOS must too.
+    // Self-hosted server discovery: a TV can sign in with QR (tv_login) alone, so accept servers
+    // that advertise tv_login even without email+password (upstream's phone default requires
+    // email+password). Then surface which backend this launch is pinned to — the persisted
+    // selection was loaded by ServerConfigurationRepository on first access (after the policy
+    // flip above), so this log line is also the "did the custom server survive the relaunch"
+    // breadcrumb.
+    ServerConnectionController.authRequirement = ServerAuthRequirement.EmailPasswordOrTvLogin
+    ServerConfigurationRepository.active.value.let { server ->
+        Logger.withTag("TvOsProviderInstaller").i {
+            "Active server: ${if (server.isCustom) "custom" else "official"} ${server.displayHost}" +
+                " (tvLogin=${server.capabilities.tvLogin}, emailPassword=${server.capabilities.emailPasswordAuth})"
+        }
+    }
 
     // Push settings changes to the per-platform ("tv") cloud blob — debrid/TMDB/MDBList keys,
     // subtitle style, poster style, theme, etc. composeApp starts this in App(); without it every
     // tvOS-set key stays local-only, so the sign-out wipe loses them and the next sign-in's pull
     // REPLACES local settings with the (empty) server blob. With it, sign-in restores everything.
     ProfileSettingsSync.startObserving()
+
+    // Fork: tvOS now edits collection filters locally (the TMDB filter editor), so local changes
+    // must PUSH to the per-profile collections blob — pulls already persist with sync=false.
+    // Auth-gated inside (no-op for guests/anonymous), debounced like the settings push.
+    CollectionSyncService.startObserving()
 
     // Tracking providers (Trakt today) → TrackingProviderRegistry. The sync spine
     // (WatchedRepository / WatchProgressRepository / LibraryRepository / SyncManager) resolves the
@@ -211,8 +245,8 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // ProviderCredentialSync.clearAccountState(), whose legacy-migration stash is keyed by
         // profile ID only — left alive, a stash staged before sign-out could seed the NEXT
         // account's same-numbered profile with the previous account's credentials (Codex round
-        // 13; the Compose cleaner already does this). Observation restarts on the next
-        // ProfileSettingsSync.startObserving() from the sign-in path.
+        // 13; the Compose cleaner already does this). This also CANCELS the settings-push
+        // observer; it is re-armed at the very end of this wipe (see below).
         ProfileSettingsSync.clearAccountState()
 
         // 2) Persisted keys for every profile slot, from the shared registry.
@@ -246,6 +280,13 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // 3) File-backed payload stores (PayloadFileStore) — the defaults-key removals above only
         // cover values left behind by pre-migration builds.
         com.nuvio.app.core.storage.AppleFilePayloadStores.deleteAll()
+
+        // 4) Re-arm settings-push observation for the NEXT account. clearAccountState() above
+        // cancelled it, and no sign-in path on tvOS restarts it (pre-existing gap: after a
+        // sign-out → sign-in, settings pushes were dead until relaunch; the server-switch flow
+        // hits the same path). Safe to arm this early: pushes stay gated on an authenticated,
+        // non-anonymous AuthRepository state, and startObserving() is idempotent.
+        ProfileSettingsSync.startObserving()
     }
 }
 

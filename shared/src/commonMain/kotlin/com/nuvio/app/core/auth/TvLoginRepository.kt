@@ -2,6 +2,7 @@ package com.nuvio.app.core.auth
 
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
+import com.nuvio.app.core.network.ServerConfigurationRepository
 import com.nuvio.app.core.network.SupabaseProvider
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.functions.functions
@@ -25,9 +26,9 @@ import kotlinx.serialization.json.put
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
-/// Where the QR code sends the phone (the site hosts the approve page; the session code rides
-/// the URL). Mirrors the Android TV app's TV_LOGIN_WEB_BASE_URL default.
-private const val TV_LOGIN_WEB_BASE_URL = "https://nuvio.tv/tv-login"
+// Fork: the QR redirect base now lives on the active server —
+// `ServerConfigurationRepository.active.value.tvLoginWebBaseUrl` (OFFICIAL_TV_LOGIN_WEB_BASE_URL for
+// the hosted backend, `<backend>/tv-login` for a self-hosted one).
 
 private const val TV_LOGIN_MAX_POLL_MINUTES = 10
 
@@ -59,6 +60,8 @@ internal data class TvLoginExchangeResult(
  * `status`: "pending" while waiting for the phone, "approved" momentarily during the exchange.
  * `completed`: the imported session is live — AuthRepository's session collector publishes the
  * real account; the QR screen should dismiss.
+ * `unsupportedByServer`: the active (self-hosted) server does not advertise the `tv_login`
+ * capability — the flow never started; the UI should offer another sign-in method instead of Retry.
  */
 data class TvLoginUiState(
     val isStarting: Boolean = false,
@@ -67,10 +70,12 @@ data class TvLoginUiState(
     val status: String? = null,
     val errorMessage: String? = null,
     val completed: Boolean = false,
+    val unsupportedByServer: Boolean = false,
 )
 
 /**
- * QR sign-in for TVs against the official backend (same protocol as the Android TV app):
+ * QR sign-in for TVs against the ACTIVE backend (official or a self-hosted server that advertises
+ * the `tv_login` capability; same protocol as the Android TV app):
  *  1. `start_tv_login_session` RPC (device nonce + redirect base) → short code + web URL. The TV
  *     renders the URL as a QR code; the phone scans it, opens the site, and the user approves.
  *  2. `poll_tv_login_session` RPC every few seconds until "approved" (or expired/cancelled).
@@ -94,6 +99,15 @@ object TvLoginRepository {
     @OptIn(ExperimentalUuidApi::class)
     fun startFlow(deviceName: String?) {
         if (flowJob?.isActive == true) return
+        // Fork: a self-hosted server may not ship the tv-login RPCs/edge function/approve page.
+        val server = ServerConfigurationRepository.active.value
+        if (!server.capabilities.tvLogin) {
+            _uiState.value = TvLoginUiState(
+                errorMessage = "QR sign-in is not available on this server",
+                unsupportedByServer = true,
+            )
+            return
+        }
         _uiState.value = TvLoginUiState(isStarting = true)
 
         flowJob = scope.launch {
@@ -103,7 +117,7 @@ object TvLoginRepository {
 
                 val params = buildJsonObject {
                     put("p_device_nonce", deviceNonce)
-                    put("p_redirect_base_url", TV_LOGIN_WEB_BASE_URL)
+                    put("p_redirect_base_url", server.tvLoginWebBaseUrl)
                     if (!deviceName.isNullOrBlank()) put("p_device_name", deviceName)
                 }
                 val start = SupabaseProvider.client.postgrest

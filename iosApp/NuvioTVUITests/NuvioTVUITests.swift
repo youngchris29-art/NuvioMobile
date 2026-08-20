@@ -1962,6 +1962,138 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
+    // MARK: - Self-hosted server discovery (review step, non-destructive)
+
+    /// Settings → Account & Services → "Connect to a Self-Hosted Server" → type the URL of a
+    /// loopback stub serving `/.well-known/nuvio` → "Check Server" → the REVIEW step must show
+    /// the discovered backend. Also exercises the typed-error path (the official host is
+    /// refused with the "already selected" copy) and that Back returns to the entry step.
+    /// DELIBERATELY never presses "Connect to This Server" — a switch signs the account out
+    /// and wipes local data on the signed-in sim; the destructive half lives in
+    /// `ScratchServerSwitchTests` (scratch-device only).
+    func test35ServerDiscoveryReview() throws {
+        let stub = DiscoveryStubServer(document: .init(emailPasswordAuth: true, tvLogin: false))
+        try stub.start()
+        defer { stub.stop() }
+
+        let app = launchToHome(forceFreshLaunch: true)
+        openTab(app, named: "Settings")
+        let account = app.buttons["Account & Services"]
+        if !(account.exists && account.hasFocus) { _ = moveFocus(.up, until: account, max: 8) }
+        remote.press(.select)
+        pause(1.2)
+        press(.right, times: 1)
+        pause(1)
+        let sidebarX = account.frame.maxX
+        shot(app, "35a_account_pane")
+
+        // The Server section sits right under Account; walk there by tree index.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Connect to a Self-Hosted Server", sidebarMaxX: sidebarX, category: "Account & Services")
+        let connectRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Connect to a Self-Hosted Server'")).firstMatch
+        guard connectRow.exists else { XCTFail("Server section row missing from Account & Services"); return }
+        remote.press(.select)
+        pause(1.5)
+
+        let urlField = app.textFields["server.url"]
+        guard urlField.waitForExistence(timeout: 6) else {
+            shot(app, "35x_no_cover")
+            XCTFail("ServerConnectionView cover did not appear")
+            return
+        }
+        shot(app, "35b_server_enter")
+
+        // 1) Negative path: the official host is refused with a typed error.
+        func enterUrl(_ text: String) -> Bool {
+            if !urlField.hasFocus { _ = moveFocus(.up, until: urlField, max: 6) }
+            remote.press(.select)
+            pause(2) // full-screen keyboard
+            // Clear anything pre-filled (a custom server's discovery base is pre-filled when
+            // one is active; on the official sim it is empty) — select-all isn't available on
+            // the tvOS keyboard, so only proceed when the field is empty.
+            let typed = typeOnKeyboard(app, text)
+            remote.press(.menu) // commit + dismiss the keyboard (the typed text stays in the field)
+            pause(1.5)
+            return typed
+        }
+        guard enterUrl("https://api.nuvio.tv") else {
+            XCTFail("could not type into the server URL field (keyboard not driveable)")
+            return
+        }
+        let check = app.buttons["server.check"]
+        guard check.waitForExistence(timeout: 4) else { XCTFail("Check Server button missing"); return }
+        // Down from the field can land on either button of the row (focus-engine geometry);
+        // glass buttons don't reliably report focus, so pin it: Down, then Left twice (Check
+        // Server is the leftmost control of the row, Left past it is a no-op).
+        func focusCheckServer() { press(.down, times: 1); press(.left, times: 2, gap: 0.5) }
+        focusCheckServer()
+        remote.press(.select)
+        pause(2)
+        let officialError = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "official server")).firstMatch
+        XCTAssertTrue(officialError.waitForExistence(timeout: 8), "typing the official host must surface the 'official server' discovery error")
+        shot(app, "35c_official_refused")
+
+        // 2) Happy path against the loopback stub. The field still holds the official URL —
+        // Menu-commit keeps the text — so re-open the keyboard and replace it: tvOS keyboards
+        // have a clear ("Clear") key; fall back to appending if clearing isn't reachable.
+        if !urlField.hasFocus { _ = moveFocus(.up, until: urlField, max: 6) }
+        remote.press(.select)
+        pause(2)
+        let clearKey = app.keys["Clear"]
+        if clearKey.waitForExistence(timeout: 2) {
+            if !clearKey.hasFocus { _ = moveFocus(.right, until: clearKey, max: 14) || moveFocus(.down, until: clearKey, max: 6) }
+            if clearKey.hasFocus { remote.press(.select); pause(0.5) }
+        }
+        let value = (urlField.value as? String) ?? ""
+        if !value.isEmpty && value != "https://backend.example.com" {
+            // Could not clear; delete character by character via the hardware-keyboard path.
+            for _ in 0..<value.count { app.typeText(XCUIKeyboardKey.delete.rawValue) }
+            pause(0.5)
+        }
+        _ = typeOnKeyboard(app, stub.origin)
+        remote.press(.menu)
+        pause(1.5)
+        let entered = (urlField.value as? String) ?? ""
+        guard entered.contains("127.0.0.1") else {
+            shot(app, "35x_url_not_entered")
+            XCTFail("stub URL not entered (field value = \(entered))")
+            return
+        }
+        focusCheckServer()
+        remote.press(.select)
+
+        let reviewTitle = app.staticTexts["server.review"]
+        guard reviewTitle.waitForExistence(timeout: 20) else {
+            shot(app, "35x_no_review")
+            XCTFail("review step never appeared — stub saw \(stub.requestLog)")
+            return
+        }
+        shot(app, "35d_server_review")
+        let backend = app.staticTexts["server.backend"]
+        XCTAssertTrue(backend.exists && backend.label.contains("127.0.0.1:\(stub.port)"), "review must show the discovered backend (got \(backend.exists ? backend.label : "nil"))")
+        XCTAssertTrue(app.buttons["server.connect"].exists, "Connect to This Server must be offered")
+        XCTAssertTrue(stub.requestLog.contains("GET /.well-known/nuvio"), "the app must have fetched the discovery document (log: \(stub.requestLog))")
+        // tv_login=false → the review must say QR sign-in is not available.
+        XCTAssertTrue(app.staticTexts["Not available"].exists, "QR sign-in capability must read Not available for a tv_login=false document")
+
+        // Back → entry step again (no switch happened).
+        let back = app.buttons["Back"]
+        if back.exists {
+            // Back is the rightmost control of the review's button row.
+            press(.down, times: 8, gap: 0.4)
+            press(.right, times: 2, gap: 0.5)
+            remote.press(.select)
+            pause(1.5)
+            XCTAssertTrue(urlField.waitForExistence(timeout: 5), "Back must return to the URL entry step")
+        }
+        shot(app, "35e_back_to_enter")
+        remote.press(.menu) // dismiss the cover
+        pause(1.5)
+        XCTAssertTrue(app.state == .runningForeground)
+        // Still signed in: the Account & Services pane's Sign Out row must still be around.
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sign Out'")).firstMatch.waitForExistence(timeout: 6), "the non-destructive flow must leave the account signed in")
+    }
+
+
     // MARK: - BUG-58: theme swatch label must stay legible while focused
 
     /// BUG-58 (beta.11 regression from the BUG-50 sweep): the focused theme swatch's name was

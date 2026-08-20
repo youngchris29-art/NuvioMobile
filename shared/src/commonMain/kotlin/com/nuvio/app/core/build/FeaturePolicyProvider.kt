@@ -28,6 +28,14 @@ interface FeaturePolicy {
     val heroTrailerPlaybackSupported: Boolean
     val inAppUpdaterEnabled: Boolean
     val imdbRatingLogoEnabled: Boolean
+
+    /**
+     * Whether the user may point the app at a self-hosted backend (`/.well-known/nuvio` discovery,
+     * see `core.network.ServerConfigurationRepository`). tvOS flips it on in
+     * `installTvOsSharedProviders`; composeApp feeds it from the flavor `AppFeaturePolicy` via
+     * `AppFeaturePolicyAdapter` (full flavors true, store flavors false — mirrors upstream).
+     */
+    val customServerConnectionsEnabled: Boolean
 }
 
 /**
@@ -44,6 +52,7 @@ object DefaultFeaturePolicy : FeaturePolicy {
     override val heroTrailerPlaybackSupported: Boolean = false
     override val inAppUpdaterEnabled: Boolean = false
     override val imdbRatingLogoEnabled: Boolean = false
+    override val customServerConnectionsEnabled: Boolean = false
 }
 
 /** Process-wide holder for the active [FeaturePolicy]; defaults to [DefaultFeaturePolicy]. */

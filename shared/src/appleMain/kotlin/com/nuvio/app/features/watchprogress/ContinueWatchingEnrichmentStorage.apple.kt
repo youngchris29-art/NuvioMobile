@@ -14,8 +14,9 @@ actual object ContinueWatchingEnrichmentStorage {
     actual fun loadPayload(key: String): String? =
         PayloadFileStore.load(subdirectory, key)
 
-    actual fun savePayload(key: String, payload: String) =
+    actual fun savePayload(key: String, payload: String) {
         PayloadFileStore.save(subdirectory, key, payload)
+    }
 
     actual fun removePayload(key: String) =
         PayloadFileStore.remove(subdirectory, key)

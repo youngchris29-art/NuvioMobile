@@ -177,6 +177,9 @@
     <string name="collections_editor_tmdb_genres_helper">استخدم أرقام أنواع TMDB. افصل القيم المتعددة بفواصل لشرط AND، أو بعلامة | لشرط OR.</string>
     <string name="collections_editor_tmdb_genres_movie_placeholder">28,12</string>
     <string name="collections_editor_tmdb_genres_series_placeholder">18,35</string>
+    <string name="collections_editor_tmdb_without_genres">معرّفات الأنواع المستبعدة</string>
+    <string name="collections_editor_tmdb_without_genres_helper">استبعد العناوين المطابقة لأرقام أنواع TMDB هذه.</string>
+    <string name="collections_editor_tmdb_without_genres_placeholder">16 للرسوم المتحركة</string>
     <string name="collections_editor_tmdb_date_from">تاريخ الإصدار أو البث من</string>
     <string name="collections_editor_tmdb_date_to">تاريخ الإصدار أو البث إلى</string>
     <string name="collections_editor_tmdb_date_helper">استخدم صيغة YYYY-MM-DD مثل 2024-01-01.</string>
@@ -199,9 +202,15 @@
     <string name="collections_editor_tmdb_keywords">معرفات الكلمات المفتاحية</string>
     <string name="collections_editor_tmdb_keywords_helper">أرقام الكلمات في TMDB. استخدم الشرائح السريعة لتعبئتها.</string>
     <string name="collections_editor_tmdb_keywords_placeholder">9715 للأبطال الخارقين</string>
+    <string name="collections_editor_tmdb_without_keywords">معرّفات الكلمات المفتاحية المستبعدة</string>
+    <string name="collections_editor_tmdb_without_keywords_helper">استبعد العناوين المطابقة لأرقام الكلمات المفتاحية هذه في TMDB.</string>
+    <string name="collections_editor_tmdb_without_keywords_placeholder">9715</string>
     <string name="collections_editor_tmdb_companies">معرفات الشركات</string>
     <string name="collections_editor_tmdb_companies_helper">معرفات الاستوديوهات. استخدم الشرائح السريعة لتعبئتها.</string>
     <string name="collections_editor_tmdb_companies_placeholder">420 لـ Marvel Studios</string>
+    <string name="collections_editor_tmdb_without_companies">معرّفات الشركات المستبعدة</string>
+    <string name="collections_editor_tmdb_without_companies_helper">استبعد العناوين المرتبطة بأرقام شركات TMDB هذه.</string>
+    <string name="collections_editor_tmdb_without_companies_placeholder">420</string>
     <string name="collections_editor_tmdb_networks">معرفات الشبكات</string>
     <string name="collections_editor_tmdb_networks_helper">للمسلسلات فقط. استخدم معرّفات الشبكات مثل Netflix 213 أو HBO 49.</string>
     <string name="collections_editor_tmdb_networks_placeholder">213 لـ Netflix</string>
@@ -282,6 +291,9 @@
     <string name="collections_editor_tmdb_watch_providers">معرّفات مزودي المشاهدة</string>
     <string name="collections_editor_tmdb_watch_providers_helper">استخدم معرّفات مزودي المشاهدة من TMDB. افصل القيم المتعددة بفواصل لشرط AND، أو بعلامة | لشرط OR.</string>
     <string name="collections_editor_tmdb_watch_providers_placeholder">8|337|350</string>
+    <string name="collections_editor_tmdb_without_watch_providers">معرّفات مزودي المشاهدة المستبعدين</string>
+    <string name="collections_editor_tmdb_without_watch_providers_helper">استبعد العناوين المتاحة عبر أرقام مزودي المشاهدة هذه في TMDB ضمن المنطقة المحددة.</string>
+    <string name="collections_editor_tmdb_without_watch_providers_placeholder">8|337|350</string>
     <string name="collections_editor_tmdb_quick_watch_providers">مزودون شائعون</string>
     <string name="collections_editor_tmdb_watch_provider_netflix">Netflix</string>
     <string name="collections_editor_tmdb_watch_provider_prime">Prime Video</string>

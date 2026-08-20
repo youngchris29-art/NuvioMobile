@@ -82,6 +82,12 @@ object AccountDataStores {
      *  - `ThemeSettingsStorage`'s UNSCOPED `selected_app_language` (and the system `AppleLanguages`
      *    key it drives): app language is stored without a profile suffix, i.e. deliberately
      *    device-wide. Only its LEGACY profile-scoped copy is wiped (see that entry).
+     *  - `core.network.ServerConfigurationStorage` (Apple `server_custom_config` — one versioned
+     *    JSON blob; Android prefs `server_configuration`): the
+     *    self-hosted backend selection. Device/install configuration in the same class as
+     *    `client_instance_id` — upstream never clears it on sign-out, and wiping it would silently
+     *    bounce a self-hosted user back to api.nuvio.tv after every sign-out (and mid
+     *    server-switch, whose prepare step runs this very wipe). It must SURVIVE sign-out.
      */
     val all: List<AccountDataStore> = listOf(
 

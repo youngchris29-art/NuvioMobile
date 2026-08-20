@@ -14,8 +14,9 @@ actual object StreamLinkCacheStorage {
     actual fun loadEntry(hashedKey: String): String? =
         PayloadFileStore.load(subdirectory, ProfileScopedKey.of(hashedKey))
 
-    actual fun saveEntry(hashedKey: String, payload: String) =
+    actual fun saveEntry(hashedKey: String, payload: String) {
         PayloadFileStore.save(subdirectory, ProfileScopedKey.of(hashedKey), payload)
+    }
 
     actual fun removeEntry(hashedKey: String) =
         PayloadFileStore.remove(subdirectory, ProfileScopedKey.of(hashedKey))

@@ -40,12 +40,13 @@ internal object PayloadFileStore {
         return legacy
     }
 
-    fun save(subdirectory: String, key: String, payload: String) {
-        val path = path(subdirectory, key) ?: return
-        if (writeFile(path, payload)) {
-            // Keep shrinking the defaults plist even for keys that are never read back.
-            removeLegacyDefaultsValue(key)
-        }
+    /** Returns false when the write did not durably land (no resolvable path, or the file write failed). */
+    fun save(subdirectory: String, key: String, payload: String): Boolean {
+        val path = path(subdirectory, key) ?: return false
+        if (!writeFile(path, payload)) return false
+        // Keep shrinking the defaults plist even for keys that are never read back.
+        removeLegacyDefaultsValue(key)
+        return true
     }
 
     fun remove(subdirectory: String, key: String) {

@@ -108,22 +108,26 @@ object NetworkStatusRepository {
 
     private suspend fun probeCondition(): NetworkCondition {
         val internetReachable = probePublicInternet()
+        val supabaseReachable = probeSupabase()
+        // Fork: a self-hosted backend can live on the LAN (or the public probes can be blocked
+        // by the network) — a reachable backend must win over a failed internet probe, or the
+        // app declares NoInternet and suppresses loads while its own server is right there.
+        if (supabaseReachable) {
+            return NetworkCondition.Online
+        }
         if (!internetReachable) {
             return NetworkCondition.NoInternet
         }
+        return NetworkCondition.ServersUnreachable
+    }
 
-        val supabaseReachable = SupabaseEndpointConfig.restEndpointUrls().any { url ->
+    private suspend fun probeSupabase(): Boolean =
+        SupabaseEndpointConfig.restEndpointUrls().any { url ->
             probeReachable(
                 url = url,
-                headers = mapOf("apikey" to SupabaseConfig.ANON_KEY),
+                headers = mapOf("apikey" to ServerConfigurationRepository.active.value.publishableKey),
             )
         }
-        if (!supabaseReachable) {
-            return NetworkCondition.ServersUnreachable
-        }
-
-        return NetworkCondition.Online
-    }
 
     private suspend fun probePublicInternet(): Boolean =
         probeReachable(PUBLIC_PROBE_PRIMARY) || probeReachable(PUBLIC_PROBE_FALLBACK)

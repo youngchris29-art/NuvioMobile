@@ -6,6 +6,9 @@ import SwiftUI
 struct AuthView: View {
     @ObservedObject var model: AuthViewModel
     let isSignUp: Bool
+    /// Active server — a self-hosted host is named under the title so it's clear where the
+    /// credentials go.
+    @StateObject private var server = ActiveServerObserver()
 
     @Environment(\.dismiss) private var dismiss
     @State private var email = ""
@@ -25,6 +28,12 @@ struct AuthView: View {
                 Text(isSignUp ? String(localized: "Create your Nuvio account") : String(localized: "Sign in to Nuvio"))
                     .font(Theme.Font.screenTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
+
+                if server.isCustom {
+                    Text("on \(server.displayHost)")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
 
                 VStack(spacing: Theme.Spacing.lg) {
                     TextField("Email", text: $email)

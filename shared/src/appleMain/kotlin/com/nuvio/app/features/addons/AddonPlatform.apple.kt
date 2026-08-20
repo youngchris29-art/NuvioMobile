@@ -7,14 +7,21 @@ import io.ktor.client.request.accept
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.prepareRequest
 import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.request.url
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.isSuccess
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.exhausted
+import io.ktor.utils.io.readRemaining
+import kotlinx.io.readByteArray
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import platform.Foundation.NSUserDefaults
@@ -167,7 +174,7 @@ actual suspend fun httpRequestRaw(
     maxResponseBodyBytes: Int,
 ): RawHttpResponse =
     addonHttpClient
-        .request {
+        .prepareRequest {
             url(url)
             this.method = HttpMethod.parse(method.uppercase())
             headers.forEach { (key, value) ->
@@ -177,14 +184,26 @@ actual suspend fun httpRequestRaw(
                 setBody(body)
             }
         }
-        .let { response ->
+        .execute { response ->
             RawHttpResponse(
                 status = response.status.value,
                 statusText = response.status.description,
                 url = response.call.request.url.toString(),
-                body = response.bodyAsText(),
+                body = readResponseBodyLimited(response.bodyAsChannel(), maxResponseBodyBytes),
                 headers = response.headers.entries().associate { (name, values) ->
                     name.lowercase() to values.joinToString(",")
                 },
             )
         }
+
+// Mirrors the Android actual's readResponseBodyLimited: stream at most maxBytes and mark
+// truncation, so an untrusted endpoint (server discovery runs pre-trust) cannot make the client
+// buffer an unbounded body. prepareRequest/execute keeps Ktor from saving the full body; UTF-8
+// decode (every caller consumes JSON/text).
+private suspend fun readResponseBodyLimited(channel: ByteReadChannel, maxBytes: Int): String {
+    val bytes = channel.readRemaining(maxBytes.coerceAtLeast(0).toLong()).readByteArray()
+    val truncated = !channel.exhausted()
+    if (truncated) channel.cancel(null)
+    val decoded = bytes.decodeToString()
+    return if (truncated) "$decoded\n...[truncated]" else decoded
+}
