@@ -86,6 +86,15 @@ final class TrailerSoakTests: XCTestCase {
             "-inline_trailers_enabled", "YES",
             "-debug.trailerProbe", "YES",
             "-debug.trailerSmokeVideoId", Self.smokeVideoId,
+            // Deterministic row geometry (Codex, Wave 13 follow-up): the Home Upcoming row is
+            // OPTIONAL — present only when the toggle is on AND the followed-shows feed is
+            // non-empty — so any fixed Down-press count that assumes it (or assumes its absence)
+            // can silently walk a non-trailer row and turn every profile vacuously green
+            // (2026-08-19: down×4 rested on the Streaming logo row with the row present; zero
+            // `[TrailerPipeline] focus` lines, gates open). Forcing the row OFF via the argument
+            // domain (same trick as `-inline_trailers_enabled`; plain `@AppStorage` key, always
+            // wins reads) pins the pre-Upcoming layout the down×4 walks were written against.
+            "-home_upcoming_row_enabled", "NO",
         ]
     }
 
@@ -97,6 +106,10 @@ final class TrailerSoakTests: XCTestCase {
     /// the type doc); this test only proves the walk itself survives.
     func testFastScrubProfile() throws {
         let app = launchToHome(extraArguments: trailerSoakLaunchArguments())
+        // The Upcoming row is forced OFF by the launch arguments (see
+        // `trailerSoakLaunchArguments`), so this is the pre-Upcoming row geometry these walks
+        // were written against — a wrong count here walks a non-trailer row and the profile
+        // goes vacuously green (2026-08-19: zero `[TrailerPipeline] focus` lines, gates open).
         press(.down, times: 4)
         shot(app, "soak_scrub_00_row_focused")
 
@@ -128,6 +141,10 @@ final class TrailerSoakTests: XCTestCase {
     /// lines against.
     func testDwellPlayLeaveSoak() throws {
         let app = launchToHome(extraArguments: trailerSoakLaunchArguments())
+        // The Upcoming row is forced OFF by the launch arguments (see
+        // `trailerSoakLaunchArguments`), so this is the pre-Upcoming row geometry these walks
+        // were written against — a wrong count here walks a non-trailer row and the profile
+        // goes vacuously green (2026-08-19: zero `[TrailerPipeline] focus` lines, gates open).
         press(.down, times: 4)
         shot(app, "soak_dwell_00_row_focused")
 
@@ -178,7 +195,11 @@ final class TrailerSoakTests: XCTestCase {
     func testShortDwellZoomProfile() throws {
         for launch in 1...2 {
             let app = launchToHome(extraArguments: trailerSoakLaunchArguments())
-            press(.down, times: 4)
+            // The Upcoming row is forced OFF by the launch arguments (see
+        // `trailerSoakLaunchArguments`), so this is the pre-Upcoming row geometry these walks
+        // were written against — a wrong count here walks a non-trailer row and the profile
+        // goes vacuously green (2026-08-19: zero `[TrailerPipeline] focus` lines, gates open).
+        press(.down, times: 4)
             shot(app, "soak_zoom_launch\(launch)_row_focused")
             // Outbound: learn. The sim's local-HLS startup after extraction is ~2–3 s, so the dwell
             // has to outlast that AND leave ≥1 s of playing time for the span-guarded final.
@@ -227,6 +248,8 @@ final class TrailerSoakTests: XCTestCase {
                 arguments += ["-debug.resetTrailerZoomStore", "YES"]
             }
             let app = launchToHome(extraArguments: arguments)
+            // The Upcoming row is forced OFF by the launch arguments (see
+            // `trailerSoakLaunchArguments`), pinning the row geometry this count assumes.
             press(.down, times: 4)
             shot(app, "soak_reveal_launch\(launch)_row_focused")
 

@@ -19,16 +19,36 @@ import SharedCore
 /// It carries a `TrailerFailureReport` (BUG-46/B2) so the host can tell a transient playback failure
 /// from "this title genuinely has nothing to play" when it decides what to remember.
 
-/// A UIView whose backing layer is an `AVPlayerLayer` (so it resizes with SwiftUI layout for free).
+/// A UIView hosting an `AVPlayerLayer` as a managed SUBLAYER.
+///
+/// BUG-59 (reveal-gate wave, pixel-oracle finding): the player layer used to be the view's
+/// BACKING layer (`layerClass`), with the measured letterbox zoom applied to that layer's affine
+/// transform — and a hosted view's backing-layer transform/frame belong to SwiftUI, which
+/// re-asserts them on every layout pass. The zoom was silently neutralized: every `[TrailerZoom]`
+/// line said `applied=1.343` while the rendered pixels kept their bars. That is why UX-9/BUG-59
+/// kept "passing" every log-based gate (the Wave 7 sim soak, the 08-18 device pass read the log
+/// stream, not pixels) while the reporter kept counting bars on beta.12 — the measurement was
+/// fixed; the RENDERING never was. The 2026-08-19 cold-dwell screenshot oracle caught it: playing
+/// tiles showed their 12.8 % bars with a 1.343 interim already logged.
+///
+/// A sublayer's transform is ours alone. `layoutSubviews` re-asserts bounds, position AND the
+/// crop zoom together, so no layout pass can ever split them again — and the view's
+/// `clipsToBounds` genuinely crops the overscaled sublayer at the tile edge (a parent mask clips
+/// composited children after their own transforms, unlike a backing layer masking its own
+/// content).
 final class TrailerPlayerUIView: UIView {
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    let playerLayer = AVPlayerLayer()
+
+    /// The measured crop zoom (UX-9/BUG-59). Stored so every layout pass re-applies it; set it
+    /// through `setCropZoom(_:animated:)`.
+    private var cropZoom: CGFloat = 1
 
     /// Phase 0 (BUG-46): ground truth for the live-pipeline leak probe, independent of the
     /// `Coordinator.attach`/`teardown()` bookkeeping — a `liveViews` count that climbs while
     /// browsing proves the leak even if some future attach/teardown accounting drifts.
     override init(frame: CGRect) {
         super.init(frame: frame)
+        layer.addSublayer(playerLayer)
         if TrailerProbe.enabled {
             let snap = TrailerPipelineCounters.shared.viewCreated()
             NSLog("[TrailerPipeline] view created live=%d players=%d", snap.liveViews, snap.livePlayers)
@@ -37,10 +57,35 @@ final class TrailerPlayerUIView: UIView {
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        layer.addSublayer(playerLayer)
         if TrailerProbe.enabled {
             let snap = TrailerPipelineCounters.shared.viewCreated()
             NSLog("[TrailerPipeline] view created live=%d players=%d", snap.liveViews, snap.livePlayers)
         }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Non-animated on purpose: layout runs mid-morph (UX-4a width animation), and letting the
+        // implicit layer animations fire here would trail the SwiftUI-driven frame.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.bounds = bounds
+        playerLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        playerLayer.setAffineTransform(CGAffineTransform(scaleX: cropZoom, y: cropZoom))
+        CATransaction.commit()
+    }
+
+    /// The one write path for the crop zoom (probe interim/final/persisted). Render-only: bounds
+    /// and position are untouched, so UX-4a's morph geometry and BUG-29's expansion scroll never
+    /// see it.
+    func setCropZoom(_ zoom: CGFloat, animated: Bool) {
+        cropZoom = zoom
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated)
+        if animated { CATransaction.setAnimationDuration(0.25) }
+        playerLayer.setAffineTransform(CGAffineTransform(scaleX: zoom, y: zoom))
+        CATransaction.commit()
     }
 
     deinit {
@@ -106,11 +151,11 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         view.isUserInteractionEnabled = false
         // Never set before UX-9: once the trailer surface is scaled past fill (see `parityZoom`
         // above) to hide baked-in letterbox bars, the overscaled edges must not bleed past this
-        // view's bounds into whatever sits around it. Note the zoom itself now lives on the player
-        // LAYER's affine transform, which `masksToBounds` cannot contain (a layer masks its content
-        // *before* its own transform applies) — the effective clip is the host's, i.e. the inline
-        // tile's `.clipShape` (InlineTrailerCard) or the screen edges (Detail hero / full-screen).
-        // This stays set anyway: it is what keeps the un-zoomed aspect-fill crop honest.
+        // view's bounds into whatever sits around it. With the zoom on the player SUBLAYER now
+        // (see `TrailerPlayerUIView`), this genuinely clips it — a parent mask crops composited
+        // children after their transforms — with the inline tile's `.clipShape`
+        // (InlineTrailerCard) and the screen edges (Detail hero / full-screen) as the outer
+        // clips.
         view.clipsToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
         context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey)
@@ -399,10 +444,9 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         let view = TrailerPlayerUIView()
         view.backgroundColor = .black
         view.isUserInteractionEnabled = false
-        // UX-9: matches the inline/hero representable. The screen edges are what actually clip the
-        // measured zoom here (a layer masks its content before its own transform applies — see the
-        // note in `TrailerHeroPlayer.makeUIView`); this is set so the surface never *depends* on
-        // being full-screen for its aspect-fill crop to stay inside its own bounds.
+        // UX-9: matches the inline/hero representable — clips the sublayer's measured zoom at the
+        // view's bounds (see the note in `TrailerHeroPlayer.makeUIView`), with the screen edges
+        // as the outer clip.
         view.clipsToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
         if let url = URL(string: urlString) {
@@ -1023,16 +1067,13 @@ final class TrailerLetterboxProbe {
 
     // MARK: Applying
 
-    /// Render-only, by construction: an affine transform on the `AVPlayerLayer` scales what the
-    /// layer draws and touches no layout — the same property `.scaleEffect` had, which is what makes
-    /// this swap safe for UX-4a's morph geometry and BUG-29's expansion scroll.
+    /// Render-only, by construction: the zoom lives on the player SUBLAYER's transform (see
+    /// `TrailerPlayerUIView` — never the SwiftUI-owned backing layer, whose transform every
+    /// layout pass re-asserts, which is how beta.12 logged `applied=1.343` while rendering the
+    /// bars anyway) and touches no layout, which is what makes it safe for UX-4a's morph
+    /// geometry and BUG-29's expansion scroll.
     private func apply(_ zoom: CGFloat, animated: Bool) {
-        guard let layer = view?.playerLayer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(!animated)
-        if animated { CATransaction.setAnimationDuration(0.25) }
-        layer.setAffineTransform(CGAffineTransform(scaleX: zoom, y: zoom))
-        CATransaction.commit()
+        view?.setCropZoom(zoom, animated: animated)
     }
 
     /// Reveal gate: hide the surface until its crop is decided. `view.alpha`, not a layer opacity
