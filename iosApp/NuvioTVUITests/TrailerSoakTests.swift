@@ -200,4 +200,50 @@ final class TrailerSoakTests: XCTestCase {
             pause(1.0)
         }
     }
+
+    // MARK: - Profile 4: cold-store first dwell (BUG-59 reveal gate — "no barred frame ever")
+
+    /// The reveal-gate invariant, driven from its worst case: a store with NO memory of any title
+    /// (launch 1 passes `-debug.resetTrailerZoomStore`, honored only alongside the probe knob),
+    /// so every dwell is a first-ever play — exactly the window where pre-gate builds showed a
+    /// letterboxed source's bars for ~1 s before zooming. The dense screenshot burst over each
+    /// dwell's first ~4.5 s is the visual oracle: an agent reads the attachments and asserts that
+    /// NO frame shows black bars inside the focus tile — the tile shows static art until the
+    /// video appears already-cropped. Launch 2 revisits with the store intact: reveals must be
+    /// instant (`persisted-hit … token=match`, no conceal at all).
+    ///
+    /// Log oracle (harvest as in the type doc, predicate `"[TrailerZoom]"`):
+    ///
+    ///   * launch 1: `store reset (debug.resetTrailerZoomStore)` at launch; per play, a
+    ///     `reveal reason=interim|cap` line and NEVER `reveal` before that play's `interim` /
+    ///     `persisted-hit` / 12th frame-bearing tick (`reason=cap frameTicks=12` is the ~3 s-of-
+    ///     delivered-frames ceiling — wall-clock ticks may read higher on a slow startup);
+    ///   * launch 2: `persisted-hit … token=match` per revisit and ZERO `reveal` lines for those
+    ///     plays (a persisted-hit surface is never concealed, so there is nothing to reveal).
+    func testColdStoreFirstDwellRevealProfile() throws {
+        for launch in 1...2 {
+            var arguments = trailerSoakLaunchArguments()
+            if launch == 1 {
+                arguments += ["-debug.resetTrailerZoomStore", "YES"]
+            }
+            let app = launchToHome(extraArguments: arguments)
+            press(.down, times: 4)
+            shot(app, "soak_reveal_launch\(launch)_row_focused")
+
+            for card in 1...3 {
+                press(.right, times: 1, gap: 1.4) // clears the 1.0 s dwell + morph settle
+                // Burst across the resolve → conceal → reveal window: extraction + local-HLS
+                // startup is ~2–3 s on the sim, the interim ~0.5–1.5 s after play, the cap at 3 s
+                // — 12 shots at ~0.4 s cover all of it.
+                for frame in 1...12 {
+                    pause(0.4)
+                    shot(app, String(format: "soak_reveal_launch%d_card%d_t%02d", launch, card, frame))
+                }
+                pause(2.0) // let the span-guarded final land + persist before moving on
+            }
+            XCTAssertTrue(app.state == .runningForeground, "app must survive the cold-store reveal profile (launch \(launch))")
+            app.terminate()
+            pause(1.0)
+        }
+    }
 }

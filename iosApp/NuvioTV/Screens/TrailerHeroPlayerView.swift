@@ -620,6 +620,22 @@ final class TrailerZoomCache: @unchecked Sendable {
 /// remembered) still requires ≥3 samples spanning ≥1 s of item time. Safe because the min-across-
 /// samples rule below can only make a bar *thinner* and dark-centred frames are never samples: a
 /// fade-in can cost a false negative (bar=0 → floor) but never an over-zoom.
+///
+/// BUG-59 (reveal gate) — the probe also owns WHEN the video becomes visible. Early-and-interim
+/// still left a structural window: on the first-ever play of a title the surface was revealed at
+/// the 1.08 floor and only zoomed ~0.5–1.5 s later, so a letterboxed trailer *showed its bars,
+/// then cropped them* — once per title, i.e. on nearly every fresh dwell of a browsing session,
+/// which is what the reporter keeps filming. The invariant is now structural: **an unzoomed
+/// letterboxed frame can never reach the screen**, because a surface with no persisted entry for
+/// its title starts at `alpha = 0` (the static art / backdrop behind it stays up) and is revealed
+/// only when its crop is decided — persisted hit (immediately, match or mismatch), the interim or
+/// final measurement, or a cap of ~3 s of DELIVERED frames that produced no usable sample (a dark
+/// opening or a long fade — dark frames have no bars to hide). The cap counts frames, never wall
+/// clock: playback startup routinely exceeds 3 s, and a wall-clock cap would reveal before the
+/// first frame, whose bars would then sit unzoomed until the interim (Codex, Wave 13 round 2). A
+/// stream that never delivers a frame stays concealed until the 6 s startup watchdog removes the
+/// surface. Every reveal logs `[TrailerZoom] reveal reason=…` so the soak's log oracle can assert
+/// the ordering.
 final class TrailerLetterboxProbe {
     /// Ceiling on the measured zoom. DERIVED, not tuned: the widest format anyone bakes into a 16:9
     /// container is ~2.55:1, and 2.55 / (16/9) = 1.435. (The 2.39:1 scope trailers UX-9 was filed
@@ -648,13 +664,25 @@ final class TrailerLetterboxProbe {
     /// samples, `span=1.00s`, refused).
     private static let finalMinSpanSeconds: Double = 0.95
     /// Mean 8-bit luma at or below this reads as a black bar. Well above sensor/encoder noise on a
-    /// true black bar, well below any real picture content.
-    private static let blackLuma: Double = 16
+    /// true black bar, well below any real picture content. Internal (not private) so
+    /// `ArtworkLetterbox` scans static key art with the exact same thresholds — one definition of
+    /// "black bar" for the whole trailer tile.
+    static let blackLuma: Double = 16
     /// No plausible baked bar eats more than a quarter of the frame per edge (the 2.55:1 worst case
     /// is ~15%), so the scan stops there rather than walking into the picture on a dark shot.
-    private static let maxBarFraction: Double = 0.25
+    static let maxBarFraction: Double = 0.25
     /// Bars thinner than this are encoder rounding, not letterboxing.
-    private static let minBarFraction: Double = 0.01
+    static let minBarFraction: Double = 0.01
+    /// BUG-59 (reveal gate): a concealed surface is force-revealed after this many FRAME-BEARING
+    /// ticks (≈3 s of delivered video) with no measurement — content whose decoded frames keep
+    /// getting rejected as samples is dark (a black opening, a long fade), and dark frames have no
+    /// bars to hide. Deliberately counts ticks that produced a pixel buffer, NEVER wall-clock
+    /// ticks (Codex, Wave 13 round 2): playback startup routinely exceeds 3 s (the loopback repack
+    /// alone is 2–3 s on the sim), and a wall-clock cap would reveal *before the first frame* —
+    /// whose bars would then sit unzoomed until the interim, recreating the exact defect this
+    /// gate exists to prevent. A stream that never delivers frames at all stays concealed until
+    /// the coordinator's 6 s startup watchdog fails it and the surface is removed.
+    private static let revealCapFrameTicks = 12
 
     /// Bar thickness per edge, as a fraction of the frame.
     private struct Bars {
@@ -681,6 +709,8 @@ final class TrailerLetterboxProbe {
     private weak var sampledItem: AVPlayerItem?
     private var timer: Timer?
     private var ticks = 0
+    /// Ticks that actually copied a decoded frame (sample-worthy or not) — the reveal cap's clock.
+    private var frameTicks = 0
     private var samples: [Bars] = []
     /// Item time (seconds) of each entry in `samples`, for the final-measurement span guard.
     private var sampleTimes: [Double] = []
@@ -694,6 +724,10 @@ final class TrailerLetterboxProbe {
     /// BUG-59: true once THIS stream's own samples produced an interim; a persisted-mismatch value
     /// applied in `start()` does not count, so fresh samples always get to correct it.
     private var interimMeasured = false
+    /// BUG-59 (reveal gate): whether the surface is visible. Starts true and stays true on every
+    /// persisted-hit path (the zoom is already right, or near enough); flips false only when
+    /// `start()` conceals a cold surface, and back only through `reveal(reason:)`.
+    private var revealed = true
 
     init(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String? = nil, surface: String) {
         self.view = view
@@ -739,8 +773,12 @@ final class TrailerLetterboxProbe {
             interimZoom = cached.zoom
         } else {
             // Parity floor first, un-animated: until the measurement lands, every surface renders
-            // exactly what it rendered before UX-9.
+            // exactly what it rendered before UX-9 — but CONCEALED now (reveal gate): with no
+            // memory of this title, the floor would show a letterboxed source's bars for the
+            // ~0.5–1.5 s until the interim lands, once per title, on nearly every fresh dwell.
+            // The static art / backdrop behind the surface stays up instead.
             apply(TrailerHeroPlayer.parityZoom, animated: false)
+            conceal()
         }
         // BUG-59: attach the output NOW rather than on the first tick, so the very first tick can
         // already read a frame (the item exists before `play()` on both surfaces).
@@ -761,8 +799,8 @@ final class TrailerLetterboxProbe {
         // so a completed measurement never double-logs.
         if timer != nil, !finished, TrailerProbe.enabled {
             finished = true
-            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d interimApplied=%d surface=%@ key=%@ — %@ kept, not cached",
-                  samples.count, ticks, interimZoom == nil ? 0 : 1, surface, zoomKey,
+            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d interimApplied=%d revealed=%d surface=%@ key=%@ — %@ kept, not cached",
+                  samples.count, ticks, interimZoom == nil ? 0 : 1, revealed ? 1 : 0, surface, zoomKey,
                   interimZoom == nil ? "floor" : "interim")
         }
         timer?.invalidate()
@@ -802,6 +840,15 @@ final class TrailerLetterboxProbe {
         guard output.hasNewPixelBuffer(forItemTime: time),
               let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else { return }
 
+        // Reveal cap: a decoded frame is on screen. After ~3 s of DELIVERED frames that still
+        // produced no measurement, the content is dark/unsamplable — show it (dark frames carry
+        // no bars; if bright barred frames follow, the interim lands within ~2 ticks of the first
+        // usable sample, same as any fade-in did before the gate existed). Counted here, past the
+        // pixel-buffer guard, so pre-roll/buffering never advances the cap (see
+        // `revealCapFrameTicks`).
+        frameTicks += 1
+        if !revealed, frameTicks >= Self.revealCapFrameTicks { reveal(reason: "cap") }
+
         frameSize = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
         if let bars = Self.bars(in: buffer) {
             samples.append(bars)
@@ -830,6 +877,10 @@ final class TrailerLetterboxProbe {
             NSLog("[TrailerZoom] interim samples=%d span=%.2fs applied=%.3f surface=%@ key=%@",
                   samples.count, span, zoom, surface, zoomKey)
         }
+        // Reveal gate: the crop is decided (for now) — this is the earliest a cold surface may
+        // appear, and it appears already zoomed. Logged after the interim line so the soak's
+        // ordering oracle (`reveal` never precedes a measurement on the cold path) reads cleanly.
+        reveal(reason: "interim")
     }
 
     /// The zoom a set of samples implies (nil when it implies nothing usable), plus the measured
@@ -942,10 +993,16 @@ final class TrailerLetterboxProbe {
                       collected.count, span, Int(size.width), Int(size.height), ticks,
                       interimZoom == nil ? 0 : 1, surface, zoomKey, interimZoom == nil ? "floor" : "interim")
             }
+            // Reveal gate: normally long since revealed (the 3 s cap fires at tick 12, this bail
+            // at tick 48) — belt-and-braces so no path can end a live playback still concealed.
+            reveal(reason: "insufficient")
             return
         }
 
-        guard let result = Self.measure(collected) else { return }
+        guard let result = Self.measure(collected) else {
+            reveal(reason: "unmeasurable")
+            return
+        }
         let zoom = result.zoom
         let measured = result.measured
         let bars = collected.reduce(Bars(top: 1, bottom: 1, left: 1, right: 1)) { acc, next in
@@ -955,6 +1012,7 @@ final class TrailerLetterboxProbe {
 
         TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token)
         apply(zoom, animated: true)
+        reveal(reason: "final")
 
         if TrailerProbe.enabled {
             NSLog("[TrailerZoom] final frame=%dx%d bars top=%.3f bottom=%.3f left=%.3f right=%.3f samples=%d span=%.2fs measured=%.3f applied=%.3f persisted=1 surface=%@ key=%@ cardFrame=%@",
@@ -975,6 +1033,31 @@ final class TrailerLetterboxProbe {
         if animated { CATransaction.setAnimationDuration(0.25) }
         layer.setAffineTransform(CGAffineTransform(scaleX: zoom, y: zoom))
         CATransaction.commit()
+    }
+
+    /// Reveal gate: hide the surface until its crop is decided. `view.alpha`, not a layer opacity
+    /// animation of our own, so it composes multiplicatively with whatever opacity the hosting
+    /// SwiftUI transition (`.opacity` insertion on both the inline tile and the Detail hero) is
+    /// running — and, like `apply(_:animated:)`, it is render-only: no layout is touched, so
+    /// UX-4a's morph geometry and BUG-29's expansion scroll stay intact. Main-thread only (called
+    /// from `start()`/the tick timer, both main).
+    private func conceal() {
+        guard let view else { return }
+        revealed = false
+        view.alpha = 0
+    }
+
+    /// Idempotent flip back to visible, fading over the static art behind the surface. Every call
+    /// site names WHY (`persisted` paths never conceal, so the reasons are: `interim`, `final`,
+    /// `cap`, `insufficient`, `unmeasurable`) — the log line is the soak's ordering oracle.
+    private func reveal(reason: String) {
+        guard !revealed else { return }
+        revealed = true
+        if TrailerProbe.enabled {
+            NSLog("[TrailerZoom] reveal reason=%@ ticks=%d frameTicks=%d surface=%@ key=%@", reason, ticks, frameTicks, surface, zoomKey)
+        }
+        guard let view else { return }
+        UIView.animate(withDuration: 0.25) { view.alpha = 1 }
     }
 
     private func detachOutput() {

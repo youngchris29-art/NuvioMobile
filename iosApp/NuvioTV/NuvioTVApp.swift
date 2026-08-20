@@ -62,6 +62,17 @@ struct NuvioTVApp: App {
         RemuxSmokeTest.runIfRequested()
         #endif
 
+        // BUG-59 (reveal gate): `debug.resetTrailerZoomStore` wipes the persisted per-title zoom
+        // store at launch — the cold-store precondition the reveal-gate soak profile
+        // (`TrailerSoakTests.testColdStoreFirstDwellRevealProfile`) and a device-pass repro need.
+        // Honored only together with `debug.trailerProbe`, same discipline as
+        // `debug.trailerSmokeVideoId` (a forgotten persisted knob must never be able to make a
+        // release sideload re-measure every title forever).
+        if TrailerProbe.enabled, UserDefaults.standard.bool(forKey: "debug.resetTrailerZoomStore") {
+            TrailerZoomCache.shared.removeAll()
+            NSLog("[TrailerZoom] store reset (debug.resetTrailerZoomStore)")
+        }
+
         // Auth is started by AuthViewModel (ContentView.onAppear): existing guest installs
         // authenticate instantly from their stored anonymous id; otherwise the Supabase session is
         // restored, or the Welcome gate (Sign In / Create Account / Continue as Guest) is shown.

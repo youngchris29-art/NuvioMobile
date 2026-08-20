@@ -12,22 +12,33 @@ import UIKit
 struct CachedAsyncImage: View {
     private let url: URL?
     private let contentMode: ContentMode
+    /// BUG-59 (reveal-gate wave): when true, the loaded image is scanned once for letterbox/
+    /// pillarbox bars baked into its pixels (`ArtworkLetterbox` — TMDB backdrops are sometimes
+    /// trailer stills, bars and all) and overscaled to crop them. OFF by default so every existing
+    /// call site renders byte-identically; the caller that turns it on (the inline trailer tile)
+    /// must clip, exactly as it must for the video zoom underneath (`InlineTrailerCard`'s
+    /// `.clipShape`).
+    private let cropsBakedLetterboxBars: Bool
 
     @StateObject private var loader = CachedImageLoader()
+    /// 1.0 until (and unless) `ArtworkLetterbox` measures real bars in the loaded image.
+    @State private var barCropZoom: CGFloat = 1
 
-    init(url: URL?, contentMode: ContentMode = .fill) {
+    init(url: URL?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
         self.url = url
         self.contentMode = contentMode
+        self.cropsBakedLetterboxBars = cropsBakedLetterboxBars
     }
 
     /// Convenience for the many Kotlin-bridged `String` URL fields; empty/nil → no image.
-    init(string: String?, contentMode: ContentMode = .fill) {
+    init(string: String?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
         if let string, !string.isEmpty {
             self.url = URL(string: string)
         } else {
             self.url = nil
         }
         self.contentMode = contentMode
+        self.cropsBakedLetterboxBars = cropsBakedLetterboxBars
     }
 
     var body: some View {
@@ -36,6 +47,8 @@ struct CachedAsyncImage: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
+                    // `scaleEffect(1)` is the identity for every call site that doesn't opt in.
+                    .scaleEffect(barCropZoom)
             } else if loader.failed {
                 ZStack {
                     Theme.Palette.surface
@@ -52,6 +65,25 @@ struct CachedAsyncImage: View {
         }
         .onAppear { loader.load(url) }
         .onChange(of: url) { _, newURL in loader.load(newURL) }
+        // BUG-59: measure the loaded image's baked bars off-main, once per URL (memoized in
+        // `ArtworkLetterbox`). Keyed on the image (NSObject identity) so a URL change that swaps
+        // the image re-runs, and a re-render that doesn't, doesn't.
+        .task(id: loader.image) {
+            guard cropsBakedLetterboxBars else { return }
+            guard let image = loader.image, let key = url?.absoluteString else {
+                barCropZoom = 1
+                return
+            }
+            if let hit = ArtworkLetterbox.cachedZoom(forKey: key) {
+                barCropZoom = hit
+                return
+            }
+            let measured = await Task.detached(priority: .utility) {
+                ArtworkLetterbox.zoom(for: image, cacheKey: key)
+            }.value
+            guard !Task.isCancelled, loader.image === image else { return }
+            withAnimation(.easeOut(duration: 0.25)) { barCropZoom = measured }
+        }
     }
 }
 

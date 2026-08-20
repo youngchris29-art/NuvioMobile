@@ -827,7 +827,13 @@ struct InlineTrailerCard: View {
     private var trailerSurface: some View {
         ZStack {
             if model.isExpanded {
-                CachedAsyncImage(string: Self.landscapeArtworkURL(item))
+                // BUG-59 (reveal-gate wave): with the video side bar-proof (measured zoom + the
+                // probe's reveal gate), this art — on screen from the morph until the video is
+                // revealed — is the only surface left that can put a black bar on the tile: TMDB
+                // backdrops are sometimes trailer stills with the bars baked in. Scanned once per
+                // URL, symmetric-bars-only (genuinely dark art is never cropped), clipped by this
+                // view's own `.clipShape` below exactly like the video zoom is.
+                CachedAsyncImage(string: Self.landscapeArtworkURL(item), cropsBakedLetterboxBars: true)
             }
 
             if let url = model.playingURL {
