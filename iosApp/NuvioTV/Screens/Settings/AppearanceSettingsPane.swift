@@ -262,8 +262,12 @@ private struct ThemePickerRow: View {
     }
 }
 
-/// A single theme swatch: colored circle + name. Selection wears a ring; focus scales the circle
-/// and brightens the label (platter-free, mirrors the poster-tile focus language).
+/// A single theme swatch: colored circle + name. Selection wears a full-strength ring; focus
+/// wears a slightly lighter ring in the same swatch-contrast color and brightens the label
+/// (platter-free — `.borderless` gives only the system lift, no scale of our own). BUG-65: the
+/// focused state used to be label-brightening alone, which the reporter couldn't see; the ring
+/// makes focus self-describing on every swatch including White (`onColor(forFillHex:)` picks a
+/// shade that contrasts the fill, so it can never vanish into it).
 private struct SwatchLabel: View {
     let color: Color
     /// Raw hex backing `color`, so the selection ring can pick a shade that stays visible against
@@ -282,8 +286,10 @@ private struct SwatchLabel: View {
                 .frame(width: 56, height: 56)
                 .overlay(
                     Circle().strokeBorder(
-                        isSelected ? Theme.Palette.onColor(forFillHex: colorHex) : .clear,
-                        lineWidth: 4
+                        isSelected
+                            ? Theme.Palette.onColor(forFillHex: colorHex)
+                            : (isFocused ? Theme.Palette.onColor(forFillHex: colorHex).opacity(0.8) : .clear),
+                        lineWidth: isSelected ? 4 : 3
                     )
                 )
             Text(label)

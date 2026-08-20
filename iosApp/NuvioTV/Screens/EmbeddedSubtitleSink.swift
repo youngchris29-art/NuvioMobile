@@ -33,6 +33,10 @@ nonisolated final class EmbeddedSubtitleSink {
     private let starts: [Double]
     private let totalSec: Double
     private let outputDir: URL
+    /// SDH stripping, native path — the mpv path sets `sub-filter-sdh` instead. Sampled once at
+    /// session start (coordinator reads the shared subtitle style); a mid-playback toggle flip
+    /// applies from the next playback session, not to segments this sink already wrote.
+    private let stripSdh: Bool
     private var pending: [Cue] = []
     private(set) var cuesDecoded = 0
     private(set) var segmentsWritten = 0
@@ -41,7 +45,7 @@ nonisolated final class EmbeddedSubtitleSink {
     /// nil when libavcodec has no decoder for the track (then the track is simply not offered).
     init?(sinkIndex: Int, streamIndex: Int, codecpar: UnsafeMutablePointer<AVCodecParameters>,
           timeBase: AVRational, originSec: Double, segmentStartsSec: [Double], totalDurationSec: Double,
-          outputDir: URL) {
+          outputDir: URL, stripSdh: Bool = false) {
         guard let codec = avcodec_find_decoder(codecpar.pointee.codec_id),
               let ctx = avcodec_alloc_context3(codec) else { return nil }
         guard avcodec_parameters_to_context(ctx, codecpar) >= 0 else {
@@ -59,6 +63,7 @@ nonisolated final class EmbeddedSubtitleSink {
         self.starts = segmentStartsSec
         self.totalSec = totalDurationSec
         self.outputDir = outputDir
+        self.stripSdh = stripSdh
     }
 
     deinit {
@@ -94,10 +99,10 @@ nonisolated final class EmbeddedSubtitleSink {
         for i in 0..<Int(sub.num_rects) {
             guard let rect = rects[i] else { continue }
             if rect.pointee.type == SUBTITLE_ASS, let ass = rect.pointee.ass {
-                let text = SubtitleVTT.vttCueText(fromASSLine: String(cString: ass))
+                let text = SubtitleVTT.vttCueText(fromASSLine: String(cString: ass), stripSdh: stripSdh)
                 if !text.isEmpty { lines.append(text) }
             } else if rect.pointee.type == SUBTITLE_TEXT, let raw = rect.pointee.text {
-                let text = SubtitleVTT.vttCueText(fromPlainText: String(cString: raw))
+                let text = SubtitleVTT.vttCueText(fromPlainText: String(cString: raw), stripSdh: stripSdh)
                 if !text.isEmpty { lines.append(text) }
             }
         }

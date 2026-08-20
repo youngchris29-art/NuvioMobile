@@ -114,6 +114,14 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         /// coordinator uses it to honour Settings → Playback → Preferred Audio Language before the
         /// stream carries a single rendition. Runs on the remux worker thread — keep it pure.
         var preferredAudioPicker: (@Sendable ([RemuxAudioTrack]) -> Int?)? = nil
+        /// Addon-declared HTTP request headers for the source (`PlaybackContext.requestHeaders`,
+        /// pre-sanitized). Applied to avformat's http open — a header-gated scraper CDN 403s the
+        /// remux source read without them (GitHub issue #2). Empty = no `headers` option set.
+        var requestHeaders: [String: String] = [:]
+        /// Settings → Playback → Strip SDH Subtitles: embedded text-track cues run through the
+        /// shared `SubtitleSdhFilter` as their VTT segments are written (SDH stripping, native
+        /// path — the mpv path sets `sub-filter-sdh` instead). Sampled at session start.
+        var stripSdh: Bool = false
     }
 
     let config: Config
@@ -294,6 +302,11 @@ nonisolated final class RemuxSession: @unchecked Sendable {
         // the output fMP4 timeline (AVPlayer rejects it with CoreMediaErrorDomain -12927).
         var inOpts: OpaquePointer?
         av_dict_set(&inOpts, "fflags", "+genpts", 0)
+        // Addon-declared stream headers (same block MediaProbe sent — the CDN that 403s a bare
+        // probe 403s a bare remux read too). Ignored by non-HTTP protocols.
+        if !config.requestHeaders.isEmpty {
+            av_dict_set(&inOpts, "headers", MediaProbe.ffmpegHeaderBlock(config.requestHeaders), 0)
+        }
         defer { av_dict_free(&inOpts) }
         // Interrupt callback on the INPUT: without it, a reposition or stop() arriving while
         // av_read_frame is blocked on a stalled HTTP read waits out the transport timeout (tens of
@@ -517,7 +530,8 @@ nonisolated final class RemuxSession: @unchecked Sendable {
                 if let sink = EmbeddedSubtitleSink(sinkIndex: sinkIndex, streamIndex: track.streamIndex,
                                                    codecpar: par, timeBase: s.pointee.time_base,
                                                    originSec: originSec, segmentStartsSec: starts,
-                                                   totalDurationSec: map.totalDurationSec, outputDir: outputDir) {
+                                                   totalDurationSec: map.totalDurationSec, outputDir: outputDir,
+                                                   stripSdh: config.stripSdh) {
                     subSinks[track.streamIndex] = sink
                 } else {
                     print("[Remux] subtitle stream #\(track.streamIndex) (\(track.codec)): no decoder — not extracted")

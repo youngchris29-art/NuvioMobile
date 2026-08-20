@@ -57,8 +57,29 @@ struct PlaybackContext: Identifiable {
     var meta: PlaybackMeta? = nil
     /// Declared file size of the playing stream (addon `behaviorHints.videoSize`), for the Info chips.
     var fileSizeBytes: Int64? = nil
+    /// Sanitized HTTP request headers the addon declared for this stream
+    /// (`behaviorHints.proxyHeaders.request` via shared `sanitizePlaybackHeaders` — Referer /
+    /// User-Agent a scraper CDN requires; GitHub issue #2 "Some video no stream"). Empty for the
+    /// overwhelming majority of streams. Consumed by BOTH engines: mpv (`http-header-fields`)
+    /// and the native path's FFmpeg source opens (MediaProbe + RemuxSession `headers` option).
+    var requestHeaders: [String: String] = [:]
 
-    var id: String { "\(videoId)|\(url.absoluteString)" }
+    // Headers join the identity (Codex 2026-08-20 round 3): two sources for the same episode can
+    // share a URL but require different headers; StreamPickerView rebuilds the player and
+    // PlayerScreen re-keys its probe on this id, so header changes must re-key too or a stale
+    // controller keeps the old headers and an auth-gated stream 403s. The joins use ASCII unit /
+    // record separators, which `sanitizePlaybackHeaders` guarantees can never appear in a key or
+    // value (it rejects all control characters), so the fingerprint is unambiguous — a plain
+    // "&"/"=" join could collide on values containing those characters (Codex round 4).
+    var id: String {
+        let headerFingerprint = requestHeaders.isEmpty
+            ? ""
+            : "|" + requestHeaders
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)\u{1F}\($0.value)" }
+                .joined(separator: "\u{1E}")
+        return "\(videoId)|\(url.absoluteString)\(headerFingerprint)"
+    }
 }
 
 /// Title-level catalog facts shown as chips in the player's Info tab.

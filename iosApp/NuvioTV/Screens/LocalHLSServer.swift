@@ -63,6 +63,11 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     private let subtitles: [SubtitleRendition]
     /// Per-rendition AUTOSELECT/DEFAULT (parallel to `subtitles`; empty = legacy flags).
     private let subtitleFlags: [SubtitleRenditionFlags]
+    /// Settings → Playback → Strip SDH Subtitles: addon/sidecar files run through the shared
+    /// `SubtitleSdhFilter` as they are converted to VTT (SDH stripping, native path — the mpv path
+    /// sets `sub-filter-sdh` instead). Sampled at session start; converted VTTs are cached, so a
+    /// mid-playback toggle flip applies from the next playback session.
+    private let stripSdh: Bool
     private var vttCache = [Int: Data]()
     private var vttFailed = Set<Int>()
     let masterName = "master.m3u8"
@@ -99,6 +104,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
          bandwidth: Int,
          subtitles: [SubtitleRendition] = [],
          subtitleFlags: [SubtitleRenditionFlags] = [],
+         stripSdh: Bool = false,
          producingInfo: @escaping @Sendable () -> (producing: Int, pending: Int?),
          requestReposition: @escaping @Sendable (Int) -> Void) {
         self.rootDir = rootDir
@@ -111,6 +117,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         self.bandwidth = bandwidth
         self.subtitles = subtitles
         self.subtitleFlags = subtitleFlags
+        self.stripSdh = stripSdh
         self.producingInfo = producingInfo
         self.requestReposition = requestReposition
         self.token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
@@ -376,7 +383,7 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             guard let self else { connection.cancel(); return }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let vtt = (200..<300).contains(status) ? data.flatMap { SubtitleVTT.webVTT(from: $0) } : nil
+            let vtt = (200..<300).contains(status) ? data.flatMap { SubtitleVTT.webVTT(from: $0, stripSdh: self.stripSdh) } : nil
             if let vtt {
                 let body = Data(vtt.utf8)
                 self.lock.lock(); self.vttCache[rendition.index] = body; self.lock.unlock()

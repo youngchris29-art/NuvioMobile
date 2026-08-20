@@ -314,7 +314,13 @@ final class NativePlaybackCoordinator: ObservableObject {
         // produced, so starting on the right one avoids an immediate switch (the master marks it
         // DEFAULT and the audible criteria agree).
         let audioTargets = languagePlan.audioTargets
-        var config = RemuxSession.Config(url: context.url, segmentDurationSec: 6)
+        var config = RemuxSession.Config(url: context.url, segmentDurationSec: 6,
+                                         requestHeaders: context.requestHeaders)
+        // SDH stripping, native path — the mpv path sets `sub-filter-sdh` and reapplies it live in
+        // applySubtitleStyle; here the flag is sampled once (embedded cues filter at VTT-segment
+        // write, addon files at VTT conversion), so a mid-playback toggle flip deliberately applies
+        // from the next playback session — no invalidation machinery.
+        config.stripSdh = playerSettings?.subtitleStyle.stripSdh ?? false
         if !audioTargets.isEmpty {
             config.preferredAudioPicker = { tracks in Self.preferredAudioStream(in: tracks, targets: audioTargets) }
         }
@@ -465,6 +471,9 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     bandwidth: remux.estimatedBandwidth,
                                     subtitles: subtitleRenditions,
                                     subtitleFlags: subtitleFlags(for: subtitleRenditions),
+                                    // SDH stripping, native path (mpv sets sub-filter-sdh instead) —
+                                    // applies to the addon-VTT conversions this server performs.
+                                    stripSdh: playerSettings?.subtitleStyle.stripSdh ?? false,
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server

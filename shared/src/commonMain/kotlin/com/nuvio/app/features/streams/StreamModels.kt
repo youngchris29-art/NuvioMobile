@@ -179,6 +179,41 @@ fun StreamItem.isSelectableForPlayback(debridEnabled: Boolean): Boolean =
         (FeaturePolicyProvider.policy.p2pEnabled && needsLocalDebridResolve && p2pInfoHash != null) ||
         (debridEnabled && isAddonDebridCandidate)
 
+/**
+ * Sanitize addon-declared playback request headers (`behaviorHints.proxyHeaders.request`) before
+ * handing them to a player's HTTP stack. Rules mirror upstream cmp-rewrite's
+ * `PlayerEngine.sanitizePlaybackHeaders` (composeApp) verbatim: trim keys/values, drop blank
+ * pairs, and drop any `Range` header — players own byte-range requests. Public (unlike the
+ * composeApp-internal copy) so the native tvOS Swift layer can call it through SharedCore
+ * (`StreamModelsKt.sanitizePlaybackHeaders`) when building a `PlaybackContext`.
+ */
+fun sanitizePlaybackHeaders(headers: Map<String, String>?): Map<String, String> {
+    val rawHeaders = headers ?: return emptyMap()
+    if (rawHeaders.isEmpty()) return emptyMap()
+
+    val sanitized = LinkedHashMap<String, String>(rawHeaders.size)
+    rawHeaders.forEach { (rawKey, rawValue) ->
+        val key = rawKey.trim()
+        val value = rawValue.trim()
+        if (key.isEmpty() || value.isEmpty()) return@forEach
+        if (key.equals("Range", ignoreCase = true)) return@forEach
+        // Fork hardening beyond upstream's rules (Codex 2026-08-20 round 3): the consumers
+        // serialize these into FFmpeg's CRLF-joined `headers` block and mpv's comma-delimited
+        // `http-header-fields`, so a key that is not an RFC 7230 token, or any control character
+        // in the value, would let an addon inject extra header fields (including the Range we
+        // just refused) or produce malformed requests. Drop such entries outright.
+        if (!key.all { it.isHeaderTokenChar() }) return@forEach
+        if (value.any { it == '\r' || it == '\n' || it.code < 0x20 || it.code == 0x7F }) return@forEach
+        sanitized[key] = value
+    }
+    return sanitized
+}
+
+/// RFC 7230 `tchar`: the characters legal in an HTTP header field name.
+private fun Char.isHeaderTokenChar(): Boolean =
+    this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' ||
+        this in "!#$%&'*+-.^_`|~"
+
 data class StreamBehaviorHints(
     val bingeGroup: String? = null,
     val notWebReady: Boolean = false,

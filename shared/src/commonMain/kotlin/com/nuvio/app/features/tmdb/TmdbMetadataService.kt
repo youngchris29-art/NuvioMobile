@@ -8,6 +8,7 @@ import com.nuvio.app.features.details.MetaPerson
 import com.nuvio.app.features.details.MetaTrailer
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.details.MoreLikeThisSource
+import com.nuvio.app.features.details.metadataLanguagePriority
 import com.nuvio.app.features.details.PersonDetail
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
@@ -1174,6 +1175,10 @@ object TmdbMetadataService {
                     }
                 }
                     .thenByDescending { it.seasonNumber ?: Int.MIN_VALUE }
+                    // BUG-67: within a category, Metadata-Language videos list ahead of the
+                    // English/untagged fallbacks the widened BUG-63 fetch merges in — same rank
+                    // the hero pick uses (see metadataLanguagePriority).
+                    .thenByDescending { it.metadataLanguagePriority(language) }
                     .thenByDescending { it.official }
                     .thenByDescending { it.publishedAt.orEmpty() }
             )

@@ -1,4 +1,5 @@
 import Foundation
+import SharedCore
 
 // D5 of the hybrid player: external subtitles on the native path. Addon subtitles arrive as SRT
 // (occasionally VTT) URLs in `PlaybackContext.externalSubtitles`; the native player exposes them as
@@ -131,11 +132,20 @@ nonisolated enum SubtitleVTT {
 
     /// Cue text from a plain-text subtitle rectangle (`AVSubtitleRect.text`): markup cleanup and
     /// WebVTT escaping only — no ASS field split (plain sentences may contain any number of commas).
-    static func vttCueText(fromPlainText raw: String) -> String {
-        let cleaned = raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-            .split(separator: "\n", omittingEmptySubsequences: false)
+    /// `stripSdh` = Settings → Playback → Strip SDH Subtitles (SDH stripping, native path — the mpv
+    /// path sets `sub-filter-sdh` instead): the shared filter runs AFTER markup cleanup (Codex
+    /// round 4: an override/tag before a speaker label — `{\an8}JOHN:` — hid the label from the
+    /// regexes when filtering raw text) and before VTT escaping; a cue that filters to nothing
+    /// returns "" (callers skip empty cues).
+    static func vttCueText(fromPlainText raw: String, stripSdh: Bool = false) -> String {
+        let text = raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        var cleaned = text.split(separator: "\n", omittingEmptySubsequences: false)
             .map { cleanCueText(String($0)) }
             .joined(separator: "\n")
+        if stripSdh {
+            guard let kept = SubtitleSdhFilter.shared.filter(text: cleaned) else { return "" }
+            cleaned = kept
+        }
         return escapeVTT(cleaned)
     }
 
@@ -149,8 +159,8 @@ nonisolated enum SubtitleVTT {
     /// Cue text from a decoded ASS dialogue line as libavcodec's subtitle decoders emit it in
     /// `AVSubtitleRect.ass` ("ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text"):
     /// take the Text field, unescape ASS line breaks, strip `{\override}` blocks and `<font>`, and
-    /// escape the two characters WebVTT reserves.
-    static func vttCueText(fromASSLine line: String) -> String {
+    /// escape the two characters WebVTT reserves. `stripSdh`: see `vttCueText(fromPlainText:stripSdh:)`.
+    static func vttCueText(fromASSLine line: String, stripSdh: Bool = false) -> String {
         // The text is everything after the 8th comma (Text itself may contain commas).
         var text = line
         var commas = 0
@@ -163,9 +173,16 @@ nonisolated enum SubtitleVTT {
         text = text.replacingOccurrences(of: "\\N", with: "\n")
             .replacingOccurrences(of: "\\n", with: "\n")
             .replacingOccurrences(of: "\\h", with: "\u{00A0}")
-        let cleaned = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var cleaned = text.split(separator: "\n", omittingEmptySubsequences: false)
             .map { cleanCueText(String($0)) }
             .joined(separator: "\n")
+        if stripSdh {
+            // SDH stripping, native path (mpv path sets sub-filter-sdh instead). Runs AFTER
+            // cleanCueText (Codex round 4): an ASS override before a label — `{\an8}JOHN: Hello`
+            // — hid the label from the shared regexes when filtering the raw text.
+            guard let kept = SubtitleSdhFilter.shared.filter(text: cleaned) else { return "" }
+            cleaned = kept
+        }
         return escapeVTT(cleaned)
     }
 
@@ -197,14 +214,19 @@ nonisolated enum SubtitleVTT {
 
     /// Decode a downloaded subtitle file and return WebVTT text, or nil when it is unusable.
     /// Accepts SRT (converted) and WebVTT (passed through after cleanup).
-    static func webVTT(from data: Data) -> String? {
+    /// `stripSdh` = Settings → Playback → Strip SDH Subtitles (SDH stripping, native path — the mpv
+    /// path sets `sub-filter-sdh` instead): cue PAYLOAD lines run through the shared filter before
+    /// markup cleanup; header/timing lines are never touched. A payload line that filters to nothing
+    /// is dropped (a cue whose lines all drop keeps its timing line and renders empty — harmless).
+    static func webVTT(from data: Data, stripSdh: Bool = false) -> String? {
         guard var text = decode(data) else { return nil }
         text = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
-        if text.hasPrefix("WEBVTT") { return text }
+        if text.hasPrefix("WEBVTT") { return stripSdh ? stripSdhFromCuePayloads(text) : text }
 
         var lines = [String]()
         var previousBlank = true                     // file start behaves like after-a-blank
+        var inCue = false                            // between a timing line and the next blank
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(rawLine)
             if let cueTiming = vttTiming(from: line) {
@@ -215,15 +237,49 @@ nonisolated enum SubtitleVTT {
                 }
                 lines.append(cueTiming)
                 previousBlank = false
+                inCue = true
             } else {
-                lines.append(cleanCueText(line))
-                previousBlank = line.trimmingCharacters(in: .whitespaces).isEmpty
+                let blank = line.trimmingCharacters(in: .whitespaces).isEmpty
+                if blank { inCue = false }
+                if stripSdh, inCue {
+                    if let kept = SubtitleSdhFilter.shared.filter(text: line) {
+                        lines.append(cleanCueText(kept))
+                    }
+                    previousBlank = false
+                } else {
+                    lines.append(cleanCueText(line))
+                    previousBlank = blank
+                }
             }
         }
         let body = lines.joined(separator: "\n")
         // A subtitle file with no timing lines at all converted to nothing useful — treat as bad.
         guard body.contains("-->") else { return nil }
         return "WEBVTT\n\n" + body
+    }
+
+    /// SDH stripping for a file that is already WebVTT (passed through otherwise untouched): run the
+    /// shared filter over cue payload lines only — the header, NOTE/STYLE/REGION blocks, cue
+    /// identifiers and timing lines pass through verbatim. A payload line that filters to nothing is
+    /// dropped entirely (its cue keeps the timing line and renders empty when all lines drop).
+    private static func stripSdhFromCuePayloads(_ text: String) -> String {
+        var out = [String]()
+        var inCue = false                            // between a timing line and the next blank
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                inCue = false
+                out.append(line)
+            } else if line.contains("-->") {
+                inCue = true
+                out.append(line)
+            } else if inCue {
+                if let kept = SubtitleSdhFilter.shared.filter(text: line) { out.append(kept) }
+            } else {
+                out.append(line)                     // header / block / cue-identifier line
+            }
+        }
+        return out.joined(separator: "\n")
     }
 
     /// `HH:MM:SS,mmm --> HH:MM:SS,mmm[ position hints]` → `HH:MM:SS.mmm --> HH:MM:SS.mmm`.

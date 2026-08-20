@@ -130,12 +130,38 @@ struct PersonDetailView: View {
                 }
 
                 if let known = model.person?.knownFor, !known.isEmpty {
-                    Text("Known for: \(known)")
+                    // BUG-68 (partial): the department VALUE arrives as TMDB's raw English
+                    // string ("Acting"), so a French UI read "Connu(e) pour : Acting". The
+                    // biography itself already requests the Metadata Language with an English
+                    // fallback — TMDB simply has no localized bios for many people (verified
+                    // against tmdb.org's own French page for Harold Perrineau) — but the
+                    // department is a closed vocabulary we can localize ourselves.
+                    Text("Known for: \(Self.localizedDepartment(known))")
                         .font(Theme.Font.meta)
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
             }
             Spacer(minLength: 0)
+        }
+    }
+
+    /// BUG-68: TMDB's `known_for_department` is a small closed vocabulary, always delivered in
+    /// English regardless of the request language. Unknown values pass through untranslated.
+    private static func localizedDepartment(_ raw: String) -> String {
+        switch raw {
+        case "Acting": return String(localized: "Acting")
+        case "Directing": return String(localized: "Directing")
+        case "Writing": return String(localized: "Writing")
+        case "Production": return String(localized: "Production")
+        case "Crew": return String(localized: "Crew")
+        case "Sound": return String(localized: "Sound")
+        case "Camera": return String(localized: "Camera")
+        case "Editing": return String(localized: "Editing")
+        case "Art": return String(localized: "Art")
+        case "Visual Effects": return String(localized: "Visual Effects")
+        case "Costume & Make-Up": return String(localized: "Costume & Make-Up")
+        case "Lighting": return String(localized: "Lighting")
+        default: return raw
         }
     }
 

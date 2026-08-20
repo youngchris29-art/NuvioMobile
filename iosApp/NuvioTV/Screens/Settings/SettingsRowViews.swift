@@ -29,10 +29,15 @@ struct RowTextColor: ViewModifier {
     /// mirroring the textPrimary/textSecondary contrast used unfocused.
     var secondary = false
     @Environment(\.isFocused) private var isFocused
+    // BUG-65 (beta.13 review video): on DEVICE this modifier can see `false` while the row's
+    // platter is visibly drawn, leaving light text on white (the sim renders correctly — see
+    // SettingsRowIsFocusedKey in FlatControlStyles.swift for the full story). The row's own
+    // @FocusState is published through this key; OR-ing keeps non-row consumers intact.
+    @Environment(\.settingsRowIsFocused) private var rowFocused
 
     func body(content: Content) -> some View {
         content.foregroundStyle(
-            isFocused
+            (isFocused || rowFocused)
                 ? Theme.Palette.onFocusPlatter.opacity(secondary ? 0.7 : 1)
                 : (secondary ? Theme.Palette.textSecondary : Theme.Palette.textPrimary)
         )
@@ -56,6 +61,7 @@ struct SettingsActionRow: View {
     let subtitle: String
     let systemImage: String
     let action: () -> Void
+    @FocusState private var focused: Bool // BUG-65 — see SettingsToggleRow
 
     var body: some View {
         Button(action: action) {
@@ -80,6 +86,8 @@ struct SettingsActionRow: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.settingsRow)
+        .focused($focused)
+        .environment(\.settingsRowIsFocused, focused)
     }
 }
 
@@ -90,6 +98,7 @@ struct SettingsInfoRow: View {
     let title: String
     let value: String
     var systemImage: String? = nil
+    @FocusState private var focused: Bool // BUG-65 — see SettingsToggleRow
 
     var body: some View {
         Button(action: {}) {
@@ -111,15 +120,23 @@ struct SettingsInfoRow: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.settingsRow)
+        .focused($focused)
+        .environment(\.settingsRowIsFocused, focused)
     }
 }
 
 /// A focusable settings row that toggles a boolean on select.
+/// BUG-65: each row carries its own `@FocusState` and publishes it via `settingsRowIsFocused`,
+/// so the label colors survive on devices where the env `\.isFocused` read dies inside the
+/// custom `.settingsRow` style (the reporter's white-on-white video; the sim renders correctly
+/// either way). `@FocusState` on the Button is the mechanism BUG-45's device-verified sidebar
+/// fix already proved reliable.
 struct SettingsToggleRow: View {
     let title: String
     let subtitle: String
     let isOn: Bool
     let action: () -> Void
+    @FocusState private var focused: Bool
 
     var body: some View {
         Button(action: action) {
@@ -141,6 +158,8 @@ struct SettingsToggleRow: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.settingsRow)
+        .focused($focused)
+        .environment(\.settingsRowIsFocused, focused)
         // VoiceOver reads the state (the checkmark glyph alone says nothing); the UITest harness
         // keys its state-aware toggle helper off this same value (beta.13 wave 2).
         .accessibilityValue(isOn ? Text("On") : Text("Off"))

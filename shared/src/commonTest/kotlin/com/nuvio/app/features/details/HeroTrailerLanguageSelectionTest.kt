@@ -5,9 +5,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * BUG-63: the Metadata Language is a *preference* at selection time, never a filter. These pin
- * the tier order (preferred > en > untagged > other) and that it sits BELOW the official/type
- * tiers the one-argument selector already had.
+ * BUG-63/BUG-67: the Metadata Language is a *preference* at selection time, never a filter.
+ * These pin the tier order (preferred > en > untagged > other) and — since BUG-67 — that a set
+ * preference sits ABOVE the official/type tiers: BUG-63's below-type placement let the widened
+ * fetch's English official trailers beat French ones ("72 Hours" / "Drop Game", beta.13 review).
  */
 class HeroTrailerLanguageSelectionTest {
 
@@ -37,12 +38,25 @@ class HeroTrailerLanguageSelectionTest {
     }
 
     @Test
-    fun officialAndTypeTiersStillOutrankLanguage() {
+    fun languageOutranksOfficialAndTypeTiers() {
+        // BUG-67 (the "72 Hours" / "Drop Game" regression): a French Teaser must beat an English
+        // official Trailer when the Metadata Language is French — pre-BUG-63, the French-only
+        // fetch made exactly this pick.
         val trailers = listOf(
             trailer("fr-teaser", language = "fr", type = "Teaser"),
             trailer("en-official", language = "en", official = true),
         )
-        assertEquals("en-official", selectHeroTrailer(trailers, "fr-FR")?.id)
+        assertEquals("fr-teaser", selectHeroTrailer(trailers, "fr-FR")?.id)
+    }
+
+    @Test
+    fun typeTiersStillDecideWithinTheSameLanguage() {
+        val trailers = listOf(
+            trailer("fr-teaser", language = "fr", type = "Teaser"),
+            trailer("fr-official", language = "fr", official = true),
+            trailer("en-official", language = "en", official = true),
+        )
+        assertEquals("fr-official", selectHeroTrailer(trailers, "fr-FR")?.id)
     }
 
     @Test

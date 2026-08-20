@@ -235,7 +235,9 @@ final class NextEpisodeEngine: ObservableObject {
             synopsis: context.synopsis,
             episodeStill: context.episodeStill,
             meta: context.meta,
-            fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }()
+            fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
+            requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
+                headers: stream.behaviorHints.proxyHeaders?.request)
         )
         onPlayNext(switched)
     }
@@ -558,7 +560,9 @@ final class NextEpisodeEngine: ObservableObject {
             synopsis: Self.nonEmpty(next.overview),
             episodeStill: Self.nonEmpty(next.thumbnail),
             meta: context.meta,
-            fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }()
+            fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
+            requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
+                headers: stream.behaviorHints.proxyHeaders?.request)
         )
     }
 

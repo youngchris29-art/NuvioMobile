@@ -128,7 +128,9 @@ struct StreamPickerView: View {
             synopsis: synopsis,
             episodeStill: episodeStill,
             meta: meta,
-            fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }()
+            fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }(),
+            requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
+                headers: stream?.behaviorHints.proxyHeaders?.request)
         )
     }
 

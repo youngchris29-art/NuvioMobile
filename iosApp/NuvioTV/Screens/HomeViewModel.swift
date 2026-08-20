@@ -67,7 +67,7 @@ final class HomeViewModel: ObservableObject {
             // naming the head so a device log shows whether it ever moved after first paint.
             if HomeHeroProbe.enabled, state.heroItems.isEmpty, !self.heroItems.isEmpty {
                 // An A → empty → B sequence must not hide the A→B change from the probe.
-                NSLog("[HomeHero] publish n=0 (hero emptied) %@ sinceLaunch=%dms", HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs)
+                HomeHeroProbe.log(String(format: "publish n=0 (hero emptied) %@ sinceLaunch=%dms", HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs))
             }
             if HomeHeroProbe.enabled, !state.heroItems.isEmpty {
                 let head = state.heroItems.first.map { "\($0.type):\($0.id)" } ?? "-"
@@ -81,9 +81,9 @@ final class HomeViewModel: ObservableObject {
                     section.items.contains { $0.type == headItem?.type && $0.id == headItem?.id }
                 }
                 let ids = state.heroItems.map { "\($0.type):\($0.id)" }.joined(separator: ",")
-                NSLog("[HomeHero] publish n=%d head=%@ headChanged=%d inRows=%d sections=%d loading=%d %@ sinceLaunch=%dms ids=%@",
+                HomeHeroProbe.log(String(format: "publish n=%d head=%@ headChanged=%d inRows=%d sections=%d loading=%d %@ sinceLaunch=%dms ids=%@",
                       state.heroItems.count, head, headChanged ? 1 : 0, inRows ? 1 : 0, state.sections.count,
-                      state.isLoading ? 1 : 0, HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs, ids)
+                      state.isLoading ? 1 : 0, HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs, ids))
             }
             self.heroItems = state.heroItems
             self.sections = state.sections
@@ -99,7 +99,7 @@ final class HomeViewModel: ObservableObject {
                 #if DEBUG
                 LaunchTrace.mark("first_hero n=\(state.heroItems.count)")
                 #else
-                if HomeHeroProbe.enabled { NSLog("[HomeHero] first_hero n=%d sinceLaunch=%dms", state.heroItems.count, HomeHeroProbe.sinceLaunchMs) }
+                if HomeHeroProbe.enabled { HomeHeroProbe.log(String(format: "first_hero n=%d sinceLaunch=%dms", state.heroItems.count, HomeHeroProbe.sinceLaunchMs)) }
                 #endif
             }
             self.rebuildRows()
@@ -305,7 +305,7 @@ final class HomeViewModel: ObservableObject {
         // the user happened to open Settings — the "collections are scrambled" report.
         if HomeHeroProbe.enabled {
             let catalogs = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
-            NSLog("[HomeHero] addonsChanged ready=%d catalogs=%d sinceLaunch=%dms", ready.count, catalogs, HomeHeroProbe.sinceLaunchMs)
+            HomeHeroProbe.log(String(format: "addonsChanged ready=%d catalogs=%d sinceLaunch=%dms", ready.count, catalogs, HomeHeroProbe.sinceLaunchMs))
         }
         HomeCatalogSettingsRepository.shared.syncCatalogs(addons: ready)
         HomeRepository.shared.refresh(addons: ready, force: true)

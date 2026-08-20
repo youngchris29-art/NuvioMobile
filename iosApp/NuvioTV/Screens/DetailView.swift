@@ -883,6 +883,7 @@ struct DetailView: View {
                                 TrailerThumbCard(trailer: trailer, isResolving: model.resolvingTrailerId == trailer.id)
                             }
                             .buttonStyle(.borderless)
+                            .posterButtonShape() // BUG-32: honor the Corners setting
                         }
                     }
                     .padding(.vertical, Theme.Spacing.md)

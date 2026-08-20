@@ -20,6 +20,28 @@ private enum FocusLook {
     static func liftShadow(_ isFocused: Bool) -> Color { .black.opacity(isFocused ? 0.45 : 0) }
 }
 
+/// BUG-65 (beta.13, u/mrStevenx3's review video t=133.5): ON DEVICE, a focused `.settingsRow`
+/// button can render its white focus platter while the env-keyed label modifiers
+/// (`RowTextColor`/`RowAccentTint`) still paint the at-rest light colors — white-on-white.
+/// The tvOS 26.5 SIM does NOT reproduce this (test36 measured the row rendering correctly
+/// before and after any fix, byte-identical), so the sim cannot adjudicate which env read dies
+/// on the device. Fix strategy is therefore belt-and-braces via a signal that IS device-proven:
+/// the row views (`SettingsToggleRow` & co.) hold their own `@FocusState` — the mechanism
+/// BUG-45's device-verified sidebar fix already relies on — and publish it through this key;
+/// the style body and the label modifiers treat `\.isFocused` OR this key as focus. In the sim
+/// both signals agree and rendering is unchanged; on a device where the env read dies, the
+/// published FocusState still flips the text dark.
+private struct SettingsRowIsFocusedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var settingsRowIsFocused: Bool {
+        get { self[SettingsRowIsFocusedKey.self] }
+        set { self[SettingsRowIsFocusedKey.self] = newValue }
+    }
+}
+
 /// Full-width text row style used by Settings (pending the native List conversion) and a few
 /// content rows. Transparent at rest; focused it renders the system look: near-white platter,
 /// dark label, slight lift.
@@ -31,23 +53,30 @@ struct SettingsRowButtonStyle: ButtonStyle {
     private struct RowBody: View {
         let configuration: Configuration
         @Environment(\.isFocused) private var isFocused
+        // BUG-65: rows that carry their own `@FocusState` (SettingsToggleRow & co.) publish it
+        // through this key; the style treats either signal as focus — see the key's doc above.
+        @Environment(\.settingsRowIsFocused) private var externalFocus
+
+        private var focused: Bool { isFocused || externalFocus }
 
         var body: some View {
             configuration.label
-                .foregroundStyle(isFocused ? FocusLook.onPlatter : Theme.Palette.textPrimary)
+                .foregroundStyle(focused ? FocusLook.onPlatter : Theme.Palette.textPrimary)
                 // The label's own semantic colors (.primary/.secondary — e.g. subtitles, stream
                 // metadata) don't inherit the foregroundStyle above; flipping the scheme makes
                 // them resolve dark on the white focus platter (device feedback: light-on-white
                 // text in the stream picker / settings rows was illegible).
-                .environment(\.colorScheme, isFocused ? .light : .dark)
+                .environment(\.colorScheme, focused ? .light : .dark)
+                // BUG-65: see SettingsRowIsFocusedKey above.
+                .environment(\.settingsRowIsFocused, focused)
                 .background(
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
-                        .fill(isFocused ? FocusLook.platter : .clear)
+                        .fill(focused ? FocusLook.platter : .clear)
                 )
-                .shadow(color: FocusLook.liftShadow(isFocused), radius: 16, y: 8)
-                .scaleEffect(isFocused ? 1.02 : 1)
+                .shadow(color: FocusLook.liftShadow(focused), radius: 16, y: 8)
+                .scaleEffect(focused ? 1.02 : 1)
                 .scaleEffect(configuration.isPressed ? FocusLook.pressScale : 1)
-                .animation(FocusLook.anim, value: isFocused)
+                .animation(FocusLook.anim, value: focused)
                 .animation(FocusLook.pressAnim, value: configuration.isPressed)
         }
     }
@@ -92,6 +121,9 @@ struct ChipButtonStyle: ButtonStyle {
                 // Same semantic-color flip as SettingsRowButtonStyle — chip labels with their own
                 // .secondary text stay legible on the white focus platter.
                 .environment(\.colorScheme, isFocused ? .light : .dark)
+                // BUG-65: same custom-ButtonStyle label env gap as SettingsRowButtonStyle —
+                // `chipMetaText` inside chip labels needs the style's known-good focus value.
+                .environment(\.settingsRowIsFocused, isFocused)
                 .frame(minWidth: 40, minHeight: 40)
                 .background(Capsule().fill(fill))
                 .shadow(color: FocusLook.liftShadow(isFocused), radius: 16, y: 8)
@@ -122,15 +154,20 @@ extension ButtonStyle where Self == ChipButtonStyle {
 struct ChipMetaText: ViewModifier {
     var selected = false
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+
+    // BUG-65: `\.isFocused` alone can die inside a custom ButtonStyle's label on device —
+    // OR in the style-published value (see SettingsRowIsFocusedKey).
+    private var effectiveFocus: Bool { isFocused || rowFocused }
 
     private var color: Color {
-        if isFocused { return FocusLook.onPlatter }
+        if effectiveFocus { return FocusLook.onPlatter }
         if selected { return Theme.Palette.accentText }
         return Theme.Palette.textPrimary
     }
 
     func body(content: Content) -> some View {
-        content.foregroundStyle(color.opacity(isFocused ? 1 : 0.7))
+        content.foregroundStyle(color.opacity(effectiveFocus ? 1 : 0.7))
     }
 }
 
@@ -179,10 +216,12 @@ struct RowAccentTint: ViewModifier {
     var active = true
     var inactiveColor: Color = Theme.Palette.textSecondary
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
 
     func body(content: Content) -> some View {
+        // BUG-65: OR in the style-published focus value — see SettingsRowIsFocusedKey.
         content.foregroundStyle(
-            isFocused ? FocusLook.onPlatter : (active ? Theme.Palette.accent : inactiveColor)
+            (isFocused || rowFocused) ? FocusLook.onPlatter : (active ? Theme.Palette.accent : inactiveColor)
         )
     }
 }

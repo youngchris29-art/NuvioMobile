@@ -357,6 +357,7 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("subtitle_font_size_sp"),
                 AppleKeySpec.ProfileScoped("subtitle_bottom_offset"),
                 AppleKeySpec.ProfileScoped("subtitle_use_forced_subtitles"),
+                AppleKeySpec.ProfileScoped("subtitle_strip_sdh"),
                 AppleKeySpec.ProfileScoped("subtitle_show_only_preferred_languages"),
                 AppleKeySpec.ProfileScoped("addon_subtitle_startup_mode"),
                 AppleKeySpec.ProfileScoped("stream_reuse_last_link_enabled"),

@@ -2280,6 +2280,40 @@
         }
       }
     },
+    "Acting": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schauspiel"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interpretación"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interprétation"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recitazione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diễn xuất"
+          }
+        }
+      }
+    },
     "Active": {
       "localizations": {
         "de": {
@@ -3092,6 +3126,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiếng Ả Rập"
+          }
+        }
+      }
+    },
+    "Art": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ausstattung"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dirección de arte"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direction artistique"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scenografia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mỹ thuật"
           }
         }
       }
@@ -4112,6 +4180,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bộ nhớ đệm"
+          }
+        }
+      }
+    },
+    "Camera": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kamera"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cámara"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caméra"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fotografia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quay phim"
           }
         }
       }
@@ -5783,6 +5885,40 @@
         }
       }
     },
+    "Costume & Make-Up": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kostüm & Maske"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vestuario y maquillaje"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Costumes et maquillage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Costumi e trucco"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phục trang & hóa trang"
+          }
+        }
+      }
+    },
     "Could not open this link.": {
       "localizations": {
         "de": {
@@ -6391,6 +6527,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tạo tài khoản Nuvio"
+          }
+        }
+      }
+    },
+    "Crew": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crew"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Equipo técnico"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Équipe technique"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Troupe"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đoàn làm phim"
           }
         }
       }
@@ -7041,6 +7211,40 @@
         }
       }
     },
+    "Directing": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regie"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dirección"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réalisation"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Regia"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đạo diễn"
+          }
+        }
+      }
+    },
     "Director": {
       "localizations": {
         "de": {
@@ -7649,6 +7853,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chỉnh sửa hồ sơ"
+          }
+        }
+      }
+    },
+    "Editing": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Schnitt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Montaje"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Montage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Montaggio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dựng phim"
           }
         }
       }
@@ -9455,6 +9693,40 @@
         }
       }
     },
+    "Hero Paint Diagnostics": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero-Anzeige-Diagnose"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnóstico del Hero"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic d'affichage du Hero"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostica del Hero"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chẩn đoán hiển thị Hero"
+          }
+        }
+      }
+    },
     "Hero Poster Only When Focused": {
       "localizations": {
         "de": {
@@ -9656,6 +9928,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ẩn tiêu đề"
+          }
+        }
+      }
+    },
+    "Hide sound descriptions and speaker labels from text subtitles.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blende Geräuschbeschreibungen und Sprecherkennzeichnungen aus Textuntertiteln aus."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oculta descripciones de sonido y etiquetas de hablantes en los subtítulos de texto."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Masque les descriptions sonores et les étiquettes de locuteurs des sous-titres texte."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nasconde le descrizioni dei suoni e le etichette dei parlanti dai sottotitoli di testo."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ẩn mô tả âm thanh và nhãn người nói khỏi phụ đề văn bản."
           }
         }
       }
@@ -11152,6 +11458,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bibliotheksquelle"
+          }
+        }
+      }
+    },
+    "Lighting": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Licht"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Iluminación"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Éclairage"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Luci"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ánh sáng"
           }
         }
       }
@@ -14049,6 +14389,40 @@
         }
       }
     },
+    "Off · Turn on if asked to capture a hero artwork report, then relaunch the app": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Aktiviere dies, wenn du einen Hero-Artwork-Bericht erstellen sollst, und starte die App neu"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · Actívalo si te piden capturar un informe del Hero y reinicia la app"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · Activez si l'on vous demande une capture du Hero, puis relancez l'app"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · Attivalo se ti viene chiesto un report dell'artwork del Hero, poi riavvia l'app"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt · Bật khi được yêu cầu chụp báo cáo ảnh Hero, sau đó khởi động lại ứng dụng"
+          }
+        }
+      }
+    },
     "Off · add-on release dates are used as-is": {
       "localizations": {
         "de": {
@@ -14420,6 +14794,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật · Đã lưu API key"
+          }
+        }
+      }
+    },
+    "On · After relaunching, this launch's hero paint log appears below — photograph it when reporting": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Nach dem Neustart erscheint das Hero-Anzeige-Protokoll dieses Starts unten — fotografiere es für deinen Fehlerbericht"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · Tras reiniciar, el registro de dibujo del Hero de este inicio aparece abajo — fotografíalo al informar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · Après redémarrage, le journal d'affichage du Hero de cette session apparaît ci-dessous — photographiez-le pour votre signalement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivato · Dopo il riavvio, il log di disegno del Hero di questo avvio appare qui sotto — fotografalo quando segnali"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật · Sau khi khởi động lại, nhật ký hiển thị Hero của lần chạy này sẽ hiện bên dưới — hãy chụp lại khi báo cáo"
           }
         }
       }
@@ -16461,6 +16869,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nhấn để ngắt kết nối"
+          }
+        }
+      }
+    },
+    "Production": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Produktion"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Producción"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Production"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Produzione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sản xuất"
           }
         }
       }
@@ -20478,6 +20920,40 @@
         }
       }
     },
+    "Sound": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ton"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonido"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suono"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Âm thanh"
+          }
+        }
+      }
+    },
     "Source": {
       "localizations": {
         "de": {
@@ -21154,6 +21630,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Luồng phát bằng trình phát tích hợp. Giữ một luồng để mở bằng trình phát ngoài."
+          }
+        }
+      }
+    },
+    "Strip SDH Subtitles": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SDH-Untertitel entfernen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eliminar subtítulos SDH"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supprimer les sous-titres SDH"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimuovi sottotitoli SDH"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loại bỏ phụ đề SDH"
           }
         }
       }
@@ -24796,6 +25306,40 @@
         }
       }
     },
+    "Visual Effects": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Visuelle Effekte"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Efectos visuales"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Effets visuels"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Effetti visivi"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kỹ xảo"
+          }
+        }
+      }
+    },
     "Vote count": {
       "localizations": {
         "de": {
@@ -25330,6 +25874,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sceneggiatori"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Biên kịch"
+          }
+        }
+      }
+    },
+    "Writing": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drehbuch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guion"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Écriture"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sceneggiatura"
           }
         },
         "vi": {

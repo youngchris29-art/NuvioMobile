@@ -24,8 +24,6 @@ struct EpisodesSection: View {
         let episodes = current.flatMap { grouped[$0] } ?? []
 
         return VStack(alignment: .leading, spacing: 20) {
-            Text("Episodes").font(.title2).bold()
-
             if seasons.count > 1 {
                 // FEAT-24 (u/mrStevenx3, p4afwfo): season POSTERS instead of "Season 1 / Season 2"
                 // text, "comme le fait l'application mobile Nuvio". The data was already here —
@@ -49,6 +47,9 @@ struct EpisodesSection: View {
                                     )
                                 }
                                 .buttonStyle(.borderless)
+                                // BUG-32: follow the user's Corners setting (system radius
+                                // otherwise overrides it — the BUG-25 class).
+                                .posterButtonShape()
                                 .accessibilityIdentifier("season_poster_\(season)")
                             }
                         }
@@ -75,6 +76,13 @@ struct EpisodesSection: View {
                 }
             }
 
+            // UX-15 (u/mrStevenx3, beta.13 review): with multiple seasons the heading used to sit
+            // ABOVE the season selector, reading "Episodes → seasons → episodes" — inverted
+            // hierarchy. It now labels the shelf it belongs to, directly under the selector. Was
+            // also a raw `Text("Episodes")` — the one unlocalized string on this screen (his
+            // French locale showed "Episodes", not "Épisodes").
+            Text(String(localized: "Episodes")).font(.title2).bold()
+
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
@@ -90,6 +98,7 @@ struct EpisodesSection: View {
                                 )
                             }
                             .buttonStyle(.borderless)
+                            .posterButtonShape() // BUG-32: honor the Corners setting
                             .focused($focusedEpisodeId, equals: episode.id)
                             .id(episode.id)
                         }
@@ -287,6 +296,9 @@ private struct EpisodeThumbCard: View {
     var isWatched: Bool = false
 
     @Environment(\.isFocused) private var isFocused
+    // BUG-32: shared corner token, not the hardcoded Theme.Radius.card.
+    @Environment(\.posterStyle) private var posterStyle
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
@@ -297,8 +309,8 @@ private struct EpisodeThumbCard: View {
                     // the `.fill` image overflows this fixed frame and the hover lift copies the
                     // overflow as a ghost-doubled subject. Clip inside the frame first.
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
-                    .nuvioCardDepth(RoundedRectangle(cornerRadius: Theme.Radius.card), surface: .episodeCards)
+                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
+                    .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .episodeCards)
 
                 // Soft scrim so the rating badge reads over bright stills.
                 if rating != nil {
@@ -307,7 +319,7 @@ private struct EpisodeThumbCard: View {
                         startPoint: .top, endPoint: .bottom
                     )
                     .frame(height: 70)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
                     .allowsHitTesting(false)
                 }
             }
@@ -321,7 +333,7 @@ private struct EpisodeThumbCard: View {
             // Whole-card system lift — see PosterCard: still, scrim, and badges move as one.
             // BUG-31/BUG-25: highlight geometry pinned to the card's own corner radius; goes
             // still under "No Zoom on Focus" (which this tile used to ignore).
-            .tileFocusLift(cornerRadius: Theme.Radius.card)
+            .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
 
             Text(heading)
                 .font(Theme.Font.cardTitle)
@@ -330,6 +342,12 @@ private struct EpisodeThumbCard: View {
                 .truncationMode(.tail)
                 .padding(.horizontal, Theme.Spacing.xs)
                 .frame(width: Theme.Size.episodeWidth, alignment: .leading)
+                // UX-15 class: keep the artwork↔title gap constant under the system lift.
+                .modifier(CardCaptionFocusDrop(
+                    mode: noZoomOnFocus ? .still(ringed: false) : .systemLift,
+                    isFocused: isFocused,
+                    artworkHeight: Theme.Size.episodeHeight
+                ))
         }
         .animation(.easeOut(duration: 0.15), value: isFocused)
     }
@@ -391,6 +409,10 @@ private struct SeasonPosterCard: View {
     let imageURL: String?
     let isSelected: Bool
     @Environment(\.isFocused) private var isFocused
+    // BUG-32: read the shared corner token instead of hardcoding Theme.Radius.card, so the
+    // Poster Style → Corners setting reaches this card (both states, focused and not).
+    @Environment(\.posterStyle) private var posterStyle
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     private static let width: CGFloat = 120
     private static let height: CGFloat = 180
@@ -410,18 +432,26 @@ private struct SeasonPosterCard: View {
             }
             .frame(width: Self.width, height: Self.height)
             .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
             .overlay {
-                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
                     .strokeBorder(isSelected ? Theme.Palette.accent : Color.white.opacity(0.10), lineWidth: isSelected ? 3 : 1)
             }
-            .tileFocusLift(cornerRadius: Theme.Radius.card)
+            .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
 
             Text(label)
                 .font(Theme.Font.cardTitle)
                 .foregroundStyle(isFocused || isSelected ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
                 .lineLimit(1)
                 .frame(width: Self.width, alignment: .leading)
+                // UX-15 (beta.13 review, frame-verified at t=77.5): the system lift grows the
+                // artwork's bottom edge over this caption. Same fix as PosterCard's BUG-54
+                // treatment — the focused caption drops by the lift's bottom expansion.
+                .modifier(CardCaptionFocusDrop(
+                    mode: noZoomOnFocus ? .still(ringed: false) : .systemLift,
+                    isFocused: isFocused,
+                    artworkHeight: Self.height
+                ))
         }
         .accessibilityLabel(label)
         .accessibilityAddTraits(isSelected ? .isSelected : [])

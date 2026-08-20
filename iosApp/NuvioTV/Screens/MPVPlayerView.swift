@@ -218,6 +218,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if !didLoad {
             didLoad = true
             computeResumePosition()
+            applyRequestHeaders(context.requestHeaders)
             command("loadfile", args: [context.url.absoluteString, "replace"])
             startPolling()
             flashControls()
@@ -368,6 +369,43 @@ final class MPVTVPlayerViewController: UIViewController {
             let vc = unsafeBitCast(ctx, to: MPVTVPlayerViewController.self)
             vc.readEvents()
         }, UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()))
+    }
+
+    /// Addon-declared stream headers (`context.requestHeaders`, already sanitized by the shared
+    /// `sanitizePlaybackHeaders`) → mpv's `http-header-fields`, applied to every HTTP request this
+    /// handle makes (media, HLS segments, addon subtitle side-loads — matching mobile). The
+    /// serialization mirrors upstream `MPVPlayerBridge.applyRequestHeaders` exactly: sorted keys,
+    /// `Key: Value` pairs comma-joined, `\` and `,` escaped in values, and an explicit "" clear
+    /// when there are no headers so a header-free load can never inherit a previous stream's
+    /// headers should this handle ever load more than one file. Called before `loadfile`.
+    /// Credential-class header names (lowercased). When the stream carries any of these, mpv's
+    /// GLOBAL `http-header-fields` would also send them to every `sub-add` URL — i.e. leak the
+    /// media host's credentials to unrelated subtitle providers (Codex 2026-08-20 round 4, P1).
+    /// `subAdd` checks this flag and side-loads such subtitles through its own credential-free
+    /// download instead of letting the core fetch them.
+    private static let credentialHeaderNames: Set<String> = ["authorization", "cookie", "proxy-authorization"]
+    private var streamHeadersCarryCredentials = false
+
+    private func applyRequestHeaders(_ headers: [String: String]) {
+        guard mpv != nil else { return }
+        streamHeadersCarryCredentials = headers.keys.contains {
+            Self.credentialHeaderNames.contains($0.lowercased())
+        }
+        if headers.isEmpty {
+            setMpvString("http-header-fields", "")
+            return
+        }
+
+        let serialized = headers
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { key, value in
+                let escapedValue = value
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: ",", with: "\\,")
+                return "\(key): \(escapedValue)"
+            }
+            .joined(separator: ",")
+        setMpvString("http-header-fields", serialized)
     }
 
     // MARK: - Tracks
@@ -710,6 +748,8 @@ final class MPVTVPlayerViewController: UIViewController {
         setMpvInt("sub-outline-size", outline)
         setMpvInt("sub-border-size", outline)
         setMpvInt("sub-pos", Int64(max(0, min(100, 100 - Int(style.bottomOffset) / 10))))
+        setMpvString("sub-filter-sdh", style.stripSdh ? "yes" : "no")
+        setMpvString("sub-filter-sdh-harder", style.stripSdh ? "yes" : "no")
     }
 
     private func mpvColorString(_ argb: Int64) -> String {
@@ -782,6 +822,33 @@ final class MPVTVPlayerViewController: UIViewController {
     private func subAdd(url: String, title: String, lang: String) {
         guard mpv != nil, !addedSubtitleUrls.contains(url) else { return }
         addedSubtitleUrls.insert(url)
+        // Credential leak guard (Codex round 4, P1): with credential-class stream headers set
+        // globally on this handle, an in-core `sub-add <http url>` would send them to the
+        // subtitle host. Download the file ourselves WITHOUT those headers and hand mpv a local
+        // path instead. Only this rare credential case takes the new path — header-free and
+        // benign-header (Referer/UA) streams keep the exact in-core behavior below.
+        if streamHeadersCarryCredentials,
+           let remote = URL(string: url), remote.scheme == "http" || remote.scheme == "https" {
+            URLSession.shared.dataTask(with: remote) { [weak self] data, _, error in
+                guard let self, let data, error == nil, !data.isEmpty else {
+                    NSLog("[MPVPlayer] credential-scoped subtitle fetch failed for %@ — skipping side-load", url)
+                    return
+                }
+                let ext = remote.pathExtension.isEmpty ? "srt" : remote.pathExtension
+                let local = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("mpv-sub-\(UUID().uuidString).\(ext)")
+                do {
+                    try data.write(to: local)
+                } catch {
+                    NSLog("[MPVPlayer] credential-scoped subtitle write failed — skipping side-load")
+                    return
+                }
+                self.eventQueue.async { [weak self] in
+                    self?.command("sub-add", args: [local.path, "auto", title, lang])
+                }
+            }.resume()
+            return
+        }
         // sub-add downloads/probes the file synchronously inside the core — never on main.
         eventQueue.async { [weak self] in
             self?.command("sub-add", args: [url, "auto", title, lang])

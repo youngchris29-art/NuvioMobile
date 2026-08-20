@@ -63,10 +63,20 @@ nonisolated struct ProbeResult: Sendable {
 }
 
 nonisolated enum MediaProbe {
+    /// Serialize request headers into FFmpeg's `headers` AVOption form for the http protocol:
+    /// CRLF-terminated `Key: Value` lines. Sorted for determinism. Shared with `RemuxSession`
+    /// (both open the remote source through avformat and need the same addon headers).
+    static func ffmpegHeaderBlock(_ headers: [String: String]) -> String {
+        headers
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { "\($0.key): \($0.value)\r\n" }
+            .joined()
+    }
+
     /// Open `url` with avformat and return a `ProbeResult`, or nil on failure/timeout. Blocking
     /// (network I/O) — call off the main thread. A deadline-based interrupt callback guarantees the
     /// call cannot hang past `timeoutSec`.
-    static func probe(url: URL, timeoutSec: Double) -> ProbeResult? {
+    static func probe(url: URL, timeoutSec: Double, requestHeaders: [String: String] = [:]) -> ProbeResult? {
         MediaProbeNetwork.ensureInit()
 
         guard let ctx = avformat_alloc_context() else { return nil }
@@ -80,6 +90,12 @@ nonisolated enum MediaProbe {
         // Protocol-level open/read timeout (microseconds) for demuxers/protocols that honor it.
         var opts: OpaquePointer?
         av_dict_set(&opts, "timeout", String(Int(timeoutSec * 1_000_000)), 0)
+        // Addon-declared stream headers (behaviorHints.proxyHeaders.request, pre-sanitized): a
+        // header-gated CDN 403s a bare probe, which would silently route the stream to mpv even
+        // when the native path could play it. Ignored by non-HTTP protocols.
+        if !requestHeaders.isEmpty {
+            av_dict_set(&opts, "headers", ffmpegHeaderBlock(requestHeaders), 0)
+        }
         defer { av_dict_free(&opts) }
 
         var fmt: UnsafeMutablePointer<AVFormatContext>? = ctx

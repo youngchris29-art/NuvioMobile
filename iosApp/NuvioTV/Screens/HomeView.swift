@@ -1439,9 +1439,36 @@ struct HomeHeroBackdrop: View {
 /// `HeroCrossfadeImage.crossfade`, per image swap). A healthy cold launch shows exactly ONE
 /// `paint first=1` and NO `publish … headChanged=1`.
 enum HomeHeroProbe {
+    /// BUG-42 (beta.13.5): the defaults knob stays for local/device-pass use, but the reporter is
+    /// on a sideload with no way to `defaults write` — Settings → About now exposes the same knob
+    /// as a toggle (`heroDiagnosticsKey`), and the probe lines are mirrored into a small persisted
+    /// ring buffer the About pane renders, so a cold-launch capture is one TV photo away.
     nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.homeHeroProbe")
     nonisolated static let t0 = Date()
-    static var sinceLaunchMs: Int { Int(Date().timeIntervalSince(t0) * 1000) }
+    // nonisolated (Codex round 1): the target defaults to MainActor isolation, and the
+    // nonisolated `log` below reads this — pure Date math, safe from any executor.
+    nonisolated static var sinceLaunchMs: Int { Int(Date().timeIntervalSince(t0) * 1000) }
+
+    nonisolated static let linesKey = "debug.homeHeroProbe.lines"
+    nonisolated static let maxLines = 24
+    nonisolated(unsafe) private static var didResetThisLaunch = false
+    nonisolated private static let bufferLock = NSLock()
+
+    /// NSLogs `line` (the greppable `[HomeHero]` console contract is unchanged) and appends it to
+    /// the persisted ring buffer. The buffer resets on the first record of each launch, so the
+    /// About pane always shows exactly the current launch's lines — the cold-launch capture
+    /// BUG-42 has been waiting for.
+    nonisolated static func log(_ line: String) {
+        NSLog("[HomeHero] %@", line)
+        bufferLock.lock()
+        defer { bufferLock.unlock() }
+        let defaults = UserDefaults.standard
+        var lines = didResetThisLaunch ? (defaults.stringArray(forKey: linesKey) ?? []) : []
+        didResetThisLaunch = true
+        lines.append("\(sinceLaunchMs)ms \(line)")
+        if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
+        defaults.set(lines, forKey: linesKey)
+    }
 }
 
 /// UX-7 flash-free backdrop swapper: unlike `HomeHeroBackdrop`'s old approach, this view is NEVER
@@ -1513,7 +1540,7 @@ struct HeroCrossfadeImage: View {
             let firstPaint = current == nil && previous == nil
             if !firstPaint, paintCount == 0, !didLogSeededPaint, HomeHeroProbe.enabled {
                 didLogSeededPaint = true
-                NSLog("[HomeHero] paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0", HomeHeroProbe.sinceLaunchMs)
+                HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0", HomeHeroProbe.sinceLaunchMs))
             }
             guard let url, !url.isEmpty, let resolvedURL = URL(string: url) else {
                 // This title genuinely has no artwork: fade down to the flat background rather
@@ -1594,7 +1621,7 @@ struct HeroCrossfadeImage: View {
                         primaryLanded = true
                         if firstPaintCommittedWithFallback {
                             if HomeHeroProbe.enabled {
-                                NSLog("[HomeHero] paint suppressed kind=primaryAfterFirstPaintFallback sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs)
+                                HomeHeroProbe.log(String(format: "paint suppressed kind=primaryAfterFirstPaintFallback sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
                             }
                             continue
                         }
@@ -1662,7 +1689,7 @@ struct HeroCrossfadeImage: View {
         guard image !== current else { return }
         paintCount += 1
         if HomeHeroProbe.enabled {
-            NSLog("[HomeHero] paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1)
+            HomeHeroProbe.log(String(format: "paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1))
         }
         previous = current
         current = image

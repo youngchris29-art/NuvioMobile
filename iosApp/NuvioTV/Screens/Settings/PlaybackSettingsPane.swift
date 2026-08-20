@@ -105,7 +105,8 @@ struct PlaybackSettingsPane: View {
                         onSize: { model.setSubtitleFontSize($0) },
                         onBackground: { model.setSubtitleBackground($0) },
                         onBold: { model.setSubtitleBold($0) },
-                        onOutline: { model.setSubtitleOutline($0) }
+                        onOutline: { model.setSubtitleOutline($0) },
+                        onStripSdh: { model.setSubtitleStripSdh($0) }
                     )
                 } else {
                     Text("Loading subtitle settings\u{2026}")
@@ -260,6 +261,7 @@ private struct SubtitleAppearanceControls: View {
     let onBackground: (Int64) -> Void
     let onBold: (Bool) -> Void
     let onOutline: (Bool) -> Void
+    let onStripSdh: (Bool) -> Void
 
     private let textColors: [(name: String, argb: Int64)] = [
         ("White", 0xFFFFFFFF), ("Yellow", 0xFFFFFF00), ("Cyan", 0xFF00FFFF), ("Green", 0xFF00FF00)
@@ -306,6 +308,9 @@ private struct SubtitleAppearanceControls: View {
             }
             SettingsToggleRow(title: String(localized: "Outline"), subtitle: String(localized: "Draw an outline around text for readability"), isOn: style.outlineEnabled) {
                 onOutline(!style.outlineEnabled)
+            }
+            SettingsToggleRow(title: String(localized: "Strip SDH Subtitles"), subtitle: String(localized: "Hide sound descriptions and speaker labels from text subtitles."), isOn: style.stripSdh) {
+                onStripSdh(!style.stripSdh)
             }
         }
     }

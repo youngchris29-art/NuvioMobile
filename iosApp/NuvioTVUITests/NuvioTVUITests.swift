@@ -2155,6 +2155,100 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
+    // MARK: - BUG-65: Appearance toggle rows must keep dark text on the focus platter
+
+    /// BUG-65 (beta.13, u/mrStevenx3's review video t=133.5): on HIS DEVICE the focused "Anneau
+    /// de focus couleur d'accent" row renders as a white platter with near-invisible light
+    /// title/subtitle. Calibration finding (2026-08-20, three sim runs): the 26.5 SIM does NOT
+    /// reproduce the white-out — the focused row renders dark-on-platter here in every run,
+    /// measuring a dark-pixel fraction of ~0.013 (the title is a thin line in a wide platter
+    /// band). So this guard's job in the sim is regression-catching only: a healthy row measures
+    /// ≥ ~0.013 dark; a white-out measures ≈ 0. The threshold sits between the two. Toggle rows
+    /// never report `hasFocus` on this runtime (beta.13 harness lesson), so the probe keys off
+    /// the measured platter instead and skips loudly if no platter is ever seen.
+    func test36AppearanceToggleRowFocusedContrast() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        let appearance = app.buttons["Appearance"]
+        _ = moveFocus(.down, until: appearance, max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+
+        let ringRow = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] %@", "Accent Focus Ring")
+        ).firstMatch
+        guard ringRow.waitForExistence(timeout: 6) else {
+            throw XCTSkip("Accent Focus Ring row never appeared — pane navigation failed")
+        }
+
+        // Walk down from the swatch row toward the toggle rows, measuring the ring row's band at
+        // each rest. The focused step is the one where the band's mean luma jumps (white platter).
+        var platterSeen = false
+        var worstDarkFraction = 1.0
+        for step in 0..<6 {
+            if step > 0 { press(.down, times: 1) }
+            pause(1)
+            guard ringRow.exists else { break }
+            let frame = ringRow.frame
+            let band = frame.insetBy(dx: frame.width * 0.05, dy: frame.height * 0.12)
+            let profile = try lumaProfile(in: XCUIScreen.main.screenshot().image, pointRect: band, windowSize: app.frame.size)
+            print("[BUG65] step \(step): ring row band mean=\(profile.mean) dark=\(profile.darkFraction) bright=\(profile.brightFraction)")
+            if profile.mean > 0.55 {
+                platterSeen = true
+                worstDarkFraction = min(worstDarkFraction, profile.darkFraction)
+                let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                shot.name = "36_ring_row_platter_step\(step)"
+                shot.lifetime = .keepAlways
+                add(shot)
+            }
+        }
+        guard platterSeen else {
+            throw XCTSkip("the ring row never showed a focus platter — focus walk missed it; cannot measure")
+        }
+        XCTAssertGreaterThan(
+            worstDarkFraction, 0.004,
+            "focused Appearance toggle row is white-on-white: platter present but only \(worstDarkFraction) of the band is dark label-class pixels (BUG-65; a legible row measures ~0.013)"
+        )
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// Mean luma plus dark (<0.35) and bright (>0.7) pixel fractions inside `pointRect`.
+    /// Same coordinate/scaling contract as `lumaStats`.
+    private func lumaProfile(in image: UIImage, pointRect: CGRect, windowSize: CGSize) throws -> (mean: Double, darkFraction: Double, brightFraction: Double) {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let px = CGRect(
+            x: pointRect.minX * scale, y: pointRect.minY * scale,
+            width: pointRect.width * scale, height: pointRect.height * scale
+        ).integral.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !px.isEmpty, let cropped = cg.cropping(to: px) else {
+            throw XCTSkip("band \(pointRect) is off-screen")
+        }
+        let w = cropped.width, h = cropped.height
+        var buffer = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(
+            data: &buffer, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw XCTSkip("could not build a bitmap context") }
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var total = 0.0
+        var dark = 0
+        var bright = 0
+        for i in stride(from: 0, to: buffer.count, by: 4) {
+            let l = (0.2126 * Double(buffer[i]) + 0.7152 * Double(buffer[i + 1]) + 0.0722 * Double(buffer[i + 2])) / 255.0
+            total += l
+            if l < 0.35 { dark += 1 }
+            if l > 0.7 { bright += 1 }
+        }
+        let count = Double(w * h)
+        return (total / count, Double(dark) / count, Double(bright) / count)
+    }
+
     /// Max relative luma and the fraction of pixels above 0.7 luma inside `pointRect` (in the
     /// app window's point space) of a full-screen screenshot. Scales points→pixels from the
     /// screenshot/window width ratio (sim screenshots are exactly 2 px/pt).
