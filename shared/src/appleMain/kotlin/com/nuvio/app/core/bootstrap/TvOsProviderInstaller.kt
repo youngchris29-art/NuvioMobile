@@ -37,6 +37,7 @@ import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepositor
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.SubtitleRepository
+import com.nuvio.app.features.profiles.AvatarRepository
 import com.nuvio.app.features.profiles.MAX_PROFILES
 import com.nuvio.app.features.profiles.ProfileLifecycleCoordinator
 import com.nuvio.app.features.profiles.ProfileLifecycleProvider
@@ -199,6 +200,10 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
 
         // 1) Repo/in-memory state (active profile scope).
         ProfileRepository.clearInMemory()
+        // The avatar catalog is server-scoped: without this, a server switch kept the previous
+        // server's catalog in memory and the profile screens 404'd its filenames against the new
+        // server. Persisted payload is step 2's job (registry entry "AvatarStorage").
+        AvatarRepository.clearLocalState()
         AddonRepository.clearLocalState()
         HomeRepository.clear()
         HomeCatalogSettingsRepository.clearLocalState()

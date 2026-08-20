@@ -28,6 +28,24 @@ object AvatarRepository {
     private var cacheHydrated = false
     private var fetchInFlight = false
 
+    // Bumped by clearLocalState() so a fetch already in flight against the PREVIOUS server (or
+    // account) can't repopulate — and re-persist — the stale catalog after the wipe.
+    private var generation = 0
+
+    /**
+     * In-memory reset for the account-wipe cascade (sign-out and server switch). The persisted
+     * payload is erased by the platform cleaners via the AccountDataStores "AvatarStorage" entry;
+     * this drops the hydrated copy, without which a server switch kept the previous server's
+     * catalog alive and the profile screens requested its filenames from the NEW server (404s,
+     * color-circle fallback).
+     */
+    fun clearLocalState() {
+        generation++
+        _avatars.value = emptyList()
+        loaded = false
+        cacheHydrated = false
+    }
+
     suspend fun fetchAvatars() {
         hydrateFromCacheIfNeeded()
         if (loaded && _avatars.value.isNotEmpty()) return
@@ -62,19 +80,22 @@ object AvatarRepository {
     private suspend fun doFetch() {
         if (fetchInFlight) return
         fetchInFlight = true
+        val startedGeneration = generation
         runCatching {
             val result = SupabaseProvider.client.postgrest.rpc("get_avatar_catalog")
             val items = result.decodeList<AvatarCatalogItem>()
             val activeItems = items.filter { it.isActive }.sortedWith(
                 compareBy({ it.category }, { it.sortOrder }),
             )
-            _avatars.value = activeItems
-            loaded = true
-            AvatarStorage.savePayload(
-                json.encodeToString(
-                    StoredAvatarCatalogPayload(items = activeItems),
-                ),
-            )
+            if (generation == startedGeneration) {
+                _avatars.value = activeItems
+                loaded = true
+                AvatarStorage.savePayload(
+                    json.encodeToString(
+                        StoredAvatarCatalogPayload(items = activeItems),
+                    ),
+                )
+            }
         }.onFailure { e ->
             log.e(e) { "Failed to fetch avatar catalog" }
         }.also {

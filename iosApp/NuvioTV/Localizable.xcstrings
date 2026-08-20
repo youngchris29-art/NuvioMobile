@@ -2620,6 +2620,40 @@
         }
       }
     },
+    "Addresses without a scheme are treated as HTTPS — include http:// for a plain-HTTP server.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adressen ohne Schema werden als HTTPS behandelt — gib http:// an, wenn der Server nur unverschlüsseltes HTTP unterstützt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las direcciones sin esquema se tratan como HTTPS; incluye http:// para un servidor HTTP sin cifrar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les adresses sans schéma sont traitées en HTTPS — indiquez http:// pour un serveur en HTTP non chiffré."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gli indirizzi senza schema vengono trattati come HTTPS — includi http:// per un server che usa solo HTTP."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Địa chỉ không có giao thức sẽ được coi là HTTPS — hãy thêm http:// nếu máy chủ chỉ hỗ trợ HTTP."
+          }
+        }
+      }
+    },
     "Advanced": {
       "localizations": {
         "de": {

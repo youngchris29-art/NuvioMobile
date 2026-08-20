@@ -71,6 +71,11 @@ final class ServerConnectionViewModel: ObservableObject {
     @Published private(set) var switchFailureMessage: String?
 
     private var watcher: FlowWatcher?
+    // Whether the last discovery attempt's typed URL carried an explicit scheme. Scheme-less
+    // input defaults to https (ServerDiscoveryPolicy, upstream/Android-TV parity), which fails
+    // against a plain-HTTP LAN server with no clue why — ConnectionFailed appends a hint when
+    // this is false. Nil until the first discover() from this screen.
+    private var lastDiscoverInputHadScheme: Bool?
 
     init() {
         if let seed = ServerConnectionController.shared.state.value_ as? ServerConnectionUiState {
@@ -96,6 +101,7 @@ final class ServerConnectionViewModel: ObservableObject {
     func discover(_ url: String) {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isDiscovering, !isSwitching else { return }
+        lastDiscoverInputHadScheme = trimmed.contains("://")
         ServerConnectionController.shared.discover(url: trimmed)
     }
 
@@ -169,7 +175,12 @@ final class ServerConnectionViewModel: ObservableObject {
         let failure: ServerDiscoveryFailure? = state.failure
         if let failure {
             let statusCode: KotlinInt? = state.statusCode
-            failureMessage = Self.discoveryMessage(for: failure, statusCode: statusCode, activeIsCustom: active.isCustom)
+            failureMessage = Self.discoveryMessage(
+                for: failure,
+                statusCode: statusCode,
+                activeIsCustom: active.isCustom,
+                enteredSchemelessUrl: lastDiscoverInputHadScheme == false
+            )
         } else {
             failureMessage = nil
         }
@@ -184,7 +195,7 @@ final class ServerConnectionViewModel: ObservableObject {
 
     /// Maps the Kotlin `ServerDiscoveryFailure` (by `.name` — PascalCase entries collapse to
     /// all-lowercase properties in Swift, and `switch` over the bridged enum isn't exhaustive).
-    private static func discoveryMessage(for failure: ServerDiscoveryFailure, statusCode: KotlinInt?, activeIsCustom: Bool) -> String {
+    private static func discoveryMessage(for failure: ServerDiscoveryFailure, statusCode: KotlinInt?, activeIsCustom: Bool, enteredSchemelessUrl: Bool) -> String {
         switch failure.name {
         case "InvalidUrl":
             return String(localized: "Enter a valid HTTP or HTTPS backend URL.")
@@ -194,7 +205,9 @@ final class ServerConnectionViewModel: ObservableObject {
             }
             return String(localized: "api.nuvio.tv is the official server and is already selected.")
         case "ConnectionFailed":
-            return String(localized: "Couldn\u{2019}t reach the discovery endpoint. Check the URL and that the server is online.")
+            let base = String(localized: "Couldn\u{2019}t reach the discovery endpoint. Check the URL and that the server is online.")
+            guard enteredSchemelessUrl else { return base }
+            return base + " " + String(localized: "Addresses without a scheme are treated as HTTPS \u{2014} include http:// for a plain-HTTP server.")
         case "HttpError":
             let code = statusCode?.intValue ?? 0
             return String(localized: "The discovery endpoint returned HTTP \(code).")

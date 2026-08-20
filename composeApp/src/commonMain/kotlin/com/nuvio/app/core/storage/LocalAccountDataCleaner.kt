@@ -19,6 +19,7 @@ import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.player.SubtitleRepository
+import com.nuvio.app.features.profiles.AvatarRepository
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.search.SearchRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
@@ -50,6 +51,9 @@ internal object LocalAccountDataCleaner {
         }
 
         ProfileRepository.clearInMemory()
+        // Server-scoped catalog: a server switch must not keep serving the previous server's
+        // avatar filenames (persisted payload is wiped via the AccountDataStores registry).
+        AvatarRepository.clearLocalState()
         AddonRepository.clearLocalState()
         if (AppFeaturePolicy.pluginsEnabled) {
             PluginRepository.clearLocalState()
