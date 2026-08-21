@@ -3334,6 +3334,40 @@
         }
       }
     },
+    "Autoplay Hero Trailer": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero-Trailer automatisch abspielen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproducir tráiler del héroe"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecture auto de la bande-annonce du héros"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduci automaticamente il trailer dell'hero"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động phát trailer banner"
+          }
+        }
+      }
+    },
     "Available": {
       "localizations": {
         "de": {
@@ -8979,6 +9013,40 @@
         }
       }
     },
+    "Focus Mode": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fokusmodus"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modo de Enfoque"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mode de Focus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modalità Focus"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chế độ Lấy nét"
+          }
+        }
+      }
+    },
     "Forced": {
       "localizations": {
         "fr": {
@@ -14321,6 +14389,40 @@
         }
       }
     },
+    "Off · The hero shows artwork only": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Der Hero zeigt nur die Grafik"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · el héroe muestra solo el arte"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · le héros n'affiche que le visuel"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · l'hero mostra solo l'illustrazione"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt · Banner chỉ hiện ảnh"
+          }
+        }
+      }
+    },
     "Off · Trailers only play when selected": {
       "localizations": {
         "de": {
@@ -14385,6 +14487,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tắt · Trailer bắt đầu ở chế độ tắt tiếng"
+          }
+        }
+      }
+    },
+    "Off · Turn on before walking Home down and back up, or running Detail push/pop cycles": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aus · Aktiviere dies, bevor du auf der Startseite nach unten und wieder nach oben scrollst oder Detailseiten öffnest und schließt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desactivado · Actívalo antes de desplazarte hacia abajo y volver arriba en Inicio, o de abrir y cerrar pantallas de detalle"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé · Activez avant de faire défiler l'Accueil vers le bas puis remonter, ou d'ouvrir/fermer des écrans de détail"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off · Attivalo prima di scorrere la Home in basso e poi di nuovo in alto, o di aprire e chiudere schermate di dettaglio"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tắt · Bật trước khi cuộn Trang chủ xuống rồi lên lại, hoặc mở/đóng màn hình chi tiết"
           }
         }
       }
@@ -15139,6 +15275,40 @@
         }
       }
     },
+    "On · Scroll-geometry and push/pop counters below — photograph after testing": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Scroll-Geometrie- und Push/Pop-Zähler unten — fotografiere nach dem Testen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · Contadores de geometría de desplazamiento y push/pop abajo — fotografía después de probar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · Compteurs de géométrie de défilement et push/pop ci-dessous — photographiez après les tests"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivato · Contatori di geometria di scorrimento e push/pop qui sotto — fotografa dopo il test"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật · Bộ đếm hình học cuộn và push/pop bên dưới — hãy chụp lại sau khi kiểm tra"
+          }
+        }
+      }
+    },
     "On · Search shows only the search field and recent searches": {
       "localizations": {
         "de": {
@@ -15237,6 +15407,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật · Ngày chiếu TMDB thay cho ngày phát hành của addon"
+          }
+        }
+      }
+    },
+    "On · The hero plays its trailer by itself, without waiting for focus": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Der Hero spielt seinen Trailer von selbst ab, ohne auf den Fokus zu warten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · el héroe reproduce su tráiler por sí solo, sin esperar al enfoque"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · le héros lit sa bande-annonce tout seul, sans attendre le focus"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On · l'hero riproduce il suo trailer da solo, senza attendere il focus"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật · Banner tự phát trailer mà không cần được chọn"
           }
         }
       }
@@ -22616,6 +22820,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Phim bộ"
+          }
+        }
+      }
+    },
+    "Tab Bar Diagnostics": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab-Leisten-Diagnose"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnóstico de la Barra de Pestañas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic de la Barre d'Onglets"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostica della Barra delle Schede"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chẩn đoán Thanh Tab"
           }
         }
       }

@@ -102,15 +102,18 @@ struct ChipButtonStyle: ButtonStyle {
         let configuration: Configuration
         let selected: Bool
         @Environment(\.isFocused) private var isFocused
+        @Environment(\.settingsRowIsFocused) private var externalFocus
+
+        private var focused: Bool { isFocused || externalFocus }
 
         private var fill: Color {
-            if isFocused { return FocusLook.platter }
+            if focused { return FocusLook.platter }
             if selected { return Theme.Palette.accent }
             return Color.white.opacity(0.1)
         }
 
         private var labelColor: Color {
-            if isFocused { return FocusLook.onPlatter }
+            if focused { return FocusLook.onPlatter }
             if selected { return Theme.Palette.accentText }
             return Theme.Palette.textPrimary
         }
@@ -120,16 +123,16 @@ struct ChipButtonStyle: ButtonStyle {
                 .foregroundStyle(labelColor)
                 // Same semantic-color flip as SettingsRowButtonStyle — chip labels with their own
                 // .secondary text stay legible on the white focus platter.
-                .environment(\.colorScheme, isFocused ? .light : .dark)
+                .environment(\.colorScheme, focused ? .light : .dark)
                 // BUG-65: same custom-ButtonStyle label env gap as SettingsRowButtonStyle —
                 // `chipMetaText` inside chip labels needs the style's known-good focus value.
-                .environment(\.settingsRowIsFocused, isFocused)
+                .environment(\.settingsRowIsFocused, focused)
                 .frame(minWidth: 40, minHeight: 40)
                 .background(Capsule().fill(fill))
-                .shadow(color: FocusLook.liftShadow(isFocused), radius: 16, y: 8)
-                .scaleEffect(isFocused ? FocusLook.liftScale : 1)
+                .shadow(color: FocusLook.liftShadow(focused), radius: 16, y: 8)
+                .scaleEffect(focused ? FocusLook.liftScale : 1)
                 .scaleEffect(configuration.isPressed ? FocusLook.pressScale : 1)
-                .animation(FocusLook.anim, value: isFocused)
+                .animation(FocusLook.anim, value: focused)
                 .animation(FocusLook.pressAnim, value: configuration.isPressed)
         }
     }

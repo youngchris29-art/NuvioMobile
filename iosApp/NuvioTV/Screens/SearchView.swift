@@ -53,7 +53,7 @@ struct SearchView: View {
                     .padding(Theme.Spacing.screen)
                 }
                 .scrollClipDisabled()
-                .reportsScrollToTabBar()
+                .reportsScrollToTabBar(tab: "Search")
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -111,18 +111,9 @@ struct SearchView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Theme.Spacing.md) {
                         ForEach(model.history, id: \.self) { item in
-                            Button {
+                            RecentSearchChip(item: item) {
                                 query = item
-                            } label: {
-                                HStack(spacing: Theme.Spacing.xs) {
-                                    Image(systemName: "clock.arrow.circlepath")
-                                    Text(item)
-                                }
-                                .font(Theme.Font.meta)
-                                .padding(.horizontal, Theme.Spacing.md)
-                                .padding(.vertical, Theme.Spacing.xs)
                             }
-                            .buttonStyle(.chip)
                             .contextMenu {
                                 Button(role: .destructive) {
                                     model.removeHistory(item)
@@ -160,7 +151,7 @@ struct SearchView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Theme.Spacing.md) {
                             ForEach(discover.catalogOptions, id: \.key) { option in
-                                discoverChip(
+                                DiscoverChip(
                                     title: option.catalogName,
                                     subtitle: option.addonName,
                                     isSelected: widen(discover.selectedCatalogKey) == option.key
@@ -177,12 +168,12 @@ struct SearchView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Theme.Spacing.md) {
                             if discover.selectedCatalog?.genreRequired != true {
-                                discoverChip(title: String(localized: "All"), subtitle: nil, isSelected: widen(discover.selectedGenre) == nil) {
+                                DiscoverChip(title: String(localized: "All"), subtitle: nil, isSelected: widen(discover.selectedGenre) == nil) {
                                     model.selectDiscoverGenre(nil)
                                 }
                             }
                             ForEach(discover.genreOptions, id: \.self) { genre in
-                                discoverChip(title: genre, subtitle: nil, isSelected: widen(discover.selectedGenre) == genre) {
+                                DiscoverChip(title: genre, subtitle: nil, isSelected: widen(discover.selectedGenre) == genre) {
                                     model.selectDiscoverGenre(genre)
                                 }
                             }
@@ -244,44 +235,13 @@ struct SearchView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.Spacing.md) {
                 ForEach(options, id: \.self) { option in
-                    discoverChip(title: label(option), subtitle: nil, isSelected: isSelected(option)) {
+                    DiscoverChip(title: label(option), subtitle: nil, isSelected: isSelected(option)) {
                         onSelect(option)
                     }
                 }
             }
             .padding(.vertical, Theme.Spacing.xs)
         }
-    }
-
-    private func discoverChip(
-        title: String,
-        subtitle: String?,
-        isSelected: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.xs) {
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                }
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(title)
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(Theme.Font.caption)
-                            // BUG-33 defect 3: a bare `textSecondary` here went to 1.52:1 on the
-                            // focused platter (worse than the 2.23:1 it measured unfocused) —
-                            // `.chipMetaText` (FlatControlStyles.swift) anchors to the same
-                            // focus/selection-aware tokens the chip's own label already uses.
-                            .chipMetaText(selected: isSelected)
-                    }
-                }
-            }
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-        }
-        .buttonStyle(.chip(selected: isSelected))
     }
 
     /// Kotlin `String?` properties can surface non-optional; force an explicit optional for ==.
@@ -309,5 +269,59 @@ struct SearchView: View {
             return String(localized: "Couldn't load this catalog. Try another genre or catalog.")
         }
         return String(localized: "Nothing here yet \u{2014} try another genre or catalog.")
+    }
+}
+
+private struct RecentSearchChip: View {
+    let item: String
+    let action: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: "clock.arrow.circlepath")
+                Text(item)
+            }
+            .font(Theme.Font.meta)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+            .foregroundStyle(focused ? Theme.Palette.onFocusPlatter : Theme.Palette.textPrimary)
+        }
+        .buttonStyle(.chip)
+        .focused($focused)
+        .environment(\.settingsRowIsFocused, focused)
+    }
+}
+
+private struct DiscoverChip: View {
+    let title: String
+    let subtitle: String?
+    let isSelected: Bool
+    let action: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Spacing.xs) {
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(Theme.Font.caption)
+                            .chipMetaText(selected: isSelected)
+                    }
+                }
+            }
+            .font(Theme.Font.meta)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+        }
+        .buttonStyle(.chip(selected: isSelected))
+        .focused($focused)
+        .environment(\.settingsRowIsFocused, focused)
     }
 }

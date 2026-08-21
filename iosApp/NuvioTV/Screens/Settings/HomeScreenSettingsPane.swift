@@ -20,6 +20,10 @@ struct HomeScreenSettingsPane: View {
     /// next airing episodes, directly under Continue Watching. Default ON. Local-only.
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
 
+    /// FEAT-25: mirrors HomeView's `hero_trailer_autoplay` key — the hero plays its own trailer
+    /// with no focus required. Default OFF. Local-only, not synced.
+    @AppStorage("hero_trailer_autoplay") private var heroTrailerAutoplay = false
+
     var body: some View {
         settingsSection(String(localized: "Home Rows")) {
             // Catalog-independent: the Upcoming row is fed by watch progress + Library, so its
@@ -98,6 +102,16 @@ struct HomeScreenSettingsPane: View {
                     isOn: inlineTrailersEnabled
                 ) {
                     inlineTrailersEnabled.toggle()
+                }
+
+                SettingsToggleRow(
+                    title: String(localized: "Autoplay Hero Trailer"),
+                    subtitle: heroTrailerAutoplay
+                        ? String(localized: "On \u{00B7} The hero plays its trailer by itself, without waiting for focus")
+                        : String(localized: "Off \u{00B7} The hero shows artwork only"),
+                    isOn: heroTrailerAutoplay
+                ) {
+                    heroTrailerAutoplay.toggle()
                 }
 
                 SettingsToggleRow(

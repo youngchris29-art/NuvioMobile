@@ -61,7 +61,7 @@ struct LibraryView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollClipDisabled()
-                .reportsScrollToTabBar()
+                .reportsScrollToTabBar(tab: "Library")
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)

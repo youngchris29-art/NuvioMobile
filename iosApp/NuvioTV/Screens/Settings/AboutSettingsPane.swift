@@ -12,6 +12,17 @@ struct AboutSettingsPane: View {
     @AppStorage("debug.homeHeroProbe") private var heroDiagnostics = false
     @State private var heroProbeLines: [String] = []
 
+    /// BUG-30/66/62 (beta.14): same release-safe pattern as the hero probe above, but the readout
+    /// is a live in-memory snapshot (`TabBarProbe`) rather than a persisted log — see that type's
+    /// doc comment for why.
+    @AppStorage("debug.tabBarProbe") private var tabBarDiagnostics = false
+    @Environment(\.tabBarVisibility) private var tabBarVisibility
+
+    /// BUG-64: both raw toggles `CardFocusMode.resolve` reads, so this pane can show the resolved
+    /// mode next to the settings a tester's photo needs to be checked against.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+
     var body: some View {
         settingsSection(String(localized: "About")) {
             SettingsInfoRow(
@@ -61,6 +72,53 @@ struct AboutSettingsPane: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("hero_probe_lines")
+            }
+
+            // Grouped so this whole block occupies one slot in `settingsSection`'s own
+            // @ViewBuilder — PlaybackSettingsPane's "Playback" section already sits at the
+            // 10-child ViewBuilder ceiling, and the six rows above plus the hero probe's two
+            // slots leave no room to add these five ungrouped.
+            Group {
+                SettingsToggleRow(
+                    title: String(localized: "Tab Bar Diagnostics"),
+                    subtitle: tabBarDiagnostics
+                        ? String(localized: "On \u{00B7} Scroll-geometry and push/pop counters below \u{2014} photograph after testing")
+                        : String(localized: "Off \u{00B7} Turn on before walking Home down and back up, or running Detail push/pop cycles"),
+                    isOn: tabBarDiagnostics
+                ) {
+                    tabBarDiagnostics.toggle()
+                }
+
+                if tabBarDiagnostics {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(TabBarProbe.tabNames, id: \.self) { tab in
+                            let state = TabBarProbe.scrollStates[tab] ?? TabBarProbe.ScrollState()
+                            Text("\(tab) fires=\(state.fireCount) last=\(state.lastFireMs)ms off=\(Int(state.lastOffset.rounded()))")
+                                .font(.system(size: 20, design: .monospaced))
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Text("depth=\(tabBarVisibility.immersiveDepth) cycles=\(TabBarProbe.pushPopCycles)")
+                            .font(.system(size: 20, design: .monospaced))
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("tab_bar_probe_lines")
+                }
+
+                SettingsInfoRow(
+                    title: String(localized: "Focus Mode"),
+                    value: "\(CardFocusMode.resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus))"
+                )
+                SettingsInfoRow(
+                    title: String(localized: "No Zoom on Focus"),
+                    value: noZoomOnFocus ? String(localized: "On") : String(localized: "Off")
+                )
+                SettingsInfoRow(
+                    title: String(localized: "Accent Focus Ring"),
+                    value: accentFocusRing ? String(localized: "On") : String(localized: "Off")
+                )
             }
         }
         .onAppear {

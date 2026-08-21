@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UIKit
 import SharedCore
 
 /// First real content screen for tvOS: a focus-navigable grid of catalog rows, fed entirely by the
@@ -46,6 +47,15 @@ struct HomeView: View {
     /// Home Rows toggle, default ON. Local-only like `hero_nuvio_style`. Off = the shared
     /// repository is not even started, so no metadata sweep runs.
     @AppStorage("home_upcoming_row_enabled") private var upcomingRowEnabled = true
+    /// FEAT-25: whether the hero plays its title's trailer on its own, with no focus anywhere near
+    /// it (the Nuvio behavior). Default OFF, so an untouched install keeps exactly the static
+    /// backdrop it has always had. Device-local for the same reason `inline_trailers_enabled` is —
+    /// whether a living-room Apple TV should autoplay video is a per-device call. Settings › Home
+    /// Screen owns the toggle UI.
+    @AppStorage("hero_trailer_autoplay") private var heroTrailerAutoplay = false
+    /// FEAT-25: mirrors `CatalogRowView`'s own key. Read here only so the two trailer surfaces stay
+    /// off each other's toes — see `heroTrailerAutoplayActive`.
+    @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
     /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
     /// the entire preference map on every call, so it cannot be read from `body` at render
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
@@ -212,6 +222,31 @@ struct HomeView: View {
         return nil
     }
 
+    /// FEAT-25: whether the hero backdrop may run a trailer right now. Three gates on top of the
+    /// user's own toggle:
+    /// * tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews, exactly as `CatalogRowView`
+    ///   gates the inline card — a system-wide "no video previews" must silence this surface too;
+    /// * the artwork being visible at all: with `heroPosterFocusOnly` on, the whole backdrop layer
+    ///   sits at opacity 0 until the hero is engaged, and decoding a trailer nobody can see is
+    ///   pure cost;
+    /// * a row-focused poster that has taken over the hero while Trailers on Focus is also on —
+    ///   that card is already growing its own tile for the same title, and both surfaces racing
+    ///   the single player slot (`InlineTrailerCoordinator`) would collapse one of them mid-morph.
+    private var heroTrailerAutoplayActive: Bool {
+        guard heroTrailerAutoplay, UIAccessibility.isVideoAutoplayEnabled else { return false }
+        let heroEngaged = heroFocused || focusModel.focusedItem != nil
+        if heroPosterFocusOnly && heroCarouselActive && !heroEngaged { return false }
+        if inlineTrailersEnabled && focusModel.focusedItem != nil { return false }
+        return true
+    }
+
+    /// FEAT-25: whether the hero's OWN trailer holds the shared player slot right now. Polled by
+    /// the carousel's auto-advance tick; never observed (see the call site).
+    private var heroTrailerPlaying: Bool {
+        guard heroTrailerAutoplayActive, let hero = displayHero else { return false }
+        return InlineTrailerCoordinator.shared.playingKey == TrailerResolutionCache.key(type: hero.type, id: hero.id)
+    }
+
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
@@ -248,7 +283,11 @@ struct HomeView: View {
                         // Nuvio-style: right-anchored artwork whose left edge fades to the
                         // flat background — the info panel never sits over the art.
                         // FEAT-15: the focus panel always uses that treatment (see heroNuvioStyle).
-                        HomeHeroBackdrop(item: hero, nuvioStyle: heroNuvioStyle || focusHeroActive)
+                        HomeHeroBackdrop(
+                            item: hero,
+                            nuvioStyle: heroNuvioStyle || focusHeroActive,
+                            autoplaysTrailer: heroTrailerAutoplayActive
+                        )
                         HomeHeroScrim()
                     }
                     // UX-7: a row-focused poster (focusModel.focusedItem != nil) always shows
@@ -411,6 +450,15 @@ struct HomeView: View {
                 // advance underneath it.
                 guard heroItems.count > 1, !heroFocused, focusModel.focusedItem == nil,
                       Date().timeIntervalSince(lastHeroChange) >= 7 else { return }
+                // FEAT-25: a hero trailer that is actually playing owns the page. Advancing under
+                // it would cut every trailer off around the 8s mark and restart the whole
+                // resolve pipeline for the next title, which is most of the time the feature has
+                // to work with. Read straight off the coordinator rather than observing it — an
+                // `@ObservedObject` here would re-render Home on every claim/release anywhere in
+                // the app, which is precisely the churn class BUG-19 was about. Playback is
+                // single-pass (`loops: false`), so the page resumes advancing the moment the
+                // trailer ends.
+                guard !heroTrailerPlaying else { return }
                 // Plain animated selection write, including the wrap back to page 0 — programmatic
                 // non-animated selection rebasing desyncs tvOS's paged TabView (the visible page
                 // freezes while the binding keeps moving), so never get clever here.
@@ -628,7 +676,7 @@ struct HomeView: View {
         // `.scrollView(axis: .vertical)` doesn't resolve through the row's nested horizontal
         // shelf. Inert otherwise — naming a coordinate space changes no layout.
         .coordinateSpace(.named(PinnedRowTitle.rowsScrollSpace))
-        .reportsScrollToTabBar(isScrolledDown: $isScrolledDown)
+        .reportsScrollToTabBar(tab: "Home", isScrolledDown: $isScrolledDown)
         // BUG-30 device-verify probe (instrumentation only, behavior-neutral): logs raw
         // contentOffset/contentInsets — and the RESIDUAL they imply — on every change, plus a
         // debounced REST line, so `log show` after a D-pad walk-up shows exactly where
@@ -1398,11 +1446,50 @@ struct HomeHeroBackdrop: View {
     /// out through a gradient mask, so the info panel sits on pure flat background — none of
     /// the artwork ever renders behind the title/description (Christian's spec, 2026-07-30).
     var nuvioStyle: Bool = false
+    /// FEAT-25: run the title's trailer in the backdrop, with no focus required. The gating lives
+    /// entirely in `HomeView.heroTrailerAutoplayActive`; false here is byte-for-byte the backdrop
+    /// this view has always drawn.
+    var autoplaysTrailer: Bool = false
+
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// FEAT-25: the SAME dwell → resolve → play state machine the inline catalog card runs
+    /// (`InlineTrailerCard`), driven from this view's lifecycle instead of from focus. It brings
+    /// the resolution cache, the single-player/single-extraction coordinator, the negative-result
+    /// TTLs and the storm breaker with it — nothing about the pipeline is reimplemented here.
+    @StateObject private var trailerModel = InlineTrailerCardModel()
+
+    /// Cache/zoom identity of the title on screen — also the change signal the trailer restarts on.
+    private var trailerKey: String { TrailerResolutionCache.key(type: item.type, id: item.id) }
 
     var body: some View {
+        backdrop
+            .onAppear {
+                trailerModel.prefersReducedMotion = reduceMotion
+                syncTrailer()
+            }
+            .onChange(of: autoplaysTrailer) { _, _ in syncTrailer() }
+            .onChange(of: trailerKey) { _, _ in syncTrailer() }
+            .onChange(of: scenePhase) { _, _ in syncTrailer() }
+            .onChange(of: reduceMotion) { _, motion in trailerModel.prefersReducedMotion = motion }
+            .onDisappear { trailerModel.reset() }
+    }
+
+    /// Single funnel for every start/stop reason — hero content change, the setting or one of its
+    /// gates flipping, backgrounding, and coming back. Always tears the current playback down
+    /// first (`reset()` releases the player slot and clears the state machine's per-dwell memory),
+    /// then re-arms only when there is a reason to. `focusChanged(true:)` is the inline card's own
+    /// arming call: it starts the same 1s dwell before anything is resolved or requested.
+    private func syncTrailer() {
+        trailerModel.reset()
+        guard autoplaysTrailer, scenePhase == .active else { return }
+        trailerModel.focusChanged(true, item: item)
+    }
+
+    private var backdrop: some View {
         Group {
             if nuvioStyle {
-                HeroCrossfadeImage(url: heroBackdropURL(for: item), fallbackURL: item.poster)
+                heroSurface
                     .frame(width: Theme.Size.heroNuvioArtworkWidth, height: Theme.Size.heroBackdropHeight)
                     .clipped()
                     // The left ~30% of the image dissolves into the background color the rest
@@ -1420,7 +1507,7 @@ struct HomeHeroBackdrop: View {
                     )
                     .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                HeroCrossfadeImage(url: heroBackdropURL(for: item), fallbackURL: item.poster)
+                heroSurface
                     .frame(height: Theme.Size.heroBackdropHeight)
                     .frame(maxWidth: .infinity)
                     .clipped()
@@ -1428,6 +1515,30 @@ struct HomeHeroBackdrop: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea()
+    }
+
+    /// The artwork, with the trailer fading in over it once the state machine has something to
+    /// play. The image is UNCONDITIONAL and never re-identified — the player is the only thing
+    /// that comes and goes — so a trailer starting or ending can't remount the backdrop and
+    /// reintroduce the BUG-19 identity churn this view was rebuilt to avoid. Nothing below is a
+    /// placeholder: with no trailer (or the setting off) this is exactly the still backdrop, and
+    /// the gap before one resolves is the still backdrop too. Never a spinner.
+    private var heroSurface: some View {
+        ZStack {
+            HeroCrossfadeImage(url: heroBackdropURL(for: item), fallbackURL: item.poster)
+
+            if let url = trailerModel.playingURL {
+                TrailerHeroPlayer(
+                    urlString: url,
+                    onFailure: { report in trailerModel.playbackFailed(report) },
+                    zoomKey: trailerKey,
+                    loops: false,
+                    onPlaybackEnded: { trailerModel.playbackFinished() }
+                )
+                .transition(.asymmetric(insertion: .opacity, removal: .identity))
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: trailerModel.playingURL)
     }
 }
 

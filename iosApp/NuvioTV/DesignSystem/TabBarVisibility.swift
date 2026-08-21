@@ -47,7 +47,12 @@ final class TabBarVisibility: ObservableObject {
     /// and require two pops to recover.
     func popImmersive() {
         detailDepth = max(0, detailDepth - 1)
+        TabBarProbe.recordPop(depthAfter: detailDepth)
     }
+
+    /// BUG-30/66/62 diagnostics only — read-only surface of the depth `immersiveHidden` is
+    /// computed from, for the About pane's live tab-bar readout.
+    var immersiveDepth: Int { detailDepth }
 
     private func recompute() {
         hidden = scrolledAway || detailDepth > 0
@@ -84,6 +89,8 @@ extension EnvironmentValues {
 private struct TabBarScrollAutoHide: ViewModifier {
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     @State private var hidesBar = false
+    /// BUG-30/66/62: which tab root this is, for the About-pane diagnostics readout.
+    let tab: String
     /// Optional mirror of `hidesBar` for the attaching screen's own use (BUG-27: Home keys its
     /// Menu-to-top shortcut off the same hysteresis the bar uses, so the two never disagree).
     var isScrolledDown: Binding<Bool>?
@@ -92,6 +99,7 @@ private struct TabBarScrollAutoHide: ViewModifier {
         content.onScrollGeometryChange(for: CGFloat.self, of: { geo in
             geo.contentOffset.y - geo.contentInsets.top
         }, action: { _, offset in
+            TabBarProbe.recordScrollFire(tab: tab, offset: offset)
             if !hidesBar, offset > 60 {
                 hidesBar = true
                 tabBarVisibility.setScrolled(true)
@@ -108,9 +116,53 @@ private struct TabBarScrollAutoHide: ViewModifier {
 extension View {
     /// Attach to a tab root's main (vertical) `ScrollView` so its position drives the floating tab
     /// bar's scroll-driven auto-hide. Screens that don't meaningfully scroll (Settings, Profile)
-    /// should not attach this. Pass `isScrolledDown` to also receive the same hysteresis-filtered
+    /// should not attach this. `tab` names the tab root for the BUG-30/66/62 diagnostics readout
+    /// (e.g. "Home", "Search"). Pass `isScrolledDown` to also receive the same hysteresis-filtered
     /// signal locally (crossings only, never per scroll tick).
-    func reportsScrollToTabBar(isScrolledDown: Binding<Bool>? = nil) -> some View {
-        modifier(TabBarScrollAutoHide(isScrolledDown: isScrolledDown))
+    func reportsScrollToTabBar(tab: String, isScrolledDown: Binding<Bool>? = nil) -> some View {
+        modifier(TabBarScrollAutoHide(tab: tab, isScrolledDown: isScrolledDown))
+    }
+}
+
+/// BUG-30/66/62 (beta.14): release-safe diagnostics for the tvOS 26 system tab bar's scroll-edge
+/// state. Same house pattern as `HomeHeroProbe` (deliberately not `#if DEBUG` — this bar has only
+/// ever been seen stuck on a device pass, never in sim) but the readout is a live counter
+/// snapshot rather than an event log: `.onScrollGeometryChange` can fire many times a second while
+/// scrolling, and a line per fire would spam both the console and whatever ring buffer held it.
+/// Everything here is in-memory only for the running process — the BUG-30/66 protocol (walk Home
+/// down/up, then run Detail push/pop cycles, then check Settings → About) never spans a
+/// relaunch — so nothing here touches UserDefaults or feeds back into the bar's own state.
+@MainActor
+enum TabBarProbe {
+    /// Live read, not the other probes' latched `static let`: those pair with a relaunch-based
+    /// capture protocol, while this toggle must take effect in the same session it is flipped in.
+    nonisolated static var enabled: Bool { UserDefaults.standard.bool(forKey: "debug.tabBarProbe") }
+
+    /// Stable display order for the About pane — dictionary iteration order isn't.
+    static let tabNames = ["Home", "Search", "Library", "Add-ons"]
+
+    struct ScrollState {
+        var fireCount = 0
+        var lastFireMs = 0
+        var lastOffset: CGFloat = 0
+    }
+
+    private(set) static var scrollStates: [String: ScrollState] = [:]
+    /// Counts full push→pop round trips (depth back to 0), not raw push/pop calls — the BUG-30/66
+    /// hypothesis is stated in terms of "N push/pop cycles", not a raw event tally.
+    private(set) static var pushPopCycles = 0
+
+    static func recordScrollFire(tab: String, offset: CGFloat) {
+        guard enabled else { return }
+        var state = scrollStates[tab, default: ScrollState()]
+        state.fireCount += 1
+        state.lastFireMs = HomeHeroProbe.sinceLaunchMs
+        state.lastOffset = offset
+        scrollStates[tab] = state
+    }
+
+    static func recordPop(depthAfter: Int) {
+        guard enabled, depthAfter == 0 else { return }
+        pushPopCycles += 1
     }
 }
