@@ -31,6 +31,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only MPVKit — the repo carries four other gitlinks with no .gitmodules URL
+      # (libass-android, enginefs, TorrServer, quickjs-kt), so `submodules: true`
+      # on the checkout step would fail on them. MPVKit is the one local Swift
+      # package the iosApp SPM graph resolves.
+      - name: Init MPVKit submodule
+        run: git submodule update --init MPVKit
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
