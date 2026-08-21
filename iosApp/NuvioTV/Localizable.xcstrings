@@ -9727,6 +9727,40 @@
         }
       }
     },
+    "Hero": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Héros"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Banner"
+          }
+        }
+      }
+    },
     "Hero Info on the Right": {
       "localizations": {
         "de": {
@@ -9859,6 +9893,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Nguồn banner"
+          }
+        }
+      }
+    },
+    "Hero needs a hero source enabled below; until then, trailers play in the poster.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero benötigt eine unten aktivierte Hero-Quelle; bis dahin werden Trailer im Poster abgespielt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero necesita una fuente de hero activada abajo; hasta entonces, los tráilers se reproducen en el póster."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Héros nécessite une source de héros activée ci-dessous ; d'ici là, les bandes-annonces sont lues dans l'affiche."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hero richiede una sorgente hero attivata qui sotto; fino ad allora, i trailer vengono riprodotti nel poster."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Banner cần bật một nguồn banner bên dưới; cho đến lúc đó, trailer sẽ phát trong poster."
           }
         }
       }
@@ -10506,6 +10574,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trong thư viện"
+          }
+        }
+      }
+    },
+    "In the classic hero layout, trailers play in the poster.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Im klassischen Hero-Layout werden Trailer im Poster abgespielt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En el diseño clásico del hero, los tráilers se reproducen en el póster."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dans la disposition classique du héros, les bandes-annonces sont lues dans l'affiche."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nel layout hero classico, i trailer vengono riprodotti nel poster."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trong bố cục banner cổ điển, trailer sẽ phát trong poster."
           }
         }
       }
@@ -16699,6 +16801,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Giá trị dương làm trễ; giá trị âm phát sớm hơn."
+          }
+        }
+      }
+    },
+    "Poster": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poster"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Póster"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poster"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poster"
           }
         }
       }
@@ -24218,6 +24354,40 @@
         }
       }
     },
+    "Trailer Location": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer-Position"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ubicación del tráiler"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Emplacement de la bande-annonce"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Posizione del trailer"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vị trí trailer"
+          }
+        }
+      }
+    },
     "Trailer Sound by Default": {
       "localizations": {
         "de": {
@@ -26598,36 +26768,36 @@
         }
       }
     },
-    "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@": {
+    "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@ tloc=%@ hph=%@": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@"
+            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@ tloc=%@ hph=%@"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@"
+            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@ tloc=%@ hph=%@"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@"
+            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@ tloc=%@ hph=%@"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@"
+            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@ tloc=%@ hph=%@"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@"
+            "value": "debug_hero idx=%lld foc=%lld n=%lld src=%@ fitem=%@ pin=%lld mode=%@ tloc=%@ hph=%@"
           }
         }
       }

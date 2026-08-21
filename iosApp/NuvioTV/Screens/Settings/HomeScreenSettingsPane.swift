@@ -1,6 +1,30 @@
 import SwiftUI
 import SharedCore
 
+/// A titled row of value chips. Mirrors AppearanceSettingsPane's file-private copy of the same
+/// free function verbatim — duplication is the established pattern for this helper across panes.
+@ViewBuilder
+private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+        Text(title)
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+        HStack(spacing: Theme.Spacing.md) { content() }
+    }
+}
+
+/// A single selectable value chip, paired with `controlRow`. Mirrors AppearanceSettingsPane's
+/// file-private copy of the same free function verbatim (see note above).
+private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Text(label)
+            .font(Theme.Font.meta)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xxs + 2)
+    }
+    .buttonStyle(.chip(selected: selected))
+}
+
 /// "Home Screen" category content: hero banner + hero sources, inline trailer previews, catalog
 /// type labels, and the Home Rows enable/reorder list. Extracted from SettingsView.swift (Phase 2
 /// HIG revamp file split) — logic and wiring preserved verbatim, only regrouped into a
@@ -23,6 +47,10 @@ struct HomeScreenSettingsPane: View {
     /// FEAT-25: mirrors HomeView's `hero_trailer_autoplay` key — the hero plays its own trailer
     /// with no focus required. Default OFF. Local-only, not synced.
     @AppStorage("hero_trailer_autoplay") private var heroTrailerAutoplay = false
+
+    /// Where the "Trailers on Focus" muted preview plays: the poster card itself (default) or the
+    /// hero banner. Only meaningful while `inlineTrailersEnabled` is on. Local-only, not synced.
+    @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
 
     var body: some View {
         settingsSection(String(localized: "Home Rows")) {
@@ -104,6 +132,10 @@ struct HomeScreenSettingsPane: View {
                     inlineTrailersEnabled.toggle()
                 }
 
+                if inlineTrailersEnabled {
+                    trailerLocationRow
+                }
+
                 SettingsToggleRow(
                     title: String(localized: "Autoplay Hero Trailer"),
                     subtitle: heroTrailerAutoplay
@@ -130,6 +162,37 @@ struct HomeScreenSettingsPane: View {
                     onUp: { model.moveUp($0) },
                     onDown: { model.moveDown($0) }
                 )
+            }
+        }
+    }
+
+    /// Dependent chip row shown only while "Trailers on Focus" is on: picks whether the muted
+    /// preview plays in the poster card (default) or the hero banner. The classic (non-Nuvio-
+    /// style) hero layout has no artwork region to preview into, so a caption explains that
+    /// "Hero" falls back to the poster there.
+    private var trailerLocationRow: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            controlRow(String(localized: "Trailer Location")) {
+                chip(String(localized: "Poster"), selected: trailerPlaybackLocation == "poster") {
+                    trailerPlaybackLocation = "poster"
+                }
+                chip(String(localized: "Hero"), selected: trailerPlaybackLocation == "hero") {
+                    trailerPlaybackLocation = "hero"
+                }
+            }
+            if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
+                Text("In the classic hero layout, trailers play in the poster.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+            // Same silent-mismatch guard for the other configuration where "Hero" cannot take
+            // effect: Nuvio-style layout but zero hero sources selected, so the hero fan-out can
+            // never produce a surface and `heroFocusTrailerMode`'s latch never sets.
+            if trailerPlaybackLocation == "hero" && model.heroEnabled && heroNuvioStyle
+                && !model.catalogs.contains(where: { $0.heroSourceEnabled }) {
+                Text("Hero needs a hero source enabled below; until then, trailers play in the poster.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
             }
         }
     }

@@ -30,6 +30,19 @@ private struct RowCardBottomReachKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
+/// Home's "Trailer Location: Hero" mode: the focused title's trailer plays in the PINNED HERO
+/// backdrop (which already follows focus), so the focused poster must NOT morph into an inline
+/// trailer tile — two surfaces cannot share the single player slot, and the hero is the one the
+/// user asked for. Set by `HomeView.rowsScroll` from `heroFocusTrailerMode` — settings plus
+/// hero-surface existence, which moves at most once per Home lifetime (see that property's doc
+/// for why anything churnier would be the BUG-19 identity class).
+///
+/// Defaults to false so Search — and any other `CatalogRowView` host — keeps the inline morph
+/// exactly as it is today, without opting in to anything.
+private struct TrailerPlaysInHeroKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var rowCardTopReach: CGFloat {
         get { self[RowCardTopReachKey.self] }
@@ -38,6 +51,10 @@ extension EnvironmentValues {
     var rowCardBottomReach: CGFloat {
         get { self[RowCardBottomReachKey.self] }
         set { self[RowCardBottomReachKey.self] = newValue }
+    }
+    var trailerPlaysInHero: Bool {
+        get { self[TrailerPlaysInHeroKey.self] }
+        set { self[TrailerPlaysInHeroKey.self] = newValue }
     }
 }
 
@@ -373,10 +390,18 @@ struct CatalogRowView: View {
 
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
+    /// The third term is Home's "Trailer Location: Hero" mode (`trailerPlaysInHero`): the trailer
+    /// still plays, just in the hero backdrop, so this row must leave its posters alone.
     private var inlineTrailersActive: Bool {
-        let active = inlineTrailersEnabled && UIAccessibility.isVideoAutoplayEnabled
+        let active = inlineTrailersEnabled && UIAccessibility.isVideoAutoplayEnabled && !trailerPlaysInHero
         // BUG-55: both gates default OFF, and a fresh container silently resets the toggle — a
         // no-trailers session must say WHY in the log, once per state change, not per render.
+        // Hero-location suppression is NOT threaded through this probe: its dedupe is one global
+        // tuple, and `trailerPlaysInHero` differs per host (Home true, Search false), so routing
+        // it through would flip-flop the "once per state change" contract on every Home↔Search
+        // render alternation. HomeView logs its own `[TrailerPipeline] trailerLocation` line on
+        // mode changes instead, so a log pull still can't mistake BY-DESIGN suppression for a
+        // broken gate.
         InlineTrailerGateProbe.report(enabled: inlineTrailersEnabled, autoplay: UIAccessibility.isVideoAutoplayEnabled)
         return active
     }
@@ -394,6 +419,10 @@ struct CatalogRowView: View {
     /// `rowCardBottomReach` for the mechanism. 0 (no-op) everywhere except Home's pinned mode.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+
+    /// Home's "Trailer Location: Hero" mode — see `trailerPlaysInHero`. False (no-op) everywhere
+    /// except Home in that mode, so Search and every other host keeps the inline morph.
+    @Environment(\.trailerPlaysInHero) private var trailerPlaysInHero
 
     /// H3 hardening (BUG-47): the previous version fired-and-forgot a detached `Task` per
     /// expansion. A rapid re-focus while one was still mid-flight (the 450ms deferred correction

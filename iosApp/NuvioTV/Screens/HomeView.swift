@@ -56,6 +56,13 @@ struct HomeView: View {
     /// FEAT-25: mirrors `CatalogRowView`'s own key. Read here only so the two trailer surfaces stay
     /// off each other's toes — see `heroTrailerAutoplayActive`.
     @AppStorage("inline_trailers_enabled") private var inlineTrailersEnabled = false
+    /// Where "Trailers on Focus" plays the focused title's trailer: `"poster"` (the default) keeps
+    /// the original behavior — the focused card morphs into an inline trailer tile — while
+    /// `"hero"` leaves every poster alone and hands the trailer to the pinned hero backdrop, which
+    /// already follows focus through `HomeHeroFocusModel` (`displayHero`). Device-local for the
+    /// same reason `inline_trailers_enabled` is; Settings › Home Screen owns the picker UI. Inert
+    /// while Trailers on Focus is off — see `heroFocusTrailerMode`.
+    @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
     /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
     /// the entire preference map on every call, so it cannot be read from `body` at render
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
@@ -96,6 +103,22 @@ struct HomeView: View {
     // focused — the same interaction as the Apple TV+ feature carousel — and a timer advances it
     // while focus is elsewhere.
     @State private var heroIndex = 0
+    /// Latch: the hero fan-out has produced at least one item this Home lifetime. Consumed by
+    /// `heroFocusTrailerMode` as its hero-surface-existence term, and a LATCH on purpose: the
+    /// hero publish path can legitimately emit nonempty → empty → nonempty mid-session (the
+    /// BUG-42 "hero emptied" sequence — an addon refresh dropping the last hero-source catalog),
+    /// and a term that tracked `heroCarouselActive` directly would re-branch every mounted
+    /// `InlineTrailerCard` on each swing (the BUG-19 identity-churn class). Latched, the mode
+    /// term moves false → true at most once per Home lifetime; during a transient empty the hero
+    /// simply has nothing to play (fail-soft), and posters stay unmorphing rather than flickering
+    /// through a morph-and-collapse. Never cleared until Home itself is torn down — which is the
+    /// latch's honest residual (Codex pre-commit round 5): a PERMANENT mid-session hero loss (the
+    /// user removes their only hero-source addon and keeps browsing) keeps suppression latched
+    /// with no hero to play into until the next launch, where the empty fan-out never sets the
+    /// latch and the poster morph returns. Accepted: unlatching on empty is exactly the
+    /// nonempty→empty re-branch the latch exists to prevent, and the state self-heals at
+    /// relaunch.
+    @State private var heroSurfaceSeen = false
     @FocusState private var heroFocused: Bool
     /// Last time the hero page changed (manual or automatic). The auto-advance timer skips its
     /// tick unless the carousel has been still for most of its period, so a manual page never
@@ -260,29 +283,134 @@ struct HomeView: View {
     /// * a row-focused poster that has taken over the hero while Trailers on Focus is also on —
     ///   that card is already growing its own tile for the same title, and both surfaces racing
     ///   the single player slot (`InlineTrailerCoordinator`) would collapse one of them mid-morph.
+    ///
+    /// Precedence contract with the focus-driven siblings below (`heroFocusTrailerMode` /
+    /// `heroFocusTrailerActive`, folded together by `heroTrailerActive`): the third gate above —
+    /// `if inlineTrailersEnabled && focusModel.focusedItem != nil { return false }` — is unchanged
+    /// and applies in BOTH trailer locations. It means this property never claims the player while
+    /// a poster holds committed focus, whichever surface that focus is destined to play on. In
+    /// poster location the card takes the slot as before; in hero location `heroFocusTrailerActive`
+    /// takes exactly that slot instead, on the same backdrop, for the same `displayHero` title.
+    /// Once focus leaves the rows and the 0.3s revert grace lands `focusedItem` back on nil, this
+    /// property resumes (if the user has Hero Trailer Autoplay on) and the carousel title dwells
+    /// afresh. When focus arrives on the title the hero is ALREADY showing, the handoff changes no
+    /// `trailerKey`, so `HomeHeroBackdrop.syncTrailer` keeps the existing playback running rather
+    /// than restarting it. In every state exactly one of the two is the claimant of the single
+    /// player slot.
     private var heroTrailerAutoplayActive: Bool {
-        guard heroTrailerAutoplay, systemVideoAutoplayEnabled else { return false }
-        // Device pass 2026-08-21: anything covering Home from Home's own presentation machinery
-        // silences the hero — a pushed screen (See All grid, EntityBrowse, folder, person,
-        // Detail) or the Continue Watching stream-picker cover. Tab switches and cross-stack
-        // coverage are the shell-level `homeSurfaceCovered` signal in `HomeHeroBackdrop`.
-        if !homePath.isEmpty || resume != nil { return false }
+        guard heroTrailerAutoplay, heroTrailerSharedGatesOpen else { return false }
         let heroEngaged = heroFocused || focusModel.focusedItem != nil
         if heroPosterFocusOnly && heroCarouselActive && !heroEngaged { return false }
         if inlineTrailersEnabled && focusModel.focusedItem != nil { return false }
         return true
     }
 
+    /// Gates shared by BOTH hero-trailer claimants (`heroTrailerAutoplayActive` /
+    /// `heroFocusTrailerActive`), hoisted so a future cover source cannot silence one trailer
+    /// location and miss the other — the gates have accreted one by one on device evidence and
+    /// will again:
+    /// * the mirrored system Auto-Play Video Previews preference (`systemVideoAutoplayEnabled`);
+    /// * device pass 2026-08-21: anything covering Home from Home's own presentation machinery —
+    ///   a pushed screen (See All grid, EntityBrowse, folder, person, Detail) via `homePath`, or
+    ///   the Continue Watching stream-picker cover via `resume`. Tab switches and cross-stack
+    ///   coverage are the shell-level `homeSurfaceCovered` signal in `HomeHeroBackdrop`.
+    private var heroTrailerSharedGatesOpen: Bool {
+        guard systemVideoAutoplayEnabled else { return false }
+        return homePath.isEmpty && resume == nil
+    }
+
+    /// Whether "Trailers on Focus" should play in the HERO backdrop instead of morphing the
+    /// focused poster — Trailers on Focus on, the location picker set to hero, and a layout that
+    /// actually pins a hero above the rows (a classic, scroll-away hero would carry the trailer
+    /// off-screen the moment the user browsed downward, which is the opposite of the request).
+    ///
+    /// NEAR-pure composition of settings: it is NOT gated on `heroHeaderVisible`, on
+    /// `displayHero`, or on any other per-focus/per-frame state. Rows read this through the
+    /// environment to decide whether the poster morph exists at all, so a value that churned at
+    /// arbitrary boundaries would structurally re-branch every mounted `InlineTrailerCard`
+    /// mid-session — the BUG-19 identity-churn class, on the one subtree that owns a live
+    /// `AVPlayer`.
+    ///
+    /// The one non-settings term is hero-surface EXISTENCE (`heroSurfaceSeen ||
+    /// !heroSettings.heroEnabled`): without it, a zero-hero configuration — Show Hero on,
+    /// Nuvio-Style on, but every hero source toggled off or returning empty — would suppress the
+    /// poster morph forever while mounting no hero to play into: a permanent, silent no-trailers
+    /// state (Codex pre-commit round 1). With it, "no hero surface" falls back to the poster
+    /// morph instead. Both halves are single-flip by construction, matching the
+    /// `heroContainerPinned` precedent: `heroSurfaceSeen` is a LATCH (false → true at the first
+    /// nonempty fan-out, never back — deliberately NOT `heroCarouselActive`, whose publish path
+    /// can swing nonempty → empty → nonempty mid-session per the BUG-42 "hero emptied" evidence,
+    /// see the latch's own doc), and the Show-Hero-off half is `!heroSettings.heroEnabled`, NOT
+    /// `focusHeroActive` (Codex pre-commit round 3): the latter also tracks the focus panel's
+    /// SEED item, which can vanish mid-session (last Continue Watching entry finished on a
+    /// CW-only Home) and would re-branch every mounted card. Settings-off is seed-independent
+    /// and safe: whenever a poster exists to morph, the panel has a seed and mounts — a seedless
+    /// Home has nothing to morph, so suppression is vacuous. So posters morph during the initial
+    /// fan-out window and hand the trailer to the hero in one structural flip when it lands —
+    /// never per focus, never per frame. The flip's honest cost (Codex pre-commit round 6): a
+    /// poster morph IN FLIGHT at that instant (a cold launch racing a slow fan-out) is torn out
+    /// structurally — `InlineTrailerCard.onDisappear → model.reset()` releases the player
+    /// cleanly, but the removal bypasses `morphAnimation`, so that one card snaps closed and the
+    /// title re-dwells on the hero. Once per Home lifetime at worst, accepted over any
+    /// load-state-tracking alternative. Classic (unpinned) layouts evaluate false, which is a
+    /// silent fallback to the poster morph; there is no user-visible error state for "hero
+    /// location requested but unavailable".
+    private var heroFocusTrailerMode: Bool {
+        inlineTrailersEnabled && trailerPlaybackLocation == "hero" && heroContainerPinned
+            && (heroSurfaceSeen || !heroSettings.heroEnabled)
+    }
+
+    /// Whether the hero backdrop should be running the FOCUSED title's trailer right now — the
+    /// hero-location counterpart to `heroTrailerAutoplayActive`, sharing its coverage gates
+    /// through `heroTrailerSharedGatesOpen`.
+    ///
+    /// No `heroPosterFocusOnly` gate is needed here, unlike the carousel's claim: that toggle only
+    /// fades the backdrop while nothing is engaged, and a committed `focusModel.focusedItem` forces
+    /// the backdrop layer's opacity to 1 (see the `.opacity` gate on the hero group below). If
+    /// this is true, the artwork is on screen by construction.
+    ///
+    /// Engagement is a COMMITTED focus (`HomeHeroFocusModel`'s 0.2s commit), never a skim — which
+    /// is also the exact event that flips `displayHero` to this title, so the backdrop and the
+    /// trailer claim always name the same thing.
+    private var heroFocusTrailerActive: Bool {
+        guard heroFocusTrailerMode, heroTrailerSharedGatesOpen else { return false }
+        return focusModel.focusedItem != nil
+    }
+
+    /// The single Bool handed to `HomeHeroBackdrop` as `autoplaysTrailer`. The backdrop never needs
+    /// to know WHICH mode wants a trailer: `displayHero` already resolves to the right title for
+    /// whichever claim is live (the focused poster's, or the carousel page's), and `syncTrailer`
+    /// re-arms on `trailerKey`/`autoplaysTrailer` changes either way. Mutually exclusive by
+    /// construction — see the precedence contract on `heroTrailerAutoplayActive`.
+    private var heroTrailerActive: Bool { heroFocusTrailerActive || heroTrailerAutoplayActive }
+
     /// FEAT-25: whether the hero currently owns a trailer ATTEMPT — dwell, resolution, or
     /// playback. Polled by the carousel's auto-advance tick. The phase check is the real signal
     /// (every attempt path, including "nothing to play", lands back on `.idle` within bounded
     /// time — see `InlineTrailerCardModel.expand`'s skip paths); the coordinator check is a
-    /// belt-and-braces for the playback tail.
+    /// belt-and-braces for the playback tail. Gated on `heroTrailerActive`, not FEAT-25's claim
+    /// alone, so the hold also covers the hero-location focus window and the handback that follows
+    /// it: a focus-driven attempt is playing on the very same backdrop, and the carousel paging
+    /// underneath it would reset the model exactly as it would mid-carousel-resolve.
     private var heroTrailerHolding: Bool {
-        guard heroTrailerAutoplayActive, let hero = displayHero else { return false }
+        guard heroTrailerActive, let hero = displayHero else { return false }
         if heroTrailerModel.phase != .idle { return true }
         return InlineTrailerCoordinator.shared.playingKey == TrailerResolutionCache.key(type: hero.type, id: hero.id)
     }
+
+    #if DEBUG
+    /// Short code for the hero trailer model's live phase, for the `debug_hero` probe's `hph=`
+    /// field — the harness reads fixed-width-ish tokens, not Swift's synthesized descriptions
+    /// (`playing(_:)` would otherwise splat a resolved URL key into the string).
+    private var debugHeroTrailerPhase: String {
+        switch heroTrailerModel.phase {
+        case .idle: return "idle"
+        case .dwelling: return "dwell"
+        case .expandedStatic: return "exp"
+        case .playing: return "play"
+        }
+    }
+    #endif
 
     var body: some View {
         NavigationStack(path: $homePath) {
@@ -298,7 +426,10 @@ struct HomeView: View {
                 // BUG-23 diagnostic (invisible, harness-readable): the hero carousel's live
                 // selection + focus state, so the UITest can watch exactly what a left press
                 // does to the index (one-press page? two? snap-back?).
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none"))")
+                // Append-only: existing fields keep their exact spelling (the harness asserts on
+                // substrings like `pin=1`, `src=c`, `fitem=`). `tloc` is the trailer LOCATION the
+                // rows are actually rendering under, `hph` the hero trailer model's live phase.
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")
@@ -323,7 +454,7 @@ struct HomeView: View {
                         HomeHeroBackdrop(
                             item: hero,
                             nuvioStyle: heroNuvioStyle || focusHeroActive,
-                            autoplaysTrailer: heroTrailerAutoplayActive,
+                            autoplaysTrailer: heroTrailerActive,
                             trailerModel: heroTrailerModel
                         )
                         HomeHeroScrim()
@@ -514,6 +645,7 @@ struct HomeView: View {
             }
             .onChange(of: heroItems.count) { _, newCount in
                 if heroIndex >= newCount { heroIndex = 0 }
+                if newCount > 0 { heroSurfaceSeen = true }
             }
             // FEAT-25 (Codex beta.14 r5): keep the mirrored system autoplay gate current — see
             // `systemVideoAutoplayEnabled`. The state write re-renders, recomputing
@@ -582,6 +714,20 @@ struct HomeView: View {
             // auto-advance timer's next tick would immediately yank the page the instant focus
             // moves away, before the user even sees the carousel resume.
             focusModel.onRevert = { lastHeroChange = Date() }
+            // BUG-55 class: hero-location suppression can't ride `InlineTrailerGateProbe` (its
+            // global dedupe would flip-flop between Home and Search — see
+            // `CatalogRowView.inlineTrailersActive`), so Home states its own mode here and on
+            // change: once at mount, once per actual flip, never per render. Logged BEFORE the
+            // latch's initial write below — the pre-latch value is the truth at mount, and if
+            // the write flips the mode, `.onChange` records that flip as its own line (logging
+            // after would double-report the same state).
+            NSLog("[TrailerPipeline] trailerLocation heroMode=%@", heroFocusTrailerMode ? "YES" : "NO")
+            // The latch's initial read: heroItems can already be populated at mount (repository
+            // cache published before this view appeared), and `.onChange` only sees changes.
+            if !heroItems.isEmpty { heroSurfaceSeen = true }
+        }
+        .onChange(of: heroFocusTrailerMode) { _, mode in
+            NSLog("[TrailerPipeline] trailerLocation heroMode=%@", mode ? "YES" : "NO")
         }
         .onDisappear {
             model.stop()
@@ -704,6 +850,11 @@ struct HomeView: View {
             // include it. See rowCardTopReach / rowCardBottomReach (BrowseComponents).
             .environment(\.rowCardTopReach, pinned ? Theme.Size.heroPinnedRowTopPad : 0)
             .environment(\.rowCardBottomReach, pinned ? Theme.Size.heroPinnedRowBottomReach : 0)
+            // "Trailer Location: Hero" — tell every row card to skip the inline morph, because
+            // the focused title's trailer is playing in the pinned hero backdrop instead. Passed
+            // unconditionally (the computed is already false in every other configuration, and
+            // `pinned` is the wrong test: it is the header's LOAD boundary, not the setting).
+            .environment(\.trailerPlaysInHero, heroFocusTrailerMode)
             // BUG-30: `heroInScroll` moves the classic top inset into the hero's own reach (see
             // the hero branch above). Every other configuration keeps its inset unchanged.
             .padding(rowsInsets(pinned: pinned, heroInScroll: !heroItems.isEmpty && !pinned))

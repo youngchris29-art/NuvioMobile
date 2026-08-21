@@ -197,6 +197,9 @@ final class NuvioTVUITests: XCTestCase {
 
     // MARK: - UX-2: trailers in thumbnails
 
+    // Also doubles as the poster-location regression test for `trailer_playback_location`
+    // (default "poster") — test37TrailerLocationHero's leg 2 re-covers this same morph under the
+    // explicit argument, but this test is the one that has always run it at the default.
     func test01InlineTrailerDwell() throws {
         // Trailers on Focus is opt-in (default OFF since 05dd8ecd) — force it via the argument
         // domain so this test never depends on the sim's stored settings.
@@ -2353,5 +2356,130 @@ final class NuvioTVUITests: XCTestCase {
             if element.exists { return true }
         }
         return false
+    }
+
+    // MARK: - trailer_playback_location: hero vs poster
+
+    /// `trailer_playback_location` (`HomeView.swift`'s `@AppStorage` key, default "poster") picks
+    /// WHERE "Trailers on Focus" plays a focused title's trailer: the classic poster morph
+    /// (unchanged pre-existing behavior, covered by test01), or the pinned hero backdrop —
+    /// `heroFocusTrailerMode` only engages the hero surface when the container is actually
+    /// pinned (`-hero_nuvio_style YES`, same as test22/test31), so that argument travels with
+    /// both legs here.
+    ///
+    /// Reuses `TrailerSoakTests`' deterministic-row-geometry recipe (forced smoke video id,
+    /// `-home_upcoming_row_enabled NO` so the down×4 walk to the first movies row is the same
+    /// pre-Upcoming layout test01/TrailerSoakTests' walks were written against — those run
+    /// UNPINNED; the pinned variant of the same walk is validated here, not by that precedent —
+    /// plus the location knob. Both
+    /// legs are fresh launches (`forceFreshLaunch: true`, same rationale as test20/22/31) so
+    /// neither inherits the other's focus/dwell state.
+    ///
+    /// `debug_hero`'s two appended fields (HomeView.swift) are the oracle: `tloc=h|p` is the
+    /// trailer location the rows are actually rendering under, `hph=idle|dwell|exp|play` the
+    /// hero trailer model's live phase (see `debugHeroTrailerPhase`). Hero location must show
+    /// `tloc=h` and the model advancing past idle; poster location must show `tloc=p` and the
+    /// pre-existing 16:9 morph on the focused card.
+    func test37TrailerLocationHero() throws {
+        // Same known bar-free trailer id TrailerSoakTests.smokeVideoId forces (duplicated, not
+        // shared — see TrailerSoakTests' type doc on why cross-file test helpers stay copied).
+        let smokeVideoId = "rNZ0xKaCdus"
+        func heroLocationArguments(_ location: String) -> [String] {
+            [
+                "-inline_trailers_enabled", "YES",
+                "-debug.trailerProbe", "YES",
+                "-debug.trailerSmokeVideoId", smokeVideoId,
+                // Deterministic row geometry (TrailerSoakTests' trick): removes the Upcoming row
+                // so the down×4 walk below has a stable target.
+                "-home_upcoming_row_enabled", "NO",
+                "-trailer_playback_location", location,
+                "-hero_nuvio_style", "YES",
+            ]
+        }
+
+        /// Walks down×4 to the first movies row (test01/TrailerSoakTests' walk, run pinned
+        /// here), snapshots the pre-dwell focused card's frame, waits out the dwell gate (1s) +
+        /// morph window, then the settle margin, and returns the PEAK width the card showed
+        /// across both samples plus the debug_hero probe — the peak is the morph oracle, so a
+        /// morph that fired and collapsed still registers.
+        func measureDwell(_ app: XCUIApplication, _ tag: String) throws -> (before: CGFloat, peak: CGFloat, probe: String) {
+            // Upcoming row forced off (see heroLocationArguments), so this is the pre-Upcoming
+            // row geometry test01/TrailerSoakTests' down×4 walks were written against.
+            press(.down, times: 4)
+            // ONE .frame read, taken immediately: focusedButton's AX sweep plus repeated frame
+            // reads can straddle the 1.0s dwell on a loaded sim, and a mid-morph baseline would
+            // inflate `before` (failing leg 2 on a correct build) or flip the portrait guard
+            // into an XCTSkip. Snapshot first, judge the snapshot after.
+            guard let beforeButton = focusedButton(app) else {
+                throw XCTSkip("no focused element reported before dwell (27.0 runtime never reports hasFocus)")
+            }
+            let beforeFrame = beforeButton.frame
+            guard beforeFrame.width > 80, beforeFrame.height > beforeFrame.width else {
+                throw XCTSkip("focused element before dwell is not a resting portrait poster — frame=\(beforeFrame)")
+            }
+            let widthBefore = beforeFrame.width
+            shot(app, "\(tag)_00_before_dwell")
+
+            // Codex pre-commit round 5: a single sample 3s out would false-pass a morph that
+            // fired and then COLLAPSED (trailer resolution failure) — so sample once inside the
+            // morph window (dwell 1.0s + morph 0.35s) and once after settle, and judge the MAX
+            // width the card ever showed, not the final rest.
+            pause(1.4) // dwell gate + morph window
+            shot(app, "\(tag)_01_mid_window")
+            let midWidth = focusedButton(app)?.frame.width ?? widthBefore
+            pause(1.6) // focus commit delay + margin — let the morph (or hero handoff) settle
+            shot(app, "\(tag)_02_after_dwell")
+
+            guard let after = focusedButton(app) else {
+                throw XCTSkip("focused card lost after the dwell wait")
+            }
+            let probe = heroSrcProbe(app, "\(tag)_03_probe")
+            return (widthBefore, max(midWidth, after.frame.width), probe)
+        }
+
+        // Leg 1: hero location — the focused poster must NOT morph; the hero backdrop takes the
+        // trailer instead.
+        let heroApp = launchToHome(extraArguments: heroLocationArguments("hero"), forceFreshLaunch: true)
+        let heroResult = try measureDwell(heroApp, "37a_hero")
+        XCTAssertLessThanOrEqual(
+            heroResult.peak, heroResult.before + 12,
+            "poster width grew (morph fired) while trailer_playback_location=hero — before=\(heroResult.before) peak=\(heroResult.peak)"
+        )
+        XCTAssertTrue(heroResult.probe.contains(" tloc=h"), "trailer_playback_location=hero must set tloc=h on debug_hero, got: \(heroResult.probe)")
+
+        // debug_hero must also show the hero trailer model took the attempt. Poll a few more
+        // samples if the first one is still mid-resolve — same tolerant polling shape test20's
+        // src=c/src=f walk uses — preferring the strongest signal (exp/play) but accepting dwell
+        // as the floor, matching what TrailerSoakTests' own dwell-play-leave soak treats as the
+        // reliably-observable attempt signal on a sim.
+        var hphState = heroResult.probe
+        var reachedAttemptPhase = hphState.contains("hph=exp") || hphState.contains("hph=play")
+        if !reachedAttemptPhase {
+            for i in 1...6 {
+                pause(0.5)
+                hphState = heroSrcProbe(heroApp, "37a_hero_hph_poll_\(i)")
+                if hphState.contains("hph=exp") || hphState.contains("hph=play") {
+                    reachedAttemptPhase = true
+                    break
+                }
+            }
+        }
+        XCTAssertTrue(
+            reachedAttemptPhase || hphState.contains("hph=dwell"),
+            "hero trailer model never took the focus attempt (expected hph=exp/play, or at least hph=dwell) — got: \(hphState)"
+        )
+        XCTAssertTrue(heroApp.state == .runningForeground, "app must survive the hero-location leg")
+        heroApp.terminate()
+        pause(1.0)
+
+        // Leg 2: poster location (the pre-existing default) — same walk, the poster DOES morph.
+        let posterApp = launchToHome(extraArguments: heroLocationArguments("poster"), forceFreshLaunch: true)
+        let posterResult = try measureDwell(posterApp, "37b_poster")
+        XCTAssertGreaterThan(
+            posterResult.peak, posterResult.before + 20,
+            "poster width did not grow (no morph) while trailer_playback_location=poster — before=\(posterResult.before) peak=\(posterResult.peak)"
+        )
+        XCTAssertTrue(posterResult.probe.contains(" tloc=p"), "trailer_playback_location=poster must set tloc=p on debug_hero, got: \(posterResult.probe)")
+        XCTAssertTrue(posterApp.state == .runningForeground, "app must survive the poster-location leg")
     }
 }
