@@ -95,5 +95,6 @@ jobs:
             -scheme NuvioTV \
             -configuration Debug \
             -destination "generic/platform=tvOS Simulator" \
+            ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
