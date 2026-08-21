@@ -414,8 +414,10 @@ private struct SeasonPosterCard: View {
     @Environment(\.posterStyle) private var posterStyle
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
-    private static let width: CGFloat = 120
-    private static let height: CGFloat = 180
+    // FEAT-26: 180×270 — the same miniPoster size as More Like This, so the season row no longer
+    // reads as the smallest tile on the detail screen (it shipped at 120×180).
+    private static let width: CGFloat = Theme.Size.miniPosterWidth
+    private static let height: CGFloat = Theme.Size.miniPosterHeight
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
@@ -424,18 +426,23 @@ private struct SeasonPosterCard: View {
                     CachedAsyncImage(string: imageURL)
                 } else {
                     Theme.Palette.surface
+                    // FEAT-26: at 180×270 the caption2 label got lost in the empty surface — meta
+                    // (caption semibold) with md padding gives the placeholder some presence.
                     Text(label)
-                        .font(Theme.Font.cardTitle)
+                        .font(Theme.Font.meta)
                         .foregroundStyle(Theme.Palette.textSecondary)
-                        .padding(Theme.Spacing.sm)
+                        .padding(Theme.Spacing.md)
                 }
             }
             .frame(width: Self.width, height: Self.height)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
+            // FEAT-26: these cards were the only detail tiles without the card-depth treatment —
+            // same surface as the poster rows, attached to the artwork like EpisodeThumbCard.
+            .nuvioCardDepth(RoundedRectangle(cornerRadius: posterStyle.cornerRadius), surface: .posters)
             .overlay {
                 RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
-                    .strokeBorder(isSelected ? Theme.Palette.accent : Color.white.opacity(0.10), lineWidth: isSelected ? 3 : 1)
+                    .strokeBorder(isSelected ? Theme.Palette.accent : Color.white.opacity(0.10), lineWidth: isSelected ? 4 : 1)
             }
             .tileFocusLift(cornerRadius: posterStyle.cornerRadius)
 
