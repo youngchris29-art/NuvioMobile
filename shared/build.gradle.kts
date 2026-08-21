@@ -283,6 +283,11 @@ kotlin {
         }
     }
 
+    // beta.14 Wave 4 / docs/issue-triage-plan-2026-08-21.md §6.1 — lets `commonTest` run as
+    // `:shared:jvmTest` on any host (this repo's Apple targets need a macOS simulator to test).
+    // jvmMain actuals under src/jvmMain back tests only; neither app ships this target.
+    jvm()
+
     val appleTargets = listOf(
         iosArm64(),
         iosSimulatorArm64(),
@@ -338,12 +343,16 @@ kotlin {
             // AddonPlatform.android uses okhttp + IPv4FirstDns directly (matches composeApp).
             implementation("com.squareup.okhttp3:okhttp:4.12.0")
         }
-        // Mirrors composeApp's commonTest dependency declaration — kotlin-test only, no other
-        // targets' test source sets added. Runs via the native test tasks (e.g.
-        // :shared:iosSimulatorArm64Test / :shared:tvosSimulatorArm64Test) and/or
-        // :shared:allTests since this module has no jvm target.
+        // Mirrors composeApp's commonTest dependency declaration — kotlin-test only. Runs via the
+        // native test tasks (:shared:iosSimulatorArm64Test / :shared:tvosSimulatorArm64Test, need
+        // a macOS simulator host) and, since the jvm() target above, :shared:jvmTest on any host.
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+        }
+        // JUnit runner for kotlin-test on the jvm target (jvmMain itself needs no extra deps —
+        // its actuals are plain java.* / java.time.* / java.net.*, see src/jvmMain).
+        jvmTest.dependencies {
+            implementation(libs.kotlin.testJunit)
         }
     }
 }
