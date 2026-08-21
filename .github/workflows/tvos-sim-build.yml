@@ -58,6 +58,29 @@ jobs:
           xcrun --sdk appletvsimulator --show-sdk-version
           java -version
 
+      # :shared's tvOS cinterop needs io.github.dokar3:quickjs-kt:1.0.5-tvos, a patched
+      # fork published only to mavenLocal (see the outer NuvioTV repo's
+      # scaffolding/build-quickjs-tvos.sh). Build it here the same way, cached on the
+      # patch hash so it compiles once, not per run.
+      - uses: actions/checkout@v4
+        with:
+          repository: youngchris29-art/NuvioTV
+          path: outer-scaffolding
+          sparse-checkout: scaffolding
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/io/github/dokar3
+          key: quickjs-tvos-${{ hashFiles('outer-scaffolding/scaffolding/quickjs-kt-tvos.patch') }}
+
+      - name: Publish quickjs-kt 1.0.5-tvos to mavenLocal
+        run: |
+          if [ -d "$HOME/.m2/repository/io/github/dokar3/quickjs-kt/1.0.5-tvos" ]; then
+            echo "quickjs-kt 1.0.5-tvos already in mavenLocal (cache hit)"
+            exit 0
+          fi
+          bash outer-scaffolding/scaffolding/build-quickjs-tvos.sh "$HOME/quickjs-kt-tvos"
+
       # Same Gradle task the Xcode 'Compile Kotlin Framework' phase runs, isolated so
       # its real error surfaces in this step's log instead of being buried mid-xcodebuild.
       # Warms the Konan/Gradle caches for the xcodebuild step either way.
