@@ -57,8 +57,34 @@ final class TabBarVisibility: ObservableObject {
     /// computed from, for the About pane's live tab-bar readout.
     var immersiveDepth: Int { detailDepth }
 
+    /// FEAT-25 (device pass 2026-08-21): whether the HOME tab's root content is the frontmost
+    /// surface — false while another tab is selected or an immersive screen is pushed over it.
+    /// Exists because neither event fires `onDisappear` on Home's subtree (each tab keeps its
+    /// NavigationStack alive across a switch, and a push keeps the stack root mounted), so the
+    /// hero's autoplaying trailer kept making sound under Detail pages and in Settings. Published
+    /// so `HomeHeroBackdrop` can subscribe imperatively (`onReceive`) — the covered subtree is
+    /// still hierarchy-resident (that's the bug) but may not re-render while hidden, so a
+    /// render-driven gate could defer teardown exactly when it matters.
+    @Published private(set) var homeSurfaceCovered = false
+
+    private var homeTabSelected = true {
+        didSet { recomputeHomeCovered() }
+    }
+
+    /// MainTabView reports selection changes here (Home is tab value 0).
+    func setHomeTabSelected(_ selected: Bool) {
+        guard homeTabSelected != selected else { return }
+        homeTabSelected = selected
+    }
+
+    private func recomputeHomeCovered() {
+        let covered = !homeTabSelected || detailDepth > 0
+        if homeSurfaceCovered != covered { homeSurfaceCovered = covered }
+    }
+
     private func recompute() {
         hidden = scrolledAway || detailDepth > 0
+        recomputeHomeCovered()
     }
 
     /// Device pass round 4 (2026-08-02): the toolbar drives off THIS, not `hidden`. Toggling

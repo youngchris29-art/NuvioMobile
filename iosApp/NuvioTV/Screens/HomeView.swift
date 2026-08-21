@@ -80,6 +80,13 @@ struct HomeView: View {
     /// FEAT-25 (Codex beta.14 r5): only for the `systemVideoAutoplayEnabled` refresh above —
     /// `HomeHeroBackdrop` owns its own copy for the play/pause lifecycle.
     @Environment(\.scenePhase) private var scenePhase
+    /// FEAT-25 (device pass 2026-08-21): count of screens pushed onto HOME's own NavigationStack.
+    /// Home's root never gets `onDisappear` on a push, but the PUSHED screen's appear/disappear
+    /// pair is reliable (the tab-bar probe's exact cycles=10 proved it on device) — so every
+    /// `navigationDestination` below reports through `reportsHomePush`. Detail double-counts with
+    /// its own `pushImmersive` counter; harmless, both clear on pop. Without this, the hero
+    /// trailer kept playing — audibly — under See All grids, EntityBrowse, and person pages.
+    @State private var homePushDepth = 0
 
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
@@ -253,6 +260,11 @@ struct HomeView: View {
     ///   the single player slot (`InlineTrailerCoordinator`) would collapse one of them mid-morph.
     private var heroTrailerAutoplayActive: Bool {
         guard heroTrailerAutoplay, systemVideoAutoplayEnabled else { return false }
+        // Device pass 2026-08-21: anything covering Home from Home's own presentation machinery
+        // silences the hero — a pushed screen (See All grid, EntityBrowse, folder, person,
+        // Detail) or the Continue Watching stream-picker cover. Tab switches and cross-stack
+        // coverage are the shell-level `homeSurfaceCovered` signal in `HomeHeroBackdrop`.
+        if homePushDepth > 0 || resume != nil { return false }
         let heroEngaged = heroFocused || focusModel.focusedItem != nil
         if heroPosterFocusOnly && heroCarouselActive && !heroEngaged { return false }
         if inlineTrailersEnabled && focusModel.focusedItem != nil { return false }
@@ -264,6 +276,14 @@ struct HomeView: View {
     /// (every attempt path, including "nothing to play", lands back on `.idle` within bounded
     /// time — see `InlineTrailerCardModel.expand`'s skip paths); the coordinator check is a
     /// belt-and-braces for the playback tail.
+    /// FEAT-25: coverage reporter for Home's pushed screens — see `homePushDepth`. The `max(0,)`
+    /// clamp mirrors `popImmersive`'s: a duplicate/unmatched `onDisappear` must not go negative.
+    private func reportsHomePush(_ view: some View) -> some View {
+        view
+            .onAppear { homePushDepth += 1 }
+            .onDisappear { homePushDepth = max(0, homePushDepth - 1) }
+    }
+
     private var heroTrailerHolding: Bool {
         guard heroTrailerAutoplayActive, let hero = displayHero else { return false }
         if heroTrailerModel.phase != .idle { return true }
@@ -525,19 +545,19 @@ struct HomeView: View {
                 prefetchHeroArt()
             }
             .navigationDestination(for: TitleRoute.self) { route in
-                DetailView(preview: route.preview)
+                reportsHomePush(DetailView(preview: route.preview))
             }
             .navigationDestination(for: CatalogRoute.self) { route in
-                CatalogGridView(route: route)
+                reportsHomePush(CatalogGridView(route: route))
             }
             .navigationDestination(for: PersonRoute.self) { route in
-                PersonDetailView(personId: route.id, personName: route.name)
+                reportsHomePush(PersonDetailView(personId: route.id, personName: route.name))
             }
             .navigationDestination(for: EntityRoute.self) { route in
-                EntityBrowseView(route: route)
+                reportsHomePush(EntityBrowseView(route: route))
             }
             .navigationDestination(for: FolderRoute.self) { route in
-                FolderDetailView(route: route)
+                reportsHomePush(FolderDetailView(route: route))
             }
             .fullScreenCover(item: $resume) { target in
                 StreamPickerView(
@@ -1496,6 +1516,10 @@ struct HomeHeroBackdrop: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// FEAT-25 (device pass 2026-08-21): the "Home is actually frontmost" gate. Neither a Detail
+    /// push nor a tab switch fires `onDisappear` on this view (Home's subtree stays mounted in
+    /// both), so the trailer kept playing — audibly — under Detail pages and in Settings.
+    @Environment(\.tabBarVisibility) private var tabBarVisibility
 
     /// Cache/zoom identity of the title on screen — also the change signal the trailer restarts on.
     private var trailerKey: String { TrailerResolutionCache.key(type: item.type, id: item.id) }
@@ -1510,17 +1534,27 @@ struct HomeHeroBackdrop: View {
             .onChange(of: trailerKey) { _, _ in syncTrailer() }
             .onChange(of: scenePhase) { _, _ in syncTrailer() }
             .onChange(of: reduceMotion) { _, motion in trailerModel.prefersReducedMotion = motion }
+            // FEAT-25: imperative on purpose — while covered, this subtree is hierarchy-resident
+            // (the player keeps playing, hence the bug) but may not re-render, so an `onChange`
+            // of a computed prop could defer teardown indefinitely. `onReceive` fires regardless.
+            // `@Published` emits on willSet, so use the payload, not the property.
+            .onReceive(tabBarVisibility.$homeSurfaceCovered) { covered in
+                syncTrailer(homeCovered: covered)
+            }
             .onDisappear { trailerModel.reset() }
     }
 
     /// Single funnel for every start/stop reason — hero content change, the setting or one of its
-    /// gates flipping, backgrounding, and coming back. Always tears the current playback down
+    /// gates flipping, backgrounding and coming back, and Home being covered by a Detail push or
+    /// a tab switch (or uncovered again — returning re-arms the same 1s dwell, so the trailer
+    /// starts fresh rather than resuming mid-scene). Always tears the current playback down
     /// first (`reset()` releases the player slot and clears the state machine's per-dwell memory),
     /// then re-arms only when there is a reason to. `focusChanged(true:)` is the inline card's own
     /// arming call: it starts the same 1s dwell before anything is resolved or requested.
-    private func syncTrailer() {
+    private func syncTrailer(homeCovered: Bool? = nil) {
         trailerModel.reset()
-        guard autoplaysTrailer, scenePhase == .active else { return }
+        guard autoplaysTrailer, scenePhase == .active,
+              !(homeCovered ?? tabBarVisibility.homeSurfaceCovered) else { return }
         trailerModel.focusChanged(true, item: item)
     }
 

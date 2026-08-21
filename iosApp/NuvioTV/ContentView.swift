@@ -174,7 +174,12 @@ struct MainTabView: View {
             }
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
-        .onChange(of: selectedTab) { _, _ in
+        // FEAT-25: keep the "is Home frontmost" signal current from OUTSIDE the kept-alive tab
+        // subtrees — this closure runs on the always-visible shell, so the hero trailer's
+        // teardown can't be deferred along with a hidden tab's rendering.
+        .onAppear { tabBarVisibility.setHomeTabSelected(selectedTab == 0) }
+        .onChange(of: selectedTab) { _, tab in
+            tabBarVisibility.setHomeTabSelected(tab == 0)
             // A newly-selected tab starts with its bar visible from the scroll perspective — but
             // NOT via a blanket reset of `detailDepth` too: each tab keeps its own NavigationStack
             // alive across a tab switch, so a still-pushed DetailView elsewhere must keep counting
