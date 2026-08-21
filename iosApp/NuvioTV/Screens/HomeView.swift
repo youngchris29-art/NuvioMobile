@@ -69,6 +69,17 @@ struct HomeView: View {
     /// about: it publishes only the HERO's own phase — a handful of discrete changes per page
     /// cycle — never app-wide claim/release traffic.
     @StateObject private var heroTrailerModel = InlineTrailerCardModel()
+    /// FEAT-25 (Codex beta.14 r5): the system Auto-Play Video Previews gate, mirrored into state
+    /// because a bare `UIAccessibility.isVideoAutoplayEnabled` read in `heroTrailerAutoplayActive`
+    /// re-evaluates only when something ELSE re-renders this view — flipping the setting while the
+    /// app is backgrounded left the backdrop holding a stale `autoplaysTrailer == true`, and the
+    /// foreground `syncTrailer()` restarted playback against the new preference. Refreshed by the
+    /// status-change notification and, belt-and-braces, on every return to `.active` (the
+    /// notification is not guaranteed to be delivered to a suspended process).
+    @State private var systemVideoAutoplayEnabled = UIAccessibility.isVideoAutoplayEnabled
+    /// FEAT-25 (Codex beta.14 r5): only for the `systemVideoAutoplayEnabled` refresh above —
+    /// `HomeHeroBackdrop` owns its own copy for the play/pause lifecycle.
+    @Environment(\.scenePhase) private var scenePhase
 
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
@@ -241,7 +252,7 @@ struct HomeView: View {
     ///   that card is already growing its own tile for the same title, and both surfaces racing
     ///   the single player slot (`InlineTrailerCoordinator`) would collapse one of them mid-morph.
     private var heroTrailerAutoplayActive: Bool {
-        guard heroTrailerAutoplay, UIAccessibility.isVideoAutoplayEnabled else { return false }
+        guard heroTrailerAutoplay, systemVideoAutoplayEnabled else { return false }
         let heroEngaged = heroFocused || focusModel.focusedItem != nil
         if heroPosterFocusOnly && heroCarouselActive && !heroEngaged { return false }
         if inlineTrailersEnabled && focusModel.focusedItem != nil { return false }
@@ -489,6 +500,19 @@ struct HomeView: View {
             }
             .onChange(of: heroItems.count) { _, newCount in
                 if heroIndex >= newCount { heroIndex = 0 }
+            }
+            // FEAT-25 (Codex beta.14 r5): keep the mirrored system autoplay gate current — see
+            // `systemVideoAutoplayEnabled`. The state write re-renders, recomputing
+            // `heroTrailerAutoplayActive`, and the backdrop's `.onChange(of: autoplaysTrailer)`
+            // funnel does the actual start/stop.
+            .onReceive(NotificationCenter.default.publisher(
+                for: UIAccessibility.videoAutoplayStatusDidChangeNotification)) { _ in
+                systemVideoAutoplayEnabled = UIAccessibility.isVideoAutoplayEnabled
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    systemVideoAutoplayEnabled = UIAccessibility.isVideoAutoplayEnabled
+                }
             }
             .onChange(of: heroItems.map(\.id)) { _, _ in
                 prefetchHeroArt()
