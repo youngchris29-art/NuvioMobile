@@ -80,13 +80,15 @@ struct HomeView: View {
     /// FEAT-25 (Codex beta.14 r5): only for the `systemVideoAutoplayEnabled` refresh above —
     /// `HomeHeroBackdrop` owns its own copy for the play/pause lifecycle.
     @Environment(\.scenePhase) private var scenePhase
-    /// FEAT-25 (device pass 2026-08-21): count of screens pushed onto HOME's own NavigationStack.
-    /// Home's root never gets `onDisappear` on a push, but the PUSHED screen's appear/disappear
-    /// pair is reliable (the tab-bar probe's exact cycles=10 proved it on device) — so every
-    /// `navigationDestination` below reports through `reportsHomePush`. Detail double-counts with
-    /// its own `pushImmersive` counter; harmless, both clear on pop. Without this, the hero
-    /// trailer kept playing — audibly — under See All grids, EntityBrowse, and person pages.
-    @State private var homePushDepth = 0
+    /// FEAT-25 (device pass 2026-08-21): HOME's own NavigationStack path, bound explicitly so
+    /// `homePath.isEmpty` is an EXACT "nothing pushed over Home" signal. Home's root never gets
+    /// `onDisappear` on a push, and appearance-counting the pushed screens (the first attempt)
+    /// conflates a destination hidden behind its own modal with a pop (Codex beta.14 r9 — a
+    /// FolderDetail filter editor would have restarted the trailer under two layers). The path
+    /// count can't be fooled by appearance noise: every link in the app is value-based, so every
+    /// push lands here. Without this gate the hero trailer kept playing — audibly — under See
+    /// All grids, EntityBrowse, and person pages.
+    @State private var homePath = NavigationPath()
 
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
@@ -264,7 +266,7 @@ struct HomeView: View {
         // silences the hero — a pushed screen (See All grid, EntityBrowse, folder, person,
         // Detail) or the Continue Watching stream-picker cover. Tab switches and cross-stack
         // coverage are the shell-level `homeSurfaceCovered` signal in `HomeHeroBackdrop`.
-        if homePushDepth > 0 || resume != nil { return false }
+        if !homePath.isEmpty || resume != nil { return false }
         let heroEngaged = heroFocused || focusModel.focusedItem != nil
         if heroPosterFocusOnly && heroCarouselActive && !heroEngaged { return false }
         if inlineTrailersEnabled && focusModel.focusedItem != nil { return false }
@@ -276,14 +278,6 @@ struct HomeView: View {
     /// (every attempt path, including "nothing to play", lands back on `.idle` within bounded
     /// time — see `InlineTrailerCardModel.expand`'s skip paths); the coordinator check is a
     /// belt-and-braces for the playback tail.
-    /// FEAT-25: coverage reporter for Home's pushed screens — see `homePushDepth`. The `max(0,)`
-    /// clamp mirrors `popImmersive`'s: a duplicate/unmatched `onDisappear` must not go negative.
-    private func reportsHomePush(_ view: some View) -> some View {
-        view
-            .onAppear { homePushDepth += 1 }
-            .onDisappear { homePushDepth = max(0, homePushDepth - 1) }
-    }
-
     private var heroTrailerHolding: Bool {
         guard heroTrailerAutoplayActive, let hero = displayHero else { return false }
         if heroTrailerModel.phase != .idle { return true }
@@ -291,7 +285,7 @@ struct HomeView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $homePath) {
             ZStack(alignment: .top) {
                 Theme.Palette.background.ignoresSafeArea()
 
@@ -545,19 +539,19 @@ struct HomeView: View {
                 prefetchHeroArt()
             }
             .navigationDestination(for: TitleRoute.self) { route in
-                reportsHomePush(DetailView(preview: route.preview))
+                DetailView(preview: route.preview)
             }
             .navigationDestination(for: CatalogRoute.self) { route in
-                reportsHomePush(CatalogGridView(route: route))
+                CatalogGridView(route: route)
             }
             .navigationDestination(for: PersonRoute.self) { route in
-                reportsHomePush(PersonDetailView(personId: route.id, personName: route.name))
+                PersonDetailView(personId: route.id, personName: route.name)
             }
             .navigationDestination(for: EntityRoute.self) { route in
-                reportsHomePush(EntityBrowseView(route: route))
+                EntityBrowseView(route: route)
             }
             .navigationDestination(for: FolderRoute.self) { route in
-                reportsHomePush(FolderDetailView(route: route))
+                FolderDetailView(route: route)
             }
             .fullScreenCover(item: $resume) { target in
                 StreamPickerView(
