@@ -487,8 +487,13 @@ final class InlineTrailerCardModel: ObservableObject {
 
     private func expand(_ item: MetaPreview) {
         let key = TrailerResolutionCache.key(type: item.type, id: item.id)
+        // Every skip below must leave `.idle`, not the `.dwelling` the timer fired from: a parked
+        // `.dwelling` renders identically to idle on the card, but `phase != .idle` is also the
+        // hero carousel's "attempt in progress" hold (FEAT-25) — leaving it set would hold the
+        // page forever on a title with nothing to play.
         guard didFinishForKey != key else {
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand skip=alreadyFinished key=%@", key) }
+            setPhase(.idle)
             return
         }
 
@@ -511,10 +516,12 @@ final class InlineTrailerCardModel: ObservableObject {
             // Already known to have nothing to play: never morph at all, so a row full of
             // trailer-less titles never twitches under a browsing thumb. Expires in 20 minutes.
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand skip=unavailable key=%@", key) }
+            setPhase(.idle)
             return
         case .transient:
             // Nothing that played, moments ago — suppresses a tight refocus retry. Expires in 45s.
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand skip=transient key=%@", key) }
+            setPhase(.idle)
             return
         case nil:
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=miss key=%@", key) }

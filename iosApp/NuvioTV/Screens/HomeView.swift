@@ -61,6 +61,14 @@ struct HomeView: View {
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
     /// flow SettingsViewModel does and republishes the single field Home renders from.
     @StateObject private var heroSettings = HomeHeroSettingsObserver()
+    /// FEAT-25 (Codex beta.14 r2): the hero backdrop's dwell → resolve → play state machine, owned
+    /// HERE so the carousel's auto-advance tick can poll the whole attempt (`phase != .idle`), not
+    /// just the playback tail the coordinator's `playingKey` exposes — a cold-cache resolution can
+    /// outlast the 7s tick, and advancing mid-resolve resets the model and churns forever.
+    /// Observing this model is NOT the BUG-19/coordinator churn class the tick comment warns
+    /// about: it publishes only the HERO's own phase — a handful of discrete changes per page
+    /// cycle — never app-wide claim/release traffic.
+    @StateObject private var heroTrailerModel = InlineTrailerCardModel()
 
     // Hero carousel state, hoisted here so the full-bleed backdrop (behind the scroll) and the
     // focusable paged carousel (inside the scroll) share the same index. The carousel is a paged
@@ -240,10 +248,14 @@ struct HomeView: View {
         return true
     }
 
-    /// FEAT-25: whether the hero's OWN trailer holds the shared player slot right now. Polled by
-    /// the carousel's auto-advance tick; never observed (see the call site).
-    private var heroTrailerPlaying: Bool {
+    /// FEAT-25: whether the hero currently owns a trailer ATTEMPT — dwell, resolution, or
+    /// playback. Polled by the carousel's auto-advance tick. The phase check is the real signal
+    /// (every attempt path, including "nothing to play", lands back on `.idle` within bounded
+    /// time — see `InlineTrailerCardModel.expand`'s skip paths); the coordinator check is a
+    /// belt-and-braces for the playback tail.
+    private var heroTrailerHolding: Bool {
         guard heroTrailerAutoplayActive, let hero = displayHero else { return false }
+        if heroTrailerModel.phase != .idle { return true }
         return InlineTrailerCoordinator.shared.playingKey == TrailerResolutionCache.key(type: hero.type, id: hero.id)
     }
 
@@ -286,7 +298,8 @@ struct HomeView: View {
                         HomeHeroBackdrop(
                             item: hero,
                             nuvioStyle: heroNuvioStyle || focusHeroActive,
-                            autoplaysTrailer: heroTrailerAutoplayActive
+                            autoplaysTrailer: heroTrailerAutoplayActive,
+                            trailerModel: heroTrailerModel
                         )
                         HomeHeroScrim()
                     }
@@ -450,15 +463,14 @@ struct HomeView: View {
                 // advance underneath it.
                 guard heroItems.count > 1, !heroFocused, focusModel.focusedItem == nil,
                       Date().timeIntervalSince(lastHeroChange) >= 7 else { return }
-                // FEAT-25: a hero trailer that is actually playing owns the page. Advancing under
-                // it would cut every trailer off around the 8s mark and restart the whole
-                // resolve pipeline for the next title, which is most of the time the feature has
-                // to work with. Read straight off the coordinator rather than observing it — an
-                // `@ObservedObject` here would re-render Home on every claim/release anywhere in
-                // the app, which is precisely the churn class BUG-19 was about. Playback is
-                // single-pass (`loops: false`), so the page resumes advancing the moment the
-                // trailer ends.
-                guard !heroTrailerPlaying else { return }
+                // FEAT-25: an ACTIVE hero trailer attempt owns the page — dwell, resolution, and
+                // playback alike (Codex beta.14 r2). Holding only the playing phase was not
+                // enough: a cold-cache resolution (1s dwell + metadata + extraction) can outlast
+                // this tick, and advancing mid-resolve resets the model, discards the in-flight
+                // result, and re-resolves the same title every time it cycles back around. Every
+                // attempt path is bounded (meta 5s, extraction 15s, failure → `.idle`), and
+                // playback is single-pass (`loops: false`), so the page always resumes.
+                guard !heroTrailerHolding else { return }
                 // Plain animated selection write, including the wrap back to page 0 — programmatic
                 // non-animated selection rebasing desyncs tvOS's paged TabView (the visible page
                 // freezes while the binding keeps moving), so never get clever here.
@@ -1450,14 +1462,16 @@ struct HomeHeroBackdrop: View {
     /// entirely in `HomeView.heroTrailerAutoplayActive`; false here is byte-for-byte the backdrop
     /// this view has always drawn.
     var autoplaysTrailer: Bool = false
-
-    @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// FEAT-25: the SAME dwell → resolve → play state machine the inline catalog card runs
     /// (`InlineTrailerCard`), driven from this view's lifecycle instead of from focus. It brings
     /// the resolution cache, the single-player/single-extraction coordinator, the negative-result
     /// TTLs and the storm breaker with it — nothing about the pipeline is reimplemented here.
-    @StateObject private var trailerModel = InlineTrailerCardModel()
+    /// Owned by `HomeView` (Codex beta.14 r2) so the carousel tick can poll the attempt phase;
+    /// this view still drives its whole lifecycle via `syncTrailer()`.
+    @ObservedObject var trailerModel: InlineTrailerCardModel
+
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Cache/zoom identity of the title on screen — also the change signal the trailer restarts on.
     private var trailerKey: String { TrailerResolutionCache.key(type: item.type, id: item.id) }
