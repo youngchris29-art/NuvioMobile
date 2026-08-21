@@ -58,6 +58,12 @@ jobs:
           xcrun --sdk appletvsimulator --show-sdk-version
           java -version
 
+      # Same Gradle task the Xcode 'Compile Kotlin Framework' phase runs, isolated so
+      # its real error surfaces in this step's log instead of being buried mid-xcodebuild.
+      # Warms the Konan/Gradle caches for the xcodebuild step either way.
+      - name: Link shared Kotlin framework (tvOS Simulator)
+        run: ./gradlew :shared:linkDebugFrameworkTvosSimulatorArm64 --no-daemon --stacktrace
+
       - name: Build NuvioTV for tvOS Simulator
         run: |
           set -o pipefail
