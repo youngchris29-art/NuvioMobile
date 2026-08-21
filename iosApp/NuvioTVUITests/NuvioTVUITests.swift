@@ -1314,6 +1314,33 @@ final class NuvioTVUITests: XCTestCase {
     /// for: a pop only cancels the in-flight fetch (`CatalogRepository.detach()`), it does not wipe
     /// `items`/`scrollPositions` the way `clear()` did, so `load()`'s same-target early-return
     /// keeps the grid — and its focus/scroll state — exactly as the user left it.
+    /// Enter the See All grid from a card row, recovering from mis-entry. The blind Right×N +
+    /// Select after `walkRightUntilExists` is approximate by design (the SeeAllCard materializes
+    /// while focus is still a couple of cards away, and composed-label cards never report focus),
+    /// so an undershoot Selects a POSTER and opens its detail page instead of the grid — which is
+    /// exactly what the 2026-08-21 in-suite run did (suite-order Home drift; the UX-13 assert then
+    /// ran against a detail page's cast row and failed on the wrong screen entirely, while the
+    /// solo run passed). Detail pages carry the always-on `debug_ux6` probe in DEBUG builds, so:
+    /// Select, and if a detail page opened, Menu out and retry one card further Right. The SeeAll
+    /// card is the row's LAST card, so extra Rights can't overshoot — only undershoot needs
+    /// walking, and each attempt converges on it.
+    private func selectIntoSeeAllGrid(_ app: XCUIApplication, shotName: String) -> Bool {
+        for attempt in 0..<4 {
+            remote.press(.select)
+            pause(2.5)
+            if !app.staticTexts["debug_ux6"].exists {
+                shot(app, shotName)
+                return true
+            }
+            print("[UX13] mis-entry attempt \(attempt): detail page opened instead of the grid — backing out, walking one more Right")
+            remote.press(.menu)
+            pause(2)
+            press(.right, times: 1, gap: 0.6)
+        }
+        shot(app, "\(shotName)_misentry")
+        return false
+    }
+
     private func assertGridFocusRestores(_ app: XCUIApplication) throws {
         press(.right, times: 2, gap: 0.5)
         press(.down, times: 1, gap: 0.5)
@@ -1354,9 +1381,10 @@ final class NuvioTVUITests: XCTestCase {
         let homeSeeAll = seeAllCard(app)
         if walkRightUntilExists(homeSeeAll, max: 40) {
             press(.right, times: 3, gap: 0.6)
-            remote.press(.select)
-            pause(2.5)
-            shot(app, "24_home_grid_opened")
+            guard selectIntoSeeAllGrid(app, shotName: "24_home_grid_opened") else {
+                XCTFail("UX-13 gate not exercised: could not enter the Home See All grid (kept opening detail pages)")
+                return
+            }
             try assertGridFocusRestores(app)
             return
         }
@@ -1391,9 +1419,10 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         press(.right, times: 3, gap: 0.6)
-        remote.press(.select)
-        pause(2.5)
-        shot(app, "24_search_grid_opened")
+        guard selectIntoSeeAllGrid(app, shotName: "24_search_grid_opened") else {
+            XCTFail("UX-13 gate not exercised: could not enter the Search See All grid (kept opening detail pages)")
+            return
+        }
         try assertGridFocusRestores(app)
     }
 

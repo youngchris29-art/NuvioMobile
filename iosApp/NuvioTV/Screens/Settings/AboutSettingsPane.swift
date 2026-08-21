@@ -90,18 +90,27 @@ struct AboutSettingsPane: View {
                 }
 
                 if tabBarDiagnostics {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(TabBarProbe.tabNames, id: \.self) { tab in
-                            let state = TabBarProbe.scrollStates[tab] ?? TabBarProbe.ScrollState()
-                            Text("\(tab) fires=\(state.fireCount) last=\(state.lastFireMs)ms off=\(Int(state.lastOffset.rounded()))")
+                    // Live readout (Codex beta.14 r6): the probe's counters are plain statics
+                    // with no publisher, and this pane can stay mounted while the tester bounces
+                    // to Home, runs the protocol, and comes back — a static render would keep
+                    // showing the pre-test values, which fakes the exact "callbacks stopped
+                    // firing" signature the probe exists to detect. The 1 Hz TimelineView
+                    // re-render is the entire invalidation story: every tick re-reads the
+                    // statics. It only ticks while the toggle is on and the pane is on screen.
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(TabBarProbe.tabNames, id: \.self) { tab in
+                                let state = TabBarProbe.scrollStates[tab] ?? TabBarProbe.ScrollState()
+                                Text("\(tab) fires=\(state.fireCount) last=\(state.lastFireMs)ms off=\(Int(state.lastOffset.rounded()))")
+                                    .font(.system(size: 20, design: .monospaced))
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Text("depth=\(tabBarVisibility.immersiveDepth) cycles=\(TabBarProbe.pushPopCycles)")
                                 .font(.system(size: 20, design: .monospaced))
                                 .foregroundStyle(Theme.Palette.textSecondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
                         }
-                        Text("depth=\(tabBarVisibility.immersiveDepth) cycles=\(TabBarProbe.pushPopCycles)")
-                            .font(.system(size: 20, design: .monospaced))
-                            .foregroundStyle(Theme.Palette.textSecondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("tab_bar_probe_lines")
