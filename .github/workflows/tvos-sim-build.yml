@@ -62,16 +62,20 @@ jobs:
       # fork published only to mavenLocal (see the outer NuvioTV repo's
       # scaffolding/build-quickjs-tvos.sh). Build it here the same way, cached on the
       # patch hash so it compiles once, not per run.
+      # Pinned to a reviewed outer-repo commit: this checkout's script is executed
+      # below, so an unpinned ref would let any future push to the outer repo's
+      # default branch run arbitrary code (and poison caches) in this CI.
       - uses: actions/checkout@v4
         with:
           repository: youngchris29-art/NuvioTV
+          ref: 6265f00ec0b19b8a1301488f2ede523c8768de84
           path: outer-scaffolding
           sparse-checkout: scaffolding
 
       - uses: actions/cache@v4
         with:
           path: ~/.m2/repository/io/github/dokar3
-          key: quickjs-tvos-${{ hashFiles('outer-scaffolding/scaffolding/quickjs-kt-tvos.patch') }}
+          key: quickjs-tvos-${{ hashFiles('outer-scaffolding/scaffolding/quickjs-kt-tvos.patch', 'outer-scaffolding/scaffolding/build-quickjs-tvos.sh') }}
 
       - name: Publish quickjs-kt 1.0.5-tvos to mavenLocal
         run: |
