@@ -36,7 +36,12 @@ struct ContentView: View {
                     MainTabView(
                         activeProfile: profiles.activeProfile,
                         onSwitchProfile: { entered = false },
-                        selectedTab: $selectedTab
+                        selectedTab: $selectedTab,
+                        // FEAT-25 (Codex beta.14 r8): the app-root deep-link cover (Top Shelf)
+                        // presents over the whole shell without touching tab selection or push
+                        // depth — it must count as covering Home, or the hero trailer plays
+                        // audibly beneath DeepLinkTitleView/StreamPickerView.
+                        rootCoverActive: deepLink != nil
                     )
                     .environmentObject(auth)
                 } else {
@@ -140,6 +145,9 @@ struct MainTabView: View {
     /// Owned by ContentView (above the theme `.id()` rebuild boundary) so changing the theme in
     /// Settings doesn't dump the user back onto the Home tab.
     @Binding var selectedTab: Int
+    /// FEAT-25: true while ContentView's app-root deep-link cover is presented — a fourth way
+    /// Home gets covered that neither tab selection nor push depth can see (Codex beta.14 r8).
+    var rootCoverActive: Bool = false
 
     /// Single shared instance for the whole tab shell — provided to every tab root (and anything
     /// they push, like `DetailView`) via `.environment(\.tabBarVisibility,)` below. `@StateObject`
@@ -177,7 +185,13 @@ struct MainTabView: View {
         // FEAT-25: keep the "is Home frontmost" signal current from OUTSIDE the kept-alive tab
         // subtrees — this closure runs on the always-visible shell, so the hero trailer's
         // teardown can't be deferred along with a hidden tab's rendering.
-        .onAppear { tabBarVisibility.setHomeTabSelected(selectedTab == 0) }
+        .onAppear {
+            tabBarVisibility.setHomeTabSelected(selectedTab == 0)
+            tabBarVisibility.setRootCoverActive(rootCoverActive)
+        }
+        .onChange(of: rootCoverActive) { _, active in
+            tabBarVisibility.setRootCoverActive(active)
+        }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
             // A newly-selected tab starts with its bar visible from the scroll perspective — but

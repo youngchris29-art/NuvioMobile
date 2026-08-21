@@ -70,6 +70,11 @@ final class TabBarVisibility: ObservableObject {
     private var homeTabSelected = true {
         didSet { recomputeHomeCovered() }
     }
+    /// ContentView's app-root deep-link cover (Top Shelf) — presented over the whole shell, so
+    /// it covers Home without touching tab selection or push depth (Codex beta.14 r8).
+    private var rootCoverActive = false {
+        didSet { recomputeHomeCovered() }
+    }
 
     /// MainTabView reports selection changes here (Home is tab value 0).
     func setHomeTabSelected(_ selected: Bool) {
@@ -77,8 +82,14 @@ final class TabBarVisibility: ObservableObject {
         homeTabSelected = selected
     }
 
+    /// MainTabView forwards ContentView's deep-link cover presence here.
+    func setRootCoverActive(_ active: Bool) {
+        guard rootCoverActive != active else { return }
+        rootCoverActive = active
+    }
+
     private func recomputeHomeCovered() {
-        let covered = !homeTabSelected || detailDepth > 0
+        let covered = !homeTabSelected || detailDepth > 0 || rootCoverActive
         if homeSurfaceCovered != covered { homeSurfaceCovered = covered }
     }
 
