@@ -1323,19 +1323,37 @@ final class NuvioTVUITests: XCTestCase {
     /// solo run passed). Detail pages carry the always-on `debug_ux6` probe in DEBUG builds, so:
     /// Select, and if a detail page opened, Menu out and retry one card further Right. The SeeAll
     /// card is the row's LAST card, so extra Rights can't overshoot — only undershoot needs
-    /// walking, and each attempt converges on it.
+    /// walking, and each attempt converges on it. First observed solo 2026-08-21 on the Search
+    /// fallback: the results row is long and the SeeAllCard can be IN THE TREE while focus is
+    /// still many cards short of it, so proximity guessing (+1 per retry) never covered the
+    /// distance — each retry now strides several cards, which overshoot-safety makes free.
+    /// Walk Right until the FOCUSED element is the SeeAll card itself. tvOS 26.5 (the gating
+    /// runtime) reports focus, so identity beats press-count guessing — a long Search results
+    /// row defeated both Right×3 and Right×28 (2026-08-21): existence of the card in the tree
+    /// says nothing about how many cards away focus is. On 27.0 `focusedButton` is nil and this
+    /// no-ops; the caller's blind stride + mis-entry retries remain the (skippy) fallback there.
+    private func walkFocusOntoSeeAll(_ app: XCUIApplication) {
+        for _ in 0..<30 {
+            guard let f = focusedButton(app) else { return }
+            if f.label.localizedCaseInsensitiveContains("See All") { return }
+            remote.press(.right)
+            pause(0.45)
+        }
+    }
+
     private func selectIntoSeeAllGrid(_ app: XCUIApplication, shotName: String) -> Bool {
-        for attempt in 0..<4 {
+        for attempt in 0..<6 {
+            walkFocusOntoSeeAll(app)
             remote.press(.select)
             pause(2.5)
             if !app.staticTexts["debug_ux6"].exists {
                 shot(app, shotName)
                 return true
             }
-            print("[UX13] mis-entry attempt \(attempt): detail page opened instead of the grid — backing out, walking one more Right")
+            print("[UX13] mis-entry attempt \(attempt): detail page opened instead of the grid — backing out, striding Right")
             remote.press(.menu)
             pause(2)
-            press(.right, times: 1, gap: 0.6)
+            press(.right, times: 3, gap: 0.5)
         }
         shot(app, "\(shotName)_misentry")
         return false
@@ -1380,7 +1398,9 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         let homeSeeAll = seeAllCard(app)
         if walkRightUntilExists(homeSeeAll, max: 40) {
-            press(.right, times: 3, gap: 0.6)
+            // Overshoot-safe stride: the SeeAll card is the row's LAST card, so Rights past it
+            // are no-ops — 10 covers the materializes-early gap the old ×3 undershot.
+            press(.right, times: 10, gap: 0.4)
             guard selectIntoSeeAllGrid(app, shotName: "24_home_grid_opened") else {
                 XCTFail("UX-13 gate not exercised: could not enter the Home See All grid (kept opening detail pages)")
                 return
@@ -1418,7 +1438,9 @@ final class NuvioTVUITests: XCTestCase {
             XCTFail("UX-13 gate not exercised: no reachable See All card on Home or in Search results")
             return
         }
-        press(.right, times: 3, gap: 0.6)
+        // Same overshoot-safe stride as the Home path — the Search results row is where the
+        // materializes-early gap actually bit (2026-08-21 solo run).
+        press(.right, times: 10, gap: 0.4)
         guard selectIntoSeeAllGrid(app, shotName: "24_search_grid_opened") else {
             XCTFail("UX-13 gate not exercised: could not enter the Search See All grid (kept opening detail pages)")
             return
