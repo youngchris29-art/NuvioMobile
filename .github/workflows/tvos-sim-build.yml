@@ -1,0 +1,63 @@
+name: tvOS Simulator Build
+
+# beta.14 §8 gate 2 ("sim app build succeeds"), runnable off-Mac. Build-only:
+# the UI test suite needs the FA87 fixture's sign-in state and stays a local gate.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "iosApp/**"
+      - "shared/**"
+      - "gradle/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - ".github/workflows/tvos-sim-build.yml"
+
+concurrency:
+  group: tvos-sim-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Xcode build phase defaults GRADLE_OPTS to -Xmx12288M when unset — sized for
+  # Christian's Mac, not a CI runner. Pre-set both so that branch never fires here.
+  GRADLE_OPTS: -Xmx4g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1g
+  KOTLIN_DAEMON_JVMARGS: -Xmx3g
+
+jobs:
+  sim-build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: gradle-konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-konan-${{ runner.os }}-
+
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          xcrun --sdk appletvsimulator --show-sdk-version
+          java -version
+
+      - name: Build NuvioTV for tvOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project iosApp/iosApp.xcodeproj \
+            -scheme NuvioTV \
+            -configuration Debug \
+            -destination "generic/platform=tvOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
