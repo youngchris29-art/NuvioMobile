@@ -42,11 +42,14 @@ final class TabBarVisibility: ObservableObject {
         detailDepth += 1
     }
 
-    /// Called from the same screen's `.onDisappear`. Clamped at 0 so an unmatched call (shouldn't
-    /// happen, but SwiftUI view lifecycle edge cases are never fully guaranteed) can't go negative
-    /// and require two pops to recover.
+    /// Called from the same screen's `.onDisappear`. An unmatched call (shouldn't happen, but
+    /// SwiftUI view lifecycle edge cases are never fully guaranteed) is a full no-op: the early
+    /// return both keeps the depth from going negative (which would take two pops to recover) and
+    /// keeps the probe from logging a push/pop cycle that never occurred — the cycle counter
+    /// exists to diagnose BUG-66, so a phantom count is worse than none (Codex beta.14 r4).
     func popImmersive() {
-        detailDepth = max(0, detailDepth - 1)
+        guard detailDepth > 0 else { return }
+        detailDepth -= 1
         TabBarProbe.recordPop(depthAfter: detailDepth)
     }
 
