@@ -867,7 +867,14 @@ struct HomeView: View {
                                     heroFolderRoutes[preview.id] = FolderRoute(collectionId: collection.id, folder: folder)
                                 }
                                 reportRowFocus(preview, source: collection.id, prefetch: {
-                                    collection.folders.prefix(8).compactMap { $0.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                                    // Backdrops AND logos (Codex r3): a folder with its own cover never
+                                    // warms its logo on the tile (FolderTile suppresses it there), so the
+                                    // hero's HeroLogo would otherwise start cold and flash the text name.
+                                    collection.folders.prefix(8).flatMap { folder -> [String] in
+                                        [folder.heroBackdropUrl, folder.titleLogoUrl]
+                                            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                            .filter { !$0.isEmpty }
+                                    }
                                 })
                             })
                         }
