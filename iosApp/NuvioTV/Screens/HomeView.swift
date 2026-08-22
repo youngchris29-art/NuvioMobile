@@ -1162,7 +1162,7 @@ struct HomeView: View {
         guard !(backdrop?.isEmpty ?? true) || !(logo?.isEmpty ?? true) else { return nil }
         let cover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         return MetaPreview(
-            id: "\(collection.id)/\(folder.id)",
+            id: "\(collectionHeroIdScheme)\(collection.id)/\(folder.id)",
             type: collectionHeroType,
             name: folder.title.trimmingCharacters(in: .whitespacesAndNewlines),
             poster: (cover?.isEmpty ?? true) ? nil : cover,
@@ -2304,12 +2304,18 @@ struct HomeHeroForeground: View {
 
 
 
-/// BUG-38 round three: the `MetaPreview.type` a collection folder's hero preview carries. Not a
-/// Stremio type — nothing resolves it — which is exactly why the trailer, enrichment and CTA
-/// paths key on it to stay away.
-let collectionHeroType = "collection"
+/// BUG-38 round three: the `MetaPreview.type` a collection folder's hero preview carries, and
+/// the scheme its synthetic id starts with. Both are namespaced so no addon catalog item can
+/// satisfy `isCollectionHero` by accident (Codex round 1: Stremio manifests may declare ANY
+/// media type — "collection" included — and a real title misclassified here would lose its hero
+/// trailer and enrichment). The predicate requires BOTH the dotted type and the id scheme; a
+/// catalog would have to ship that exact pair, which nothing does.
+let collectionHeroType = "nuvio.folder"
+let collectionHeroIdScheme = "nuvio-folder://"
 
-func isCollectionHero(_ item: MetaPreview) -> Bool { item.type == collectionHeroType }
+func isCollectionHero(_ item: MetaPreview) -> Bool {
+    item.type == collectionHeroType && item.id.hasPrefix(collectionHeroIdScheme)
+}
 
 /// Resolves the logo artwork URL for a hero item. Catalog previews (Cinemeta rows especially)
 /// usually omit `logo` even when logo art exists, so for IMDb-id items fall back to metahub —
