@@ -124,9 +124,13 @@ struct HomeScreenSettingsPane: View {
 
                 SettingsToggleRow(
                     title: String(localized: "Trailers on Focus"),
-                    subtitle: inlineTrailersEnabled
-                        ? String(localized: "On \u{00B7} Posters play a muted trailer preview after a moment of focus")
-                        : String(localized: "Off \u{00B7} Posters show artwork only"),
+                    // Codex gate r3: the enabled summary names the surface the picker below
+                    // actually selects — with "Hero" chosen it must not say the poster plays.
+                    subtitle: !inlineTrailersEnabled
+                        ? String(localized: "Off \u{00B7} Posters show artwork only")
+                        : trailerPlaybackLocation == "hero"
+                            ? String(localized: "On \u{00B7} The hero plays a muted trailer preview after a moment of focus on a poster")
+                            : String(localized: "On \u{00B7} Posters play a muted trailer preview after a moment of focus"),
                     isOn: inlineTrailersEnabled
                 ) {
                     inlineTrailersEnabled.toggle()

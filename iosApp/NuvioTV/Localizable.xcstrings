@@ -15513,6 +15513,40 @@
         }
       }
     },
+    "On · The hero plays a muted trailer preview after a moment of focus on a poster": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An · Der Hero spielt eine stumme Trailer-Vorschau, nachdem ein Poster kurz fokussiert wurde"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activado · El hero reproduce una vista previa del tráiler sin sonido tras un momento de foco en un póster"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activé · Le héros lit un aperçu muet de la bande-annonce après un instant de focus sur une affiche"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attivo · L'hero riproduce un'anteprima muta del trailer dopo un momento di focus su un poster"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật · Hero phát bản xem trước trailer không tiếng sau một lúc tập trung vào poster"
+          }
+        }
+      }
+    },
     "On · The hero plays its trailer by itself, without waiting for focus": {
       "localizations": {
         "de": {
