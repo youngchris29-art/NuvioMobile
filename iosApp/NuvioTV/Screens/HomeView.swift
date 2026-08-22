@@ -160,6 +160,10 @@ struct HomeView: View {
     /// UX-7: always-on focus-follows-backdrop. Owns the row-focused item (if any) that should
     /// take over the hero from the carousel.
     @StateObject private var focusModel = HomeHeroFocusModel()
+    /// BUG-38 round three: the folder page each hero-driving folder preview opens, keyed by the
+    /// preview's synthetic id (`folderHeroPreview`). A `MetaPreview` can't carry a `FolderRoute`,
+    /// and the hero CTA must open the FOLDER, never a Detail page for an id no addon knows.
+    @State private var heroFolderRoutes: [String: FolderRoute] = [:]
     /// UX-7: rows whose backdrops have already been prefetch-warmed (keyed by report source),
     /// so each row pays the warm-up exactly once per Home lifetime.
     @State private var prefetchedBackdropRows = Set<String>()
@@ -200,12 +204,14 @@ struct HomeView: View {
     /// FEAT-15: the hero region is the focus-only panel. Gated on the SETTING, never on
     /// `heroItems.isEmpty` — the latter is also true during the hero-on fan-out window, and
     /// mounting a panel there would pin/unpin the header inside that window in classic mode.
-    /// Codex review: gated on `heroPanelSeed` rather than `hasFocusableRows` — a collection-only
-    /// Home has focusable rows but nothing the panel can ever represent (`CollectionRowView`
-    /// never reports a `MetaPreview`), and mounting it there reserved a permanently blank band.
-    /// With no seed the layout degenerates to pure rows, which is also the only way a "rows
-    /// only, no hero region" configuration remains reachable. Still a content/load-boundary
-    /// value, never per-focus.
+    /// Codex review: gated on `heroPanelSeed` rather than `hasFocusableRows` — a Home whose rows
+    /// can never produce a preview (collection rows whose folders carry no hero artwork) has
+    /// focusable rows but nothing the panel can represent, and mounting it there reserved a
+    /// permanently blank band. BUG-38 round three: a collection folder WITH a backdrop or logo
+    /// now does report a preview (`folderHeroPreview`), so such a folder also seeds the panel —
+    /// a collection-only Home built from Fusion collections gets its hero. With no seed the
+    /// layout degenerates to pure rows, which is also the only way a "rows only, no hero region"
+    /// configuration remains reachable. Still a content/load-boundary value, never per-focus.
     private var focusHeroActive: Bool { !heroSettings.heroEnabled && heroPanelSeed != nil }
 
     /// Whether a hero header is mounted above the rows ScrollView at all.
@@ -251,6 +257,16 @@ struct HomeView: View {
             if case .catalog(let section) = row, let first = section.items.first { return first }
         }
         if let firstEntry = model.continueWatching.first { return previewFromEntry(firstEntry) }
+        // BUG-38 round three (Codex r2): a collection-only Home — no catalog rows, no Continue
+        // Watching — still has something the panel can represent when a folder carries its own
+        // hero artwork. Same load-boundary character as the branches above (it moves when the
+        // collections publish, never per focus).
+        for row in model.rows {
+            if case .collection(let collection) = row,
+               let first = collection.folders.lazy.compactMap({ folderHeroPreview(collection: collection, folder: $0) }).first {
+                return first
+            }
+        }
         return nil
     }
 
@@ -382,7 +398,13 @@ struct HomeView: View {
     /// whichever claim is live (the focused poster's, or the carousel page's), and `syncTrailer`
     /// re-arms on `trailerKey`/`autoplaysTrailer` changes either way. Mutually exclusive by
     /// construction — see the precedence contract on `heroTrailerAutoplayActive`.
-    private var heroTrailerActive: Bool { heroFocusTrailerActive || heroTrailerAutoplayActive }
+    private var heroTrailerActive: Bool {
+        // BUG-38 round three: a focused collection folder drives the hero with its own artwork;
+        // it has no trailer to resolve (its synthetic id is not a title), so neither claimant may
+        // arm an attempt while a folder is on the backdrop.
+        if let hero = displayHero, isCollectionHero(hero) { return false }
+        return heroFocusTrailerActive || heroTrailerAutoplayActive
+    }
 
     /// FEAT-25: whether the hero currently owns a trailer ATTEMPT — dwell, resolution, or
     /// playback. Polled by the carousel's auto-advance tick. The phase check is the real signal
@@ -835,7 +857,26 @@ struct HomeView: View {
                             // cost nothing (see HomeRepository.requestRowEnrichment).
                             .onAppear { model.rowAppeared(sectionKey: section.key) }
                         case .collection(let collection):
-                            CollectionRowView(collection: collection)
+                            CollectionRowView(collection: collection, onFolderFocusChange: { folder in
+                                // BUG-38 round three: a focused folder tile hands its configured
+                                // backdrop + title logo to the hero, the Fusion behaviour the
+                                // reporter asked for on the HOME page. Folders with neither asset
+                                // report nil — the hero stays where it was, exactly as before.
+                                let preview = folder.flatMap { folderHeroPreview(collection: collection, folder: $0) }
+                                if let folder, let preview {
+                                    heroFolderRoutes[preview.id] = FolderRoute(collectionId: collection.id, folder: folder)
+                                }
+                                reportRowFocus(preview, source: collection.id, prefetch: {
+                                    // Backdrops AND logos (Codex r3): a folder with its own cover never
+                                    // warms its logo on the tile (FolderTile suppresses it there), so the
+                                    // hero's HeroLogo would otherwise start cold and flash the text name.
+                                    collection.folders.prefix(8).flatMap { folder -> [String] in
+                                        [folder.heroBackdropUrl, folder.titleLogoUrl]
+                                            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                            .filter { !$0.isEmpty }
+                                    }
+                                })
+                            })
                         }
                     }
                 }
@@ -939,7 +980,8 @@ struct HomeView: View {
                 if let hero = displayHero {
                     HomeHeroForeground(item: hero, heroFocused: $heroFocused, compact: compact,
                                        showsCTA: heroCarouselActive,
-                                       forceNuvioLayout: focusHeroActive)
+                                       forceNuvioLayout: focusHeroActive,
+                                       folderRoute: isCollectionHero(hero) ? heroFolderRoutes[hero.id] : nil)
                 }
             }
             // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
@@ -1122,6 +1164,38 @@ struct HomeView: View {
             ArtworkStore.prefetch(prefetch().compactMap(URL.init(string:)))
         }
         focusModel.reportFocus(item, from: source)
+    }
+
+    /// BUG-38 round three: adapts a collection folder to the hero's `MetaPreview` shape so a
+    /// focused folder tile can drive the hero with the folder's OWN artwork — `banner` is the
+    /// configured `heroBackdropUrl`, `logo` the `titleLogoUrl` (both read by the existing
+    /// `heroBackdropURL(for:)` / `heroLogoURL(for:)` chains with no special casing), `poster` the
+    /// cover (the backdrop chain's last fallback), and `releaseInfo` the collection's title so
+    /// the hero's meta line reads e.g. "Genres". `type` is the `collectionHeroType` sentinel the
+    /// trailer, enrichment and CTA gates key on. Nil when the folder carries neither a backdrop
+    /// nor a logo — such a folder has nothing of its own to show, so focusing it leaves the hero
+    /// alone rather than painting a poster-shaped cover across the backdrop.
+    private func folderHeroPreview(collection: NuvioCollection, folder: CollectionFolder) -> MetaPreview? {
+        let backdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let logo = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !(backdrop?.isEmpty ?? true) || !(logo?.isEmpty ?? true) else { return nil }
+        let cover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MetaPreview(
+            id: "\(collectionHeroIdScheme)\(collection.id)/\(folder.id)",
+            type: collectionHeroType,
+            name: folder.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            poster: (cover?.isEmpty ?? true) ? nil : cover,
+            banner: (backdrop?.isEmpty ?? true) ? nil : backdrop,
+            logo: (logo?.isEmpty ?? true) ? nil : logo,
+            posterShape: .poster,
+            description: nil,
+            releaseInfo: collection.title,
+            rawReleaseDate: nil,
+            popularity: nil,
+            voteCount: nil,
+            imdbRating: nil,
+            genres: []
+        )
     }
 
     /// UX-7: adapts a Continue Watching entry to the hero's `MetaPreview` shape so a focused CW
@@ -1450,6 +1524,9 @@ final class HomeHeroFocusModel: ObservableObject {
     /// can be localized. Closing that gap means localizing row metadata broadly, which is the
     /// fetch-volume product call flagged in `HomeRepository.withTmdbEnrichment`, not a change here.
     private func enrichIfNeeded(_ item: MetaPreview) {
+        // BUG-38 round three: a collection folder's preview is not a title — TMDB has nothing
+        // for its synthetic id, and its artwork is already the user's configured assets.
+        guard !isCollectionHero(item) else { return }
         guard nonBlank(item.description_) == nil || nonBlank(item.banner) == nil else { return }
         let settings = TmdbSettingsRepository.shared.snapshot()
         guard settings.enabled, settings.hasApiKey,
@@ -2101,6 +2178,9 @@ struct HomeHeroForeground: View {
     /// request is modelled on, the pinned geometry has only ever been device-tuned for it, and its
     /// Settings row is hidden while Show Hero is off.
     var forceNuvioLayout: Bool = false
+    /// BUG-38 round three: set when `item` is a collection folder's preview — the CTA then opens
+    /// the folder page instead of a Detail route for an id no addon can resolve.
+    var folderRoute: FolderRoute? = nil
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
     private var usesNuvioLayout: Bool { forceNuvioLayout || heroNuvioStyle }
@@ -2120,9 +2200,18 @@ struct HomeHeroForeground: View {
             // outside the TabView). D-pad left/right still pages the carousel while this
             // button holds focus — it is the page's focus anchor.
             if showsCTA {
-                NavigationLink(value: TitleRoute(preview: item)) {
-                    Text(ctaTitle)
-                        .font(Theme.Font.body)
+                Group {
+                    if let folderRoute {
+                        NavigationLink(value: folderRoute) {
+                            Text(ctaTitle)
+                                .font(Theme.Font.body)
+                        }
+                    } else {
+                        NavigationLink(value: TitleRoute(preview: item)) {
+                            Text(ctaTitle)
+                                .font(Theme.Font.body)
+                        }
+                    }
                 }
                 .buttonStyle(.glass)
                 .focused(heroFocused)
@@ -2161,7 +2250,8 @@ struct HomeHeroForeground: View {
 
     /// "movie" is the only meta type that reads as a film; series/tv both read as shows.
     private var ctaTitle: String {
-        item.type == "movie"
+        if folderRoute != nil { return String(localized: "Open Folder") }
+        return item.type == "movie"
             ? String(localized: "Go to Movie")
             : String(localized: "Go to Show")
     }
@@ -2232,6 +2322,19 @@ struct HomeHeroForeground: View {
 }
 
 
+
+/// BUG-38 round three: the `MetaPreview.type` a collection folder's hero preview carries, and
+/// the scheme its synthetic id starts with. Both are namespaced so no addon catalog item can
+/// satisfy `isCollectionHero` by accident (Codex round 1: Stremio manifests may declare ANY
+/// media type — "collection" included — and a real title misclassified here would lose its hero
+/// trailer and enrichment). The predicate requires BOTH the dotted type and the id scheme; a
+/// catalog would have to ship that exact pair, which nothing does.
+let collectionHeroType = "nuvio.folder"
+let collectionHeroIdScheme = "nuvio-folder://"
+
+func isCollectionHero(_ item: MetaPreview) -> Bool {
+    item.type == collectionHeroType && item.id.hasPrefix(collectionHeroIdScheme)
+}
 
 /// Resolves the logo artwork URL for a hero item. Catalog previews (Cinemeta rows especially)
 /// usually omit `logo` even when logo art exists, so for IMDb-id items fall back to metahub —

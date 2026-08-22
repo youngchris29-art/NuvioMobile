@@ -23,17 +23,17 @@ struct FolderRoute: Hashable {
     let collectionId: String
     let folderId: String
     let folderTitle: String
-    /// BUG-38 (folder page hero): the folder's configured hero assets, carried so the page's
-    /// first frame already has them — the repository's `folder` lands a beat later. Identity
-    /// (==/hash) stays collectionId + folderId; these are display-only.
-    let heroBackdropUrl: String?
+    /// BUG-38 (folder page): the folder's configured title logo, carried so the page's first
+    /// frame already has it — the repository's `folder` lands a beat later. Identity (==/hash)
+    /// stays collectionId + folderId; this is display-only. The backdrop is deliberately NOT
+    /// drawn on this page (round three, reporter: "if we keep the background image inside, it
+    /// makes the text unreadable depending on the image") — it belongs to the Home hero.
     let titleLogoUrl: String?
 
     init(collectionId: String, folder: CollectionFolder) {
         self.collectionId = collectionId
         self.folderId = folder.id
         self.folderTitle = folder.title
-        self.heroBackdropUrl = folder.heroBackdropUrl.nonBlankTrimmed
         self.titleLogoUrl = folder.titleLogoUrl.nonBlankTrimmed
     }
 
@@ -50,6 +50,12 @@ struct FolderRoute: Hashable {
 /// One collection as a horizontal row of focusable folder tiles (Home).
 struct CollectionRowView: View {
     let collection: NuvioCollection
+    /// BUG-38 round three: the focused folder (nil when nothing in this row holds focus), so
+    /// Home can hand the folder's configured backdrop + title logo to the pinned hero exactly
+    /// the way a catalog row's `onItemFocusChange` hands it a title — the reporter's actual ask
+    /// was the Home page, not the folder page.
+    var onFolderFocusChange: ((CollectionFolder?) -> Void)? = nil
+    @FocusState private var focusedFolderId: String?
     /// Pinned-hero card reach (UX-7 extension, device rounds 4–5) — see `rowCardTopReach` /
     /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
@@ -81,6 +87,7 @@ struct CollectionRowView: View {
                         }
                         .buttonStyle(.borderless)
                         .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
+                        .focused($focusedFolderId, equals: folder.id)
                     }
                 }
                 // Always positive — the reach lives inside the buttons (see CatalogRowView).
@@ -106,6 +113,9 @@ struct CollectionRowView: View {
             }
         }
         .focusSection()
+        .onChange(of: focusedFolderId) { _, id in
+            onFolderFocusChange?(id.flatMap { fid in collection.folders.first { $0.id == fid } })
+        }
     }
 }
 
@@ -407,13 +417,11 @@ final class FolderDetailViewModel: ObservableObject {
     }
 
     @Published private(set) var folderTitle: String
-    /// BUG-38 (folder page hero): `CollectionFolder.heroBackdropUrl` / `titleLogoUrl` — the two
-    /// payload keys the Home tile deliberately does NOT draw for a folder that has its own
-    /// cover (BUG-52: the logo over a self-naming cover doubled every wordmark). Fusion, where
-    /// these community collections come from, renders them as the FOLDER PAGE's hero; so
-    /// does this page now. Blank/whitespace counts as absent, the same trimming rule the tile
-    /// applies to every payload URL.
-    @Published private(set) var heroBackdropUrl: String?
+    /// BUG-38 (folder page): `CollectionFolder.titleLogoUrl` as the page title — the key the
+    /// Home tile deliberately does NOT draw over a folder's own cover (BUG-52: the logo over a
+    /// self-naming cover doubled every wordmark). Blank/whitespace counts as absent, the same
+    /// trimming rule the tile applies to every payload URL. The folder's `heroBackdropUrl` is
+    /// the HOME hero's business (round three), not this page's.
     @Published private(set) var titleLogoUrl: String?
     @Published private(set) var collectionTitle = ""
     @Published private(set) var tabs: [FolderTab] = []
@@ -434,7 +442,6 @@ final class FolderDetailViewModel: ObservableObject {
         collectionId = route.collectionId
         folderId = route.folderId
         folderTitle = route.folderTitle
-        heroBackdropUrl = route.heroBackdropUrl
         titleLogoUrl = route.titleLogoUrl
     }
 
@@ -444,7 +451,6 @@ final class FolderDetailViewModel: ObservableObject {
             guard let self, let state = emitted as? FolderDetailUiState else { return }
             if let folder = state.folder {
                 self.folderTitle = folder.title
-                self.heroBackdropUrl = folder.heroBackdropUrl.nonBlankTrimmed
                 self.titleLogoUrl = folder.titleLogoUrl.nonBlankTrimmed
             }
             self.collectionTitle = state.collectionTitle
@@ -556,24 +562,13 @@ struct FolderDetailView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack {
             Theme.Palette.background.ignoresSafeArea()
 
-            // BUG-38 (folder page hero): the folder's configured `heroBackdropUrl` behind the
-            // page, top-aligned and faded into the background by the Home hero's own scrim so
-            // the grid scrolls over it exactly as rows scroll over the Home hero. The same
-            // `HeroCrossfadeImage` slot the Home hero paints through (ArtworkStore cache, no
-            // re-fetch on pop/push). Without a backdrop the page is byte-for-byte what it was.
-            if let backdrop = model.heroBackdropUrl {
-                HeroCrossfadeImage(url: backdrop)
-                    .frame(height: Theme.Size.heroBackdropHeight)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                HomeHeroScrim()
-            }
-
+            // BUG-38 round three: the folder's backdrop is NOT painted behind this page any
+            // more (it shipped that way in beta.14; the reporter found it made the page text
+            // unreadable depending on the image). The logo-as-title stays; the backdrop moved
+            // to the Home hero, which follows the focused folder tile.
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                     HStack(alignment: .center, spacing: Theme.Spacing.lg) {
