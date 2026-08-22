@@ -204,12 +204,14 @@ struct HomeView: View {
     /// FEAT-15: the hero region is the focus-only panel. Gated on the SETTING, never on
     /// `heroItems.isEmpty` — the latter is also true during the hero-on fan-out window, and
     /// mounting a panel there would pin/unpin the header inside that window in classic mode.
-    /// Codex review: gated on `heroPanelSeed` rather than `hasFocusableRows` — a collection-only
-    /// Home has focusable rows but nothing the panel can ever represent (`CollectionRowView`
-    /// never reports a `MetaPreview`), and mounting it there reserved a permanently blank band.
-    /// With no seed the layout degenerates to pure rows, which is also the only way a "rows
-    /// only, no hero region" configuration remains reachable. Still a content/load-boundary
-    /// value, never per-focus.
+    /// Codex review: gated on `heroPanelSeed` rather than `hasFocusableRows` — a Home whose rows
+    /// can never produce a preview (collection rows whose folders carry no hero artwork) has
+    /// focusable rows but nothing the panel can represent, and mounting it there reserved a
+    /// permanently blank band. BUG-38 round three: a collection folder WITH a backdrop or logo
+    /// now does report a preview (`folderHeroPreview`), so such a folder also seeds the panel —
+    /// a collection-only Home built from Fusion collections gets its hero. With no seed the
+    /// layout degenerates to pure rows, which is also the only way a "rows only, no hero region"
+    /// configuration remains reachable. Still a content/load-boundary value, never per-focus.
     private var focusHeroActive: Bool { !heroSettings.heroEnabled && heroPanelSeed != nil }
 
     /// Whether a hero header is mounted above the rows ScrollView at all.
@@ -255,6 +257,16 @@ struct HomeView: View {
             if case .catalog(let section) = row, let first = section.items.first { return first }
         }
         if let firstEntry = model.continueWatching.first { return previewFromEntry(firstEntry) }
+        // BUG-38 round three (Codex r2): a collection-only Home — no catalog rows, no Continue
+        // Watching — still has something the panel can represent when a folder carries its own
+        // hero artwork. Same load-boundary character as the branches above (it moves when the
+        // collections publish, never per focus).
+        for row in model.rows {
+            if case .collection(let collection) = row,
+               let first = collection.folders.lazy.compactMap({ folderHeroPreview(collection: collection, folder: $0) }).first {
+                return first
+            }
+        }
         return nil
     }
 
