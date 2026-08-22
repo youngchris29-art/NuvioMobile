@@ -23,11 +23,18 @@ struct FolderRoute: Hashable {
     let collectionId: String
     let folderId: String
     let folderTitle: String
+    /// BUG-38 (folder page hero): the folder's configured hero assets, carried so the page's
+    /// first frame already has them — the repository's `folder` lands a beat later. Identity
+    /// (==/hash) stays collectionId + folderId; these are display-only.
+    let heroBackdropUrl: String?
+    let titleLogoUrl: String?
 
     init(collectionId: String, folder: CollectionFolder) {
         self.collectionId = collectionId
         self.folderId = folder.id
         self.folderTitle = folder.title
+        self.heroBackdropUrl = folder.heroBackdropUrl.nonBlankTrimmed
+        self.titleLogoUrl = folder.titleLogoUrl.nonBlankTrimmed
     }
 
     static func == (lhs: FolderRoute, rhs: FolderRoute) -> Bool {
@@ -400,6 +407,14 @@ final class FolderDetailViewModel: ObservableObject {
     }
 
     @Published private(set) var folderTitle: String
+    /// BUG-38 (folder page hero): `CollectionFolder.heroBackdropUrl` / `titleLogoUrl` — the two
+    /// payload keys the Home tile deliberately does NOT draw for a folder that has its own
+    /// cover (BUG-52: the logo over a self-naming cover doubled every wordmark). Fusion, where
+    /// these community collections come from, renders them as the FOLDER PAGE's hero; so
+    /// does this page now. Blank/whitespace counts as absent, the same trimming rule the tile
+    /// applies to every payload URL.
+    @Published private(set) var heroBackdropUrl: String?
+    @Published private(set) var titleLogoUrl: String?
     @Published private(set) var collectionTitle = ""
     @Published private(set) var tabs: [FolderTab] = []
     @Published private(set) var selectedTabIndex = 0
@@ -419,13 +434,19 @@ final class FolderDetailViewModel: ObservableObject {
         collectionId = route.collectionId
         folderId = route.folderId
         folderTitle = route.folderTitle
+        heroBackdropUrl = route.heroBackdropUrl
+        titleLogoUrl = route.titleLogoUrl
     }
 
     func start() {
         guard watcher == nil else { return }
         watcher = FlowWatcherKt.watch(FolderDetailRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? FolderDetailUiState else { return }
-            if let folder = state.folder { self.folderTitle = folder.title }
+            if let folder = state.folder {
+                self.folderTitle = folder.title
+                self.heroBackdropUrl = folder.heroBackdropUrl.nonBlankTrimmed
+                self.titleLogoUrl = folder.titleLogoUrl.nonBlankTrimmed
+            }
             self.collectionTitle = state.collectionTitle
             self.tabs = state.tabs
             self.selectedTabIndex = Int(state.selectedTabIndex)
@@ -535,8 +556,23 @@ struct FolderDetailView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             Theme.Palette.background.ignoresSafeArea()
+
+            // BUG-38 (folder page hero): the folder's configured `heroBackdropUrl` behind the
+            // page, top-aligned and faded into the background by the Home hero's own scrim so
+            // the grid scrolls over it exactly as rows scroll over the Home hero. The same
+            // `HeroCrossfadeImage` slot the Home hero paints through (ArtworkStore cache, no
+            // re-fetch on pop/push). Without a backdrop the page is byte-for-byte what it was.
+            if let backdrop = model.heroBackdropUrl {
+                HeroCrossfadeImage(url: backdrop)
+                    .frame(height: Theme.Size.heroBackdropHeight)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                HomeHeroScrim()
+            }
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
@@ -547,9 +583,7 @@ struct FolderDetailView: View {
                                     .font(Theme.Font.caption)
                                     .foregroundStyle(Theme.Palette.textSecondary)
                             }
-                            Text(model.folderTitle)
-                                .font(Theme.Font.screenTitle)
-                                .foregroundStyle(Theme.Palette.textPrimary)
+                            FolderHeroTitle(title: model.folderTitle, logoUrl: model.titleLogoUrl)
                         }
                         Spacer()
                         // On-device TMDB Discover filter editing for the selected tmdb tab
@@ -653,6 +687,60 @@ struct FolderDetailView: View {
 /// covering that platter. `ChipButtonStyle(selected:)` already resolves fill and label for all
 /// four focus×selection states (accent at rest when selected, white platter + dark label on
 /// focus), so the chip must not override either.
+/// BUG-38 (folder page hero): the folder's `titleLogoUrl` as the page title when it loads —
+/// the same ArtworkStore path `HeroLogo` (HomeView) uses for the Home hero's logo — and the
+/// plain `screenTitle` text until then / when there is none. The logo is capped to the pinned
+/// Home hero's logo slot so a 1:1 genre badge and a wide wordmark both sit on one baseline.
+private struct FolderHeroTitle: View {
+    let title: String
+    let logoUrl: String?
+    @State private var image: UIImage?
+
+    private var url: URL? {
+        guard let logoUrl else { return nil }
+        return URL(string: logoUrl)
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: Theme.Size.heroLogoMaxWidth, maxHeight: Theme.Size.heroLogoSlotHeightPinned, alignment: .leading)
+                    .accessibilityLabel(title)
+            } else {
+                Text(title)
+                    .font(Theme.Font.screenTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+            }
+        }
+        .task(id: url) {
+            guard let url else {
+                image = nil
+                return
+            }
+            if let hit = ArtworkStore.cached(url) {
+                image = hit
+                return
+            }
+            image = nil
+            if let fetched = try? await ArtworkStore.fetch(url) {
+                withAnimation(.easeIn(duration: 0.25)) { image = fetched }
+            }
+        }
+    }
+}
+
+private extension Optional where Wrapped == String {
+    /// Blank/whitespace-only payload URLs count as absent — the rule every other cover/logo
+    /// check in this file applies (the editor/import path can persist whitespace-only values).
+    var nonBlankTrimmed: String? {
+        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+}
+
 private struct TabChip: View {
     let label: String
     let isSelected: Bool
