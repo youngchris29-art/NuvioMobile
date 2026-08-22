@@ -378,6 +378,23 @@ publish_release() { # publish_release <repo> <target_branch>
     --notes-file "$NOTES_FILE" \
     --prerelease \
     "$PRODUCTS_DIR/$IPA_NAME#NuvioTV.ipa (unsigned tvOS IPA)"
+
+  # Move the repo's "Latest" pointer to this build.
+  #
+  # Every announcement links <repo>/releases/latest. While EVERY release was
+  # flagged prerelease that link 302'd to the /releases list page and the API
+  # endpoint 404'd, because GitHub never treats a prerelease as Latest — found
+  # and fixed by hand on 2026-08-22 (beta.14.5), see docs/beta-feedback-*.
+  #
+  # GitHub will not let a release be both prerelease and Latest, so promoting
+  # necessarily drops this build's prerelease badge. The badge stays on every
+  # OLDER release, which is the point: the newest beta is the one testers are
+  # meant to land on, and the rest stay visibly archival. Done as an explicit
+  # post-publish flip rather than by omitting --prerelease above so the pointer
+  # is SET, not inferred from publish order — re-runs and the mirror repo would
+  # otherwise be at the mercy of GitHub's implicit "newest non-prerelease wins".
+  echo "==> Marking $TAG as Latest on $1 (drops its prerelease badge; older releases keep theirs)"
+  gh release edit "$TAG" --repo "$1" --prerelease=false --latest
 }
 
 publish_release "$GH_REPO" "$BRANCH"
