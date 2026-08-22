@@ -191,6 +191,29 @@ final class NuvioTVUITests: XCTestCase {
     /// Whichever button currently holds focus, or nil if none does. `hasFocus` isn't a reliable
     /// NSPredicate key on `XCUIElementQuery`, so this walks the snapshot instead — fine here since
     /// a "See All" grid's visible button count is small.
+    /// One consistent read of every button frame on screen. `allElementsBoundByIndex` elements
+    /// re-resolve BY INDEX on every `.frame` read, and a row whose lazy tree re-shuffles
+    /// mid-poll (the poster morph remounting tiles) makes that throw "No matches found for
+    /// Element at index N" (sim run 4, 2026-08-21). A single `snapshot()` walk has no such race.
+    private func buttonFrames(_ app: XCUIApplication) -> [CGRect] {
+        buttonSnapshots(app).map(\.frame)
+    }
+
+    /// Every button's frame + focus flag from ONE `snapshot()` — the focused card and its row
+    /// neighbours read in the same instant, with none of `focusedButton`'s slow `hasFocus`
+    /// sweep in between (sim run 5, 2026-08-21: sweep + press gap straddled the 1s dwell, so
+    /// the "resting" baseline was already mid-morph).
+    private func buttonSnapshots(_ app: XCUIApplication) -> [(frame: CGRect, hasFocus: Bool)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(frame: CGRect, hasFocus: Bool)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.elementType == .button { out.append((node.frame, node.hasFocus)) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
     private func focusedButton(_ app: XCUIApplication) -> XCUIElement? {
         app.buttons.allElementsBoundByIndex.first { $0.hasFocus }
     }
@@ -2394,47 +2417,81 @@ final class NuvioTVUITests: XCTestCase {
                 "-home_upcoming_row_enabled", "NO",
                 "-trailer_playback_location", location,
                 "-hero_nuvio_style", "YES",
+                // Codex gate r2: the hero leg's `hph` oracle must be the FOCUS-driven claimant
+                // (`heroFocusTrailerActive`), never FEAT-25's carousel autoplay — a sim whose
+                // stored settings have Autoplay Hero Trailer on would otherwise satisfy the
+                // phase assertion with the carousel's own attempt. Forced off for both legs.
+                "-hero_trailer_autoplay", "NO",
             ]
         }
 
         /// Walks down×4 to the first movies row (test01/TrailerSoakTests' walk, run pinned
-        /// here), snapshots the pre-dwell focused card's frame, waits out the dwell gate (1s) +
-        /// morph window, then the settle margin, and returns the PEAK width the card showed
-        /// across both samples plus the debug_hero probe — the peak is the morph oracle, so a
-        /// morph that fired and collapsed still registers.
+        /// here), snapshots the row's resting geometry, then polls through the dwell + resolve +
+        /// morph window and returns the PEAK rightward displacement of the focused card's row
+        /// neighbours plus the debug_hero probe.
+        ///
+        /// Why neighbours, not the focused card (sim runs 2/3, 2026-08-21): the focused Button's
+        /// AX frame stays at its resting portrait width through a morph that the screenshots
+        /// (and `[TrailerPipeline] claimPlayback`) prove fired — the card body is
+        /// `accessibilityHidden`, so the Button's reported frame doesn't follow the tile. What
+        /// the morph DOES move is everything to its right: the rest of the row slides over by
+        /// the landscape−portrait delta (~170pt). That displacement is the oracle. Peak, not
+        /// final, so a morph that fired and then COLLAPSED (Codex pre-commit round 5) still
+        /// registers.
         func measureDwell(_ app: XCUIApplication, _ tag: String) throws -> (before: CGFloat, peak: CGFloat, probe: String) {
             // Upcoming row forced off (see heroLocationArguments), so this is the pre-Upcoming
             // row geometry test01/TrailerSoakTests' down×4 walks were written against.
-            press(.down, times: 4)
-            // ONE .frame read, taken immediately: focusedButton's AX sweep plus repeated frame
-            // reads can straddle the 1.0s dwell on a loaded sim, and a mid-morph baseline would
-            // inflate `before` (failing leg 2 on a correct build) or flip the portrait guard
-            // into an XCTSkip. Snapshot first, judge the snapshot after.
-            guard let beforeButton = focusedButton(app) else {
+            press(.down, times: 3)
+            remote.press(.down)
+            pause(0.3) // focus-engine settle only — the baseline MUST land inside the 1.0s dwell
+            // ONE baseline read, immediately after the final press: the focused card AND its row
+            // neighbours from the same `snapshot()`. A separate `focusedButton` sweep here took
+            // long enough (plus the press gap) to straddle the dwell, so the "resting" geometry
+            // was already mid-morph (sim run 5). Snapshot first, judge the snapshot after.
+            let baseline = buttonSnapshots(app)
+            guard let beforeFrame = baseline.first(where: { $0.hasFocus })?.frame else {
                 throw XCTSkip("no focused element reported before dwell (27.0 runtime never reports hasFocus)")
             }
-            let beforeFrame = beforeButton.frame
             guard beforeFrame.width > 80, beforeFrame.height > beforeFrame.width else {
                 throw XCTSkip("focused element before dwell is not a resting portrait poster — frame=\(beforeFrame)")
             }
-            let widthBefore = beforeFrame.width
-            shot(app, "\(tag)_00_before_dwell")
-
-            // Codex pre-commit round 5: a single sample 3s out would false-pass a morph that
-            // fired and then COLLAPSED (trailer resolution failure) — so sample once inside the
-            // morph window (dwell 1.0s + morph 0.35s) and once after settle, and judge the MAX
-            // width the card ever showed, not the final rest.
-            pause(1.4) // dwell gate + morph window
-            shot(app, "\(tag)_01_mid_window")
-            let midWidth = focusedButton(app)?.frame.width ?? widthBefore
-            pause(1.6) // focus commit delay + margin — let the morph (or hero handoff) settle
-            shot(app, "\(tag)_02_after_dwell")
-
-            guard let after = focusedButton(app) else {
-                throw XCTSkip("focused card lost after the dwell wait")
+            /// The focused card's row neighbours to its right: same vertical band, further along.
+            /// The band follows the focused card's position IN THAT SAME SNAPSHOT (sim run 6: the
+            /// baseline lands while the row is still sliding up into place — focused y=711 vs a
+            /// 648 rest — so a band anchored to the baseline's midY rejected every later
+            /// neighbour). Only minX feeds the oracle, and that is scroll-independent.
+            func neighbourMinXs(_ snaps: [(frame: CGRect, hasFocus: Bool)]) -> [CGFloat] {
+                let anchor = snaps.first(where: { $0.hasFocus })?.frame ?? beforeFrame
+                return snaps.compactMap { b -> CGFloat? in
+                    let f = b.frame
+                    guard abs(f.midY - anchor.midY) < 20, f.minX > anchor.maxX - 1 else { return nil }
+                    return f.minX
+                }.sorted()
             }
+            func neighbourMinXs() -> [CGFloat] { neighbourMinXs(buttonSnapshots(app)) }
+            let neighboursBefore = neighbourMinXs(baseline)
+            guard let firstNeighbourBefore = neighboursBefore.first else {
+                throw XCTSkip("focused poster has no row neighbour to its right — frame=\(beforeFrame)")
+            }
+            shot(app, "\(tag)_00_before_dwell")
+            print("[UX7] \(tag) baseline focused=\(beforeFrame) neighbours=\(neighboursBefore.prefix(3))")
+
+            // Poll the peak at 0.5s through an 8s window (test01's own morph window is 8s+): on
+            // this sim the poster morph follows resolution at ~+3.6s after focus.
+            var peakShift: CGFloat = 0
+            for i in 0..<16 {
+                pause(0.5)
+                if let firstNeighbour = neighbourMinXs().first {
+                    peakShift = max(peakShift, firstNeighbour - firstNeighbourBefore)
+                }
+                if i == 2 || i == 8 {
+                    print("[UX7] \(tag) sample \(i) focused=\(focusedButton(app)?.frame ?? .zero) neighbour=\(neighbourMinXs().first ?? -1) peakShift=\(peakShift)")
+                }
+                if i == 2 { shot(app, "\(tag)_01_mid_window") }
+            }
+            shot(app, "\(tag)_02_after_dwell")
             let probe = heroSrcProbe(app, "\(tag)_03_probe")
-            return (widthBefore, max(midWidth, after.frame.width), probe)
+            return (firstNeighbourBefore, firstNeighbourBefore + peakShift, probe)
         }
 
         // Leg 1: hero location — the focused poster must NOT morph; the hero backdrop takes the
@@ -2443,26 +2500,73 @@ final class NuvioTVUITests: XCTestCase {
         let heroResult = try measureDwell(heroApp, "37a_hero")
         XCTAssertLessThanOrEqual(
             heroResult.peak, heroResult.before + 12,
-            "poster width grew (morph fired) while trailer_playback_location=hero — before=\(heroResult.before) peak=\(heroResult.peak)"
+            "row neighbours shifted (poster morph fired) while trailer_playback_location=hero — neighbourMinX before=\(heroResult.before) peak=\(heroResult.peak)"
         )
         XCTAssertTrue(heroResult.probe.contains(" tloc=h"), "trailer_playback_location=hero must set tloc=h on debug_hero, got: \(heroResult.probe)")
+        // Codex gate r2: with carousel autoplay forced off above, the only path to a non-idle
+        // `hph` is a COMMITTED row focus (`src=f` + a real `fitem`), so prove that focus state
+        // exists before reading the phase — otherwise the phase assertion below could not
+        // distinguish "the feature worked" from "some other claimant ran".
+        XCTAssertTrue(heroResult.probe.contains(" src=f"), "hero leg must have a committed row focus (src=f) driving the hero, got: \(heroResult.probe)")
+        XCTAssertFalse(heroResult.probe.contains(" fitem=- "), "hero leg must report the focused item id (fitem=), got: \(heroResult.probe)")
 
         // debug_hero must also show the hero trailer model took the attempt. Poll a few more
         // samples if the first one is still mid-resolve — same tolerant polling shape test20's
         // src=c/src=f walk uses — preferring the strongest signal (exp/play) but accepting dwell
         // as the floor, matching what TrailerSoakTests' own dwell-play-leave soak treats as the
         // reliably-observable attempt signal on a sim.
-        var hphState = heroResult.probe
-        var reachedAttemptPhase = hphState.contains("hph=exp") || hphState.contains("hph=play")
-        if !reachedAttemptPhase {
-            for i in 1...6 {
-                pause(0.5)
-                hphState = heroSrcProbe(heroApp, "37a_hero_hph_poll_\(i)")
-                if hphState.contains("hph=exp") || hphState.contains("hph=play") {
-                    reachedAttemptPhase = true
-                    break
+        func pollHeroPhase(_ tag: String, initial: String) -> (state: String, reached: Bool) {
+            var state = initial
+            var reached = state.contains("hph=exp") || state.contains("hph=play")
+            if !reached {
+                for i in 1...6 {
+                    pause(0.5)
+                    state = heroSrcProbe(heroApp, "\(tag)_\(i)")
+                    if state.contains("hph=exp") || state.contains("hph=play") {
+                        reached = true
+                        break
+                    }
                 }
             }
+            return (state, reached)
+        }
+        var (hphState, reachedAttemptPhase) = pollHeroPhase("37a_hero_hph_poll", initial: heroResult.probe)
+        // Sim run 1 (2026-08-21): the walk's 0.8s press gap stretched to 2.0s under load on one
+        // intermediate card, whose hero attempt (hero mode arms on EVERY committed row focus —
+        // Continue Watching cards included) fired its dwell and took the single extraction slot;
+        // the destination card's dwell was then `beginExtraction refused` and, by the pipeline's
+        // skip-don't-queue design (BUG-46), never retried — `hph=idle` across the whole poll on
+        // a correct build. Harden the TEST, not the app: wait out the slot, then re-focus the
+        // card (right → left, gaps short enough that the neighbour never dwells) — "leaving and
+        // coming back plays it again" is the documented model contract — and judge that second
+        // attempt, still requiring the poster not to grow while it runs.
+        if !reachedAttemptPhase && !hphState.contains("hph=dwell") {
+            print("[UX7] 37a_hero: first attempt idle after poll (refused-slot cadence) — re-focusing")
+            pause(3.0) // > the sim's ~2.7s extraction hold, so the slot is free for the retry
+            press(.right, gap: 0.3)
+            press(.left, gap: 0.3)
+            guard let refocused = focusedButton(heroApp) else {
+                throw XCTSkip("no focused element reported after the re-focus nudge")
+            }
+            let retryFrame = refocused.frame
+            func retryNeighbourMinX() -> CGFloat? {
+                buttonFrames(heroApp).compactMap { f -> CGFloat? in
+                    guard abs(f.midY - retryFrame.midY) < 20, f.minX > retryFrame.maxX - 1 else { return nil }
+                    return f.minX
+                }.min()
+            }
+            let retryNeighbourBefore = retryNeighbourMinX() ?? -1
+            pause(1.4)
+            var retryPeakShift: CGFloat = 0
+            if let n = retryNeighbourMinX(), retryNeighbourBefore >= 0 { retryPeakShift = max(retryPeakShift, n - retryNeighbourBefore) }
+            let retryProbe = heroSrcProbe(heroApp, "37a_hero_retry_probe")
+            (hphState, reachedAttemptPhase) = pollHeroPhase("37a_hero_retry_hph_poll", initial: retryProbe)
+            if let n = retryNeighbourMinX(), retryNeighbourBefore >= 0 { retryPeakShift = max(retryPeakShift, n - retryNeighbourBefore) }
+            XCTAssertLessThanOrEqual(
+                retryPeakShift, 12,
+                "row neighbours shifted (poster morph fired) on the re-focused attempt while trailer_playback_location=hero — shift=\(retryPeakShift)"
+            )
+            XCTAssertTrue(hphState.contains(" src=f"), "re-focused hero leg must still report a committed row focus (src=f), got: \(hphState)")
         }
         XCTAssertTrue(
             reachedAttemptPhase || hphState.contains("hph=dwell"),
@@ -2477,7 +2581,7 @@ final class NuvioTVUITests: XCTestCase {
         let posterResult = try measureDwell(posterApp, "37b_poster")
         XCTAssertGreaterThan(
             posterResult.peak, posterResult.before + 20,
-            "poster width did not grow (no morph) while trailer_playback_location=poster — before=\(posterResult.before) peak=\(posterResult.peak)"
+            "row neighbours never shifted (no poster morph) while trailer_playback_location=poster — neighbourMinX before=\(posterResult.before) peak=\(posterResult.peak)"
         )
         XCTAssertTrue(posterResult.probe.contains(" tloc=p"), "trailer_playback_location=poster must set tloc=p on debug_hero, got: \(posterResult.probe)")
         XCTAssertTrue(posterApp.state == .runningForeground, "app must survive the poster-location leg")
