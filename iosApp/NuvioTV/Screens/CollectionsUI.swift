@@ -693,12 +693,16 @@ struct FolderDetailView: View {
 /// Home hero's logo slot so a 1:1 genre badge and a wide wordmark both sit on one baseline.
 private struct FolderHeroTitle: View {
     let title: String
-    let logoUrl: String?
+    private let url: URL?
     @State private var image: UIImage?
 
-    private var url: URL? {
-        guard let logoUrl else { return nil }
-        return URL(string: logoUrl)
+    init(title: String, logoUrl: String?) {
+        self.title = title
+        self.url = logoUrl.flatMap(URL.init(string:))
+        // Codex round 1: seed synchronously from the cache, exactly as `HeroLogo` does — a
+        // reopened folder whose logo is already in ArtworkStore must not flash its text title
+        // for one frame before the `.task` consults the same cache.
+        _image = State(initialValue: ArtworkStore.cached(url))
     }
 
     var body: some View {
@@ -715,6 +719,10 @@ private struct FolderHeroTitle: View {
                     .foregroundStyle(Theme.Palette.textPrimary)
             }
         }
+        // Codex round 1: when a logo is configured, text-while-loading and the loaded logo share
+        // ONE fixed-height slot, so the swap cannot resize the header and shove the tabs/grid
+        // while focus is live. No logo configured → no slot: the page keeps its old text metrics.
+        .frame(height: url == nil ? nil : Theme.Size.heroLogoSlotHeightPinned, alignment: .leading)
         .task(id: url) {
             guard let url else {
                 image = nil
@@ -725,9 +733,12 @@ private struct FolderHeroTitle: View {
                 return
             }
             image = nil
-            if let fetched = try? await ArtworkStore.fetch(url) {
-                withAnimation(.easeIn(duration: 0.25)) { image = fetched }
-            }
+            let fetched = try? await ArtworkStore.fetch(url)
+            // Codex round 1: `.task(id:)` cancels this task when the URL changes, but
+            // `ArtworkStore.fetch` lets shared work run to completion — so a superseded fetch can
+            // land after its replacement. Never install a result for a URL that is no longer ours.
+            guard !Task.isCancelled, let fetched else { return }
+            withAnimation(.easeIn(duration: 0.25)) { image = fetched }
         }
     }
 }
