@@ -124,11 +124,13 @@ struct HomeScreenSettingsPane: View {
 
                 SettingsToggleRow(
                     title: String(localized: "Trailers on Focus"),
-                    // Codex gate r3: the enabled summary names the surface the picker below
-                    // actually selects — with "Hero" chosen it must not say the poster plays.
+                    // Codex gate r3/r4: the enabled summary names the surface that will ACTUALLY
+                    // play — "Hero" only when the hero location can take effect (same conditions
+                    // as the two fallback captions below); otherwise the poster, which is what
+                    // the user will see in the classic layout or with no hero source enabled.
                     subtitle: !inlineTrailersEnabled
                         ? String(localized: "Off \u{00B7} Posters show artwork only")
-                        : trailerPlaybackLocation == "hero"
+                        : heroLocationEffective
                             ? String(localized: "On \u{00B7} The hero plays a muted trailer preview after a moment of focus on a poster")
                             : String(localized: "On \u{00B7} Posters play a muted trailer preview after a moment of focus"),
                     isOn: inlineTrailersEnabled
@@ -168,6 +170,16 @@ struct HomeScreenSettingsPane: View {
                 )
             }
         }
+    }
+
+    /// Settings-side mirror of `HomeView.heroFocusTrailerMode`'s settings terms: "Hero" is
+    /// selected AND the layout pins a hero (Show Hero off → focus panel; Nuvio-style on with at
+    /// least one hero source, the best proxy Settings has for the hero fan-out producing a
+    /// surface). Exactly the complement of the two fallback captions in `trailerLocationRow`.
+    private var heroLocationEffective: Bool {
+        guard trailerPlaybackLocation == "hero" else { return false }
+        if !model.heroEnabled { return true }
+        return heroNuvioStyle && model.catalogs.contains(where: { $0.heroSourceEnabled })
     }
 
     /// Dependent chip row shown only while "Trailers on Focus" is on: picks whether the muted
