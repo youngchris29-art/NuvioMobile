@@ -134,6 +134,9 @@ struct ContentView: View {
         // `debug.mpvSmokeURL`: present the real player over the root for sim validation of the
         // libmpv path (see MPVSmokeTest.swift).
         .modifier(MPVSmokeModifier())
+        // `debug.settingsKitPreview`: throwaway stock-List Settings spike (beta.15 plan §C, task
+        // C0 — see SettingsKitPreview.swift). Delete this line when that file is deleted.
+        .modifier(SettingsKitPreviewModifier())
         #endif
     }
 }
