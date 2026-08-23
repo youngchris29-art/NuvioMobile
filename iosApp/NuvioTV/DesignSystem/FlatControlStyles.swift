@@ -200,6 +200,37 @@ extension View {
     func prominentAccentLabel() -> some View { modifier(ProminentAccentLabel()) }
 }
 
+/// legacy — used by non-Settings screens pending their own native-List pass (beta.16 candidate).
+///
+/// Focus-aware title/subtitle/value text colour for content inside `.settingsRow`-styled buttons
+/// (the BUG-4/14/22/28/33 white-on-white class; BUG-65 added the `settingsRowIsFocused` OR-in for
+/// devices where `\.isFocused` dies inside the custom style). Moved here from the Settings kit
+/// (`SettingsRowViews.swift`) in beta.15 task C4: the Settings screen's own rows are all stock
+/// controls now and the system flips their label colour itself, so this survives only for the
+/// five screens still on `.settingsRow` buttons — `StreamPickerView`, `DetailView`,
+/// `CloudLibraryUI`, `AddonsView`, `TmdbFilterEditorView`. Do not reach for it in new code.
+struct RowTextColor: ViewModifier {
+    var secondary = false
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(
+            (isFocused || rowFocused)
+                ? Theme.Palette.onFocusPlatter.opacity(secondary ? 0.7 : 1)
+                : (secondary ? Theme.Palette.textSecondary : Theme.Palette.textPrimary)
+        )
+    }
+}
+
+extension View {
+    /// legacy — used by non-Settings screens pending their own native-List pass (beta.16
+    /// candidate). See `RowTextColor`.
+    func rowTextColor(secondary: Bool = false) -> some View {
+        modifier(RowTextColor(secondary: secondary))
+    }
+}
+
 /// Accent tint for icons/labels that sit INSIDE a focusable row or chip (BUG-22). The row
 /// styles above flip their platter to near-white on focus and rely on semantic colors flipping
 /// with the forced light `colorScheme` — but an explicit `Theme.Palette.accent` bypasses that,

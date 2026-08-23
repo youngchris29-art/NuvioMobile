@@ -18,12 +18,13 @@ import SharedCore
 //   row subtitle → Caption1 25  (`Theme.Font.meta`)
 //   section head → Caption2 23  (`Theme.Font.caption`)
 //
-// Legacy call sites: the seven `*SettingsPane` files are converted in task C3, so each primitive
-// keeps the OLD initializer as a forwarding shim (marked `LEGACY SHIM (C3)`) that maps the old
-// value+action shape onto the new binding-based one. `RowTextColor`/`rowTextColor`,
-// `LanguageSelectRow` and the `settingsSection` free function survive for the same reason (and
-// `rowTextColor` for five non-Settings screens that use `.settingsRow` buttons); C4 deletes
-// whatever is unreferenced by then.
+// C4 (cleanup after C1-C3): the seven `*SettingsPane` files are fully converted now, so every
+// legacy value+action shim, `SettingsInfoRow`, and `LanguageSelectRow` — all unreferenced once C3
+// landed — are deleted from this file. The legacy focus-aware text-colour modifier moved to
+// DesignSystem/FlatControlStyles.swift, since five non-Settings screens still draw the legacy
+// full-width row button style and need it; those screens are out of this beta's scope.
+// `settingsSection` survives here because `TmdbFilterEditorView` (also out of scope) still calls
+// it.
 
 /// The three type-scale tokens the kit uses, named by role so a future scale change is one edit.
 /// All three resolve to `Theme.Font` semantic tokens — no `Font.system(size:)` anywhere (HIG
@@ -168,17 +169,6 @@ struct SettingsToggleRow: View {
         self.isOn = isOn
     }
 
-    /// LEGACY SHIM (C3): the pre-C1 value + action shape used by all seven panes. The synthesized
-    /// binding ignores the incoming value and just fires `action` (the pane's model flips the
-    /// stored value and re-renders), so a single Select produces exactly one toggle.
-    init(title: String, subtitle: String = "", isOn: Bool, action: @escaping () -> Void) {
-        self.init(
-            title: title,
-            subtitle: subtitle.isEmpty ? nil : subtitle,
-            isOn: Binding(get: { isOn }, set: { _ in action() })
-        )
-    }
-
     var body: some View {
         Toggle(isOn: isOn) {
             SettingsRowLabel(title: title, subtitle: subtitle)
@@ -258,18 +248,6 @@ struct SettingsValueRow: View {
         } label: {
             SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage)
         }
-    }
-}
-
-/// LEGACY SHIM (C3): the pre-C1 name for `SettingsValueRow` (About pane + the account summary
-/// row). Same arguments, forwards verbatim.
-struct SettingsInfoRow: View {
-    let title: String
-    let value: String
-    var systemImage: String?
-
-    var body: some View {
-        SettingsValueRow(title: title, value: value, systemImage: systemImage)
     }
 }
 
@@ -399,36 +377,12 @@ struct DebridKeyEntryRow: View {
 }
 
 // MARK: - Legacy support (deleted in C4 once nothing references it)
-
-/// LEGACY: focus-aware title/subtitle/value text colour for content inside `.settingsRow`-styled
-/// buttons (the BUG-4/14/22/28/33 white-on-white class; BUG-65 added the `settingsRowIsFocused`
-/// OR-in for devices where `\.isFocused` dies inside the custom style).
-///
-/// The C1 kit does NOT use this — its rows are stock controls and the system flips their label
-/// colour itself. It survives only because five non-Settings screens still draw `.settingsRow`
-/// buttons (`StreamPickerView`, `DetailView`, `CloudLibraryUI`, `AddonsView`,
-/// `TmdbFilterEditorView`) plus the not-yet-converted panes. Do not reach for it in new code.
-struct RowTextColor: ViewModifier {
-    var secondary = false
-    @Environment(\.isFocused) private var isFocused
-    @Environment(\.settingsRowIsFocused) private var rowFocused
-
-    func body(content: Content) -> some View {
-        content.foregroundStyle(
-            (isFocused || rowFocused)
-                ? Theme.Palette.onFocusPlatter.opacity(secondary ? 0.7 : 1)
-                : (secondary ? Theme.Palette.textSecondary : Theme.Palette.textPrimary)
-        )
-    }
-}
-
-extension View {
-    /// LEGACY (see `RowTextColor`): focus-aware replacement for a bare
-    /// `.foregroundStyle(Theme.Palette.textPrimary/textSecondary)` inside `.settingsRow` buttons.
-    func rowTextColor(secondary: Bool = false) -> some View {
-        modifier(RowTextColor(secondary: secondary))
-    }
-}
+//
+// The legacy focus-aware text-colour modifier moved out to DesignSystem/FlatControlStyles.swift
+// in C4 — it is still used by five non-Settings screens (`StreamPickerView`, `DetailView`,
+// `CloudLibraryUI`, `AddonsView`, `TmdbFilterEditorView`) that draw the legacy full-width row
+// button style, so it belongs next to `SettingsRowButtonStyle`/`RowAccentTint` rather than in the
+// Settings kit, which no longer uses it anywhere.
 
 /// Language options for the audio/subtitle preference pickers. Special sentinels (`device`,
 /// `original`, `none`) match the shared `AudioLanguageOption`/`SubtitleLanguageOption` constants;
@@ -462,37 +416,5 @@ enum LanguageOptions {
     /// and needs the display name back.
     static func name(forCode code: String, in options: [(name: String, code: String)]) -> String {
         options.first { $0.code == code }?.name ?? code
-    }
-}
-
-/// LEGACY (C4 deletes): a horizontally-scrolling row of language chips. Superseded by
-/// `SettingsPickerRow` — the field notes call the chip row the anti-pattern versus `Menu { Picker }`
-/// — but three pane call sites still use it until C3 converts them.
-struct LanguageSelectRow: View {
-    let title: String
-    let options: [(name: String, code: String)]
-    let selected: String
-    let onSelect: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text(title)
-                .font(SettingsRowFont.sectionHeader)
-                .foregroundStyle(.secondary)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Theme.Spacing.md) {
-                    ForEach(options, id: \.code) { option in
-                        Button { onSelect(option.code) } label: {
-                            Text(option.name)
-                                .font(Theme.Font.meta)
-                                .padding(.horizontal, Theme.Spacing.md)
-                                .padding(.vertical, Theme.Spacing.xxs + 2)
-                        }
-                        .buttonStyle(.chip(selected: selected == option.code))
-                    }
-                }
-                .padding(.vertical, Theme.Spacing.xs)
-            }
-        }
     }
 }

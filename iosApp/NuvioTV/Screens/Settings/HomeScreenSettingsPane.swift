@@ -296,8 +296,10 @@ private struct HomeCatalogsGroup: View {
 
 /// Shared collapsed/expanded header row for the two collapsible Home Screen groups above: title +
 /// a live summary subtitle + a chevron that rotates 180° between collapsed (pointing down) and
-/// expanded (pointing up). Styled like the section's other top-level rows (`SettingsToggleRow`,
-/// `DefaultPlayerRow`) so it reads as a peer row, not a nested control.
+/// expanded (pointing up). C4: converted off the legacy full-width row button style and its
+/// focus-aware text-colour modifier onto a plain default-style `Button` (`SettingsActionRow`'s
+/// pattern) with a trailing chevron the system list row draws and inverts on focus for free, same
+/// as every other kit row in this file.
 private struct SettingsDisclosureRow: View {
     let title: String
     let subtitle: String
@@ -307,61 +309,35 @@ private struct SettingsDisclosureRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Theme.Spacing.lg) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    Text(title)
-                        .font(Theme.Font.body)
-                        .rowTextColor()
-                    Text(subtitle)
-                        .font(Theme.Font.caption)
-                        .rowTextColor(secondary: true)
-                        .lineLimit(2)
-                }
+                SettingsRowLabel(title: title, subtitle: subtitle)
                 Spacer()
-                Image(systemName: "chevron.down")
-                    .font(Theme.Font.body)
-                    .rowTextColor(secondary: true)
-                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(SettingsRowFont.title)
+                    .foregroundStyle(.secondary)
             }
-            .padding(Theme.Spacing.lg)
-            .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.settingsRow)
     }
 }
 
 /// A single Hero Sources row: catalog title + add-on, with an on/off indicator. Non-interactive
-/// (dimmed, ignores input) when the 2-source limit is reached and this row is currently off.
+/// (dimmed, disabled) when the 2-source limit is reached and this row is currently off. C4:
+/// converted onto `SettingsToggleRow` (a real `Toggle`) instead of the hand-rolled checkmark
+/// Button — the disabled state now uses `.disabled`, which the system already dims/ignores input
+/// for, so the manual `.opacity(interactive ? 1 : 0.4)` is gone too.
 private struct HeroSourceRow: View {
     let item: HomeCatalogSettingsItem
     let interactive: Bool
     let onToggle: (Bool) -> Void
 
     var body: some View {
-        Button {
-            onToggle(!item.heroSourceEnabled)
-        } label: {
-            HStack(spacing: Theme.Spacing.md) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    Text(item.displayTitle)
-                        .font(Theme.Font.body)
-                        .rowTextColor()
-                        .lineLimit(1)
-                    Text(item.addonName)
-                        .font(Theme.Font.caption)
-                        .rowTextColor(secondary: true)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Image(systemName: item.heroSourceEnabled ? "checkmark.circle.fill" : "circle")
-                    .font(Theme.Font.body)
-                    .rowAccentTint(item.heroSourceEnabled)
-            }
-            .padding(.vertical, Theme.Spacing.xs)
-            .padding(.horizontal, Theme.Spacing.md)
-            .frame(maxWidth: .infinity)
-            .opacity(interactive ? 1 : 0.4)
-        }
-        .buttonStyle(.settingsRow)
+        SettingsToggleRow(
+            title: item.displayTitle,
+            subtitle: item.addonName,
+            isOn: Binding(
+                get: { item.heroSourceEnabled },
+                set: { onToggle($0) }
+            )
+        )
         .disabled(!interactive)
     }
 }

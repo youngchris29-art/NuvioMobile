@@ -9,7 +9,7 @@ import SharedCore
 /// beta.15 §C (C2): this was a hand-rolled `HStack` of custom `SettingsRowButtonStyle` buttons in
 /// a `ScrollView`. Everything focus- and colour-related is now the system's job — no custom
 /// `ButtonStyle`, no `hoverEffect`, no focus-derived label colours (the BUG-45 sidebar
-/// special-case and the BUG-65 `settingsRowIsFocused` hack are gone from this file).
+/// special-case and the BUG-65 published-focus-environment-key hack are gone from this file).
 ///
 /// ## Focus graph (written before the code, per the tvOS skill's workflow)
 ///

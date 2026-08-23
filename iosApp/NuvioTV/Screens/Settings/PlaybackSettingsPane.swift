@@ -159,9 +159,9 @@ struct PlaybackSettingsPane: View {
 /// The stored id is deliberately device-local (@AppStorage, not synced): which apps are
 /// installed differs per Apple TV, so a synced default would dangle on every other device.
 ///
-/// C3a: was a hand-rolled `Menu` + manual `HStack`/`rowTextColor()`/`.buttonStyle(.settingsRow)`
-/// row; now `SettingsPickerRow` gives the same Menu{Picker} pill for free with system-inverted
-/// label colour, so the custom row chrome is gone.
+/// C3a: was a hand-rolled `Menu` + manual `HStack` with the legacy focus-aware text-colour
+/// modifier and full-width row button style; now `SettingsPickerRow` gives the same Menu{Picker}
+/// pill for free with system-inverted label colour, so the custom row chrome is gone.
 private struct DefaultPlayerRow: View {
     @AppStorage("default_external_player_id") private var defaultExternalPlayerId = ""
     /// Probed at init, NOT in `.onAppear`: with no players this row renders nothing, and

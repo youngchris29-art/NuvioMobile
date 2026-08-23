@@ -56,11 +56,11 @@ final class SettingsViewModel: ObservableObject {
     /// Nil until the first search of this app session, or after `SearchViewModel.queryChanged`
     /// clears back to an empty query.
     @Published private(set) var lastSearchFanOut: String?
-    /// Which backend owns the Library tab: "local", "trakt", or "simkl". Chip-row key, not the raw
-    /// Kotlin enum — mirrors `tmdbLanguageSelection`'s string-key pattern so the Content Sources
-    /// pane can reuse `LanguageSelectRow` without switching over the bridged enum in the view.
-    /// Backed by the provider-neutral `TrackingSettingsRepository` facade (currently persists
-    /// through the Trakt settings store — see the Kotlin object's doc comment).
+    /// Which backend owns the Library tab: "local", "trakt", or "simkl". `SettingsPickerRow`
+    /// selection key, not the raw Kotlin enum — mirrors `tmdbLanguageSelection`'s string-key
+    /// pattern so the Content Sources pane's picker doesn't switch over the bridged enum in the
+    /// view. Backed by the provider-neutral `TrackingSettingsRepository` facade (currently
+    /// persists through the Trakt settings store — see the Kotlin object's doc comment).
     @Published private(set) var librarySourceMode = "trakt"
     /// Which backend owns Continue Watching / watched history: "trakt", "simkl", or "nuvio_sync".
     @Published private(set) var watchProgressSource = "trakt"
