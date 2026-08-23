@@ -68,8 +68,19 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// sets `sub-filter-sdh` instead). Sampled at session start; converted VTTs are cached, so a
     /// mid-playback toggle flip applies from the next playback session.
     private let stripSdh: Bool
-    private var vttCache = [Int: Data]()
+    /// Converted addon VTT at offset zero, cached per rendition index. Delay variants are shifted
+    /// from this base on demand (cheap — a few thousand timing lines).
+    private var vttBase = [Int: String]()
     private var vttFailed = Set<Int>()
+    /// Subtitle delay in milliseconds, applied to the addon VTT bodies this server renders.
+    private var _subtitleDelayMs = 0
+    /// Bumped on every delay change; the media playlist names `sub-N-g<gen>.vtt`, so a refetched
+    /// playlist always points at a URL AVPlayer has never seen.
+    private var _subtitleGeneration = 0
+    /// How many interchangeable EXT-X-MEDIA slots each subtitle rendition is published under. >1
+    /// lets the coordinator force AVPlayer to load a rendition URI it has never fetched (the
+    /// re-timing mechanism); 1 = classic single-entry behaviour. Set before `start()`.
+    private var _subtitleSlots = 1
     let masterName = "master.m3u8"
     let mediaName = "media.m3u8"
 
@@ -128,6 +139,99 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
         lock.lock(); _signaling = signaling; lock.unlock()
     }
 
+    // MARK: - Subtitle delay (native-engine re-timing)
+
+    /// Publish each subtitle rendition under `slots` interchangeable EXT-X-MEDIA entries. Must be
+    /// called before `start()` — the master is rendered from this on every fetch, but AVPlayer only
+    /// fetches it once.
+    func setSubtitleSlots(_ slots: Int) {
+        lock.lock(); _subtitleSlots = max(1, slots); lock.unlock()
+    }
+
+    /// Set the subtitle delay in milliseconds and return the generation token that now names the
+    /// VTT bodies. Positive = subtitles appear LATER.
+    @discardableResult
+    func setSubtitleDelay(ms: Int) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard ms != _subtitleDelayMs else { return _subtitleGeneration }
+        _subtitleDelayMs = ms
+        _subtitleGeneration += 1
+        return _subtitleGeneration
+    }
+
+    var subtitleDelayMs: Int { lock.lock(); defer { lock.unlock() }; return _subtitleDelayMs }
+    var subtitleGeneration: Int { lock.lock(); defer { lock.unlock() }; return _subtitleGeneration }
+
+    /// `sub-<index>-g<generation>.vtt` — the delay-stamped body name a media playlist points at.
+    static func delayedVTTName(index: Int, generation: Int) -> String { "sub-\(index)-g\(generation).vtt" }
+
+    /// Parse `sub-<index>.vtt` or `sub-<index>-g<generation>.vtt`.
+    static func parseSubtitleVTTName(_ name: String) -> (index: Int, generation: Int)? {
+        guard name.hasPrefix("sub-"), name.hasSuffix(".vtt") else { return nil }
+        let core = name.dropFirst(4).dropLast(4)
+        let parts = core.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        if parts.count == 1, let index = Int(parts[0]) { return (index, 0) }
+        guard parts.count == 2, let index = Int(parts[0]),
+              parts[1].hasPrefix("g"), let generation = Int(parts[1].dropFirst()) else { return nil }
+        return (index, generation)
+    }
+
+    /// `sub-<index>.m3u8` (slot 0) or `sub-<index>-s<slot>.m3u8`.
+    static func parseSubtitlePlaylistName(_ name: String) -> (index: Int, slot: Int)? {
+        guard name.hasPrefix("sub-"), name.hasSuffix(".m3u8") else { return nil }
+        let core = name.dropFirst(4).dropLast(5)
+        let parts = core.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+        if parts.count == 1, let index = Int(parts[0]) { return (index, 0) }
+        guard parts.count == 2, let index = Int(parts[0]),
+              parts[1].hasPrefix("s"), let slot = Int(parts[1].dropFirst()) else { return nil }
+        return (index, slot)
+    }
+
+    /// Slot `k`'s playlist name for a rendition whose slot-0 name is `sub-<index>.m3u8`.
+    static func slotPlaylistName(index: Int, slot: Int) -> String {
+        slot == 0 ? "sub-\(index).m3u8" : "sub-\(index)-s\(slot).m3u8"
+    }
+
+    /// Duplicate every SUBTITLES EXT-X-MEDIA line of a rendered master into `slots` entries. Slot 0
+    /// keeps the original NAME and flags; the extra slots are never auto-selected and carry a
+    /// slot-suffixed NAME (AVPlayer keys options by NAME, so they must stay unique). The panel and
+    /// the coordinator strip the suffix again; the SYSTEM subtitle popover shows them, which is the
+    /// known cosmetic cost of this mechanism.
+    private static func expandSubtitleSlots(_ master: String, slots: Int) -> String {
+        guard slots > 1 else { return master }
+        var out: [String] = []
+        for line in master.components(separatedBy: "\n") {
+            guard line.hasPrefix("#EXT-X-MEDIA:TYPE=SUBTITLES"),
+                  let uriRange = line.range(of: "URI=\""),
+                  let uriEnd = line.range(of: "\"", range: uriRange.upperBound..<line.endIndex),
+                  let parsed = parseSubtitlePlaylistName(String(line[uriRange.upperBound..<uriEnd.lowerBound])),
+                  let nameRange = line.range(of: "NAME=\""),
+                  let nameEnd = line.range(of: "\"", range: nameRange.upperBound..<line.endIndex) else {
+                out.append(line)
+                continue
+            }
+            out.append(line)
+            let name = String(line[nameRange.upperBound..<nameEnd.lowerBound])
+            for slot in 1..<slots {
+                var twin = line
+                twin.replaceSubrange(uriRange.upperBound..<uriEnd.lowerBound,
+                                     with: slotPlaylistName(index: parsed.index, slot: slot))
+                // Recompute the NAME range on the mutated string before substituting.
+                if let r = twin.range(of: "NAME=\""), let e = twin.range(of: "\"", range: r.upperBound..<twin.endIndex) {
+                    twin.replaceSubrange(r.upperBound..<e.lowerBound, with: "\(name)\(slotNameSuffix)\(slot)")
+                }
+                twin = twin.replacingOccurrences(of: "DEFAULT=YES", with: "DEFAULT=NO")
+                    .replacingOccurrences(of: "AUTOSELECT=YES", with: "AUTOSELECT=NO")
+                out.append(twin)
+            }
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// Separator between a rendition NAME and its slot number in the master's twin entries.
+    static let slotNameSuffix = " \u{2007}#"
+
     /// The master playlist exactly as a client would receive it right now (for failure diagnostics).
     func renderedMasterPlaylist() -> String? { renderedPlaylist(named: masterName) }
 
@@ -135,10 +239,11 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     func renderedPlaylist(named name: String) -> String? {
         switch name {
         case masterName:
-            lock.lock(); let signaling = _signaling; lock.unlock()
-            return map.masterPlaylist(signaling: signaling, audioRenditions: audioRenditions,
-                                      bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles,
-                                      subtitleFlags: subtitleFlags)
+            lock.lock(); let signaling = _signaling; let slots = _subtitleSlots; lock.unlock()
+            let master = map.masterPlaylist(signaling: signaling, audioRenditions: audioRenditions,
+                                            bandwidth: bandwidth, mediaName: mediaName, subtitles: subtitles,
+                                            subtitleFlags: subtitleFlags)
+            return Self.expandSubtitleSlots(master, slots: slots)
         case mediaName:
             return map.mediaPlaylist()
         default:
@@ -147,22 +252,32 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             if let audio = audioRenditions.first(where: { $0.playlistName == name }) {
                 return map.mediaPlaylist(initName: audio.initName, segmentPrefix: audio.segmentPrefix)
             }
-            guard let rendition = subtitles.first(where: { $0.playlistName == name }) else { return nil }
+            // sub-N-sK.m3u8 — a delay slot's twin of sub-N.m3u8; same content, same rendition.
+            let slotted = Self.parseSubtitlePlaylistName(name)
+            guard let rendition = subtitles.first(where: {
+                $0.playlistName == name || (!$0.isEmbedded && $0.index == slotted?.index)
+            }) else { return nil }
             // esub-K.m3u8 — embedded track: one WebVTT file per video segment (same boundaries and
             // EXTINFs as media.m3u8, no init map), produced by the remux worker as it goes.
             if case .embedded(let sink) = rendition.source {
                 return map.embeddedSubtitlePlaylist { SubtitleRendition.embeddedSegmentName(sink: sink, segment: $0) }
             }
-            // sub-N.m3u8 — addon file: a one-segment VOD playlist covering the whole timeline (cue
-            // times are playlist times; no X-TIMESTAMP-MAP needed at origin zero).
+            // sub-N.m3u8 / sub-N-sK.m3u8 — addon file: a one-segment VOD playlist covering the whole
+            // timeline (cue times are playlist times; no X-TIMESTAMP-MAP needed at origin zero).
+            // The body name carries the current delay GENERATION, so a freshly fetched playlist
+            // always names a URL AVPlayer has not cached.
             let total = map.totalDurationSec
+            lock.lock(); let generation = _subtitleGeneration; lock.unlock()
+            let body = generation == 0
+                ? rendition.fileName
+                : Self.delayedVTTName(index: rendition.index, generation: generation)
             return [
                 "#EXTM3U",
                 "#EXT-X-VERSION:7",
                 "#EXT-X-TARGETDURATION:\(Int(total.rounded(.up)))",
                 "#EXT-X-PLAYLIST-TYPE:VOD",
                 String(format: "#EXTINF:%.3f,", total),
-                rendition.fileName,
+                body,
                 "#EXT-X-ENDLIST",
             ].joined(separator: "\n") + "\n"
         }
@@ -358,18 +473,25 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
     /// SRT→WebVTT and cache. Failures 404 — a missing subtitle track must never disturb playback
     /// (AVPlayer keeps playing; the menu entry just doesn't render cues).
     private func serveSubtitle(name: String, rangeHeader: String?, isHead: Bool, on connection: NWConnection) {
-        guard let rendition = subtitles.first(where: { !$0.isEmbedded && $0.fileName == name }),
+        guard let index = Self.parseSubtitleVTTName(name)?.index,
+              let rendition = subtitles.first(where: { !$0.isEmbedded && $0.index == index }),
               let sourceURL = rendition.sourceURL else {
             send(status: "404 Not Found", contentType: "text/plain", body: Data("Not found".utf8),
                  on: connection, requestPath: name)
             return
         }
         lock.lock()
-        let cached = vttCache[rendition.index]
+        let cached = vttBase[rendition.index]
         let failed = vttFailed.contains(rendition.index)
+        // ALWAYS the current delay, whatever generation the requesting playlist named: AVPlayer
+        // caches a rendition's media playlist for the life of the item but re-fetches the VTT body
+        // on every (re)selection, so the body request is the one place the new timing can land.
+        // (Measured on the simulator — see the B3 report.)
+        let offsetMs = _subtitleDelayMs
         lock.unlock()
         if let cached {
-            serveBytes(cached, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
+            let shifted = offsetMs == 0 ? cached : SubtitleVTT.shift(cached, offsetMs: offsetMs)
+            serveBytes(Data(shifted.utf8), name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             return
         }
         if failed {
@@ -385,9 +507,10 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let vtt = (200..<300).contains(status) ? data.flatMap { SubtitleVTT.webVTT(from: $0, stripSdh: self.stripSdh) } : nil
             if let vtt {
-                let body = Data(vtt.utf8)
-                self.lock.lock(); self.vttCache[rendition.index] = body; self.lock.unlock()
-                print("[HLS] subtitle \(rendition.index) ready (\(body.count)b, \(rendition.name))")
+                self.lock.lock(); self.vttBase[rendition.index] = vtt; self.lock.unlock()
+                let shifted = offsetMs == 0 ? vtt : SubtitleVTT.shift(vtt, offsetMs: offsetMs)
+                let body = Data(shifted.utf8)
+                print("[HLS] subtitle \(rendition.index) ready (\(body.count)b, \(rendition.name), delay \(offsetMs)ms)")
                 self.serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             } else {
                 self.lock.lock(); self.vttFailed.insert(rendition.index); self.lock.unlock()

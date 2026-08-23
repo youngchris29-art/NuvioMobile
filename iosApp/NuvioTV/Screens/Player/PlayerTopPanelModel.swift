@@ -50,9 +50,19 @@ final class PlayerTopPanelModel: ObservableObject {
     /// that don't drive AVAudioSession routing.
     @Published var canPickRoute = true
 
+    /// Current subtitle delay in milliseconds (0 = none, positive = subtitles later). Meaningless
+    /// while `supportsSubtitleDelay` is false.
+    @Published var subtitleDelayMs: Int = 0
+    /// Whether the current engine can re-time subtitles at all — false hides the Subtitles tab's
+    /// "Timing" row entirely. mpv sets this true (`MPVPlayerPanelAdapter`); the native AVPlayer
+    /// adapter leaves it false until the delay mechanism lands (beta.15 §B3).
+    @Published var supportsSubtitleDelay: Bool = false
+
     /// nil = Off.
     var onSelectSubtitle: ((PlayerPanelOption?) -> Void)?
     var onSelectAudio: ((PlayerPanelOption) -> Void)?
+    /// New delay in milliseconds, already clamped to ±`SUBTITLE_DELAY_MAX_MS`.
+    var onSubtitleDelayChange: ((Int) -> Void)?
     var onClose: (() -> Void)?
 
     init(info: PlayerPanelInfo) {

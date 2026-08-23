@@ -102,6 +102,38 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Subtitle renditions of the current session keyed by NAME (source, forced, SDH) — the top
     /// panel's Subtitles tab groups/labels its rows from this.
     private(set) var subtitleRenditionsByName: [String: SubtitleRendition] = [:]
+
+    // MARK: - Subtitle delay (B3)
+
+    // The native engine re-times subtitles by RE-SERVING the rendition's WebVTT body with every cue
+    // shifted. Measured on the tvOS 26.5 simulator (see docs, B3):
+    //   • AVPlayer caches a subtitle rendition's MEDIA PLAYLIST for the life of the item — a second
+    //     selection of a rendition never refetches `sub-N.m3u8`, so the body URL it names is frozen.
+    //   • AVPlayer DOES refetch the VTT BODY on every (re)selection of a legible option, including
+    //     one it has loaded before (our responses carry `Cache-Control: no-store`).
+    // So the forcing function is simply Off → same option again; the server answers the refetch with
+    // the current offset. Six consecutive distinct delays landed, each visible on the very next cue.
+
+    /// Fallback forcing function, OFF by default. If an AVFoundation build ever caches the VTT body
+    /// too, publishing each rendition under N interchangeable EXT-X-MEDIA slots makes a delay change
+    /// select a URI AVPlayer has never fetched. It costs duplicate entries in the SYSTEM subtitle
+    /// popover and caps a session at N distinct delays (slot K is bound to the delay it first
+    /// served), which is why the reselect path is preferred. >1 re-enables it.
+    static let subtitleDelaySlots = 1
+    /// Current subtitle delay in milliseconds (positive = subtitles appear later). Persisted per
+    /// `context.videoId` through the shared `PlayerTrackPreferenceStorage`.
+    @Published private(set) var subtitleDelayMs = 0
+    /// Number of delay changes applied this session — the slot cursor for the fallback path.
+    private var subtitleDelayChanges = 0
+    /// Coalesces a burst of ±0.1 s presses into one reselect (each one costs AVPlayer a VTT reparse
+    /// and blinks the caption off for a frame).
+    private var subtitleDelayApplyTask: Task<Void, Never>?
+    /// The deferred "same option again" half of a delay refetch; cancelled by any explicit
+    /// subtitle selection so a viewer's pick during the window is never overwritten.
+    private var subtitleRefetchRestoreTask: Task<Void, Never>?
+    /// True for the ~60 ms Off→restore hop of a delay refetch, so the panel keeps the Timing row
+    /// mounted (unmounting the focused chip would throw tvOS focus — Codex review).
+    @Published private(set) var isRefetchingSubtitles = false
     /// Paused per `timeControlStatus` (drives the swipe-down hint re-show).
     @Published private(set) var isPaused = false
     private var hasStartedPlaying = false
@@ -148,6 +180,11 @@ final class NativePlaybackCoordinator: ObservableObject {
         // StateFlow replay also delivers results prefetched before this coordinator existed).
         // Settings first: the addon-subtitle watcher below filters by them.
         resolveLanguagePlan(selectedAudioLanguage: nil)
+        // Persisted subtitle delay for this title/episode (profile-scoped, shared with mobile).
+        // Loaded before the server exists, so the very first VTT body is already re-timed.
+        subtitleDelayMs = Self.clampSubtitleDelay(
+            PlayerTrackPreferenceStorage.shared.loadSubtitleDelayMs(videoId: context.videoId)?.intValue ?? 0)
+        if subtitleDelayMs != 0 { print("[NativePlayer] subtitle delay restored: \(subtitleDelayMs)ms") }
         subsRequestKey = SubtitleRepository.shared.requestKey(type: context.contentType, videoId: context.videoId)
         addonSubsWatcher = FlowWatcherKt.watch(SubtitleRepository.shared.addonSubtitles) { [weak self] emitted in
             guard let subs = emitted as? [AddonSubtitle] else { return }
@@ -336,6 +373,8 @@ final class NativePlaybackCoordinator: ObservableObject {
     func stop() {
         pollTask?.cancel(); pollTask = nil
         observeTask?.cancel(); observeTask = nil
+        subtitleDelayApplyTask?.cancel(); subtitleDelayApplyTask = nil
+        subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
         if let o = mediaSelectionObserver { NotificationCenter.default.removeObserver(o); mediaSelectionObserver = nil }
         timeControlObserver?.invalidate(); timeControlObserver = nil
         addonSubsWatcher?.cancel(); addonSubsWatcher = nil
@@ -477,6 +516,13 @@ final class NativePlaybackCoordinator: ObservableObject {
                                     producingInfo: { remux.producingInfo },
                                     requestReposition: { remux.reposition(toSegment: $0) })
         self.server = server
+        // Subtitle delay (B3): publish each addon rendition under N interchangeable slots so a delay
+        // change can be forced past AVPlayer's per-item playlist cache, and bake the restored delay
+        // into generation 0 — the first body AVPlayer ever fetches is already re-timed.
+        if subtitleRenditions.contains(where: { !$0.isEmbedded }) {
+            server.setSubtitleSlots(Self.subtitleDelaySlots)
+        }
+        if subtitleDelayMs != 0 { server.setSubtitleDelay(ms: subtitleDelayMs) }
         server.start(masterName: remux.masterPlaylistName) { [weak self] url in
             guard let self else { return }
             guard let url else { self.failIfPreplayback("server bind failed"); return }
@@ -508,6 +554,9 @@ final class NativePlaybackCoordinator: ObservableObject {
             self.observeMediaSelection(item: item, player: player)
             self.phase = .playing
             self.observePlayback(player: player, item: item)
+            #if DEBUG
+            self.startSubtitleDelaySpike()
+            #endif
         }
     }
 
@@ -731,11 +780,151 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Select a legible option (nil = Off). AVPlayer honours manual picks over the criteria.
     func select(subtitle option: AVMediaSelectionOption?) {
+        subtitleRefetchRestoreTask?.cancel(); subtitleRefetchRestoreTask = nil
+        isRefetchingSubtitles = false
         guard let item = playerItem, let group = legibleGroup else { return }
         item.select(option, in: group)
         print("[NativePlayer] subtitle selection → \(option.map(Self.renditionName(of:)) ?? "Off")")
         selectionVersion &+= 1
     }
+
+    // MARK: - Subtitle delay
+
+    /// The rendition NAME without the delay-slot suffix the master's twin entries carry.
+    static func canonicalSubtitleName(_ name: String) -> String {
+        guard let r = name.range(of: LocalHLSServer.slotNameSuffix) else { return name }
+        return String(name[..<r.lowerBound])
+    }
+
+    /// Which delay slot an option's NAME belongs to (0 = the primary entry shown in the panel).
+    static func subtitleSlot(ofName name: String) -> Int {
+        guard let r = name.range(of: LocalHLSServer.slotNameSuffix) else { return 0 }
+        return Int(name[r.upperBound...]) ?? 0
+    }
+
+    static func clampSubtitleDelay(_ ms: Int) -> Int {
+        let step = Int(SubtitleAudioModelsKt.SUBTITLE_DELAY_STEP_MS)
+        let minMs = Int(SubtitleAudioModelsKt.SUBTITLE_DELAY_MIN_MS)
+        let maxMs = Int(SubtitleAudioModelsKt.SUBTITLE_DELAY_MAX_MS)
+        let snapped = step > 0 ? Int((Double(ms) / Double(step)).rounded()) * step : ms
+        return max(minMs, min(maxMs, snapped))
+    }
+
+    /// Apply a new subtitle delay: persist it immediately, re-time the VTT bodies the local server
+    /// hands out, and — when an addon rendition is showing — nudge AVPlayer into refetching that
+    /// body. Coalesced, because a viewer walks the value in 0.1 s steps.
+    func setSubtitleDelay(ms: Int) {
+        let clamped = Self.clampSubtitleDelay(ms)
+        guard clamped != subtitleDelayMs else { return }
+        subtitleDelayMs = clamped
+        PlayerTrackPreferenceStorage.shared.saveSubtitleDelayMs(videoId: context.videoId, delayMs: Int32(clamped))
+        server?.setSubtitleDelay(ms: clamped)
+        subtitleDelayApplyTask?.cancel()
+        subtitleDelayApplyTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            self?.forceSubtitleRefetch()
+        }
+    }
+
+    /// Reset the delay to zero (panel's Reset chip). Writes 0 rather than deleting the key, so a
+    /// deliberate reset survives a relaunch instead of falling back to a stale value.
+    func resetSubtitleDelay() { setSubtitleDelay(ms: 0) }
+
+    /// Make AVPlayer re-read the selected subtitle rendition's body at the current delay.
+    private func forceSubtitleRefetch() {
+        guard let item = playerItem, let group = legibleGroup,
+              let current = item.currentMediaSelection.selectedMediaOption(in: group) else {
+            print("[NativePlayer] subtitle delay \(subtitleDelayMs)ms staged (no rendition showing)")
+            return
+        }
+        let currentName = Self.renditionName(of: current)
+        let canonical = Self.canonicalSubtitleName(currentName)
+        // Embedded text tracks are per-segment VTTs written by the remux worker as it produces the
+        // timeline; they are NOT re-timed by this mechanism (documented gap — B3).
+        guard subtitleRenditionsByName[canonical]?.isEmbedded != true else {
+            print("[NativePlayer] subtitle delay \(subtitleDelayMs)ms — embedded track, not re-timed")
+            return
+        }
+        subtitleDelayChanges += 1
+        // Fallback forcing function (off by default): hop to the next twin slot, a URI AVPlayer has
+        // never fetched.
+        if Self.subtitleDelaySlots > 1 {
+            let nextSlot = subtitleDelayChanges % Self.subtitleDelaySlots
+            let targetName = nextSlot == 0 ? canonical : canonical + LocalHLSServer.slotNameSuffix + String(nextSlot)
+            if let target = group.options.first(where: { Self.renditionName(of: $0) == targetName }), target != current {
+                item.select(target, in: group)
+                selectionVersion &+= 1
+                print("[NativePlayer] subtitle delay \(subtitleDelayMs)ms applied (slot \(nextSlot))")
+                return
+            }
+        }
+        // Off → the same option again. AVPlayer keeps the cached media playlist but refetches the
+        // body, which is where the new cue times live.
+        isRefetchingSubtitles = true
+        item.select(nil, in: group)
+        subtitleRefetchRestoreTask?.cancel()
+        subtitleRefetchRestoreTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            defer { self?.isRefetchingSubtitles = false }
+            guard !Task.isCancelled, let self, self.playerItem === item, self.legibleGroup === group else { return }
+            // Codex review: a viewer pick during the window wins. Panel picks go through
+            // `select(subtitle:)`, which cancels this task; a system-popover pick shows up as a
+            // non-nil selection here. (`selectionVersion` can't be the token — our own
+            // `select(nil)` bumps it asynchronously.)
+            guard item.currentMediaSelection.selectedMediaOption(in: group) == nil else {
+                print("[NativePlayer] subtitle delay reselect skipped — selection changed")
+                return
+            }
+            item.select(current, in: group)
+            self.selectionVersion &+= 1
+            print("[NativePlayer] subtitle delay \(self.subtitleDelayMs)ms applied (reselect ‘\(currentName)’)")
+        }
+    }
+
+    #if DEBUG
+    /// B3 measurement harness. `debug.subDelaySpike` = "6:1500,12:-2000,18:3500" — at T seconds of
+    /// wall clock after playback starts, apply a delay of N ms. The first entry is preceded by an
+    /// explicit selection of the first addon rendition (the headless smoke run has no UI to pick
+    /// one). Read the `[HLS]` request log to see whether AVPlayer refetched playlist + body.
+    private func startSubtitleDelaySpike() {
+        guard let spec = UserDefaults.standard.string(forKey: "debug.subDelaySpike"), !spec.isEmpty else { return }
+        let steps: [(Double, Int)] = spec.split(separator: ",").compactMap {
+            let parts = $0.split(separator: ":")
+            guard parts.count == 2, let at = Double(parts[0]), let ms = Int(parts[1]) else { return nil }
+            return (at, ms)
+        }
+        guard !steps.isEmpty else { return }
+        print("[SubDelaySpike] armed: \(steps.map { "\($0.0)s→\($0.1)ms" }.joined(separator: " "))")
+        Task { @MainActor [weak self] in
+            // Wait for the legible group, then select the first slot-0 addon rendition.
+            for _ in 0..<40 {
+                if let self, let group = self.legibleGroup,
+                   let first = group.options.first(where: {
+                       let name = Self.renditionName(of: $0)
+                       return Self.subtitleSlot(ofName: name) == 0
+                           && self.subtitleRenditionsByName[Self.canonicalSubtitleName(name)]?.isEmbedded == false
+                   }) {
+                    self.select(subtitle: first)
+                    print("[SubDelaySpike] selected ‘\(Self.renditionName(of: first))’ "
+                          + "(group has \(group.options.count) options)")
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            var elapsed = 0.0
+            for (at, ms) in steps.sorted(by: { $0.0 < $1.0 }) {
+                let wait = max(0, at - elapsed)
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                elapsed = at
+                guard let self else { return }
+                print("[SubDelaySpike] t=\(at)s applying \(ms)ms")
+                self.setSubtitleDelay(ms: ms)
+            }
+            print("[SubDelaySpike] done")
+        }
+    }
+    #endif
 
     /// Select an audible option; the remux worker is switched by `syncAudioSelection` on the
     /// next tick / media-selection notification, exactly as for a pick from the native popover.
@@ -876,7 +1065,12 @@ final class NativePlaybackCoordinator: ObservableObject {
         func add(_ label: String, _ value: String?) {
             if let value, !value.isEmpty { rows.append(NativeInfoRow(label: label, value: value)) }
         }
-        add(String(localized: "Engine"), routingNote ?? String(localized: "Native"))
+        var engine = routingNote ?? String(localized: "Native")
+        if subtitleDelayMs != 0 {
+            // Device-pass readout: the persisted/applied delay, mirroring the mpv Engine row.
+            engine += String(format: " \u{00B7} subs %+.2f s", Double(subtitleDelayMs) / 1000)
+        }
+        add(String(localized: "Engine"), engine)
         if let s = remux?.videoSignaling {
             add(String(localized: "Video"), s.codecs)
             add("Dolby Vision", s.supplementalCodecs)

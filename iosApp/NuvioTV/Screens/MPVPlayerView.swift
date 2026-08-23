@@ -589,6 +589,11 @@ final class MPVTVPlayerViewController: UIViewController {
     private func onFileLoaded() {
         guard !fileLoaded else { return }
         fileLoaded = true
+        // Restore any subtitle delay saved for this exact video (per title/episode, per profile —
+        // beta.15 §B2). `setSubtitleDelay` re-saves the same value, which is a harmless no-op.
+        if let storedMs = PlayerTrackPreferenceStorage.shared.loadSubtitleDelayMs(videoId: context.videoId) {
+            setSubtitleDelay(Double(storedMs.intValue) / 1000.0)
+        }
         for sub in context.externalSubtitles {
             subAdd(url: sub.url, title: sub.name ?? sub.language, lang: sub.language)
         }
@@ -877,10 +882,16 @@ final class MPVTVPlayerViewController: UIViewController {
         state.playbackSpeed = speed
     }
 
+    /// Single source of truth for subtitle re-timing on the mpv path: applies to the running core,
+    /// updates the UI state, and persists per title/profile (beta.15 §B1/B2). Called both for user
+    /// chip presses and for the persisted-value replay in `onFileLoaded()` — the redundant save on
+    /// replay is a same-value no-op.
     private func setSubtitleDelay(_ seconds: Double) {
         guard mpv != nil else { return }
         setMpvDouble("sub-delay", seconds)
         state.subtitleDelaySec = seconds
+        let delayMs = Int32((seconds * 1000).rounded())
+        PlayerTrackPreferenceStorage.shared.saveSubtitleDelayMs(videoId: context.videoId, delayMs: delayMs)
     }
 
     private func setAudioDelay(_ seconds: Double) {
@@ -899,9 +910,16 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Runs on `eventQueue` (many synchronous property reads). `engine` is passed in because
     /// `state` is main-actor.
-    private func buildStreamInfo(engine: String) -> StreamInfoSnapshot {
+    private func buildStreamInfo(engine: String, subtitleDelaySec: Double) -> StreamInfoSnapshot {
         var info = StreamInfoSnapshot()
-        info.engine = engine
+        // Append the active subtitle delay to the Engine row so a device pass can read it without
+        // opening the panel (beta.15 §B2) — e.g. "mpv · subs +1.50 s".
+        if subtitleDelaySec != 0 {
+            let suffix = String(format: "subs %+.2f s", subtitleDelaySec)
+            info.engine = engine.isEmpty ? suffix : "\(engine) \u{00B7} \(suffix)"
+        } else {
+            info.engine = engine
+        }
         let w = getInt("video-params/w"), h = getInt("video-params/h")
         if w > 0, h > 0 { info.resolution = "\(w)\u{00D7}\(h)" }
         info.videoCodec = getString("video-codec") ?? ""
@@ -1052,9 +1070,10 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Rebuilds the Stream Info panel rows off-main (it reads a dozen mpv properties).
     private func refreshStreamInfoAsync() {
         let engine = state.routingNote
+        let subtitleDelaySec = state.subtitleDelaySec
         eventQueue.async { [weak self] in
             guard let self, self.mpv != nil else { return }
-            let info = self.buildStreamInfo(engine: engine)
+            let info = self.buildStreamInfo(engine: engine, subtitleDelaySec: subtitleDelaySec)
             DispatchQueue.main.async {
                 if info != self.state.streamInfo { self.state.streamInfo = info }
             }

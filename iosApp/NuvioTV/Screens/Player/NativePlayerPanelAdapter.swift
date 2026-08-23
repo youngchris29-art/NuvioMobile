@@ -25,6 +25,15 @@ final class NativePlayerPanelAdapter {
 
         model.onSelectSubtitle = { [weak self] option in self?.selectSubtitle(option) }
         model.onSelectAudio = { [weak self] option in self?.selectAudio(option) }
+        // Subtitle delay (B3): the native engine re-times the addon WebVTT renditions it serves
+        // itself. `supportsSubtitleDelay` is re-derived per selection in `rebuildSelections` — only
+        // an addon rendition can be re-timed.
+        model.subtitleDelayMs = coordinator.subtitleDelayMs
+        model.onSubtitleDelayChange = { [weak self] ms in self?.coordinator.setSubtitleDelay(ms: ms) }
+        coordinator.$subtitleDelayMs
+            .receive(on: RunLoop.main)
+            .sink { [weak model] ms in if model?.subtitleDelayMs != ms { model?.subtitleDelayMs = ms } }
+            .store(in: &cancellables)
 
         Publishers.Merge4(
             coordinator.$legibleGroup.map { _ in () }.eraseToAnyPublisher(),
@@ -70,16 +79,25 @@ final class NativePlayerPanelAdapter {
         var subtitles: [PlayerPanelOption] = []
         if let group = coordinator.legibleGroup {
             let selected = coordinator.currentSubtitleOption
+            // A delay change moves the selection to a twin slot of the same rendition — compare the
+            // canonical name so the checkmark stays on the row the viewer picked.
+            let selectedName = selected.map {
+                NativePlaybackCoordinator.canonicalSubtitleName(NativePlaybackCoordinator.renditionName(of: $0))
+            }
             subtitles.append(PlayerPanelOption(id: "off", title: String(localized: "Off"), group: .off,
                                                isSelected: selected == nil))
             let options = group.options
+                // The master publishes each addon rendition under several interchangeable delay
+                // slots (B3 re-timing); only slot 0 is a real menu entry.
+                .filter { NativePlaybackCoordinator.subtitleSlot(ofName: NativePlaybackCoordinator.renditionName(of: $0)) == 0 }
                 .filter { coordinator.subtitleOptionAllowed($0) }
                 .map { option -> (AVMediaSelectionOption, SubtitleRendition?) in
-                    (option, coordinator.subtitleRenditionsByName[NativePlaybackCoordinator.renditionName(of: option)])
+                    (option, coordinator.subtitleRenditionsByName[
+                        NativePlaybackCoordinator.canonicalSubtitleName(NativePlaybackCoordinator.renditionName(of: option))])
                 }
                 .sorted { a, b in (a.1?.index ?? Int.max) < (b.1?.index ?? Int.max) }
             for (option, rendition) in options {
-                let name = NativePlaybackCoordinator.renditionName(of: option)
+                let name = NativePlaybackCoordinator.canonicalSubtitleName(NativePlaybackCoordinator.renditionName(of: option))
                 var details: [String] = []
                 if rendition?.forced == true || option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) {
                     details.append(String(localized: "Forced"))
@@ -91,10 +109,18 @@ final class NativePlayerPanelAdapter {
                     id: name, title: name,
                     detail: details.isEmpty ? nil : details.joined(separator: " · "),
                     group: rendition?.isEmbedded == true ? .embedded : .addon,
-                    isSelected: selected.map { $0 == option } ?? false))
+                    isSelected: selectedName == name))
             }
         }
         if model.subtitles != subtitles { model.subtitles = subtitles }
+        // The Timing row is only meaningful for a showing ADDON rendition: the whole file is ours to
+        // re-serve. Embedded text tracks are per-segment VTTs the remux writes as it goes and are not
+        // re-timed (B3), and with subtitles Off there is nothing to shift.
+        // During the coordinator's own Off→restore refetch hop the selection is transiently nil;
+        // keep the row mounted so the focused chip survives consecutive presses.
+        let canRetime = subtitles.contains { $0.isSelected && $0.group == .addon }
+            || (coordinator.isRefetchingSubtitles && model.supportsSubtitleDelay)
+        if model.supportsSubtitleDelay != canRetime { model.supportsSubtitleDelay = canRetime }
         let searching = !coordinator.addonSubtitlesFetched
         if model.subtitlesSearching != searching { model.subtitlesSearching = searching }
 
@@ -114,7 +140,11 @@ final class NativePlayerPanelAdapter {
     private func selectSubtitle(_ option: PlayerPanelOption?) {
         guard let option else { coordinator.select(subtitle: nil); return }
         guard let group = coordinator.legibleGroup,
-              let target = group.options.first(where: { NativePlaybackCoordinator.renditionName(of: $0) == option.id })
+              let target = group.options.first(where: {
+                  let name = NativePlaybackCoordinator.renditionName(of: $0)
+                  return NativePlaybackCoordinator.subtitleSlot(ofName: name) == 0
+                      && NativePlaybackCoordinator.canonicalSubtitleName(name) == option.id
+              })
         else { return }
         coordinator.select(subtitle: target)
     }

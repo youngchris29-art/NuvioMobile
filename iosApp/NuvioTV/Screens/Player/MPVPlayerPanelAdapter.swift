@@ -25,6 +25,13 @@ final class MPVPlayerPanelAdapter {
         model.onSelectAudio = { [weak state] option in
             if let id = Int(option.id) { state?.selectAudio?(id) }
         }
+        // mpv can always re-time subtitles (`sub-delay`); the native AVPlayer adapter leaves
+        // `supportsSubtitleDelay` false until beta.15 §B3 lands a delay mechanism there.
+        model.supportsSubtitleDelay = true
+        model.subtitleDelayMs = Self.ms(fromSeconds: state.subtitleDelaySec)
+        model.onSubtitleDelayChange = { [weak state] ms in
+            state?.setSubtitleDelay?(Double(ms) / 1000.0)
+        }
 
         Publishers.Merge3(
             state.$audioTracks.map { _ in () }.eraseToAnyPublisher(),
@@ -34,6 +41,18 @@ final class MPVPlayerPanelAdapter {
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.rebuildSelections() }
         .store(in: &cancellables)
+
+        // Reflects the controller's applied delay back into the panel — covers both the
+        // persisted-value-on-load case (controller sets it before the panel is ever opened) and
+        // any future non-panel path that changes it.
+        state.$subtitleDelaySec
+            .receive(on: RunLoop.main)
+            .sink { [weak self] seconds in
+                guard let self else { return }
+                let ms = Self.ms(fromSeconds: seconds)
+                if self.model.subtitleDelayMs != ms { self.model.subtitleDelayMs = ms }
+            }
+            .store(in: &cancellables)
 
         Publishers.Merge3(
             state.$streamInfo.map { _ in () }.eraseToAnyPublisher(),
@@ -127,6 +146,10 @@ final class MPVPlayerPanelAdapter {
         let names = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portName).filter { !$0.isEmpty }
         let name = names.isEmpty ? "Apple TV" : names.joined(separator: ", ")
         if model.outputRouteName != name { model.outputRouteName = name }
+    }
+
+    private static func ms(fromSeconds seconds: Double) -> Int {
+        Int((seconds * 1000).rounded())
     }
 
     private static func runtimeString(_ seconds: Double) -> String {

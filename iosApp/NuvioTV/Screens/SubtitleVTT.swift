@@ -218,7 +218,12 @@ nonisolated enum SubtitleVTT {
     /// path sets `sub-filter-sdh` instead): cue PAYLOAD lines run through the shared filter before
     /// markup cleanup; header/timing lines are never touched. A payload line that filters to nothing
     /// is dropped (a cue whose lines all drop keeps its timing line and renders empty — harmless).
-    static func webVTT(from data: Data, stripSdh: Bool = false) -> String? {
+    static func webVTT(from data: Data, stripSdh: Bool = false, offsetMs: Int = 0) -> String? {
+        guard let base = convert(data, stripSdh: stripSdh) else { return nil }
+        return offsetMs == 0 ? base : shift(base, offsetMs: offsetMs)
+    }
+
+    private static func convert(_ data: Data, stripSdh: Bool) -> String? {
         guard var text = decode(data) else { return nil }
         text = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
@@ -256,6 +261,90 @@ nonisolated enum SubtitleVTT {
         // A subtitle file with no timing lines at all converted to nothing useful — treat as bad.
         guard body.contains("-->") else { return nil }
         return "WEBVTT\n\n" + body
+    }
+
+    // MARK: - Re-timing (subtitle delay, native engine)
+
+    /// Shift every cue of a WebVTT document by `offsetMs` (positive = subtitles appear LATER).
+    /// Header lines — `WEBVTT`, `X-TIMESTAMP-MAP`, `NOTE`/`STYLE`/`REGION` blocks — pass through
+    /// untouched; a cue whose END lands at or before zero is dropped entirely (it can never be shown
+    /// on a playlist whose origin is zero), a cue that straddles zero is clamped to start at 0 so it
+    /// is still visible for its remaining span. Cue settings after the end timestamp
+    /// (`line:90% align:middle`) are preserved verbatim.
+    ///
+    /// Cues are addressed as blank-line-separated blocks, which is how both our SRT conversion and
+    /// every real-world VTT are laid out; a block with no timing line is copied through.
+    static func shift(_ vtt: String, offsetMs: Int) -> String {
+        guard offsetMs != 0 else { return vtt }
+        let lines = vtt.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        var out: [String] = []
+        var block: [String] = []
+
+        func flush() {
+            defer { block = [] }
+            guard let timingIdx = block.firstIndex(where: { $0.contains("-->") }) else {
+                out.append(contentsOf: block)
+                return
+            }
+            guard let shifted = shiftTiming(block[timingIdx], offsetMs: offsetMs) else { return } // cue dropped
+            var kept = block
+            kept[timingIdx] = shifted
+            out.append(contentsOf: kept)
+        }
+
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                flush()
+                out.append(line)
+            } else {
+                block.append(line)
+            }
+        }
+        flush()
+        return out.joined(separator: "\n")
+    }
+
+    /// `HH:MM:SS.mmm --> HH:MM:SS.mmm[ settings]` shifted by `offsetMs`, or nil when the whole cue
+    /// falls off the front of the timeline. A line that doesn't parse is returned unchanged.
+    private static func shiftTiming(_ line: String, offsetMs: Int) -> String? {
+        let sides = line.components(separatedBy: "-->")
+        guard sides.count == 2 else { return line }
+        let startToken = sides[0].trimmingCharacters(in: .whitespaces)
+        let tail = sides[1].trimmingCharacters(in: .whitespaces)
+        // The end timestamp is the first whitespace-delimited token; anything after it is cue settings.
+        // WebVTT allows a space OR a tab between the end timestamp and the settings.
+        let endToken = tail.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? ""
+        let settings = tail.dropFirst(endToken.count).trimmingCharacters(in: .whitespaces)
+        guard let start = millis(fromVTTTimestamp: startToken), let end = millis(fromVTTTimestamp: endToken) else {
+            return line
+        }
+        let newEnd = end + offsetMs
+        guard newEnd > 0 else { return nil }
+        let newStart = max(0, start + offsetMs)
+        let rendered = "\(vttTime(Double(newStart) / 1000)) --> \(vttTime(Double(max(newStart, newEnd)) / 1000))"
+        return settings.isEmpty ? rendered : rendered + " " + settings
+    }
+
+    /// `[HH:]MM:SS.mmm` → milliseconds. Tolerates a comma decimal separator (SRT leftovers).
+    static func millis(fromVTTTimestamp raw: String) -> Int? {
+        let normalized = raw.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+        let parts = normalized.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard (2...3).contains(parts.count) else { return nil }
+        let secComps = (parts.last ?? "").split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard let sec = Int(secComps.first ?? "") else { return nil }
+        let millisText = secComps.count > 1 ? String((secComps[1] + "000").prefix(3)) : "000"
+        guard let ms = Int(millisText) else { return nil }
+        var hour = 0, minute = 0
+        if parts.count == 3 {
+            guard let h = Int(parts[0]), let m = Int(parts[1]) else { return nil }
+            hour = h; minute = m
+        } else {
+            guard let m = Int(parts[0]) else { return nil }
+            minute = m
+        }
+        return ((hour * 60 + minute) * 60 + sec) * 1000 + ms
     }
 
     /// SDH stripping for a file that is already WebVTT (passed through otherwise untouched): run the

@@ -181,11 +181,14 @@ nonisolated enum RemuxSmokeTest {
     /// Logs the first few cues AVPlayer renders for the smoke run's selected subtitle.
     final class SmokeCueSink: NSObject, AVPlayerItemLegibleOutputPushDelegate {
         var seen = 0
+        /// The subtitle-delay spike (B3) needs the whole cue stream, not a sample, to see whether a
+        /// delay change actually moved the cue times AVFoundation reports.
+        private lazy var limit = UserDefaults.standard.string(forKey: "debug.subDelaySpike") == nil ? 6 : Int.max
         func legibleOutput(_ output: AVPlayerItemLegibleOutput,
                            didOutputAttributedStrings strings: [NSAttributedString],
                            nativeSampleBuffers: [Any], forItemTime itemTime: CMTime) {
             let text = strings.map(\.string).joined(separator: "|")
-            guard !text.isEmpty, seen < 6 else { return }
+            guard !text.isEmpty, seen < limit else { return }
             seen += 1
             print("[RemuxSmoke] cue @\(String(format: "%.1f", CMTimeGetSeconds(itemTime)))s \"\(text)\"")
         }
