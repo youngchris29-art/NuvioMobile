@@ -507,10 +507,16 @@ nonisolated final class LocalHLSServer: @unchecked Sendable {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let vtt = (200..<300).contains(status) ? data.flatMap { SubtitleVTT.webVTT(from: $0, stripSdh: self.stripSdh) } : nil
             if let vtt {
-                self.lock.lock(); self.vttBase[rendition.index] = vtt; self.lock.unlock()
-                let shifted = offsetMs == 0 ? vtt : SubtitleVTT.shift(vtt, offsetMs: offsetMs)
+                // Re-read the delay AFTER the (up to 10 s) download: the user may have adjusted
+                // it while the fetch was in flight, and the captured offsetMs would serve the
+                // freshly selected subtitle with stale timing (Codex, final branch review).
+                self.lock.lock()
+                self.vttBase[rendition.index] = vtt
+                let currentOffsetMs = self._subtitleDelayMs
+                self.lock.unlock()
+                let shifted = currentOffsetMs == 0 ? vtt : SubtitleVTT.shift(vtt, offsetMs: currentOffsetMs)
                 let body = Data(shifted.utf8)
-                print("[HLS] subtitle \(rendition.index) ready (\(body.count)b, \(rendition.name), delay \(offsetMs)ms)")
+                print("[HLS] subtitle \(rendition.index) ready (\(body.count)b, \(rendition.name), delay \(currentOffsetMs)ms)")
                 self.serveBytes(body, name: name, rangeHeader: rangeHeader, isHead: isHead, on: connection)
             } else {
                 self.lock.lock(); self.vttFailed.insert(rendition.index); self.lock.unlock()
