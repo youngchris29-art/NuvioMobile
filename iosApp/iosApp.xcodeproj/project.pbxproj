@@ -36,6 +36,13 @@
 			remoteGlobalIDString = 94AEB9E32FF2294B007C43F2;
 			remoteInfo = NuvioTV;
 		};
+		B11CE57000000000000000C9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E819B502921EC7C68AC4965A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 94AEB9E32FF2294B007C43F2;
+			remoteInfo = NuvioTV;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -70,6 +77,7 @@
 		947233682FF8500F001B4F7C /* TVServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = TVServices.framework; path = Library/Frameworks/TVServices.framework; sourceTree = DEVELOPER_DIR; };
 		94AEB9E42FF2294B007C43F2 /* NuvioTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NuvioTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A11CE57000000000000000B1 /* NuvioTVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NuvioTVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B11CE57000000000000000C1 /* NuvioTVTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NuvioTVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -138,6 +146,11 @@
 			path = NuvioTVUITests;
 			sourceTree = "<group>";
 		};
+		B11CE57000000000000000C2 /* NuvioTVTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NuvioTVTests;
+			sourceTree = "<group>";
+		};
 		A2F97F59D21EB4D4B662C8D1 /* iosApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -187,6 +200,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B11CE57000000000000000C5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -198,6 +218,7 @@
 				0A1B2C3D4E5F60718293A4B6 /* DownloadsWidgetExtension */,
 				94AEB9E52FF2294B007C43F2 /* NuvioTV */,
 				A11CE57000000000000000B2 /* NuvioTVUITests */,
+				B11CE57000000000000000C2 /* NuvioTVTests */,
 				9472336A2FF8500F001B4F7C /* NuvioTopShelf */,
 				94AEB9EF2FF22AEE007C43F2 /* Frameworks */,
 				AD93033A33973C81BB77B73A /* Products */,
@@ -220,6 +241,7 @@
 				94AEB9E42FF2294B007C43F2 /* NuvioTV.app */,
 				947233672FF8500F001B4F7C /* NuvioTopShelf.appex */,
 				A11CE57000000000000000B1 /* NuvioTVUITests.xctest */,
+				B11CE57000000000000000C1 /* NuvioTVTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -346,6 +368,28 @@
 			productReference = A11CE57000000000000000B1 /* NuvioTVUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		B11CE57000000000000000C3 /* NuvioTVTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B11CE57000000000000000C6 /* Build configuration list for PBXNativeTarget "NuvioTVTests" */;
+			buildPhases = (
+				B11CE57000000000000000C4 /* Sources */,
+				B11CE57000000000000000C5 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B11CE57000000000000000CA /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B11CE57000000000000000C2 /* NuvioTVTests */,
+			);
+			name = NuvioTVTests;
+			packageProductDependencies = (
+			);
+			productName = NuvioTVTests;
+			productReference = B11CE57000000000000000C1 /* NuvioTVTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -397,6 +441,7 @@
 				94AEB9E32FF2294B007C43F2 /* NuvioTV */,
 				947233662FF8500F001B4F7C /* NuvioTopShelf */,
 				A11CE57000000000000000B3 /* NuvioTVUITests */,
+				B11CE57000000000000000C3 /* NuvioTVTests */,
 			);
 		};
 /* End PBXProject section */
@@ -529,6 +574,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B11CE57000000000000000C4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -546,6 +598,11 @@
 			isa = PBXTargetDependency;
 			target = 94AEB9E32FF2294B007C43F2 /* NuvioTV */;
 			targetProxy = A11CE57000000000000000B9 /* PBXContainerItemProxy */;
+		};
+		B11CE57000000000000000CA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 94AEB9E32FF2294B007C43F2 /* NuvioTV */;
+			targetProxy = B11CE57000000000000000C9 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -959,6 +1016,50 @@
 			};
 			name = Release;
 		};
+		B11CE57000000000000000C7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WNYA9B575G;
+				"FRAMEWORK_SEARCH_PATHS[sdk=appletvos*]" = "$(SRCROOT)/../shared/build/bin/tvosArm64/debugFramework";
+				"FRAMEWORK_SEARCH_PATHS[sdk=appletvsimulator*]" = "$(SRCROOT)/../shared/build/bin/tvosSimulatorArm64/debugFramework";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nuvio.media.NuvioTVTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NuvioTV.app/NuvioTV";
+				TEST_TARGET_NAME = NuvioTV;
+				TVOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		B11CE57000000000000000C8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WNYA9B575G;
+				"FRAMEWORK_SEARCH_PATHS[sdk=appletvos*]" = "$(SRCROOT)/../shared/build/bin/tvosArm64/releaseFramework";
+				"FRAMEWORK_SEARCH_PATHS[sdk=appletvsimulator*]" = "$(SRCROOT)/../shared/build/bin/tvosSimulatorArm64/releaseFramework";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nuvio.media.NuvioTVTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NuvioTV.app/NuvioTV";
+				TEST_TARGET_NAME = NuvioTV;
+				TVOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1012,6 +1113,15 @@
 			buildConfigurations = (
 				A11CE57000000000000000B7 /* Debug */,
 				A11CE57000000000000000B8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B11CE57000000000000000C6 /* Build configuration list for PBXNativeTarget "NuvioTVTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B11CE57000000000000000C7 /* Debug */,
+				B11CE57000000000000000C8 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
