@@ -1,13 +1,53 @@
 import SwiftUI
 import SharedCore
 
-/// The Settings tab: Account (sign in / sign out), Playback (Skip Intro toggle) and Home Rows
-/// (enable/disable + reorder the Home catalog rows).
+/// The Settings tab: a two-pane split — a native `List` of categories on the left (~1/3), the
+/// selected category's pane rendered inside a native `List` on the right (~2/3), under one page
+/// title. Each category's rows live in their own `*SettingsPane` file; the shared row primitives
+/// live in Settings/SettingsRowViews.swift.
 ///
-/// Split across NuvioTV/Screens/Settings/ (Phase 2 HIG revamp): this file owns the NavigationStack,
-/// the two-pane split-view (sidebar + detail), the category enum/selection state, and the pane
-/// switch. Each sidebar category's rows live in their own `*SettingsPane` file; small shared row
-/// views live in Settings/SettingsRowViews.swift.
+/// beta.15 §C (C2): this was a hand-rolled `HStack` of custom `SettingsRowButtonStyle` buttons in
+/// a `ScrollView`. Everything focus- and colour-related is now the system's job — no custom
+/// `ButtonStyle`, no `hoverEffect`, no focus-derived label colours (the BUG-45 sidebar
+/// special-case and the BUG-65 `settingsRowIsFocused` hack are gone from this file).
+///
+/// ## Focus graph (written before the code, per the tvOS skill's workflow)
+///
+/// **Default focus.** The sidebar `List` is a `.focusScope(sidebarFocus)`; the first category row
+/// (Account & Services) carries `.prefersDefaultFocus(true, in: sidebarFocus)`. Entering the
+/// Settings tab — from the tab bar, or back from a pushed sub-page — lands focus on a sidebar
+/// row, never in the detail pane. There is no `@FocusState` write on appear: the scope's default
+/// is the only mechanism, so a restored focus (tvOS remembers the last focused row within the
+/// tab) still wins where the system wants it to.
+///
+/// **Sidebar.**
+/// - Up / Down walk the seven categories. Focus *is* selection: `onChange(of: focusedCategory)`
+///   writes `selectedCategory`, so the detail pane live-previews the focused category (the
+///   Settings.app behaviour the old screen had, kept deliberately).
+/// - Up from the first row leaves the list upward and lands on the app's tab bar (the standard
+///   tvOS top-edge exit). Down from the last row does nothing — the list ends.
+/// - Left does nothing: the sidebar is the leading edge of the screen.
+/// - Right enters the detail `List` and lands on its first focusable row.
+///
+/// **Detail.**
+/// - Up / Down walk the rows and sections; the `List` scrolls to reveal.
+/// - Left from any row returns to the sidebar, on the row that is still selected (the sidebar
+///   keeps its focus memory, so the walk resumes where it left off).
+/// - Right does nothing at row level. Inside a row it is the control's own business: a `Toggle`
+///   ignores it, a `Menu { Picker }` opens on Select, not on Right.
+/// - Up from the first detail row leaves upward to the tab bar; Down from the last does nothing.
+///
+/// **Empty / error panes (BUG-47 class).** A pane whose `List` has no focusable row cannot be
+/// entered: Right from the sidebar is a no-op and focus stays on the category row — it is never
+/// stranded, and Menu still exits cleanly. Every pane today has at least one focusable control in
+/// every state (e.g. Advanced offers "Start Remote Setup" when the server is stopped), and every
+/// pushed sub-page a `SettingsLinkRow` presents must keep one too.
+///
+/// **Menu.** Exactly one level per press, all of it the system's default — this file installs no
+/// `onExitCommand` anywhere. Inside an open `Menu`/`Picker` popover it dismisses the popover; on a
+/// page pushed by a `SettingsLinkRow` it pops back to the detail list; at the `NavigationStack`
+/// root (the split itself) it leaves Settings for the app's tab bar. An `.alert` is dismissed by
+/// its own Cancel button.
 struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
     @StateObject private var trakt = TraktViewModel()
@@ -24,37 +64,37 @@ struct SettingsView: View {
     @State private var debridDisconnectId: String?
     /// "Use the official server?" confirmation (self-hosted → api.nuvio.tv switch-back).
     @State private var confirmingUseOfficial = false
-    /// Which category's sections are shown in the detail pane (split-view, tvOS-Settings style).
+    /// Which category's sections are shown in the detail pane. Non-optional (panes and the pane
+    /// switch below read it directly); the `List`'s selection binding adapts it.
     @State private var selectedCategory: SettingsCategory = .accountServices
     @FocusState private var focusedCategory: SettingsCategory?
-    /// FEAT-7: "Default" shows the category icon at normal row padding; "Minimal" drops the icon
-    /// and tightens the row for a denser sidebar. Set from the Appearance pane's Settings Style chips.
+    /// Scope that owns the sidebar's default focus — see the focus graph above.
+    @Namespace private var sidebarFocus
+    /// FEAT-7: "Default" shows the category icon; "Minimal" drops it for a denser sidebar. Set
+    /// from the Appearance pane's Settings Style chips.
     @AppStorage("settings_style") private var settingsStyle = "default"
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Theme.Palette.background.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                // One title for the whole split (HIG Split views: never one per pane).
+                Text("Settings")
+                    .font(Theme.Font.screenTitle)
+                    .foregroundStyle(Theme.Palette.textPrimary)
+                    .padding(.horizontal, Theme.Spacing.screen)
+                    .padding(.top, Theme.Spacing.lg)
 
-                HStack(alignment: .top, spacing: 0) {
-                    categorySidebar
-                        .frame(width: 460)
-                        .focusSection()
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        categorySidebar
+                            .frame(width: max(400, geo.size.width / 3))
 
-                    ScrollView(.vertical) {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-                            Text(selectedCategory.title)
-                                .font(Theme.Font.screenTitle)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-
-                            pane
-                        }
-                        .padding(Theme.Spacing.screen)
-                        .frame(maxWidth: 1500, alignment: .leading)
+                        detailPane
+                            .frame(maxWidth: .infinity)
                     }
-                    .focusSection()
                 }
             }
+            .background(Theme.Palette.background.ignoresSafeArea())
         }
         .onAppear {
             model.start()
@@ -142,6 +182,16 @@ struct SettingsView: View {
         }
     }
 
+    /// Right column: the selected pane's sections inside a native `List`. `settingsUsesNativeList`
+    /// tells the shared `settingsSection(_:)` helper it may emit a real `Section` here (it stays
+    /// on the legacy stack everywhere else — see SettingsRowViews.swift).
+    private var detailPane: some View {
+        List {
+            pane
+        }
+        .environment(\.settingsUsesNativeList, true)
+    }
+
     /// The detail pane's content for the currently selected sidebar category. Only the selected
     /// category's pane is built (not the others), matching the previous per-section filtering —
     /// keeps focus + perf clean.
@@ -174,58 +224,44 @@ struct SettingsView: View {
         }
     }
 
-    /// Left column: one focusable row per category. Focusing a row live-updates the detail pane
-    /// (tvOS Settings pattern); swiping right enters the pane.
+    /// Left column: one focusable row per category, in a native `List`. Focusing a row
+    /// live-selects it (the tvOS Settings pattern); Right enters the pane.
+    ///
+    /// Rows are `Button`s, not bare `Label`s: a plain `Label` inside `List(selection:)` is NOT
+    /// focusable on tvOS (C0 spike finding), so selection alone can't drive the walk. No
+    /// `foregroundStyle` here on purpose — the system inverts the row's label colour on the focus
+    /// platter, which is what BUG-45's hand-rolled three-way colour switch was working around.
     private var categorySidebar: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text("Settings")
-                .font(Theme.Font.screenTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
-                .padding(.bottom, Theme.Spacing.md)
-
+        List(selection: sidebarSelection) {
             ForEach(SettingsCategory.allCases) { category in
                 Button {
                     selectedCategory = category
                 } label: {
-                    HStack(spacing: Theme.Spacing.md) {
-                        if settingsStyle != "minimal" {
-                            Image(systemName: category.icon)
-                                .font(Theme.Font.body)
-                                .frame(width: 40)
-                        }
+                    if settingsStyle == "minimal" {
                         Text(category.title)
-                            .font(Theme.Font.body)
-                        Spacer(minLength: 0)
+                    } else {
+                        Label(category.title, systemImage: category.icon)
                     }
-                    // BUG-45 (beta.12): the label color is driven by the sidebar's OWN
-                    // `@FocusState`, not `rowAccentTint`'s `@Environment(\.isFocused)`. The
-                    // sidebar is the one surface where the focused row is ALWAYS also the
-                    // selected one (focusing live-selects, see onChange below), so when that
-                    // environment read fails to reflect focus here, the "selected" accent paints
-                    // on the focus platter — and on the White theme (accent ≈ platter) the
-                    // measured result was a label with ZERO pixels (luma range 3 across the whole
-                    // row interior on camera, 2026-08-10). `focusedCategory` is ground truth from
-                    // the same `.focused(...)` binding that drives the pane preview — it cannot
-                    // disagree with the platter the style draws.
-                    .foregroundStyle(
-                        category == focusedCategory ? Theme.Palette.onFocusPlatter
-                            : category == selectedCategory ? Theme.Palette.accent
-                            : Theme.Palette.textPrimary
-                    )
-                    .padding(.horizontal, Theme.Spacing.lg)
-                    .padding(.vertical, settingsStyle == "minimal" ? Theme.Spacing.sm : Theme.Spacing.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.settingsRow)
+                .tag(category)
                 .focused($focusedCategory, equals: category)
+                .prefersDefaultFocus(category == SettingsCategory.allCases.first, in: sidebarFocus)
             }
-            Spacer(minLength: 0)
         }
-        .padding(Theme.Spacing.screen)
+        .focusScope(sidebarFocus)
         .onChange(of: focusedCategory) { _, newValue in
             // Live-preview the focused category in the detail pane.
             if let newValue { selectedCategory = newValue }
         }
+    }
+
+    /// `List(selection:)` wants an optional binding; the screen's own state is non-optional so the
+    /// pane switch (and the panes) never deal with "no category".
+    private var sidebarSelection: Binding<SettingsCategory?> {
+        Binding(
+            get: { selectedCategory },
+            set: { if let newValue = $0 { selectedCategory = newValue } }
+        )
     }
 }
 
