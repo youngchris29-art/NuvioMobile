@@ -165,7 +165,7 @@ internal fun SimklSyncSnapshot.movieAlternateWatchedKeys(): Set<String> {
 
 internal fun SimklSyncSnapshot.toSimklProgressEntries(): List<WatchProgressEntry> =
     playback
-        .mapNotNull(SimklPlaybackSession::toWatchProgressEntry)
+        .mapNotNull { session -> session.toWatchProgressEntry(entries) }
         .groupBy(WatchProgressEntry::progressKey)
         .mapNotNull { (_, candidates) -> candidates.maxByOrNull(WatchProgressEntry::lastUpdatedEpochMs) }
         .sortedByDescending(WatchProgressEntry::lastUpdatedEpochMs)
@@ -377,7 +377,9 @@ internal fun parseSimklUtcEpochMs(value: String?): Long? {
     return (((days * 24L + hour) * 60L + minute) * 60L + second) * 1_000L + millis
 }
 
-internal fun SimklPlaybackSession.toWatchProgressEntry(): WatchProgressEntry? {
+internal fun SimklPlaybackSession.toWatchProgressEntry(
+    libraryEntries: List<SimklLibraryEntry> = emptyList(),
+): WatchProgressEntry? {
     val media = media ?: return null
     val parentId = media.canonicalContentId() ?: return null
     // Codex review of the 6e5e41f3 port: classify anime by the session's explicit
@@ -385,10 +387,32 @@ internal fun SimklPlaybackSession.toWatchProgressEntry(): WatchProgressEntry? {
     // payloads), NOT by `episode == null` — an episodic anime session with missing episode
     // details is incomplete data and falls through to the episodeNumber guard below
     // (discarded), the pre-port behavior.
+    //
+    // Library cross-reference ported from upstream 54aa75ea ("Fix anime movies for Simkl"):
+    // a session with no `type` marker at all (e.g. an older cached payload, or a provider
+    // that never sets it) can still be identified as an anime movie by cross-referencing the
+    // user's Simkl library — if any library entry sharing this media's identity is itself an
+    // anime movie (`animeType == "movie"`), the session is a movie. Upstream's `episode == null`
+    // heuristic is intentionally NOT ported alongside it: that fallback still discards genuine
+    // incomplete episodic sessions (the bug this file's earlier divergence fixed), and the
+    // library cross-reference does not depend on it to catch the anime-movie case.
+    val sessionIds by lazy { media.toTrackingExternalIds() }
+    // Only a session with NO type marker consults the library; an explicit `type == "episode"`
+    // always wins (Codex review, beta.15 port).
+    val isAnimeMovie = mediaType == SimklMediaType.ANIME && type == null && libraryEntries.any { entry ->
+        entry.mediaType == SimklMediaType.ANIME &&
+            entry.animeType == "movie" &&
+            entry.media?.toTrackingExternalIds()?.sharesIdentityWith(sessionIds) == true
+    }
     val isMovie = mediaType == SimklMediaType.MOVIES ||
-        (mediaType == SimklMediaType.ANIME && type == "movie")
-    val season = episode?.tvdbSeason ?: episode?.season
-    val episodeNumber = episode?.tvdbNumber ?: episode?.number
+        (mediaType == SimklMediaType.ANIME && type == "movie") ||
+        isAnimeMovie
+    // A movie carries no episode coordinates: a Simkl anime-movie session may still ship an
+    // `episode` object (S01E01), and copying it through would make the entry read as an
+    // episode downstream (CW badge, stream picker, scrobble). Codex review of the beta.15 port.
+    val season = if (isMovie) null else episode?.tvdbSeason ?: episode?.season
+    val episodeNumber = if (isMovie) null else episode?.tvdbNumber ?: episode?.number
+    val episodeTitle = if (isMovie) null else episode?.title
     if (!isMovie && episodeNumber == null) return null
     val videoId = if (isMovie) {
         parentId
@@ -414,7 +438,7 @@ internal fun SimklPlaybackSession.toWatchProgressEntry(): WatchProgressEntry? {
         poster = simklPosterUrl(media.poster),
         seasonNumber = season,
         episodeNumber = episodeNumber,
-        episodeTitle = episode?.title,
+        episodeTitle = episodeTitle,
         lastPositionMs = positionMs,
         durationMs = durationMs,
         lastUpdatedEpochMs = updatedAt,

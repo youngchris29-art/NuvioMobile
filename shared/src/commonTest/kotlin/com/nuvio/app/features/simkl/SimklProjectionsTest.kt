@@ -296,6 +296,96 @@ class SimklProjectionsTest {
     }
 
     @Test
+    fun `untyped anime playback with an episode projects movie progress when library marks it a movie`() {
+        // Ported from upstream 54aa75ea: a session with no `type == "movie"` marker and a
+        // (spurious) non-null episode can still be recognized as an anime movie by
+        // cross-referencing the user's Simkl library for a matching anime-movie entry.
+        val libraryEntry = entry(
+            type = SimklMediaType.ANIME,
+            status = SimklListStatus.COMPLETED,
+            id = 46409,
+            imdb = "tt0245429",
+            animeType = "movie",
+        )
+        val session = SimklPlaybackSession(
+            id = 780,
+            progress = 30.0,
+            pausedAt = "2024-04-30T22:13:00.250Z",
+            type = null,
+            episode = SimklPlaybackEpisode(season = 1, number = 1),
+            anime = media(id = 46409, imdb = "tt0245429", runtime = 125),
+        )
+
+        val entry = SimklSyncSnapshot(entries = listOf(libraryEntry), playback = listOf(session))
+            .toSimklProgressEntries()
+            .single()
+
+        assertEquals("movie", entry.contentType)
+        assertEquals("movie", entry.parentMetaType)
+        assertEquals("tt0245429", entry.parentMetaId)
+        // videoId is the bare parent id for a movie classification, even though the session
+        // carried a (spurious, ignored) season/episode marker — and the coordinates are dropped,
+        // so the entry never reads as an episode downstream (CW badge, stream picker, scrobble).
+        assertEquals("tt0245429", entry.videoId)
+        assertNull(entry.seasonNumber)
+        assertNull(entry.episodeNumber)
+        assertNull(entry.episodeTitle)
+    }
+
+    @Test
+    fun `explicit episode anime playback stays series progress even with a matching library movie entry`() {
+        // Ported from upstream 54aa75ea: a session with no `type == "movie"` marker and a
+        // (spurious) non-null episode can still be recognized as an anime movie by
+        // cross-referencing the user's Simkl library for a matching anime-movie entry.
+        val libraryEntry = entry(
+            type = SimklMediaType.ANIME,
+            status = SimklListStatus.COMPLETED,
+            id = 46409,
+            imdb = "tt0245429",
+            animeType = "movie",
+        )
+        val session = SimklPlaybackSession(
+            id = 780,
+            progress = 30.0,
+            pausedAt = "2024-04-30T22:13:00.250Z",
+            type = "episode",
+            episode = SimklPlaybackEpisode(season = 1, number = 1),
+            anime = media(id = 46409, imdb = "tt0245429", runtime = 125),
+        )
+
+        val entry = SimklSyncSnapshot(entries = listOf(libraryEntry), playback = listOf(session))
+            .toSimklProgressEntries()
+            .single()
+
+        assertEquals("series", entry.contentType)
+        assertEquals("series", entry.parentMetaType)
+        assertEquals("tt0245429", entry.parentMetaId)
+        assertEquals(1, entry.seasonNumber)
+        assertEquals(1, entry.episodeNumber)
+    }
+
+    @Test
+    fun `untyped anime playback with an episode projects series progress without a matching library movie entry`() {
+        // Control for the library cross-reference above: same session, but with no library
+        // entry (or a non-movie one) to cross-reference against — prior behaviour is preserved,
+        // the session projects as ordinary series progress.
+        val session = SimklPlaybackSession(
+            id = 781,
+            progress = 30.0,
+            pausedAt = "2024-04-30T22:13:00.250Z",
+            type = null,
+            episode = SimklPlaybackEpisode(season = 1, number = 1),
+            anime = media(id = 46409, imdb = "tt0245429", runtime = 125),
+        )
+
+        val entry = SimklSyncSnapshot(playback = listOf(session)).toSimklProgressEntries().single()
+
+        assertEquals("series", entry.contentType)
+        assertEquals(1, entry.seasonNumber)
+        assertEquals(1, entry.episodeNumber)
+    }
+
+    @Test
     fun `anime playback with an episode still projects series progress`() {
         val session = SimklPlaybackSession(
             id = 778,

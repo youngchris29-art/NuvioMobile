@@ -6,6 +6,8 @@ import SharedCore
 struct AddonsView: View {
     @StateObject private var model = AddonsViewModel()
     @State private var newUrl = ""
+    /// Addon pending a remove confirmation (drives the alert below).
+    @State private var addonPendingRemoval: ManagedAddon?
 
     var body: some View {
         NavigationStack {
@@ -24,6 +26,21 @@ struct AddonsView: View {
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+        .alert(
+            "Remove \(addonPendingRemoval.map { model.displayName($0) } ?? "")?",
+            isPresented: Binding(
+                get: { addonPendingRemoval != nil },
+                set: { if !$0 { addonPendingRemoval = nil } }
+            )
+        ) {
+            Button("Remove", role: .destructive) {
+                if let addon = addonPendingRemoval { model.remove(addon) }
+                addonPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its catalogs and streams will no longer appear.")
+        }
     }
 
     private var installSection: some View {
@@ -88,7 +105,7 @@ struct AddonsView: View {
                     subtitle: addon.manifestUrl,
                     enabled: addon.enabled,
                     onToggle: { model.setEnabled(addon, !addon.enabled) },
-                    onRemove: { model.remove(addon) }
+                    onRemove: { addonPendingRemoval = addon }
                 )
             }
         }
