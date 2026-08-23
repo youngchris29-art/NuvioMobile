@@ -1,34 +1,16 @@
 import SwiftUI
 import SharedCore
 
-/// A titled row of value chips (poster size/corners, card-depth edge/sheen/coverage, FEAT-8's
-/// trailer duration, etc.). Hoisted out of `PosterStyleControls` (FEAT-8) to a file-private free
-/// function so any section in this file can build the same chip-selector row without duplicating
-/// it — `PosterStyleControls` itself just calls this now.
-@ViewBuilder
-private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-        Text(title)
-            .font(Theme.Font.caption)
-            .foregroundStyle(Theme.Palette.textSecondary)
-        HStack(spacing: Theme.Spacing.md) { content() }
-    }
-}
-
-/// A single selectable value chip, paired with `controlRow`. Hoisted alongside it (see above).
-private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-        Text(label)
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xxs + 2)
-    }
-    .buttonStyle(.chip(selected: selected))
-}
-
 /// "Appearance" category content: accent theme, poster card style, card depth effect, and stream
 /// badges. Extracted from SettingsView.swift (Phase 2 HIG revamp file split) — logic and wiring
 /// preserved verbatim, only regrouped into a per-category pane.
+///
+/// beta.15 §C (C3a): converted onto the native-List Settings kit (SettingsRowViews.swift, C1) —
+/// the pane body returns its sections directly (no `VStack(spacing: sectionGap)` wrapper), every
+/// toggle binds straight to an @AppStorage/view-model value, and every text-label chip row
+/// (Settings Style, Poster Size/Corners, Trailer Duration, Card Depth Edge/Sheen/Coverage) is now
+/// a `SettingsPickerRow` menu. The Theme swatches stay a custom row — the kit has no
+/// colour-swatch primitive.
 struct AppearanceSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
     @ObservedObject var badges: BadgeSettingsViewModel
@@ -60,166 +42,126 @@ struct AppearanceSettingsPane: View {
     /// single `CardFocusMode`.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
+    private static let settingsStyleOptions: [(value: String, label: String)] = [
+        ("default", String(localized: "Default")),
+        ("minimal", String(localized: "Minimal")),
+    ]
+    private static let trailerDurationOptions: [(value: Int, label: String)] = [
+        (30, String(localized: "30s")),
+        (60, String(localized: "1 min")),
+        (90, String(localized: "90s")),
+        (0, String(localized: "Always")),
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-            settingsSection(String(localized: "Theme")) {
-                Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .frame(maxWidth: 1100, alignment: .leading)
-                ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
+        SettingsSection(String(localized: "Theme")) {
+            Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+            ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
 
-                // FEAT-14: opt-in accent focus ring on artwork cards. Default OFF — off renders
-                // byte-identical to today (PosterCard/LandscapeCard skip the overlay entirely).
-                SettingsToggleRow(
-                    title: String(localized: "Accent Focus Ring"),
-                    subtitle: accentFocusRing
-                        ? String(localized: "On \u{00B7} Focused artwork shows a ring in your accent color")
-                        : String(localized: "Off \u{00B7} Focused artwork uses the system highlight only"),
-                    isOn: accentFocusRing
-                ) {
-                    accentFocusRing.toggle()
-                }
+            // FEAT-14: opt-in accent focus ring on artwork cards. Default OFF — off renders
+            // byte-identical to today (PosterCard/LandscapeCard skip the overlay entirely).
+            SettingsToggleRow(
+                title: String(localized: "Accent Focus Ring"),
+                subtitle: String(localized: "Focused artwork shows a ring in your accent color"),
+                isOn: $accentFocusRing
+            )
 
-                // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
-                // turns the zoom off outright — the card holds its size and marks focus with the
-                // ring (or a highlight border when the ring is off) and a shadow instead. Default
-                // OFF, so the stock focus motion is unchanged for everyone else.
-                SettingsToggleRow(
-                    title: String(localized: "No Zoom on Focus"),
-                    subtitle: noZoomOnFocus
-                        ? String(localized: "On \u{00B7} Focused cards keep their size \u{2014} highlight and shadow only")
-                        : String(localized: "Off \u{00B7} Focused cards lift and zoom slightly"),
-                    isOn: noZoomOnFocus
-                ) {
-                    noZoomOnFocus.toggle()
-                }
+            // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
+            // turns the zoom off outright — the card holds its size and marks focus with the
+            // ring (or a highlight border when the ring is off) and a shadow instead. Default
+            // OFF, so the stock focus motion is unchanged for everyone else.
+            SettingsToggleRow(
+                title: String(localized: "No Zoom on Focus"),
+                subtitle: String(localized: "Focused cards keep their size \u{2014} highlight and shadow only"),
+                isOn: $noZoomOnFocus
+            )
 
-                settingsStyleRow
-            }
+            // FEAT-7: Default keeps the sidebar's category icons at normal row height; Minimal
+            // drops the icons and tightens row padding for a denser list. (A third "Top Bar"
+            // style was scoped out.)
+            SettingsPickerRow(
+                title: String(localized: "Settings Style"),
+                selection: $settingsStyle,
+                options: Self.settingsStyleOptions.map(\.value),
+                label: { value in Self.settingsStyleOptions.first { $0.value == value }?.label ?? value }
+            )
+        }
 
-            settingsSection(String(localized: "Poster Style")) {
-                PosterStyleControls(
-                    widthDp: model.posterWidthDp,
-                    cornerDp: model.posterCornerRadiusDp,
-                    hideLabels: model.posterHideLabels,
-                    landscapeRows: model.posterLandscapeRows,
-                    onSize: { model.setPosterWidth($0) },
-                    onCorner: { model.setPosterCorner($0) },
-                    onHideLabels: { model.setPosterHideLabels($0) },
-                    onLandscape: { model.setPosterLandscapeRows($0) },
-                    onReset: { model.resetPosterStyle() }
-                )
-                // Default (off) always shows the Home hero's backdrop artwork — a beta
-                // tester read the old focus-only fade as a bug ("hero posts don't
-                // work"). This restores that original fade for anyone who preferred it.
-                // BUG-24/UX-1: the old name ("Hero Poster Only When Focused") confused two
-                // testers in opposite directions — one asked for the OFF behavior thinking it
-                // was missing (UX-1), one reported the toggle "does nothing" while describing
-                // exactly what ON does (BUG-24). The name now states the action.
-                SettingsToggleRow(
-                    title: String(localized: "Hide Hero Artwork While Browsing"),
-                    subtitle: heroPosterFocusOnly
-                        ? String(localized: "On \u{00B7} Artwork shows while the hero is highlighted and hides once you move down into the rows")
-                        : String(localized: "Off \u{00B7} Hero artwork stays visible while you browse"),
-                    isOn: heroPosterFocusOnly
-                ) {
-                    heroPosterFocusOnly.toggle()
-                }
-                SettingsToggleRow(
-                    title: String(localized: "Auto-Play Trailer on Detail"),
-                    subtitle: detailTrailerAutoplay
-                        ? String(localized: "On \u{00B7} Play the trailer full screen shortly after opening a title")
-                        : String(localized: "Off \u{00B7} Trailers only play when selected"),
-                    isOn: detailTrailerAutoplay
-                ) {
-                    detailTrailerAutoplay.toggle()
-                }
-                // UX-4b (tester ask): the auto-play toggle above never controlled the muted
-                // trailer looping BEHIND the detail description — that had no switch at all.
-                SettingsToggleRow(
-                    title: String(localized: "Background Trailer on Detail"),
-                    subtitle: detailTrailerBackground
-                        ? String(localized: "On \u{00B7} A muted trailer plays behind the description on detail pages")
-                        : String(localized: "Off \u{00B7} Detail pages stay on the still artwork"),
-                    isOn: detailTrailerBackground
-                ) {
-                    detailTrailerBackground.toggle()
-                }
-                // FEAT-8: only meaningful while the background trailer itself is on.
-                if detailTrailerBackground {
-                    trailerDurationRow
-                }
-                SettingsToggleRow(
-                    title: String(localized: "Poster in Detail Background"),
-                    subtitle: detailPosterBackdrop
-                        ? String(localized: "On \u{00B7} Show the title's poster on the right side of detail pages")
-                        : String(localized: "Off \u{00B7} Detail pages show only the backdrop"),
-                    isOn: detailPosterBackdrop
-                ) {
-                    detailPosterBackdrop.toggle()
-                }
-                // FEAT-9
-                SettingsToggleRow(
-                    title: String(localized: "Icon-Only Detail Buttons"),
-                    subtitle: detailActionIconsOnly
-                        ? String(localized: "On \u{00B7} Buttons show icons only")
-                        : String(localized: "Off \u{00B7} Buttons show text and icons"),
-                    isOn: detailActionIconsOnly
-                ) {
-                    detailActionIconsOnly.toggle()
-                }
-            }
-
-            settingsSection(String(localized: "Card Depth")) {
-                CardDepthControls(
-                    style: model.cardDepth,
-                    onEnabled: { model.setCardDepthEnabled($0) },
-                    onEdge: { model.setCardDepthEdge($0) },
-                    onSheen: { model.setCardDepthSheen($0) },
-                    onCoverage: { model.setCardDepthCoverage($0) },
-                    onSurface: { model.setCardDepthSurface($0, $1) },
-                    onReset: { model.resetCardDepth() }
+        SettingsSection(String(localized: "Poster Style")) {
+            PosterStyleControls(
+                widthDp: model.posterWidthDp,
+                cornerDp: model.posterCornerRadiusDp,
+                hideLabels: model.posterHideLabels,
+                landscapeRows: model.posterLandscapeRows,
+                onSize: { model.setPosterWidth($0) },
+                onCorner: { model.setPosterCorner($0) },
+                onHideLabels: { model.setPosterHideLabels($0) },
+                onLandscape: { model.setPosterLandscapeRows($0) },
+                onReset: { model.resetPosterStyle() }
+            )
+            // Default (off) always shows the Home hero's backdrop artwork — a beta
+            // tester read the old focus-only fade as a bug ("hero posts don't
+            // work"). This restores that original fade for anyone who preferred it.
+            // BUG-24/UX-1: the old name ("Hero Poster Only When Focused") confused two
+            // testers in opposite directions — one asked for the OFF behavior thinking it
+            // was missing (UX-1), one reported the toggle "does nothing" while describing
+            // exactly what ON does (BUG-24). The name now states the action.
+            SettingsToggleRow(
+                title: String(localized: "Hide Hero Artwork While Browsing"),
+                subtitle: String(localized: "Artwork shows while the hero is highlighted and hides once you move down into the rows"),
+                isOn: $heroPosterFocusOnly
+            )
+            SettingsToggleRow(
+                title: String(localized: "Auto-Play Trailer on Detail"),
+                subtitle: String(localized: "Play the trailer full screen shortly after opening a title"),
+                isOn: $detailTrailerAutoplay
+            )
+            // UX-4b (tester ask): the auto-play toggle above never controlled the muted
+            // trailer looping BEHIND the detail description — that had no switch at all.
+            SettingsToggleRow(
+                title: String(localized: "Background Trailer on Detail"),
+                subtitle: String(localized: "A muted trailer plays behind the description on detail pages"),
+                isOn: $detailTrailerBackground
+            )
+            // FEAT-8: only meaningful while the background trailer itself is on.
+            if detailTrailerBackground {
+                SettingsPickerRow(
+                    title: String(localized: "Trailer Duration"),
+                    selection: $detailTrailerDuration,
+                    options: Self.trailerDurationOptions.map(\.value),
+                    label: { value in Self.trailerDurationOptions.first { $0.value == value }?.label ?? "\(value)" }
                 )
             }
-
-            settingsSection(String(localized: "Stream Badges")) {
-                StreamBadgesSection(badges: badges)
-            }
+            SettingsToggleRow(
+                title: String(localized: "Poster in Detail Background"),
+                subtitle: String(localized: "Show the title's poster on the right side of detail pages"),
+                isOn: $detailPosterBackdrop
+            )
+            // FEAT-9
+            SettingsToggleRow(
+                title: String(localized: "Icon-Only Detail Buttons"),
+                subtitle: String(localized: "Buttons show icons only"),
+                isOn: $detailActionIconsOnly
+            )
         }
-    }
 
-    /// FEAT-8: how long the muted background trailer plays before fading back to the still
-    /// backdrop. 0 ("Always") is the original play-forever behavior.
-    private var trailerDurationRow: some View {
-        let options: [(value: Int, label: String)] = [
-            (30, String(localized: "30s")),
-            (60, String(localized: "1 min")),
-            (90, String(localized: "90s")),
-            (0, String(localized: "Always")),
-        ]
-        return controlRow(String(localized: "Trailer Duration")) {
-            ForEach(options, id: \.value) { option in
-                chip(option.label, selected: detailTrailerDuration == option.value) {
-                    detailTrailerDuration = option.value
-                }
-            }
+        SettingsSection(String(localized: "Card Depth")) {
+            CardDepthControls(
+                style: model.cardDepth,
+                onEnabled: { model.setCardDepthEnabled($0) },
+                onEdge: { model.setCardDepthEdge($0) },
+                onSheen: { model.setCardDepthSheen($0) },
+                onCoverage: { model.setCardDepthCoverage($0) },
+                onSurface: { model.setCardDepthSurface($0, $1) },
+                onReset: { model.resetCardDepth() }
+            )
         }
-    }
 
-    /// FEAT-7: Default keeps the sidebar's category icons at normal row height; Minimal drops the
-    /// icons and tightens row padding for a denser list. (A third "Top Bar" style was scoped out.)
-    private var settingsStyleRow: some View {
-        let options: [(value: String, label: String)] = [
-            ("default", String(localized: "Default")),
-            ("minimal", String(localized: "Minimal")),
-        ]
-        return controlRow(String(localized: "Settings Style")) {
-            ForEach(options, id: \.value) { option in
-                chip(option.label, selected: settingsStyle == option.value) {
-                    settingsStyle = option.value
-                }
-            }
+        SettingsSection(String(localized: "Stream Badges")) {
+            StreamBadgesSection(badges: badges)
         }
     }
 }
@@ -313,6 +255,9 @@ private struct SwatchLabel: View {
 
 /// Poster card style controls: size, corner radius, hide-titles and landscape-rows toggles, and a
 /// reset. Values are the shared dp presets (scaled to tvOS points by `PosterStyle`).
+///
+/// C3a: Size and Corners were text-label chip rows — both are now `SettingsPickerRow` menus; the
+/// destructive reset button is now `SettingsDestructiveRow`.
 private struct PosterStyleControls: View {
     let widthDp: Int32
     let cornerDp: Int32
@@ -332,40 +277,40 @@ private struct PosterStyleControls: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            controlRow(String(localized: "Size")) {
-                ForEach(sizes, id: \.dp) { size in
-                    chip(size.name, selected: widthDp == size.dp) { onSize(size.dp) }
-                }
-            }
-            controlRow(String(localized: "Corners")) {
-                ForEach(corners, id: \.dp) { corner in
-                    chip(corner.name, selected: cornerDp == corner.dp) { onCorner(corner.dp) }
-                }
-            }
+        SettingsPickerRow(
+            title: String(localized: "Size"),
+            selection: Binding(get: { widthDp }, set: { onSize($0) }),
+            options: sizes.map(\.dp),
+            label: { dp in sizes.first { $0.dp == dp }?.name ?? "\(dp)" }
+        )
+        SettingsPickerRow(
+            title: String(localized: "Corners"),
+            selection: Binding(get: { cornerDp }, set: { onCorner($0) }),
+            options: corners.map(\.dp),
+            label: { dp in corners.first { $0.dp == dp }?.name ?? "\(dp)" }
+        )
 
-            SettingsToggleRow(title: String(localized: "Hide Titles"), subtitle: String(localized: "Show posters without a title label"), isOn: hideLabels) {
-                onHideLabels(!hideLabels)
-            }
-            SettingsToggleRow(title: String(localized: "Landscape Rows"), subtitle: String(localized: "Show Home & Search catalog rows as wide 16:9 cards"), isOn: landscapeRows) {
-                onLandscape(!landscapeRows)
-            }
+        SettingsToggleRow(
+            title: String(localized: "Hide Titles"),
+            subtitle: String(localized: "Show posters without a title label"),
+            isOn: Binding(get: { hideLabels }, set: { onHideLabels($0) })
+        )
+        SettingsToggleRow(
+            title: String(localized: "Landscape Rows"),
+            subtitle: String(localized: "Show Home & Search catalog rows as wide 16:9 cards"),
+            isOn: Binding(get: { landscapeRows }, set: { onLandscape($0) })
+        )
 
-            Button(role: .destructive, action: onReset) {
-                Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
-                    .font(Theme.Font.meta)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.xxs + 2)
-            }
-            .buttonStyle(.chip)
-        }
+        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", action: onReset)
     }
 }
 
 /// Card-depth controls: a master toggle, then edge/sheen/coverage strength presets and per-surface
 /// enables (progressively revealed once on), plus a reset. Mirrors composeApp's card-depth section;
 /// the effect itself is rendered by `View.nuvioCardDepth`. Preset values match the Compose page.
+///
+/// C3a: Edge/Sheen/Coverage were text-label chip rows — all three are now `SettingsPickerRow`
+/// menus; the destructive reset button is now `SettingsDestructiveRow`.
 private struct CardDepthControls: View {
     let style: CardDepthStyle
     let onEnabled: (Bool) -> Void
@@ -393,51 +338,49 @@ private struct CardDepthControls: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            Text("Add a raised edge highlight and a glossy top sheen to cards for a little more depth.")
+        Text("Add a raised edge highlight and a glossy top sheen to cards for a little more depth.")
+            .font(Theme.Font.caption)
+            .foregroundStyle(Theme.Palette.textSecondary)
+
+        SettingsToggleRow(
+            title: String(localized: "Card Depth"),
+            subtitle: String(localized: "Enable the edge highlight and top sheen"),
+            isOn: Binding(get: { style.enabled }, set: { onEnabled($0) })
+        )
+
+        if style.enabled {
+            SettingsPickerRow(
+                title: String(localized: "Edge"),
+                selection: Binding(get: { Int32(style.edgeStrength) }, set: { onEdge($0) }),
+                options: edgeOptions.map(\.value),
+                label: { value in edgeOptions.first { $0.value == value }?.name ?? "\(value)" }
+            )
+            SettingsPickerRow(
+                title: String(localized: "Sheen"),
+                selection: Binding(get: { Int32(style.sheenStrength) }, set: { onSheen($0) }),
+                options: sheenOptions.map(\.value),
+                label: { value in sheenOptions.first { $0.value == value }?.name ?? "\(value)" }
+            )
+            SettingsPickerRow(
+                title: String(localized: "Edge Coverage"),
+                selection: Binding(get: { Int32(style.edgeCoverage) }, set: { onCoverage($0) }),
+                options: coverageOptions.map(\.value),
+                label: { value in coverageOptions.first { $0.value == value }?.name ?? "\(value)" }
+            )
+
+            Text("Apply To")
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)
-
-            SettingsToggleRow(title: String(localized: "Card Depth"), subtitle: String(localized: "Enable the edge highlight and top sheen"), isOn: style.enabled) {
-                onEnabled(!style.enabled)
+            ForEach(surfaces, id: \.name) { entry in
+                SettingsToggleRow(
+                    title: entry.name,
+                    subtitle: entry.subtitle,
+                    isOn: Binding(get: { isOn(entry.surface) }, set: { onSurface(entry.surface, $0) })
+                )
             }
-
-            if style.enabled {
-                controlRow(String(localized: "Edge")) {
-                    ForEach(edgeOptions, id: \.value) { opt in
-                        chip(opt.name, selected: Int32(style.edgeStrength) == opt.value) { onEdge(opt.value) }
-                    }
-                }
-                controlRow(String(localized: "Sheen")) {
-                    ForEach(sheenOptions, id: \.value) { opt in
-                        chip(opt.name, selected: Int32(style.sheenStrength) == opt.value) { onSheen(opt.value) }
-                    }
-                }
-                controlRow(String(localized: "Edge Coverage")) {
-                    ForEach(coverageOptions, id: \.value) { opt in
-                        chip(opt.name, selected: Int32(style.edgeCoverage) == opt.value) { onCoverage(opt.value) }
-                    }
-                }
-
-                Text("Apply To")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                ForEach(surfaces, id: \.name) { entry in
-                    SettingsToggleRow(title: entry.name, subtitle: entry.subtitle, isOn: isOn(entry.surface)) {
-                        onSurface(entry.surface, !isOn(entry.surface))
-                    }
-                }
-            }
-
-            Button(role: .destructive, action: onReset) {
-                Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
-                    .font(Theme.Font.meta)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.xxs + 2)
-            }
-            .buttonStyle(.chip)
         }
+
+        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", action: onReset)
     }
 
     private func isOn(_ surface: CardDepthSurface) -> Bool {
@@ -448,25 +391,5 @@ private struct CardDepthControls: View {
         case .cast: return style.castEnabled
         case .trailers: return style.trailersEnabled
         }
-    }
-
-    @ViewBuilder
-    private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text(title)
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            HStack(spacing: Theme.Spacing.md) { content() }
-        }
-    }
-
-    private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(Theme.Font.meta)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xxs + 2)
-        }
-        .buttonStyle(.chip(selected: selected))
     }
 }

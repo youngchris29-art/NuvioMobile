@@ -23,12 +23,10 @@ struct AccountServicesSettingsPane: View {
     @Binding var debridDisconnectId: String?
     /// Drives the shared "Use the official server?" confirmation alert owned by SettingsView.
     @Binding var confirmingUseOfficial: Bool
-    /// Presents the self-hosted server discovery flow as a full-screen cover.
-    @State private var showServerConnection = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-            settingsSection(String(localized: "Account")) {
+        Group {
+            SettingsSection(String(localized: "Account")) {
                 if auth.isAnonymous {
                     SettingsActionRow(
                         title: String(localized: "Sign In to Nuvio"),
@@ -38,7 +36,7 @@ struct AccountServicesSettingsPane: View {
                         confirmingSignOut = true
                     }
                 } else {
-                    SettingsActionRow(
+                    SettingsDestructiveRow(
                         title: String(localized: "Sign Out"),
                         subtitle: String(localized: "Signed in as \(auth.accountEmail ?? "your Nuvio account"). Local data on this Apple TV will be cleared."),
                         systemImage: "rectangle.portrait.and.arrow.right"
@@ -48,28 +46,25 @@ struct AccountServicesSettingsPane: View {
                 }
             }
 
-            settingsSection(String(localized: "Server")) {
+            SettingsSection(String(localized: "Server")) {
                 serverSection
             }
 
-            settingsSection(String(localized: "Trakt")) {
+            SettingsSection(String(localized: "Trakt")) {
                 traktSection
             }
 
-            settingsSection(String(localized: "Simkl")) {
+            SettingsSection(String(localized: "Simkl")) {
                 simklSection
             }
 
-            settingsSection(String(localized: "Debrid")) {
+            SettingsSection(String(localized: "Debrid")) {
                 debridSection
             }
         }
         // BUG-21 follow-up: verify each connected provider's stored credential the moment the
         // pane opens, so an expired token reads "Session expired" instead of "Connected".
         .onAppear { debrid.revalidateConnected() }
-        .fullScreenCover(isPresented: $showServerConnection) {
-            ServerConnectionView()
-        }
     }
 
     /// The Server section: which backend this Apple TV talks to, plus the self-hosted discovery
@@ -78,24 +73,24 @@ struct AccountServicesSettingsPane: View {
     /// SettingsView; the connect flow confirms inside `ServerConnectionView`.
     @ViewBuilder
     private var serverSection: some View {
-        SettingsInfoRow(
+        SettingsValueRow(
             title: String(localized: "Server"),
             value: server.isCustom
                 ? server.displayHost
                 : String(localized: "Official Nuvio (\(server.displayHost))"),
             systemImage: "server.rack"
         )
-        SettingsActionRow(
+        SettingsLinkRow(
             title: server.isCustom
                 ? String(localized: "Connect to Another Server")
                 : String(localized: "Connect to a Self-Hosted Server"),
             subtitle: String(localized: "Point this Apple TV at a self-hosted Nuvio backend. Switching servers signs you out and clears local data on this Apple TV."),
             systemImage: "network"
         ) {
-            showServerConnection = true
+            ServerConnectionView()
         }
         if server.isCustom {
-            SettingsActionRow(
+            SettingsDestructiveRow(
                 title: String(localized: "Use Official Server"),
                 subtitle: String(localized: "Switch back to api.nuvio.tv. You\u{2019}ll be signed out and local data on this Apple TV will be cleared."),
                 systemImage: "arrow.uturn.backward"
@@ -115,7 +110,7 @@ struct AccountServicesSettingsPane: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
         } else if trakt.isConnected {
-            SettingsActionRow(
+            SettingsDestructiveRow(
                 title: String(localized: "Disconnect Trakt"),
                 subtitle: String(localized: "Connected as \(trakt.username ?? "your Trakt account") \u{00B7} watched history is scrobbled automatically as you play."),
                 systemImage: "checkmark.circle.fill"
@@ -166,7 +161,7 @@ struct AccountServicesSettingsPane: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
         } else if simkl.isConnected {
-            SettingsActionRow(
+            SettingsDestructiveRow(
                 title: String(localized: "Disconnect Simkl"),
                 subtitle: String(localized: "Connected as \(simkl.username ?? "your Simkl account") \u{00B7} watched history is scrobbled automatically as you play."),
                 systemImage: "checkmark.circle.fill"
@@ -193,9 +188,16 @@ struct AccountServicesSettingsPane: View {
 
             SimklSyncInfoRow()
 
-            SimklAnimeIdRow(selection: simkl.animeIdPreference) { key in
-                simkl.setAnimeIdPreference(key)
-            }
+            SettingsPickerRow(
+                title: String(localized: "Anime ID Preference"),
+                subtitle: String(localized: "Which external ID identifies anime entries. MyAnimeList or Kitsu give each season its own entry; IMDB groups the seasons of a franchise under one ID."),
+                selection: Binding(
+                    get: { simkl.animeIdPreference },
+                    set: { simkl.setAnimeIdPreference($0) }
+                ),
+                options: SimklAnimeIdOptions.keys,
+                label: SimklAnimeIdOptions.name(forKey:)
+            )
         } else if let code = simkl.deviceUserCode {
             SimklActivationCard(
                 code: code,
@@ -249,36 +251,25 @@ struct AccountServicesSettingsPane: View {
             SettingsToggleRow(
                 title: String(localized: "Resolve Streams with Debrid"),
                 subtitle: String(localized: "Turn cached torrent results into direct links automatically"),
-                isOn: debrid.resolverEnabled
-            ) {
-                debrid.setResolverEnabled(!debrid.resolverEnabled)
-            }
+                isOn: Binding(
+                    get: { debrid.resolverEnabled },
+                    set: { debrid.setResolverEnabled($0) }
+                )
+            )
         }
 
         if debrid.resolverProviders.count > 1 {
-            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                Text("Preferred resolver")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                HStack(spacing: Theme.Spacing.md) {
-                    ForEach(debrid.resolverProviders, id: \.id) { provider in
-                        Button {
-                            debrid.setPreferredResolver(provider.id)
-                        } label: {
-                            HStack(spacing: Theme.Spacing.xs) {
-                                if debrid.activeResolverId == provider.id {
-                                    Image(systemName: "checkmark.circle.fill")
-                                }
-                                Text(provider.displayName)
-                            }
-                            .font(Theme.Font.meta)
-                            .padding(.horizontal, Theme.Spacing.md)
-                            .padding(.vertical, Theme.Spacing.xs)
-                        }
-                        .buttonStyle(.chip(selected: debrid.activeResolverId == provider.id))
-                    }
+            SettingsPickerRow(
+                title: String(localized: "Preferred resolver"),
+                selection: Binding(
+                    get: { debrid.activeResolverId ?? debrid.resolverProviders[0].id },
+                    set: { debrid.setPreferredResolver($0) }
+                ),
+                options: debrid.resolverProviders.map(\.id),
+                label: { id in
+                    debrid.resolverProviders.first { $0.id == id }?.displayName ?? id
                 }
-            }
+            )
         }
     }
 
@@ -289,7 +280,7 @@ struct AccountServicesSettingsPane: View {
             // on a real provider call or the pane-open revalidation. Same disconnect action —
             // reconnecting mints a fresh token, which is the entire fix.
             if debrid.authFailedIds.contains(provider.id) {
-                SettingsActionRow(
+                SettingsDestructiveRow(
                     title: String(localized: "\(provider.displayName) \u{00B7} Session expired"),
                     subtitle: String(localized: "\(provider.displayName) rejected the saved sign-in. Press to disconnect, then connect again."),
                     systemImage: "exclamationmark.triangle.fill"
@@ -297,7 +288,7 @@ struct AccountServicesSettingsPane: View {
                     debridDisconnectId = provider.id
                 }
             } else {
-                SettingsActionRow(
+                SettingsDestructiveRow(
                     title: String(localized: "\(provider.displayName) \u{00B7} Connected"),
                     subtitle: debrid.activeResolverId == provider.id
                         ? String(localized: "Active resolver \u{00B7} press to disconnect")
@@ -389,46 +380,12 @@ private struct SimklSyncNowRow: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.lg) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(Theme.Font.body)
-                    .rowAccentTint()
-                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    Text(isSyncing ? String(localized: "Syncing\u{2026}") : String(localized: "Sync Now"))
-                        .font(Theme.Font.body)
-                        .rowTextColor()
-                    Text(subtitle)
-                        .font(Theme.Font.caption)
-                        .rowTextColor(secondary: true)
-                }
-                Spacer()
-                if isSyncing {
-                    RowProgressIndicator()
-                } else {
-                    Image(systemName: "chevron.right")
-                        .font(Theme.Font.body)
-                        .rowTextColor(secondary: true)
-                }
-            }
-            .padding(Theme.Spacing.lg)
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.settingsRow)
-    }
-}
-
-/// A `ProgressView` that survives the focus platter. `rowTextColor()`/`rowAccentTint()` only set
-/// `foregroundStyle`, which the circular indicator ignores — it follows `tint`, so it needs the
-/// same focus-aware treatment applied there or it renders near-white on the near-white focused
-/// row (the white-on-white regression class this app keeps hitting).
-private struct RowProgressIndicator: View {
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        ProgressView()
-            .progressViewStyle(.circular)
-            .tint(isFocused ? Theme.Palette.onFocusPlatter : Theme.Palette.textSecondary)
+        SettingsActionRow(
+            title: isSyncing ? String(localized: "Syncing\u{2026}") : String(localized: "Sync Now"),
+            subtitle: subtitle,
+            systemImage: "arrow.triangle.2.circlepath",
+            action: action
+        )
     }
 }
 
@@ -436,8 +393,9 @@ private struct RowProgressIndicator: View {
 ///
 /// Rendered as an expanding row rather than an alert: it is four paragraphs of explanation with no
 /// decision attached, and a tvOS alert with that much body text is unreadable at 10 feet. The
-/// collapsed/expanded header mirrors the Home Screen pane's disclosure groups (a plain Button +
-/// conditional content — tvOS `DisclosureGroup` focus highlighting is unusable).
+/// collapsed/expanded header is a kit `SettingsActionRow` that toggles `isExpanded`, with the
+/// paragraphs below it as plain body text when expanded — a "few rows" inline sub-flow per the
+/// beta.15 §C3 conversion rules, not a pushed page.
 ///
 /// Upstream's "Read the Simkl sync guide" button is dropped: it calls `UriHandler.openUri`, and
 /// tvOS has no browser to hand the URL to. The URL is printed instead so it can be opened on a
@@ -451,31 +409,13 @@ private struct SimklSyncInfoRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Button {
+            SettingsActionRow(
+                title: String(localized: "How Syncing Works"),
+                subtitle: String(localized: "What Nuvio sends to Simkl, when it checks back, and why some shows leave Continue Watching."),
+                systemImage: "info.circle"
+            ) {
                 isExpanded.toggle()
-            } label: {
-                HStack(spacing: Theme.Spacing.lg) {
-                    Image(systemName: "info.circle")
-                        .font(Theme.Font.body)
-                        .rowAccentTint()
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                        Text("How Syncing Works")
-                            .font(Theme.Font.body)
-                            .rowTextColor()
-                        Text("What Nuvio sends to Simkl, when it checks back, and why some shows leave Continue Watching.")
-                            .font(Theme.Font.caption)
-                            .rowTextColor(secondary: true)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(Theme.Font.body)
-                        .rowTextColor(secondary: true)
-                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
-                }
-                .padding(Theme.Spacing.lg)
-                .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.settingsRow)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -496,68 +436,22 @@ private struct SimklSyncInfoRow: View {
     }
 }
 
-/// Anime ID preference — which external ID is the canonical content ID for anime resolved through
-/// Simkl (`SimklAnimeIdPreference`). Upstream opens an adaptive picker dialog listing each option
-/// with a description; on tvOS this is the Menu + Picker dropdown the Playback pane's Default
-/// Player row established: the row shows the current choice, Select pops the native menu, and the
-/// embedded Picker gets radio-style checkmarks for free.
-///
-/// The per-option descriptions upstream shows inside its dialog don't survive that trip (tvOS menu
-/// items are single labels), so the trade-off they explain is folded into the row's own subtitle.
-private struct SimklAnimeIdRow: View {
-    let selection: String
-    let onSelect: (String) -> Void
+/// Anime ID preference options for the `SettingsPickerRow` in `simklSection` — which external ID
+/// is the canonical content ID for anime resolved through Simkl (`SimklAnimeIdPreference`).
+/// MyAnimeList or Kitsu give each season its own entry; IMDB groups a franchise's seasons under
+/// one ID (the trade-off folded into the picker row's subtitle since a tvOS `Menu` item can't
+/// carry upstream's per-option descriptions).
+private enum SimklAnimeIdOptions {
+    static let keys = ["imdb", "mal", "kitsu"]
 
-    private static let options: [(key: String, name: String)] = [
-        ("imdb", String(localized: "Prefer IMDB")),
-        ("mal", String(localized: "Prefer MyAnimeList")),
-        ("kitsu", String(localized: "Prefer Kitsu"))
+    private static let names: [String: String] = [
+        "imdb": String(localized: "Prefer IMDB"),
+        "mal": String(localized: "Prefer MyAnimeList"),
+        "kitsu": String(localized: "Prefer Kitsu")
     ]
 
-    private var selectedName: String {
-        Self.options.first { $0.key == selection }?.name ?? Self.options[0].name
-    }
-
-    /// The Picker binds through this rather than to a @State mirror: the shared settings flow is
-    /// the source of truth, so the row re-renders from the repository's own emission and can never
-    /// display a choice that failed to persist.
-    private var binding: Binding<String> {
-        Binding(get: { selection }, set: { onSelect($0) })
-    }
-
-    var body: some View {
-        Menu {
-            Picker(String(localized: "Anime ID Preference"), selection: binding) {
-                ForEach(Self.options, id: \.key) { option in
-                    Text(option.name).tag(option.key)
-                }
-            }
-        } label: {
-            HStack(spacing: Theme.Spacing.lg) {
-                Image(systemName: "square.stack.3d.up")
-                    .font(Theme.Font.body)
-                    .rowAccentTint()
-                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                    Text("Anime ID Preference")
-                        .font(Theme.Font.body)
-                        .rowTextColor()
-                    Text("Which external ID identifies anime entries. MyAnimeList or Kitsu give each season its own entry; IMDB groups the seasons of a franchise under one ID.")
-                        .font(Theme.Font.caption)
-                        .rowTextColor(secondary: true)
-                }
-                Spacer()
-                Text(selectedName)
-                    .font(Theme.Font.body)
-                    .rowTextColor(secondary: true)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(Theme.Font.body)
-                    .rowTextColor(secondary: true)
-            }
-            .padding(Theme.Spacing.lg)
-            .frame(maxWidth: .infinity)
-        }
-        .menuStyle(.button)
-        .buttonStyle(.settingsRow)
+    static func name(forKey key: String) -> String {
+        names[key] ?? key
     }
 }
 

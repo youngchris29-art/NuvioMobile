@@ -1,7 +1,7 @@
 import SwiftUI
 import SharedCore
 
-/// Self-hosted server flow (presented as a `.fullScreenCover` from Welcome and from Settings →
+/// Self-hosted server flow (presented as a `.fullScreenCover` from Welcome and pushed via NavigationLink from Settings →
 /// Account & Services). Two steps driven entirely by the shared `ServerConnectionController`:
 ///
 /// 1. ENTER — type the backend URL; "Check Server" runs `/.well-known/nuvio` discovery.

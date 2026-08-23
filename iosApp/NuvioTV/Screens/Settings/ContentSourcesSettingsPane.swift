@@ -9,8 +9,8 @@ struct ContentSourcesSettingsPane: View {
     @ObservedObject var plugins: PluginsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-            settingsSection(String(localized: "Metadata (TMDB)")) {
+        Group {
+            SettingsSection(String(localized: "Metadata (TMDB)")) {
                 Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
@@ -19,30 +19,36 @@ struct ContentSourcesSettingsPane: View {
                 if model.tmdbHasKey {
                     SettingsToggleRow(
                         title: String(localized: "TMDB Enrichment"),
-                        subtitle: model.tmdbEnabled ? String(localized: "On \u{00B7} API key saved") : String(localized: "Off \u{00B7} API key saved"),
-                        isOn: model.tmdbEnabled
-                    ) {
-                        model.setTmdbEnabled(!model.tmdbEnabled)
-                    }
+                        subtitle: String(localized: "API key saved"),
+                        isOn: Binding(
+                            get: { model.tmdbEnabled },
+                            set: { model.setTmdbEnabled($0) }
+                        )
+                    )
                     SettingsToggleRow(
                         title: String(localized: "TMDB Release Dates"),
                         subtitle: model.tmdbUseReleaseDates
-                            ? String(localized: "On \u{00B7} TMDB air dates override add-on release dates")
-                            : String(localized: "Off \u{00B7} add-on release dates are used as-is"),
-                        isOn: model.tmdbUseReleaseDates
-                    ) {
-                        model.setTmdbUseReleaseDates(!model.tmdbUseReleaseDates)
-                    }
+                            ? String(localized: "TMDB air dates override add-on release dates")
+                            : String(localized: "add-on release dates are used as-is"),
+                        isOn: Binding(
+                            get: { model.tmdbUseReleaseDates },
+                            set: { model.setTmdbUseReleaseDates($0) }
+                        )
+                    )
                     Text("Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.")
                         .font(Theme.Font.caption)
                         .foregroundStyle(Theme.Palette.textSecondary)
                         .frame(maxWidth: 1100, alignment: .leading)
-                    LanguageSelectRow(
+                    SettingsPickerRow(
                         title: String(localized: "Metadata Language"),
-                        options: LanguageOptions.tmdbMetadata,
-                        selected: model.tmdbLanguageSelection
-                    ) { model.setTmdbLanguage($0) }
-                    SettingsActionRow(
+                        selection: Binding(
+                            get: { model.tmdbLanguageSelection },
+                            set: { model.setTmdbLanguage($0) }
+                        ),
+                        options: LanguageOptions.tmdbMetadata.map(\.code),
+                        label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.tmdbMetadata) }
+                    )
+                    SettingsDestructiveRow(
                         title: String(localized: "Remove API Key"),
                         subtitle: String(localized: "Clears the saved TMDB key and turns enrichment off."),
                         systemImage: "trash"
@@ -54,7 +60,7 @@ struct ContentSourcesSettingsPane: View {
                 }
             }
 
-            settingsSection(String(localized: "Ratings (MDBList)")) {
+            SettingsSection(String(localized: "Ratings (MDBList)")) {
                 Text("Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open after enabling will show the ratings.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
@@ -63,12 +69,13 @@ struct ContentSourcesSettingsPane: View {
                 if model.mdbListHasKey {
                     SettingsToggleRow(
                         title: String(localized: "MDBList Ratings"),
-                        subtitle: model.mdbListEnabled ? String(localized: "On \u{00B7} API key saved") : String(localized: "Off \u{00B7} API key saved"),
-                        isOn: model.mdbListEnabled
-                    ) {
-                        model.setMdbListEnabled(!model.mdbListEnabled)
-                    }
-                    SettingsActionRow(
+                        subtitle: String(localized: "API key saved"),
+                        isOn: Binding(
+                            get: { model.mdbListEnabled },
+                            set: { model.setMdbListEnabled($0) }
+                        )
+                    )
+                    SettingsDestructiveRow(
                         title: String(localized: "Remove API Key"),
                         subtitle: String(localized: "Clears the saved MDBList key and turns ratings off."),
                         systemImage: "trash"
@@ -82,30 +89,41 @@ struct ContentSourcesSettingsPane: View {
                 }
             }
 
-            settingsSection(String(localized: "Library & Watch Progress")) {
+            SettingsSection(String(localized: "Library & Watch Progress")) {
                 librarySection
             }
 
             // FEAT-10 (tester ask): choose which catalogs Search fans out to. Fewer sources
             // means faster, more focused results — the fan-out across every search-capable
             // catalog of every addon is also the app's biggest single burst of requests.
-            settingsSection(String(localized: "Search Sources")) {
+            SettingsSection(String(localized: "Search Sources")) {
                 searchSourcesSection
             }
 
-            settingsSection(String(localized: "Plugins")) {
+            SettingsSection(String(localized: "Plugins")) {
                 pluginsSection
             }
         }
     }
+
+    /// Display names for the Library Source / Watch Progress Source pickers below, keyed by the
+    /// shared repo's provider-neutral mode strings.
+    private static let librarySourceLabels: [(name: String, code: String)] = [
+        (String(localized: "Nuvio Library"), "local"),
+        (String(localized: "Trakt"), "trakt"),
+        (String(localized: "Simkl"), "simkl"),
+    ]
+    private static let watchProgressSourceLabels: [(name: String, code: String)] = [
+        (String(localized: "Nuvio Sync"), "nuvio_sync"),
+        (String(localized: "Trakt"), "trakt"),
+        (String(localized: "Simkl"), "simkl"),
+    ]
 
     /// Library Source (which backend the Library tab reads from) and Watch Progress Source (which
     /// backend owns Continue Watching / watched history). Both are provider-neutral picks backed by
     /// `TrackingSettingsRepository`; the shared layer falls back to the local/Nuvio option on its
     /// own if the chosen provider isn't connected (`effectiveLibrarySourceMode` /
     /// `effectiveWatchProgressSource`), so this pane doesn't need to gate the options itself.
-    /// Reuses `LanguageSelectRow` (already shared with the Playback and TMDB-language rows above) —
-    /// it's a generic name/code chip row, not language-specific despite the name.
     @ViewBuilder
     private var librarySection: some View {
         Text("Choose where your library and watch progress are saved. Connect Trakt or Simkl in Account & Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
@@ -113,25 +131,25 @@ struct ContentSourcesSettingsPane: View {
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)
 
-        LanguageSelectRow(
+        SettingsPickerRow(
             title: String(localized: "Library Source"),
-            options: [
-                (String(localized: "Nuvio Library"), "local"),
-                (String(localized: "Trakt"), "trakt"),
-                (String(localized: "Simkl"), "simkl"),
-            ],
-            selected: model.librarySourceMode
-        ) { model.setLibrarySourceMode($0) }
+            selection: Binding(
+                get: { model.librarySourceMode },
+                set: { model.setLibrarySourceMode($0) }
+            ),
+            options: Self.librarySourceLabels.map(\.code),
+            label: { code in LanguageOptions.name(forCode: code, in: Self.librarySourceLabels) }
+        )
 
-        LanguageSelectRow(
+        SettingsPickerRow(
             title: String(localized: "Watch Progress Source"),
-            options: [
-                (String(localized: "Nuvio Sync"), "nuvio_sync"),
-                (String(localized: "Trakt"), "trakt"),
-                (String(localized: "Simkl"), "simkl"),
-            ],
-            selected: model.watchProgressSource
-        ) { model.setWatchProgressSource($0) }
+            selection: Binding(
+                get: { model.watchProgressSource },
+                set: { model.setWatchProgressSource($0) }
+            ),
+            options: Self.watchProgressSourceLabels.map(\.code),
+            label: { code in LanguageOptions.name(forCode: code, in: Self.watchProgressSourceLabels) }
+        )
     }
 
     /// FEAT-10: one toggle per search-capable catalog. Rows derive from the installed addons
@@ -144,12 +162,13 @@ struct ContentSourcesSettingsPane: View {
         SettingsToggleRow(
             title: String(localized: "Hide Discover"),
             subtitle: model.hideDiscover
-                ? String(localized: "On \u{00B7} Search shows only the search field and recent searches")
-                : String(localized: "Off \u{00B7} Search shows the Discover section (types, catalogs, genres) below the field"),
-            isOn: model.hideDiscover
-        ) {
-            model.setHideDiscover(!model.hideDiscover)
-        }
+                ? String(localized: "Search shows only the search field and recent searches")
+                : String(localized: "Search shows the Discover section (types, catalogs, genres) below the field"),
+            isOn: Binding(
+                get: { model.hideDiscover },
+                set: { model.setHideDiscover($0) }
+            )
+        )
 
         Text("Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.")
             .font(Theme.Font.caption)
@@ -168,12 +187,13 @@ struct ContentSourcesSettingsPane: View {
                 SettingsToggleRow(
                     title: "\(option.catalogName) \u{00B7} \(option.typeLabel)",
                     subtitle: disabled
-                        ? String(localized: "Off \u{00B7} \(option.addonName) \u{00B7} skipped when searching")
-                        : String(localized: "On \u{00B7} \(option.addonName)"),
-                    isOn: !disabled
-                ) {
-                    model.setSearchSource(key: option.key, disabled: !disabled)
-                }
+                        ? String(localized: "\(option.addonName) \u{00B7} skipped when searching")
+                        : String(localized: "\(option.addonName)"),
+                    isOn: Binding(
+                        get: { !disabled },
+                        set: { model.setSearchSource(key: option.key, disabled: !$0) }
+                    )
+                )
             }
 
             // BUG-33 defect 1 (P1, twice re-opened): the tester's only way to confirm a
@@ -200,10 +220,11 @@ struct ContentSourcesSettingsPane: View {
         SettingsToggleRow(
             title: String(localized: "Enable Plugins"),
             subtitle: String(localized: "Run enabled plugin providers when loading streams."),
-            isOn: plugins.pluginsEnabled
-        ) {
-            plugins.setPluginsEnabled(!plugins.pluginsEnabled)
-        }
+            isOn: Binding(
+                get: { plugins.pluginsEnabled },
+                set: { plugins.setPluginsEnabled($0) }
+            )
+        )
 
         PluginRepoEntryRow(isInstalling: plugins.isInstalling) { plugins.addRepository($0) }
 
@@ -249,10 +270,11 @@ struct ContentSourcesSettingsPane: View {
                             subtitle: scraper.description_.isEmpty
                                 ? String(localized: "v\(scraper.version)")
                                 : String(localized: "\(scraper.description_) \u{00B7} v\(scraper.version)"),
-                            isOn: scraper.enabled
-                        ) {
-                            plugins.toggleScraper(scraper, !scraper.enabled)
-                        }
+                            isOn: Binding(
+                                get: { scraper.enabled },
+                                set: { plugins.toggleScraper(scraper, $0) }
+                            )
+                        )
                     }
                 }
             }

@@ -5,6 +5,13 @@ import SharedCore
 /// appearance, and audio/subtitle language preference. Extracted from SettingsView.swift (Phase 2
 /// HIG revamp file split) — logic and wiring preserved verbatim, only regrouped into a
 /// per-category pane.
+///
+/// beta.15 §C (C3a): converted onto the native-List Settings kit (SettingsRowViews.swift, C1) —
+/// the pane body returns its sections directly (no `VStack(spacing: sectionGap)` wrapper, which
+/// used to collapse the whole pane into one giant List row), every toggle binds straight to the
+/// view-model instead of the legacy value+action shim, and the Streaming Buffer / Network
+/// Readahead / subtitle Size & Background chip rows are now `SettingsPickerRow` menus. Text Color
+/// stays a custom swatch row — the kit has no colour-swatch primitive.
 struct PlaybackSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
 
@@ -16,153 +23,124 @@ struct PlaybackSettingsPane: View {
     @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sectionGap) {
-            settingsSection(String(localized: "Playback")) {
-                // Hidden entirely unless an external player (Infuse) is installed —
-                // see DefaultPlayerRow.
-                DefaultPlayerRow()
+        SettingsSection(String(localized: "Playback")) {
+            // Hidden entirely unless an external player (Infuse) is installed —
+            // see DefaultPlayerRow.
+            DefaultPlayerRow()
+            SettingsToggleRow(
+                title: String(localized: "Skip Intro"),
+                subtitle: String(localized: "Show a Skip button during intros and outros"),
+                isOn: Binding(get: { model.skipIntroEnabled }, set: { model.setSkipIntro($0) })
+            )
+            SettingsToggleRow(
+                title: String(localized: "Match Content Frame Rate"),
+                subtitle: String(localized: "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings \u{2192} Video and Audio."),
+                isOn: Binding(get: { model.matchFrameRate }, set: { model.setMatchFrameRate($0) })
+            )
+            SettingsToggleRow(
+                title: String(localized: "Enhanced Video Renderer"),
+                subtitle: String(localized: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video."),
+                isOn: Binding(get: { model.enhancedRenderer }, set: { model.setEnhancedRenderer($0) })
+            )
+            SettingsToggleRow(
+                title: String(localized: "Native player (Dolby Vision & HDR)"),
+                subtitle: String(localized: "Play Dolby Vision, HDR10 and other compatible MKVs through the native AVPlayer engine for true DV output on Apple TV 4K; everything else stays on the mpv player. Profile 7 discs convert to 8.1 on the fly, and TrueHD/DTS-only audio plays as AAC 5.1."),
+                isOn: Binding(get: { model.nativeDolbyVision }, set: { model.setNativeDolbyVision($0) })
+            )
+            if model.nativeDolbyVision {
                 SettingsToggleRow(
-                    title: String(localized: "Skip Intro"),
-                    subtitle: String(localized: "Show a Skip button during intros and outros"),
-                    isOn: model.skipIntroEnabled
-                ) {
-                    model.setSkipIntro(!model.skipIntroEnabled)
-                }
-                SettingsToggleRow(
-                    title: String(localized: "Match Content Frame Rate"),
-                    subtitle: String(localized: "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings \u{2192} Video and Audio."),
-                    isOn: model.matchFrameRate
-                ) {
-                    model.setMatchFrameRate(!model.matchFrameRate)
-                }
-                SettingsToggleRow(
-                    title: String(localized: "Enhanced Video Renderer"),
-                    subtitle: String(localized: "Use the gpu-next (libplacebo) renderer for better HDR tone-mapping. Experimental \u{2014} Apple TV hardware only (ignored on the Simulator). Applies to the next video."),
-                    isOn: model.enhancedRenderer
-                ) {
-                    model.setEnhancedRenderer(!model.enhancedRenderer)
-                }
-                SettingsToggleRow(
-                    title: String(localized: "Native player (Dolby Vision & HDR)"),
-                    subtitle: String(localized: "Play Dolby Vision, HDR10 and other compatible MKVs through the native AVPlayer engine for true DV output on Apple TV 4K; everything else stays on the mpv player. Profile 7 discs convert to 8.1 on the fly, and TrueHD/DTS-only audio plays as AAC 5.1."),
-                    isOn: model.nativeDolbyVision
-                ) {
-                    model.setNativeDolbyVision(!model.nativeDolbyVision)
-                }
-                if model.nativeDolbyVision {
-                    SettingsToggleRow(
-                        title: String(localized: "Keep Profile 7 FEL on mpv"),
-                        subtitle: String(localized: "Profile 7 FEL releases carry enhancement data the 8.1 conversion must discard. Turn on to keep those files on the mpv player (plays as HDR10, nothing discarded) instead of native Dolby Vision. MEL releases convert losslessly and always play native."),
-                        isOn: model.dvP7FelMpv
-                    ) {
-                        model.setDvP7FelMpv(!model.dvP7FelMpv)
+                    title: String(localized: "Keep Profile 7 FEL on mpv"),
+                    subtitle: String(localized: "Profile 7 FEL releases carry enhancement data the 8.1 conversion must discard. Turn on to keep those files on the mpv player (plays as HDR10, nothing discarded) instead of native Dolby Vision. MEL releases convert losslessly and always play native."),
+                    isOn: Binding(get: { model.dvP7FelMpv }, set: { model.setDvP7FelMpv($0) })
+                )
+            }
+            // FEAT-11
+            SettingsToggleRow(
+                title: String(localized: "Trailer Sound by Default"),
+                subtitle: String(localized: "Trailers start with sound; play/pause mutes"),
+                isOn: Binding(
+                    get: { trailerAudioDefaultOn },
+                    set: { newValue in
+                        trailerAudioDefaultOn = newValue
+                        // Applies immediately, without relaunch — DetailView otherwise only reads
+                        // this default at app launch and after a full-screen trailer dismisses.
+                        HeroTrailerAudioState.shared.setMuted(value: !newValue)
                     }
-                }
-                // FEAT-11
-                SettingsToggleRow(
-                    title: String(localized: "Trailer Sound by Default"),
-                    subtitle: trailerAudioDefaultOn
-                        ? String(localized: "On \u{00B7} Trailers start with sound; play/pause mutes")
-                        : String(localized: "Off \u{00B7} Trailers start muted"),
-                    isOn: trailerAudioDefaultOn
-                ) {
-                    trailerAudioDefaultOn.toggle()
-                    // Applies immediately, without relaunch — DetailView otherwise only reads this
-                    // default at app launch and after a full-screen trailer dismisses.
-                    HeroTrailerAudioState.shared.setMuted(value: !trailerAudioDefaultOn)
-                }
-                tuningChipRow(
-                    title: String(localized: "Streaming Buffer"),
-                    options: [
-                        (0, String(localized: "Default")),
-                        (64, String(localized: "64 MB")),
-                        (150, String(localized: "150 MB")),
-                        (512, String(localized: "512 MB")),
-                    ],
-                    selected: model.bufferMB
-                ) { model.setBufferMB($0) }
-                tuningChipRow(
-                    title: String(localized: "Network Readahead"),
-                    options: [
-                        (0, String(localized: "Default")),
-                        (30, String(localized: "30 s")),
-                        (60, String(localized: "60 s")),
-                        (120, String(localized: "120 s")),
-                    ],
-                    selected: model.readaheadSec
-                ) { model.setReadaheadSec($0) }
-                Text("Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .frame(maxWidth: 1100, alignment: .leading)
-            }
+                )
+            )
+            SettingsPickerRow(
+                title: String(localized: "Streaming Buffer"),
+                selection: Binding(get: { model.bufferMB }, set: { model.setBufferMB($0) }),
+                options: [0, 64, 150, 512],
+                label: Self.bufferLabel
+            )
+            SettingsPickerRow(
+                title: String(localized: "Network Readahead"),
+                selection: Binding(get: { model.readaheadSec }, set: { model.setReadaheadSec($0) }),
+                options: [0, 30, 60, 120],
+                label: Self.readaheadLabel
+            )
+            Text("Buffer changes apply to the next playback. Larger buffers smooth out flaky connections at the cost of memory.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+        }
 
-            settingsSection(String(localized: "Subtitles")) {
-                if let style = model.subtitleStyle {
-                    SubtitleAppearanceControls(
-                        style: style,
-                        onTextColor: { model.setSubtitleTextColor($0) },
-                        onSize: { model.setSubtitleFontSize($0) },
-                        onBackground: { model.setSubtitleBackground($0) },
-                        onBold: { model.setSubtitleBold($0) },
-                        onOutline: { model.setSubtitleOutline($0) },
-                        onStripSdh: { model.setSubtitleStripSdh($0) }
-                    )
-                } else {
-                    Text("Loading subtitle settings\u{2026}")
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
-            }
-
-            settingsSection(String(localized: "Audio & Subtitle Language")) {
-                Text("When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).")
-                    .font(Theme.Font.caption)
+        SettingsSection(String(localized: "Subtitles")) {
+            if let style = model.subtitleStyle {
+                SubtitleAppearanceControls(
+                    style: style,
+                    onTextColor: { model.setSubtitleTextColor($0) },
+                    onSize: { model.setSubtitleFontSize($0) },
+                    onBackground: { model.setSubtitleBackground($0) },
+                    onBold: { model.setSubtitleBold($0) },
+                    onOutline: { model.setSubtitleOutline($0) },
+                    onStripSdh: { model.setSubtitleStripSdh($0) }
+                )
+            } else {
+                Text("Loading subtitle settings\u{2026}")
+                    .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
-                    .frame(maxWidth: 1100, alignment: .leading)
-                LanguageSelectRow(
-                    title: String(localized: "Audio"),
-                    options: LanguageOptions.audio,
-                    selected: model.preferredAudioLanguage
-                ) { model.setPreferredAudioLanguage($0) }
-                LanguageSelectRow(
-                    title: String(localized: "Subtitles"),
-                    options: LanguageOptions.subtitle,
-                    selected: model.preferredSubtitleLanguage
-                ) { model.setPreferredSubtitleLanguage($0) }
             }
+        }
+
+        SettingsSection(String(localized: "Audio & Subtitle Language")) {
+            Text("When playback starts, auto-select the audio and subtitle tracks in your preferred language (when a matching track exists).")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+            SettingsPickerRow(
+                title: String(localized: "Audio"),
+                selection: Binding(get: { model.preferredAudioLanguage }, set: { model.setPreferredAudioLanguage($0) }),
+                options: LanguageOptions.audio.map(\.code),
+                label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.audio) }
+            )
+            SettingsPickerRow(
+                title: String(localized: "Subtitles"),
+                selection: Binding(get: { model.preferredSubtitleLanguage }, set: { model.setPreferredSubtitleLanguage($0) }),
+                options: LanguageOptions.subtitle.map(\.code),
+                label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.subtitle) }
+            )
         }
     }
 
-    /// A labeled row of value chips for the device-local player tuning knobs.
-    private func tuningChipRow(
-        title: String,
-        options: [(value: Int, label: String)],
-        selected: Int,
-        onSelect: @escaping (Int) -> Void
-    ) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text(title)
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            HStack(spacing: Theme.Spacing.md) {
-                ForEach(options, id: \.value) { option in
-                    Button {
-                        onSelect(option.value)
-                    } label: {
-                        HStack(spacing: Theme.Spacing.xs) {
-                            if selected == option.value {
-                                Image(systemName: "checkmark.circle.fill")
-                            }
-                            Text(option.label)
-                        }
-                        .font(Theme.Font.meta)
-                        .padding(.horizontal, Theme.Spacing.md)
-                        .padding(.vertical, Theme.Spacing.xs)
-                    }
-                    .buttonStyle(.chip(selected: selected == option.value))
-                }
-            }
+    private static func bufferLabel(_ value: Int) -> String {
+        switch value {
+        case 0: return String(localized: "Default")
+        case 64: return String(localized: "64 MB")
+        case 150: return String(localized: "150 MB")
+        case 512: return String(localized: "512 MB")
+        default: return "\(value) MB"
+        }
+    }
+
+    private static func readaheadLabel(_ value: Int) -> String {
+        switch value {
+        case 0: return String(localized: "Default")
+        case 30: return String(localized: "30 s")
+        case 60: return String(localized: "60 s")
+        case 120: return String(localized: "120 s")
+        default: return "\(value) s"
         }
     }
 }
@@ -180,6 +158,10 @@ struct PlaybackSettingsPane: View {
 ///
 /// The stored id is deliberately device-local (@AppStorage, not synced): which apps are
 /// installed differs per Apple TV, so a synced default would dangle on every other device.
+///
+/// C3a: was a hand-rolled `Menu` + manual `HStack`/`rowTextColor()`/`.buttonStyle(.settingsRow)`
+/// row; now `SettingsPickerRow` gives the same Menu{Picker} pill for free with system-inverted
+/// label colour, so the custom row chrome is gone.
 private struct DefaultPlayerRow: View {
     @AppStorage("default_external_player_id") private var defaultExternalPlayerId = ""
     /// Probed at init, NOT in `.onAppear`: with no players this row renders nothing, and
@@ -198,44 +180,17 @@ private struct DefaultPlayerRow: View {
 
     var body: some View {
         if !externalPlayers.isEmpty {
-            // Dropdown rather than inline chips: renders as a normal settings row showing the
-            // current choice; Select pops the native tvOS menu. The embedded Picker gets
-            // radio-style checkmarks in the menu for free, bound straight to the stored id.
-            Menu {
-                Picker("Default Player", selection: $defaultExternalPlayerId) {
-                    Text("NuvioTV (Built-in)").tag("")
-                    ForEach(externalPlayers, id: \.id) { player in
-                        Text(player.name).tag(player.id)
-                    }
+            SettingsPickerRow(
+                title: String(localized: "Default Player"),
+                subtitle: defaultExternalPlayerId.isEmpty
+                    ? String(localized: "Streams play in the built-in player. Hold a stream to open it in an external player instead.")
+                    : String(localized: "Streams open in \(selectedName). Hold a stream to play it in NuvioTV instead; if \(selectedName) can\u{2019}t open, playback falls back to the built-in player."),
+                selection: $defaultExternalPlayerId,
+                options: [""] + externalPlayers.map(\.id),
+                label: { id in
+                    id.isEmpty ? String(localized: "NuvioTV (Built-in)") : (externalPlayers.first { $0.id == id }?.name ?? id)
                 }
-            } label: {
-                HStack(spacing: Theme.Spacing.lg) {
-                    Image(systemName: "play.rectangle.on.rectangle")
-                        .font(Theme.Font.body)
-                        .rowAccentTint()
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                        Text("Default Player")
-                            .font(Theme.Font.body)
-                            .rowTextColor()
-                        Text(defaultExternalPlayerId.isEmpty
-                            ? "Streams play in the built-in player. Hold a stream to open it in an external player instead."
-                            : "Streams open in \(selectedName). Hold a stream to play it in NuvioTV instead; if \(selectedName) can\u{2019}t open, playback falls back to the built-in player.")
-                            .font(Theme.Font.caption)
-                            .rowTextColor(secondary: true)
-                    }
-                    Spacer()
-                    Text(selectedName)
-                        .font(Theme.Font.body)
-                        .rowTextColor(secondary: true)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(Theme.Font.body)
-                        .rowTextColor(secondary: true)
-                }
-                .padding(Theme.Spacing.lg)
-                .frame(maxWidth: .infinity)
-            }
-            .menuStyle(.button)
-            .buttonStyle(.settingsRow)
+            )
             .onAppear {
                 // Safe here: this onAppear is on the VISIBLE content, so it actually fires.
                 // A stored default whose app was uninstalled silently reverts to built-in —
@@ -254,6 +209,10 @@ private struct DefaultPlayerRow: View {
 
 /// Subtitle appearance controls: a live preview plus text color, size, background, bold and outline.
 /// Colors are `SubtitleColor` argb longs (0xAARRGGBB). The player reads these on the next file load.
+///
+/// C3a: Size and Background were text-label chip rows (the anti-pattern per the kit's field notes)
+/// — both are now `SettingsPickerRow` menus. Text Color stays a custom swatch row: the kit has no
+/// colour-swatch primitive, and a `Menu{Picker}` pill can't show a live colour preview.
 private struct SubtitleAppearanceControls: View {
     let style: SubtitleStyleState
     let onTextColor: (Int64) -> Void
@@ -275,44 +234,50 @@ private struct SubtitleAppearanceControls: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            preview
+        preview
 
-            controlRow(String(localized: "Text Color")) {
-                ForEach(textColors, id: \.argb) { entry in
-                    Button { onTextColor(entry.argb) } label: {
-                        SubtitleColorSwatch(
-                            fill: color(entry.argb),
-                            colorHex: UInt32(entry.argb & 0xFFFFFF),
-                            isSelected: style.textColor == entry.argb
-                        )
-                    }
-                    .buttonStyle(.borderless)
+        controlRow(String(localized: "Text Color")) {
+            ForEach(textColors, id: \.argb) { entry in
+                Button { onTextColor(entry.argb) } label: {
+                    SubtitleColorSwatch(
+                        fill: color(entry.argb),
+                        colorHex: UInt32(entry.argb & 0xFFFFFF),
+                        isSelected: style.textColor == entry.argb
+                    )
                 }
-            }
-
-            controlRow(String(localized: "Size")) {
-                ForEach(sizes, id: \.sp) { entry in
-                    chip(entry.name, selected: style.fontSizeSp == entry.sp) { onSize(entry.sp) }
-                }
-            }
-
-            controlRow(String(localized: "Background")) {
-                ForEach(backgrounds, id: \.argb) { entry in
-                    chip(entry.name, selected: style.backgroundColor == entry.argb) { onBackground(entry.argb) }
-                }
-            }
-
-            SettingsToggleRow(title: String(localized: "Bold"), subtitle: String(localized: "Use a heavier subtitle font"), isOn: style.bold) {
-                onBold(!style.bold)
-            }
-            SettingsToggleRow(title: String(localized: "Outline"), subtitle: String(localized: "Draw an outline around text for readability"), isOn: style.outlineEnabled) {
-                onOutline(!style.outlineEnabled)
-            }
-            SettingsToggleRow(title: String(localized: "Strip SDH Subtitles"), subtitle: String(localized: "Hide sound descriptions and speaker labels from text subtitles."), isOn: style.stripSdh) {
-                onStripSdh(!style.stripSdh)
+                .buttonStyle(.borderless)
             }
         }
+
+        SettingsPickerRow(
+            title: String(localized: "Size"),
+            selection: Binding(get: { style.fontSizeSp }, set: { onSize($0) }),
+            options: sizes.map(\.sp),
+            label: { sp in sizes.first { $0.sp == sp }?.name ?? "\(sp)" }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Background"),
+            selection: Binding(get: { style.backgroundColor }, set: { onBackground($0) }),
+            options: backgrounds.map(\.argb),
+            label: { argb in backgrounds.first { $0.argb == argb }?.name ?? "\(argb)" }
+        )
+
+        SettingsToggleRow(
+            title: String(localized: "Bold"),
+            subtitle: String(localized: "Use a heavier subtitle font"),
+            isOn: Binding(get: { style.bold }, set: { onBold($0) })
+        )
+        SettingsToggleRow(
+            title: String(localized: "Outline"),
+            subtitle: String(localized: "Draw an outline around text for readability"),
+            isOn: Binding(get: { style.outlineEnabled }, set: { onOutline($0) })
+        )
+        SettingsToggleRow(
+            title: String(localized: "Strip SDH Subtitles"),
+            subtitle: String(localized: "Hide sound descriptions and speaker labels from text subtitles."),
+            isOn: Binding(get: { style.stripSdh }, set: { onStripSdh($0) })
+        )
     }
 
     private var preview: some View {
@@ -337,16 +302,6 @@ private struct SubtitleAppearanceControls: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
             HStack(spacing: Theme.Spacing.md) { content() }
         }
-    }
-
-    private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(Theme.Font.meta)
-                .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xxs + 2)
-        }
-        .buttonStyle(.chip(selected: selected))
     }
 
     private func color(_ argb: Int64) -> Color {

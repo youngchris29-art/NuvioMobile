@@ -5,6 +5,12 @@ import SharedCore
 /// badge-pack management, all backed by the shared `StreamBadgeSettingsRepository` (syncs across
 /// devices). Extracted from SettingsView.swift (Phase 2 HIG revamp file split) — logic and wiring
 /// preserved verbatim.
+///
+/// beta.15 §C (C3a): the three toggles bind straight to the view-model instead of the legacy
+/// value+action shim. The per-pack row (name/filter-count + Active-or-"Set Active" + delete) and
+/// `BadgeUrlEntryRow` stay custom compositions — no kit primitive covers a row with two
+/// independent trailing actions, or a URL importer with an async progress state — see the C3a
+/// report for the full rationale.
 struct StreamBadgesSection: View {
     @ObservedObject var badges: BadgeSettingsViewModel
 
@@ -17,26 +23,20 @@ struct StreamBadgesSection: View {
         SettingsToggleRow(
             title: String(localized: "File Size Badges"),
             subtitle: String(localized: "Show the video size (GB/MB) as a chip on stream results."),
-            isOn: badges.showFileSizeBadges
-        ) {
-            badges.setShowFileSizeBadges(!badges.showFileSizeBadges)
-        }
+            isOn: Binding(get: { badges.showFileSizeBadges }, set: { badges.setShowFileSizeBadges($0) })
+        )
         SettingsToggleRow(
             title: String(localized: "Show Add-on Logo"),
             subtitle: String(localized: "Show each result's add-on logo and name on the right of the row."),
-            isOn: badges.showAddonLogo
-        ) {
-            badges.setShowAddonLogo(!badges.showAddonLogo)
-        }
+            isOn: Binding(get: { badges.showAddonLogo }, set: { badges.setShowAddonLogo($0) })
+        )
         SettingsToggleRow(
             title: String(localized: "Badges Above Title"),
             subtitle: badges.badgesOnTop
                 ? String(localized: "Badge chips render above the stream name.")
                 : String(localized: "Badge chips render below the stream description."),
-            isOn: badges.badgesOnTop
-        ) {
-            badges.setBadgesOnTop(!badges.badgesOnTop)
-        }
+            isOn: Binding(get: { badges.badgesOnTop }, set: { badges.setBadgesOnTop($0) })
+        )
 
         if badges.imports.isEmpty {
             Text("No badge packs imported yet.")

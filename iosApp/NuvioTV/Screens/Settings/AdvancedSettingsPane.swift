@@ -8,7 +8,7 @@ struct AdvancedSettingsPane: View {
     @ObservedObject var remote: RemoteSetupViewModel
 
     var body: some View {
-        settingsSection(String(localized: "Remote Setup")) {
+        SettingsSection(String(localized: "Remote Setup")) {
             remoteSetupSection
         }
     }

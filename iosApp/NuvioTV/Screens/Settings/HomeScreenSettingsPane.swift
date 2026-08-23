@@ -1,30 +1,6 @@
 import SwiftUI
 import SharedCore
 
-/// A titled row of value chips. Mirrors AppearanceSettingsPane's file-private copy of the same
-/// free function verbatim — duplication is the established pattern for this helper across panes.
-@ViewBuilder
-private func controlRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-        Text(title)
-            .font(Theme.Font.caption)
-            .foregroundStyle(Theme.Palette.textSecondary)
-        HStack(spacing: Theme.Spacing.md) { content() }
-    }
-}
-
-/// A single selectable value chip, paired with `controlRow`. Mirrors AppearanceSettingsPane's
-/// file-private copy of the same free function verbatim (see note above).
-private func chip(_ label: String, selected: Bool, _ action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-        Text(label)
-            .font(Theme.Font.meta)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xxs + 2)
-    }
-    .buttonStyle(.chip(selected: selected))
-}
-
 /// "Home Screen" category content: hero banner + hero sources, inline trailer previews, catalog
 /// type labels, and the Home Rows enable/reorder list. Extracted from SettingsView.swift (Phase 2
 /// HIG revamp file split) — logic and wiring preserved verbatim, only regrouped into a
@@ -53,18 +29,16 @@ struct HomeScreenSettingsPane: View {
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
 
     var body: some View {
-        settingsSection(String(localized: "Home Rows")) {
+        SettingsSection(String(localized: "Home Rows")) {
             // Catalog-independent: the Upcoming row is fed by watch progress + Library, so its
             // switch must stay reachable when no catalog add-on is installed (Codex round 1).
             SettingsToggleRow(
                 title: String(localized: "Upcoming Episodes"),
                 subtitle: upcomingRowEnabled
-                    ? String(localized: "On \u{00B7} A row under Continue Watching with your shows' next episodes airing in the next 14 days")
-                    : String(localized: "Off \u{00B7} No Upcoming row on Home"),
-                isOn: upcomingRowEnabled
-            ) {
-                upcomingRowEnabled.toggle()
-            }
+                    ? String(localized: "A row under Continue Watching with your shows' next episodes airing in the next 14 days")
+                    : String(localized: "No Upcoming row on Home"),
+                isOn: $upcomingRowEnabled
+            )
 
             if model.catalogs.isEmpty {
                 Text("Install add-ons to customize your Home rows.")
@@ -81,12 +55,13 @@ struct HomeScreenSettingsPane: View {
                 SettingsToggleRow(
                     title: String(localized: "Show Hero"),
                     subtitle: model.heroEnabled
-                        ? String(localized: "On \u{00B7} A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse")
-                        : String(localized: "Off \u{00B7} No rotating banner \u{2014} the top of Home shows the focused title's artwork and description"),
-                    isOn: model.heroEnabled
-                ) {
-                    model.setHeroEnabled(!model.heroEnabled)
-                }
+                        ? String(localized: "A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse")
+                        : String(localized: "No rotating banner \u{2014} the top of Home shows the focused title's artwork and description"),
+                    isOn: Binding(
+                        get: { model.heroEnabled },
+                        set: { model.setHeroEnabled($0) }
+                    )
+                )
 
                 // Collections are hard-forced to heroSourceEnabled = false on the
                 // Kotlin side (HomeCatalogSettingsRepository.normalizePreferences),
@@ -106,12 +81,10 @@ struct HomeScreenSettingsPane: View {
                     SettingsToggleRow(
                         title: String(localized: "Nuvio-Style Hero"),
                         subtitle: heroNuvioStyle
-                            ? String(localized: "On \u{00B7} Title and description on the left, artwork on the right, hero pinned while rows scroll")
-                            : String(localized: "Off \u{00B7} Classic layout with the logo on the lower left"),
-                        isOn: heroNuvioStyle
-                    ) {
-                        heroNuvioStyle.toggle()
-                    }
+                            ? String(localized: "Title and description on the left, artwork on the right, hero pinned while rows scroll")
+                            : String(localized: "Classic layout with the logo on the lower left"),
+                        isOn: $heroNuvioStyle
+                    )
 
                     let heroSourceCatalogs = model.catalogs.filter { !$0.isCollection }
                     if !heroSourceCatalogs.isEmpty {
@@ -129,14 +102,12 @@ struct HomeScreenSettingsPane: View {
                     // as the two fallback captions below); otherwise the poster, which is what
                     // the user will see in the classic layout or with no hero source enabled.
                     subtitle: !inlineTrailersEnabled
-                        ? String(localized: "Off \u{00B7} Posters show artwork only")
+                        ? String(localized: "Posters show artwork only")
                         : heroLocationEffective
-                            ? String(localized: "On \u{00B7} The hero plays a muted trailer preview after a moment of focus on a poster")
-                            : String(localized: "On \u{00B7} Posters play a muted trailer preview after a moment of focus"),
-                    isOn: inlineTrailersEnabled
-                ) {
-                    inlineTrailersEnabled.toggle()
-                }
+                            ? String(localized: "The hero plays a muted trailer preview after a moment of focus on a poster")
+                            : String(localized: "Posters play a muted trailer preview after a moment of focus"),
+                    isOn: $inlineTrailersEnabled
+                )
 
                 if inlineTrailersEnabled {
                     trailerLocationRow
@@ -145,22 +116,21 @@ struct HomeScreenSettingsPane: View {
                 SettingsToggleRow(
                     title: String(localized: "Autoplay Hero Trailer"),
                     subtitle: heroTrailerAutoplay
-                        ? String(localized: "On \u{00B7} The hero plays its trailer by itself, without waiting for focus")
-                        : String(localized: "Off \u{00B7} The hero shows artwork only"),
-                    isOn: heroTrailerAutoplay
-                ) {
-                    heroTrailerAutoplay.toggle()
-                }
+                        ? String(localized: "The hero plays its trailer by itself, without waiting for focus")
+                        : String(localized: "The hero shows artwork only"),
+                    isOn: $heroTrailerAutoplay
+                )
 
                 SettingsToggleRow(
                     title: String(localized: "Show Catalog Type in Titles"),
                     subtitle: model.showCatalogType
-                        ? String(localized: "On \u{00B7} rows read like \u{201C}Popular - Movies\u{201D}")
-                        : String(localized: "Off \u{00B7} rows use the add-on's catalog name"),
-                    isOn: model.showCatalogType
-                ) {
-                    model.setShowCatalogType(!model.showCatalogType)
-                }
+                        ? String(localized: "rows read like \u{201C}Popular - Movies\u{201D}")
+                        : String(localized: "rows use the add-on's catalog name"),
+                    isOn: Binding(
+                        get: { model.showCatalogType },
+                        set: { model.setShowCatalogType($0) }
+                    )
+                )
 
                 HomeCatalogsGroup(
                     items: model.catalogs,
@@ -186,30 +156,30 @@ struct HomeScreenSettingsPane: View {
     /// preview plays in the poster card (default) or the hero banner. The classic (non-Nuvio-
     /// style) hero layout has no artwork region to preview into, so a caption explains that
     /// "Hero" falls back to the poster there.
+    @ViewBuilder
     private var trailerLocationRow: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            controlRow(String(localized: "Trailer Location")) {
-                chip(String(localized: "Poster"), selected: trailerPlaybackLocation == "poster") {
-                    trailerPlaybackLocation = "poster"
-                }
-                chip(String(localized: "Hero"), selected: trailerPlaybackLocation == "hero") {
-                    trailerPlaybackLocation = "hero"
-                }
-            }
-            if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
-                Text("In the classic hero layout, trailers play in the poster.")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-            }
-            // Same silent-mismatch guard for the other configuration where "Hero" cannot take
-            // effect: Nuvio-style layout but zero hero sources selected, so the hero fan-out can
-            // never produce a surface and `heroFocusTrailerMode`'s latch never sets.
-            if trailerPlaybackLocation == "hero" && model.heroEnabled && heroNuvioStyle
-                && !model.catalogs.contains(where: { $0.heroSourceEnabled }) {
-                Text("Hero needs a hero source enabled below; until then, trailers play in the poster.")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-            }
+        SettingsPickerRow(
+            title: String(localized: "Trailer Location"),
+            selection: Binding(
+                get: { trailerPlaybackLocation },
+                set: { trailerPlaybackLocation = $0 }
+            ),
+            options: ["poster", "hero"],
+            label: { $0 == "hero" ? String(localized: "Hero") : String(localized: "Poster") }
+        )
+        if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
+            Text("In the classic hero layout, trailers play in the poster.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+        }
+        // Same silent-mismatch guard for the other configuration where "Hero" cannot take
+        // effect: Nuvio-style layout but zero hero sources selected, so the hero fan-out can
+        // never produce a surface and `heroFocusTrailerMode`'s latch never sets.
+        if trailerPlaybackLocation == "hero" && model.heroEnabled && heroNuvioStyle
+            && !model.catalogs.contains(where: { $0.heroSourceEnabled }) {
+            Text("Hero needs a hero source enabled below; until then, trailers play in the poster.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
         }
     }
 }

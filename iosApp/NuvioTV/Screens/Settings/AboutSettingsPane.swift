@@ -24,28 +24,28 @@ struct AboutSettingsPane: View {
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     var body: some View {
-        settingsSection(String(localized: "About")) {
-            SettingsInfoRow(
+        SettingsSection(String(localized: "About")) {
+            SettingsValueRow(
                 title: String(localized: "Version"),
                 value: "\(Self.marketingVersion) (\(Self.buildNumber))"
             )
-            SettingsInfoRow(
+            SettingsValueRow(
                 title: String(localized: "Build"),
                 value: Self.betaTag
             )
-            SettingsInfoRow(
+            SettingsValueRow(
                 title: String(localized: "Commit"),
                 value: Self.commitSHA
             )
-            SettingsInfoRow(
+            SettingsValueRow(
                 title: String(localized: "tvOS"),
                 value: ProcessInfo.processInfo.operatingSystemVersionString
             )
-            SettingsInfoRow(
+            SettingsValueRow(
                 title: String(localized: "Device"),
                 value: Self.deviceModelIdentifier
             )
-            SettingsInfoRow(
+            SettingsValueRow(
                 title: String(localized: "Source"),
                 value: "github.com/youngchris29-art/NuvioTV"
             )
@@ -53,12 +53,10 @@ struct AboutSettingsPane: View {
             SettingsToggleRow(
                 title: String(localized: "Hero Paint Diagnostics"),
                 subtitle: heroDiagnostics
-                    ? String(localized: "On \u{00B7} After relaunching, this launch's hero paint log appears below \u{2014} photograph it when reporting")
-                    : String(localized: "Off \u{00B7} Turn on if asked to capture a hero artwork report, then relaunch the app"),
-                isOn: heroDiagnostics
-            ) {
-                heroDiagnostics.toggle()
-            }
+                    ? String(localized: "After relaunching, this launch's hero paint log appears below \u{2014} photograph it when reporting")
+                    : String(localized: "Turn on if asked to capture a hero artwork report, then relaunch the app"),
+                isOn: $heroDiagnostics
+            )
 
             if heroDiagnostics, !heroProbeLines.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
@@ -74,7 +72,7 @@ struct AboutSettingsPane: View {
                 .accessibilityIdentifier("hero_probe_lines")
             }
 
-            // Grouped so this whole block occupies one slot in `settingsSection`'s own
+            // Grouped so this whole block occupies one slot in `SettingsSection`'s own
             // @ViewBuilder — PlaybackSettingsPane's "Playback" section already sits at the
             // 10-child ViewBuilder ceiling, and the six rows above plus the hero probe's two
             // slots leave no room to add these five ungrouped.
@@ -82,12 +80,10 @@ struct AboutSettingsPane: View {
                 SettingsToggleRow(
                     title: String(localized: "Tab Bar Diagnostics"),
                     subtitle: tabBarDiagnostics
-                        ? String(localized: "On \u{00B7} Scroll-geometry and push/pop counters below \u{2014} photograph after testing")
-                        : String(localized: "Off \u{00B7} Turn on before walking Home down and back up, or running Detail push/pop cycles"),
-                    isOn: tabBarDiagnostics
-                ) {
-                    tabBarDiagnostics.toggle()
-                }
+                        ? String(localized: "Scroll-geometry and push/pop counters below \u{2014} photograph after testing")
+                        : String(localized: "Turn on before walking Home down and back up, or running Detail push/pop cycles"),
+                    isOn: $tabBarDiagnostics
+                )
 
                 if tabBarDiagnostics {
                     // Live readout (Codex beta.14 r6): the probe's counters are plain statics
@@ -116,15 +112,15 @@ struct AboutSettingsPane: View {
                     .accessibilityIdentifier("tab_bar_probe_lines")
                 }
 
-                SettingsInfoRow(
+                SettingsValueRow(
                     title: String(localized: "Focus Mode"),
                     value: "\(CardFocusMode.resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus))"
                 )
-                SettingsInfoRow(
+                SettingsValueRow(
                     title: String(localized: "No Zoom on Focus"),
                     value: noZoomOnFocus ? String(localized: "On") : String(localized: "Off")
                 )
-                SettingsInfoRow(
+                SettingsValueRow(
                     title: String(localized: "Accent Focus Ring"),
                     value: accentFocusRing ? String(localized: "On") : String(localized: "Off")
                 )
