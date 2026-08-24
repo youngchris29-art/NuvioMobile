@@ -156,17 +156,31 @@ struct ContentView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // Foreground refresh (mirrors mobile's AppForegroundMonitor → requestForegroundPull).
-            // SyncManager self-guards: no-op unless signed in with a real account.
-            guard newPhase == .active, auth.gate == .main, entered else { return }
-            SyncManager.shared.requestForegroundPull(
-                profileId: ProfileRepository.shared.activeProfileId,
-                force: true
-            )
-            // Re-register this device/session on foreground (self-throttled to once per
-            // 15 min inside DeviceSessionRegistration unless force is passed).
-            Task {
-                _ = try? await DeviceSessionRegistration.shared.registerIfAuthenticated(force: false)
+            // Foreground/background sync lifecycle (mirrors mobile's AppVisibility collector in
+            // MainAppContent). SyncManager self-guards: no-op unless signed in with a real account.
+            // Divergence from mobile: iOS maps willResignActive → Background; on tvOS we only stop
+            // the periodic loop on a real .background, not the transient .inactive that fires
+            // during app-switcher overlays — restarting the loop is cheap, churn is not.
+            switch newPhase {
+            case .active:
+                guard auth.gate == .main, entered else { return }
+                // No force: the 2-minute activity-pull freshness gate inside SyncManager decides.
+                SyncManager.shared.requestForegroundPull(
+                    profileId: ProfileRepository.shared.activeProfileId,
+                    force: false
+                )
+                SyncManager.shared.startPeriodicNuvioSyncPull(
+                    profileId: ProfileRepository.shared.activeProfileId
+                )
+                // Re-register this device/session on foreground (self-throttled to once per
+                // 15 min inside DeviceSessionRegistration unless force is passed).
+                Task {
+                    _ = try? await DeviceSessionRegistration.shared.registerIfAuthenticated(force: false)
+                }
+            case .background:
+                SyncManager.shared.stopPeriodicNuvioSyncPull()
+            default:
+                break
             }
         }
         #if DEBUG

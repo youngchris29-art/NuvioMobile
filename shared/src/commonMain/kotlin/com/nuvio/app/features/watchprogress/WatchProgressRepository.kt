@@ -53,6 +53,7 @@ private const val WATCH_PROGRESS_METADATA_RETRY_BASE_DELAY_MS = 750L
 private const val WATCH_PROGRESS_DELTA_PAGE_SIZE = 900
 private const val WATCH_PROGRESS_DELTA_OPERATION_UPSERT = "upsert"
 private const val WATCH_PROGRESS_DELTA_OPERATION_DELETE = "delete"
+private const val WATCH_PROGRESS_REMOTE_WRITE_DEDUP_WINDOW_MS = 5_000L
 
 private data class RemoteMetadataResolutionResult(
     val key: WatchProgressMetadataKey,
@@ -211,6 +212,54 @@ fun WatchProgressEntry.needsRemoteMetadataEnrichment(): Boolean =
         poster.isNullOrBlank() ||
         background.isNullOrBlank()
 
+private data class RemoteProgressWriteKey(
+    val profileId: Int,
+    val progressKey: String,
+)
+
+private data class RemoteProgressWrite(
+    val entry: WatchProgressEntry,
+    val sentAtEpochMs: Long,
+)
+
+internal class RemoteProgressWriteDeduplicator(
+    private val windowMs: Long = WATCH_PROGRESS_REMOTE_WRITE_DEDUP_WINDOW_MS,
+) {
+    private val lock = SynchronizedObject()
+    private val recentWrites = mutableMapOf<RemoteProgressWriteKey, RemoteProgressWrite>()
+
+    fun shouldSend(
+        profileId: Int,
+        entry: WatchProgressEntry,
+        nowEpochMs: Long,
+    ): Boolean = synchronized(lock) {
+        recentWrites.entries.removeAll { (_, write) ->
+            val elapsedMs = nowEpochMs - write.sentAtEpochMs
+            elapsedMs < 0L || elapsedMs >= windowMs
+        }
+        val key = RemoteProgressWriteKey(
+            profileId = profileId,
+            progressKey = entry.resolvedProgressKey(),
+        )
+        val normalizedEntry = entry.copy(lastUpdatedEpochMs = 0L)
+        val previous = recentWrites[key]
+        if (previous?.entry == normalizedEntry) {
+            return@synchronized false
+        }
+        recentWrites[key] = RemoteProgressWrite(
+            entry = normalizedEntry,
+            sentAtEpochMs = nowEpochMs,
+        )
+        true
+    }
+
+    fun clear() {
+        synchronized(lock) {
+            recentWrites.clear()
+        }
+    }
+}
+
 object WatchProgressRepository {
     private val syncScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("WatchProgressRepository"))
@@ -241,6 +290,7 @@ object WatchProgressRepository {
     private var lastSuccessfulPushEpochMs = 0L
     private var deltaCursorEventId = 0L
     private var deltaInitialized = false
+    private val remoteWriteDeduplicator = RemoteProgressWriteDeduplicator()
     internal var syncAdapter: ProgressSyncAdapter = SupabaseProgressSyncAdapter
 
     init {
@@ -318,6 +368,7 @@ object WatchProgressRepository {
         lastSuccessfulPushEpochMs = 0L
         deltaCursorEventId = 0L
         deltaInitialized = false
+        remoteWriteDeduplicator.clear()
         TrackingProviderRegistry.progressProviders().forEach(TrackingProgressProvider::clearLocalState)
         TrackingSettingsRepository.clearLocalState()
         _uiState.value = WatchProgressUiState()
@@ -1322,10 +1373,24 @@ object WatchProgressRepository {
         ).normalizedCompletion()
 
         if (targetProfileId != currentProfileId || ProfileRepository.activeProfileId != targetProfileId) {
+            val resolvedEntry = resolveStoredProfileProgressIdentity(
+                profileId = targetProfileId,
+                entry = candidateEntry,
+            )
+            if (
+                syncRemote &&
+                !remoteWriteDeduplicator.shouldSend(
+                    profileId = targetProfileId,
+                    entry = resolvedEntry,
+                    nowEpochMs = candidateEntry.lastUpdatedEpochMs,
+                )
+            ) {
+                return
+            }
             val entry = if (persist) {
-                upsertStoredProfileProgress(profileId = targetProfileId, entry = candidateEntry)
+                upsertStoredProfileProgress(profileId = targetProfileId, entry = resolvedEntry)
             } else {
-                resolveStoredProfileProgressIdentity(profileId = targetProfileId, entry = candidateEntry)
+                resolvedEntry
             }
             if (syncRemote) {
                 pushScrobbleToServer(entry = entry, profileId = targetProfileId)
@@ -1334,6 +1399,16 @@ object WatchProgressRepository {
         }
 
         val entry = localEntriesSnapshot().resolveIdentityForUpsert(candidateEntry)
+        if (
+            syncRemote &&
+            !remoteWriteDeduplicator.shouldSend(
+                profileId = targetProfileId,
+                entry = entry,
+                nowEpochMs = candidateEntry.lastUpdatedEpochMs,
+            )
+        ) {
+            return
+        }
 
         if (entry.parentMetaType.equals("series", ignoreCase = true)) {
             ContinueWatchingPreferencesRepository.removeDismissedNextUpKeysForContent(entry.parentMetaId)

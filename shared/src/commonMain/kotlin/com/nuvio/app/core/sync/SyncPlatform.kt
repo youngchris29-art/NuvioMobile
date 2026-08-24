@@ -16,7 +16,6 @@ const val TV_SYNC_PLATFORM = "tv"
  */
 const val TVOS_SYNC_PLATFORM = "tvos"
 internal const val HOME_CATALOG_SHARED_SYNC_PLATFORM = "home_catalog_shared"
-internal val HOME_CATALOG_LEGACY_SYNC_PLATFORMS = listOf(MOBILE_SYNC_PLATFORM, TV_SYNC_PLATFORM)
 
 /**
  * Which `p_platform` value this client sends on the platform-scoped settings-blob RPCs
@@ -36,7 +35,7 @@ object SyncPlatformProvider {
      * Namespaces to read (never write) when [platform] has no settings blob yet — one-shot
      * migration seed. tvOS sets `["tv"]` so an existing install keeps its cloud settings the
      * first time it runs under the "tvos" namespace; after the seed is pushed to [platform],
-     * the legacy scope is never touched again (mirrors HOME_CATALOG_LEGACY_SYNC_PLATFORMS).
+     * the legacy scope is never touched again.
      */
     @Volatile
     var legacySettingsPlatforms: List<String> = emptyList()
