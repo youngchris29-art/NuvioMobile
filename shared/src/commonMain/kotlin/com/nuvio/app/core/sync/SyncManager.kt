@@ -79,8 +79,13 @@ data class ProfilePullFreshness(
     val profileId: Int? = null,
     val completedAtEpochMs: Long = 0L,
 ) {
-    fun isRecent(profileId: Int, nowEpochMs: Long, minIntervalMs: Long): Boolean =
-        this.profileId == profileId && nowEpochMs - completedAtEpochMs < minIntervalMs
+    fun isRecent(profileId: Int, nowEpochMs: Long, minIntervalMs: Long): Boolean {
+        // Fork (Codex 2026-08-24): a backwards wall-clock correction makes elapsed negative, which
+        // upstream's `elapsed < minIntervalMs` reads as "recent" — suppressing pulls until the
+        // clock catches back up. Treat it as stale instead (same rule d0c7bff7's write dedup uses).
+        val elapsedMs = nowEpochMs - completedAtEpochMs
+        return this.profileId == profileId && elapsedMs >= 0L && elapsedMs < minIntervalMs
+    }
 
     fun recordIfSuccessful(
         profileId: Int,
@@ -425,7 +430,16 @@ object SyncManager {
                     }
                     if (!force && hasRecentActivityPull(profileId)) return@launch
                     if (ProfileRepository.activeProfileId != profileId) return@launch
-                    startActivityProfilePull(profileId = profileId, reason = "foreground")
+                    // Escalate to a full sync when the caller forced (reconnect handlers use
+                    // force=true precisely to retry everything) or when this profile has never
+                    // completed one — otherwise a full pull that failed offline would only ever
+                    // retry library/watch activity until the profile is reselected (Codex
+                    // 2026-08-24). startFullProfilePull's own 10s gate bounds the worst case.
+                    if (force || !hasCompletedFullPull(profileId)) {
+                        startFullProfilePull(profileId = profileId, reason = "foreground")
+                    } else {
+                        startActivityProfilePull(profileId = profileId, reason = "foreground")
+                    }
                 } finally {
                     synchronized(pullStateLock) {
                         if (foregroundPullJob === requestJob) {
@@ -458,6 +472,13 @@ object SyncManager {
                 nowEpochMs = TraktPlatformClock.nowEpochMs(),
                 minIntervalMs = FULL_PULL_MIN_INTERVAL_MS,
             )
+        }
+
+    // "Has ANY full pull ever succeeded for this profile since the account scope began" — the
+    // freshness record only ever holds a successful pull's profile, and cancelAccountSync resets it.
+    private fun hasCompletedFullPull(profileId: Int): Boolean =
+        synchronized(pullStateLock) {
+            fullPullFreshness.profileId == profileId
         }
 
     private fun startActivityProfilePull(

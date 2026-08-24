@@ -35,4 +35,12 @@ class PluginModelsTest {
 
         assertTrue(isPluginRepositoryRefreshDue(lastUpdatedEpochMs = 0L, nowEpochMs = now))
     }
+
+    // Fork-only (Codex 2026-08-24): a future lastUpdated (clock rollback) is due, not frozen.
+    @Test
+    fun `repository updated in the future is due for refresh`() {
+        val now = 10 * PLUGIN_REPOSITORY_REFRESH_INTERVAL_MS
+
+        assertTrue(isPluginRepositoryRefreshDue(lastUpdatedEpochMs = now + 1L, nowEpochMs = now))
+    }
 }

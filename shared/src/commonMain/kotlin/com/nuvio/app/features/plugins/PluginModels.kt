@@ -8,8 +8,13 @@ internal const val PLUGIN_REPOSITORY_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1_000L
 internal fun isPluginRepositoryRefreshDue(
     lastUpdatedEpochMs: Long,
     nowEpochMs: Long,
-): Boolean = lastUpdatedEpochMs <= 0L ||
-    nowEpochMs - lastUpdatedEpochMs >= PLUGIN_REPOSITORY_REFRESH_INTERVAL_MS
+): Boolean {
+    val elapsedMs = nowEpochMs - lastUpdatedEpochMs
+    // Fork divergence from upstream 0e9a1ebe (Codex 2026-08-24): a FUTURE lastUpdated (clock
+    // rollback, or persisted state from a device whose clock ran ahead) makes elapsed negative,
+    // which upstream reads as "not due" until real time catches up — treat it as due instead.
+    return lastUpdatedEpochMs <= 0L || elapsedMs < 0L || elapsedMs >= PLUGIN_REPOSITORY_REFRESH_INTERVAL_MS
+}
 
 @Serializable
 data class PluginManifest(
