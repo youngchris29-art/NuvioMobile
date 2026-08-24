@@ -1185,6 +1185,40 @@ final class NuvioTVUITests: XCTestCase {
         return text
     }
 
+    /// beta.15: reads the `hero_probe_lines` container (`AboutSettingsPane.swift`) — the
+    /// head-preserving `HomeHeroProbe` ring buffer rendered as one `Text` row per line, with the
+    /// identifier on the WRAPPING `VStack`, not on any individual row. `app.staticTexts[…]`
+    /// therefore cannot find it directly (identifier lookups on a subscript match that exact
+    /// element, and the container itself isn't a `staticText`), so this walks one `snapshot()` —
+    /// same trick as `buttonSnapshots` above, for the same reason: a live element/query re-walk
+    /// here would re-resolve mid-render and could throw or return a torn read — finds the node
+    /// carrying that identifier regardless of its resolved AX type, then collects every
+    /// `staticText` descendant's label, in document order (matches the source `ForEach`'s order).
+    /// Empty array (not a failure) when the container isn't on screen at all, or the runtime
+    /// truncated its subtree away — callers are expected to fail loudly on that themselves rather
+    /// than have this silently swallow the "pane never rendered" case.
+    private func heroProbeLines(_ app: XCUIApplication) -> [String] {
+        guard let root = try? app.snapshot() else { return [] }
+        var container: XCUIElementSnapshot?
+        func findContainer(_ node: XCUIElementSnapshot) {
+            guard container == nil else { return }
+            if node.identifier == "hero_probe_lines" {
+                container = node
+                return
+            }
+            for child in node.children { findContainer(child) }
+        }
+        findContainer(root)
+        guard let container else { return [] }
+        var lines: [String] = []
+        func collect(_ node: XCUIElementSnapshot) {
+            if node.elementType == .staticText, !node.label.isEmpty { lines.append(node.label) }
+            for child in node.children { collect(child) }
+        }
+        collect(container)
+        return lines
+    }
+
     /// UX-7: a row-focused poster now owns the hero backdrop too — `HomeFocusModel` commits a
     /// focused row item after `commitDelay` (0.2s) and reverts to nil after `revertGrace`
     /// (0.3s) once focus reports nothing. This walks CTA → row poster → CTA and watches the
@@ -1621,6 +1655,60 @@ final class NuvioTVUITests: XCTestCase {
             pause(4.0)
             shot(app, "31_launch\(launch)_hero_settled")
             XCTAssertTrue(app.state == .runningForeground, "app must be alive after hero first paint (launch \(launch))")
+
+            // beta.15 extension: re-derive the SAME two invariants the type doc above states from
+            // the `[HomeHero]` log stream, but from the release-safe on-device surface (Settings ›
+            // About › `hero_probe_lines`, BUG-42/AboutSettingsPane.swift) instead of `log show` —
+            // this is the exact photo a device-pass tester would take. `-debug.homeHeroProbe YES`
+            // (above) is BOTH the log-stream gate AND the `heroDiagnostics` `@AppStorage` toggle
+            // the pane's `if heroDiagnostics, !heroProbeLines.isEmpty` guard reads (same defaults
+            // key, `debug.homeHeroProbe` — see AboutSettingsPane.swift), so no extra argument is
+            // needed to make the pane render.
+            openTab(app, named: "Settings")
+            let about = app.buttons["About"]
+            _ = moveFocus(.down, until: about, max: 8)
+            press(.right, times: 1)
+            pause(1.5)
+            shot(app, "31_launch\(launch)_about_probe")
+
+            let lines = heroProbeLines(app)
+            if lines.isEmpty {
+                // Defensive per the task's own instruction: don't assert on nothing. This can
+                // legitimately mean the pane's AX subtree didn't fully resolve in the snapshot
+                // (see `heroProbeLines`'s doc), not necessarily that the probe never logged.
+                XCTFail("launch \(launch): hero_probe_lines produced no readable lines — cannot verify the vm-start / no-flash invariants this run; see heroProbeLines' doc for why this can happen independent of whether HomeHeroProbe actually logged anything")
+            } else {
+                // (a) exactly one VM start (`HomeHeroProbe.log("vm start id=%d …")`,
+                // HomeViewModel.swift ~L198) — a cold launch must mint exactly one HomeViewModel
+                // instance; more than one means an extra pipeline start (the BUG-42 double-init
+                // class this whole probe exists to catch) and zero means the probe pane can't be
+                // trusted for this run at all.
+                let vmStartCount = lines.filter { $0.contains("vm start id=") }.count
+                XCTAssertEqual(vmStartCount, 1, "launch \(launch): expected exactly one 'vm start' line in hero_probe_lines, found \(vmStartCount) — lines=\(lines)")
+
+                // (b) no stale-then-real flash: a `paint kind=fallbackCached` line for item X must
+                // never be immediately followed by a `paint kind=primary` line for that SAME item
+                // — that pairing is precisely "the fallback painted, then got silently replaced by
+                // the real art for the identical title", the visible double-paint HeroCrossfadeImage's
+                // `paintedIdentity` bookkeeping (HomeView.swift) exists to prevent. "Immediately
+                // followed" is checked as raw adjacency in the displayed buffer (not filtered to
+                // paint-only lines first) — the literal, strictest reading; a real regression that
+                // interleaves an unrelated log line between the two paints would need a looser
+                // check to catch, which isn't implemented here.
+                func item(from line: String) -> String? {
+                    guard let range = line.range(of: "item=") else { return nil }
+                    return String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                }
+                for i in 0..<max(0, lines.count - 1) {
+                    let line = lines[i]
+                    guard line.contains("paint kind=fallbackCached"), let itemA = item(from: line) else { continue }
+                    let next = lines[i + 1]
+                    if next.contains("paint kind=primary"), let itemB = item(from: next), itemA == itemB {
+                        XCTFail("launch \(launch): fallbackCached paint immediately followed by a primary paint for the same item (\(itemA)) — stale-then-real flash. lines[\(i)]=\(line) lines[\(i + 1)]=\(next)")
+                    }
+                }
+            }
+
             app.terminate()
             pause(1.0)
         }
@@ -2764,5 +2852,222 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "40d_after_menu")
         XCTAssertTrue(app.state == .runningForeground, "Menu from the Settings detail pane must not exit the app")
         XCTAssertTrue(app.buttons["Settings"].exists, "Settings tab bar button must still exist after Menu — the app must not have been kicked to the springboard")
+    }
+
+    // MARK: - P-1d: forced no-trailer must never bloom the poster
+
+    /// Inverse of test37TrailerLocationHero's poster leg. `debug.trailerForceNoTrailer`
+    /// (`TrailerProbe.forceNoTrailer`, TrailerDebugProbes.swift) makes every title report "no
+    /// trailer available" — that knob exists specifically so the never-morph-on-speculation fix
+    /// ("a focused poster with nothing to play must never bloom into a landscape tile, even for
+    /// ~1s", per its own doc comment) is testable without hunting for a fixture whose TMDB
+    /// listing happens to be empty. Reuses test37's neighbour-shift oracle verbatim (the focused
+    /// Button's own AX frame never follows the tile — its body is `accessibilityHidden` — so the
+    /// row's OTHER cards sliding over by the landscape-portrait delta is what a real morph looks
+    /// like; see test37's header comment) but asserts the mirror-image bound: peak shift must stay
+    /// ≤ 12pt (test37's own "no morph" threshold) for the WHOLE dwell+resolve window, never
+    /// exceeding it, instead of eventually exceeding 20pt.
+    func test41NoTrailerNeverMorphsPoster() throws {
+        let app = launchToHome(extraArguments: [
+            "-inline_trailers_enabled", "YES",
+            "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES",
+            // Deterministic row geometry (test37's trick): removes the Upcoming row so the
+            // down×4 walk below has a stable target.
+            "-home_upcoming_row_enabled", "NO",
+        ], forceFreshLaunch: true)
+
+        // Same down×4 walk as test01/test37 to a resting portrait poster in the first movies row.
+        press(.down, times: 3)
+        remote.press(.down)
+        pause(0.3) // focus-engine settle only — baseline must land inside the would-be 1.0s dwell
+        let baseline = buttonSnapshots(app)
+        guard let beforeFrame = baseline.first(where: { $0.hasFocus })?.frame else {
+            throw XCTSkip("no focused element reported before the dwell window (27.0 runtime never reports hasFocus)")
+        }
+        guard beforeFrame.width > 80, beforeFrame.height > beforeFrame.width else {
+            throw XCTSkip("focused element before the dwell window is not a resting portrait poster — frame=\(beforeFrame)")
+        }
+
+        func neighbourMinXs(_ snaps: [(frame: CGRect, hasFocus: Bool)]) -> [CGFloat] {
+            let anchor = snaps.first(where: { $0.hasFocus })?.frame ?? beforeFrame
+            return snaps.compactMap { b -> CGFloat? in
+                let f = b.frame
+                guard abs(f.midY - anchor.midY) < 20, f.minX > anchor.maxX - 1 else { return nil }
+                return f.minX
+            }.sorted()
+        }
+        func neighbourMinXsNow() -> [CGFloat] { neighbourMinXs(buttonSnapshots(app)) }
+
+        let neighboursBefore = neighbourMinXs(baseline)
+        guard let firstNeighbourBefore = neighboursBefore.first else {
+            throw XCTSkip("focused poster has no row neighbour to its right — frame=\(beforeFrame)")
+        }
+        shot(app, "41a_before_dwell")
+        print("[P1d] baseline focused=\(beforeFrame) neighbours=\(neighboursBefore.prefix(3))")
+
+        // Poll the peak every 0.5s over a 10s window — comfortably past test37's observed
+        // ~3.6s focus→resolve→morph latency on a sim, with no trailer ever able to resolve here.
+        var peakShift: CGFloat = 0
+        for i in 0..<20 {
+            pause(0.5)
+            if let firstNeighbour = neighbourMinXsNow().first {
+                peakShift = max(peakShift, firstNeighbour - firstNeighbourBefore)
+            }
+            if i == 4 || i == 12 {
+                print("[P1d] sample \(i) neighbour=\(neighbourMinXsNow().first ?? -1) peakShift=\(peakShift)")
+                shot(app, "41b_sample_\(i)")
+            }
+        }
+        shot(app, "41c_after_window")
+
+        XCTAssertLessThanOrEqual(
+            peakShift, 12,
+            "row neighbours shifted (poster morphed) despite debug.trailerForceNoTrailer — the card never should have bloomed with nothing to play. peak shift=\(peakShift)pt, before firstNeighbourMinX=\(firstNeighbourBefore)"
+        )
+        XCTAssertTrue(app.state == .runningForeground, "app must survive the forced-no-trailer dwell window")
+    }
+
+    // MARK: - H-2: the folder page is logo-only, never the parent collection's title
+
+    /// Seeds ONE collection via the DEBUG-only `-debug.collectionsSeedJsonB64` knob
+    /// (`HomeViewModel.applyCollectionsSeedIfRequested`, HomeViewModel.swift ~L282-319) with a
+    /// distinctive collection title and one folder carrying `heroBackdropUrl` + `titleLogoUrl`
+    /// (deliberately unreachable `example.invalid` URLs — RFC 2606 reserved, guaranteed to fail
+    /// to load, which is fine: the label FALLBACK logic is what's under test, not artwork
+    /// fetching) and `hideTitle: false`.
+    ///
+    /// H-2 (CollectionsUI.swift ~L573) removed the parent collection's title as a caption above
+    /// the folder page's logo — a tvOS-only invention a tester flagged; the folder page is
+    /// logo-only now (`FolderHeroTitle(title: model.folderTitle, …)` — always the FOLDER's own
+    /// title, verified by reading `FolderDetailViewModel.folderTitle`'s assignments, never the
+    /// collection's). That is this test's PRIMARY, strict assertion: the collection title must
+    /// never appear as a `staticText` on the folder page.
+    ///
+    /// Divergence from a literal "never appears anywhere on Home" reading, recorded here because
+    /// it materially changes what's asserted: `CollectionRowView` (CollectionsUI.swift ~L64-73,
+    /// ~L101-113) renders `Text(collection.title)` as that row's OWN section header — deliberately
+    /// and unconditionally, the exact same role `CatalogRowView`'s `section.title` plays for a
+    /// catalog shelf. That is correct, desired behavior, not something H-2 (or anything else)
+    /// ever removed, and asserting its absence would fail against a correctly working build. The
+    /// Home-side assertion below instead checks there is at most ONE on-screen occurrence of the
+    /// collection title (the row header, and nothing more) — i.e. it never additionally leaks into
+    /// the folder tile itself or the hero overlay, which per `FolderTile`'s and
+    /// `HomeView.folderHeroPreview`'s source (both read directly: the tile's fallback caption and
+    /// the hero's `name` field are always `folder.title`, never `collection.title`) is the real,
+    /// defensible invariant on the Home side.
+    ///
+    /// Guest-mode requirement: the seed knob's own doc comment says a signed-in session's next
+    /// foreground pull may overwrite the import (remote wins) — "use in guest mode". This harness
+    /// otherwise always drives the shared, persistently signed-in "Chris" sim (see `launchToHome`),
+    /// which has no reachable Continue-as-Guest path; producing a genuinely signed-out container is
+    /// a destructive, gated recipe of its own (`ScratchServerSwitchTests.swift`, throwaway sim
+    /// only — this harness's own field notes say never sign out on a shared clone). Rather than
+    /// force that here, this test detects the fork at runtime and skips loudly with the reason
+    /// when Continue-as-Guest isn't reachable, instead of asserting on nothing.
+    func test42CollectionTitleNeverLeaksBeyondRowHeader() throws {
+        let collectionTitle = "ZZLabelProbe"
+        let folderTitle = "ZZLabelProbeFolder"
+        let seedJson = """
+        [{"id":"zzlabelprobe-collection-1","title":"\(collectionTitle)","folders":[{"id":"zzlabelprobe-folder-1","title":"\(folderTitle)","heroBackdropUrl":"https://example.invalid/zzlabelprobe-backdrop.jpg","titleLogoUrl":"https://example.invalid/zzlabelprobe-logo.png","hideTitle":false}]}]
+        """
+        let seedB64 = Data(seedJson.utf8).base64EncodedString()
+
+        let app = XCUIApplication()
+        app.launchArguments += ["-debug.collectionsSeedJsonB64", seedB64]
+        app.launch()
+
+        let chris = app.buttons["Chris"]
+        let continueAsGuest = app.buttons["Continue as Guest"]
+        guard chris.waitForExistence(timeout: 20) || continueAsGuest.waitForExistence(timeout: 20) else {
+            XCTFail("app never reached a profile gate (Chris picker or Welcome) after launch")
+            return
+        }
+        guard !chris.exists else {
+            throw XCTSkip("sim is signed in (the shared \"Chris\" profile exists) — the guest-only debug.collectionsSeedJsonB64 seed needs a fresh/signed-out container; see ScratchServerSwitchTests.swift for the destructive, gated recipe that produces one")
+        }
+        guard continueAsGuest.exists else {
+            throw XCTSkip("neither Chris nor Continue as Guest reachable after launch — unexpected profile-gate state, cannot proceed safely")
+        }
+
+        // Enter guest mode (ScratchServerSwitchTests.passProfileGate's recipe, trimmed to this
+        // test's single path): select Continue as Guest; a brand-new guest needs a profile made
+        // via the Add Profile cover (name field on screen), an existing guest instead shows a
+        // normal picker tile.
+        if !continueAsGuest.hasFocus { _ = moveFocus(.up, until: continueAsGuest, max: 4) }
+        remote.press(.select)
+        pause(3)
+
+        if app.staticTexts["Add Profile"].exists, app.textFields.firstMatch.exists {
+            let name = app.textFields.firstMatch
+            if !name.hasFocus { _ = moveFocus(.up, until: name, max: 4) }
+            remote.press(.select)
+            pause(2)
+            app.typeText("Guest")
+            pause(0.8)
+            remote.press(.menu) // dismisses the keyboard only — the cover itself stays up
+            pause(1.5)
+            let save = app.buttons["Save"]
+            if save.waitForExistence(timeout: 3) {
+                if !save.hasFocus { _ = moveFocus(.down, until: save, max: 6) }
+                remote.press(.select)
+                pause(6)
+            }
+            // ScratchServerSwitchTests' documented finding: the picker stops taking arrow presses
+            // once the cover dismisses, while a fresh launch's picker default-focuses the first
+            // tile — relaunch (the seed argument re-applies; `didApplyCollectionsSeed` is a fresh
+            // static per process) so the profile tile is reliably selectable.
+            app.terminate()
+            pause(1)
+            app.launch()
+            pause(10)
+        }
+
+        if !app.buttons["Home"].exists {
+            remote.press(.select) // whichever profile tile the fresh launch defaulted focus to
+            pause(4)
+        }
+        guard app.buttons["Home"].waitForExistence(timeout: 30) else {
+            throw XCTSkip("never reached Home after entering guest mode — cannot verify the collections seed")
+        }
+        pause(2) // let the imported collection row mount
+        shot(app, "42a_home_after_guest_seed")
+
+        func staticTextCount(equalTo label: String) -> Int {
+            app.staticTexts.matching(NSPredicate(format: "label == %@", label)).count
+        }
+
+        // Walk down existence-driven (this harness's house rule — the 27.0 runtime never reports
+        // `hasFocus`) looking for the seeded row's own header, up to a generous budget since we
+        // don't know how many built-in catalog rows sit above it.
+        var foundRow = false
+        for _ in 0..<20 {
+            if app.staticTexts[collectionTitle].exists { foundRow = true; break }
+            remote.press(.down)
+            pause(0.6)
+        }
+        guard foundRow else {
+            throw XCTSkip("seeded collection row ('\(collectionTitle)') never appeared on Home — cannot verify the label invariants")
+        }
+        pause(1)
+        shot(app, "42b_collection_row_focused")
+
+        let homeCollectionTitleCount = staticTextCount(equalTo: collectionTitle)
+        XCTAssertLessThanOrEqual(
+            homeCollectionTitleCount, 1,
+            "collection title '\(collectionTitle)' appeared \(homeCollectionTitleCount) times on Home — expected at most 1 (CollectionRowView's own row header); a second occurrence would mean the title leaked into the folder tile or the hero overlay, which must always show the FOLDER's own title instead"
+        )
+
+        // Open the seeded folder (its tile should already hold focus — CollectionRowView's
+        // `focusSection` contains only that one tile in this seed).
+        remote.press(.select)
+        pause(2.5)
+        shot(app, "42c_folder_page")
+
+        XCTAssertFalse(
+            app.staticTexts[collectionTitle].exists,
+            "folder page must never show the parent collection's title ('\(collectionTitle)') — H-2 made the folder header logo-only, falling back to the FOLDER's own title, never the collection's"
+        )
+        XCTAssertTrue(app.state == .runningForeground, "app must survive opening the seeded folder")
     }
 }
