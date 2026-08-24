@@ -194,14 +194,6 @@ struct MainTabView: View {
         }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
-            // A newly-selected tab starts with its bar visible from the scroll perspective — but
-            // NOT via a blanket reset of `detailDepth` too: each tab keeps its own NavigationStack
-            // alive across a tab switch, so a still-pushed DetailView elsewhere must keep counting
-            // toward `hidden` (see TabBarVisibility's doc comment). In practice this is also the
-            // only safe choice: the spike found the hidden bar safely absorbs the Up press needed
-            // to reach it, so a tab switch literally can't happen while a push is keeping the bar
-            // hidden — you have to pop back out (running `popImmersive()`) first.
-            tabBarVisibility.setScrolled(false)
         }
     }
 }

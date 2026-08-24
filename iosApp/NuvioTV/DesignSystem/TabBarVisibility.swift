@@ -1,40 +1,38 @@
 import Combine
 import SwiftUI
 
-/// Shared visibility state for the floating glass tab bar, combining two independent signals:
+/// Shared visibility state for the floating glass tab bar's immersive-push signal, plus the
+/// FEAT-25 "is Home frontmost" signal below.
 ///
-///   - `scrolledAway`: the currently-selected tab's root content has scrolled far enough down that
-///     the bar should get out of the way. Tab roots report this from their main `ScrollView` via
-///     `setScrolled(_:)`, applying hysteresis at the call site (hide past one threshold, show back
-///     below a lower one) so the bar doesn't flicker right at the boundary.
-///   - `detailDepth`: count of "immersive" pushed screens (currently just `DetailView`) stacked on
-///     top of the active tab's `NavigationStack`. A depth counter rather than a `Bool` because
-///     Detail → More Like This → Detail nests — the bar should only reappear once every pushed
-///     immersive screen has been popped, not after the first one.
+/// T2 (beta.14 regression fix — retired a signal this class used to combine): this class used to
+/// also own `scrolledAway`, a SINGLE shared slot fed by whichever tab root last called
+/// `setScrolled(_:)`, folded together with `detailDepth` into one `hidden` bit. That was wrong
+/// for two reasons: a single shared slot across four independently-scrolling tabs is
+/// last-writer-wins (tab B's scroll position could overwrite tab A's), and `ContentView`'s
+/// tab-switch reset (`setScrolled(false)`) could race under the latch and desync `hidden` from
+/// the actually-selected tab's real position. It was also long dead for the bar's OWN
+/// presentation — round 4 (below, `immersiveHidden`) already stopped the toolbar from reading
+/// `hidden` at all. The only real consumer was `isScrolledDown` (BUG-27's Menu-to-top signal),
+/// and that was already correctly served by `TabBarScrollAutoHide`'s own per-tab
+/// `@State private var hidesBar` — one latch per tab root, not one shared across all four.
+/// `scrolledAway`/`setScrolled(_:)`/`hidden` are gone; the per-tab `@State` latch is the real
+/// state and always was.
 ///
-/// The bar is hidden whenever either signal holds. Owned as a single `@StateObject` in
-/// `MainTabView` and read/written by descendants via `@Environment(\.tabBarVisibility)` — a custom
-/// environment key (not `@EnvironmentObject`) so views that can be presented *outside* the tab
-/// shell (e.g. `DetailView` reached through `DeepLinkTitleView`'s own standalone `NavigationStack`,
-/// pushed from a Top Shelf deep link with no tab bar in play at all) fall back to a harmless
-/// unconnected default instance instead of crashing for a missing environment object.
+/// `detailDepth`: count of "immersive" pushed screens (currently just `DetailView`) stacked on
+/// top of the active tab's `NavigationStack`. A depth counter rather than a `Bool` because
+/// Detail → More Like This → Detail nests — the bar should only reappear once every pushed
+/// immersive screen has been popped, not after the first one.
+///
+/// Owned as a single `@StateObject` in `MainTabView` and read/written by descendants via
+/// `@Environment(\.tabBarVisibility)` — a custom environment key (not `@EnvironmentObject`) so
+/// views that can be presented *outside* the tab shell (e.g. `DetailView` reached through
+/// `DeepLinkTitleView`'s own standalone `NavigationStack`, pushed from a Top Shelf deep link with
+/// no tab bar in play at all) fall back to a harmless unconnected default instance instead of
+/// crashing for a missing environment object.
 @MainActor
 final class TabBarVisibility: ObservableObject {
-    @Published private(set) var hidden: Bool = false
-
-    private var scrolledAway = false {
-        didSet { recompute() }
-    }
     private var detailDepth = 0 {
         didSet { recompute() }
-    }
-
-    /// Tab roots call this from their main scroll view's geometry-change hysteresis (see each
-    /// screen's `.onScrollGeometryChange`), not on every scroll tick — only when crossing a
-    /// hide/show threshold.
-    func setScrolled(_ scrolled: Bool) {
-        guard scrolledAway != scrolled else { return }
-        scrolledAway = scrolled
     }
 
     /// Called from an immersive pushed screen's `.onAppear` (currently `DetailView`).
@@ -93,20 +91,24 @@ final class TabBarVisibility: ObservableObject {
         if homeSurfaceCovered != covered { homeSurfaceCovered = covered }
     }
 
+    /// T2: collapsed to `recomputeHomeCovered()` now that there is no `hidden`/`scrolledAway`
+    /// to fold together — `detailDepth`'s only other effect is on `homeSurfaceCovered`, which
+    /// this already forwards to.
     private func recompute() {
-        hidden = scrolledAway || detailDepth > 0
         recomputeHomeCovered()
     }
 
-    /// Device pass round 4 (2026-08-02): the toolbar drives off THIS, not `hidden`. Toggling
-    /// `.toolbarVisibility(.hidden)` on scroll and re-showing it later left the system bar
-    /// frozen mid-slide on real hardware — clipped at the top until focus moved within it —
+    /// Device pass round 4 (2026-08-02): the toolbar drives off THIS, not the retired `hidden`.
+    /// Toggling `.toolbarVisibility(.hidden)` on scroll and re-showing it later left the system
+    /// bar frozen mid-slide on real hardware — clipped at the top until focus moved within it —
     /// through three rounds of transition fixes (.automatic→.visible, dropping the custom
     /// animation). The cure is structural: never toggle visibility for scrolling at all; the
     /// tvOS 26 system bar already minimizes/expands natively as content scrolls (`.automatic`),
-    /// so there is no hidden→shown transition left to get stuck. Only the immersive detail
-    /// push still force-hides. `hidden`/`scrolledAway` remain for the BUG-27 Menu-to-top
-    /// hysteresis, which is unrelated to bar presentation.
+    /// so there is no hidden→shown transition left to get stuck. Only the immersive detail push
+    /// still force-hides. T2: the retired `hidden`/`scrolledAway` were never read by bar
+    /// presentation anyway (that's what made them safe to retire) — `isScrolledDown`, computed
+    /// per-tab in `TabBarScrollAutoHide`, remains the BUG-27 Menu-to-top signal, unrelated to bar
+    /// presentation.
     var immersiveHidden: Bool { detailDepth > 0 }
 }
 
@@ -140,12 +142,16 @@ private struct TabBarScrollSample: Equatable {
     var residual: CGFloat { offsetY + insetTop }
 }
 
-/// Reports a tab root's main scroll view position to the shared `TabBarVisibility`, with
-/// hysteresis so the bar doesn't flicker right at one boundary. `hidesBar` mirrors the last state
-/// actually reported, so `setScrolled` is only called on a real crossing — not once per scroll
-/// tick.
+/// Reports a tab root's main scroll view position via hysteresis so the bar doesn't flicker right
+/// at one boundary. `hidesBar` mirrors the last state actually reported, so `isScrolledDown` only
+/// changes on a real crossing — not once per scroll tick.
+///
+/// T2: this used to also forward crossings to the shared `TabBarVisibility` via `setScrolled(_:)`
+/// — retired along with that method (see the class doc comment): a single shared slot fed by
+/// whichever tab last fired is wrong when four tabs scroll independently, and nothing besides
+/// `isScrolledDown` ever needed the crossing anyway. This modifier is now purely local per-tab
+/// state.
 private struct TabBarScrollAutoHide: ViewModifier {
-    @Environment(\.tabBarVisibility) private var tabBarVisibility
     @State private var hidesBar = false
     /// BUG-30/66/62: which tab root this is, for the About-pane diagnostics readout.
     let tab: String
@@ -181,11 +187,9 @@ private struct TabBarScrollAutoHide: ViewModifier {
             let residual = sample.residual
             if !hidesBar, residual > Self.hideArm {
                 hidesBar = true
-                tabBarVisibility.setScrolled(true)
                 isScrolledDown?.wrappedValue = true
             } else if hidesBar, residual < Self.showArm {
                 hidesBar = false
-                tabBarVisibility.setScrolled(false)
                 isScrolledDown?.wrappedValue = false
             }
         })
