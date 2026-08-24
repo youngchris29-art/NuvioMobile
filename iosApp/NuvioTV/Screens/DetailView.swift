@@ -36,6 +36,20 @@ private struct ScrollDimOverlay: View {
     }
 }
 
+/// Runtime knob for DetailView's scroll-diagnostic probes (the BUG-41 body-eval counter and the
+/// UX-6 raw scroll-offset log), following the exact house pattern of `HomeGeometryProbe`
+/// (`BrowseComponents.swift:76-78`) and `TrailerProbe` (`TrailerDebugProbes.swift:25-26`):
+///
+///     defaults write com.nuvio.media.NuvioTV debug.detailScrollProbe -bool YES
+///
+/// Deliberately NOT `#if DEBUG` — house rule recorded on `TrailerProbe`'s doc comment: testers run
+/// release sideloads, there is no automated input path to the physical Apple TV, and the console
+/// (`log show`) is the only diagnostic that comes back from a device pass. A probe gated behind
+/// `#if DEBUG` never runs on the builds that actually reproduce BUG-41.
+enum DetailScrollProbe {
+    nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.detailScrollProbe")
+}
+
 /// Full detail screen for a single title, fed by the shared `MetaDetailsRepository`.
 /// Constructed from a `MetaPreview` (the card the user focused), then enriched in place as the
 /// repository resolves full metadata.
@@ -108,24 +122,24 @@ struct DetailView: View {
         _model = StateObject(wrappedValue: DetailViewModel(preview: preview))
     }
 
-    #if DEBUG
-    /// BUG-41 measurement probe (DEBUG only): counts `DetailView.body` evaluations so the main
-    /// session can compare before/after this fix. Logs every 10th eval (not every single one) to
-    /// stay cheap while still grep-able: `log show --predicate 'eventMessage contains "BUG41"'`.
+    /// BUG-41 measurement probe: counts `DetailView.body` evaluations so the main session can
+    /// compare before/after this fix. Logs every 10th eval (not every single one) to stay cheap
+    /// while still grep-able: `log show --predicate 'eventMessage contains "BUG41"'`. Gated by
+    /// `DetailScrollProbe.enabled` rather than `#if DEBUG` — see that enum's doc comment: testers
+    /// run release sideloads, so a compile-time gate would stop measuring on exactly the builds
+    /// that reproduce the reported choppiness.
     static var bodyEvalCount = 0
     static func logBodyEval() {
+        guard DetailScrollProbe.enabled else { return }
         bodyEvalCount += 1
         if bodyEvalCount % 10 == 0 {
             NSLog("[BUG41] detailBodyEval=%d", bodyEvalCount)
         }
     }
-    #endif
 
     var body: some View {
-        #if DEBUG
-        // BUG-41 measurement probe (DEBUG only).
+        // BUG-41 measurement probe, gated at runtime by `DetailScrollProbe.enabled` (see above).
         let _ = Self.logBodyEval()
-        #endif
         ZStack(alignment: .topLeading) {
             backdropImage
             if showPosterBackdrop {
@@ -195,15 +209,18 @@ struct DetailView: View {
             }, action: { _, newValue in
                 dimModel.value = newValue
             })
-            #if DEBUG
             // UX-6 device-verify probe: raw offset/inset so `log show` proves whether tvOS
-            // focus-scrolling moves this ScrollView's contentOffset at all.
+            // focus-scrolling moves this ScrollView's contentOffset at all. Gated by
+            // `DetailScrollProbe.enabled` (not `#if DEBUG` — see that enum's doc comment). The
+            // `of:` closure collapses to a constant when disabled so `action:` only fires once
+            // (on the first geometry read) instead of on every scroll frame.
             .onScrollGeometryChange(for: String.self, of: { geo in
-                "y=\(Int(geo.contentOffset.y)) inset=\(Int(geo.contentInsets.top))"
+                guard DetailScrollProbe.enabled else { return "" }
+                return "y=\(Int(geo.contentOffset.y)) inset=\(Int(geo.contentInsets.top))"
             }, action: { _, v in
+                guard DetailScrollProbe.enabled else { return }
                 NSLog("[UX6] %@", v)
             })
-            #endif
         }
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
