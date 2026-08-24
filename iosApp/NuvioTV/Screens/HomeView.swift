@@ -6,7 +6,15 @@ import SharedCore
 /// First real content screen for tvOS: a focus-navigable grid of catalog rows, fed entirely by the
 /// shared Kotlin `HomeRepository`. Tapping a poster pushes the detail screen.
 struct HomeView: View {
-    @StateObject private var model = HomeViewModel()
+    /// H-1B-ii (beta.15): NOT `@StateObject` any more — the model is owned by `ContentView`, above
+    /// the `.id(appTheme.themeName)` rebuild boundary, and handed down through `MainTabView`. A
+    /// sync pull that flips the theme minutes after launch re-identifies this whole subtree; while
+    /// this view owned the model that meant a second `HomeViewModel`, a replayed StateFlow publish
+    /// (duplicate hero head), a second forced `HomeRepository.refresh` (fresh empty
+    /// `lastRefreshSignature`) and two hero paint pipelines alive at once — the "doubled hero"
+    /// report. Home's DATA lifetime is now independent of Home's VIEW identity; the view only
+    /// retains/releases it (see `HomeViewModel.acquire()` for the ordering that forces refcounting).
+    @ObservedObject var model: HomeViewModel
     @State private var resume: ResumeTarget?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if DEBUG
@@ -731,7 +739,11 @@ struct HomeView: View {
             #if DEBUG
             LaunchTrace.mark("home_appear")  // BUG-26: profile gate passed, Home mounting
             #endif
-            model.start()
+            // H-1B-ii: retain, don't start. During a theme `.id()` swap SwiftUI inserts the
+            // incoming subtree BEFORE removing the outgoing one, so this runs while the previous
+            // HomeView still holds the model — the count goes 1 → 2 → 1 and the pipeline never
+            // stops, restarts, or republishes.
+            model.acquire()
             if upcomingRowEnabled { model.startUpcoming() }
             heroSettings.start()
             prefetchHeroArt()
@@ -756,7 +768,13 @@ struct HomeView: View {
             NSLog("[TrailerPipeline] trailerLocation heroMode=%@", mode ? "YES" : "NO")
         }
         .onDisappear {
-            model.stop()
+            // H-1B-ii: balanced against the `acquire()` above. This fires effectively only on shell
+            // teardown (neither a Detail push nor a tab switch fires `onDisappear` on Home's root —
+            // see `HomeHeroBackdrop`) and, transiently, as the outgoing half of a theme swap, where
+            // the incoming view has already retained the model so the pipeline stays up. Profile
+            // exit / sign-out is NOT handled here any more: `ContentView` hard-stops the model
+            // there, because it now outlives this view.
+            model.release()
             heroSettings.stop()
         }
         .onChange(of: upcomingRowEnabled) { _, enabled in

@@ -62,17 +62,108 @@ final class HomeViewModel: ObservableObject {
     private var didSeed = false
     /// Guards against redundant `refresh` calls — only re-refresh when the ready-addon set changes.
     private var lastRefreshSignature = ""
+    /// True exactly while the watcher pipeline below is live (0→1 acquired … 1→0 released).
     private var started = false
+    /// H-1B-ii (beta.15): how many views currently hold this model. See `acquire()`.
+    private var retainCount = 0
+    /// H-1B-ii: releases still OWED by views that were unmounted out from under a hard `stop()`.
+    /// A hard stop discards the whole retain count, but the views that contributed to it still run
+    /// their `onDisappear → release()` afterwards; those releases are expected, not underflow, so
+    /// they are absorbed here instead of tripping the DEBUG assertion.
+    private var hardStopAbsorb = 0
 
-    func start() {
-        // H-1A: logged unconditionally on ENTRY, before the `started` guard below, so a redundant
-        // start() call (the exact shape a duplicate-instance bug produces) still leaves a trace —
-        // a guard-gated log would silently swallow the very calls this probe exists to catch.
+    // MARK: - Lifecycle
+    //
+    // H-1B-ii (beta.15): this model is owned by `ContentView` — ABOVE the `.id(appTheme.themeName)`
+    // rebuild boundary — not by `HomeView`. A profile-scoped sync pull that flips the theme minutes
+    // after launch re-identifies the whole tree, and when `HomeView` owned the model via
+    // `@StateObject` that meant: a brand-new `HomeViewModel`, a replayed StateFlow publish
+    // (duplicate hero head), `lastRefreshSignature == ""` → a second forced full
+    // `HomeRepository.refresh`, and two hero paint pipelines alive across the swap (the tester's
+    // "doubled hero"). The data now outlives view identity, so the swap is invisible to the
+    // pipeline — but only if the hand-off is REFCOUNTED:
+    //
+    //   SwiftUI inserts the incoming subtree BEFORE removing the outgoing one, so the new
+    //   `HomeView.onAppear` runs BEFORE the old `HomeView.onDisappear`. A naive hoist that kept
+    //   plain start()/stop() would therefore tear the watchers down immediately AFTER the new view
+    //   had already started them, leaving Home permanently dead. With a refcount the sequence is
+    //   1 → 2 → 1: no teardown, no restart, nothing republished.
+    //
+    // Normal steady state is 0 or 1: `HomeView.onDisappear` effectively only fires on shell
+    // teardown (neither a Detail push nor a tab switch fires it — see `HomeHeroBackdrop`), so the
+    // count only ever transiently reaches 2 during a theme `.id()` swap.
+
+    /// Balanced retain. Runs the pipeline exactly once on 0→1; every later holder just bumps the
+    /// count. Every `acquire()` MUST be paired with a `release()` (or subsumed by `stop()`).
+    func acquire() {
+        retainCount += 1
+        if HomeHeroProbe.enabled {
+            // H-1A's probe intent, adapted: the old unconditional entry log existed so a redundant
+            // `start()` — the shape a duplicate-instance bug produced — still left a trace. Under
+            // refcounting a second holder is legitimate, so retain traffic gets its OWN line and
+            // `vm start`/`vm stop` keep meaning "the pipeline actually started/stopped".
+            HomeHeroProbe.log(String(format: "vm acquire id=%d rc=%d sinceLaunch=%dms", vmId, retainCount, HomeHeroProbe.sinceLaunchMs))
+        }
+        guard retainCount == 1 else { return }
+        startPipeline()
+    }
+
+    /// Balanced release. Tears the pipeline down only on 1→0. Underflow clamps at zero — and in
+    /// DEBUG asserts, unless it is a release owed to a preceding hard `stop()` (see
+    /// `hardStopAbsorb`); a release build must never crash on an unbalanced release.
+    func release() {
+        // Absorbed FIRST, before the count is touched: a hard `stop()` already discarded the
+        // retains these releases balance, so they must not decrement anything — the arrival of
+        // `onDisappear` is not ordered against a later re-entry. (Profile exit → hard stop →
+        // re-enter a profile → the NEW HomeView's `acquire()` can land before the OLD view's
+        // `onDisappear`; decrementing there would tear down the pipeline the new view just
+        // started, leaving Home permanently empty.) Worst case this leaks a retain, which the
+        // next hard stop clears — strictly preferable to a premature teardown.
+        if hardStopAbsorb > 0 {
+            hardStopAbsorb -= 1
+            if HomeHeroProbe.enabled {
+                HomeHeroProbe.log(String(format: "vm release id=%d rc=%d (post-hard-stop, absorbed) sinceLaunch=%dms", vmId, retainCount, HomeHeroProbe.sinceLaunchMs))
+            }
+            return
+        }
+        guard retainCount > 0 else {
+            // Genuine underflow: an unpaired release with no hard stop to explain it. Clamp (a
+            // release build must never crash here) and shout in DEBUG.
+            #if DEBUG
+            assertionFailure("HomeViewModel.release() underflow — an unpaired release() (vm=\(vmId))")
+            #endif
+            retainCount = 0
+            if HomeHeroProbe.enabled {
+                HomeHeroProbe.log(String(format: "vm release id=%d rc=0 (underflow clamped) sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
+            }
+            return
+        }
+        retainCount -= 1
+        if HomeHeroProbe.enabled {
+            HomeHeroProbe.log(String(format: "vm release id=%d rc=%d sinceLaunch=%dms", vmId, retainCount, HomeHeroProbe.sinceLaunchMs))
+        }
+        guard retainCount == 0 else { return }
+        teardownPipeline()
+    }
+
+    /// Hard teardown, regardless of who still holds the model. Used on profile switch / sign-out:
+    /// everything below is PROFILE-SCOPED (the shared repositories are re-scoped by
+    /// `ActiveProfileProvider`), and now that the model outlives `HomeView` the old implicit
+    /// "the view went away, so the watchers went away" teardown no longer happens on its own.
+    /// The outstanding retains are remembered in `hardStopAbsorb` so the unmounting views'
+    /// `release()` calls don't read as underflow.
+    func stop() {
+        hardStopAbsorb += retainCount
+        retainCount = 0
+        teardownPipeline()
+    }
+
+    private func startPipeline() {
+        guard !started else { return }
+        started = true
         if HomeHeroProbe.enabled {
             HomeHeroProbe.log(String(format: "vm start id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
         }
-        guard !started else { return }
-        started = true
 
         // Home output → SwiftUI.
         homeWatcher = FlowWatcherKt.watch(HomeRepository.shared.uiState) { [weak self] emitted in
@@ -194,7 +285,11 @@ final class HomeViewModel: ObservableObject {
     }
     #endif
 
-    func stop() {
+    /// The real teardown. Idempotent (`started` gates it) so a hard `stop()` on an already-stopped
+    /// model is a no-op and, crucially, does NOT emit a spurious `vm stop` probe line — those two
+    /// lines keep meaning "the pipeline actually started/stopped", never "someone asked".
+    private func teardownPipeline() {
+        guard started else { return }
         if HomeHeroProbe.enabled {
             HomeHeroProbe.log(String(format: "vm stop id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
         }
@@ -213,7 +308,9 @@ final class HomeViewModel: ObservableObject {
     }
 
     /// Upcoming row (gated by the `home_upcoming_row_enabled` toggle, so it is started separately
-    /// from `start()`). Idempotent; re-entering Home also nudges a cheap refresh so a calendar
+    /// from the main pipeline — `HomeView.onAppear` calls it right after `acquire()` when the
+    /// toggle is on, and it is NOT refcounted: it is idempotent both ways, and the pipeline
+    /// teardown below stops it wholesale). Re-entering Home also nudges a cheap refresh so a calendar
     /// rollover while the app sat in the background re-labels TODAY / TOMORROW.
     func startUpcoming() {
         if upcomingWatcher == nil {

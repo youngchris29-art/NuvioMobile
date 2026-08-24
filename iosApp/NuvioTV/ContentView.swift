@@ -11,6 +11,16 @@ struct ContentView: View {
     @StateObject private var posterStyle = PosterStyleModel()
     @StateObject private var cardDepth = CardDepthStyleModel()
     @StateObject private var appTheme = AppThemeModel()
+    /// H-1B-ii (beta.15): Home's view model lives HERE, above the `.id(appTheme.themeName)` rebuild
+    /// boundary applied to the `Group` below, so a theme flip (which a profile-scoped sync pull can
+    /// deliver minutes after cold launch) rebuilds Home's VIEWS without rebuilding Home's DATA.
+    /// While `HomeView` owned it via `@StateObject`, that rebuild produced a second
+    /// `HomeViewModel` — replayed StateFlow publish (duplicate hero head), a second forced
+    /// `HomeRepository.refresh`, and two hero paint pipelines alive across the swap: the tester's
+    /// "doubled hero". `HomeView` now only `acquire()`s / `release()`s it (refcounted because
+    /// SwiftUI inserts the incoming subtree before removing the outgoing one), and this view hard-
+    /// stops it on profile exit below — the teardown Home's view lifetime used to do implicitly.
+    @StateObject private var home = HomeViewModel()
     @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
     @State private var selectedTab = 0
@@ -35,6 +45,9 @@ struct ContentView: View {
                 if entered {
                     MainTabView(
                         activeProfile: profiles.activeProfile,
+                        // H-1B-ii: handed down (not re-created) so the theme `.id()` rebuild of
+                        // this Group cannot re-create Home's data pipeline.
+                        home: home,
                         onSwitchProfile: { entered = false },
                         selectedTab: $selectedTab,
                         // FEAT-25 (Codex beta.14 r8): the app-root deep-link cover (Top Shelf)
@@ -76,7 +89,15 @@ struct ContentView: View {
         }
         .onChange(of: auth.gate) { _, newGate in
             // Signing out (or a remote session invalidation) tears the shell down to the gate.
-            if newGate != .main { entered = false }
+            if newGate != .main {
+                entered = false
+                // H-1B-ii: hard teardown of Home's (profile-scoped) watchers. `home` now outlives
+                // `HomeView`, so leaving the signed-in state no longer implicitly stops them the
+                // way the old view-lifetime `onDisappear → model.stop()` did. Redundant with the
+                // `entered` handler below when we were entered (the hard stop is idempotent), but
+                // required on its own when the gate drops while sitting on the profile picker.
+                home.stop()
+            }
         }
         // Top Shelf snapshot mirrors the active profile's continue watching; only meaningful
         // once a profile is entered (data is profile-scoped).
@@ -91,6 +112,13 @@ struct ContentView: View {
                 // Sign-out wipes local progress first, so the watcher's final emission already
                 // rewrote the snapshot empty before we stop observing.
                 topShelf.stop()
+                // H-1B-ii: `entered == false` is BOTH "switch profile" (the MainTabView
+                // `onSwitchProfile` closure) and the sign-out path. Everything `home` observes is
+                // profile-scoped, and it now outlives `HomeView`, so the profile exit must tear it
+                // down explicitly — exactly what Home's view lifetime used to do implicitly. Hard
+                // stop, not `release()`: it must drop regardless of who still holds it, and the
+                // unmounting HomeView's own `release()` is absorbed by the model.
+                home.stop()
             }
         }
         .onOpenURL { url in
@@ -141,6 +169,14 @@ struct ContentView: View {
 /// The main app shell once a profile is selected.
 struct MainTabView: View {
     let activeProfile: NuvioProfile?
+    /// H-1B-ii: Home's view model, owned by `ContentView` above the theme `.id()` boundary and
+    /// merely PASSED THROUGH here. Deliberately a plain `let` — NOT `@ObservedObject`. Observing it
+    /// would re-couple `MainTabView.body` to `HomeViewModel.objectWillChange`, so every Home
+    /// publish (hero commit, row rebuild, continue-watching tick) would invalidate the shell and
+    /// re-evaluate every `Tab` closure — precisely the T3/BUG-66 class documented on
+    /// `tabBarVisibility` below, which the tab-bar wave fixed by making these subtrees constant and
+    /// prunable. `HomeView` is the only view that should observe it, and it does.
+    let home: HomeViewModel
     let onSwitchProfile: () -> Void
     /// Owned by ContentView (above the theme `.id()` rebuild boundary) so changing the theme in
     /// Settings doesn't dump the user back onto the Home tab.
@@ -171,7 +207,7 @@ struct MainTabView: View {
         // `.tabItem` API renders the older chrome).
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: 0) {
-                HomeView()
+                HomeView(model: home)
                     .tabBarImmersiveHide()
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
