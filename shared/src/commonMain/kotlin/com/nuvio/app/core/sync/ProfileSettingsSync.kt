@@ -385,18 +385,36 @@ object ProfileSettingsSync {
         }
 
         if (has("theme_settings")) {
-            ThemeSettingsStoreProvider.store.replaceFromSyncPayload(blob.features.themeSettings)
-            ThemeSettingsRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "theme_settings",
+                current = ThemeSettingsStoreProvider.store.exportToSyncPayload(),
+                incoming = blob.features.themeSettings,
+                apply = { ThemeSettingsStoreProvider.store.replaceFromSyncPayload(blob.features.themeSettings) },
+                notifyChanged = { ThemeSettingsRepository.onProfileChanged() },
+            )
         }
 
         if (has("poster_card_style_settings_payload")) {
-            PosterCardStyleStorage.savePayload(blob.features.posterCardStyleSettingsPayload)
-            PosterCardStyleRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "poster_card_style_settings_payload",
+                current = PosterCardStyleStorage.loadPayload().orEmpty().trim(),
+                incoming = blob.features.posterCardStyleSettingsPayload.trim(),
+                apply = { PosterCardStyleStorage.savePayload(blob.features.posterCardStyleSettingsPayload) },
+                notifyChanged = { PosterCardStyleRepository.onProfileChanged() },
+            )
         }
 
         if (has("card_depth_style_settings_payload")) {
-            CardDepthStyleStorage.savePayload(blob.features.cardDepthStyleSettingsPayload)
-            CardDepthStyleRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "card_depth_style_settings_payload",
+                current = CardDepthStyleStorage.loadPayload().orEmpty().trim(),
+                incoming = blob.features.cardDepthStyleSettingsPayload.trim(),
+                apply = { CardDepthStyleStorage.savePayload(blob.features.cardDepthStyleSettingsPayload) },
+                notifyChanged = { CardDepthStyleRepository.onProfileChanged() },
+            )
         }
 
         if (has("player_settings")) {
@@ -550,6 +568,39 @@ object ProfileSettingsSync {
         "episode_release_alerts=${EpisodeReleaseNotificationsRepository.uiState.value.isEnabled}",
     ).joinToString(separator = "||")
 
+}
+
+/**
+ * H-1B-i no-op suppression: applies [incoming] over [current] and fires [notifyChanged] only when
+ * they differ. Every `applyRemoteBlob()` block used to replace-and-fan-out unconditionally on
+ * every foreground pull whose feature was PRESENT in the remote blob — including a pull whose
+ * payload is byte-identical to what's already stored locally. On tvOS the whole SwiftUI view tree
+ * is re-identified by `.id(appTheme.themeName)` on that fan-out (`onProfileChanged()` →
+ * `objectWillChange`), so an identical pull minutes after launch caused a full, visible remount
+ * (2026-08-22 tester report, doubled hero) — this is defense in depth at the source, alongside the
+ * Swift-side guard landed separately.
+ *
+ * [current] and [incoming] MUST be the exact serialized shape a feature's own
+ * `exportToSyncPayload()` produces (a raw [kotlinx.serialization.json.JsonObject] for theme, the
+ * raw stored payload string for poster/card-depth) — never fields decoded out of that payload. A
+ * writing client on a different schema (e.g. one that doesn't model a given key) still serializes
+ * to a payload that differs at this raw level, so it correctly reads as "changed" and applies
+ * exactly as before; only a truly byte-identical payload is suppressed.
+ */
+internal inline fun <T> applyFeatureUnlessUnchanged(
+    log: Logger,
+    featureName: String,
+    current: T,
+    incoming: T,
+    apply: () -> Unit,
+    notifyChanged: () -> Unit,
+) {
+    if (current == incoming) {
+        log.d { "applyRemoteBlob() — '$featureName' payload unchanged; skipping replace + onProfileChanged() (no-op suppression)" }
+        return
+    }
+    apply()
+    notifyChanged()
 }
 
 @Serializable
