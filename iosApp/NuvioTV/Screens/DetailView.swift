@@ -23,7 +23,12 @@ private struct ScrollDimOverlay: View {
         ZStack {
             // UX-6: darkens the whole backdrop/poster/trailer stack (trailer keeps playing
             // underneath) as the description scrolls down — the scrim above stays untouched.
+            // P-2c: `.animation` interpolates between the (now coarser, 0.05-step) quantized
+            // values in Core Animation's render server rather than SwiftUI stepping the opacity
+            // directly — see the quantization comment on `DetailView`'s `.onScrollGeometryChange`
+            // for the full 0.01→0.05 reasoning this pairs with.
             Color.black.opacity(model.value).ignoresSafeArea().allowsHitTesting(false)
+                .animation(.linear(duration: 0.12), value: model.value)
             #if DEBUG
             // UX-6 diagnostic (invisible, harness-readable): the live darkening value, so the
             // UITest can prove whether focus-driven scrolling feeds the overlay at all.
@@ -227,10 +232,16 @@ struct DetailView: View {
                 // TV — the reporter's ask (and upstream's cinematic mode) is a near-black dim
                 // once the description scrolls up. Sim-verified via debug_ux6 (test17).
                 let raw = min(max((geo.contentOffset.y - geo.contentInsets.top) / 400.0, 0), 1) * 0.85
-                // BUG-41: quantized to 2 decimal places — `onScrollGeometryChange` only calls
-                // `action:` when the mapped value actually *changes*, so rounding away sub-1%
-                // wobble cuts the update rate down, independent of the `dimModel` isolation.
-                return (raw * 100).rounded() / 100
+                // BUG-41: quantized to the nearest 0.05 (was 0.01) — `onScrollGeometryChange`
+                // only calls `action:` when the mapped value actually *changes*, so coarsening the
+                // step cuts the write rate from ~85 possible values over the 400pt ramp down to
+                // ~17, roughly 5x fewer SwiftUI invalidations. P-2c (device revival, 2026-08-23):
+                // 0.01 alone was fine-grained enough to read as smooth without help, but 0.05 alone
+                // visibly steps — paired with `ScrollDimOverlay`'s
+                // `.animation(.linear(duration: 0.12), value:)` below, which interpolates between
+                // steps in Core Animation's render server instead of SwiftUI stepping the opacity
+                // directly, 0.05 reads as smooth again while writing far less.
+                return (raw * 20).rounded() / 20
             }, action: { _, newValue in
                 dimModel.value = newValue
             })
