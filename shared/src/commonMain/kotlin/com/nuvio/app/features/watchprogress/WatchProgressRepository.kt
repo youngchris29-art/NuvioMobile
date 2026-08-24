@@ -222,6 +222,13 @@ private data class RemoteProgressWrite(
     val sentAtEpochMs: Long,
 )
 
+// Upstream-faithful (d0c7bff7): a suppressed write is a complete no-op — local upsert, persist,
+// publish, and the completion cascade are all skipped, not just the network push. That is safe
+// precisely because suppression requires the entry to be CONTENT-IDENTICAL (everything but
+// `lastUpdatedEpochMs`) to one sent < windowMs ago: the first write already persisted the same
+// state, marked its key dirty, and ran the cascade. And a first push that FAILS is not lost to
+// the window either — its key stays in `dirtyProgressKeys` until a push is acknowledged, so the
+// dirty-key reconcile path retries it independently of this deduplicator (Codex 2026-08-24).
 internal class RemoteProgressWriteDeduplicator(
     private val windowMs: Long = WATCH_PROGRESS_REMOTE_WRITE_DEDUP_WINDOW_MS,
 ) {

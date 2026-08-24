@@ -222,11 +222,22 @@ object ProviderCredentialSync {
             // shouldSeedProviderCredentials gates on the payload that would actually be sent
             // (post legacy-fill, post blank-filter), not the raw local snapshot — a provider
             // already present remotely never needs re-seeding even if other local slots are blank.
+            // Because the pull now precedes the seed, values the seed just created are NOT in
+            // `rows` — capture them so the merge below can apply them locally this round (the
+            // success bookkeeping consumes the stash, so waiting for the next pull would leave a
+            // freshly migrated credential inert for a whole sync round). Only providers with NO
+            // remote row qualify: a provider that has a row — including a blank tombstone — was
+            // untouched by the insert-if-absent seed, and the tombstone must keep winning.
+            val remoteProviders = rows.mapTo(mutableSetOf()) { it.provider.lowercase() }
+            var seededByProvider = emptyMap<String, String>()
             if (seedPayload.values.isNotEmpty() && shouldSeedProviderCredentials(seedPayload, rows)) {
                 if (stagedByProvider.isNotEmpty()) {
                     log.i { "Seeding ${stagedByProvider.size} legacy blob credential(s) for profile $profileId (insert-if-absent)" }
                 }
                 seedSnapshot(seedPayload)
+                seededByProvider = seedPayload.values
+                    .filter { it.provider.lowercase() !in remoteProviders }
+                    .associate { it.provider to it.value }
             }
             requireCurrentScope(credentialScope)
             val remoteSnapshot = localSnapshot.mergeRemote(rows)
@@ -239,10 +250,14 @@ object ProviderCredentialSync {
             // mirroring the seed's insert-if-absent semantics: a real local credential wins over
             // a staged legacy one (Codex review, 2026-08-08 device-pass session).
             val unsupportedStaged = stagedByProvider.filterKeys { it in BACKEND_UNSUPPORTED_PROVIDERS }
-            val mergedSnapshot = if (unsupportedStaged.isEmpty()) remoteSnapshot else remoteSnapshot.copy(
+            // Both maps void-fill only: just-seeded values (rows pulled pre-seed can't contain
+            // them) and unsupported-provider staged values (no row will ever exist). Unsupported
+            // wins on overlap — its value never rode the seed, so the stash is its only copy.
+            val voidFill = seededByProvider + unsupportedStaged
+            val mergedSnapshot = if (voidFill.isEmpty()) remoteSnapshot else remoteSnapshot.copy(
                 values = remoteSnapshot.values.map { slot ->
-                    val legacy = unsupportedStaged[slot.provider]
-                    if (legacy != null && slot.value.isBlank()) slot.copy(value = legacy) else slot
+                    val fill = voidFill[slot.provider]
+                    if (!fill.isNullOrBlank() && slot.value.isBlank()) slot.copy(value = fill) else slot
                 },
             )
             val applied = mergedSnapshot != localSnapshot

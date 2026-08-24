@@ -66,6 +66,13 @@ private data class PullToken(
  * second remote fetch on every push (ported from upstream `f9c13a9b`). Invalidated implicitly:
  * a push under a stale [PullToken] (account/profile switched mid-flight) falls back to a
  * remote-less merge rather than reading data for the wrong account.
+ *
+ * Knowingly imperfect, upstream-faithful tradeoff (Codex 2026-08-24): the cache is refreshed on
+ * pull and after each successful push, but another client writing an unknown-to-this-client field
+ * BETWEEN this session's pull and a later push gets that field overwritten with the cached value
+ * (the RPC is replace-style). The pre-`f9c13a9b` fetch-before-every-push only shrank that race
+ * window, never closed it, and upstream deliberately traded it for one fewer RPC per push —
+ * diverging here would fork merge semantics from upstream's apps on the same account.
  */
 private data class CachedSharedSettings(
     val token: PullToken,
