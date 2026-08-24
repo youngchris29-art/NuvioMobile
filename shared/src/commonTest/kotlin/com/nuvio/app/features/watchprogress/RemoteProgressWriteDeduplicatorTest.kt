@@ -55,6 +55,24 @@ class RemoteProgressWriteDeduplicatorTest {
         )
     }
 
+    // Fork-only (Codex 2026-08-24 P1): a failed push rolls its key back so identical rewrites
+    // inside the window are no longer suppressed.
+    @Test
+    fun `cleared key sends identical progress inside dedupe window`() {
+        val deduplicator = RemoteProgressWriteDeduplicator(windowMs = 5_000L)
+        val entry = progressEntry(positionMs = 30_000L, updatedAtEpochMs = 1_000L)
+
+        assertTrue(deduplicator.shouldSend(profileId = 1, entry = entry, nowEpochMs = 1_000L))
+        deduplicator.clearEntry(profileId = 1, progressKey = entry.resolvedProgressKey())
+        assertTrue(
+            deduplicator.shouldSend(
+                profileId = 1,
+                entry = entry.copy(lastUpdatedEpochMs = 1_100L),
+                nowEpochMs = 1_100L,
+            ),
+        )
+    }
+
     private fun progressEntry(
         positionMs: Long,
         updatedAtEpochMs: Long,

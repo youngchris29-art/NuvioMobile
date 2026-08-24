@@ -224,11 +224,15 @@ private data class RemoteProgressWrite(
 
 // Upstream-faithful (d0c7bff7): a suppressed write is a complete no-op — local upsert, persist,
 // publish, and the completion cascade are all skipped, not just the network push. That is safe
-// precisely because suppression requires the entry to be CONTENT-IDENTICAL (everything but
+// because suppression requires the entry to be CONTENT-IDENTICAL (everything but
 // `lastUpdatedEpochMs`) to one sent < windowMs ago: the first write already persisted the same
-// state, marked its key dirty, and ran the cascade. And a first push that FAILS is not lost to
-// the window either — its key stays in `dirtyProgressKeys` until a push is acknowledged, so the
-// dirty-key reconcile path retries it independently of this deduplicator (Codex 2026-08-24).
+// state, marked its key dirty, and ran the cascade. The remaining hazard is DELIVERY, not state:
+// entries are recorded here at send time, before the async push resolves, and dirty keys only
+// win pull merges — nothing re-pushes them. So a failed first push would silently absorb an
+// identical terminal flush inside the window (Codex 2026-08-24, P1). Fork divergence from
+// upstream, which has the same latent gap: `pushScrobbleToServer` rolls the key back via
+// [clearEntry] on failure and retries the same entry once — content-identical is the only way
+// the flush was suppressed, so re-delivering the recorded entry delivers the flush too.
 internal class RemoteProgressWriteDeduplicator(
     private val windowMs: Long = WATCH_PROGRESS_REMOTE_WRITE_DEDUP_WINDOW_MS,
 ) {
@@ -258,6 +262,14 @@ internal class RemoteProgressWriteDeduplicator(
             sentAtEpochMs = nowEpochMs,
         )
         true
+    }
+
+    // Roll back one key so an identical rewrite is no longer suppressed — the failure path of
+    // an unacknowledged push (see the class comment).
+    fun clearEntry(profileId: Int, progressKey: String) {
+        synchronized(lock) {
+            recentWrites.remove(RemoteProgressWriteKey(profileId = profileId, progressKey = progressKey))
+        }
     }
 
     fun clear() {
@@ -1482,7 +1494,7 @@ object WatchProgressRepository {
         return storedEntries.resolveIdentityForUpsert(entry)
     }
 
-    private fun pushScrobbleToServer(entry: WatchProgressEntry, profileId: Int) {
+    private fun pushScrobbleToServer(entry: WatchProgressEntry, profileId: Int, isRetry: Boolean = false) {
         val operationGeneration = profileGeneration.takeIf { profileId == currentProfileId }
         accountScopeSnapshot().launch {
             runCatching {
@@ -1494,6 +1506,19 @@ object WatchProgressRepository {
                 )
             }.onFailure { e ->
                 log.e(e) { "Failed to push watch progress scrobble" }
+                // The deduplicator recorded this entry at send time; a failed push must not keep
+                // suppressing identical rewrites (a terminal flush may already have been absorbed
+                // inside the window — see RemoteProgressWriteDeduplicator). Roll the key back and
+                // retry the same entry once; a second failure leaves the key rolled back so any
+                // later identical write pushes again.
+                remoteWriteDeduplicator.clearEntry(
+                    profileId = profileId,
+                    progressKey = entry.resolvedProgressKey(),
+                )
+                if (!isRetry) {
+                    delay(WATCH_PROGRESS_REMOTE_WRITE_DEDUP_WINDOW_MS)
+                    pushScrobbleToServer(entry = entry, profileId = profileId, isRetry = true)
+                }
             }
         }
     }
