@@ -181,7 +181,39 @@ extension View {
     /// Attach to the TITLE TEXT ITSELF, BEFORE its `.padding(.top,)` — the modifier reads the
     /// text's own frame, so padding applied first would shift what it measures.
     func pinnedRowTitleTracking(rowKey: String) -> some View {
-        modifier(PinnedRowTitleTracking(rowKey: rowKey))
+        modifier(PinnedRowTitleTrackingStyleGate(rowKey: rowKey))
+    }
+}
+
+/// P-3 (beta.15): `PinnedRowTitleTracking`'s `slide`/`hasSeeded` `@State` is seeded from the row's
+/// geometry and then only *updates* after the next `onGeometryChange` pass. A Poster Style change
+/// (width/height, landscape toggle, caption visibility) re-lays out every row's cards in the same
+/// frame the state is still holding the PRE-change offset, so the title renders on top of the
+/// artwork for one frame and then heals over 0.22s — the tester-reported flash, prior form
+/// BUG-60/61. This thin wrapper reads `PosterStyle` and gives the inner modifier a fresh `.id()`
+/// whenever the geometry-relevant fields change, so SwiftUI discards `slide`/`hasSeeded` instead
+/// of carrying them across the relayout: the very first frame after a style change then takes
+/// `PinnedRowTitleTracking`'s own pre-seed, draw-time branch (see its comment — correct by
+/// construction), so there is no stale offset to heal away from and no flash to see.
+///
+/// `styleKey` deliberately covers only `width`, `height`, `landscapeCatalogRows`, and `showTitle`
+/// — the fields that change a row's CARD FRAMES (width/height, landscape aspect) or a card's total
+/// height (the caption line `showTitle` adds/removes), all of which move where the row's content —
+/// and therefore the clip edge the title tracks — sits. `cornerRadius` is excluded on purpose: it
+/// only changes the background shape's corner, never any dimension that affects layout, so keying
+/// on it would discard state (losing the eased-slide animation) on changes that don't need it.
+private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
+    let rowKey: String
+    @Environment(\.posterStyle) private var style
+
+    private var styleKey: String {
+        "\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-title\(style.showTitle)"
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(PinnedRowTitleTracking(rowKey: rowKey))
+            .id(styleKey)
     }
 }
 
