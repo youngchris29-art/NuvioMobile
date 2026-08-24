@@ -635,6 +635,14 @@ final class InlineTrailerCardModel: ObservableObject {
             return
         }
 
+        // Codex wave-1 r1 (P1): the `await fetchMeta` above is the first suspension since the
+        // `activeKey == key` guard at the top of `resolve()` — focus can leave the card during it,
+        // in which case `reset()` already cleared `activeKey` and restored `.idle`. Without this
+        // re-check the continuation would still take the single extraction slot and morph the now
+        // UNFOCUSED card to `.expandedStatic`, which nothing ever collapses (`startPlayback`
+        // rejects on the nil `activeKey`, leaving the stale landscape tile in the row).
+        guard activeKey == key else { return }
+
         // Busy: skip rather than queue, and stay neutral on the cache — being second in line says
         // nothing about whether this title has a trailer.
         //
