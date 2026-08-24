@@ -1577,8 +1577,12 @@ final class HomeHeroFocusModel: ObservableObject {
                 // republishes `focusedItem` — `@Published` doesn't check equality — which restarts
                 // `HeroCrossfadeImage`'s `.task(id:)` for the row-focus hero path with nothing to
                 // show for it. Skip the assignment entirely when nothing actually changed.
-                guard mergedBanner != base.banner || mergedLogo != base.logo ||
-                      mergedDescription != base.description_ || mergedGenres != base.genres
+                // Codex wave-3 r2 (P2): compare NORMALIZED against normalized — an absent field is
+                // commonly `""` in addon previews, which `nonBlank` maps to nil; comparing the
+                // merged nil against the raw `""` would read as a change and republish a
+                // semantically identical item, restarting the image task for nothing.
+                guard mergedBanner != self.nonBlank(base.banner) || mergedLogo != self.nonBlank(base.logo) ||
+                      mergedDescription != self.nonBlank(base.description_) || mergedGenres != base.genres
                 else { return }
                 self.focusedItem = MetaPreview(
                     id: base.id,
@@ -2035,7 +2039,11 @@ struct HeroCrossfadeImage: View {
         // only the fallback poster changes (CW adaptation without a poster → catalog card with
         // one) — keyed on the primary alone, a terminally-failed primary never retried the newly
         // available fallback.
-        .task(id: "\(url ?? "")|\(fallbackURL ?? "")") {
+        // Codex wave-3 r2 (P2): `identity` is part of the key — two consecutive items resolving to
+        // the SAME url/fallback pair (shared artwork) must still rerun the task, or
+        // `paintedIdentity` stays owned by the previous item and a later enrichment of the new
+        // item bypasses the same-title fallback suppression.
+        .task(id: "\(identity)|\(url ?? "")|\(fallbackURL ?? "")") {
             // BUG-42: is this the hero's very first paint (nothing on screen yet)? Later swaps keep
             // the "show the cached poster now, upgrade later" rule below — it exists so a stalled
             // metahub fetch can't pin the PREVIOUS title's art. On first paint there is no previous
@@ -2241,7 +2249,15 @@ struct HeroCrossfadeImage: View {
     /// `first` = this task started with nothing on screen (the hero's first paint); `hadArt` on the
     /// log line says whether THIS swap replaced an image (a second commit) or filled a blank.
     private func crossfade(to image: UIImage, kind: String = "swap", first: Bool = false) {
-        guard image !== current else { return }
+        guard image !== current else {
+            // Codex wave-3 r2 (P2): the image is already on screen, but THIS commit may belong to
+            // a different item that resolved to the same bitmap (identity joined the task key
+            // above) — refresh the painted ownership so the suppression state tracks the item
+            // actually being displayed, not the one that first loaded the pixels.
+            paintedIdentity = identity
+            paintedFallbackURL = fallbackURL
+            return
+        }
         paintCount += 1
         if HomeHeroProbe.enabled {
             HomeHeroProbe.log(String(format: "paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d item=%@", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1, identity))
