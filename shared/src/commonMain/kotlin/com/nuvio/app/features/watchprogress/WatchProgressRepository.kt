@@ -231,8 +231,9 @@ private data class RemoteProgressWrite(
 // win pull merges — nothing re-pushes them. So a failed first push would silently absorb an
 // identical terminal flush inside the window (Codex 2026-08-24, P1). Fork divergence from
 // upstream, which has the same latent gap: `pushScrobbleToServer` rolls the key back via
-// [clearEntry] on failure and retries the same entry once — content-identical is the only way
-// the flush was suppressed, so re-delivering the recorded entry delivers the flush too.
+// [clearEntry] on failure and retries once, re-resolving the key's freshest entry at retry time
+// (`latestScrobbleForRetry`) — an absorbed flush was content-identical, so delivering the current
+// state delivers the flush, while progress recorded during the delay is never regressed.
 internal class RemoteProgressWriteDeduplicator(
     private val windowMs: Long = WATCH_PROGRESS_REMOTE_WRITE_DEDUP_WINDOW_MS,
 ) {
@@ -1494,6 +1495,31 @@ object WatchProgressRepository {
         return storedEntries.resolveIdentityForUpsert(entry)
     }
 
+    /**
+     * The freshest entry to re-push for [failedEntry]'s progress key, or null to skip the retry.
+     *
+     * - Active profile: the in-memory entries are authoritative. Key present → retry that entry
+     *   (it is the failed one, or something newer recorded during the delay). Key absent → the
+     *   progress was removed (removals push their own delete) — skip.
+     * - Other profiles: the stored payload is authoritative when it has the key (cross-profile
+     *   scrobbles with `persist` land there; there is no cross-profile delete path to respect).
+     *   A non-persisted cross-profile scrobble leaves no local trace, so the captured entry is
+     *   all there is — retry it.
+     */
+    private fun latestScrobbleForRetry(profileId: Int, failedEntry: WatchProgressEntry): WatchProgressEntry? {
+        val progressKey = failedEntry.resolvedProgressKey()
+        if (profileId == currentProfileId) {
+            return localEntriesSnapshot().firstOrNull { it.resolvedProgressKey() == progressKey }
+        }
+        val payload = WatchProgressStorage.loadPayload(profileId).orEmpty().trim()
+        val storedMatch = if (payload.isEmpty()) {
+            null
+        } else {
+            WatchProgressCodec.decodePayload(payload).entries.firstOrNull { it.resolvedProgressKey() == progressKey }
+        }
+        return storedMatch?.takeIf { it.lastUpdatedEpochMs >= failedEntry.lastUpdatedEpochMs } ?: failedEntry
+    }
+
     private fun pushScrobbleToServer(entry: WatchProgressEntry, profileId: Int, isRetry: Boolean = false) {
         val operationGeneration = profileGeneration.takeIf { profileId == currentProfileId }
         accountScopeSnapshot().launch {
@@ -1517,7 +1543,15 @@ object WatchProgressRepository {
                 )
                 if (!isRetry) {
                     delay(WATCH_PROGRESS_REMOTE_WRITE_DEDUP_WINDOW_MS)
-                    pushScrobbleToServer(entry = entry, profileId = profileId, isRetry = true)
+                    // Never re-send the captured snapshot blindly: playback may have recorded (and
+                    // even successfully pushed) NEWER progress for this key during the delay, and
+                    // a stale re-push would regress the backend. Retry whatever is authoritative
+                    // for the key NOW; a null means the entry was removed locally — retrying
+                    // would resurrect deleted progress remotely, so drop the retry instead.
+                    val latestEntry = latestScrobbleForRetry(profileId = profileId, failedEntry = entry)
+                    if (latestEntry != null) {
+                        pushScrobbleToServer(entry = latestEntry, profileId = profileId, isRetry = true)
+                    }
                 }
             }
         }
