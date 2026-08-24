@@ -1563,6 +1563,23 @@ final class HomeHeroFocusModel: ObservableObject {
                 // focused-row hero must not bypass the user's TMDB category preferences.
                 let useArtwork = settings.useArtwork
                 let useBasicInfo = settings.useBasicInfo
+                let mergedBanner = self.nonBlank(base.banner) ?? (useArtwork ? enrichment.backdrop : nil)
+                let mergedLogo = self.nonBlank(base.logo) ?? (useArtwork ? enrichment.logo : nil)
+                let mergedDescription = self.nonBlank(base.description_) ?? (useBasicInfo ? enrichment.description_ : nil)
+                let mergedGenres = base.genres.isEmpty && useBasicInfo ? enrichment.genres : base.genres
+                // H-1C (beta.15): `enrichment.hasContent()` above only says the RESPONSE carried
+                // something — not that the merge just computed actually ADDED anything to THIS
+                // base. Every field it could fill may already be non-blank (the gap-fill guard at
+                // the top of this function already required BOTH description and banner to be
+                // present for it to have run at all — description alone, or banner alone, still
+                // gets here with nothing left to fill), or gating (useArtwork/useBasicInfo off)
+                // may zero out everything enrichment offered. A same-content reassignment still
+                // republishes `focusedItem` — `@Published` doesn't check equality — which restarts
+                // `HeroCrossfadeImage`'s `.task(id:)` for the row-focus hero path with nothing to
+                // show for it. Skip the assignment entirely when nothing actually changed.
+                guard mergedBanner != base.banner || mergedLogo != base.logo ||
+                      mergedDescription != base.description_ || mergedGenres != base.genres
+                else { return }
                 self.focusedItem = MetaPreview(
                     id: base.id,
                     type: base.type,
@@ -1572,16 +1589,16 @@ final class HomeHeroFocusModel: ObservableObject {
                     // reading is the exact double commit this fix removes (see the doc comment).
                     name: base.name,
                     poster: base.poster,
-                    banner: self.nonBlank(base.banner) ?? (useArtwork ? enrichment.backdrop : nil),
-                    logo: self.nonBlank(base.logo) ?? (useArtwork ? enrichment.logo : nil),
+                    banner: mergedBanner,
+                    logo: mergedLogo,
                     posterShape: base.posterShape,
-                    description: self.nonBlank(base.description_) ?? (useBasicInfo ? enrichment.description_ : nil),
+                    description: mergedDescription,
                     releaseInfo: base.releaseInfo,
                     rawReleaseDate: base.rawReleaseDate,
                     popularity: base.popularity,
                     voteCount: base.voteCount,
                     imdbRating: base.imdbRating,
-                    genres: base.genres.isEmpty && useBasicInfo ? enrichment.genres : base.genres
+                    genres: mergedGenres
                 )
             }
         }
@@ -1975,6 +1992,12 @@ struct HeroCrossfadeImage: View {
     /// the `@State`, so only the first task on a view that has painted nothing yet counts.
     @State private var paintCount = 0
     @State private var didLogSeededPaint = false
+    /// H-1C (beta.15): which item's identity the currently-committed `current` image belongs to —
+    /// set in `crossfade(to:)`, cleared in `fadeToEmpty()`. This view is never re-identified (see
+    /// the type doc), so it lives across many different items over time; comparing a task run's
+    /// `identity` against this tells a same-title URL upgrade (TMDB enrichment rewriting THIS
+    /// title's banner mid-display) apart from a genuine title change.
+    @State private var paintedIdentity: String?
 
     var body: some View {
         ZStack {
@@ -2007,6 +2030,15 @@ struct HeroCrossfadeImage: View {
             // over it" the reporter filmed. So on first paint the poster waits for the primary up
             // to `firstPaintFallbackDeadline` before it is allowed to show.
             let firstPaint = current == nil && previous == nil
+            // H-1C: the SAME title is already on screen with correct art, and this task run is
+            // only here because enrichment (or any other source) rewrote a URL for that same
+            // title — the exact shape that produced the "poster paints over already-correct
+            // backdrop" bug. Keyed STRICTLY on identity, never on "did the URL change": a genuine
+            // title change must still run the full stale-art-protection ladder below unchanged —
+            // keying on URL instead would reintroduce the mismatched-art bug that ladder prevents.
+            // `current != nil` also rules this out on true first paint (where there is nothing to
+            // protect yet), matching `firstPaint`'s own current==nil check.
+            let isSameTitleUpgrade = (identity == paintedIdentity) && current != nil
             if !firstPaint, paintCount == 0, !didLogSeededPaint, HomeHeroProbe.enabled {
                 didLogSeededPaint = true
                 HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0 item=%@", HomeHeroProbe.sinceLaunchMs, identity))
@@ -2037,6 +2069,12 @@ struct HeroCrossfadeImage: View {
             if let resolvedFallback, let fallbackHit = ArtworkStore.cached(resolvedFallback) {
                 if firstPaint {
                     heldFallback = fallbackHit
+                } else if isSameTitleUpgrade {
+                    // H-1C: never repaint the poster over this same title's already-correct art —
+                    // only `primary`/`cachedPrimary` may commit while an upgrade is in flight.
+                    if HomeHeroProbe.enabled {
+                        HomeHeroProbe.log(String(format: "paint suppressed kind=sameTitleFallback sinceLaunch=%dms item=%@", HomeHeroProbe.sinceLaunchMs, identity))
+                    }
                 } else {
                     crossfade(to: fallbackHit, kind: "fallbackCached", first: false)
                     showedArt = true
@@ -2099,9 +2137,17 @@ struct HeroCrossfadeImage: View {
                         guard let image else { continue }
                         if primaryLanded { continue }
                         if deadlinePassed {
-                            showedArt = true
-                            if firstPaint { firstPaintCommittedWithFallback = true }
-                            crossfade(to: image, kind: "fallbackFetched", first: firstPaint)
+                            if isSameTitleUpgrade {
+                                // H-1C: same suppression as the immediate branch above — the
+                                // fetched poster must not repaint over this same title's art.
+                                if HomeHeroProbe.enabled {
+                                    HomeHeroProbe.log(String(format: "paint suppressed kind=sameTitleFallback sinceLaunch=%dms item=%@", HomeHeroProbe.sinceLaunchMs, identity))
+                                }
+                            } else {
+                                showedArt = true
+                                if firstPaint { firstPaintCommittedWithFallback = true }
+                                crossfade(to: image, kind: "fallbackFetched", first: firstPaint)
+                            }
                         } else {
                             heldFallback = image
                             if !graceArmed {
@@ -2115,9 +2161,17 @@ struct HeroCrossfadeImage: View {
                     case .deadline:
                         deadlinePassed = true
                         if !primaryLanded, let held = heldFallback {
-                            showedArt = true
-                            if firstPaint { firstPaintCommittedWithFallback = true }
-                            crossfade(to: held, kind: "fallbackHeld", first: firstPaint)
+                            if isSameTitleUpgrade {
+                                // H-1C: same suppression again — the held poster must not repaint
+                                // over this same title's art either.
+                                if HomeHeroProbe.enabled {
+                                    HomeHeroProbe.log(String(format: "paint suppressed kind=sameTitleFallback sinceLaunch=%dms item=%@", HomeHeroProbe.sinceLaunchMs, identity))
+                                }
+                            } else {
+                                showedArt = true
+                                if firstPaint { firstPaintCommittedWithFallback = true }
+                                crossfade(to: held, kind: "fallbackHeld", first: firstPaint)
+                            }
                         }
                     }
                 }
@@ -2126,6 +2180,17 @@ struct HeroCrossfadeImage: View {
             // the no-URL case — stale art under a mismatched title is worse than the flat
             // background.
             guard !Task.isCancelled, !showedArt else { return }
+            if isSameTitleUpgrade {
+                // H-1C: the SAME title is already on screen with good art — the whole point of
+                // suppressing the fallback repaints above is defeated if a failed upgrade then
+                // fades that good art to the flat background anyway. Keep it. A genuine title
+                // change (isSameTitleUpgrade false) still falls through to fadeToEmpty() below,
+                // unchanged.
+                if HomeHeroProbe.enabled {
+                    HomeHeroProbe.log(String(format: "paint suppressed kind=sameTitleFadeToEmpty sinceLaunch=%dms item=%@", HomeHeroProbe.sinceLaunchMs, identity))
+                }
+                return
+            }
             fadeToEmpty()
         }
     }
@@ -2136,6 +2201,9 @@ struct HeroCrossfadeImage: View {
         guard current != nil || previous != nil else { return }
         previous = current
         current = nil
+        // H-1C: nothing is committed any more — the next task run must not treat whatever item
+        // this was as a same-title upgrade just because its identity string is still sitting here.
+        paintedIdentity = nil
         if reduceMotion || previous == nil {
             previous = nil
             previousOpacity = 0
@@ -2162,6 +2230,10 @@ struct HeroCrossfadeImage: View {
         }
         previous = current
         current = image
+        // H-1C: record which item this committed image belongs to — the same-title-upgrade check
+        // near the top of the `.task` compares its `identity` against this on the NEXT task run
+        // for this (persistent, never-re-identified) view instance.
+        paintedIdentity = identity
         if reduceMotion || previous == nil {
             previous = nil
             previousOpacity = 0
