@@ -37,6 +37,22 @@ enum TrailerProbe {
         return value
     }()
 
+    /// `debug.trailerForceNoTrailer` (P-1d) — makes every title report "no trailer", so the
+    /// never-morph-on-speculation fix (a focused poster with nothing to play must never bloom
+    /// into a landscape tile, even for ~1s) is testable on sim and device without hunting for a
+    /// fixture whose TMDB listing happens to be empty. Read once, logged once — same pairing rule
+    /// as `smokeVideoId` above: honored ONLY when `enabled` is also true, so a stray persisted
+    /// value can't silently kill every trailer on a release sideload. The gating is baked into
+    /// this property (it reads `false` whenever `enabled` is off) rather than left for call sites
+    /// to re-check, since every read of this knob is an OR'd boolean condition, not a value with
+    /// its own "present but not honored" log line to make.
+    nonisolated static let forceNoTrailer: Bool = {
+        let raw = UserDefaults.standard.bool(forKey: "debug.trailerForceNoTrailer")
+        guard raw else { return false }
+        NSLog("[TrailerPipeline] forceNoTrailer present=YES honored=%@", enabled ? "YES" : "NO (debug.trailerProbe off)")
+        return enabled
+    }()
+
     /// `scheme://host` only — the log lines that carry a playback URL (attach/teardown) must
     /// never leak a full googlevideo URL (query strings carry auth tokens) into `log show` output
     /// that a tester might paste into a bug report.
