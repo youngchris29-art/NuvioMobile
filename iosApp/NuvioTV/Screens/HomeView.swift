@@ -1169,12 +1169,17 @@ struct HomeView: View {
     /// BUG-38 round three: adapts a collection folder to the hero's `MetaPreview` shape so a
     /// focused folder tile can drive the hero with the folder's OWN artwork — `banner` is the
     /// configured `heroBackdropUrl`, `logo` the `titleLogoUrl` (both read by the existing
-    /// `heroBackdropURL(for:)` / `heroLogoURL(for:)` chains with no special casing), `poster` the
-    /// cover (the backdrop chain's last fallback), and `releaseInfo` the collection's title so
-    /// the hero's meta line reads e.g. "Genres". `type` is the `collectionHeroType` sentinel the
-    /// trailer, enrichment and CTA gates key on. Nil when the folder carries neither a backdrop
-    /// nor a logo — such a folder has nothing of its own to show, so focusing it leaves the hero
-    /// alone rather than painting a poster-shaped cover across the backdrop.
+    /// `heroBackdropURL(for:)` / `heroLogoURL(for:)` chains with no special casing), and `poster`
+    /// the cover (the backdrop chain's last fallback). `type` is the `collectionHeroType`
+    /// sentinel the trailer, enrichment and CTA gates key on. `releaseInfo` is deliberately nil —
+    /// beta.14.5 shipped the parent collection's title ("Genres", "Services de Streaming") here
+    /// as the hero's meta line, but a tester flagged it 2026-08-22 as an unwanted tvOS-only
+    /// caption with no mobile counterpart, so H-2 removes it: the folder hero is logo-only.
+    /// `genres` is already empty for a folder preview, so `metaLine` resolves to "" and the
+    /// `Theme.Size.heroMetaSlotHeight`-framed slot at the call sites just holds empty — no layout
+    /// jump. Nil when the folder carries neither a backdrop nor a logo — such a folder has
+    /// nothing of its own to show, so focusing it leaves the hero alone rather than painting a
+    /// poster-shaped cover across the backdrop.
     private func folderHeroPreview(collection: NuvioCollection, folder: CollectionFolder) -> MetaPreview? {
         let backdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         let logo = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1189,7 +1194,7 @@ struct HomeView: View {
             logo: (logo?.isEmpty ?? true) ? nil : logo,
             posterShape: .poster,
             description: nil,
-            releaseInfo: collection.title,
+            releaseInfo: nil,
             rawReleaseDate: nil,
             popularity: nil,
             voteCount: nil,

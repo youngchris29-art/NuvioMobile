@@ -423,7 +423,6 @@ final class FolderDetailViewModel: ObservableObject {
     /// trimming rule the tile applies to every payload URL. The folder's `heroBackdropUrl` is
     /// the HOME hero's business (round three), not this page's.
     @Published private(set) var titleLogoUrl: String?
-    @Published private(set) var collectionTitle = ""
     @Published private(set) var tabs: [FolderTab] = []
     @Published private(set) var selectedTabIndex = 0
     @Published private(set) var items: [MetaPreview] = []
@@ -453,7 +452,6 @@ final class FolderDetailViewModel: ObservableObject {
                 self.folderTitle = folder.title
                 self.titleLogoUrl = folder.titleLogoUrl.nonBlankTrimmed
             }
-            self.collectionTitle = state.collectionTitle
             self.tabs = state.tabs
             self.selectedTabIndex = Int(state.selectedTabIndex)
             self.items = state.selectedTab?.items ?? []
@@ -572,14 +570,13 @@ struct FolderDetailView: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                     HStack(alignment: .center, spacing: Theme.Spacing.lg) {
-                        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                            if !model.collectionTitle.isEmpty {
-                                Text(model.collectionTitle)
-                                    .font(Theme.Font.caption)
-                                    .foregroundStyle(Theme.Palette.textSecondary)
-                            }
-                            FolderHeroTitle(title: model.folderTitle, logoUrl: model.titleLogoUrl)
-                        }
+                        // H-2: the parent collection's title ("Genres", "Services de
+                        // Streaming") used to render as a caption above this logo — a
+                        // tvOS-only invention (mobile's `hideTitle` is tile-scoped, not this)
+                        // that a tester flagged 2026-08-22. Removed unconditionally; the
+                        // folder page header is logo-only now, so the wrapping VStack that
+                        // once held both is gone too.
+                        FolderHeroTitle(title: model.folderTitle, logoUrl: model.titleLogoUrl)
                         Spacer()
                         // On-device TMDB Discover filter editing for the selected tmdb tab
                         // (upstream 0fc4616b's exclusion filters + the existing include fields).
