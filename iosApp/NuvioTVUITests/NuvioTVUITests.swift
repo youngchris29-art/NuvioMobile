@@ -1729,12 +1729,24 @@ final class NuvioTVUITests: XCTestCase {
                     guard let range = line.range(of: "item=") else { return nil }
                     return String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
                 }
+                // Device pass 2026-08-24 (Living Room): a fallbackCached→primary pair for the
+                // SAME item is not automatically a bug — it's also the intended sequence for a
+                // title entering view for the FIRST time (poster cache hit shown provisionally
+                // while the network backdrop lands, HeroCrossfadeImage's documented "show it NOW
+                // as provisional art, then upgrade" ladder). That legitimate case paints onto
+                // blank/previous-title art, so its fallbackCached line reads `hadArt=0`. The bug
+                // this oracle actually exists to catch — a stale poster briefly overwriting art
+                // that was ALREADY correct for this same title — reads `hadArt=1` on that same
+                // line, because "hadArt" is computed from `current` at the moment of the swap and
+                // a same-title upgrade always has `current` already showing this title's art.
+                // Require hadArt=1 or the check has been rejecting normal first-time paints.
                 for i in 0..<max(0, lines.count - 1) {
                     let line = lines[i]
-                    guard line.contains("paint kind=fallbackCached"), let itemA = item(from: line) else { continue }
+                    guard line.contains("paint kind=fallbackCached"), line.contains("hadArt=1"),
+                          let itemA = item(from: line) else { continue }
                     let next = lines[i + 1]
                     if next.contains("paint kind=primary"), let itemB = item(from: next), itemA == itemB {
-                        XCTFail("launch \(launch): fallbackCached paint immediately followed by a primary paint for the same item (\(itemA)) — stale-then-real flash. lines[\(i)]=\(line) lines[\(i + 1)]=\(next)")
+                        XCTFail("launch \(launch): fallbackCached paint (hadArt=1, overwrote existing good art) immediately followed by a primary paint for the same item (\(itemA)) — stale-then-real flash. lines[\(i)]=\(line) lines[\(i + 1)]=\(next)")
                     }
                 }
             }
