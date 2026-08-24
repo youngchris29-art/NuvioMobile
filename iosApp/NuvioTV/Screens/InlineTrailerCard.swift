@@ -511,7 +511,7 @@ final class InlineTrailerCardModel: ObservableObject {
             if let token = TrailerLocalHLS.token(inPlaybackURL: url), !TrailerLocalHLS.shared.hasToken(token) {
                 if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolvedStaleToken key=%@", key) }
                 TrailerResolutionCache.shared.invalidate(key: key)
-                beginResolution(item, key: key)
+                startResolution(item, key: key)
                 return
             }
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolved key=%@", key) }
@@ -532,11 +532,12 @@ final class InlineTrailerCardModel: ObservableObject {
         case nil:
             // P-1a: `MetaDetailsRepository.peek()` is usually cold here — `DetailViewModel.stop()`
             // clears its cache the instant a Detail visit ends, so a genuinely fresh card still
-            // falls through to `beginResolution`'s async `resolve()` below, which morphs before the
-            // fetch lands (that cold-meta case is what P-1b's hold-the-morph change covers). This
-            // synchronous check only helps the WARM cases — a TTL-expiry re-flash on a title whose
-            // meta is still cached, or re-dwelling a title just visited in Detail — both can be
-            // resolved-or-refused before the card's layout changes at all.
+            // falls through to `startResolution`'s async `resolve()` below, which (as of P-1b) no
+            // longer morphs until `resolve()` itself confirms a trailer exists — the cold-meta case
+            // is covered by that hold, not by this peek. This synchronous check only helps the WARM
+            // cases — a TTL-expiry re-flash on a title whose meta is still cached, or re-dwelling a
+            // title just visited in Detail — both can be resolved-or-refused right here, with zero
+            // async hop at all.
             if let meta = MetaDetailsRepository.shared.peek(type: item.type, id: item.id) {
                 let language = TmdbSettingsRepository.shared.snapshot().language
                 let hasTrailer = !meta.trailers.isEmpty
@@ -551,22 +552,31 @@ final class InlineTrailerCardModel: ObservableObject {
                 }
             }
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=miss key=%@", key) }
-            beginResolution(item, key: key)
+            startResolution(item, key: key)
         }
     }
 
-    /// Expand onto static landscape art and start the resolve pipeline for `key`. Shared by the
-    /// cache-miss path and B3's stale-token path, which are the same thing from here on.
-    private func beginResolution(_ item: MetaPreview, key: String) {
+    /// Arms the resolve pipeline for `key` — it does NOT expand the card any more (P-1b: that used
+    /// to happen here, immediately, and then snap back ~1s later on any title with nothing to
+    /// play). The card stays exactly where the dwell timer left it, `.dwelling`, which still holds
+    /// the FEAT-25 hero "attempt in progress" gate (see the comment in `expand()` above) — only
+    /// `resolve()` promotes it to `.expandedStatic`, and only once it has proof there's something
+    /// to show: a selectable trailer AND a held extraction ticket (P-1c). Shared by the cache-miss
+    /// path and B3's stale-token path, which are the same thing from here on.
+    private func startResolution(_ item: MetaPreview, key: String) {
         activeKey = key
-        setPhase(.expandedStatic)
         guard resolvingKey != key else { return }
         resolvingKey = key
         Task { [weak self] in await self?.resolve(item, key: key) }
     }
 
-    /// Resolution concluded that there is nothing to play: collapse instead of sitting on static
-    /// landscape art (device feedback — an expanded card that never plays reads as a stuck card).
+    /// Collapses the card — usually a silent no-op, not "resolution concluded there's nothing to
+    /// play": since P-1b, most callers (no meta, language changed pre-fetch, no trailer listed,
+    /// refused extraction slot) fire while the card is still `.dwelling`, before it has ever
+    /// morphed, so `collapse()` just resets bookkeeping and re-asserts `.idle` on a card that was
+    /// already reading as idle. The two callers that DO undo a real `.expandedStatic` morph are the
+    /// ones after `resolve()`'s extraction guard: a language change mid-extraction, and extraction
+    /// producing nothing playable (`notPlayable`, rare — ≤1× per title per 20 min).
     private func abandonExpansion(key: String) {
         guard activeKey == key else { return }
         collapse()
@@ -637,6 +647,12 @@ final class InlineTrailerCardModel: ObservableObject {
             abandonExpansion(key: key)
             return
         }
+        // P-1b: THIS is where the card actually becomes visible as a landscape tile — only now,
+        // with a selectable trailer confirmed (the guard above) and the single extraction slot
+        // actually held. Everything before this point in `resolve()` ran against `.dwelling`
+        // (armed by `startResolution`, never touched by it); a title with nothing to play, or a
+        // refused slot, never puts anything on screen to undo.
+        setPhase(.expandedStatic)
         let source: TrailerPlaybackSource?
         // BUG-46/B4: the latch is released by a `defer` in its OWN scope, so no future early return
         // between here and the end of the extraction can strand it (a stranded latch means nothing
