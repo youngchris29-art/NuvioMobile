@@ -97,7 +97,11 @@ struct AboutSettingsPane: View {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(TabBarProbe.tabNames, id: \.self) { tab in
                                 let state = TabBarProbe.scrollStates[tab] ?? TabBarProbe.ScrollState()
-                                Text("\(tab) fires=\(state.fireCount) last=\(state.lastFireMs)ms off=\(Int(state.lastOffset.rounded()))")
+                                // T1: y/i/r (offsetY / insetTop / residual) replace the old single
+                                // "off=" reading — the sign-fixed residual alone can't tell a
+                                // device pass whether the bar was expanded or minimized when it
+                                // fired, and that's exactly the distinction BUG-66 turns on.
+                                Text("\(tab) f=\(state.fireCount) t=\(state.lastFireMs) y=\(Int(state.lastOffsetY.rounded())) i=\(Int(state.lastInsetTop.rounded())) r=\(Int(state.lastResidual.rounded()))")
                                     .font(.system(size: 20, design: .monospaced))
                                     .foregroundStyle(Theme.Palette.textSecondary)
                                     .lineLimit(1)

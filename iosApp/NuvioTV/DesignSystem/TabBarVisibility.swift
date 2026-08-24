@@ -121,11 +121,29 @@ extension EnvironmentValues {
     }
 }
 
+/// One `.onScrollGeometryChange` sample, carried as a small `Equatable` struct rather than a
+/// single pre-combined `CGFloat`. Two reasons: the BUG-30/66/62 diagnostics pane needs `y` and
+/// `i` separately to be interpretable (see `TabBarProbe.ScrollState`), and observing the inset
+/// (not just the offset) means this callback also fires on the system bar's own minimize/expand
+/// transitions — timestamping exactly the BUG-66 moment the bar's resolved visibility changes.
+/// Hysteresis is unaffected by those extra fires: `residual` is inset-invariant at rest, so a
+/// same-position re-fire from a bar transition never crosses either arm on its own.
+private struct TabBarScrollSample: Equatable {
+    var offsetY: CGFloat
+    var insetTop: CGFloat
+    /// T1 sign fix: 0 at a scroll view's true top, matching the in-tree formula this residual
+    /// was always supposed to share (`HomeView.swift`'s probe, ~L1276: `contentOffset.y +
+    /// contentInsets.top`). The OLD formula here (`offset.y - insets.top`) was a sign error —
+    /// at the true top `contentOffset.y == -contentInsets.top`, so the old expression evaluated
+    /// to −2×insetTop instead of 0, and every threshold below it was tuned against that wrong
+    /// number.
+    var residual: CGFloat { offsetY + insetTop }
+}
+
 /// Reports a tab root's main scroll view position to the shared `TabBarVisibility`, with
-/// hysteresis so the bar doesn't flicker right at one boundary: hide once scrolled comfortably
-/// past the top (> 60pt), only show again once scrolled almost all the way back (< 8pt). `hidesBar`
-/// mirrors the last state actually reported, so `setScrolled` is only called on a real crossing —
-/// not once per scroll tick.
+/// hysteresis so the bar doesn't flicker right at one boundary. `hidesBar` mirrors the last state
+/// actually reported, so `setScrolled` is only called on a real crossing — not once per scroll
+/// tick.
 private struct TabBarScrollAutoHide: ViewModifier {
     @Environment(\.tabBarVisibility) private var tabBarVisibility
     @State private var hidesBar = false
@@ -135,16 +153,37 @@ private struct TabBarScrollAutoHide: ViewModifier {
     /// Menu-to-top shortcut off the same hysteresis the bar uses, so the two never disagree).
     var isScrolledDown: Binding<Bool>?
 
+    /// T1: hysteresis arms restated in the corrected (sign-fixed) residual frame. Under the OLD
+    /// mis-signed `offset.y - insets.top` formula, the literal thresholds (60 / 8) worked out to
+    /// EFFECTIVE arms that were inset-dependent — the same literals meant different things
+    /// depending on whether the system bar was expanded or minimized at the moment of the fire:
+    ///   expanded bar (insetTop≈157): hide fired past residual>374, show fired below residual<322
+    ///   minimized bar (insetTop≈76):  hide fired past residual>212, show fired below residual<160
+    /// (derived by adding 2×insetTop to each old literal — the sign error's exact offset).
+    /// `hideArm` = 300 sits between the two historical hide points, so it engages after roughly
+    /// one row scrolled — the same felt behavior as today. `showArm` = 160 is the historical
+    /// MINIMIZED-bar show point, chosen over the expanded-bar one because it is also comfortably
+    /// above both the documented 59–67pt rest-short-of-top (HomeView.swift ~L794-806, BUG-30) and
+    /// the pinned hero's headroom — LOAD-BEARING: if the show arm sat below that rest-short
+    /// residual, `isScrolledDown` would stay latched even at the visual top, and BUG-27's
+    /// Menu-to-top handler (HomeView.swift ~L559-608) would never disarm — Menu could never exit
+    /// the app from Home. If a device pass finds 160 too eager, the conservative fallback pair is
+    /// the expanded-bar values above (374 / 322), which reproduce today's shipped behavior
+    /// byte-for-byte.
+    private static let hideArm: CGFloat = 300
+    private static let showArm: CGFloat = 160
+
     func body(content: Content) -> some View {
-        content.onScrollGeometryChange(for: CGFloat.self, of: { geo in
-            geo.contentOffset.y - geo.contentInsets.top
-        }, action: { _, offset in
-            TabBarProbe.recordScrollFire(tab: tab, offset: offset)
-            if !hidesBar, offset > 60 {
+        content.onScrollGeometryChange(for: TabBarScrollSample.self, of: { geo in
+            TabBarScrollSample(offsetY: geo.contentOffset.y, insetTop: geo.contentInsets.top)
+        }, action: { _, sample in
+            TabBarProbe.recordScrollFire(tab: tab, offsetY: sample.offsetY, insetTop: sample.insetTop)
+            let residual = sample.residual
+            if !hidesBar, residual > Self.hideArm {
                 hidesBar = true
                 tabBarVisibility.setScrolled(true)
                 isScrolledDown?.wrappedValue = true
-            } else if hidesBar, offset < 8 {
+            } else if hidesBar, residual < Self.showArm {
                 hidesBar = false
                 tabBarVisibility.setScrolled(false)
                 isScrolledDown?.wrappedValue = false
@@ -184,7 +223,12 @@ enum TabBarProbe {
     struct ScrollState {
         var fireCount = 0
         var lastFireMs = 0
-        var lastOffset: CGFloat = 0
+        /// T1: `y`/`i` kept separate (not just the combined residual) so the About-pane readout
+        /// can show all three — a tester's photo of `y=… i=… r=…` is what lets a device pass
+        /// distinguish "the bar never fired" from "it fired but the residual math is wrong".
+        var lastOffsetY: CGFloat = 0
+        var lastInsetTop: CGFloat = 0
+        var lastResidual: CGFloat = 0
     }
 
     private(set) static var scrollStates: [String: ScrollState] = [:]
@@ -192,12 +236,14 @@ enum TabBarProbe {
     /// hypothesis is stated in terms of "N push/pop cycles", not a raw event tally.
     private(set) static var pushPopCycles = 0
 
-    static func recordScrollFire(tab: String, offset: CGFloat) {
+    static func recordScrollFire(tab: String, offsetY: CGFloat, insetTop: CGFloat) {
         guard enabled else { return }
         var state = scrollStates[tab, default: ScrollState()]
         state.fireCount += 1
         state.lastFireMs = HomeHeroProbe.sinceLaunchMs
-        state.lastOffset = offset
+        state.lastOffsetY = offsetY
+        state.lastInsetTop = insetTop
+        state.lastResidual = offsetY + insetTop
         scrollStates[tab] = state
     }
 
