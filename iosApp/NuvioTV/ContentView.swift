@@ -130,6 +130,11 @@ struct ContentView: View {
                 // stop, not `release()`: it must drop regardless of who still holds it, and the
                 // unmounting HomeView's own `release()` is absorbed by the model.
                 home.stop()
+                // Periodic activity polling is profile-scoped too, and "switch profile" keeps the
+                // selected profile active in the repository — without this the loop started at
+                // profile entry keeps pulling every 15 min while the picker is up. Idempotent
+                // with the sign-out path's cancelAccountSync (Codex 2026-08-24).
+                SyncManager.shared.stopPeriodicNuvioSyncPull()
             }
         }
         .onOpenURL { url in
