@@ -1828,7 +1828,15 @@ struct HomeHeroBackdrop: View {
     /// the gap before one resolves is the still backdrop too. Never a spinner.
     private var heroSurface: some View {
         ZStack {
-            HeroCrossfadeImage(url: heroBackdropURL(for: item), fallbackURL: item.poster)
+            HeroCrossfadeImage(
+                url: heroBackdropURL(for: item),
+                fallbackURL: item.poster,
+                // H-1C: `type:id` uniquely identifies the displayed item, including a collection
+                // folder's hero (`isCollectionHero`/`collectionHeroType` above) — a folder's type
+                // is the namespaced "nuvio.folder" and its id is a synthetic `nuvio-folder://…`
+                // per-folder, so this pair is just as unique for folder heroes as for real titles.
+                identity: "\(item.type):\(item.id)"
+            )
 
             if let url = trailerModel.playingURL {
                 TrailerHeroPlayer(
@@ -1864,24 +1872,63 @@ enum HomeHeroProbe {
     nonisolated static var sinceLaunchMs: Int { Int(Date().timeIntervalSince(t0) * 1000) }
 
     nonisolated static let linesKey = "debug.homeHeroProbe.lines"
-    nonisolated static let maxLines = 24
-    nonisolated(unsafe) private static var didResetThisLaunch = false
+    /// H-1A (beta.15): the buffer used to be a flat 24-line ring, front-evicted — so on a busy
+    /// cold launch (addons syncing, rows filling in, hero enrichment landing) the LAUNCH HEAD —
+    /// exactly the diagnostically valuable part: init, first publish, first paint — was the first
+    /// thing evicted once logging ran past 24 lines, and a tester's photo of the About pane showed
+    /// only recent noise with the actual double-paint evidence already gone. Now HEAD-PRESERVING:
+    /// the first `headMaxLines` lines are captured once and never evicted; only the TAIL rolls,
+    /// keeping the most recent `tailMaxLines`. A single elision marker line separates the two once
+    /// eviction has actually started (never shown on a launch short enough that nothing was
+    /// dropped). Max displayed lines: `headMaxLines` + 1 marker + `tailMaxLines` = 49.
+    nonisolated static let headMaxLines = 16
+    nonisolated static let tailMaxLines = 32
+    nonisolated(unsafe) private static var headLines: [String] = []
+    nonisolated(unsafe) private static var tailLines: [String] = []
+    /// Lines dropped from the tail stream once `tailLines` is full. Stays 0 (no marker rendered)
+    /// until eviction genuinely begins.
+    nonisolated(unsafe) private static var elidedTailCount = 0
     nonisolated private static let bufferLock = NSLock()
 
+    /// H-1A: monotonic per-process instance counter, guarded by `bufferLock` alongside the ring
+    /// buffer it stamps lines for. `HomeViewModel`/`HeroCrossfadeImage` each mint one id at init
+    /// and stamp it (`vm=<n>` / `item=<id>`) into every probe line they log, so a photographed
+    /// pane can tell two overlapping instances apart instead of interleaving their lines under one
+    /// identity — exactly the ambiguity a sync-driven theme remount (see `AppThemeModel`) produces.
+    nonisolated(unsafe) private static var nextInstanceId = 0
+    nonisolated static func newInstanceId() -> Int {
+        bufferLock.lock()
+        defer { bufferLock.unlock() }
+        nextInstanceId += 1
+        return nextInstanceId
+    }
+
     /// NSLogs `line` (the greppable `[HomeHero]` console contract is unchanged) and appends it to
-    /// the persisted ring buffer. The buffer resets on the first record of each launch, so the
-    /// About pane always shows exactly the current launch's lines — the cold-launch capture
-    /// BUG-42 has been waiting for.
+    /// the persisted, head-preserving ring buffer. `headLines`/`tailLines` are fresh statics for
+    /// this process, so the very first call of a launch already starts the buffer clean — no
+    /// separate "did we reset yet" flag needed (the old flat-ring implementation carried one; it's
+    /// moot once the head is captured once and frozen rather than continuously re-derived from
+    /// whatever UserDefaults happened to hold from the previous launch).
     nonisolated static func log(_ line: String) {
         NSLog("[HomeHero] %@", line)
         bufferLock.lock()
         defer { bufferLock.unlock() }
-        let defaults = UserDefaults.standard
-        var lines = didResetThisLaunch ? (defaults.stringArray(forKey: linesKey) ?? []) : []
-        didResetThisLaunch = true
-        lines.append("\(sinceLaunchMs)ms \(line)")
-        if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
-        defaults.set(lines, forKey: linesKey)
+        let stamped = "\(sinceLaunchMs)ms \(line)"
+        if headLines.count < headMaxLines {
+            headLines.append(stamped)
+        } else {
+            tailLines.append(stamped)
+            if tailLines.count > tailMaxLines {
+                tailLines.removeFirst()
+                elidedTailCount += 1
+            }
+        }
+        var display = headLines
+        if elidedTailCount > 0 {
+            display.append("\u{2026} \(elidedTailCount) lines elided \u{2026}")
+        }
+        display.append(contentsOf: tailLines)
+        UserDefaults.standard.set(display, forKey: linesKey)
     }
 }
 
@@ -1896,6 +1943,13 @@ struct HeroCrossfadeImage: View {
     /// metahub entry would keep the previous title's backdrop (or blank on first load) even though
     /// a perfectly good poster exists (Codex review finding).
     let fallbackURL: String?
+    /// H-1C (beta.15): the displayed item's stable identity (`"\(type):\(id)"`, constructed at the
+    /// single call site in `HomeHeroBackdrop.heroSurface`) — landed in H-1A purely as a probe
+    /// stamp (`item=<identity>` on every paint/suppression log line below), and load-bearing from
+    /// H-1C onward, where it distinguishes a same-title URL upgrade (TMDB enrichment rewriting
+    /// this title's banner) from a genuine title change (see `paintedIdentity`/
+    /// `isSameTitleUpgrade` further down).
+    let identity: String
     @State private var current: UIImage?
     @State private var previous: UIImage?
     /// Drives the outgoing image's fade — animated 1 → 0 on every swap (see `crossfade(to:)`).
@@ -1905,9 +1959,10 @@ struct HeroCrossfadeImage: View {
     /// Same trick as `HeroLogo.init`: seed `current` synchronously from the memory cache when the
     /// URL is already resident, so a cached backdrop is on screen from this view's very first
     /// frame — no placeholder flash as focus moves across a row.
-    init(url: String?, fallbackURL: String? = nil) {
+    init(url: String?, fallbackURL: String? = nil, identity: String) {
         self.url = url
         self.fallbackURL = fallbackURL
+        self.identity = identity
         let resolved: URL? = {
             guard let url, !url.isEmpty else { return nil }
             return URL(string: url)
@@ -1954,7 +2009,7 @@ struct HeroCrossfadeImage: View {
             let firstPaint = current == nil && previous == nil
             if !firstPaint, paintCount == 0, !didLogSeededPaint, HomeHeroProbe.enabled {
                 didLogSeededPaint = true
-                HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0", HomeHeroProbe.sinceLaunchMs))
+                HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0 item=%@", HomeHeroProbe.sinceLaunchMs, identity))
             }
             guard let url, !url.isEmpty, let resolvedURL = URL(string: url) else {
                 // This title genuinely has no artwork: fade down to the flat background rather
@@ -2035,7 +2090,7 @@ struct HeroCrossfadeImage: View {
                         primaryLanded = true
                         if firstPaintCommittedWithFallback {
                             if HomeHeroProbe.enabled {
-                                HomeHeroProbe.log(String(format: "paint suppressed kind=primaryAfterFirstPaintFallback sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
+                                HomeHeroProbe.log(String(format: "paint suppressed kind=primaryAfterFirstPaintFallback sinceLaunch=%dms item=%@", HomeHeroProbe.sinceLaunchMs, identity))
                             }
                             continue
                         }
@@ -2103,7 +2158,7 @@ struct HeroCrossfadeImage: View {
         guard image !== current else { return }
         paintCount += 1
         if HomeHeroProbe.enabled {
-            HomeHeroProbe.log(String(format: "paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1))
+            HomeHeroProbe.log(String(format: "paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d item=%@", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1, identity))
         }
         previous = current
         current = image

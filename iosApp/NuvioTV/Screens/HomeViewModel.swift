@@ -39,6 +39,15 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var errorMessage: String?
 
+    /// H-1A (beta.15): a per-instance id from the shared hero probe counter, stamped into every
+    /// probe line this view model logs (`vm=<n>`). A profile-scoped sync pull flipping the theme
+    /// can `.id(appTheme.themeName)`-remount `ContentView` minutes after cold launch, which spins
+    /// up a SECOND `HomeViewModel` while the first is still tearing down — without this stamp the
+    /// two instances' publish lines interleave in the probe log under one identity and read as one
+    /// view model publishing twice. See `AppThemeModel`'s guarded theme assignment for the actual
+    /// fix; this id is purely diagnostic.
+    let vmId = HomeHeroProbe.newInstanceId()
+
     /// Stremio's default community catalog addon — gives the tvOS build real content out of the box.
     private let cinemetaManifestUrl = "https://v3-cinemeta.strem.io/manifest.json"
 
@@ -56,6 +65,12 @@ final class HomeViewModel: ObservableObject {
     private var started = false
 
     func start() {
+        // H-1A: logged unconditionally on ENTRY, before the `started` guard below, so a redundant
+        // start() call (the exact shape a duplicate-instance bug produces) still leaves a trace —
+        // a guard-gated log would silently swallow the very calls this probe exists to catch.
+        if HomeHeroProbe.enabled {
+            HomeHeroProbe.log(String(format: "vm start id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
+        }
         guard !started else { return }
         started = true
 
@@ -67,7 +82,7 @@ final class HomeViewModel: ObservableObject {
             // naming the head so a device log shows whether it ever moved after first paint.
             if HomeHeroProbe.enabled, state.heroItems.isEmpty, !self.heroItems.isEmpty {
                 // An A → empty → B sequence must not hide the A→B change from the probe.
-                HomeHeroProbe.log(String(format: "publish n=0 (hero emptied) %@ sinceLaunch=%dms", HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs))
+                HomeHeroProbe.log(String(format: "publish vm=%d n=0 (hero emptied) %@ sinceLaunch=%dms", self.vmId, HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs))
             }
             if HomeHeroProbe.enabled, !state.heroItems.isEmpty {
                 let head = state.heroItems.first.map { "\($0.type):\($0.id)" } ?? "-"
@@ -81,8 +96,8 @@ final class HomeViewModel: ObservableObject {
                     section.items.contains { $0.type == headItem?.type && $0.id == headItem?.id }
                 }
                 let ids = state.heroItems.map { "\($0.type):\($0.id)" }.joined(separator: ",")
-                HomeHeroProbe.log(String(format: "publish n=%d head=%@ headChanged=%d inRows=%d sections=%d loading=%d %@ sinceLaunch=%dms ids=%@",
-                      state.heroItems.count, head, headChanged ? 1 : 0, inRows ? 1 : 0, state.sections.count,
+                HomeHeroProbe.log(String(format: "publish vm=%d n=%d head=%@ headChanged=%d inRows=%d sections=%d loading=%d %@ sinceLaunch=%dms ids=%@",
+                      self.vmId, state.heroItems.count, head, headChanged ? 1 : 0, inRows ? 1 : 0, state.sections.count,
                       state.isLoading ? 1 : 0, HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs, ids))
             }
             self.heroItems = state.heroItems
@@ -180,6 +195,9 @@ final class HomeViewModel: ObservableObject {
     #endif
 
     func stop() {
+        if HomeHeroProbe.enabled {
+            HomeHeroProbe.log(String(format: "vm stop id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
+        }
         addonWatcher?.cancel()
         homeWatcher?.cancel()
         progressWatcher?.cancel()
@@ -305,7 +323,7 @@ final class HomeViewModel: ObservableObject {
         // the user happened to open Settings — the "collections are scrambled" report.
         if HomeHeroProbe.enabled {
             let catalogs = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
-            HomeHeroProbe.log(String(format: "addonsChanged ready=%d catalogs=%d sinceLaunch=%dms", ready.count, catalogs, HomeHeroProbe.sinceLaunchMs))
+            HomeHeroProbe.log(String(format: "addonsChanged vm=%d ready=%d catalogs=%d sinceLaunch=%dms", vmId, ready.count, catalogs, HomeHeroProbe.sinceLaunchMs))
         }
         HomeCatalogSettingsRepository.shared.syncCatalogs(addons: ready)
         HomeRepository.shared.refresh(addons: ready, force: true)

@@ -69,6 +69,12 @@ struct AboutSettingsPane: View {
             )
 
             if heroDiagnostics, !heroProbeLines.isEmpty {
+                // H-1A (beta.15): `heroProbeLines` is now head-preserving — the first 16 lines
+                // (the launch head a tester's photo needs) plus, once the tail actually evicts,
+                // one "… N lines elided …" marker and the most recent 32 (see `HomeHeroProbe.log`)
+                // — up to 49 rows total. No special-casing needed here: the marker is just another
+                // string in the array, this `ForEach` already renders any count, and `SettingsSection`
+                // lives inside a native `List`, so the section scrolls naturally as the row count grows.
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(heroProbeLines.enumerated()), id: \.offset) { _, line in
                         Text(line)
