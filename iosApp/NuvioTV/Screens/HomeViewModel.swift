@@ -71,6 +71,14 @@ final class HomeViewModel: ObservableObject {
     /// their `onDisappear → release()` afterwards; those releases are expected, not underflow, so
     /// they are absorbed here instead of tripping the DEBUG assertion.
     private var hardStopAbsorb = 0
+    /// Codex wave-4 r3 (P1): `FlowWatcher.cancel()` is cooperative — a delivery already queued when
+    /// the pipeline tears down can still run AFTER `stop()` cleared the profile-scoped state, and
+    /// on a model that now outlives the profile that means the PREVIOUS profile's data repopulating
+    /// Home (the collections callback would even `syncCollections` the old definitions under the
+    /// new profile). Every watcher closure captures the generation current at registration and
+    /// bails when it no longer matches; both teardown and each restart bump it, so late deliveries
+    /// from an earlier pipeline are inert forever.
+    private var pipelineGeneration = 0
 
     // MARK: - Lifecycle
     //
@@ -184,13 +192,15 @@ final class HomeViewModel: ObservableObject {
     private func startPipeline() {
         guard !started else { return }
         started = true
+        pipelineGeneration += 1
+        let gen = pipelineGeneration
         if HomeHeroProbe.enabled {
             HomeHeroProbe.log(String(format: "vm start id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
         }
 
         // Home output → SwiftUI.
         homeWatcher = FlowWatcherKt.watch(HomeRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let state = emitted as? HomeUiState else { return }
+            guard let self, self.pipelineGeneration == gen, let state = emitted as? HomeUiState else { return }
             self.isLoading = state.isLoading
             // BUG-42 (beta.13): release-safe hero commit probe — one line per hero-bearing publish,
             // naming the head so a device log shows whether it ever moved after first paint.
@@ -238,26 +248,26 @@ final class HomeViewModel: ObservableObject {
         // them with HomeCatalogSettingsRepository (like mobile's HomeScreen does) lets the Home Rows
         // settings order/enable them alongside addon catalogs.
         collectionsWatcher = FlowWatcherKt.watch(CollectionRepository.shared.collections) { [weak self] emitted in
-            guard let self, let collections = emitted as? [NuvioCollection] else { return }
+            guard let self, self.pipelineGeneration == gen, let collections = emitted as? [NuvioCollection] else { return }
             self.collections = collections.filter { !$0.folders.isEmpty }
             HomeCatalogSettingsRepository.shared.syncCollections(collections: collections)
             self.rebuildRows()
         }
         catalogSettingsWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
+            guard let self, self.pipelineGeneration == gen, let state = emitted as? HomeCatalogSettingsUiState else { return }
             self.settingsItems = state.items
             self.rebuildRows()
         }
 
         // Installed addons → drive Home refresh.
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let state = emitted as? AddonsUiState else { return }
+            guard let self, self.pipelineGeneration == gen, let state = emitted as? AddonsUiState else { return }
             self.onAddonsChanged(state)
         }
 
         // Watch progress → Continue Watching row.
         progressWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] _ in
-            guard let self else { return }
+            guard let self, self.pipelineGeneration == gen else { return }
             self.continueWatching = WatchProgressRepository.shared.continueWatching()
         }
 
@@ -313,6 +323,10 @@ final class HomeViewModel: ObservableObject {
     /// lines keep meaning "the pipeline actually started/stopped", never "someone asked".
     private func teardownPipeline() {
         guard started else { return }
+        // Codex wave-4 r3: bump BEFORE cancelling — `cancel()` is cooperative, and any delivery
+        // already queued behind it must find the generation stale and bail (see
+        // `pipelineGeneration`'s doc).
+        pipelineGeneration += 1
         if HomeHeroProbe.enabled {
             HomeHeroProbe.log(String(format: "vm stop id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
         }
@@ -337,8 +351,11 @@ final class HomeViewModel: ObservableObject {
     /// rollover while the app sat in the background re-labels TODAY / TOMORROW.
     func startUpcoming() {
         if upcomingWatcher == nil {
+            // Same generation guard as the main pipeline's watchers (Codex wave-4 r3): a delivery
+            // queued at teardown time must not repopulate `upcoming` after the profile-scoped clear.
+            let gen = pipelineGeneration
             upcomingWatcher = FlowWatcherKt.watch(UpcomingEpisodesRepository.shared.uiState) { [weak self] emitted in
-                guard let self, let state = emitted as? UpcomingEpisodesUiState else { return }
+                guard let self, self.pipelineGeneration == gen, let state = emitted as? UpcomingEpisodesUiState else { return }
                 self.upcoming = state.items
             }
             UpcomingEpisodesRepository.shared.ensureStarted()
