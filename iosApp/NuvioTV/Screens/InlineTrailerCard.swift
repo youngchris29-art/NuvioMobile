@@ -176,6 +176,12 @@ final class TrailerResolutionCache {
 /// stack up work: at most one card owns an `AVPlayer`, and at most one YouTube extraction is in
 /// flight (a second card that dwells while one is running simply skips — it is *not* queued, or the
 /// user would get trailers for cards they left long ago).
+///
+/// P-1c: `beginExtraction()`'s refusal is also, as of this pass, the reason a busy pipeline never
+/// makes a card flash. `InlineTrailerCardModel.resolve()` checks this latch before it ever morphs
+/// the card to `.expandedStatic` (P-1b), so a card that loses the race for the single extraction
+/// slot simply stays in `.dwelling` and quietly collapses — the refusal is decided before there is
+/// anything on screen to undo.
 @MainActor
 final class InlineTrailerCoordinator: ObservableObject {
     static let shared = InlineTrailerCoordinator()
@@ -621,6 +627,12 @@ final class InlineTrailerCardModel: ObservableObject {
 
         // Busy: skip rather than queue, and stay neutral on the cache — being second in line says
         // nothing about whether this title has a trailer.
+        //
+        // P-1c: this guard runs before `resolve()` has touched phase at all — the card is still
+        // sitting in whatever phase it was in when `resolve()` started (`.dwelling`, dwell-driven;
+        // never `.expandedStatic` here). P-1b moves the morph to immediately AFTER this guard
+        // succeeds, so a refusal means the card never became visible as a landscape tile in the
+        // first place: `abandonExpansion` below is a plain `.idle` no-op, not a collapse-after-flash.
         guard let extractionTicket = InlineTrailerCoordinator.shared.beginExtraction() else {
             abandonExpansion(key: key)
             return
