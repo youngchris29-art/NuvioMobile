@@ -30,6 +30,16 @@ object ThemeSettingsRepository {
         loadFromDisk()
     }
 
+    /**
+     * Synchronous read of the current theme name for Swift callers — the generic
+     * `StateFlow<AppTheme>` bridges to Swift as an untyped protocol without a usable `value`
+     * member, and tvOS's `AppThemeModel` must seed its initial `@Published` name from the STORED
+     * theme at init (a hard-coded seed guaranteed a whole-tree `.id()` remount seconds after
+     * every cold launch for any profile whose theme differed — the beta.15 "doubled hero" report).
+     * Call `ensureLoaded()` first.
+     */
+    fun currentThemeName(): String = _selectedTheme.value.name
+
     fun onProfileChanged() {
         loadFromDisk()
     }

@@ -8,9 +8,22 @@ import SharedCore
 /// re-reading `Theme.Palette.accent`/`accentFocus` everywhere.
 @MainActor
 final class AppThemeModel: ObservableObject {
-    @Published private(set) var themeName = "CRIMSON"
+    @Published private(set) var themeName: String
 
     private var watcher: FlowWatcher?
+
+    /// H-1B follow-up (beta.15, probe-verified): seed from the repository's CURRENT value
+    /// synchronously instead of hard-coding "CRIMSON". With the hard-coded seed, every profile
+    /// whose stored theme differed got a GUARANTEED whole-tree remount ~3s after cold launch when
+    /// the first repository emission landed (`theme CRIMSON→OCEAN` in the probe capture) — tearing
+    /// Home down and restarting its pipeline on every single launch. `ensureLoaded()` is a cheap
+    /// disk read the `start()` path performed moments later anyway.
+    init() {
+        ThemeSettingsRepository.shared.ensureLoaded()
+        let name = ThemeSettingsRepository.shared.currentThemeName()
+        themeName = name
+        Theme.Palette.applyTheme(named: name)
+    }
 
     func start() {
         guard watcher == nil else { return }

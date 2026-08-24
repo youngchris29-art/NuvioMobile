@@ -1210,6 +1210,16 @@ final class NuvioTVUITests: XCTestCase {
         }
         findContainer(root)
         guard let container else { return [] }
+        // beta.15 r2: the container now combines its children and publishes the WHOLE buffer as
+        // its accessibility value (newline-joined) — the List row clips below the fold, so the
+        // per-line `Text` children beyond it never entered the AX tree and the walk below saw
+        // only the first line (test31's launch-1 failure: `lines=[<one acquire line>]` while the
+        // container plist held 21). Prefer the value; keep the walk as a fallback for older
+        // builds of the pane.
+        if let joined = container.value as? String, joined.contains("ms ") {
+            let fromValue = joined.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+            if fromValue.count > 1 { return fromValue }
+        }
         var lines: [String] = []
         func collect(_ node: XCUIElementSnapshot) {
             if node.elementType == .staticText, !node.label.isEmpty { lines.append(node.label) }
@@ -1683,8 +1693,22 @@ final class NuvioTVUITests: XCTestCase {
                 // instance; more than one means an extra pipeline start (the BUG-42 double-init
                 // class this whole probe exists to catch) and zero means the probe pane can't be
                 // trusted for this run at all.
-                let vmStartCount = lines.filter { $0.contains("vm start id=") }.count
-                XCTAssertEqual(vmStartCount, 1, "launch \(launch): expected exactly one 'vm start' line in hero_probe_lines, found \(vmStartCount) — lines=\(lines)")
+                // beta.15 r2: the count is TIME-WINDOWED to the first 15s. The test's own
+                // navigation to Settings→About releases Home's last retain (a tab switch CAN drop
+                // the now-prunable Home subtree), tearing the pipeline down and legitimately
+                // restarting it if the walk brushes back through Home — those later `vm start`
+                // lines are the refcount lifecycle working, not the cold-launch double-init this
+                // oracle exists to catch. Every line carries a leading `<N>ms ` stamp.
+                func stampMs(_ line: String) -> Int? {
+                    guard let range = line.range(of: "ms ") else { return nil }
+                    return Int(line[line.startIndex..<range.lowerBound])
+                }
+                let vmStartCount = lines.filter { $0.contains("vm start id=") && (stampMs($0) ?? 0) < 15_000 }.count
+                XCTAssertEqual(vmStartCount, 1, "launch \(launch): expected exactly one 'vm start' line within the first 15s in hero_probe_lines, found \(vmStartCount) — lines=\(lines)")
+                // The boot-time theme seed must hold: a `theme A→B` line in the first 15s means
+                // AppThemeModel's repository seed regressed and the launch remounted the tree.
+                let earlyThemeFlips = lines.filter { $0.contains("theme ") && $0.contains("\u{2192}") && (stampMs($0) ?? 0) < 15_000 }
+                XCTAssertTrue(earlyThemeFlips.isEmpty, "launch \(launch): boot-window theme remount detected — \(earlyThemeFlips)")
 
                 // (b) no stale-then-real flash: a `paint kind=fallbackCached` line for item X must
                 // never be immediately followed by a `paint kind=primary` line for that SAME item
