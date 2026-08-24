@@ -164,6 +164,21 @@ final class HomeViewModel: ObservableObject {
         // for a newly selected empty profile.
         lastRefreshSignature = ""
         didSeed = false
+        // Codex wave-4 r2 (P1): the published content and internal snapshots are profile-scoped
+        // too. Left populated, the next profile's `HomeView` renders the PREVIOUS profile's hero,
+        // rows, Continue Watching, and Upcoming until the freshly attached watchers replay —
+        // profile data crossing the profile boundary. Same cascade rule as the account-data wipe
+        // registry: in-memory account/profile-scoped state joins the teardown.
+        heroItems = []
+        sections = []
+        rows = []
+        continueWatching = []
+        upcoming = []
+        isLoading = false
+        errorMessage = nil
+        collections = []
+        settingsItems = []
+        lastNonEmptyHeroHead = nil
     }
 
     private func startPipeline() {
