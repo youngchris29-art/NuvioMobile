@@ -156,6 +156,14 @@ final class HomeViewModel: ObservableObject {
         hardStopAbsorb += retainCount
         retainCount = 0
         teardownPipeline()
+        // Codex wave-4 (P1): these two guards are PROFILE-SCOPED state on a model that now
+        // outlives the profile. Without the reset, switching to a profile whose ready-addon URLs
+        // happen to match the previous profile's would hit the `signature != lastRefreshSignature`
+        // equality guard and skip the one forced Home refresh that repopulates the cleared
+        // `HomeRepository` — leaving Home empty; `didSeed` would likewise block Cinemeta seeding
+        // for a newly selected empty profile.
+        lastRefreshSignature = ""
+        didSeed = false
     }
 
     private func startPipeline() {

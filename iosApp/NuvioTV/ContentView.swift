@@ -20,7 +20,14 @@ struct ContentView: View {
     /// "doubled hero". `HomeView` now only `acquire()`s / `release()`s it (refcounted because
     /// SwiftUI inserts the incoming subtree before removing the outgoing one), and this view hard-
     /// stops it on profile exit below — the teardown Home's view lifetime used to do implicitly.
-    @StateObject private var home = HomeViewModel()
+    ///
+    /// Codex wave-4 (P1) — `@State`, NOT `@StateObject`, and load-bearing exactly like
+    /// `MainTabView.tabBarVisibility` (T3): `@State` on a reference type stores the instance once
+    /// with the same lifetime but WITHOUT subscribing this view to `objectWillChange`. With
+    /// `@StateObject`, every hero/row/progress publication would re-evaluate the entire app root
+    /// (Group + MainTabView) — restoring the shell-wide invalidation storm T3 removed. Only
+    /// `HomeView` (via `@ObservedObject`) is supposed to observe this model.
+    @State private var home = HomeViewModel()
     @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
     @State private var selectedTab = 0
