@@ -1984,7 +1984,14 @@ struct HeroCrossfadeImage: View {
             guard let url, !url.isEmpty else { return nil }
             return URL(string: url)
         }()
-        _current = State(initialValue: ArtworkStore.cached(resolved))
+        let seeded = ArtworkStore.cached(resolved)
+        _current = State(initialValue: seeded)
+        // Codex wave-3 (P2): when init seeds `current`, the first task's cachedPrimary hit is the
+        // SAME UIImage instance, so `crossfade`'s same-image guard returns before recording
+        // `paintedIdentity` — a later same-title enrichment would then be misclassified as a title
+        // change and repaint the fallback poster. Seed the painted state here alongside the image.
+        _paintedIdentity = State(initialValue: seeded != nil ? identity : nil)
+        _paintedFallbackURL = State(initialValue: seeded != nil ? fallbackURL : nil)
     }
 
     /// BUG-42 probe: an init-seeded first frame IS the first paint (no `crossfade` runs for it).
@@ -1998,6 +2005,12 @@ struct HeroCrossfadeImage: View {
     /// `identity` against this tells a same-title URL upgrade (TMDB enrichment rewriting THIS
     /// title's banner mid-display) apart from a genuine title change.
     @State private var paintedIdentity: String?
+    /// Codex wave-3 (P2): the fallback URL that was current when `paintedIdentity` was recorded.
+    /// A same-title task run whose fallback URL CHANGED (e.g. a CW→catalog re-adoption swapping
+    /// the poster while the primary keeps failing) is not the enrichment-repaint shape H-1C
+    /// suppresses — the new poster must still commit through the existing ladder, or a failing
+    /// primary pins the stale poster indefinitely.
+    @State private var paintedFallbackURL: String?
 
     var body: some View {
         ZStack {
@@ -2039,6 +2052,10 @@ struct HeroCrossfadeImage: View {
             // `current != nil` also rules this out on true first paint (where there is nothing to
             // protect yet), matching `firstPaint`'s own current==nil check.
             let isSameTitleUpgrade = (identity == paintedIdentity) && current != nil
+            // Codex wave-3 (P2): fallback suppression additionally requires the fallback URL to be
+            // UNCHANGED since the painted state — see `paintedFallbackURL`. The terminal
+            // keep-good-art guard at the bottom stays keyed on `isSameTitleUpgrade` alone.
+            let suppressFallback = isSameTitleUpgrade && fallbackURL == paintedFallbackURL
             if !firstPaint, paintCount == 0, !didLogSeededPaint, HomeHeroProbe.enabled {
                 didLogSeededPaint = true
                 HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0 item=%@", HomeHeroProbe.sinceLaunchMs, identity))
@@ -2069,7 +2086,7 @@ struct HeroCrossfadeImage: View {
             if let resolvedFallback, let fallbackHit = ArtworkStore.cached(resolvedFallback) {
                 if firstPaint {
                     heldFallback = fallbackHit
-                } else if isSameTitleUpgrade {
+                } else if suppressFallback {
                     // H-1C: never repaint the poster over this same title's already-correct art —
                     // only `primary`/`cachedPrimary` may commit while an upgrade is in flight.
                     if HomeHeroProbe.enabled {
@@ -2137,7 +2154,7 @@ struct HeroCrossfadeImage: View {
                         guard let image else { continue }
                         if primaryLanded { continue }
                         if deadlinePassed {
-                            if isSameTitleUpgrade {
+                            if suppressFallback {
                                 // H-1C: same suppression as the immediate branch above — the
                                 // fetched poster must not repaint over this same title's art.
                                 if HomeHeroProbe.enabled {
@@ -2161,7 +2178,7 @@ struct HeroCrossfadeImage: View {
                     case .deadline:
                         deadlinePassed = true
                         if !primaryLanded, let held = heldFallback {
-                            if isSameTitleUpgrade {
+                            if suppressFallback {
                                 // H-1C: same suppression again — the held poster must not repaint
                                 // over this same title's art either.
                                 if HomeHeroProbe.enabled {
@@ -2204,6 +2221,7 @@ struct HeroCrossfadeImage: View {
         // H-1C: nothing is committed any more — the next task run must not treat whatever item
         // this was as a same-title upgrade just because its identity string is still sitting here.
         paintedIdentity = nil
+        paintedFallbackURL = nil
         if reduceMotion || previous == nil {
             previous = nil
             previousOpacity = 0
@@ -2234,6 +2252,7 @@ struct HeroCrossfadeImage: View {
         // near the top of the `.task` compares its `identity` against this on the NEXT task run
         // for this (persistent, never-re-identified) view instance.
         paintedIdentity = identity
+        paintedFallbackURL = fallbackURL
         if reduceMotion || previous == nil {
             previous = nil
             previousOpacity = 0
