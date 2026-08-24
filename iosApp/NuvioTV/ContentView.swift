@@ -186,11 +186,20 @@ struct MainTabView: View {
                 AddonsView()
                     .tabBarImmersiveHide()
             }
+            // T4: Settings and Profile don't scroll meaningfully, so they were left with no
+            // tab-bar declaration at all — but that's not neutral. Without one, the resolved
+            // `.toolbarVisibility` preference CHANGES on entering/leaving these two tabs (nothing
+            // → whatever `.automatic` resolves to elsewhere), and a preference change is exactly
+            // the kind of re-resolution that can latch the bar visible (BUG-66). `.automatic` via
+            // `tabBarImmersiveHide()` is the only safe uniform value here: `.visible` would pin
+            // the bar open (BUG-66 itself), and `.hidden` is wrong for a tab root.
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView()
+                    .tabBarImmersiveHide()
             }
             Tab("Profile", systemImage: "person.crop.circle", value: 5) {
                 ProfileTabView(activeProfile: activeProfile, onSwitchProfile: onSwitchProfile)
+                    .tabBarImmersiveHide()
             }
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
