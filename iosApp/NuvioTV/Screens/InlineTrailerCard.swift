@@ -705,10 +705,31 @@ final class InlineTrailerCardModel: ObservableObject {
         startPlayback(playable, key: key)
     }
 
-    /// Only attaches when this card is *still* sitting expanded on the title that was resolved —
+    /// Only attaches when this card is *still* sitting on the title that was resolved —
     /// late results from a card the user has already left write the cache and nothing else.
+    ///
+    /// Codex final-branch review (P2): `.dwelling` is accepted alongside `.expandedStatic` for the
+    /// refocus race — focus can leave AFTER the resolver morphed (reset() → `.idle`) and return
+    /// BEFORE it finished; the new dwell's `startResolution` re-arms `activeKey` but bails on
+    /// `resolvingKey == key`, leaving the card `.dwelling` while the ORIGINAL resolver carries the
+    /// result. Rejecting that here stranded the card in `.dwelling` (no trailer, and the FEAT-25
+    /// hero hold latched until focus left). Re-promoting through the morph phase keeps the
+    /// morph-then-play visual order.
     private func startPlayback(_ url: String, key: String) {
-        guard phase == .expandedStatic, activeKey == key else { return }
+        guard activeKey == key else { return }
+        switch phase {
+        case .expandedStatic:
+            break
+        case .dwelling:
+            // The refocus's own dwell timer is still pending — cancel it, or it re-enters
+            // `expand()` on a `.playing` card one second from now and replays the morph.
+            generation &+= 1
+            dwellTask?.cancel()
+            dwellTask = nil
+            setPhase(.expandedStatic)
+        default:
+            return
+        }
         InlineTrailerCoordinator.shared.claimPlayback(self, key: key)
         setPhase(.playing(url))
     }
