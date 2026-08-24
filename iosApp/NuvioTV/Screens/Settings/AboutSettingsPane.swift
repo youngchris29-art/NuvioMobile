@@ -18,6 +18,16 @@ struct AboutSettingsPane: View {
     @AppStorage("debug.tabBarProbe") private var tabBarDiagnostics = false
     @Environment(\.tabBarVisibility) private var tabBarVisibility
 
+    /// T5 (BUG-30/42): the reporter is on a sideload and can't `defaults write`, so the one
+    /// lawful A/B lever over the clipped tab-bar reappearance —
+    /// `HomeScrollEdgeStyleModifier` (HomeView.swift ~L1307-1325; its own comment records it is
+    /// NOT one of the six banned scroll-changing rounds) — needs a Settings switch too.
+    /// `@AppStorage` on both ends (this toggle and `HomeView.homeScrollEdgeHard`), unlike the
+    /// hero probe above: the change is LIVE, not launch-latched, so a tester can A/B it without
+    /// relaunching between tries. Default stays off — shipped behavior is byte-identical until
+    /// toggled.
+    @AppStorage("debug.homeScrollEdgeHard") private var scrollEdgeHard = false
+
     /// BUG-64: both raw toggles `CardFocusMode.resolve` reads, so this pane can show the resolved
     /// mode next to the settings a tester's photo needs to be checked against.
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
@@ -75,7 +85,7 @@ struct AboutSettingsPane: View {
             // Grouped so this whole block occupies one slot in `SettingsSection`'s own
             // @ViewBuilder — PlaybackSettingsPane's "Playback" section already sits at the
             // 10-child ViewBuilder ceiling, and the six rows above plus the hero probe's two
-            // slots leave no room to add these five ungrouped.
+            // slots leave no room to add these six ungrouped.
             Group {
                 SettingsToggleRow(
                     title: String(localized: "Tab Bar Diagnostics"),
@@ -83,6 +93,15 @@ struct AboutSettingsPane: View {
                         ? String(localized: "Scroll-geometry and push/pop counters below \u{2014} photograph after testing")
                         : String(localized: "Turn on before walking Home down and back up, or running Detail push/pop cycles"),
                     isOn: $tabBarDiagnostics
+                )
+
+                // T5 (BUG-30/42): the lawful A/B lever for the clipped-reappear bug, next to the
+                // diagnostics toggle above since a device pass runs the two together — diagnose,
+                // then try the lever.
+                SettingsToggleRow(
+                    title: String(localized: "Hard Top Scroll Edge (A/B)"),
+                    subtitle: String(localized: "BUG-30: try if Home's tab bar still reappears clipped after scrolling up"),
+                    isOn: $scrollEdgeHard
                 )
 
                 if tabBarDiagnostics {

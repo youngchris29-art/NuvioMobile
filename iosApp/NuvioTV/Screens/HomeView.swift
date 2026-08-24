@@ -155,7 +155,11 @@ struct HomeView: View {
     /// full-bleed hero backdrop, which nothing but a device can judge. So it ships as an A/B knob
     /// the manual pass can flip between runs rather than an unverified visual change:
     ///   defaults write com.nuvio.media.NuvioTV debug.homeScrollEdgeHard -bool YES
-    private let homeScrollEdgeHard = UserDefaults.standard.bool(forKey: "debug.homeScrollEdgeHard")
+    /// T5 (BUG-42): also exposed as a Settings → About toggle, since a sideloaded tester can't
+    /// `defaults write`. `@AppStorage`, not a launch-latched `let`, so the switch takes effect
+    /// live in the same session it's flipped in — the manual A/B pass can compare both states on
+    /// one running app rather than needing a relaunch between each.
+    @AppStorage("debug.homeScrollEdgeHard") private var homeScrollEdgeHard = false
 
     /// UX-7: always-on focus-follows-backdrop. Owns the row-focused item (if any) that should
     /// take over the hero from the carousel.
