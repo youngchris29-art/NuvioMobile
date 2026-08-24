@@ -86,13 +86,19 @@ struct AboutSettingsPane: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("hero_probe_lines")
-                // The XCUI harness reads the WHOLE buffer through this value: the List row clips
-                // to visible height, so the per-line `Text` children beyond the fold never enter
-                // the accessibility tree — a snapshot walk of the children sees only the first
-                // line or two. `.combine` + an explicit joined value makes the harness's read
-                // independent of scroll position (test31's oracle).
-                .accessibilityElement(children: .combine)
-                .accessibilityValue(heroProbeLines.joined(separator: "\n"))
+                // The XCUI harness reads the WHOLE buffer through the hidden single-Text probe
+                // below (`hero_probe_blob`) — the List row clips to visible height, so the
+                // per-line `Text` children beyond the fold never enter the accessibility tree and
+                // a snapshot walk of this container sees only the first line or two. (An
+                // `.accessibilityElement(children: .combine)` + `.accessibilityValue` variant was
+                // tried first and did not surface the value on the tvOS 26.5 runtime.) Same
+                // one-hidden-Text pattern as `debug_ux6` (DetailView.swift).
+                .overlay(alignment: .topLeading) {
+                    Text(heroProbeLines.joined(separator: "\n"))
+                        .font(.system(size: 4))
+                        .opacity(0.011)
+                        .accessibilityIdentifier("hero_probe_blob")
+                }
             }
 
             // Grouped so this whole block occupies one slot in `SettingsSection`'s own

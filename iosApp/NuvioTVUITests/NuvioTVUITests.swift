@@ -1208,18 +1208,24 @@ final class NuvioTVUITests: XCTestCase {
             }
             for child in node.children { findContainer(child) }
         }
+        // beta.15 r3: prefer the hidden single-Text blob (`hero_probe_blob`, AboutSettingsPane) —
+        // the List row clips below the fold, so the per-line `Text` children beyond it never
+        // enter the AX tree and the container walk sees only the first line (launch-1 failure:
+        // `lines=[<one acquire line>]` while the container plist held 21). One Text = one AX
+        // element = the whole buffer in its label, same pattern the `debug_ux6` probe proved out.
+        func findBlob(_ node: XCUIElementSnapshot) -> String? {
+            if node.identifier == "hero_probe_blob", !node.label.isEmpty { return node.label }
+            for child in node.children {
+                if let hit = findBlob(child) { return hit }
+            }
+            return nil
+        }
+        if let blob = findBlob(root) {
+            let fromBlob = blob.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+            if fromBlob.count > 1 { return fromBlob }
+        }
         findContainer(root)
         guard let container else { return [] }
-        // beta.15 r2: the container now combines its children and publishes the WHOLE buffer as
-        // its accessibility value (newline-joined) — the List row clips below the fold, so the
-        // per-line `Text` children beyond it never entered the AX tree and the walk below saw
-        // only the first line (test31's launch-1 failure: `lines=[<one acquire line>]` while the
-        // container plist held 21). Prefer the value; keep the walk as a fallback for older
-        // builds of the pane.
-        if let joined = container.value as? String, joined.contains("ms ") {
-            let fromValue = joined.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-            if fromValue.count > 1 { return fromValue }
-        }
         var lines: [String] = []
         func collect(_ node: XCUIElementSnapshot) {
             if node.elementType == .staticText, !node.label.isEmpty { lines.append(node.label) }

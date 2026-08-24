@@ -65,7 +65,11 @@ struct ContentView: View {
                     )
                     .environmentObject(auth)
                 } else {
-                    ProfileSelectionView(model: profiles, onSelected: { entered = true })
+                    // `reseedNow()` BEFORE `entered = true`: the chosen profile's theme must be
+                    // applied while only this picker is mounted, or MainTabView mounts under the
+                    // boot-time theme and the async watcher delivery remounts the whole shell
+                    // ~70ms later (see AppThemeModel.reseedNow).
+                    ProfileSelectionView(model: profiles, onSelected: { appTheme.reseedNow(); entered = true })
                 }
             }
         }

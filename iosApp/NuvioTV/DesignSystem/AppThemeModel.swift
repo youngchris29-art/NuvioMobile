@@ -56,4 +56,24 @@ final class AppThemeModel: ObservableObject {
         watcher?.cancel()
         watcher = nil
     }
+
+    /// Synchronous re-seed at PROFILE ENTRY (probe-verified fix): theme keys are profile-scoped,
+    /// so `init`'s seed reads the boot-time (pre-profile) key. `selectProfile`'s Kotlin fan-out
+    /// reloads the repository for the chosen profile synchronously, but the Swift watcher
+    /// delivery is async — without this, `MainTabView` mounted under the OLD name and the
+    /// watcher's delivery ~70ms later re-identified the whole tree (probe: `theme CRIMSON→OCEAN`
+    /// at 3.1s, a full Home pipeline teardown+restart on EVERY cold launch of a non-default-theme
+    /// profile). ContentView calls this in `onSelected` BEFORE flipping `entered`, while only
+    /// ProfileSelectionView is mounted — the `.id` change is then nearly free. Logged as
+    /// `themeSeed` (not `theme …`) so test31's boot-window remount tripwire doesn't fire on the
+    /// legitimate pre-mount seed.
+    func reseedNow() {
+        let name = ThemeSettingsRepository.shared.currentThemeName()
+        guard themeName != name else { return }
+        if HomeHeroProbe.enabled {
+            HomeHeroProbe.log(String(format: "themeSeed %@\u{2192}%@ sinceLaunch=%dms", themeName, name, HomeHeroProbe.sinceLaunchMs))
+        }
+        Theme.Palette.applyTheme(named: name)
+        themeName = name
+    }
 }
