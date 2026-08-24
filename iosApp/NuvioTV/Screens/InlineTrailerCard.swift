@@ -524,6 +524,26 @@ final class InlineTrailerCardModel: ObservableObject {
             setPhase(.idle)
             return
         case nil:
+            // P-1a: `MetaDetailsRepository.peek()` is usually cold here — `DetailViewModel.stop()`
+            // clears its cache the instant a Detail visit ends, so a genuinely fresh card still
+            // falls through to `beginResolution`'s async `resolve()` below, which morphs before the
+            // fetch lands (that cold-meta case is what P-1b's hold-the-morph change covers). This
+            // synchronous check only helps the WARM cases — a TTL-expiry re-flash on a title whose
+            // meta is still cached, or re-dwelling a title just visited in Detail — both can be
+            // resolved-or-refused before the card's layout changes at all.
+            if let meta = MetaDetailsRepository.shared.peek(type: item.type, id: item.id) {
+                let language = TmdbSettingsRepository.shared.snapshot().language
+                let hasTrailer = !meta.trailers.isEmpty
+                    && HeroTrailerSelectorKt.selectHeroTrailer(trailers: meta.trailers, preferredLanguage: language) != nil
+                if TrailerProbe.forceNoTrailer || !hasTrailer {
+                    TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "noTrailerListedPeek")
+                    if TrailerProbe.enabled {
+                        NSLog("[TrailerPipeline] expand skip=peekNoTrailer key=%@ listed=%d", key, meta.trailers.count)
+                    }
+                    setPhase(.idle)
+                    return
+                }
+            }
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=miss key=%@", key) }
             beginResolution(item, key: key)
         }
@@ -578,7 +598,10 @@ final class InlineTrailerCardModel: ObservableObject {
         }
 
         guard languageStillCurrent() else { abandonExpansion(key: key); return }
-        let trailers = meta.trailers
+        // P-1d: debug.trailerForceNoTrailer forces this to read as empty, so a cold-meta fetch
+        // (peek() missed above, in `expand()`) behaves deterministically too — every title takes
+        // the noTrailerListed branch below instead of only the ones peek() happened to catch warm.
+        let trailers = TrailerProbe.forceNoTrailer ? [] : meta.trailers
         guard !trailers.isEmpty,
               // BUG-63: prefer the Metadata Language among the (now language-inclusive) list.
               let trailer = HeroTrailerSelectorKt.selectHeroTrailer(
