@@ -50,6 +50,27 @@ enum DetailScrollProbe {
     nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.detailScrollProbe")
 }
 
+/// `debug.detailScrollAB` (Int, read once at launch): a four-leg on-device A/B knob that settles
+/// BUG-41's attribution question — is the reported scroll choppiness the UX-6 dim overlay, the
+/// Liquid Glass chips in the top block, or both — that the simulator has never been able to answer
+/// (BUG-41 history: sim never reproduced the choppiness). One build, four device legs:
+///
+///     defaults write com.nuvio.media.NuvioTV debug.detailScrollAB -int 1
+///
+///   - 0: shipping behavior (dim + glass), the default.
+///   - 1: dim disabled — the `.onScrollGeometryChange` `of:` closure that feeds `dimModel` always
+///     returns 0, so the UX-6 overlay never darkens past its first frame.
+///   - 2: glass off in the top block — `metaChip` and the parental-guide chips fall back to a
+///     plain translucent capsule fill instead of `.glassEffect`. `actionRow`'s
+///     `.glass`/`.glassProminent` BUTTON styles are left alone — button styles are a different
+///     swap from the chip backgrounds this leg targets.
+///   - 3: both 1 and 2.
+enum DetailScrollAB {
+    nonisolated static let leg = UserDefaults.standard.integer(forKey: "debug.detailScrollAB")
+    nonisolated static var dimDisabled: Bool { leg == 1 || leg == 3 }
+    nonisolated static var glassDisabled: Bool { leg == 2 || leg == 3 }
+}
+
 /// Full detail screen for a single title, fed by the shared `MetaDetailsRepository`.
 /// Constructed from a `MetaPreview` (the card the user focused), then enriched in place as the
 /// repository resolves full metadata.
@@ -197,6 +218,10 @@ struct DetailView: View {
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { geo in
+                // P-2b (BUG-41 attribution knob): leg 1/3 disables the dim outright by pinning
+                // this closure's result to a constant, so `action:` fires once with 0 and never
+                // again — see `DetailScrollAB`'s doc comment.
+                guard !DetailScrollAB.dimDisabled else { return 0 }
                 // 0 → 0.85 over the first ~400pt of scroll. Device pass (2026-08-01): the
                 // original 0.35 ceiling was invisible over a bright playing trailer on a real
                 // TV — the reporter's ask (and upstream's cinematic mode) is a near-black dim
@@ -495,17 +520,32 @@ struct DetailView: View {
         .foregroundStyle(Theme.Palette.textSecondary)
     }
 
+    /// P-2b (BUG-41 attribution knob): wraps padded chip content in either the shipping Liquid
+    /// Glass capsule or, on `DetailScrollAB` leg 2/3, a plain translucent capsule fill — the
+    /// single swap point shared by `metaChip` and the parental-guide chips below so the two don't
+    /// duplicate the conditional. `actionRow`'s `.glass`/`.glassProminent` BUTTON styles are a
+    /// separate swap and are untouched by this leg.
+    @ViewBuilder
+    private func detailChipBackground(@ViewBuilder _ content: () -> some View) -> some View {
+        if DetailScrollAB.glassDisabled {
+            content().background(Color.white.opacity(0.12), in: .capsule)
+        } else {
+            content().glassEffect(.regular, in: .capsule)
+        }
+    }
+
     /// A small Liquid Glass capsule around one metadata item (year / runtime / rating).
     private func metaChip(stroked: Bool = false, @ViewBuilder content: () -> some View) -> some View {
-        content()
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs - 2)
-            .glassEffect(.regular, in: .capsule)
-            .overlay {
-                if stroked {
-                    Capsule().stroke(Theme.Palette.textSecondary, lineWidth: 1)
-                }
+        detailChipBackground {
+            content()
+                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.vertical, Theme.Spacing.xs - 2)
+        }
+        .overlay {
+            if stroked {
+                Capsule().stroke(Theme.Palette.textSecondary, lineWidth: 1)
             }
+        }
     }
 
     /// Play + library/watched controls as one Liquid Glass cluster. The container lets the
@@ -853,19 +893,20 @@ struct DetailView: View {
                     .foregroundStyle(Theme.Palette.textPrimary)
                 HStack(spacing: Theme.Spacing.md) {
                     ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in
-                        HStack(spacing: Theme.Spacing.xs) {
-                            Circle()
-                                .fill(severityColor(warning.severity))
-                                .frame(width: 12, height: 12)
-                            Text(warning.label)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-                            Text(warning.severity)
-                                .foregroundStyle(Theme.Palette.textSecondary)
+                        detailChipBackground {
+                            HStack(spacing: Theme.Spacing.xs) {
+                                Circle()
+                                    .fill(severityColor(warning.severity))
+                                    .frame(width: 12, height: 12)
+                                Text(warning.label)
+                                    .foregroundStyle(Theme.Palette.textPrimary)
+                                Text(warning.severity)
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                            }
+                            .font(Theme.Font.caption)
+                            .padding(.horizontal, Theme.Spacing.md)
+                            .padding(.vertical, Theme.Spacing.xs)
                         }
-                        .font(Theme.Font.caption)
-                        .padding(.horizontal, Theme.Spacing.md)
-                        .padding(.vertical, Theme.Spacing.xs)
-                        .glassEffect(.regular, in: .capsule)
                     }
                 }
             }
