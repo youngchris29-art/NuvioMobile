@@ -23,7 +23,8 @@ import SwiftUI
 /// Detail → More Like This → Detail nests — the bar should only reappear once every pushed
 /// immersive screen has been popped, not after the first one.
 ///
-/// Owned as a single `@StateObject` in `MainTabView` and read/written by descendants via
+/// Owned as a single instance in `MainTabView` (see that property's own doc comment for why T3
+/// made it `@State` rather than `@StateObject`) and read/written by descendants via
 /// `@Environment(\.tabBarVisibility)` — a custom environment key (not `@EnvironmentObject`) so
 /// views that can be presented *outside* the tab shell (e.g. `DetailView` reached through
 /// `DeepLinkTitleView`'s own standalone `NavigationStack`, pushed from a Top Shelf deep link with
@@ -91,10 +92,12 @@ final class TabBarVisibility: ObservableObject {
         if homeSurfaceCovered != covered { homeSurfaceCovered = covered }
     }
 
-    /// T2: collapsed to `recomputeHomeCovered()` now that there is no `hidden`/`scrolledAway`
-    /// to fold together — `detailDepth`'s only other effect is on `homeSurfaceCovered`, which
-    /// this already forwards to.
+    /// T3: also drives `immersiveHidden` now — see that property's doc comment for why the write
+    /// is guarded to an actual 0↔>0 crossing rather than reassigning on every `detailDepth`
+    /// change.
     private func recompute() {
+        let hidden = detailDepth > 0
+        if immersiveHidden != hidden { immersiveHidden = hidden }
         recomputeHomeCovered()
     }
 
@@ -109,7 +112,21 @@ final class TabBarVisibility: ObservableObject {
     /// presentation anyway (that's what made them safe to retire) — `isScrolledDown`, computed
     /// per-tab in `TabBarScrollAutoHide`, remains the BUG-27 Menu-to-top signal, unrelated to bar
     /// presentation.
-    var immersiveHidden: Bool { detailDepth > 0 }
+    ///
+    /// T3 (beta.14 regression fix): `@Published`, not computed, and written from `recompute()`
+    /// ONLY on an actual 0↔>0 crossing — never reassigned to the same value it already held.
+    /// This is what makes `tabBarImmersiveHide()` below narrow: it subscribes to
+    /// `$immersiveHidden` specifically, so a redundant same-value write (which `@Published` would
+    /// still broadcast — it doesn't dedupe) would otherwise re-resolve `.toolbarVisibility` for
+    /// no reason. Before T3 this was a plain computed property read fresh by a modifier that took
+    /// the whole `TabBarVisibility` object as a parameter — which meant the modifier's owning
+    /// view (`MainTabView`, via `@StateObject`) re-evaluated on EVERY `@Published` change on the
+    /// object, including unrelated ones like `homeSurfaceCovered`, and `.toolbarVisibility` got
+    /// re-resolved along with it. That's the exact mechanism rounds 1–3 fought blind: the bar
+    /// froze mid-slide because its resolved preference kept changing identity underneath an
+    /// in-flight system transition, on every tab switch. See `tabBarImmersiveHide()` and
+    /// `MainTabView.tabBarVisibility` for the other two pieces of this fix.
+    @Published private(set) var immersiveHidden: Bool = false
 }
 
 private struct TabBarVisibilityKey: EnvironmentKey {
@@ -120,6 +137,50 @@ extension EnvironmentValues {
     var tabBarVisibility: TabBarVisibility {
         get { self[TabBarVisibilityKey.self] }
         set { self[TabBarVisibilityKey.self] = newValue }
+    }
+}
+
+/// Applies the detail-push-driven tab-bar auto-hide to one tab's root content. Formerly
+/// `ContentView.tabBarAutoHide(_ vis: TabBarVisibility)`, a `private extension View` that took
+/// the shared instance as a parameter — T3 (beta.14 regression fix) moved it here as a
+/// no-argument modifier instead:
+///
+/// Reading `tabBarVisibility` via `@Environment` INSIDE this modifier (rather than as a
+/// parameter) is what makes each `Tab` closure in `MainTabView` a constant, prunable view value —
+/// a parameter of object identity forced the closure to be re-evaluated whenever the object's
+/// identity was seen as changing inputs upstream. Combined with `MainTabView` reading
+/// `$immersiveHidden` through a narrow `onReceive` rather than the whole object through
+/// `@StateObject`, `.toolbarVisibility` can now only re-resolve on an actual `immersiveHidden`
+/// publish — i.e. a Detail push/pop — never as a side effect of a tab switch. See
+/// `MainTabView.tabBarVisibility`'s own doc comment for the other half of this fix.
+private struct TabBarImmersiveHideModifier: ViewModifier {
+    @Environment(\.tabBarVisibility) private var vis
+    @State private var immersive = false
+
+    func body(content: Content) -> some View {
+        content
+            // Round 4 (see TabBarVisibility.immersiveHidden): scroll no longer toggles bar
+            // visibility at all — `.automatic` lets the tvOS 26 system bar do its native
+            // minimize/expand as content scrolls, and only the immersive detail push
+            // force-hides. Rounds 1–3 proved any hidden→shown reshow can freeze mid-slide
+            // on hardware (clipped at the top until focus re-entered the bar), so the fix
+            // is to not have a reshow.
+            .toolbarVisibility(immersive ? .hidden : .automatic, for: .tabBar)
+            // T3: use the PAYLOAD from `onReceive`, not the property — `@Published` emits on
+            // willSet, same house rule as HomeView.swift's hero-trailer sync (~L1762-1768:
+            // "`@Published` emits on willSet, so use the payload, not the property"). A
+            // `@Published` publisher replays its current value to a new subscriber, so no
+            // `onAppear` seed is needed here.
+            .onReceive(vis.$immersiveHidden) { immersive = $0 }
+    }
+}
+
+extension View {
+    /// Attach to a tab root's content to drive the floating tab bar's immersive-push auto-hide.
+    /// No-argument by design (see `TabBarImmersiveHideModifier`'s doc comment) — reads the shared
+    /// instance from the environment rather than taking it as a parameter.
+    func tabBarImmersiveHide() -> some View {
+        modifier(TabBarImmersiveHideModifier())
     }
 }
 

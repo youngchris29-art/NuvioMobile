@@ -150,9 +150,21 @@ struct MainTabView: View {
     var rootCoverActive: Bool = false
 
     /// Single shared instance for the whole tab shell — provided to every tab root (and anything
-    /// they push, like `DetailView`) via `.environment(\.tabBarVisibility,)` below. `@StateObject`
-    /// here (not further up in `ContentView`) so it lives and dies with the tab shell itself.
-    @StateObject private var tabBarVisibility = TabBarVisibility()
+    /// they push, like `DetailView`) via `.environment(\.tabBarVisibility,)` below. Declared here
+    /// (not further up in `ContentView`) so it lives and dies with the tab shell itself.
+    ///
+    /// T3 (beta.14 regression fix, load-bearing — do NOT revert to `@StateObject`): `@State` on a
+    /// reference type stores the SAME instance for the same lifetime `@StateObject` would, but
+    /// without subscribing this view to the object's `objectWillChange`. `@StateObject` was the
+    /// bug: it meant ANY `@Published` mutation on `tabBarVisibility` — including
+    /// `homeSurfaceCovered`, which has nothing to do with the tab bar — invalidated `MainTabView`
+    /// and re-evaluated every `Tab` closure's body, which is what re-resolved
+    /// `.toolbarVisibility` mid-transition on every tab switch (the rounds 1–3 latch class,
+    /// BUG-66). The tab bar's own presentation now flows through `tabBarImmersiveHide()`'s own
+    /// `@Environment` read plus a narrow `onReceive(vis.$immersiveHidden)` — a targeted
+    /// subscription to exactly the one publisher that should move it. A well-meaning revert to
+    /// `@StateObject` here would silently restore the every-tab-switch toolbar re-resolution.
+    @State private var tabBarVisibility = TabBarVisibility()
 
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
@@ -160,19 +172,19 @@ struct MainTabView: View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: 0) {
                 HomeView()
-                    .tabBarAutoHide(tabBarVisibility)
+                    .tabBarImmersiveHide()
             }
             Tab("Search", systemImage: "magnifyingglass", value: 1) {
                 SearchView()
-                    .tabBarAutoHide(tabBarVisibility)
+                    .tabBarImmersiveHide()
             }
             Tab("Library", systemImage: "books.vertical", value: 2) {
                 LibraryView()
-                    .tabBarAutoHide(tabBarVisibility)
+                    .tabBarImmersiveHide()
             }
             Tab("Add-ons", systemImage: "puzzlepiece.extension", value: 3) {
                 AddonsView()
-                    .tabBarAutoHide(tabBarVisibility)
+                    .tabBarImmersiveHide()
             }
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView()
@@ -195,23 +207,6 @@ struct MainTabView: View {
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
         }
-    }
-}
-
-/// Applies the scroll-driven / detail-driven tab-bar auto-hide to one tab's root content. Kept as
-/// a modifier (rather than inlined per `Tab`) since the same `.toolbarVisibility` + `.animation`
-/// pair is identical across every scrolling tab root — only the shared `TabBarVisibility` instance
-/// varies (there is exactly one, but this keeps each `Tab` closure above short and consistent).
-private extension View {
-    func tabBarAutoHide(_ vis: TabBarVisibility) -> some View {
-        self
-            // Round 4 (see TabBarVisibility.immersiveHidden): scroll no longer toggles bar
-            // visibility at all — `.automatic` lets the tvOS 26 system bar do its native
-            // minimize/expand as content scrolls, and only the immersive detail push
-            // force-hides. Rounds 1–3 proved any hidden→shown reshow can freeze mid-slide
-            // on hardware (clipped at the top until focus re-entered the bar), so the fix
-            // is to not have a reshow.
-            .toolbarVisibility(vis.immersiveHidden ? .hidden : .automatic, for: .tabBar)
     }
 }
 
