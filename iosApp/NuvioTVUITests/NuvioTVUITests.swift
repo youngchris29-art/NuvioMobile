@@ -2170,6 +2170,33 @@ final class NuvioTVUITests: XCTestCase {
                 if let f = focusedButton(app), inPane(f) { break }
             }
         }
+        /// Post-condition enforcement (2026-08-25, found while fixing test32): the index
+        /// arithmetic above can finish ONE ROW PAST the target, and nothing used to check.
+        /// `ensureToggleRow` then pressed Select on the neighbour — on the Appearance pane that
+        /// silently flipped "No Zoom on Focus" while asserting about "Accent Focus Ring", so the
+        /// failure read as "the toggle would not change state" and sent two investigations after
+        /// the state READ (which was always correct) and after profile sync (which was innocent).
+        ///
+        /// Rather than re-derive the arithmetic — it carries a lot of focus-engine history — this
+        /// verifies what the function promises and nudges one row at a time until it holds. Cheap,
+        /// and it fixes the landing for every caller, not just the one that exposed it.
+        func settleFocusOnTargetRow() {
+            func targetY() -> CGFloat? {
+                rows().first(where: { row in row.contains { $0.label.hasPrefix(targetLabelPrefix) } })?[0].frame.minY
+            }
+            for _ in 0..<8 {
+                guard let f = focusedButton(app), inPane(f) else { return } // focus unreadable: leave as-is
+                if f.label.hasPrefix(targetLabelPrefix) { return }
+                guard let ty = targetY() else { return }
+                if abs(f.frame.minY - ty) < 6 { return } // same row, different element in it
+                remote.press(f.frame.minY > ty ? .up : .down)
+                pause(0.6)
+            }
+            if let f = focusedButton(app), inPane(f), !f.label.hasPrefix(targetLabelPrefix) {
+                XCTFail("focus would not settle on '\(targetLabelPrefix)…' — ended on '\(f.label.prefix(60))'")
+            }
+        }
+
         for _ in 0..<10 {
             let r = rows()
             guard !r.isEmpty else { throw XCTSkip("no pane buttons in the AX tree") }
@@ -2181,6 +2208,7 @@ final class NuvioTVUITests: XCTestCase {
                 if delta > 0 { press(.down, times: delta, gap: 0.6) }
                 if delta < 0 { press(.up, times: -delta, gap: 0.6) }
                 pause(0.8)
+                settleFocusOnTargetRow()
                 return
             }
             // Hop to the LAST row whose label is unique in this capture (so it is re-findable).
@@ -2219,15 +2247,46 @@ final class NuvioTVUITests: XCTestCase {
         // ambiguous between legacy `.switch` and modern `.toggle` on this SDK, not the old
         // hand-rolled `.button` — see focusedButton's comment for how this was diagnosed.
         // `descendants(matching: .any)` sidesteps the type-scoped query entirely.
-        let row = { app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix)).firstMatch }
+        //
+        // The row surfaces THREE times under one label (dumped 2026-08-25, not guessed): the
+        // wrapping `Cell` (composed label ending ", On"/", Off", no usable `.value`), the `Switch`
+        // (`.value` "On"/"Off"), and a bare `StaticText` carrying NEITHER. `firstMatch` could
+        // return any of them, and the old `toggleState(...) ?? false` turned "unreadable" into
+        // "Off" — a silent wrong answer that pressed Select on a toggle it had not actually read.
+        // Scan the candidates instead, prefer the one with a real value, and treat unreadable as
+        // a loud failure.
+        func readState() -> Bool? {
+            let matches = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
+                .allElementsBoundByIndex
+            for e in matches where (e.value as? String) == "On" || (e.value as? String) == "Off" {
+                return (e.value as? String) == "On"
+            }
+            for e in matches { if let s = toggleState(e) { return s } }
+            return nil
+        }
+        func describeCandidates() -> String {
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
+                .allElementsBoundByIndex
+                .map { "t\($0.elementType.rawValue):v=<\(String(describing: $0.value))>:l=<\($0.label.suffix(16))>" }
+                .joined(separator: " | ")
+        }
+
         try walkToRowByTreeIndex(app, targetLabelPrefix: labelPrefix, sidebarMaxX: sidebarMaxX, category: category)
-        guard row().exists else { XCTFail("toggle '\(labelPrefix)' missing"); return }
-        func isOn() -> Bool { toggleState(row()) ?? false }
-        if isOn() != on {
+        guard let before = readState() else {
+            XCTFail("toggle '\(labelPrefix)' state unreadable — candidates: \(describeCandidates())")
+            return
+        }
+        if before != on {
             remote.press(.select)
             pause(1.5)
         }
-        XCTAssertEqual(isOn(), on, "toggle '\(labelPrefix)' did not end up \(on ? "ON" : "OFF"): value=\(String(describing: row().value))")
+        guard let after = readState() else {
+            XCTFail("toggle '\(labelPrefix)' state unreadable after the press — candidates: \(describeCandidates())")
+            return
+        }
+        XCTAssertEqual(after, on, "toggle '\(labelPrefix)' did not end up \(on ? "ON" : "OFF") (was \(before)) — candidates: \(describeCandidates())")
     }
 
     // MARK: - Home "Upcoming" row (next airing episodes of followed shows)
