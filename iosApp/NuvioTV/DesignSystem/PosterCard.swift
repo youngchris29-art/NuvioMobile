@@ -84,10 +84,25 @@ private let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
 /// scales with the card as one layer" contract and the graveyard above are untouched.
 private func ringInset(_ accentFocusRing: Bool) -> CGFloat { accentFocusRing ? ringWidth : 0 }
 
-/// FEAT-14: approximates the magnitude of the system `.hoverEffect(.highlight)` lift, used by
-/// `CardFocusTreatment`'s manual scale so ring mode's focused size roughly matches the size a
-/// focused card would have under the default (non-ring) hover treatment.
-private let cardRingLiftScale: CGFloat = 1.06
+/// The magnitude of the system `.hoverEffect(.highlight)` lift on a poster — **measured**, not
+/// estimated (test44, tvOS 26.5 sim, 2026-08-25: focused artwork top edge rises 20.0pt on a 330pt
+/// artwork → 1.1212, rounded here).
+///
+/// BUG-64 is what this constant was. It sat at **1.06** and was documented as "approximates" /
+/// "roughly matches" — a guess, never checked — while the hybrid contract's FEAT-14 carve-out
+/// promised ring mode swaps the system lift for *"an equivalent manual scale"*. It was not
+/// equivalent: it was barely half the lift. u/mrStevenx3 reported for two betas that turning the
+/// ring on changed how focus behaves, and the earlier video-based reading concluded the ring made
+/// posters zoom MORE. The measurement says the opposite — ring mode zoomed noticeably LESS — which
+/// is why "re-tune it" kept being dismissed as already-tried.
+///
+/// Used in BOTH directions, which is why the correction reaches further than the ring:
+///  - `CardFocusTreatment.manualScale` — ring mode's stand-in for the system lift;
+///  - `CardCaptionFocusDrop` — how far the caption follows the SYSTEM lift's bottom edge, which
+///    was therefore dropping by half the distance it should have on every default-mode card.
+///
+/// Sim-derived; a device pass should confirm it before it is treated as settled.
+private let cardSystemLiftScale: CGFloat = 1.12
 
 /// BUG-36: the ARTWORK's rounded rect, expressed in the WHOLE CARD's coordinate space.
 ///
@@ -211,7 +226,18 @@ struct CardFocusTreatment: ViewModifier {
             content
         case .manualScale:
             content
-                .scaleEffect(isFocused ? cardRingLiftScale : 1)
+                // BUG-64: the system lift is not just a scale — it carries a platter and a drop
+                // shadow, so a ring card that only scaled read as a flat mechanical zoom next to
+                // the native lift's sense of depth. Same fill+shadow still mode uses, so all three
+                // treatments share one depth cue.
+                .background {
+                    if isFocused {
+                        artworkShape
+                            .fill(Color.black)
+                            .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
+                    }
+                }
+                .scaleEffect(isFocused ? cardSystemLiftScale : 1)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
         case let .still(ringed):
             content
@@ -334,7 +360,7 @@ struct CardArtworkSystemLift: ViewModifier {
 /// BUG-54 companion: in `.systemLift` mode the caption sits OUTSIDE the hover-effect view again,
 /// so the system lift no longer moves it. Instead of standing still under the lifted artwork
 /// (BUG-36's second symptom), the focused caption slides down by the lift's bottom expansion —
-/// half of the scale delta over the artwork height, the same arithmetic `cardRingLiftScale`
+/// half of the scale delta over the artwork height, the same arithmetic `cardSystemLiftScale`
 /// approximates for ring mode — which keeps the artwork↔title gap visually constant and matches
 /// the native TV-app caption behavior. `.offset` is render-only, so row layout never reflows.
 /// Other modes return 0: manual scale carries the caption inside the scaled lockup, still mode
@@ -347,7 +373,7 @@ struct CardCaptionFocusDrop: ViewModifier {
 
     private var drop: CGFloat {
         guard case .systemLift = mode, isFocused else { return 0 }
-        return (cardRingLiftScale - 1) / 2 * artworkHeight
+        return (cardSystemLiftScale - 1) / 2 * artworkHeight
     }
 
     func body(content: Content) -> some View {

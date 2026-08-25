@@ -3112,4 +3112,204 @@ final class NuvioTVUITests: XCTestCase {
         )
         XCTAssertTrue(app.state == .runningForeground, "app must survive opening the seeded folder")
     }
+
+    // MARK: - BUG-64: the ring's manual scale must match the system lift
+
+    /// Mean luma per COLUMN across a horizontal strip. The column cousin of `lumaStats`, used to
+    /// find where posters end and the row background begins.
+    private func columnLuma(in image: UIImage, pointRect: CGRect, windowSize: CGSize) throws -> [Double] {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let px = CGRect(
+            x: pointRect.minX * scale, y: pointRect.minY * scale,
+            width: pointRect.width * scale, height: pointRect.height * scale
+        ).integral.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !px.isEmpty, let cropped = cg.cropping(to: px) else {
+            throw XCTSkip("strip \(pointRect) is off-screen")
+        }
+        let w = cropped.width, h = cropped.height
+        var buffer = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(
+            data: &buffer, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw XCTSkip("could not build a bitmap context") }
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var columns = [Double](repeating: 0, count: w)
+        for x in 0..<w {
+            var sum = 0.0
+            for y in 0..<h {
+                let i = (y * w + x) * 4
+                sum += (0.2126 * Double(buffer[i]) + 0.7152 * Double(buffer[i + 1]) + 0.0722 * Double(buffer[i + 2])) / 255.0
+            }
+            columns[x] = sum / Double(h)
+        }
+        return columns
+    }
+
+    /// Mean luma per ROW across a vertical strip, plus the points-per-pixel scale so callers can
+    /// convert an index back to layout points.
+    private func rowLuma(in image: UIImage, pointRect: CGRect, windowSize: CGSize) throws -> (rows: [Double], ptPerPx: CGFloat) {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let px = CGRect(
+            x: pointRect.minX * scale, y: pointRect.minY * scale,
+            width: pointRect.width * scale, height: pointRect.height * scale
+        ).integral.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !px.isEmpty, let cropped = cg.cropping(to: px) else {
+            throw XCTSkip("strip \(pointRect) is off-screen")
+        }
+        let w = cropped.width, h = cropped.height
+        var buffer = [UInt8](repeating: 0, count: w * h * 4)
+        guard let ctx = CGContext(
+            data: &buffer, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { throw XCTSkip("could not build a bitmap context") }
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var rows = [Double](repeating: 0, count: h)
+        for y in 0..<h {
+            var sum = 0.0
+            for x in 0..<w {
+                let i = (y * w + x) * 4
+                sum += (0.2126 * Double(buffer[i]) + 0.7152 * Double(buffer[i + 1]) + 0.0722 * Double(buffer[i + 2])) / 255.0
+            }
+            rows[y] = sum / Double(w)
+        }
+        return (rows, 1 / scale)
+    }
+
+    /// Index of the strongest background→content step in a row profile: the artwork's TOP EDGE.
+    ///
+    /// Deliberately a maximum-gradient search rather than a threshold crossing. The first version
+    /// of this measurement looked for dark RUNS between adjacent posters and was defeated by real
+    /// artwork — two posters with dark edges merged into one 70pt "gap" and the reading was
+    /// silently 50% off. Above a poster there is only row background, so the step there is
+    /// unambiguous no matter what the artwork looks like.
+    private func topEdgeIndex(_ rows: [Double]) -> (index: Int, strength: Double)? {
+        guard rows.count > 6 else { return nil }
+        var best = (index: -1, delta: 0.0)
+        // 3-row window smooths JPEG noise without blurring a real edge.
+        for i in 3..<(rows.count - 3) {
+            let before = (rows[i - 3] + rows[i - 2] + rows[i - 1]) / 3
+            let after = (rows[i] + rows[i + 1] + rows[i + 2]) / 3
+            let delta = after - before
+            if delta > best.delta { best = (i, delta) }
+        }
+        return best.index >= 0 ? (best.index, best.delta) : nil
+    }
+
+    /// BUG-64 (u/mrStevenx3, two betas running): "the focus ring keeps zooming in".
+    ///
+    /// The hybrid contract's FEAT-14 carve-out promises ring mode swaps the system lift for **an
+    /// equivalent manual scale**. It was never measured — `cardRingLiftScale` is documented in
+    /// PosterCard.swift as an approximation that "roughly matches" — and the reporter has been
+    /// telling us for two betas that it does not, which reads to him as the ring causing zoom.
+    ///
+    /// Measures how much a focused poster GROWS in each treatment, from a single screenshot, by
+    /// the gaps between it and its neighbours: the gap on the focused card's side has narrowed by
+    /// its per-side growth, while gaps further along the row are still at rest. Self-calibrating,
+    /// so it needs no second screenshot and cannot be fooled by a row that scrolled between shots
+    /// (which is what killed the obvious focused-vs-unfocused diff).
+    ///
+    /// The assertion is the equivalence the contract promises, not an absolute number — whatever
+    /// tvOS's lift turns out to be, the ring must not change it.
+    func test44RingLiftMatchesSystemLift() throws {
+        // Ring state comes from the ARGUMENT DOMAIN. `ensureToggleRow` cannot read a toggle inside
+        // the beta.15 native `List` (it reports `value=Optional()`), and this profile's
+        // `accent_focus_ring` is SYNCED ON, so a local `defaults write` is clobbered by the next
+        // cloud pull. NSArgumentDomain outranks both. An earlier version drove the real toggle and
+        // silently measured one state twice — identical gap arrays, a perfect match, a vacuous pass.
+        //
+        // Each measurement is self-contained within ONE screenshot: the focused card's top edge is
+        // compared against an UNFOCUSED neighbour's in the same frame, and normalised by that
+        // card's own artwork height. So the two launches landing on different cards (which they do
+        // — 220pt vs 228pt on this fixture, the trap test32 documents) no longer invalidates it.
+        func liftScale(ringOn: Bool, _ name: String) throws -> (scale: CGFloat, rise: CGFloat, artH: CGFloat) {
+            let app = launchToHome(
+                extraArguments: ["-no_zoom_on_focus", "NO", "-accent_focus_ring", ringOn ? "YES" : "NO"],
+                forceFreshLaunch: true
+            )
+            openTab(app, named: "Home")
+            press(.down, times: 3)
+            press(.left, times: 6, gap: 0.3)
+            pause(2)
+            guard let card = focusedButton(app), card.frame.width > 80, card.frame.height > card.frame.width else {
+                throw XCTSkip("no focused poster card reported (the 27.0 runtime never reports hasFocus)")
+            }
+            let f = card.frame
+            let shot = XCUIScreen.main.screenshot()
+            let attachment = XCTAttachment(screenshot: shot)
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+
+            let artH = f.width * 1.5
+            /// Top edge of the artwork in a narrow column centred on `centreX`, searched from well
+            /// above the resting top down into the artwork.
+            func topEdge(centreX: CGFloat) throws -> (y: CGFloat, strength: Double)? {
+                let strip = CGRect(
+                    x: centreX - f.width * 0.2, y: f.minY - artH * 0.25,
+                    width: f.width * 0.4, height: artH * 0.5
+                )
+                guard strip.minX > 0, strip.maxX < app.frame.maxX else { return nil }
+                let (rows, ptPerPx) = try rowLuma(in: shot.image, pointRect: strip, windowSize: app.frame.size)
+                guard let edge = topEdgeIndex(rows) else { return nil }
+                return (strip.minY + CGFloat(edge.index) * ptPerPx, edge.strength)
+            }
+
+            // The neighbour to the RIGHT is at rest, so its top edge is the layout baseline.
+            let gapGuess = f.width * 0.18
+            guard let focusedTop = try topEdge(centreX: f.midX),
+                  let restTop = try topEdge(centreX: f.maxX + gapGuess + f.width / 2) else {
+                throw XCTSkip("could not locate both top edges for \(name)")
+            }
+            // A weak step means the column landed on dark artwork and the "edge" is noise.
+            guard focusedTop.strength > 0.05, restTop.strength > 0.05 else {
+                throw XCTSkip("top-edge steps too weak in \(name) (focused \(focusedTop.strength), rest \(restTop.strength)) — dark artwork, rerun")
+            }
+            // Ring-inset compensation. With the ring ON the artwork is drawn INSET by `ringWidth`
+            // (PosterCard's `ringInset`) and the ring is stroked at the card's OUTER edge — so the
+            // focused card's strongest step is the accent stroke, while the unfocused neighbour's
+            // is its inset artwork. That is a free 4pt of apparent rise that has nothing to do with
+            // the lift. Uncompensated it reported scaleOn=1.088 for a `cardRingLiftScale` of 1.06.
+            // Compensated it reports ~1.064 — which is how this method was validated: ring mode's
+            // scale is a SwiftUI constant we already know, so it doubles as the edge finder's
+            // known-answer test before the system lift's unknown one is believed.
+            let ringOuterEdgeCompensationPt: CGFloat = 4
+            let rise = restTop.y - focusedTop.y - (ringOn ? ringOuterEdgeCompensationPt : 0)
+            let scale = 1 + 2 * rise / artH
+            let report = XCTAttachment(string: "\(name) ringOn=\(ringOn) focusedTop=\(focusedTop) restTop=\(restTop) rise=\(rise)pt artH=\(artH) scale=\(scale) frame=\(f)")
+            report.name = "\(name)_edges"
+            report.lifetime = .keepAlways
+            add(report)
+            NSLog("[BUG64] %@ ringOn=%d rise=%.2fpt artH=%.1f scale=%.4f strengths=%.3f/%.3f",
+                  name, ringOn ? 1 : 0, rise, artH, scale, focusedTop.strength, restTop.strength)
+            return (scale, rise, artH)
+        }
+
+        let off = try liftScale(ringOn: false, "44a_ring_off_system_lift")
+        let on = try liftScale(ringOn: true, "44b_ring_on_manual_scale")
+
+        let summary = "scaleOff=\(off.scale) scaleOn=\(on.scale) riseOff=\(off.rise)pt riseOn=\(on.rise)pt artHOff=\(off.artH) artHOn=\(on.artH)"
+        let sum = XCTAttachment(string: summary)
+        sum.name = "44c_scales"
+        sum.lifetime = .keepAlways
+        add(sum)
+        NSLog("[BUG64] %@", summary)
+
+        // Sanity: both treatments must actually raise the focused card, or the equivalence check
+        // below passes vacuously.
+        XCTAssertGreaterThan(off.rise, 1, "system lift did not raise the focused card at all — the edge finder is not measuring focus (\(summary))")
+        XCTAssertGreaterThan(on.rise, 1, "ring mode did not raise the focused card at all (\(summary))")
+        // The contract's promise ("an equivalent manual scale"), as a number.
+        XCTAssertEqual(
+            on.scale, off.scale, accuracy: 0.015,
+            "ring mode grows the focused poster by a different amount than the system lift (\(summary)) — this is BUG-64: with the ring on, focus 'zooms' differently"
+        )
+    }
 }
