@@ -301,7 +301,7 @@ struct DetailView: View {
             if interacted { cancelAutoPlayTrailer() }
         }
         .fullScreenCover(isPresented: $showStreams) {
-            StreamPickerView(type: preview.type, videoId: preview.id, title: title,
+            StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
                              poster: posterUrl, synopsis: overview, meta: playbackMeta)
         }
         .fullScreenCover(item: $seriesPlay) { route in
@@ -364,6 +364,24 @@ struct DetailView: View {
     /// Poster art for the right-hand backdrop layer — independent of `backgroundUrl`'s
     /// banner/backdrop preference (tester ask: mirror mobile's "poster stays on the right" layout).
     private var posterUrl: String? { model.meta?.poster ?? preview.poster }
+
+    /// BUG-74: the id a STREAM request must use — the resolved meta's canonical id whenever we
+    /// have it, never the catalog preview's. This is the one derived value where the two genuinely
+    /// disagree, and it is why it took three weeks and a DM to find.
+    ///
+    /// Every TMDB-backed surface (collection folders, search, More Like This) hands this screen a
+    /// `preview.id` of the form `tmdb:<n>`. `MetaDetailsRepository.resolveMetaLookupId` remaps that
+    /// to `tt…` for the META fetch *only*: the addon's canonical id comes back on `meta.id` while
+    /// `preview.id` stays `tmdb:` — the divergence `DetailViewModel` already documents where it
+    /// explains why the stale-publish guard must not match on `meta.id`. Stream addons declare
+    /// `idPrefixes: ["tt"]`, so shipping a `tmdb:` id into `StreamsRepository` filters out every
+    /// one of them (`NoCompatibleAddons`) and the user gets no streams at all — on a detail page
+    /// that rendered perfectly, which is exactly what hid this.
+    ///
+    /// The preview fallback still earns its place: Play can be pressed before the meta resolves.
+    /// That window is covered by `StreamsRepository`'s own tmdb→imdb retry, not here — this
+    /// property must stay a pure read so it can't stall the cover's presentation.
+    private var streamVideoId: String { model.meta?.id ?? preview.id }
 
     /// Same gate the muted background hero player (and its mute button/play-pause toggle) use.
     /// FEAT-8: also false once the trailer-duration timer has stopped the background player, so the

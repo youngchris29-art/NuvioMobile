@@ -30,6 +30,13 @@ struct AboutSettingsPane: View {
 
     /// BUG-64: both raw toggles `CardFocusMode.resolve` reads, so this pane can show the resolved
     /// mode next to the settings a tester's photo needs to be checked against.
+    /// BUG-74: the reporter saw "no streams" on titles that played fine on mobile, and the one
+    /// fact that would have settled it in a day — the id we sent the addons was `tmdb:…`, not
+    /// `tt…` — was only ever written to a console no sideloaded tester has. Same release-safe
+    /// toggle pattern as the two probes above; live in-session (no relaunch), since the capture
+    /// protocol is "turn on, open the failing title, press Play, come back here, photograph".
+    @AppStorage("debug.streamProbe") private var streamDiagnostics = false
+
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
@@ -154,6 +161,40 @@ struct AboutSettingsPane: View {
                     .accessibilityIdentifier("tab_bar_probe_lines")
                 }
 
+                SettingsToggleRow(
+                    title: String(localized: "Stream Diagnostics"),
+                    subtitle: streamDiagnostics
+                        ? String(localized: "Stream lookups are logged below \u{2014} open the title that fails, press Play, then come back and photograph")
+                        : String(localized: "Turn on if asked to capture why a title finds no streams"),
+                    isOn: $streamDiagnostics
+                )
+
+                if streamDiagnostics {
+                    // 1 Hz re-read for the same reason the tab-bar readout has one: `StreamProbe`
+                    // is a plain static buffer with no publisher, and this pane stays mounted
+                    // while the tester goes off to reproduce. A static render would show an empty
+                    // log forever, which reads as "the probe is broken".
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        VStack(alignment: .leading, spacing: 2) {
+                            if StreamProbe.lines.isEmpty {
+                                Text(String(localized: "No stream lookups yet \u{2014} press Play on the title that fails."))
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                            } else {
+                                ForEach(Array(StreamProbe.lines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.system(size: 20, design: .monospaced))
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("stream_probe_lines")
+                }
+
                 SettingsValueRow(
                     title: String(localized: "Focus Mode"),
                     value: "\(CardFocusMode.resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus))"
@@ -171,6 +212,9 @@ struct AboutSettingsPane: View {
         .onAppear {
             heroProbeLines = UserDefaults.standard.stringArray(forKey: "debug.homeHeroProbe.lines") ?? []
         }
+        // The shared-side sink is installed/removed here rather than at the toggle, so it also
+        // recovers if the switch was flipped in a previous session (startup does the same call).
+        .onChange(of: streamDiagnostics) { _, _ in StreamProbe.syncSink() }
     }
 
     private static var marketingVersion: String {

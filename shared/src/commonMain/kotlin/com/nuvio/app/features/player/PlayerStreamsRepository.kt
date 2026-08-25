@@ -24,6 +24,9 @@ import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamLoadCompletion
 import com.nuvio.app.features.streams.StreamParser
 import com.nuvio.app.features.streams.StreamsUiState
+import com.nuvio.app.features.streams.StreamDiagnostics
+import com.nuvio.app.features.streams.StreamVideoIdRemap
+import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.streams.runCatchingUnlessCancelled
 import com.nuvio.app.features.streams.sortedForGroupedDisplay
 import com.nuvio.app.features.streams.streamAddonInstanceId
@@ -31,6 +34,7 @@ import com.nuvio.app.features.streams.toEmptyStateReason
 import com.nuvio.app.features.streams.toPluginProviderGroups
 import com.nuvio.app.features.streams.toStreamItem
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -137,6 +141,8 @@ object PlayerStreamsRepository {
         setRequestKey: (String?) -> Unit,
         jobHolder: () -> Job?,
         setJob: (Job) -> Unit,
+        imdbVideoId: String? = null,
+        remapAttempted: Boolean = false,
     ) {
         val pluginUiState = if (FeaturePolicyProvider.policy.pluginsEnabled) {
             PluginScraperHostProvider.host.initialize()
@@ -202,28 +208,88 @@ object PlayerStreamsRepository {
             return
         }
 
+        // BUG-74: each addon is asked with the id IT accepts — see StreamsRepository's copy and
+        // [StreamVideoIdRemap]. This path matters most for next-episode autoplay, whose videoId
+        // comes from persisted watch progress and so can be `tmdb:`-namespaced even when the detail
+        // screen handed the picker a clean one.
         val streamAddons = installedAddons
             .mapNotNull { addon ->
                 val manifest = addon.manifest ?: return@mapNotNull null
-                val supportsRequestedStream = manifest.resources.any { resource ->
-                    resource.name == "stream" &&
-                        resource.types.contains(type) &&
-                        (resource.idPrefixes.isEmpty() ||
-                            resource.idPrefixes.any { videoId.startsWith(it) })
+                val streamResources = manifest.resources.filter { resource ->
+                    resource.name == "stream" && resource.types.contains(type)
                 }
-                if (!supportsRequestedStream) return@mapNotNull null
+                val requestId = when {
+                    streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, videoId) } -> videoId
+                    imdbVideoId != null &&
+                        streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, imdbVideoId) } -> imdbVideoId
+                    else -> return@mapNotNull null
+                }
 
                 InstalledStreamAddonTarget(
                     addonName = addon.displayTitle.ifBlank { manifest.name },
                     addonId = addon.streamAddonInstanceId(manifest.id),
                     manifest = manifest,
+                    videoId = requestId,
                 )
             }
+
+        val typeStreamIdPrefixes = installedAddons.mapNotNull { addon ->
+            addon.manifest?.resources
+                ?.filter { it.name == "stream" && it.types.contains(type) }
+                ?.flatMap { it.idPrefixes }
+                ?.takeIf { it.isNotEmpty() }
+        }
+        val tmdbId = StreamVideoIdRemap.parseTmdbId(videoId)
+        if (
+            !remapAttempted &&
+            tmdbId != null &&
+            StreamVideoIdRemap.wouldReachMoreAddons(videoId, typeStreamIdPrefixes)
+        ) {
+            stateFlow.value = StreamsUiState(isAnyLoading = true)
+            val remapJob = scope.launch(start = CoroutineStart.LAZY) {
+                val imdbId = TmdbService.tmdbToImdb(tmdbId = tmdbId, mediaType = type)
+                val remapped = imdbId?.let { StreamVideoIdRemap.withImdbId(videoId, it) }
+                if (remapped != null) {
+                    log.d { "Remapped tmdb id for player streams: $videoId -> $remapped" }
+                    StreamDiagnostics.log("player remap $videoId → $remapped")
+                } else {
+                    log.w { "No IMDb id for tmdb:$tmdbId ($type) — tt-only stream addons stay unreachable" }
+                    StreamDiagnostics.log("player remap FAILED $videoId → no imdb id on tmdb")
+                }
+                // Re-enter either way, so a failed resolution never costs the user an addon that
+                // did accept the original id.
+                setRequestKey(null)
+                fetchStreams(
+                    type = type,
+                    videoId = videoId,
+                    season = season,
+                    episode = episode,
+                    forceRefresh = forceRefresh,
+                    stateFlow = stateFlow,
+                    requestKeyHolder = requestKeyHolder,
+                    setRequestKey = setRequestKey,
+                    // `{ null }`, not `jobHolder`: the re-entry cancels whatever the holder
+                    // reports, and right now that is THIS coroutine. Same reason
+                    // StreamsRepository nulls `activeJob` before its own re-entry.
+                    jobHolder = { null },
+                    setJob = setJob,
+                    imdbVideoId = remapped,
+                    remapAttempted = true,
+                )
+            }
+            setJob(remapJob)
+            remapJob.start()
+            return
+        }
 
         if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
             stateFlow.value = StreamsUiState(
                 isAnyLoading = false,
-                emptyStateReason = com.nuvio.app.features.streams.StreamsEmptyStateReason.NoCompatibleAddons,
+                emptyStateReason = if (tmdbId != null) {
+                    com.nuvio.app.features.streams.StreamsEmptyStateReason.IncompatibleContentId
+                } else {
+                    com.nuvio.app.features.streams.StreamsEmptyStateReason.NoCompatibleAddons
+                },
             )
             return
         }
@@ -333,7 +399,7 @@ object PlayerStreamsRepository {
                         manifestUrl = addon.manifest.transportUrl,
                         resource = "stream",
                         type = type,
-                        id = videoId,
+                        id = addon.videoId,
                     )
 
                     val displayName = addon.addonName

@@ -42,6 +42,10 @@ struct NuvioTVApp: App {
         // profile-change/sign-out lifecycle hooks.
         TvOsPluginsInstallerKt.installTvOsPlugins()
 
+        // BUG-74: attach the stream-diagnostics sink if the tester left the About toggle on. Inert
+        // (sink stays nil) in every other case — see `StreamProbe`.
+        StreamProbe.syncSink()
+
         // Configure + activate the audio session off the main thread once at startup. libmpv /
         // AVFoundation otherwise activate it lazily on the main thread at first playback, which
         // trips Xcode's "AVAudioSession Hang Risk" runtime diagnostic.

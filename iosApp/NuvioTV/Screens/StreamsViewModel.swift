@@ -120,6 +120,12 @@ final class StreamsViewModel: ObservableObject {
             self.updateCredentialWarning()
         }
 
+        // BUG-74: the id this screen was actually handed, logged before the fetch so a tester's
+        // photo shows it even if the fetch then reports nothing at all.
+        StreamProbe.log("open type=\(type) id=\(videoId)"
+            + (season.map { " s=\($0)" } ?? "")
+            + (episode.map { " e=\($0)" } ?? ""))
+
         StreamsRepository.shared.load(
             type: type,
             videoId: videoId,
@@ -203,8 +209,7 @@ final class StreamsViewModel: ObservableObject {
             if rawCount > 0 {
                 (emptyReason, emptyReasonHint) = Self.describeFiltered(rawCount: rawCount, debridEnabled: debridEnabled)
             } else {
-                emptyReason = Self.describe(state.emptyStateReason)
-                emptyReasonHint = nil
+                (emptyReason, emptyReasonHint) = Self.describe(state.emptyStateReason)
             }
         } else {
             emptyReason = nil
@@ -227,13 +232,28 @@ final class StreamsViewModel: ObservableObject {
         return (reason, nil)
     }
 
-    private static func describe(_ reason: StreamsEmptyStateReason?) -> String {
+    /// BUG-74: `NoCompatibleAddons` used to assert "only a metadata catalog (Cinemeta) is set up",
+    /// which was a guess dressed as a fact — and when a `tmdb:` id filtered out addons the user
+    /// definitely had installed, it was a confident lie that sent them looking in the wrong place
+    /// for three weeks. Both strings now describe what we actually know, and the id case has its
+    /// own reason so it can say so.
+    private static func describe(_ reason: StreamsEmptyStateReason?) -> (String, String?) {
         switch reason?.name {
-        case "NoAddonsInstalled":  return String(localized: "No addons installed.")
-        case "NoCompatibleAddons": return String(localized: "No streaming addons installed \u{2014} only a metadata catalog (Cinemeta) is set up.")
-        case "NoStreamsFound":     return String(localized: "No streams found for this title.")
-        case "StreamFetchFailed":  return String(localized: "Stream lookup failed.")
-        default:                   return String(localized: "No playable streams. Install a streaming addon, or connect a debrid account in Settings to play torrent results.")
+        case "NoAddonsInstalled":
+            return (String(localized: "No addons installed."),
+                    String(localized: "Add one in Settings \u{2192} Content Sources \u{2192} Addons."))
+        case "NoCompatibleAddons":
+            return (String(localized: "None of your addons provide streams for this title."),
+                    String(localized: "Your installed addons either don\u{2019}t serve streams, or don\u{2019}t cover this content type."))
+        case "IncompatibleContentId":
+            return (String(localized: "Couldn\u{2019}t look this title up with your stream addons."),
+                    String(localized: "It was opened from a TMDB source and has no matching IMDb id, which is what stream addons need. Opening it from search or a different row usually works."))
+        case "NoStreamsFound":
+            return (String(localized: "No streams found for this title."), nil)
+        case "StreamFetchFailed":
+            return (String(localized: "Stream lookup failed."), nil)
+        default:
+            return (String(localized: "No playable streams. Install a streaming addon, or connect a debrid account in Settings to play torrent results."), nil)
         }
     }
 

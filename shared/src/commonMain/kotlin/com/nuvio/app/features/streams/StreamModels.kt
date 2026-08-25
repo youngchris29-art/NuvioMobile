@@ -319,6 +319,15 @@ data class AddonStreamGroup(
 enum class StreamsEmptyStateReason {
     NoAddonsInstalled,
     NoCompatibleAddons,
+
+    /**
+     * BUG-74: the title reached us under a `tmdb:` id and we could not turn it into the IMDb id
+     * that `tt`-only stream addons require, so no addon was ever asked. Distinct from
+     * [NoCompatibleAddons] on purpose — that one means "you have no addon for this", this one means
+     * "you probably do, but we could not address this title to it". Conflating them is what made
+     * BUG-74 invisible for three weeks: the user was told to install addons he already had.
+     */
+    IncompatibleContentId,
     NoStreamsFound,
     StreamFetchFailed,
 }

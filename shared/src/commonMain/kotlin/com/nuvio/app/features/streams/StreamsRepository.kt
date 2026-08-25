@@ -16,7 +16,9 @@ import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.plugins.PluginScraperHostProvider
 import com.nuvio.app.features.plugins.pluginContentId
 import com.nuvio.app.features.plugins.PluginsUiState
+import com.nuvio.app.features.tmdb.TmdbService
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -72,7 +74,12 @@ object StreamsRepository {
         )
     }
 
-    private fun load(type: String, videoId: String, parentMetaId: String?, season: Int?, episode: Int?, manualSelection: Boolean, forceRefresh: Boolean) {
+    /**
+     * [imdbVideoId] is BUG-74's resolved alternate id: non-null only on the second pass, after the
+     * suspend TMDB lookup below has turned a `tmdb:` request into the `tt` one that most stream
+     * addons are keyed on. Addons are then matched against whichever of the two they accept.
+     */
+    private fun load(type: String, videoId: String, parentMetaId: String?, season: Int?, episode: Int?, manualSelection: Boolean, forceRefresh: Boolean, imdbVideoId: String? = null, remapAttempted: Boolean = false) {
         val pluginUiState = if (FeaturePolicyProvider.policy.pluginsEnabled) {
             PluginScraperHostProvider.host.initialize()
             PluginScraperHostProvider.host.uiState.value
@@ -175,31 +182,114 @@ object StreamsRepository {
             return
         }
 
+        // BUG-74: each addon is asked with the id IT accepts. `videoId` first (so a tmdb-only or
+        // prefix-less addon keeps working exactly as before), then the resolved IMDb id if this is
+        // the second pass. Before this, one id was used for the whole fan-out and every addon that
+        // disagreed with its namespace was dropped without a word.
         val streamAddons = installedAddons
             .mapNotNull { addon ->
                 val manifest = addon.manifest ?: return@mapNotNull null
-                val supportsRequestedStream = manifest.resources.any { resource ->
-                    resource.name == "stream" &&
-                        resource.types.contains(type) &&
-                        (resource.idPrefixes.isEmpty() ||
-                            resource.idPrefixes.any { videoId.startsWith(it) })
+                val streamResources = manifest.resources.filter { resource ->
+                    resource.name == "stream" && resource.types.contains(type)
                 }
-                if (!supportsRequestedStream) return@mapNotNull null
+                val requestId = when {
+                    streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, videoId) } -> videoId
+                    imdbVideoId != null &&
+                        streamResources.any { StreamVideoIdRemap.accepts(it.idPrefixes, imdbVideoId) } -> imdbVideoId
+                    else -> return@mapNotNull null
+                }
 
                 InstalledStreamAddonTarget(
                     addonName = addon.displayTitle.ifBlank { manifest.name },
                     addonId = addon.streamAddonInstanceId(manifest.id),
                     manifest = manifest,
+                    videoId = requestId,
                 )
             }
 
         log.d { "Found ${streamAddons.size} addons for stream type=$type id=$videoId" }
+        // Name BOTH ids on the second pass. The first version of this line printed only the
+        // original, so a photographed log showed "id=tmdb:550" twice with different addon counts
+        // and no visible reason — the remap is the reason, and the line has to say so.
+        StreamDiagnostics.log(
+            "match type=$type id=$videoId" +
+                (imdbVideoId?.let { " +$it" } ?: "") +
+                " → addons=${streamAddons.size}/${installedAddons.size} plugins=${pluginProviderGroups.size}"
+        )
+
+        // BUG-74: if a `tmdb:` request is leaving some of the user's stream addons unasked, resolve
+        // the IMDb id and run the match again with BOTH ids available, so each addon can be asked
+        // with the one it accepts. Gated on `remapAttempted`, not on the result, so a title with no
+        // IMDb id on TMDB resolves once and then proceeds normally instead of looping.
+        val typeStreamIdPrefixes = installedAddons.mapNotNull { addon ->
+            addon.manifest?.resources
+                ?.filter { it.name == "stream" && it.types.contains(type) }
+                ?.flatMap { it.idPrefixes }
+                ?.takeIf { it.isNotEmpty() }
+        }
+        val tmdbId = StreamVideoIdRemap.parseTmdbId(videoId)
+        if (
+            !remapAttempted &&
+            tmdbId != null &&
+            StreamVideoIdRemap.wouldReachMoreAddons(videoId, typeStreamIdPrefixes)
+        ) {
+            _uiState.value = StreamsUiState(requestToken = requestToken, isAnyLoading = true)
+            // LAZY + assign + start, not a bare `activeJob = scope.launch {}`: the body must not be
+            // able to run before the field holds it. It nulls that same field below, and a plain
+            // launch could interleave the two so `activeJob` ended up pointing at this finished
+            // remap instead of the real fetch — leaving `clear()` cancelling a corpse.
+            val remapJob = scope.launch(start = CoroutineStart.LAZY) {
+                val imdbId = TmdbService.tmdbToImdb(tmdbId = tmdbId, mediaType = type)
+                // Cancellation is the supersede guard: `clear()` and any newer `load()` both cancel
+                // `activeJob`, which is this job until the lines below, so a request replaced while
+                // resolving dies at the suspension above and never re-enters.
+                val remapped = imdbId?.let { StreamVideoIdRemap.withImdbId(videoId, it) }
+                if (remapped != null) {
+                    log.d { "Remapped tmdb id for streams: $videoId -> $remapped" }
+                    StreamDiagnostics.log("remap $videoId → $remapped")
+                } else {
+                    log.w { "No IMDb id for tmdb:$tmdbId ($type) — tt-only stream addons stay unreachable" }
+                    StreamDiagnostics.log("remap FAILED $videoId → no imdb id on tmdb")
+                }
+                // Re-enter either way. On failure `imdbVideoId` stays null and the second pass
+                // matches exactly as the first did, so whatever addons DID accept the tmdb id are
+                // still fetched — the resolution failing must not cost the user a working source.
+                // Release both guards first: `activeRequestKey` so the reload isn't skipped as
+                // "unchanged", `activeJob` so the reload's own `activeJob?.cancel()` can't cancel
+                // the coroutine making the call. `videoId` stays the ORIGINAL — the second pass
+                // needs both ids. parentMetaId passes through untouched; it keys the binge-group
+                // cache, not an addon request.
+                activeRequestKey = null
+                activeJob = null
+                load(
+                    type = type,
+                    videoId = videoId,
+                    parentMetaId = parentMetaId,
+                    season = season,
+                    episode = episode,
+                    manualSelection = manualSelection,
+                    forceRefresh = forceRefresh,
+                    imdbVideoId = remapped,
+                    remapAttempted = true,
+                )
+            }
+            activeJob = remapJob
+            remapJob.start()
+            return
+        }
 
         if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
                 isAnyLoading = false,
-                emptyStateReason = StreamsEmptyStateReason.NoCompatibleAddons,
+                // BUG-74: a `tmdb:` id that reached here either had no IMDb equivalent or found no
+                // addon willing to take either form. Either way the id — not the user's addon
+                // list — is why nothing was asked, and saying so is the whole point of the split.
+                emptyStateReason = if (tmdbId != null) {
+                    StreamsEmptyStateReason.IncompatibleContentId
+                } else {
+                    StreamsEmptyStateReason.NoCompatibleAddons
+                },
             )
             return
         }
@@ -435,9 +525,10 @@ object StreamsRepository {
                         manifestUrl = addon.manifest.transportUrl,
                         resource = "stream",
                         type = type,
-                        id = videoId,
+                        id = addon.videoId,
                     )
                     log.d { "Fetching streams from: $url" }
+                    StreamDiagnostics.log("fetch ${addon.addonName}: ${StreamDiagnostics.redactUrl(url)}")
 
                     val displayName = addon.addonName
                     val group = runCatchingUnlessCancelled {
@@ -454,6 +545,7 @@ object StreamsRepository {
                     }.fold(
                         onSuccess = { streams ->
                             log.d { "Got ${streams.size} streams from ${displayName}" }
+                            StreamDiagnostics.log("got ${streams.size} from $displayName")
                             AddonStreamGroup(
                                 addonName = displayName,
                                 addonId = addon.addonId,
@@ -463,6 +555,7 @@ object StreamsRepository {
                         },
                         onFailure = { err ->
                             log.w(err) { "Failed to fetch streams from ${displayName}" }
+                            StreamDiagnostics.log("FAILED $displayName: ${err.message ?: "unknown error"}")
                             AddonStreamGroup(
                                 addonName = displayName,
                                 addonId = addon.addonId,
