@@ -13,8 +13,10 @@ import SharedCore
 ///
 /// ## Focus graph (written before the code, per the tvOS skill's workflow)
 ///
-/// **Default focus.** The sidebar `List` is a `.focusScope(sidebarFocus)`; the first category row
-/// (Account & Services) carries `.prefersDefaultFocus(true, in: sidebarFocus)`. Entering the
+/// **Default focus.** The sidebar `List` is a `.focusScope(sidebarFocus)`; the SELECTED category
+/// row carries `.prefersDefaultFocus(true, in: sidebarFocus)` — on a cold mount that is the first
+/// row (Account & Services), and after a theme-change remount it is whichever category the user
+/// was standing in, so picking a theme swatch no longer throws them to the top. Entering the
 /// Settings tab — from the tab bar, or back from a pushed sub-page — lands focus on a sidebar
 /// row, never in the detail pane. There is no `@FocusState` write on appear: the scope's default
 /// is the only mechanism, so a restored focus (tvOS remembers the last focused row within the
@@ -66,7 +68,13 @@ struct SettingsView: View {
     @State private var confirmingUseOfficial = false
     /// Which category's sections are shown in the detail pane. Non-optional (panes and the pane
     /// switch below read it directly); the `List`'s selection binding adapts it.
-    @State private var selectedCategory: SettingsCategory = .accountServices
+    ///
+    /// A `@Binding` owned by `ContentView`, NOT local `@State`: `ContentView` pins
+    /// `.id(appTheme.themeName)` on the app root, so choosing a theme swatch in the Appearance pane
+    /// remounts this whole view. While this was `@State` that remount reset the split to
+    /// `.accountServices` — the user pressed a colour and was thrown to the top of Settings with
+    /// nothing visibly changed. Same fix, and same reason, as `selectedTab`.
+    @Binding var selectedCategory: SettingsCategory
     @FocusState private var focusedCategory: SettingsCategory?
     /// Scope that owns the sidebar's default focus — see the focus graph above.
     @Namespace private var sidebarFocus
@@ -240,12 +248,27 @@ struct SettingsView: View {
                     if settingsStyle == "minimal" {
                         Text(category.title)
                     } else {
-                        Label(category.title, systemImage: category.icon)
+                        // Icon in the theme accent at rest, `.primary` under the focus platter —
+                        // same `SettingsAccentTint` the detail rows use. The label itself keeps
+                        // NO explicit colour (BUG-45: an accent label here was white-on-white for
+                        // the White theme's near-white accent).
+                        Label {
+                            Text(category.title)
+                        } icon: {
+                            Image(systemName: category.icon)
+                                .settingsAccentTint()
+                        }
                     }
                 }
                 .tag(category)
                 .focused($focusedCategory, equals: category)
-                .prefersDefaultFocus(category == SettingsCategory.allCases.first, in: sidebarFocus)
+                // The scope's default follows the SELECTED category rather than always the first
+                // row. On a cold mount `selectedCategory` is `.accountServices` — the first row —
+                // so the documented "entering Settings lands on Account & Services" behaviour is
+                // unchanged. After a theme-change remount it lands back on the category the user
+                // was actually in, and (because focus IS selection here) the `onChange` below then
+                // re-writes the same value instead of clobbering it with the first row's.
+                .prefersDefaultFocus(category == selectedCategory, in: sidebarFocus)
             }
         }
         .focusScope(sidebarFocus)

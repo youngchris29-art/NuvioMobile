@@ -19,6 +19,7 @@ object SupabaseProvider {
     // build a client — the loser's client would leak un-closed into long-lived collectors.
     private val clientLock = SynchronizedObject()
     private var cachedClient: SupabaseClient? = null
+    private val rateLimitCoordinator = BackendRateLimitCoordinator()
 
     @OptIn(SupabaseInternal::class)
     val client: SupabaseClient
@@ -35,26 +36,65 @@ object SupabaseProvider {
             supabaseKey = configuration.publishableKey,
         ) {
             httpConfig {
-                if (SupabaseEndpointConfig.hasFallback) {
-                    install(HttpRequestRetry) {
-                        retryOnExceptionIf(maxRetries = 1) { request, cause ->
-                            SupabaseEndpointConfig.shouldRetryWithFallback(
+                install(BackendRateLimitPlugin) {
+                    coordinator = rateLimitCoordinator
+                }
+                install(HttpRequestRetry) {
+                    retryOnExceptionIf(maxRetries = 1) { request, cause ->
+                        isSafeBackendRetryRequest(
+                            method = request.method.value,
+                            encodedPath = request.url.build().encodedPath,
+                        ) && SupabaseEndpointConfig.shouldRetryWithFallback(
+                            requestUrl = request.url.buildString(),
+                            cause = cause,
+                        )
+                    }
+                    retryIf(maxRetries = 1) { request, response ->
+                        val safeToRetry = isSafeBackendRetryRequest(
+                            method = request.method.value,
+                            encodedPath = request.url.encodedPath,
+                        )
+                        val retryableResponse = isRetryableBackendResponse(response.status.value)
+                        val fallbackEligible = SupabaseEndpointConfig.shouldRetryWithFallback(
+                            requestUrl = request.url.toString(),
+                            statusCode = response.status.value,
+                        )
+                        safeToRetry && (retryableResponse || fallbackEligible)
+                    }
+                    modifyRequest { request ->
+                        val retryResponse = response
+                        val retryCause = cause
+                        val shouldUseFallback = when {
+                            retryResponse != null && shouldApplyBackendCooldown(
+                                retryResponse.status.value,
+                                retryResponse.headers[HttpHeaders.RetryAfter],
+                            ) -> false
+                            retryResponse != null -> SupabaseEndpointConfig.shouldRetryWithFallback(
                                 requestUrl = request.url.buildString(),
-                                cause = cause,
+                                statusCode = retryResponse.status.value,
                             )
-                        }
-                        retryIf(maxRetries = 1) { request, response ->
-                            SupabaseEndpointConfig.shouldRetryWithFallback(
-                                requestUrl = request.url.toString(),
-                                statusCode = response.status.value,
+                            retryCause != null -> SupabaseEndpointConfig.shouldRetryWithFallback(
+                                requestUrl = request.url.buildString(),
+                                cause = retryCause,
                             )
+                            else -> false
                         }
-                        modifyRequest { request ->
+                        if (shouldUseFallback) {
                             SupabaseEndpointConfig.fallbackUrlFor(request.url.buildString())?.let { fallbackUrl ->
                                 request.url.takeFrom(fallbackUrl)
                             }
                         }
-                        constantDelay(millis = 100)
+                    }
+                    delayMillis(respectRetryAfterHeader = false) { retryCount ->
+                        val retryResponse = response
+                        if (retryResponse != null && isRetryableBackendResponse(retryResponse.status.value)) {
+                            backendRetryDelayMillis(
+                                retryCount = retryCount,
+                                retryAfterHeader = retryResponse.headers[HttpHeaders.RetryAfter],
+                            )
+                        } else {
+                            100L
+                        }
                     }
                 }
                 defaultRequest {
@@ -76,6 +116,7 @@ object SupabaseProvider {
         val previous = synchronized(clientLock) {
             cachedClient.also { cachedClient = null }
         }
+        rateLimitCoordinator.clear()
         previous?.close()
     }
 }

@@ -31,6 +31,13 @@ struct ContentView: View {
     @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
     @State private var selectedTab = 0
+    /// Which Settings category the split view is showing. Owned HERE, above the
+    /// `.id(appTheme.themeName)` rebuild boundary, for exactly the reason `selectedTab` is: picking
+    /// a theme swatch re-identifies the whole tree, and while this was a plain `@State` inside
+    /// `SettingsView` the split snapped back to the first category (Account & Services) on every
+    /// theme change — so pressing a colour looked like it had done nothing at all, which is how the
+    /// "the theme picker doesn't work" report reads on screen.
+    @State private var settingsCategory: SettingsCategory = .accountServices
     /// Deep link currently presented (Top Shelf → resume / title). Held until the user is past
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
@@ -57,6 +64,7 @@ struct ContentView: View {
                         home: home,
                         onSwitchProfile: { entered = false },
                         selectedTab: $selectedTab,
+                        settingsCategory: $settingsCategory,
                         // FEAT-25 (Codex beta.14 r8): the app-root deep-link cover (Top Shelf)
                         // presents over the whole shell without touching tab selection or push
                         // depth — it must count as covering Home, or the hero trailer plays
@@ -75,8 +83,17 @@ struct ContentView: View {
         }
         .environment(\.posterStyle, posterStyle.style)
         .environment(\.cardDepthStyle, cardDepth.style)
+        // NOTE — deliberately NO app-root `.tint(Theme.Palette.accent)`. It looks like the obvious
+        // way to make stock controls follow the theme, and it was tried (2026-08-25, sim-verified
+        // via test43's `43b` capture): on tvOS it repaints the `Menu { Picker }` row's LABEL PILL
+        // with the accent, and the pill's label is drawn in a colour chosen for the default grey
+        // fill — the Settings Style / Size / Corners rows became solid accent bars with invisible
+        // text. Settings gets its accent from explicit, per-element tinting in the row kit
+        // (`SettingsAccentTint` in SettingsRowViews.swift) instead, which never touches a control's
+        // background.
         // Theme change → rebuild the tree so every static Theme.Palette.accent read re-evaluates.
-        // (Navigation/focus state resets on change — acceptable; it only happens in Settings.)
+        // Focus resets on change; the state that would visibly strand the user — the selected tab
+        // and the Settings category — is held above this boundary so it survives.
         .id(appTheme.themeName)
         .onAppear {
             auth.start()
@@ -130,6 +147,11 @@ struct ContentView: View {
                 // stop, not `release()`: it must drop regardless of who still holds it, and the
                 // unmounting HomeView's own `release()` is absorbed by the model.
                 home.stop()
+                // Periodic activity polling is profile-scoped too, and "switch profile" keeps the
+                // selected profile active in the repository — without this the loop started at
+                // profile entry keeps pulling every 15 min while the picker is up. Idempotent
+                // with the sign-out path's cancelAccountSync (Codex 2026-08-24).
+                SyncManager.shared.stopPeriodicNuvioSyncPull()
             }
         }
         .onOpenURL { url in
@@ -156,17 +178,31 @@ struct ContentView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // Foreground refresh (mirrors mobile's AppForegroundMonitor → requestForegroundPull).
-            // SyncManager self-guards: no-op unless signed in with a real account.
-            guard newPhase == .active, auth.gate == .main, entered else { return }
-            SyncManager.shared.requestForegroundPull(
-                profileId: ProfileRepository.shared.activeProfileId,
-                force: true
-            )
-            // Re-register this device/session on foreground (self-throttled to once per
-            // 15 min inside DeviceSessionRegistration unless force is passed).
-            Task {
-                _ = try? await DeviceSessionRegistration.shared.registerIfAuthenticated(force: false)
+            // Foreground/background sync lifecycle (mirrors mobile's AppVisibility collector in
+            // MainAppContent). SyncManager self-guards: no-op unless signed in with a real account.
+            // Divergence from mobile: iOS maps willResignActive → Background; on tvOS we only stop
+            // the periodic loop on a real .background, not the transient .inactive that fires
+            // during app-switcher overlays — restarting the loop is cheap, churn is not.
+            switch newPhase {
+            case .active:
+                guard auth.gate == .main, entered else { return }
+                // No force: the 2-minute activity-pull freshness gate inside SyncManager decides.
+                SyncManager.shared.requestForegroundPull(
+                    profileId: ProfileRepository.shared.activeProfileId,
+                    force: false
+                )
+                SyncManager.shared.startPeriodicNuvioSyncPull(
+                    profileId: ProfileRepository.shared.activeProfileId
+                )
+                // Re-register this device/session on foreground (self-throttled to once per
+                // 15 min inside DeviceSessionRegistration unless force is passed).
+                Task {
+                    _ = try? await DeviceSessionRegistration.shared.registerIfAuthenticated(force: false)
+                }
+            case .background:
+                SyncManager.shared.stopPeriodicNuvioSyncPull()
+            default:
+                break
             }
         }
         #if DEBUG
@@ -192,6 +228,10 @@ struct MainTabView: View {
     /// Owned by ContentView (above the theme `.id()` rebuild boundary) so changing the theme in
     /// Settings doesn't dump the user back onto the Home tab.
     @Binding var selectedTab: Int
+    /// Also owned by ContentView (above the theme `.id()` boundary), same reasoning as
+    /// `selectedTab`: a theme change must not dump the user out of the Settings category they were
+    /// standing in. Passed straight through to `SettingsView`.
+    @Binding var settingsCategory: SettingsCategory
     /// FEAT-25: true while ContentView's app-root deep-link cover is presented — a fourth way
     /// Home gets covered that neither tab selection nor push depth can see (Codex beta.14 r8).
     var rootCoverActive: Bool = false
@@ -241,7 +281,7 @@ struct MainTabView: View {
             // `tabBarImmersiveHide()` is the only safe uniform value here: `.visible` would pin
             // the bar open (BUG-66 itself), and `.hidden` is wrong for a tab root.
             Tab("Settings", systemImage: "gearshape", value: 4) {
-                SettingsView()
+                SettingsView(selectedCategory: $settingsCategory)
                     .tabBarImmersiveHide()
             }
             Tab("Profile", systemImage: "person.crop.circle", value: 5) {

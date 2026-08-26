@@ -180,13 +180,19 @@ object ProviderCredentialSync {
                 }
             }
 
+            // Perf (upstream 67b865a7, "seed only missing provider credentials"): pull FIRST, so
+            // the seed below can be skipped entirely when nothing is missing remotely — the
+            // seed RPC is insert-if-absent, so calling it when every seedable provider already
+            // has a remote row is a wasted round-trip.
+            val rows = pullRows(profileId)
+
             // Legacy-blob migration (see [legacyBlobCredentials]): fill only true voids. The
             // staged values ride the SEED, whose RPC is insert-if-absent (it must be — it runs
             // with the plain local snapshot on every sync, and an upserting seed would clobber
             // remote rows before every pull, defeating mergeRemote entirely). So a provider that
             // already has a row — including a blank clear-tombstone — is untouched, while a
-            // provider with no row gets created carrying the legacy value; the pull below then
-            // returns it and mergeRemote applies it locally like any other remote credential.
+            // provider with no row gets created carrying the legacy value; mergeRemote below
+            // applies it locally like any other remote credential once a later sync pulls it.
             // Never merged into localSnapshot itself: shouldPush above was computed from the real
             // local state, so a staged value can't masquerade as a local edit (Codex rounds 7–9).
             // Stash keys are STORAGE keys ("debrid_torbox_api_key"), snapshot providers are ids
@@ -204,9 +210,6 @@ object ProviderCredentialSync {
                     if (legacy != null && slot.value.isBlank()) slot.copy(value = legacy) else slot
                 },
             )
-            if (stagedByProvider.isNotEmpty()) {
-                log.i { "Seeding ${stagedByProvider.size} legacy blob credential(s) for profile $profileId (insert-if-absent)" }
-            }
             // Seed only NON-BLANK values: an uninitialized client seeding blank rows for every
             // provider would mint authoritative tombstones out of nothing — the next device with
             // real local credentials baselines from local (no push), its seed can't replace the
@@ -216,10 +219,26 @@ object ProviderCredentialSync {
             val seedPayload = seedSnapshotWithLegacy.copy(
                 values = seedSnapshotWithLegacy.values.filter { it.value.isNotBlank() },
             )
-            if (seedPayload.values.isNotEmpty()) {
+            // shouldSeedProviderCredentials gates on the payload that would actually be sent
+            // (post legacy-fill, post blank-filter), not the raw local snapshot — a provider
+            // already present remotely never needs re-seeding even if other local slots are blank.
+            // Because the pull now precedes the seed, values the seed just created are NOT in
+            // `rows` — capture them so the merge below can apply them locally this round (the
+            // success bookkeeping consumes the stash, so waiting for the next pull would leave a
+            // freshly migrated credential inert for a whole sync round). Only providers with NO
+            // remote row qualify: a provider that has a row — including a blank tombstone — was
+            // untouched by the insert-if-absent seed, and the tombstone must keep winning.
+            val remoteProviders = rows.mapTo(mutableSetOf()) { it.provider.lowercase() }
+            var seededByProvider = emptyMap<String, String>()
+            if (seedPayload.values.isNotEmpty() && shouldSeedProviderCredentials(seedPayload, rows)) {
+                if (stagedByProvider.isNotEmpty()) {
+                    log.i { "Seeding ${stagedByProvider.size} legacy blob credential(s) for profile $profileId (insert-if-absent)" }
+                }
                 seedSnapshot(seedPayload)
+                seededByProvider = seedPayload.values
+                    .filter { it.provider.lowercase() !in remoteProviders }
+                    .associate { it.provider to it.value }
             }
-            val rows = pullRows(profileId)
             requireCurrentScope(credentialScope)
             val remoteSnapshot = localSnapshot.mergeRemote(rows)
             // Staged credentials for BACKEND_UNSUPPORTED_PROVIDERS never ride the seed (filtered
@@ -231,10 +250,14 @@ object ProviderCredentialSync {
             // mirroring the seed's insert-if-absent semantics: a real local credential wins over
             // a staged legacy one (Codex review, 2026-08-08 device-pass session).
             val unsupportedStaged = stagedByProvider.filterKeys { it in BACKEND_UNSUPPORTED_PROVIDERS }
-            val mergedSnapshot = if (unsupportedStaged.isEmpty()) remoteSnapshot else remoteSnapshot.copy(
+            // Both maps void-fill only: just-seeded values (rows pulled pre-seed can't contain
+            // them) and unsupported-provider staged values (no row will ever exist). Unsupported
+            // wins on overlap — its value never rode the seed, so the stash is its only copy.
+            val voidFill = seededByProvider + unsupportedStaged
+            val mergedSnapshot = if (voidFill.isEmpty()) remoteSnapshot else remoteSnapshot.copy(
                 values = remoteSnapshot.values.map { slot ->
-                    val legacy = unsupportedStaged[slot.provider]
-                    if (legacy != null && slot.value.isBlank()) slot.copy(value = legacy) else slot
+                    val fill = voidFill[slot.provider]
+                    if (!fill.isNullOrBlank() && slot.value.isBlank()) slot.copy(value = fill) else slot
                 },
             )
             val applied = mergedSnapshot != localSnapshot
@@ -251,9 +274,10 @@ object ProviderCredentialSync {
                 observedSnapshots[profileId] = mergedSnapshot
                 baselineSnapshots[credentialScope] = mergedSnapshot
                 pendingScopes.remove(credentialScope)
-                // Migration round-trip succeeded (seed + pull, unsupported providers applied
-                // locally above) — every staged value now lives in a provider row or the local
-                // store, so the stash can go and the legacy blob may be sanitized.
+                // Migration round-trip succeeded (seed-if-missing + pull, unsupported providers
+                // applied locally above) — every staged value now lives in a provider row
+                // (whether just seeded or already present remotely) or the local store, so the
+                // stash can go and the legacy blob may be sanitized.
                 legacyBlobCredentials.remove(profileId)
             }
             if (staged.isNotEmpty()) {

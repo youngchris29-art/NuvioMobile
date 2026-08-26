@@ -38,21 +38,66 @@ enum SettingsRowFont {
     static let sectionHeader = Theme.Font.caption
 }
 
+// MARK: - Accent
+
+/// How a row's leading SF Symbol is coloured.
+enum SettingsRowIconTint {
+    /// The theme accent while the row is at rest. The default.
+    case accent
+    /// Inherit whatever the row already paints — used by `SettingsDestructiveRow`, whose system
+    /// red must not be overridden by the accent.
+    case inherit
+}
+
+/// Focus-aware theme accent for the two places the Settings kit is allowed to carry colour: a
+/// row's leading glyph and an interactive row's trailing value.
+///
+/// The colour rule below still holds — this NEVER paints a fixed colour onto the focus platter.
+/// At rest the element carries `Theme.Palette.accent`; focused, it hands the colour back to
+/// `.primary` so the system's own light/dark label flip on the near-white platter applies. Pinning
+/// the accent through focus is the BUG-4/33/45/65 family, and the White theme's near-white accent
+/// (0xF5F5F5) would disappear into the platter outright.
+struct SettingsAccentTint: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(
+            isFocused ? AnyShapeStyle(.primary) : AnyShapeStyle(Theme.Palette.accent)
+        )
+    }
+}
+
+extension View {
+    /// Internal, not private: `SettingsView`'s sidebar builds its own `Label` rather than going
+    /// through `SettingsRowLabel`, and its icon column is the most visible place the theme shows.
+    func settingsAccentTint() -> some View { modifier(SettingsAccentTint()) }
+}
+
 // MARK: - Shared row label
 
 /// The title (+ optional subtitle, + optional SF Symbol) block every kit row puts on its leading
 /// side. Deliberately sets NO foreground colour on the title: it inherits the list row's label
-/// colour, which the system inverts on the focus platter for free.
+/// colour, which the system inverts on the focus platter for free. The GLYPH does take the theme
+/// accent at rest (`SettingsAccentTint`) — it is one of only two coloured elements on the screen,
+/// and the one that makes the chosen theme legible in Settings at all.
 struct SettingsRowLabel: View {
     let title: String
     var subtitle: String?
     var systemImage: String?
+    var iconTint: SettingsRowIconTint = .accent
 
     var body: some View {
         HStack(spacing: Theme.Spacing.md) {
             if let systemImage {
-                Image(systemName: systemImage)
-                    .font(SettingsRowFont.title)
+                switch iconTint {
+                case .accent:
+                    Image(systemName: systemImage)
+                        .font(SettingsRowFont.title)
+                        .settingsAccentTint()
+                case .inherit:
+                    Image(systemName: systemImage)
+                        .font(SettingsRowFont.title)
+                }
             }
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                 Text(title)
@@ -215,6 +260,10 @@ struct SettingsPickerRow<T: Hashable>: View {
             LabeledContent {
                 Text(label(selection.wrappedValue))
                     .font(SettingsRowFont.title)
+                    // The value the user actually picked — accent at rest, platter-flipped when
+                    // this row has focus. `SettingsValueRow` deliberately does NOT do this: it is
+                    // read-only information, not a choice, and stays `.secondary`.
+                    .settingsAccentTint()
             } label: {
                 SettingsRowLabel(title: title, subtitle: subtitle)
             }
@@ -333,7 +382,9 @@ struct SettingsDestructiveRow: View {
 
     var body: some View {
         Button(role: .destructive, action: action) {
-            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage)
+            // `.inherit`: the destructive red is the row's whole point (HIG), and it stays red
+            // under every theme. An accent glyph here would fight it.
+            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, iconTint: .inherit)
         }
     }
 }

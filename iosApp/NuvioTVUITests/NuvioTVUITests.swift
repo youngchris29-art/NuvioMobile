@@ -3371,4 +3371,88 @@ final class NuvioTVUITests: XCTestCase {
             "ring mode grows the focused poster by a different amount than the system lift (\(summary)) — this is BUG-64: with the ring on, focus 'zooms' differently"
         )
     }
+
+    /// Theme-picker regression (2026-08-25 report: "the theme picker doesn't change the theme in
+    /// the settings — settings are only ever crimson"). Two separate defects, both fixed:
+    ///
+    ///  1. **The pane bounced.** `ContentView` pins `.id(appTheme.themeName)` on the app root, so a
+    ///     swatch press remounts the whole tree. `SettingsView.selectedCategory` was plain `@State`,
+    ///     so the split snapped back to the FIRST category — the user pressed a colour, landed at
+    ///     the top of Settings, and saw nothing change. It is a `@Binding` owned by `ContentView`
+    ///     (above the `.id`) now, and the sidebar's `prefersDefaultFocus` follows it.
+    ///  2. **Nothing in Settings was accent-coloured.** The beta.15 §C row kit is semantic-only by
+    ///     design, and the app set no environment tint, so the theme genuinely had nothing to
+    ///     paint on this screen. Row glyphs and picker values now carry `Theme.Palette.accent` at
+    ///     rest (`SettingsAccentTint`), handing the colour back to `.primary` under the focus
+    ///     platter so the White theme can't vanish into it.
+    ///
+    /// Restores CRIMSON at the end — the theme is profile-scoped and syncs to the real account,
+    /// same discipline as test12/test13.
+    func test43ThemePickerKeepsCategoryAndTintsSettings() throws {
+        let app = launchToHome()
+        openTab(app, named: "Settings")
+        moveToSidebarRow(app, .down, named: "Appearance", max: 10)
+        remote.press(.select)
+        pause(1.5)
+        shot(app, "43a_appearance_before")
+
+        // Right enters the detail pane and lands on the swatch row (the pane's first row).
+        press(.right, times: 1)
+        pause(1)
+        let emerald = app.buttons["Emerald"]
+        XCTAssertTrue(moveFocus(.right, until: emerald, max: 8), "must be able to reach the Emerald swatch")
+        remote.press(.select)
+        pause(3) // the .id() remount
+
+        // Defect 1: the swatch row must still be on screen. Pre-fix this was the Account &
+        // Services pane (Sign Out / Server / Connect Trakt) and every swatch was gone.
+        // Defect 2 also shows here: the sidebar's category glyphs are emerald in this capture.
+        shot(app, "43b_after_theme_change")
+        XCTAssertTrue(
+            app.buttons["Crimson"].waitForExistence(timeout: 6),
+            "the Appearance pane must survive a theme change — a swatch press that lands the user back on Account & Services reads as 'the picker did nothing'"
+        )
+
+        // Defect 2, close up: walk down to the picker rows — the focused one wears the white
+        // platter with platter-flipped text (`SettingsAccentTint` hands the colour back to
+        // `.primary`), the ones at rest carry the theme accent on their trailing value. Capture
+        // only, no assertion: where focus lands after the `.id` remount is not deterministic
+        // (observed both ways on 2026-08-25 — sometimes still on the pressed swatch, sometimes back
+        // on the sidebar via `prefersDefaultFocus`), so this walk is best-effort framing.
+        press(.down, times: 3, gap: 0.7)
+        shot(app, "43c_picker_rows_focused_and_at_rest")
+        press(.left, times: 1, gap: 0.9)
+        pause(0.8)
+        shot(app, "43d_sidebar_focused")
+
+        // Restore CRIMSON — profile-scoped, and it syncs to the real account, so this test must not
+        // leave the fixture on Emerald.
+        //
+        // Do it from a COLD RELAUNCH rather than walking back. There is no reliable route into the
+        // swatch row once focus has left it (three failure modes, all observed 2026-08-25): walking
+        // UP from a detail row skips the horizontal swatch `ScrollView` and exits to the tab bar;
+        // Left from a detail row goes to the SIDEBAR (focus graph) rather than along the row; and
+        // Right from the sidebar re-enters on the row that last had focus, which a category switch
+        // does not clear. A fresh launch has no such memory: Right from the sidebar lands on the
+        // pane's FIRST row — the swatch row — and Crimson is the leftmost swatch, so walking left
+        // always reaches it.
+        let relaunched = launchToHome(forceFreshLaunch: true)
+        openTab(relaunched, named: "Settings")
+        moveToSidebarRow(relaunched, .down, named: "Appearance", max: 10)
+        remote.press(.select)
+        pause(2)
+        press(.right, times: 1)
+        pause(1.5)
+        XCTAssertTrue(
+            moveFocus(.left, until: relaunched.buttons["Crimson"], max: 8),
+            "must be able to restore the fixture's CRIMSON theme"
+        )
+        remote.press(.select)
+        pause(3)
+        shot(relaunched, "43e_restored_crimson")
+
+        // Third theme change of the run, and the pane still holds.
+        XCTAssertTrue(relaunched.buttons["Emerald"].waitForExistence(timeout: 6), "still on the Appearance pane")
+        XCTAssertTrue(relaunched.state == .runningForeground)
+    }
 }

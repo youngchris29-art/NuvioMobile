@@ -67,6 +67,9 @@ final class ProfilesViewModel: ObservableObject {
         // Full cloud pull for the selected profile (addons first, then the rest in parallel).
         // Self-guarding: no-op in guest mode / signed out, so the local-only flow is unchanged.
         SyncManager.shared.pullAllForProfile(profileId: profile.profileIndex)
+        // Periodic activity polling (library + watch progress) for the session. Self-guarding the
+        // same way; a profile switch re-targets the loop, sign-out cancels it via cancelAccountSync.
+        SyncManager.shared.startPeriodicNuvioSyncPull(profileId: profile.profileIndex)
         print("[ProfileSelect] full pull requested — tap complete")
     }
 
