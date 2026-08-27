@@ -233,7 +233,16 @@ object TrackingSourceSettingsSyncService {
             log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
             markInitialPullComplete(pullToken)
             val pushCount = TraktSettingsRepository.userTrackingEditCount(profileId)
-            if (!pushToRemote(pullToken, currentSelection())) {
+            // Push the edit AS THE USER MADE IT, not the live selection: the ProfileSettings step
+            // that just ran can have overwritten the live state with an older platform blob, and
+            // pushing that would launder the stale value through the shared namespace. Restoring
+            // it locally first also undoes that transient platform clobber for the UI.
+            val editSelection = TraktSettingsRepository.lastUserTrackingEditSelection(profileId)
+                ?.takeIf { hasUnreconciledEdit }
+                ?: owedPush?.selection
+                ?: currentSelection()
+            applyRemoteSelection(editSelection)
+            if (!pushToRemote(pullToken, editSelection)) {
                 error("pushing the raced local tracking source edit failed")
             }
             reconcileEditCount(pullToken.profileId, pushCount)
@@ -243,8 +252,22 @@ object TrackingSourceSettingsSyncService {
         applyRemoteSelection(remoteSelection)
         log.i { "pullFromServer — applied remote tracking source settings" }
         markInitialPullComplete(pullToken)
-        // Reconcile the count checked above, not the live one — an edit landing after the check
-        // stays dirty for the next pull.
+        // An edit can land between the liveCount read above and the apply — the apply would have
+        // overwritten it, and its debounced emission may be superseded by the apply's own. Re-check
+        // and restore-and-push the edit if so; otherwise reconcile the checked count (never the
+        // live one, so an edit landing after this check stays dirty for the next pull).
+        val postApplyCount = TraktSettingsRepository.userTrackingEditCount(profileId)
+        if (postApplyCount != liveCount) {
+            log.i { "pullFromServer — local tracking source edit raced the remote apply; restoring and pushing" }
+            val editSelection = TraktSettingsRepository.lastUserTrackingEditSelection(profileId)
+                ?: currentSelection()
+            applyRemoteSelection(editSelection)
+            if (!pushToRemote(pullToken, editSelection)) {
+                error("pushing the tracking source edit that raced the remote apply failed")
+            }
+            reconcileEditCount(pullToken.profileId, postApplyCount)
+            return
+        }
         reconcileEditCount(pullToken.profileId, liveCount)
     }
 

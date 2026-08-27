@@ -4,6 +4,7 @@ import com.nuvio.app.features.library.LibrarySourceMode
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.simkl.DEFAULT_SIMKL_ANIME_ID_PREFERENCE
 import com.nuvio.app.features.simkl.SimklAnimeIdPreference
+import com.nuvio.app.features.tracking.TrackingSourceSelection
 import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -87,11 +88,25 @@ object TraktSettingsRepository {
     private val userTrackingEditCounts = atomic(mapOf<Int, Int>())
     internal fun userTrackingEditCount(profileId: Int): Int = userTrackingEditCounts.value[profileId] ?: 0
 
-    private fun recordUserTrackingEdit() {
+    // The last user edit's resulting selection, kept alongside the count: the ordered sync's
+    // ProfileSettings step can overwrite the live state with an older platform blob AFTER the
+    // edit, so pushing "current selection" for an unreconciled edit would push the stale platform
+    // value. Only ever read count-guarded (an unreconciled count is what makes this current).
+    private val userTrackingEditSelections = atomic(mapOf<Int, TrackingSourceSelection>())
+    internal fun lastUserTrackingEditSelection(profileId: Int): TrackingSourceSelection? =
+        userTrackingEditSelections.value[profileId]
+
+    private fun recordUserTrackingEdit(next: TraktSettingsUiState) {
         val profileId = ProfileRepository.activeProfileId
         userTrackingEditCounts.value = userTrackingEditCounts.value.let {
             it + (profileId to ((it[profileId] ?: 0) + 1))
         }
+        userTrackingEditSelections.value = userTrackingEditSelections.value +
+            (profileId to TrackingSourceSelection(
+                watchProgressSource = next.watchProgressSource,
+                librarySourceMode = next.librarySourceMode,
+                continueWatchingDaysCap = next.continueWatchingDaysCap,
+            ))
     }
     val uiState: StateFlow<TraktSettingsUiState> = _uiState.asStateFlow()
 
@@ -112,6 +127,7 @@ object TraktSettingsRepository {
         // Account-scoped: profile ids repeat across accounts, and a count surviving the wipe
         // would read as a user edit for the next account's same-numbered profile.
         userTrackingEditCounts.value = emptyMap()
+        userTrackingEditSelections.value = emptyMap()
     }
 
     // `profileId` is unused since the pending-change outbox was removed (BUG-75: the shared sync
@@ -122,8 +138,8 @@ object TraktSettingsRepository {
     ) {
         ensureLoaded()
         if (_uiState.value.watchProgressSource == source) return
-        recordUserTrackingEdit()
         val nextState = _uiState.value.copy(watchProgressSource = source)
+        recordUserTrackingEdit(nextState)
         persist(nextState)
         _uiState.value = nextState
     }
@@ -155,16 +171,18 @@ object TraktSettingsRepository {
         ensureLoaded()
         val normalized = normalizeTraktContinueWatchingDaysCap(days)
         if (_uiState.value.continueWatchingDaysCap == normalized) return
-        recordUserTrackingEdit()
-        _uiState.value = _uiState.value.copy(continueWatchingDaysCap = normalized)
+        val nextState = _uiState.value.copy(continueWatchingDaysCap = normalized)
+        recordUserTrackingEdit(nextState)
+        _uiState.value = nextState
         persist()
     }
 
     fun setLibrarySourceMode(mode: LibrarySourceMode) {
         ensureLoaded()
         if (_uiState.value.librarySourceMode == mode) return
-        recordUserTrackingEdit()
-        _uiState.value = _uiState.value.copy(librarySourceMode = mode)
+        val nextState = _uiState.value.copy(librarySourceMode = mode)
+        recordUserTrackingEdit(nextState)
+        _uiState.value = nextState
         persist()
     }
 

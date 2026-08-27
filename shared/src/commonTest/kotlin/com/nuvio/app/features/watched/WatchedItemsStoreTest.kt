@@ -42,7 +42,10 @@ class WatchedItemsStoreTest {
                             val nuvioKeys = nuvioItems.keys.toSet()
                             assertEquals(nuvioKeys, providerItems[TrackingProviderId.TRAKT].orEmpty().keys)
                             assertEquals(nuvioKeys, dirtyNuvioKeys)
-                            assertEquals(nuvioKeys, dirtyProviderKeys[TrackingProviderId.TRAKT])
+                            // orEmpty: a reader can legitimately run before any writer's first
+                            // TRAKT insert, where the map has no entry yet — null here is the
+                            // coherent empty snapshot, not a coherence violation.
+                            assertEquals(nuvioKeys, dirtyProviderKeys[TrackingProviderId.TRAKT].orEmpty())
                         }
                     }
                 }
