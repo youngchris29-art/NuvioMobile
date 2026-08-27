@@ -60,6 +60,7 @@ import com.nuvio.app.features.watched.WatchedRepository
 import com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache
 import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
+import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
 import co.touchlab.kermit.Logger
 import kotlinx.coroutines.CancellationException
 import platform.Foundation.NSUserDefaults
@@ -179,6 +180,12 @@ fun installTvOsSharedProviders() {
     // repositories read the active profile id. No-op on a fresh install (no stored payload yet);
     // wrapped defensively so a malformed cache can never crash startup.
     runCatching { ProfileRepository.loadCachedProfiles() }
+
+    // BUG-75: arm this AFTER profile restore, so its first emitted context carries the restored
+    // profile id instead of the default profile 1. Mobile only arms this for guests
+    // (HomeScreen.kt:129); tvOS's sync path armed it too late (after the first full pull's
+    // refreshActiveSource step), so guests here never got it at all.
+    WatchProgressSourceCoordinator.ensureStarted()
 }
 
 /**
@@ -252,6 +259,9 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // account's same-numbered profile with the previous account's credentials (Codex round
         // 13; the Compose cleaner already does this). This also CANCELS the settings-push
         // observer; it is re-armed at the very end of this wipe (see below).
+        // Mirrors composeApp's LocalAccountDataCleaner.kt:44 — same in-memory-sync-state group,
+        // same position immediately before ProfileSettingsSync.clearAccountState().
+        WatchProgressSourceCoordinator.clearLocalState()
         ProfileSettingsSync.clearAccountState()
 
         // 2) Persisted keys for every profile slot, from the shared registry.
@@ -292,6 +302,10 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // hits the same path). Safe to arm this early: pushes stay gated on an authenticated,
         // non-anonymous AuthRepository state, and startObserving() is idempotent.
         ProfileSettingsSync.startObserving()
+
+        // Re-arm for the next account: clearLocalState() above bumped the coordinator's lifecycle
+        // generation, so ensureStarted() here binds the new generation instead of leaving it unarmed.
+        WatchProgressSourceCoordinator.ensureStarted()
     }
 }
 
