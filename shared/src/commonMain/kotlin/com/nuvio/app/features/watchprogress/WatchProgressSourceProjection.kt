@@ -48,7 +48,13 @@ fun projectWatchProgressUiState(
 
 /**
  * BUG-76: every show the user has progress on, regardless of which source is active — local ∪
- * provider, deduped on [resolvedProgressKey] with the provider's row winning.
+ * **every registered provider's** snapshot, deduped on [resolvedProgressKey] keeping the most
+ * recently updated row.
+ *
+ * [providerEntries] deliberately spans *all* progress providers, not just the active one: a show
+ * imported from Trakt lives in Trakt's snapshot and never in the local store, so unioning with the
+ * active provider alone would still drop it the moment the user switches to Simkl — which is the
+ * exact scenario this exists to survive.
  *
  * The deliberate contrast with [projectWatchProgressSourceEntries] above: that answers "what
  * should Continue Watching show?" and is therefore source-scoped, correctly going empty when the
@@ -62,13 +68,18 @@ fun unionFollowedShowEntries(
     providerEntries: Collection<WatchProgressEntry>,
 ): List<WatchProgressEntry> {
     if (providerEntries.isEmpty()) return nuvioEntries.toList()
-    if (nuvioEntries.isEmpty()) return providerEntries.toList()
-    val merged = providerEntries.toMutableList()
-    val providerKeys = providerEntries.mapTo(mutableSetOf()) { entry -> entry.resolvedProgressKey() }
-    nuvioEntries.forEach { localEntry ->
-        if (localEntry.resolvedProgressKey() !in providerKeys) {
-            merged += localEntry
+    if (nuvioEntries.isEmpty() && providerEntries.distinctBy { it.resolvedProgressKey() }.size == providerEntries.size) {
+        return providerEntries.toList()
+    }
+    // Most-recent wins rather than "the provider wins": [providerEntries] may span SEVERAL
+    // providers (see the KDoc), and registry iteration order must not decide which row survives.
+    val byKey = LinkedHashMap<String, WatchProgressEntry>()
+    (providerEntries.asSequence() + nuvioEntries.asSequence()).forEach { entry ->
+        val key = entry.resolvedProgressKey()
+        val existing = byKey[key]
+        if (existing == null || entry.lastUpdatedEpochMs > existing.lastUpdatedEpochMs) {
+            byKey[key] = entry
         }
     }
-    return merged
+    return byKey.values.toList()
 }

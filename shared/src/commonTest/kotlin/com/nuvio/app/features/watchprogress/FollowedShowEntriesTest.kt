@@ -36,7 +36,39 @@ class FollowedShowEntriesTest {
     }
 
     @Test
-    fun union_prefers_the_provider_row_for_a_show_both_know() {
+    fun union_keeps_a_show_known_only_to_a_now_inactive_provider() {
+        // The case that makes this fix actually work for a Trakt user: Trakt-imported history
+        // lives in Trakt's snapshot and never in the local store, so after flipping to an empty
+        // Simkl the followed set must still carry it — otherwise Upcoming empties anyway.
+        val local = emptyList<WatchProgressEntry>()
+        val trakt = listOf(episode("tt-trakt-only", 5_000L))
+        val simkl = emptyList<WatchProgressEntry>()
+
+        val followed = unionFollowedShowEntries(
+            nuvioEntries = local,
+            providerEntries = trakt + simkl,
+        )
+
+        assertEquals(listOf("tt-trakt-only"), followed.map { it.parentMetaId })
+    }
+
+    @Test
+    fun union_dedupes_a_show_two_providers_both_know_keeping_the_newer_row() {
+        val shared = "tt-both-providers"
+        val trakt = listOf(episode(shared, 5_000L))
+        val simkl = listOf(episode(shared, 8_000L))
+
+        val followed = unionFollowedShowEntries(
+            nuvioEntries = emptyList(),
+            providerEntries = trakt + simkl,
+        )
+
+        assertEquals(1, followed.size)
+        assertEquals(8_000L, followed.single().lastUpdatedEpochMs)
+    }
+
+    @Test
+    fun union_prefers_the_more_recent_row_for_a_show_local_and_provider_both_know() {
         val shared = "tt-shared"
         val local = listOf(episode(shared, 1_000L))
         val provider = listOf(episode(shared, 9_000L))

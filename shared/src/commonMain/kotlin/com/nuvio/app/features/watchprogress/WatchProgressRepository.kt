@@ -1612,9 +1612,13 @@ object WatchProgressRepository {
         val entries = currentEntries()
         val sortedEntries = entries.sortedByDescending { it.lastUpdatedEpochMs }
         val providerSnapshot = activeProgressProvider()?.snapshot()
+        // Every REGISTERED provider, not just the active one: Trakt-imported history lives in
+        // Trakt's snapshot and never in the local store, so a Trakt→Simkl flip would otherwise
+        // still drop it here. `snapshot()` is a StateFlow read on every provider — no I/O.
         _followedShows.value = unionFollowedShowEntries(
             nuvioEntries = localEntriesSnapshot(),
-            providerEntries = providerSnapshot?.entries.orEmpty(),
+            providerEntries = TrackingProviderRegistry.progressProviders()
+                .flatMap { provider -> provider.snapshot().entries },
         )
         _uiState.value = projectWatchProgressUiState(
             source = activeSource,

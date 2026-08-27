@@ -65,9 +65,14 @@ struct AppearanceSettingsPane: View {
                 selectedName: model.themeName,
                 pendingFocus: $pendingThemeSwatchFocus
             ) { theme in
-                // Record BEFORE the set: setTheme re-identifies the app root, so anything written
-                // after it belongs to a view that is already being torn down.
-                pendingThemeSwatchFocus = theme.name
+                // Only arm the hint for a REAL change: re-picking the current theme publishes
+                // nothing, so no remount consumes the hint and it would sit armed until some later
+                // entry into Appearance stole focus into the swatch. Record BEFORE the set —
+                // setTheme re-identifies the app root, so anything written after it belongs to a
+                // view that is already being torn down.
+                if theme.name != model.themeName {
+                    pendingThemeSwatchFocus = theme.name
+                }
                 model.setTheme(theme)
             }
 
