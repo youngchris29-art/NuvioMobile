@@ -148,6 +148,17 @@ object TrackingSourceSettingsSyncService {
     @Volatile
     private var cachedSharedSettings: CachedSharedSettings? = null
 
+    // A local edit observed while the initial pull for its token was still pending. The push
+    // observer cannot push it yet (the gate below), and without this record the pull would apply
+    // the older remote value straight over the edit and the emission would never be retried.
+    @Volatile
+    private var pendingPrePullEdit: PendingPrePullEdit? = null
+
+    private data class PendingPrePullEdit(
+        val token: PullToken,
+        val selection: TrackingSourceSelection,
+    )
+
     suspend fun pullFromServer(profileId: Int) {
         runCatching {
             val pullToken = currentPullToken(profileId) ?: return
@@ -164,7 +175,10 @@ object TrackingSourceSettingsSyncService {
                 // becomes its first value — otherwise the namespace stays empty until someone
                 // changes a setting, and a TV that never changes one never publishes anything.
                 log.i { "pullFromServer — no remote tracking source settings found; seeding from local" }
-                pushToRemote(pullToken, localSelection)
+                // Re-read so an edit that raced this pull (recorded or mid-RPC) seeds the
+                // namespace with the user's latest choice rather than the entry-time snapshot.
+                pendingPrePullEdit = null
+                pushToRemote(pullToken, currentSelection())
                 markInitialPullComplete(pullToken)
                 return
             }
@@ -173,6 +187,20 @@ object TrackingSourceSettingsSyncService {
             if (remoteSelection == null) {
                 log.w { "pullFromServer — failed to parse remote tracking source settings" }
                 markInitialPullComplete(pullToken)
+                return
+            }
+
+            // A local edit that raced this pull wins over the remote value: either the push
+            // observer recorded it while the gate was closed, or the selection moved between this
+            // function's entry and now (an edit landing mid-RPC). Applying remote here would
+            // silently revert the user's choice, so push the local edit instead.
+            val pending = pendingPrePullEdit?.takeIf { it.token == pullToken }
+            pendingPrePullEdit = null
+            val freshLocal = currentSelection()
+            if (pending != null || freshLocal != localSelection) {
+                log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
+                markInitialPullComplete(pullToken)
+                pushToRemote(pullToken, freshLocal)
                 return
             }
 
@@ -206,7 +234,12 @@ object TrackingSourceSettingsSyncService {
                     // Pushing before the pull lands would publish this device's stale selection
                     // over the account's newer one.
                     if (!hasCompletedInitialPull(token)) {
-                        log.d { "push — skipped before initial tracking source pull completed" }
+                        // Record the edit instead of discarding it: pullFromServer reconciles a
+                        // pending edit by keeping local and pushing, rather than applying remote
+                        // over it (this flow never re-emits an unchanged value, so a plain skip
+                        // here would lose the edit permanently).
+                        pendingPrePullEdit = PendingPrePullEdit(token, selection)
+                        log.d { "push — deferred until the initial tracking source pull completes" }
                         return@collect
                     }
                     if (isSyncingFromRemote) return@collect
@@ -223,6 +256,7 @@ object TrackingSourceSettingsSyncService {
         observeJob = null
         completedInitialPull = null
         cachedSharedSettings = null
+        pendingPrePullEdit = null
     }
 
     private suspend fun pushToRemote(token: PullToken, selection: TrackingSourceSelection) {

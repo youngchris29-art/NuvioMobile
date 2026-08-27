@@ -58,6 +58,9 @@ struct TopShelfSnapshot: Codable {
 @MainActor
 final class TopShelfUpdater: ObservableObject {
     private var watcher: FlowWatcher?
+    private var sourceWatcher: FlowWatcher?
+    private var traktSettingsWatcher: FlowWatcher?
+    private var lastDaysCap: Int32?
 
     func start() {
         guard watcher == nil else { return }
@@ -65,11 +68,29 @@ final class TopShelfUpdater: ObservableObject {
         watcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] _ in
             DispatchQueue.main.async { self?.writeSnapshot() }
         }
+        // BUG-75: the row's gates (active provider's dropped-show filter + recency window) live
+        // outside uiState — a source switch or days-cap edit must rewrite the snapshot too.
+        sourceWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.activeSourceState) { [weak self] _ in
+            DispatchQueue.main.async { self?.writeSnapshot() }
+        }
+        traktSettingsWatcher = FlowWatcherKt.watch(TraktSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let state = emitted as? TraktSettingsUiState else { return }
+            DispatchQueue.main.async {
+                guard let self, self.lastDaysCap != state.continueWatchingDaysCap else { return }
+                self.lastDaysCap = state.continueWatchingDaysCap
+                self.writeSnapshot()
+            }
+        }
     }
 
     func stop() {
         watcher?.cancel()
         watcher = nil
+        sourceWatcher?.cancel()
+        sourceWatcher = nil
+        traktSettingsWatcher?.cancel()
+        traktSettingsWatcher = nil
+        lastDaysCap = nil
     }
 
     private func writeSnapshot() {
