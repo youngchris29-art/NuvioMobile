@@ -55,6 +55,16 @@ private data class SupabaseHomeCatalogSettingsBlob(
     @SerialName("settings_json") val settingsJson: JsonObject = buildJsonObject { },
 )
 
+private val homeCatalogJson = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+}
+
+private const val HIDE_UNRELEASED_CONTENT_KEY = "hide_unreleased_content"
+private const val SHOW_CATALOG_TYPE_KEY = "show_catalog_type"
+private const val HIDE_CATALOG_UNDERLINE_KEY = "hide_catalog_underline"
+private const val HIDE_DISCOVER_KEY = "hide_discover"
+
 private data class PullToken(
     val userId: String,
     val profileId: Int,
@@ -92,18 +102,45 @@ internal fun mergeHomeCatalogSettingsJson(
     localJson.forEach { (key, value) -> put(key, value) }
 }
 
+/**
+ * Presence-gated decode: only the toggles the writing client actually modelled override
+ * [localPayload]'s values — a client on an older schema omits a key entirely, and absence must
+ * mean "not modelled" rather than "reset to the default". Returns null when [settingsJson] is not
+ * this payload's shape at all; the caller turns that into a failed sync step. Kept top-level (not
+ * a member) for the same unit-testability reason as [mergeHomeCatalogSettingsJson].
+ */
+internal fun decodeHomeCatalogPayloadPreservingLocalDefaults(
+    settingsJson: JsonObject,
+    localPayload: SyncHomeCatalogPayload,
+): SyncHomeCatalogPayload? = runCatching {
+    val decoded = homeCatalogJson.decodeFromJsonElement(SyncHomeCatalogPayload.serializer(), settingsJson)
+    decoded.copy(
+        showCatalogType = if (settingsJson.containsKey(SHOW_CATALOG_TYPE_KEY)) {
+            decoded.showCatalogType
+        } else {
+            localPayload.showCatalogType
+        },
+        hideUnreleasedContent = if (settingsJson.containsKey(HIDE_UNRELEASED_CONTENT_KEY)) {
+            decoded.hideUnreleasedContent
+        } else {
+            localPayload.hideUnreleasedContent
+        },
+        hideCatalogUnderline = if (settingsJson.containsKey(HIDE_CATALOG_UNDERLINE_KEY)) {
+            decoded.hideCatalogUnderline
+        } else {
+            localPayload.hideCatalogUnderline
+        },
+        hideDiscover = if (settingsJson.containsKey(HIDE_DISCOVER_KEY)) {
+            decoded.hideDiscover
+        } else {
+            localPayload.hideDiscover
+        },
+    )
+}.getOrNull()
+
 object HomeCatalogSettingsSyncService {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("HomeCatalogSettingsSync"))
     private val log = Logger.withTag("HomeCatalogSettingsSyncService")
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-    }
-
-    private const val HIDE_UNRELEASED_CONTENT_KEY = "hide_unreleased_content"
-    private const val SHOW_CATALOG_TYPE_KEY = "show_catalog_type"
-    private const val HIDE_CATALOG_UNDERLINE_KEY = "hide_catalog_underline"
-    private const val HIDE_DISCOVER_KEY = "hide_discover"
 
     @Volatile
     var isSyncingFromRemote: Boolean = false
@@ -116,48 +153,74 @@ object HomeCatalogSettingsSyncService {
     @Volatile
     private var cachedSharedSettings: CachedSharedSettings? = null
 
+    // Token of a local edit whose push was skipped because the initial pull for that token had
+    // not completed. Consumed by pullFromServer's malformed-blob branch, which lets the edit win
+    // and repair the blob; cleared once a pull for the token completes. Session-scoped like
+    // [completedInitialPull]; the token's userId keeps it inert across account switches.
+    @Volatile
+    private var localEditAwaitingInitialPull: PullToken? = null
+
     suspend fun pullFromServer(profileId: Int) {
-        runCatching {
-            val pullToken = currentPullToken(profileId) ?: return
-            val localPayload = HomeCatalogSettingsRepository.exportToSyncPayload()
-            val remoteBlob = fetchRemoteBlob(profileId)
-            cachedSharedSettings = CachedSharedSettings(
-                token = pullToken,
-                settingsJson = remoteBlob?.settingsJson ?: buildJsonObject { },
-            )
+        val pullToken = currentPullToken(profileId) ?: return
+        val localPayload = HomeCatalogSettingsRepository.exportToSyncPayload()
+        // A fetch failure propagates so runOrderedProfileSync records this step as failed and
+        // the full pull is retried, instead of the sync being stamped fresh with the remote
+        // catalog settings silently unapplied (same rule as TrackingSourceSettingsSyncService).
+        val remoteBlob = fetchRemoteBlob(profileId)
+        cachedSharedSettings = CachedSharedSettings(
+            token = pullToken,
+            settingsJson = remoteBlob?.settingsJson ?: buildJsonObject { },
+        )
 
-            if (remoteBlob == null) {
-                log.i { "pullFromServer — no remote home catalog settings found; preserving local" }
-                markInitialPullComplete(pullToken)
-                return
-            }
-
-            val remotePayload = decodePayloadPreservingLocalDefaults(remoteBlob.settingsJson, localPayload)
-            if (remotePayload == null) {
-                log.w { "pullFromServer — failed to parse remote home catalog settings" }
-                markInitialPullComplete(pullToken)
-                return
-            }
-
-            if (remotePayload.items.isEmpty()) {
-                log.i { "pullFromServer — remote has empty items, preserving local catalog order" }
-                applyRemotePayload(remotePayload)
-                markInitialPullComplete(pullToken)
-                return
-            }
-
-            applyRemotePayload(remotePayload)
-            log.i { "pullFromServer — applied ${remotePayload.items.size} items from remote" }
+        if (remoteBlob == null) {
+            log.i { "pullFromServer — no remote home catalog settings found; preserving local" }
             markInitialPullComplete(pullToken)
-        }.onFailure { e ->
-            isSyncingFromRemote = false
-            log.e(e) { "pullFromServer — FAILED" }
+            return
         }
+
+        val remotePayload = decodeHomeCatalogPayloadPreservingLocalDefaults(remoteBlob.settingsJson, localPayload)
+        if (remotePayload == null) {
+            // Same rule as TrackingSourceSettingsSyncService: with no local edit pending, a
+            // malformed blob fails the step — marking it successful would leave the stale local
+            // settings active and suppress the retry that a recorded failure earns. A local edit
+            // that raced the incomplete initial pull may instead win and repair the blob: its
+            // push re-encodes every payload key over the malformed values. Without that escape
+            // the step would wedge, because pushes stay gated on this pull completing and
+            // nothing on this device could ever rewrite the blob.
+            if (localEditAwaitingInitialPull != pullToken) {
+                error("failed to parse remote home catalog settings")
+            }
+            log.w { "pullFromServer — remote home catalog settings malformed; repairing from the raced local edit" }
+            markInitialPullComplete(pullToken)
+            if (!pushToRemote(pullToken)) {
+                // Keep the edit owed so the retried step attempts the repair again.
+                localEditAwaitingInitialPull = pullToken
+                error("pushing the raced local home catalog edit over the malformed remote blob failed")
+            }
+            return
+        }
+
+        if (remotePayload.items.isEmpty()) {
+            log.i { "pullFromServer — remote has empty items, preserving local catalog order" }
+            applyRemotePayload(remotePayload)
+            markInitialPullComplete(pullToken)
+            return
+        }
+
+        applyRemotePayload(remotePayload)
+        log.i { "pullFromServer — applied ${remotePayload.items.size} items from remote" }
+        markInitialPullComplete(pullToken)
     }
 
     fun triggerPush() {
         val requestedToken = currentPullToken()
         if (requestedToken == null || !hasCompletedInitialPull(requestedToken)) {
+            // Every call here is a genuine local mutation (applyFromRemote never triggers a
+            // push), so a skip means a local edit raced the incomplete initial pull — remember
+            // it so that pull can repair a malformed remote blob with it. Deliberately NOT
+            // edit-wins overall: unlike the tracking-source twin, a well-formed remote payload
+            // still applies over the raced edit (home's pull is remote-wins).
+            if (requestedToken != null) localEditAwaitingInitialPull = requestedToken
             log.d { "triggerPush — skipped before initial home catalog pull completed" }
             return
         }
@@ -170,7 +233,7 @@ object HomeCatalogSettingsSyncService {
         }
     }
 
-    private suspend fun pushToRemote(token: PullToken) {
+    private suspend fun pushToRemote(token: PullToken): Boolean =
         runCatching {
             val payload = HomeCatalogSettingsRepository.exportToSyncPayload()
             val jsonElement = mergedSharedPayloadJson(token, payload)
@@ -184,10 +247,14 @@ object HomeCatalogSettingsSyncService {
             SupabaseProvider.client.postgrest.rpc("sync_push_home_catalog_settings", params)
             cachedSharedSettings = CachedSharedSettings(token = token, settingsJson = jsonElement)
             log.d { "pushToRemote — success" }
-        }.onFailure { e ->
-            log.e(e) { "pushToRemote — FAILED" }
-        }
-    }
+        }.fold(
+            onSuccess = { true },
+            onFailure = { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                log.e(e) { "pushToRemote — FAILED" }
+                false
+            },
+        )
 
     private fun currentPullToken(profileId: Int = ProfileRepository.activeProfileId): PullToken? {
         val authState = AuthRepository.state.value
@@ -203,6 +270,7 @@ object HomeCatalogSettingsSyncService {
 
     private fun markInitialPullComplete(token: PullToken) {
         completedInitialPull = token
+        if (localEditAwaitingInitialPull == token) localEditAwaitingInitialPull = null
     }
 
     private fun applyRemotePayload(
@@ -227,40 +295,11 @@ object HomeCatalogSettingsSyncService {
         return result.decodeList<SupabaseHomeCatalogSettingsBlob>().firstOrNull()
     }
 
-    private fun decodePayloadPreservingLocalDefaults(
-        settingsJson: JsonObject,
-        localPayload: SyncHomeCatalogPayload,
-    ): SyncHomeCatalogPayload? = runCatching {
-        val decoded = json.decodeFromJsonElement(SyncHomeCatalogPayload.serializer(), settingsJson)
-        decoded.copy(
-            showCatalogType = if (settingsJson.containsKey(SHOW_CATALOG_TYPE_KEY)) {
-                decoded.showCatalogType
-            } else {
-                localPayload.showCatalogType
-            },
-            hideUnreleasedContent = if (settingsJson.containsKey(HIDE_UNRELEASED_CONTENT_KEY)) {
-                decoded.hideUnreleasedContent
-            } else {
-                localPayload.hideUnreleasedContent
-            },
-            hideCatalogUnderline = if (settingsJson.containsKey(HIDE_CATALOG_UNDERLINE_KEY)) {
-                decoded.hideCatalogUnderline
-            } else {
-                localPayload.hideCatalogUnderline
-            },
-            hideDiscover = if (settingsJson.containsKey(HIDE_DISCOVER_KEY)) {
-                decoded.hideDiscover
-            } else {
-                localPayload.hideDiscover
-            },
-        )
-    }.getOrNull()
-
     private fun mergedSharedPayloadJson(
         token: PullToken,
         payload: SyncHomeCatalogPayload,
     ): JsonObject {
-        val localJson = json.encodeToJsonElement(SyncHomeCatalogPayload.serializer(), payload).jsonObject
+        val localJson = homeCatalogJson.encodeToJsonElement(SyncHomeCatalogPayload.serializer(), payload).jsonObject
         val remoteJson = cachedSharedSettings
             ?.takeIf { cached -> cached.token == token }
             ?.settingsJson
