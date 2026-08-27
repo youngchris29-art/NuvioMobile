@@ -96,9 +96,12 @@ object TraktSettingsRepository {
     )
 
     private val userTrackingEdits = atomic(mapOf<Int, UserTrackingEdit>())
-    internal fun userTrackingEditCount(profileId: Int): Int = userTrackingEdits.value[profileId]?.count ?: 0
-    internal fun lastUserTrackingEditSelection(profileId: Int): TrackingSourceSelection? =
-        userTrackingEdits.value[profileId]?.selection
+
+    /** Read the record ONCE and use its paired count+selection — two separate reads can pair a
+     *  newer count with an older selection and reconcile an edit that was never pushed. */
+    internal fun lastUserTrackingEdit(profileId: Int): UserTrackingEdit? =
+        userTrackingEdits.value[profileId]
+    internal fun userTrackingEditCount(profileId: Int): Int = lastUserTrackingEdit(profileId)?.count ?: 0
 
     private fun recordUserTrackingEdit(next: TraktSettingsUiState) {
         // Attribution deliberately follows the ACTIVE profile — persist() below writes to the

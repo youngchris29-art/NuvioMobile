@@ -209,26 +209,28 @@ object TrackingSourceSettingsSyncService {
         // RPC), and a failed push for this token is likewise still owed. Profile-switch reloads
         // deliberately do not count — they move the selection without moving the edit count, so
         // for those the remote value is the newer truth and applies below.
-        val liveCount = TraktSettingsRepository.userTrackingEditCount(profileId)
+        // The edit record is read ONCE — its count and selection are a consistent pair, so the
+        // count we reconcile is exactly the count of the selection we push (an edit landing after
+        // this read stays dirty for the next pull).
+        val edit = TraktSettingsRepository.lastUserTrackingEdit(profileId)
+        val liveCount = edit?.count ?: 0
         val hasUnreconciledEdit = liveCount != (editCountsReconciled[profileId] ?: 0)
         val owedPush = failedPush?.takeIf { it.token == pullToken }
         if (hasUnreconciledEdit || owedPush != null) {
             log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
             markInitialPullComplete(pullToken)
-            val pushCount = TraktSettingsRepository.userTrackingEditCount(profileId)
             // Push the edit AS THE USER MADE IT, not the live selection: the ProfileSettings step
             // that just ran can have overwritten the live state with an older platform blob, and
             // pushing that would launder the stale value through the shared namespace. Restoring
             // it locally first also undoes that transient platform clobber for the UI.
-            val editSelection = TraktSettingsRepository.lastUserTrackingEditSelection(profileId)
-                ?.takeIf { hasUnreconciledEdit }
+            val editSelection = edit?.selection?.takeIf { hasUnreconciledEdit }
                 ?: owedPush?.selection
                 ?: currentSelection()
             applyRemoteSelection(editSelection)
             if (!pushToRemote(pullToken, editSelection)) {
                 error("pushing the raced local tracking source edit failed")
             }
-            reconcileEditCount(pullToken.profileId, pushCount)
+            reconcileEditCount(pullToken.profileId, liveCount)
             return
         }
 
@@ -246,16 +248,15 @@ object TrackingSourceSettingsSyncService {
         // overwritten it, and its debounced emission may be superseded by the apply's own. Re-check
         // and restore-and-push the edit if so; otherwise reconcile the checked count (never the
         // live one, so an edit landing after this check stays dirty for the next pull).
-        val postApplyCount = TraktSettingsRepository.userTrackingEditCount(profileId)
-        if (postApplyCount != liveCount) {
+        val postApplyEdit = TraktSettingsRepository.lastUserTrackingEdit(profileId)
+        if ((postApplyEdit?.count ?: 0) != liveCount) {
             log.i { "pullFromServer — local tracking source edit raced the remote apply; restoring and pushing" }
-            val editSelection = TraktSettingsRepository.lastUserTrackingEditSelection(profileId)
-                ?: currentSelection()
+            val editSelection = postApplyEdit?.selection ?: currentSelection()
             applyRemoteSelection(editSelection)
             if (!pushToRemote(pullToken, editSelection)) {
                 error("pushing the tracking source edit that raced the remote apply failed")
             }
-            reconcileEditCount(pullToken.profileId, postApplyCount)
+            reconcileEditCount(pullToken.profileId, postApplyEdit?.count ?: 0)
             return
         }
         reconcileEditCount(pullToken.profileId, liveCount)
@@ -293,22 +294,20 @@ object TrackingSourceSettingsSyncService {
                     // step transiently applying a stale platform blob while a shared pull is still
                     // in flight — carries nothing user-made and must never reach the namespace.
                     val owed = failedPush?.takeIf { it.token == token }
-                    val hasUnreconciledEdit = TraktSettingsRepository.userTrackingEditCount(token.profileId) !=
-                        (editCountsReconciled[token.profileId] ?: 0)
+                    // The edit record is read ONCE for a consistent count+selection pair: the
+                    // count reconciled below is exactly the count of the selection pushed, so an
+                    // edit landing after this read stays dirty and re-emits its own push.
+                    val edit = TraktSettingsRepository.lastUserTrackingEdit(token.profileId)
+                    val hasUnreconciledEdit = (edit?.count ?: 0) != (editCountsReconciled[token.profileId] ?: 0)
                     if (owed == null && !hasUnreconciledEdit) return@collect
                     // The payload is the edit AS THE USER MADE IT (or the owed push), never the
                     // raw emission — a stale platform reload can be the latest emission while the
                     // user's edit is what is actually owed. Restore it locally too, in case that
                     // reload clobbered the visible state.
-                    val payload = TraktSettingsRepository.lastUserTrackingEditSelection(token.profileId)
-                        ?.takeIf { hasUnreconciledEdit }
+                    val payload = edit?.selection?.takeIf { hasUnreconciledEdit }
                         ?: owed?.selection
                         ?: selection
-                    // Count captured before the push (same ordering rule as the pull's push
-                    // sites): a successful push must advance the reconciled count, or the next
-                    // pull would treat this already-pushed edit as unreconciled and local-wins
-                    // over a genuinely newer remote value from another device.
-                    val pushCount = TraktSettingsRepository.userTrackingEditCount(token.profileId)
+                    val pushCount = edit?.count ?: 0
                     if (payload != selection) applyRemoteSelection(payload)
                     if (payload == cachedRemoteSelection(token)) {
                         // Already what the server holds — reconcile without a redundant push.
