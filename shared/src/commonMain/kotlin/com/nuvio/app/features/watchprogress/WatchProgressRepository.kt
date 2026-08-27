@@ -1769,6 +1769,15 @@ object WatchProgressRepository {
      * Trakt→Simkl flip would otherwise drop it. `snapshot()` is a StateFlow read per provider —
      * no I/O.
      *
+     * KNOWN RESIDUAL (Codex round 4, deliberately not fixed here): only providers whose snapshot
+     * is already populated in THIS process contribute. On a cold start with Simkl active and Trakt
+     * merely connected, Trakt's snapshot is never loaded, so a show the user has Trakt progress on
+     * but never saved to their Library is missing from the sweep until Trakt is activated in the
+     * same session. The row does not empty — the Library half still seeds it, and the Library
+     * source is independent — so this is a narrower gap than the bug this fixes. Closing it needs
+     * either eager loads of inactive connected providers at startup (network for a provider the
+     * user is not using) or a small persisted followed-id set; both are their own decision.
+     *
      * Called from [publish] AND from an inactive provider's change: on a profile switch,
      * `loadFromDisk()` publishes before the inactive providers clear their snapshots, so without
      * the second call this flow would keep serving the previous profile's titles to the Upcoming
