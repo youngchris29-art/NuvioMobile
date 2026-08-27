@@ -213,13 +213,6 @@ object TrackingSourceSettingsSyncService {
             return
         }
 
-        val remoteSelection = decodeTrackingSourceSelectionPreservingLocal(remoteJson, localSelection)
-        if (remoteSelection == null) {
-            log.w { "pullFromServer — failed to parse remote tracking source settings" }
-            markInitialPullComplete(pullToken)
-            return
-        }
-
         // A *user* edit the server has not seen wins over the remote value: the profile's live
         // edit count differing from its reconciled count means an unpushed edit exists (whether
         // its debounced emission has fired or not, and whether it landed before or during this
@@ -248,6 +241,13 @@ object TrackingSourceSettingsSyncService {
             reconcileEditCount(pullToken.profileId, pushCount)
             return
         }
+
+        // Decode AFTER the local-edit check above: a local edit must be able to push (and thereby
+        // repair) even a malformed remote blob. With no edit pending, a malformed blob fails the
+        // step — marking it successful would leave the stale platform selection active and
+        // suppress the retry that a recorded failure earns.
+        val remoteSelection = decodeTrackingSourceSelectionPreservingLocal(remoteJson, localSelection)
+            ?: error("failed to parse remote tracking source settings")
 
         applyRemoteSelection(remoteSelection)
         log.i { "pullFromServer — applied remote tracking source settings" }

@@ -147,7 +147,19 @@ suspend fun runOrderedProfileSync(
             runStep(ProfileSyncStep.Library, operations.pullLibrary)
         }
         launch {
-            runStep(ProfileSyncStep.ActiveWatchSource, operations.refreshActiveWatchSource)
+            runStep(ProfileSyncStep.ActiveWatchSource) { stepProfileId ->
+                // The refresh must see the shared-namespace winner: if that step failed, the
+                // active selection may still be the stale platform value, and refreshing against
+                // it would replace visible progress with the wrong provider's data. Failing here
+                // keeps the sync stale so both are retried together.
+                val trackingSourcesFailed = synchronized(failureLock) {
+                    ProfileSyncStep.TrackingSourceSettings in failedSteps
+                }
+                if (trackingSourcesFailed) {
+                    error("skipped — tracking source settings pull failed, source may be stale")
+                }
+                operations.refreshActiveWatchSource(stepProfileId)
+            }
         }
         launch {
             runStep(ProfileSyncStep.Collections, operations.pullCollections)
