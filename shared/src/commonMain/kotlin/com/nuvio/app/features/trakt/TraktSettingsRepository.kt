@@ -109,6 +109,9 @@ object TraktSettingsRepository {
     fun clearLocalState() {
         hasLoaded = false
         _uiState.value = TraktSettingsUiState()
+        // Account-scoped: profile ids repeat across accounts, and a count surviving the wipe
+        // would read as a user edit for the next account's same-numbered profile.
+        userTrackingEditCounts.value = emptyMap()
     }
 
     // `profileId` is unused since the pending-change outbox was removed (BUG-75: the shared sync

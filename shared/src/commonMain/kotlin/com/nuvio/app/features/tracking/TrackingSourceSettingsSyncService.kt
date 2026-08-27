@@ -148,22 +148,15 @@ object TrackingSourceSettingsSyncService {
     @Volatile
     private var cachedSharedSettings: CachedSharedSettings? = null
 
-    // A local edit observed while the initial pull for its token was still pending. The push
-    // observer cannot push it yet (the gate below), and without this record the pull would apply
-    // the older remote value straight over the edit and the emission would never be retried.
+    // Per-profile user-edit counts that a completed pull has reconciled with the server (pushed,
+    // or confirmed none pending). A profile whose live count differs from its reconciled count has
+    // an edit the server has not seen — the pull keeps local and pushes instead of applying remote
+    // over it. Counts are session-scoped, start at zero, and are wiped with the account, so the
+    // zero default is always a sound baseline. This one comparison covers every window: an edit
+    // whose debounced emission has not fired yet, one recorded before the pull began, and one
+    // landing mid-RPC.
     @Volatile
-    private var pendingPrePullEdit: PendingPrePullEdit? = null
-
-    private data class PendingPrePullEdit(
-        val token: PullToken,
-        val selection: TrackingSourceSelection,
-    )
-
-    private data class ObservedSelection(
-        val selection: TrackingSourceSelection,
-        val profileId: Int,
-        val editCount: Int,
-    )
+    private var editCountsReconciled: Map<Int, Int> = emptyMap()
 
     // Last push that failed in transit, scoped to the token it was for — profile B's pull must
     // never retry (or be diverted by) profile A's owed push. In-memory only: within the session
@@ -179,17 +172,9 @@ object TrackingSourceSettingsSyncService {
         val selection: TrackingSourceSelection,
     )
 
-    // Per-profile snapshots of TraktSettingsRepository.userTrackingEditCount at the last observer
-    // emission, used to tell real user edits from profile-switch reloads flowing through the same
-    // state. A profile with no snapshot yet is never classified as edited (covers first emissions
-    // and account switches, where profile ids can repeat).
-    @Volatile
-    private var lastObservedEditCounts: Map<Int, Int> = emptyMap()
-
     suspend fun pullFromServer(profileId: Int) {
         val pullToken = currentPullToken(profileId) ?: return
         TrackingSettingsRepository.ensureLoaded()
-        val editCountAtEntry = TraktSettingsRepository.userTrackingEditCount(profileId)
         val localSelection = currentSelection()
         // A fetch failure propagates so runOrderedProfileSync records this step as failed and the
         // full pull is retried, instead of the sync being stamped fresh with the shared selection
@@ -214,7 +199,6 @@ object TrackingSourceSettingsSyncService {
             log.i { "pullFromServer — no remote tracking source settings found; seeding from local" }
             // Re-read so an edit that raced this pull seeds the namespace with the user's latest
             // choice rather than the entry-time snapshot.
-            pendingPrePullEdit = null
             val seeded = pushToRemote(pullToken, currentSelection())
             markInitialPullComplete(pullToken)
             if (!seeded) error("seeding the shared tracking source namespace failed")
@@ -228,16 +212,16 @@ object TrackingSourceSettingsSyncService {
             return
         }
 
-        // A *user* edit that raced this pull wins over the remote value: either the push observer
-        // recorded one while the gate was closed, or the edit count moved during the RPC, or an
-        // earlier push of it failed and is still owed. Profile-switch reloads deliberately do not
-        // count (they move the selection without moving the edit count) — for those the remote
-        // value is the newer truth and applies below.
-        val pending = pendingPrePullEdit?.takeIf { it.token == pullToken }
-        pendingPrePullEdit = null
-        val editedDuringPull = TraktSettingsRepository.userTrackingEditCount(profileId) != editCountAtEntry
+        // A *user* edit the server has not seen wins over the remote value: the profile's live
+        // edit count differing from its reconciled count means an unpushed edit exists (whether
+        // its debounced emission has fired or not, and whether it landed before or during this
+        // RPC), and a failed push for this token is likewise still owed. Profile-switch reloads
+        // deliberately do not count — they move the selection without moving the edit count, so
+        // for those the remote value is the newer truth and applies below.
+        val hasUnreconciledEdit =
+            TraktSettingsRepository.userTrackingEditCount(profileId) != (editCountsReconciled[profileId] ?: 0)
         val owedPush = failedPush?.takeIf { it.token == pullToken }
-        if (pending != null || editedDuringPull || owedPush != null) {
+        if (hasUnreconciledEdit || owedPush != null) {
             log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
             markInitialPullComplete(pullToken)
             if (!pushToRemote(pullToken, currentSelection())) {
@@ -258,46 +242,23 @@ object TrackingSourceSettingsSyncService {
         observeJob = scope.launch {
             TraktSettingsRepository.uiState
                 .map { state ->
-                    // Provenance is captured AT EMISSION, not after the debounce: the profile and
-                    // its edit count at this moment travel with the selection, so an edit swallowed
-                    // by the debounce during a profile switch cannot lend its provenance to the
-                    // other profile's reload emission that replaces it.
-                    val profileId = ProfileRepository.activeProfileId
-                    ObservedSelection(
-                        selection = TrackingSourceSelection(
-                            watchProgressSource = state.watchProgressSource,
-                            librarySourceMode = state.librarySourceMode,
-                            continueWatchingDaysCap = state.continueWatchingDaysCap,
-                        ),
-                        profileId = profileId,
-                        editCount = TraktSettingsRepository.userTrackingEditCount(profileId),
+                    TrackingSourceSelection(
+                        watchProgressSource = state.watchProgressSource,
+                        librarySourceMode = state.librarySourceMode,
+                        continueWatchingDaysCap = state.continueWatchingDaysCap,
                     )
                 }
                 .distinctUntilChanged()
                 .drop(1)
                 .debounce(PUSH_DEBOUNCE_MS)
-                .collect { observed ->
-                    val selection = observed.selection
-                    val lastObserved = lastObservedEditCounts[observed.profileId]
-                    lastObservedEditCounts = lastObservedEditCounts + (observed.profileId to observed.editCount)
+                .collect { selection ->
                     val token = currentPullToken() ?: return@collect
-                    val isUserEdit = token.profileId == observed.profileId &&
-                        lastObserved != null &&
-                        observed.editCount != lastObserved
                     // Pushing before the pull lands would publish this device's stale selection
-                    // over the account's newer one.
+                    // over the account's newer one. Skipping is safe for edits too: any user edit
+                    // is counted synchronously at its setter, and the pull keeps-and-pushes local
+                    // whenever the count is ahead of what it last reconciled.
                     if (!hasCompletedInitialPull(token)) {
-                        if (isUserEdit) {
-                            // Record the edit instead of discarding it: pullFromServer reconciles
-                            // a pending edit by keeping local and pushing, rather than applying
-                            // remote over it (this flow never re-emits an unchanged value, so a
-                            // plain skip here would lose the edit permanently). Profile-switch
-                            // reloads land here too but must NOT be recorded — they are not edits,
-                            // and recording one would push a platform-local value over the shared
-                            // namespace during every slow profile pull.
-                            pendingPrePullEdit = PendingPrePullEdit(token, selection)
-                            log.d { "push — deferred until the initial tracking source pull completes" }
-                        }
+                        log.d { "push — skipped before initial tracking source pull completed" }
                         return@collect
                     }
                     if (isSyncingFromRemote) return@collect
@@ -316,9 +277,8 @@ object TrackingSourceSettingsSyncService {
         observeJob = null
         completedInitialPull = null
         cachedSharedSettings = null
-        pendingPrePullEdit = null
         failedPush = null
-        lastObservedEditCounts = emptyMap()
+        editCountsReconciled = emptyMap()
     }
 
     private suspend fun pushToRemote(token: PullToken, selection: TrackingSourceSelection): Boolean =
@@ -361,6 +321,10 @@ object TrackingSourceSettingsSyncService {
 
     private fun markInitialPullComplete(token: PullToken) {
         completedInitialPull = token
+        // Whatever count exists now has been reconciled: either just pushed (seed / local-wins),
+        // or confirmed absent (apply path, where the count cannot have moved since the check).
+        editCountsReconciled = editCountsReconciled +
+            (token.profileId to TraktSettingsRepository.userTrackingEditCount(token.profileId))
     }
 
     private fun currentSelection(): TrackingSourceSelection {
