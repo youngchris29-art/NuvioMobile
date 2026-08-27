@@ -63,6 +63,8 @@ data class ProfileSyncOperations(
     val pullProfileSettings: suspend (Int) -> Unit,
     // Defaulted so existing constructions (composeApp's cross-module tests included) still compile.
     val pullTrackingSourceSettings: suspend (Int) -> Unit = {},
+    val snapshotTrackingSelection: (Int) -> Unit = {},
+    val restoreTrackingSelectionAfterFailure: (Int) -> Unit = {},
     val syncProviderCredentials: suspend (Int) -> Unit,
     val pullLibrary: suspend (Int) -> Unit,
     val refreshActiveWatchSource: suspend (Int) -> Unit,
@@ -134,8 +136,20 @@ suspend fun runOrderedProfileSync(
         }
     }
 
+    // Snapshot the tracking selection BEFORE the platform blob applies: if the shared-namespace
+    // pull below fails, the blob's possibly-stale source values are already live, and every later
+    // consumer in this sync (library pull, the resumed coordinator transitions after
+    // resumeAutomaticTransitions) would otherwise run against them. The restore returns them to
+    // the last-known-good selection; a user edit made mid-sync is never restored over.
+    operations.snapshotTrackingSelection(profileId)
     runStep(ProfileSyncStep.ProfileSettings, operations.pullProfileSettings)
     runStep(ProfileSyncStep.TrackingSourceSettings, operations.pullTrackingSourceSettings)
+    val trackingSourcesPullFailed = synchronized(failureLock) {
+        ProfileSyncStep.TrackingSourceSettings in failedSteps
+    }
+    if (trackingSourcesPullFailed) {
+        operations.restoreTrackingSelectionAfterFailure(profileId)
+    }
     runStep(ProfileSyncStep.ProviderCredentials, operations.syncProviderCredentials)
     runStep(ProfileSyncStep.Addons, operations.pullAddons)
     if (pluginsEnabled) {
@@ -148,10 +162,10 @@ suspend fun runOrderedProfileSync(
         }
         launch {
             runStep(ProfileSyncStep.ActiveWatchSource) { stepProfileId ->
-                // The refresh must see the shared-namespace winner: if that step failed, the
-                // active selection may still be the stale platform value, and refreshing against
-                // it would replace visible progress with the wrong provider's data. Failing here
-                // keeps the sync stale so both are retried together.
+                // The refresh must see the shared-namespace winner. The restore above already
+                // returned a failed pull's consumers to the last-known-good selection; this gate
+                // stays as defense in depth (and keeps the sync recorded stale so both steps are
+                // retried together).
                 val trackingSourcesFailed = synchronized(failureLock) {
                     ProfileSyncStep.TrackingSourceSettings in failedSteps
                 }
@@ -349,6 +363,8 @@ object SyncManager {
         },
         pullProfileSettings = { profileId -> ProfileSettingsSync.pull(profileId) },
         pullTrackingSourceSettings = { profileId -> TrackingSourceSettingsSyncService.pullFromServer(profileId) },
+        snapshotTrackingSelection = { profileId -> TrackingSourceSettingsSyncService.snapshotSelectionBeforePlatformApply(profileId) },
+        restoreTrackingSelectionAfterFailure = { profileId -> TrackingSourceSettingsSyncService.restoreSelectionAfterFailedPull(profileId) },
         syncProviderCredentials = { profileId -> ProviderCredentialSync.syncFromRemote(profileId) },
         pullLibrary = { profileId -> LibraryRepository.pullFromServer(profileId) },
         refreshActiveWatchSource = { profileId ->

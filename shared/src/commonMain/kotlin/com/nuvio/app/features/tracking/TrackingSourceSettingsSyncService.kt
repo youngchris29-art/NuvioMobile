@@ -119,6 +119,30 @@ object TrackingSourceSettingsSyncService {
     @Volatile
     private var cachedSharedSettings: CachedSharedSettings? = null
 
+    // Selection snapshot taken by the ordered sync BEFORE the ProfileSettings step applies the
+    // platform blob. If the shared-namespace pull then fails, the blob's possibly-stale values
+    // are already live — restoring this snapshot returns every downstream consumer (library pull,
+    // resumed coordinator transitions) to the last-known-good selection until the retry.
+    @Volatile
+    private var preSyncSelection: Pair<Int, TrackingSourceSelection>? = null
+
+    fun snapshotSelectionBeforePlatformApply(profileId: Int) {
+        TrackingSettingsRepository.ensureLoaded()
+        preSyncSelection = profileId to currentSelection()
+    }
+
+    fun restoreSelectionAfterFailedPull(profileId: Int) {
+        val snapshot = preSyncSelection?.takeIf { it.first == profileId } ?: return
+        preSyncSelection = null
+        // A user edit made since the snapshot is newer truth than the snapshot — never restore
+        // over it (the pull's local-wins path owns pushing it on the retry).
+        val hasUnreconciledEdit =
+            TraktSettingsRepository.userTrackingEditCount(profileId) != (editCountsReconciled[profileId] ?: 0)
+        if (hasUnreconciledEdit) return
+        applyRemoteSelection(snapshot.second)
+        log.i { "restoreSelectionAfterFailedPull — restored pre-sync tracking selection after failed shared pull" }
+    }
+
     // Per-profile user-edit counts that a completed pull has reconciled with the server (pushed,
     // or confirmed none pending). A profile whose live count differs from its reconciled count has
     // an edit the server has not seen — the pull keeps local and pushes instead of applying remote

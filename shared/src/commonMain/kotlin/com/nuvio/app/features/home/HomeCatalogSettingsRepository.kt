@@ -6,6 +6,8 @@ import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import kotlinx.atomicfu.atomic
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,6 +110,11 @@ object HomeCatalogSettingsRepository {
     private var hasLoaded = false
     private var definitions: List<HomeCatalogDefinition> = emptyList()
     private var collectionDefinitions: List<CollectionCatalogDefinition> = emptyList()
+    // Serializes every read-modify-write of the preferences map (CollectionRepository's
+    // mutationLock precedent): the atomic reference makes reads safe, but two concurrent
+    // whole-map reassignments (a sync pull vs a user reorder) would otherwise drop one side's
+    // change wholesale. Reentrant — normalizePreferences() runs under callers' locks too.
+    private val preferencesMutationLock = SynchronizedObject()
     private val preferencesRef = atomic<Map<String, StoredHomeCatalogPreference>>(emptyMap())
     private var preferences: Map<String, StoredHomeCatalogPreference>
         get() = preferencesRef.value
@@ -122,7 +129,7 @@ object HomeCatalogSettingsRepository {
 
     fun onProfileChanged() {
         hasLoaded = false
-        preferences = emptyMap()
+        synchronized(preferencesMutationLock) { preferences = emptyMap() }
         heroEnabled = true
         showCatalogType = true
         hideUnreleasedContent = false
@@ -137,7 +144,7 @@ object HomeCatalogSettingsRepository {
         hasLoaded = false
         definitions = emptyList()
         collectionDefinitions = emptyList()
-        preferences = emptyMap()
+        synchronized(preferencesMutationLock) { preferences = emptyMap() }
         heroEnabled = true
         showCatalogType = true
         hideUnreleasedContent = false
@@ -250,7 +257,7 @@ object HomeCatalogSettingsRepository {
         // BUG-42: an ACCEPTED explicit Hero Sources change is the one thing that redraws the hero.
         // Reset, store, and republish as one unit so no load-scope publish can interleave.
         HomeRepository.resetHeroSelectionAround {
-            preferences = preferences + (key to updated)
+            synchronized(preferencesMutationLock) { preferences = preferences + (key to updated) }
             publish()
             persist()
             HomeRepository.applyCurrentSettings()
@@ -279,7 +286,7 @@ object HomeCatalogSettingsRepository {
             hideUnreleasedContent = false
             hideCatalogUnderline = false
             hideDiscover = false
-            preferences = emptyMap()
+            synchronized(preferencesMutationLock) { preferences = emptyMap() }
             normalizePreferences()
             publish()
             persist()
@@ -304,12 +311,14 @@ object HomeCatalogSettingsRepository {
         if (fromIndex == toIndex) return
         val orderedKeys = allKeys.toMutableList()
         orderedKeys.add(toIndex, orderedKeys.removeAt(fromIndex))
-        val updatedPreferences = preferences.toMutableMap()
-        orderedKeys.forEachIndexed { index, itemKey ->
-            val current = updatedPreferences[itemKey] ?: return@forEachIndexed
-            updatedPreferences[itemKey] = current.copy(order = index)
+        synchronized(preferencesMutationLock) {
+            val updatedPreferences = preferences.toMutableMap()
+            orderedKeys.forEachIndexed { index, itemKey ->
+                val current = updatedPreferences[itemKey] ?: return@forEachIndexed
+                updatedPreferences[itemKey] = current.copy(order = index)
+            }
+            preferences = updatedPreferences
         }
-        preferences = updatedPreferences
         publish()
         persist()
         HomeRepository.applyCurrentSettings()
@@ -333,7 +342,7 @@ object HomeCatalogSettingsRepository {
             hideUnreleasedContent = parsedPayload.hideUnreleasedContent
             hideCatalogUnderline = parsedPayload.hideCatalogUnderline
             hideDiscover = parsedPayload.hideDiscover
-            preferences = parsedPayload.items.associateBy { it.key }
+            synchronized(preferencesMutationLock) { preferences = parsedPayload.items.associateBy { it.key } }
             publish()
             return
         }
@@ -342,11 +351,11 @@ object HomeCatalogSettingsRepository {
             json.decodeFromString<List<StoredHomeCatalogPreference>>(payload)
         }.getOrDefault(emptyList())
 
-        preferences = legacyItems.associateBy { it.key }
+        synchronized(preferencesMutationLock) { preferences = legacyItems.associateBy { it.key } }
         publish()
     }
 
-    private fun normalizePreferences() {
+    private fun normalizePreferences() = synchronized(preferencesMutationLock) {
         val current = preferences
         data class UnifiedEntry(val key: String, val isCollection: Boolean)
         val catalogEntries = definitions.map { UnifiedEntry(it.key, false) }
@@ -465,7 +474,7 @@ object HomeCatalogSettingsRepository {
         val current = preferences[key] ?: defaultPreferenceForMissingKey(key) ?: return
         val updated = transform(current)
         if (updated == current) return
-        preferences = preferences + (key to updated)
+        synchronized(preferencesMutationLock) { preferences = preferences + (key to updated) }
         publish()
         persist()
         HomeRepository.applyCurrentSettings()
@@ -498,12 +507,14 @@ object HomeCatalogSettingsRepository {
         val movingKey = orderedKeys.removeAt(currentIndex)
         orderedKeys.add(targetIndex, movingKey)
 
-        val updatedPreferences = preferences.toMutableMap()
-        orderedKeys.forEachIndexed { index, itemKey ->
-            val current = updatedPreferences[itemKey] ?: return@forEachIndexed
-            updatedPreferences[itemKey] = current.copy(order = index)
+        synchronized(preferencesMutationLock) {
+            val updatedPreferences = preferences.toMutableMap()
+            orderedKeys.forEachIndexed { index, itemKey ->
+                val current = updatedPreferences[itemKey] ?: return@forEachIndexed
+                updatedPreferences[itemKey] = current.copy(order = index)
+            }
+            preferences = updatedPreferences
         }
-        preferences = updatedPreferences
 
         publish()
         persist()
@@ -561,6 +572,7 @@ object HomeCatalogSettingsRepository {
         hideCatalogUnderline = payload.hideCatalogUnderline
         hideDiscover = payload.hideDiscover
         if (payload.items.isNotEmpty()) {
+            synchronized(preferencesMutationLock) {
             val existingHeroState = preferences.mapValues { it.value.heroSourceEnabled }
             val remotePreferences = payload.items.associate { item ->
                 val key = item.preferenceKey()
@@ -579,6 +591,7 @@ object HomeCatalogSettingsRepository {
             }
             preferences = preservedPreferences + remotePreferences
             normalizePreferences()
+            }
         }
         hasLoaded = true
         publish()
@@ -617,12 +630,14 @@ object HomeCatalogSettingsRepository {
         val reorderedKeys = pinnedKeys + nonPinnedKeys
         if (reorderedKeys == orderedKeys) return
 
-        val updatedPreferences = preferences.toMutableMap()
-        reorderedKeys.forEachIndexed { index, itemKey ->
-            val current = updatedPreferences[itemKey] ?: return@forEachIndexed
-            updatedPreferences[itemKey] = current.copy(order = index)
+        synchronized(preferencesMutationLock) {
+            val updatedPreferences = preferences.toMutableMap()
+            reorderedKeys.forEachIndexed { index, itemKey ->
+                val current = updatedPreferences[itemKey] ?: return@forEachIndexed
+                updatedPreferences[itemKey] = current.copy(order = index)
+            }
+            preferences = updatedPreferences
         }
-        preferences = updatedPreferences
     }
 
     private fun defaultPreferenceForMissingKey(key: String): StoredHomeCatalogPreference? {
