@@ -159,29 +159,49 @@ object TrackingSourceSettingsSyncService {
         val selection: TrackingSourceSelection,
     )
 
-    // Last push that failed in transit. In-memory only: within the session every later pull and
-    // every later emission retries it; a process death before that loses only the *push* — the
-    // edit itself is persisted locally, and the restart's first pull will see it as a mid-window
-    // divergence only if a pending/user-edit marker exists, so a stale remote can still win after
-    // a restart that follows a failed push. Accepted residual — fixing it would mean persisting a
-    // dirty flag, i.e. rebuilding the outbox this service replaced.
-    @Volatile
-    private var failedPushSelection: TrackingSourceSelection? = null
+    private data class ObservedSelection(
+        val selection: TrackingSourceSelection,
+        val profileId: Int,
+        val editCount: Int,
+    )
 
-    // Snapshot of TraktSettingsRepository.userTrackingEditCount at the last observer emission,
-    // used to tell real user edits from profile-switch reloads flowing through the same state.
+    // Last push that failed in transit, scoped to the token it was for — profile B's pull must
+    // never retry (or be diverted by) profile A's owed push. In-memory only: within the session
+    // every later pull and emission under the same token retries it; a process death before that
+    // loses only the *push* — the edit itself is persisted locally, so a stale remote can still
+    // win after a restart that follows a failed push. Accepted residual — fixing it would mean
+    // persisting a dirty flag, i.e. rebuilding the outbox this service replaced.
     @Volatile
-    private var lastObservedEditCount: Int = 0
+    private var failedPush: FailedPush? = null
+
+    private data class FailedPush(
+        val token: PullToken,
+        val selection: TrackingSourceSelection,
+    )
+
+    // Per-profile snapshots of TraktSettingsRepository.userTrackingEditCount at the last observer
+    // emission, used to tell real user edits from profile-switch reloads flowing through the same
+    // state. A profile with no snapshot yet is never classified as edited (covers first emissions
+    // and account switches, where profile ids can repeat).
+    @Volatile
+    private var lastObservedEditCounts: Map<Int, Int> = emptyMap()
 
     suspend fun pullFromServer(profileId: Int) {
         val pullToken = currentPullToken(profileId) ?: return
         TrackingSettingsRepository.ensureLoaded()
-        val editCountAtEntry = TraktSettingsRepository.userTrackingEditCount
+        val editCountAtEntry = TraktSettingsRepository.userTrackingEditCount(profileId)
         val localSelection = currentSelection()
         // A fetch failure propagates so runOrderedProfileSync records this step as failed and the
         // full pull is retried, instead of the sync being stamped fresh with the shared selection
         // silently unapplied.
         val remoteJson = fetchRemoteSettingsJson(profileId)
+        // The account or active profile can change while the RPC is in flight (tvOS sign-out does
+        // not cancel an active SyncManager pull before wiping). Everything below reads or writes
+        // ACTIVE-scoped state, so a stale token must abandon the pull here.
+        if (currentPullToken() != pullToken) {
+            log.i { "pullFromServer — pull token changed mid-fetch; abandoning" }
+            return
+        }
         cachedSharedSettings = CachedSharedSettings(
             token = pullToken,
             settingsJson = remoteJson ?: buildJsonObject { },
@@ -215,8 +235,9 @@ object TrackingSourceSettingsSyncService {
         // value is the newer truth and applies below.
         val pending = pendingPrePullEdit?.takeIf { it.token == pullToken }
         pendingPrePullEdit = null
-        val editedDuringPull = TraktSettingsRepository.userTrackingEditCount != editCountAtEntry
-        if (pending != null || editedDuringPull || failedPushSelection != null) {
+        val editedDuringPull = TraktSettingsRepository.userTrackingEditCount(profileId) != editCountAtEntry
+        val owedPush = failedPush?.takeIf { it.token == pullToken }
+        if (pending != null || editedDuringPull || owedPush != null) {
             log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
             markInitialPullComplete(pullToken)
             if (!pushToRemote(pullToken, currentSelection())) {
@@ -237,20 +258,32 @@ object TrackingSourceSettingsSyncService {
         observeJob = scope.launch {
             TraktSettingsRepository.uiState
                 .map { state ->
-                    TrackingSourceSelection(
-                        watchProgressSource = state.watchProgressSource,
-                        librarySourceMode = state.librarySourceMode,
-                        continueWatchingDaysCap = state.continueWatchingDaysCap,
+                    // Provenance is captured AT EMISSION, not after the debounce: the profile and
+                    // its edit count at this moment travel with the selection, so an edit swallowed
+                    // by the debounce during a profile switch cannot lend its provenance to the
+                    // other profile's reload emission that replaces it.
+                    val profileId = ProfileRepository.activeProfileId
+                    ObservedSelection(
+                        selection = TrackingSourceSelection(
+                            watchProgressSource = state.watchProgressSource,
+                            librarySourceMode = state.librarySourceMode,
+                            continueWatchingDaysCap = state.continueWatchingDaysCap,
+                        ),
+                        profileId = profileId,
+                        editCount = TraktSettingsRepository.userTrackingEditCount(profileId),
                     )
                 }
                 .distinctUntilChanged()
                 .drop(1)
                 .debounce(PUSH_DEBOUNCE_MS)
-                .collect { selection ->
-                    val editCount = TraktSettingsRepository.userTrackingEditCount
-                    val isUserEdit = editCount != lastObservedEditCount
-                    lastObservedEditCount = editCount
+                .collect { observed ->
+                    val selection = observed.selection
+                    val lastObserved = lastObservedEditCounts[observed.profileId]
+                    lastObservedEditCounts = lastObservedEditCounts + (observed.profileId to observed.editCount)
                     val token = currentPullToken() ?: return@collect
+                    val isUserEdit = token.profileId == observed.profileId &&
+                        lastObserved != null &&
+                        observed.editCount != lastObserved
                     // Pushing before the pull lands would publish this device's stale selection
                     // over the account's newer one.
                     if (!hasCompletedInitialPull(token)) {
@@ -271,7 +304,8 @@ object TrackingSourceSettingsSyncService {
                     // The apply above emits through this same flow; without this the pull would
                     // echo straight back as a push of the value we just received. A still-owed
                     // failed push bypasses the skip so it finally lands.
-                    if (failedPushSelection == null && selection == cachedRemoteSelection(token)) return@collect
+                    val owed = failedPush?.takeIf { it.token == token }
+                    if (owed == null && selection == cachedRemoteSelection(token)) return@collect
                     pushToRemote(token, selection)
                 }
         }
@@ -283,7 +317,8 @@ object TrackingSourceSettingsSyncService {
         completedInitialPull = null
         cachedSharedSettings = null
         pendingPrePullEdit = null
-        failedPushSelection = null
+        failedPush = null
+        lastObservedEditCounts = emptyMap()
     }
 
     private suspend fun pushToRemote(token: PullToken, selection: TrackingSourceSelection): Boolean =
@@ -298,7 +333,7 @@ object TrackingSourceSettingsSyncService {
             }
             SupabaseProvider.client.postgrest.rpc("sync_push_profile_settings_blob", params)
             cachedSharedSettings = CachedSharedSettings(token = token, settingsJson = jsonElement)
-            failedPushSelection = null
+            if (failedPush?.token == token) failedPush = null
             log.d { "pushToRemote — success" }
         }.fold(
             onSuccess = { true },
@@ -306,7 +341,7 @@ object TrackingSourceSettingsSyncService {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 // Keep the selection owed: the next pull retries it (local-wins branch), and any
                 // later emission bypasses the echo skip while this is set.
-                failedPushSelection = selection
+                failedPush = FailedPush(token, selection)
                 log.e(e) { "pushToRemote — FAILED" }
                 false
             },

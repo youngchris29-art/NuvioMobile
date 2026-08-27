@@ -79,11 +79,20 @@ object TraktSettingsRepository {
 
     private val _uiState = MutableStateFlow(TraktSettingsUiState())
 
-    // BUG-75: session-scoped count of *user* edits to the three synced tracking-source fields.
-    // TrackingSourceSettingsSyncService reads it to tell a real edit apart from a profile-switch
-    // reload or a remote apply, both of which also emit through uiState.
-    private val userTrackingEditCounter = atomic(0)
-    internal val userTrackingEditCount: Int get() = userTrackingEditCounter.value
+    // BUG-75: session-scoped, per-profile count of *user* edits to the three synced
+    // tracking-source fields. TrackingSourceSettingsSyncService reads it to tell a real edit
+    // apart from a profile-switch reload or a remote apply, both of which also emit through
+    // uiState — keyed by profile so one profile's edit can never lend provenance to another
+    // profile's reload emission.
+    private val userTrackingEditCounts = atomic(mapOf<Int, Int>())
+    internal fun userTrackingEditCount(profileId: Int): Int = userTrackingEditCounts.value[profileId] ?: 0
+
+    private fun recordUserTrackingEdit() {
+        val profileId = ProfileRepository.activeProfileId
+        userTrackingEditCounts.value = userTrackingEditCounts.value.let {
+            it + (profileId to ((it[profileId] ?: 0) + 1))
+        }
+    }
     val uiState: StateFlow<TraktSettingsUiState> = _uiState.asStateFlow()
 
     private var hasLoaded = false
@@ -110,7 +119,7 @@ object TraktSettingsRepository {
     ) {
         ensureLoaded()
         if (_uiState.value.watchProgressSource == source) return
-        userTrackingEditCounter.incrementAndGet()
+        recordUserTrackingEdit()
         val nextState = _uiState.value.copy(watchProgressSource = source)
         persist(nextState)
         _uiState.value = nextState
@@ -143,7 +152,7 @@ object TraktSettingsRepository {
         ensureLoaded()
         val normalized = normalizeTraktContinueWatchingDaysCap(days)
         if (_uiState.value.continueWatchingDaysCap == normalized) return
-        userTrackingEditCounter.incrementAndGet()
+        recordUserTrackingEdit()
         _uiState.value = _uiState.value.copy(continueWatchingDaysCap = normalized)
         persist()
     }
@@ -151,7 +160,7 @@ object TraktSettingsRepository {
     fun setLibrarySourceMode(mode: LibrarySourceMode) {
         ensureLoaded()
         if (_uiState.value.librarySourceMode == mode) return
-        userTrackingEditCounter.incrementAndGet()
+        recordUserTrackingEdit()
         _uiState.value = _uiState.value.copy(librarySourceMode = mode)
         persist()
     }

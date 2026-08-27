@@ -202,6 +202,12 @@ fun installTvOsSharedProviders() {
 private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCleaner {
 
     override fun wipe() {
+        // FIRST, before any repository below is cleared: cancel the coordinator's observe job.
+        // It watches auth/profile/settings state, and AuthRepository still reports the outgoing
+        // account through most of this wipe — left running, the clears below can trigger an
+        // automatic old-account refresh that races the wipe. Re-armed at the very end.
+        WatchProgressSourceCoordinator.clearLocalState()
+
         // 0) tvOS-only extras installed from tvosMain (plugins today).
         TvOsExtraLifecycleHooks.onClearLocalState()
 
@@ -259,9 +265,8 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // account's same-numbered profile with the previous account's credentials (Codex round
         // 13; the Compose cleaner already does this). This also CANCELS the settings-push
         // observer; it is re-armed at the very end of this wipe (see below).
-        // Mirrors composeApp's LocalAccountDataCleaner.kt:44 — same in-memory-sync-state group,
-        // same position immediately before ProfileSettingsSync.clearAccountState().
-        WatchProgressSourceCoordinator.clearLocalState()
+        // (WatchProgressSourceCoordinator.clearLocalState() runs at the very top of this wipe —
+        // its observe job must die before the repository clears above, not merely before this.)
         ProfileSettingsSync.clearAccountState()
 
         // 2) Persisted keys for every profile slot, from the shared registry.
