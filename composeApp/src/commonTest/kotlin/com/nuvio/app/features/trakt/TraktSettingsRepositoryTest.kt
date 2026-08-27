@@ -4,36 +4,9 @@ import com.nuvio.app.features.library.LibrarySourceMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TraktSettingsRepositoryTest {
-
-    @Test
-    fun `watch source outbox survives restart and a stale push cannot clear a newer choice`() {
-        val disk = mutableMapOf<Int, String>()
-        fun newOutbox() = WatchProgressSourceSettingsOutbox(
-            loadPayload = disk::get,
-            savePayload = disk::set,
-            clearPayload = disk::remove,
-        )
-        val traktChoice = PendingWatchProgressSourceChange(
-            accountId = "account-a",
-            profileId = 2,
-            source = WatchProgressSource.TRAKT,
-        )
-        val nuvioChoice = traktChoice.copy(source = WatchProgressSource.NUVIO_SYNC)
-
-        newOutbox().record(traktChoice)
-        val afterProcessRestart = newOutbox()
-        assertEquals(traktChoice, afterProcessRestart.pendingFor("account-a", 2))
-
-        afterProcessRestart.record(nuvioChoice)
-        assertFalse(afterProcessRestart.clearIfMatches(traktChoice))
-        assertEquals(nuvioChoice, afterProcessRestart.pendingFor("account-a", 2))
-        assertTrue(afterProcessRestart.clearIfMatches(nuvioChoice))
-        assertNull(afterProcessRestart.pendingFor("account-a", 2))
-    }
 
     @Test
     fun `watch progress source defaults to Trakt for unset or invalid storage`() {

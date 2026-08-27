@@ -99,6 +99,36 @@ class SyncManagerTest {
         )
     }
 
+    /**
+     * BUG-75 precedence rule: the shared tracking-source namespace is applied after the
+     * platform-scoped settings blob (so it wins) and before the watch-source refresh (so the
+     * refresh sees the winner).
+     */
+    @Test
+    fun `shared tracking sources are applied after profile settings and before the watch source refresh`() = runBlocking {
+        val events = mutableListOf<String>()
+
+        runOrderedProfileSync(
+            profileId = 9,
+            pluginsEnabled = false,
+            operations = recordingOperations(events).copy(
+                pullTrackingSourceSettings = { events += "tracking-sources" },
+            ),
+            onFailure = { _, error -> throw error },
+        )
+
+        assertTrue(events.indexOf("settings") < events.indexOf("tracking-sources"))
+        assertTrue(events.indexOf("tracking-sources") < events.indexOf("active-watch-source"))
+
+        val steps = ProfileSyncStep.entries
+        assertTrue(
+            steps.indexOf(ProfileSyncStep.ProfileSettings) < steps.indexOf(ProfileSyncStep.TrackingSourceSettings),
+        )
+        assertTrue(
+            steps.indexOf(ProfileSyncStep.TrackingSourceSettings) < steps.indexOf(ProfileSyncStep.ActiveWatchSource),
+        )
+    }
+
     @Test
     fun `duplicate active request for one profile is coalesced`() = runBlocking {
         val gate = ProfileSyncRequestGate()

@@ -1,7 +1,5 @@
 package com.nuvio.app.features.trakt
 
-import com.nuvio.app.core.auth.AuthRepository
-import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.features.library.LibrarySourceMode
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.simkl.DEFAULT_SIMKL_ANIME_ID_PREFERENCE
@@ -97,22 +95,39 @@ object TraktSettingsRepository {
         _uiState.value = TraktSettingsUiState()
     }
 
+    // `profileId` is unused since the pending-change outbox was removed (BUG-75: the shared sync
+    // namespace publishes the choice instead); the parameter stays for the existing call sites.
     internal fun setWatchProgressSource(
         source: WatchProgressSource,
-        profileId: Int = ProfileRepository.activeProfileId,
+        @Suppress("UNUSED_PARAMETER") profileId: Int = ProfileRepository.activeProfileId,
     ) {
         ensureLoaded()
         if (_uiState.value.watchProgressSource == source) return
         val nextState = _uiState.value.copy(watchProgressSource = source)
         persist(nextState)
-        val authState = AuthRepository.state.value
-        if (authState is AuthState.Authenticated && !authState.isAnonymous) {
-            ProfileSettingsWatchSourceOutbox.record(
-                accountId = authState.userId,
-                profileId = profileId,
-                source = source,
-            )
-        }
+        _uiState.value = nextState
+    }
+
+    /**
+     * BUG-75: applies the tracking source selection pulled from the shared sync namespace. Writes
+     * nothing else — no outbox, no push — so the pull can never echo back as a local edit.
+     */
+    internal fun applyFromRemoteSync(
+        watchProgressSource: WatchProgressSource?,
+        librarySourceMode: LibrarySourceMode?,
+        continueWatchingDaysCap: Int?,
+    ) {
+        ensureLoaded()
+        val current = _uiState.value
+        val nextState = current.copy(
+            watchProgressSource = watchProgressSource ?: current.watchProgressSource,
+            librarySourceMode = librarySourceMode ?: current.librarySourceMode,
+            continueWatchingDaysCap = continueWatchingDaysCap
+                ?.let { normalizeTraktContinueWatchingDaysCap(it) }
+                ?: current.continueWatchingDaysCap,
+        )
+        if (nextState == current) return
+        persist(nextState)
         _uiState.value = nextState
     }
 

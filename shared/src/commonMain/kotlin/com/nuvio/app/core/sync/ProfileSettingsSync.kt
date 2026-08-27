@@ -28,6 +28,7 @@ import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsStorage
 import com.nuvio.app.features.tmdb.TmdbSettingsStorage
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
+import com.nuvio.app.features.tracking.TrackingSourceSettingsSyncService
 import com.nuvio.app.features.trakt.TraktCommentsStorage
 import com.nuvio.app.features.trakt.TraktCommentsSettings
 import com.nuvio.app.features.trakt.TraktSettingsStorage
@@ -86,6 +87,7 @@ object ProfileSettingsSync {
         if (observeJob?.isActive == true) return
         ensureRepositoriesLoaded()
         ProviderCredentialSync.startObserving()
+        TrackingSourceSettingsSyncService.startObserving()
         observeLocalChangesAndPush()
     }
 
@@ -94,6 +96,7 @@ object ProfileSettingsSync {
         observeJob = null
         skipNextPushSignature = null
         ProviderCredentialSync.clearAccountState()
+        TrackingSourceSettingsSyncService.clearAccountState()
     }
 
     suspend fun pull(profileId: Int): Boolean {

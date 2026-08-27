@@ -15,6 +15,7 @@ import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.tracking.TrackingSettingsRepository
+import com.nuvio.app.features.tracking.TrackingSourceSettingsSyncService
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveLibrarySourceMode
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
@@ -43,6 +44,10 @@ enum class ProfileSyncStep {
     Addons,
     Plugins,
     ProfileSettings,
+    // Must stay immediately after ProfileSettings: the shared-namespace tracking sources override
+    // whatever the platform-scoped settings blob just applied, and the watch-source refresh below
+    // has to see the winner (BUG-75).
+    TrackingSourceSettings,
     // Must stay between ProfileSettings and Library: the library/watch-source steps can read
     // provider credentials, so those have to be resolved first.
     ProviderCredentials,
@@ -56,6 +61,8 @@ data class ProfileSyncOperations(
     val pullAddons: suspend (Int) -> Unit,
     val pullPlugins: suspend (Int) -> Unit,
     val pullProfileSettings: suspend (Int) -> Unit,
+    // Defaulted so existing constructions (composeApp's cross-module tests included) still compile.
+    val pullTrackingSourceSettings: suspend (Int) -> Unit = {},
     val syncProviderCredentials: suspend (Int) -> Unit,
     val pullLibrary: suspend (Int) -> Unit,
     val refreshActiveWatchSource: suspend (Int) -> Unit,
@@ -128,6 +135,7 @@ suspend fun runOrderedProfileSync(
     }
 
     runStep(ProfileSyncStep.ProfileSettings, operations.pullProfileSettings)
+    runStep(ProfileSyncStep.TrackingSourceSettings, operations.pullTrackingSourceSettings)
     runStep(ProfileSyncStep.ProviderCredentials, operations.syncProviderCredentials)
     runStep(ProfileSyncStep.Addons, operations.pullAddons)
     if (pluginsEnabled) {
@@ -328,6 +336,7 @@ object SyncManager {
             }
         },
         pullProfileSettings = { profileId -> ProfileSettingsSync.pull(profileId) },
+        pullTrackingSourceSettings = { profileId -> TrackingSourceSettingsSyncService.pullFromServer(profileId) },
         syncProviderCredentials = { profileId -> ProviderCredentialSync.syncFromRemote(profileId) },
         pullLibrary = { profileId -> LibraryRepository.pullFromServer(profileId) },
         refreshActiveWatchSource = { profileId ->

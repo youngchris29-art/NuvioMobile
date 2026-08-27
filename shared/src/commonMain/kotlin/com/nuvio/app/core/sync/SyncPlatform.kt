@@ -18,6 +18,16 @@ const val TVOS_SYNC_PLATFORM = "tvos"
 internal const val HOME_CATALOG_SHARED_SYNC_PLATFORM = "home_catalog_shared"
 
 /**
+ * BUG-75: cross-platform namespace for the tracking source preferences (watch-progress source,
+ * library source mode, continue-watching days cap). Those settings ride the platform-scoped
+ * profile blob, so a Trakt→Simkl switch on mobile lands under "mobile" and never reaches the TV.
+ * They describe the ACCOUNT's tracking backend, not a per-device look, so they get their own
+ * shared namespace — same free-form `p_platform` precedent as [HOME_CATALOG_SHARED_SYNC_PLATFORM],
+ * so no server change is needed.
+ */
+internal const val TRACKING_SOURCE_SHARED_SYNC_PLATFORM = "tracking_source_shared"
+
+/**
  * Which `p_platform` value this client sends on the platform-scoped settings-blob RPCs
  * (`sync_pull_profile_settings_blob` / `sync_push_profile_settings_blob`). The Nuvio Cloud API
  * (docs/nuvio-cloud-api-reference.md §Profile Settings) scopes those blobs per platform, so the

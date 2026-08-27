@@ -1,6 +1,11 @@
 package com.nuvio.app.features.tracking
 
 import com.nuvio.app.features.library.LibrarySourceMode
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -77,6 +82,32 @@ class TrackingSourcesTest {
         assertEquals(TrackingProviderId.TRAKT, LibrarySourceMode.TRAKT.providerId)
         assertEquals(TrackingProviderId.SIMKL, WatchProgressSource.SIMKL.providerId)
         assertEquals(TrackingProviderId.SIMKL, LibrarySourceMode.SIMKL.providerId)
+    }
+
+    /**
+     * BUG-75: the shared sync namespace is read by mobile and tvOS alike, so the wire keys and the
+     * storage-name encoding of the sources have to round-trip exactly.
+     */
+    @Test
+    fun `shared tracking source payload round-trips through its wire keys`() {
+        val json = Json { encodeDefaults = true }
+        val payload = SyncTrackingSourcePayload(
+            watchProgressSource = WatchProgressSource.SIMKL.name,
+            librarySourceMode = LibrarySourceMode.LOCAL.name,
+            continueWatchingDaysCap = 30,
+        )
+
+        val encoded = json.encodeToJsonElement(SyncTrackingSourcePayload.serializer(), payload).jsonObject
+
+        assertEquals("SIMKL", encoded.getValue("watch_progress_source").jsonPrimitive.content)
+        assertEquals("LOCAL", encoded.getValue("library_source_mode").jsonPrimitive.content)
+        assertEquals(30, encoded.getValue("continue_watching_days_cap").jsonPrimitive.content.toInt())
+        assertEquals(payload, json.decodeFromJsonElement(SyncTrackingSourcePayload.serializer(), encoded))
+        assertEquals(
+            WatchProgressSource.SIMKL,
+            WatchProgressSource.fromStorage(payload.watchProgressSource),
+        )
+        assertEquals(LibrarySourceMode.LOCAL, librarySourceModeFromStorage(payload.librarySourceMode))
     }
 
     @Test
