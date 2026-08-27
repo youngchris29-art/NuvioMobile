@@ -298,17 +298,35 @@ object TrackingSourceSettingsSyncService {
                         return@collect
                     }
                     if (isSyncingFromRemote) return@collect
-                    // The apply above emits through this same flow; without this the pull would
-                    // echo straight back as a push of the value we just received. A still-owed
-                    // failed push bypasses the skip so it finally lands.
+                    // Provenance gate: only an unreconciled user edit or an owed failed push may
+                    // publish. Every other emission — a remote apply's echo, or the ProfileSettings
+                    // step transiently applying a stale platform blob while a shared pull is still
+                    // in flight — carries nothing user-made and must never reach the namespace.
                     val owed = failedPush?.takeIf { it.token == token }
-                    if (owed == null && selection == cachedRemoteSelection(token)) return@collect
+                    val hasUnreconciledEdit = TraktSettingsRepository.userTrackingEditCount(token.profileId) !=
+                        (editCountsReconciled[token.profileId] ?: 0)
+                    if (owed == null && !hasUnreconciledEdit) return@collect
+                    // The payload is the edit AS THE USER MADE IT (or the owed push), never the
+                    // raw emission — a stale platform reload can be the latest emission while the
+                    // user's edit is what is actually owed. Restore it locally too, in case that
+                    // reload clobbered the visible state.
+                    val payload = TraktSettingsRepository.lastUserTrackingEditSelection(token.profileId)
+                        ?.takeIf { hasUnreconciledEdit }
+                        ?: owed?.selection
+                        ?: selection
                     // Count captured before the push (same ordering rule as the pull's push
                     // sites): a successful push must advance the reconciled count, or the next
                     // pull would treat this already-pushed edit as unreconciled and local-wins
                     // over a genuinely newer remote value from another device.
                     val pushCount = TraktSettingsRepository.userTrackingEditCount(token.profileId)
-                    if (pushToRemote(token, selection)) {
+                    if (payload != selection) applyRemoteSelection(payload)
+                    if (payload == cachedRemoteSelection(token)) {
+                        // Already what the server holds — reconcile without a redundant push.
+                        reconcileEditCount(token.profileId, pushCount)
+                        if (failedPush?.token == token) failedPush = null
+                        return@collect
+                    }
+                    if (pushToRemote(token, payload)) {
                         reconcileEditCount(token.profileId, pushCount)
                     }
                 }
