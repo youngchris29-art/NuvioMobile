@@ -181,6 +181,12 @@ fun installTvOsSharedProviders() {
     // wrapped defensively so a malformed cache can never crash startup.
     runCatching { ProfileRepository.loadCachedProfiles() }
 
+    // The settings observers started above may already have loaded TraktSettingsRepository under
+    // the default profile 1; if the restored active profile differs, reload so the coordinator
+    // below (and everything after it) sees the restored profile's tracking-source settings —
+    // tvOS has no onProfilesCached hook to do this, and for guests no cloud pull corrects it.
+    TraktSettingsRepository.onProfileChanged()
+
     // BUG-75: arm this AFTER profile restore, so its first emitted context carries the restored
     // profile id instead of the default profile 1. Mobile only arms this for guests
     // (HomeScreen.kt:129); tvOS's sync path armed it too late (after the first full pull's

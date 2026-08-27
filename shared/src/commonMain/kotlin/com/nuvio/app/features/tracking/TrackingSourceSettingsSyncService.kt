@@ -197,10 +197,13 @@ object TrackingSourceSettingsSyncService {
             // becomes its first value — otherwise the namespace stays empty until someone
             // changes a setting, and a TV that never changes one never publishes anything.
             log.i { "pullFromServer — no remote tracking source settings found; seeding from local" }
-            // Re-read so an edit that raced this pull seeds the namespace with the user's latest
-            // choice rather than the entry-time snapshot.
+            // Count captured BEFORE the selection is read: an edit landing between the two is
+            // then pushed but left dirty (harmlessly re-pushed later) instead of the reverse,
+            // where it would be falsely reconciled and lost. Same rule at every push site.
+            val seedCount = TraktSettingsRepository.userTrackingEditCount(profileId)
             val seeded = pushToRemote(pullToken, currentSelection())
             markInitialPullComplete(pullToken)
+            if (seeded) reconcileEditCount(pullToken.profileId, seedCount)
             if (!seeded) error("seeding the shared tracking source namespace failed")
             return
         }
@@ -218,21 +221,26 @@ object TrackingSourceSettingsSyncService {
         // RPC), and a failed push for this token is likewise still owed. Profile-switch reloads
         // deliberately do not count — they move the selection without moving the edit count, so
         // for those the remote value is the newer truth and applies below.
-        val hasUnreconciledEdit =
-            TraktSettingsRepository.userTrackingEditCount(profileId) != (editCountsReconciled[profileId] ?: 0)
+        val liveCount = TraktSettingsRepository.userTrackingEditCount(profileId)
+        val hasUnreconciledEdit = liveCount != (editCountsReconciled[profileId] ?: 0)
         val owedPush = failedPush?.takeIf { it.token == pullToken }
         if (hasUnreconciledEdit || owedPush != null) {
             log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
             markInitialPullComplete(pullToken)
+            val pushCount = TraktSettingsRepository.userTrackingEditCount(profileId)
             if (!pushToRemote(pullToken, currentSelection())) {
                 error("pushing the raced local tracking source edit failed")
             }
+            reconcileEditCount(pullToken.profileId, pushCount)
             return
         }
 
         applyRemoteSelection(remoteSelection)
         log.i { "pullFromServer — applied remote tracking source settings" }
         markInitialPullComplete(pullToken)
+        // Reconcile the count checked above, not the live one — an edit landing after the check
+        // stays dirty for the next pull.
+        reconcileEditCount(pullToken.profileId, liveCount)
     }
 
     @OptIn(FlowPreview::class)
@@ -267,7 +275,14 @@ object TrackingSourceSettingsSyncService {
                     // failed push bypasses the skip so it finally lands.
                     val owed = failedPush?.takeIf { it.token == token }
                     if (owed == null && selection == cachedRemoteSelection(token)) return@collect
-                    pushToRemote(token, selection)
+                    // Count captured before the push (same ordering rule as the pull's push
+                    // sites): a successful push must advance the reconciled count, or the next
+                    // pull would treat this already-pushed edit as unreconciled and local-wins
+                    // over a genuinely newer remote value from another device.
+                    val pushCount = TraktSettingsRepository.userTrackingEditCount(token.profileId)
+                    if (pushToRemote(token, selection)) {
+                        reconcileEditCount(token.profileId, pushCount)
+                    }
                 }
         }
     }
@@ -321,10 +336,15 @@ object TrackingSourceSettingsSyncService {
 
     private fun markInitialPullComplete(token: PullToken) {
         completedInitialPull = token
-        // Whatever count exists now has been reconciled: either just pushed (seed / local-wins),
-        // or confirmed absent (apply path, where the count cannot have moved since the check).
-        editCountsReconciled = editCountsReconciled +
-            (token.profileId to TraktSettingsRepository.userTrackingEditCount(token.profileId))
+    }
+
+    // Only ever advances, and only to a count captured BEFORE the push it reconciles — an edit
+    // that lands during a push stays dirty rather than being silently absorbed.
+    private fun reconcileEditCount(profileId: Int, count: Int) {
+        val current = editCountsReconciled[profileId] ?: 0
+        if (count > current) {
+            editCountsReconciled = editCountsReconciled + (profileId to count)
+        }
     }
 
     private fun currentSelection(): TrackingSourceSelection {
