@@ -127,9 +127,14 @@ internal fun decodeTrackingSourceSelectionPreservingLocal(
  * - The platform-scoped profile blob still carries `trakt_settings_payload`, and still applies
  *   first in [com.nuvio.app.core.sync.runOrderedProfileSync]. This service's step runs immediately
  *   after it, so a present shared value always wins over the platform-scoped one.
- * - An old client that only writes its platform blob still propagates: an updated client pulls
- *   that platform value, its push observer sees the changed selection and mirrors it into the
- *   shared namespace. Last writer wins, which is the same rule the platform blob already uses.
+ * - KNOWN mixed-version limitation, deliberate: once the shared namespace exists, an edit made on
+ *   an OLD client (which writes only its platform blob) applies transiently during each full sync
+ *   and is then overwritten by the shared value — it does not migrate into the shared namespace.
+ *   Auto-promoting it was rejected because the promotion signal ("the platform blob moved the
+ *   selection") is indistinguishable from a fresh install reading a stale platform blob, and that
+ *   case would revert the whole account's setting; true ordering would need timestamps old clients
+ *   will never write. The loss is transient (ends when that platform's clients update), and any
+ *   edit on an updated client propagates everywhere.
  * - Two clients seeding an absent shared blob simultaneously is likewise resolved last-writer-wins;
  *   both seeds are the clients' own current selections, so the loser's next local change re-pushes.
  */

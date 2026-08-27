@@ -81,11 +81,19 @@ private fun buildHomeCatalogDescriptorSignature(
     signature.add(manifest.description)
     signature.add(manifest.logoUrl)
     signature.add(manifest.transportUrl)
+    // Each collection is size-prefixed: without the boundary, types=["movie"] + idPrefixes=["tt"]
+    // would hash identically to types=["movie","tt"] + idPrefixes=[] (fork hardening over
+    // upstream 191be42a, which flattens collections without boundaries).
+    signature.add(manifest.types.size)
     manifest.types.forEach(signature::add)
+    signature.add(manifest.idPrefixes.size)
     manifest.idPrefixes.forEach(signature::add)
+    signature.add(manifest.resources.size)
     manifest.resources.forEach { resource ->
         signature.add(resource.name)
+        signature.add(resource.types.size)
         resource.types.forEach(signature::add)
+        signature.add(resource.idPrefixes.size)
         resource.idPrefixes.forEach(signature::add)
     }
     signature.add(manifest.behaviorHints.configurable)
@@ -99,6 +107,7 @@ private fun buildHomeCatalogDescriptorSignature(
     catalog.extra.forEach { extra ->
         signature.add(extra.name)
         signature.add(extra.isRequired)
+        signature.add(extra.options.size)
         extra.options.forEach(signature::add)
         signature.add(extra.optionsLimit)
     }
