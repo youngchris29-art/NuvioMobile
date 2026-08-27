@@ -227,6 +227,11 @@ object AccountDataStores {
             androidPreferences = "nuvio_search_history",
             appleKeys = listOf(AppleKeySpec.ProfileScoped("search_history_payload")),
         ),
+        AccountDataStore(
+            name = "DiscoverSelectionStorage",
+            androidPreferences = "nuvio_discover_selection",
+            appleKeys = listOf(AppleKeySpec.ProfileScoped("discover_catalog_key")),
+        ),
 
         // ── Catalog / details / appearance ──────────────────────────────────────────────────────
         AccountDataStore(
@@ -511,6 +516,8 @@ object AccountDataStores {
             androidPreferences = "nuvio_trakt_settings",
             appleKeys = listOf(
                 AppleKeySpec.ProfileScoped("trakt_settings_payload"),
+                // Legacy key sweep: nothing writes this since BUG-75 removed the pending
+                // watch-source outbox, but old installs still hold a stale payload to wipe.
                 AppleKeySpec.ProfileScoped("pending_watch_progress_source"),
             ),
         ),

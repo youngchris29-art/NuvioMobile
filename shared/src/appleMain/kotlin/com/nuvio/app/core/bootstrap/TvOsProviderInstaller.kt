@@ -382,6 +382,7 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("tmdbSettings") { TmdbSettingsRepository.onProfileChanged() }
         step("mdbListSettings") { MdbListSettingsRepository.onProfileChanged() }
         step("searchHistory") { SearchHistoryRepository.onProfileChanged() }
+        step("search") { SearchRepository.reset() }
         step("collections") { CollectionRepository.onProfileChanged() }
         // UX-14 (beta.12) made the folder grid's pop RETAIN FolderDetailRepository state
         // (detach() instead of clear()) so backing out of a title restores position — the exact

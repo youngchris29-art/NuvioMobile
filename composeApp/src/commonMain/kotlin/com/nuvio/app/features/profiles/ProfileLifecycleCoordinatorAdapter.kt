@@ -18,6 +18,7 @@ import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.search.SearchHistoryRepository
+import com.nuvio.app.features.search.SearchRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
@@ -60,6 +61,7 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
         TmdbSettingsRepository.onProfileChanged()
         MdbListSettingsRepository.onProfileChanged()
         SearchHistoryRepository.onProfileChanged()
+        SearchRepository.reset()
         CollectionRepository.onProfileChanged()
         CollectionMobileSettingsRepository.onProfileChanged()
         DownloadsRepository.onProfileChanged()

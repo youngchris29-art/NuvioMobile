@@ -34,6 +34,15 @@ import kotlinx.coroutines.launch
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 
+internal fun resolveDiscoverCatalog(
+    sources: List<DiscoverCatalogOption>,
+    preferredCatalogKey: String?,
+    currentCatalogKey: String?,
+): DiscoverCatalogOption? =
+    sources.firstOrNull { it.key == preferredCatalogKey }
+        ?: sources.firstOrNull { it.key == currentCatalogKey }
+        ?: sources.firstOrNull()
+
 object SearchRepository {
     private val log = Logger.withTag("SearchRepository")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("SearchRepository"))
@@ -243,11 +252,24 @@ object SearchRepository {
         }
 
         val typeOptions = sources.map { it.type }.distinct()
-        val selectedType = current.selectedType
-            ?.takeIf { type -> typeOptions.contains(type) }
+        val preferredCatalogKey = DiscoverSelectionStorage.loadCatalogKey()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        // Upstream (ab57cf1b) resolves the catalog FIRST and derives the type from it, so a cold
+        // start lands on the persisted catalog rather than on the first type's first catalog. The
+        // reuse guard above means this only runs on cold start / after reset(). Upstream wraps the
+        // resolve in requireNotNull (sources is non-empty by the early return); tvOS keeps the
+        // pre-fix type logic as the null branch instead of throwing.
+        val restoredCatalog = resolveDiscoverCatalog(
+            sources = sources,
+            preferredCatalogKey = preferredCatalogKey,
+            currentCatalogKey = current.selectedCatalogKey,
+        )
+        val selectedType = restoredCatalog?.type
+            ?: current.selectedType?.takeIf { type -> typeOptions.contains(type) }
             ?: typeOptions.first()
         val catalogOptions = sources.filter { it.type == selectedType }
-        val selectedCatalog = catalogOptions.firstOrNull { it.key == current.selectedCatalogKey } ?: catalogOptions.first()
+        val selectedCatalog = restoredCatalog ?: catalogOptions.first()
         val selectedGenre = selectedCatalog.resolveGenreSelection(current.selectedGenre)
 
         _discoverUiState.value = DiscoverUiState(
@@ -305,6 +327,7 @@ object SearchRepository {
             emptyStateReason = null,
             errorMessage = null,
         )
+        DiscoverSelectionStorage.saveCatalogKey(selectedCatalog.key)
         loadDiscoverFeed(reset = true)
     }
 
@@ -322,6 +345,7 @@ object SearchRepository {
             emptyStateReason = null,
             errorMessage = null,
         )
+        DiscoverSelectionStorage.saveCatalogKey(selectedCatalog.key)
         loadDiscoverFeed(reset = true)
     }
 
