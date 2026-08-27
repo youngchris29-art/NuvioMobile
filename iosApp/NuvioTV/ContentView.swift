@@ -38,6 +38,13 @@ struct ContentView: View {
     /// theme change — so pressing a colour looked like it had done nothing at all, which is how the
     /// "the theme picker doesn't work" report reads on screen.
     @State private var settingsCategory: SettingsCategory = .accountServices
+    /// Set when the user picks a theme swatch, cleared once the Appearance pane has taken focus
+    /// back. Owned HERE for the same reason as `settingsCategory`: the swatch press re-identifies
+    /// the whole tree, and focus — unlike state — cannot survive a remount at all, so it fell to
+    /// the tab bar and the user was thrown to the top of Settings. The hint lets the rebuilt pane
+    /// put focus back on the swatch it was on. Not persisted: a cold launch must never steal
+    /// focus into Appearance.
+    @State private var pendingThemeSwatchFocus: String?
     /// Deep link currently presented (Top Shelf → resume / title). Held until the user is past
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
@@ -65,6 +72,7 @@ struct ContentView: View {
                         onSwitchProfile: { entered = false },
                         selectedTab: $selectedTab,
                         settingsCategory: $settingsCategory,
+                        pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
                         // FEAT-25 (Codex beta.14 r8): the app-root deep-link cover (Top Shelf)
                         // presents over the whole shell without touching tab selection or push
                         // depth — it must count as covering Home, or the hero trailer plays
@@ -232,6 +240,9 @@ struct MainTabView: View {
     /// `selectedTab`: a theme change must not dump the user out of the Settings category they were
     /// standing in. Passed straight through to `SettingsView`.
     @Binding var settingsCategory: SettingsCategory
+    /// See `ContentView.pendingThemeSwatchFocus` — threaded through for the same reason
+    /// `settingsCategory` is: it must live above the theme rebuild boundary.
+    @Binding var pendingThemeSwatchFocus: String?
     /// FEAT-25: true while ContentView's app-root deep-link cover is presented — a fourth way
     /// Home gets covered that neither tab selection nor push depth can see (Codex beta.14 r8).
     var rootCoverActive: Bool = false
@@ -281,7 +292,10 @@ struct MainTabView: View {
             // `tabBarImmersiveHide()` is the only safe uniform value here: `.visible` would pin
             // the bar open (BUG-66 itself), and `.hidden` is wrong for a tab root.
             Tab("Settings", systemImage: "gearshape", value: 4) {
-                SettingsView(selectedCategory: $settingsCategory)
+                SettingsView(
+                    selectedCategory: $settingsCategory,
+                    pendingThemeSwatchFocus: $pendingThemeSwatchFocus
+                )
                     .tabBarImmersiveHide()
             }
             Tab("Profile", systemImage: "person.crop.circle", value: 5) {

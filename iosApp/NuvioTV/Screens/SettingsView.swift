@@ -75,6 +75,9 @@ struct SettingsView: View {
     /// `.accountServices` — the user pressed a colour and was thrown to the top of Settings with
     /// nothing visibly changed. Same fix, and same reason, as `selectedTab`.
     @Binding var selectedCategory: SettingsCategory
+    /// Theme name whose swatch should reclaim focus after a theme-change remount (see
+    /// `ContentView.pendingThemeSwatchFocus`); the Appearance pane consumes and clears it.
+    @Binding var pendingThemeSwatchFocus: String?
     @FocusState private var focusedCategory: SettingsCategory?
     /// Scope that owns the sidebar's default focus — see the focus graph above.
     @Namespace private var sidebarFocus
@@ -220,7 +223,11 @@ struct SettingsView: View {
         case .playback:
             PlaybackSettingsPane(model: model)
         case .appearance:
-            AppearanceSettingsPane(model: model, badges: badges)
+            AppearanceSettingsPane(
+                model: model,
+                badges: badges,
+                pendingThemeSwatchFocus: $pendingThemeSwatchFocus
+            )
         case .homeScreen:
             HomeScreenSettingsPane(model: model)
         case .contentSources:

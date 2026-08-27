@@ -14,6 +14,8 @@ import SharedCore
 struct AppearanceSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
     @ObservedObject var badges: BadgeSettingsViewModel
+    /// Swatch to refocus after a theme-change remount; consumed by [ThemePickerRow].
+    @Binding var pendingThemeSwatchFocus: String?
 
     /// Mirrors HomeView's `hero_poster_focus_only` @AppStorage key (same UserDefaults key, read
     /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
@@ -59,7 +61,15 @@ struct AppearanceSettingsPane: View {
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.textSecondary)
                 .frame(maxWidth: 1100, alignment: .leading)
-            ThemePickerRow(selectedName: model.themeName) { model.setTheme($0) }
+            ThemePickerRow(
+                selectedName: model.themeName,
+                pendingFocus: $pendingThemeSwatchFocus
+            ) { theme in
+                // Record BEFORE the set: setTheme re-identifies the app root, so anything written
+                // after it belongs to a view that is already being torn down.
+                pendingThemeSwatchFocus = theme.name
+                model.setTheme(theme)
+            }
 
             // FEAT-14: opt-in accent focus ring on artwork cards. Default OFF — off renders
             // byte-identical to today (PosterCard/LandscapeCard skip the overlay entirely).
@@ -170,7 +180,10 @@ struct AppearanceSettingsPane: View {
 /// colors mirror `AppTheme.nativeAccentHex` (and Theme.Palette.applyTheme's table).
 private struct ThemePickerRow: View {
     let selectedName: String
+    @Binding var pendingFocus: String?
     let onSelect: (AppTheme) -> Void
+
+    @FocusState private var focusedSwatch: String?
 
     private static let options: [(theme: AppTheme, label: String, colorHex: UInt32)] = [
         (.crimson, String(localized: "Crimson"), 0xE53935),
@@ -197,9 +210,18 @@ private struct ThemePickerRow: View {
                         )
                     }
                     .buttonStyle(.borderless)
+                    .focused($focusedSwatch, equals: option.label)
                 }
             }
             .padding(.vertical, Theme.Spacing.sm)
+        }
+        .onAppear {
+            // The press remounted the tree; put focus back where the user left it instead of
+            // letting the focus engine default to the tab bar. Cleared immediately so an
+            // unrelated later remount (or a fresh entry into Settings) does not grab focus.
+            guard let pending = pendingFocus else { return }
+            pendingFocus = nil
+            focusedSwatch = Self.options.first { $0.theme.name == pending }?.label
         }
     }
 }
