@@ -248,8 +248,8 @@ struct EpisodesSection: View {
     }
 
     private func rating(for episode: MetaVideo) -> Double? {
-        guard let s = episode.season?.value, let e = episode.episode?.value else { return nil }
-        return episodeRatings["\(s):\(e)"]
+        guard let s = episode.season?.value, let e = episode.episode?.value else { return episode.rating?.doubleValue }
+        return episodeRatings["\(s):\(e)"] ?? episode.rating?.doubleValue
     }
 
     private func isWatched(_ episode: MetaVideo) -> Bool {
