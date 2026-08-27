@@ -117,6 +117,36 @@ class SimklMutationReconciliationTest {
     }
 
     @Test
+    fun `list response resolves anime media type from response over the request kind`() {
+        val request = show()
+        val receipt = response(
+            """
+            {
+              "added": {
+                "movies": [],
+                "shows": [
+                  {
+                    "to": "plantowatch",
+                    "ids": {"simkl": 2090, "imdb": "tt1520211"},
+                    "type": "anime",
+                    "anime_type": "tv"
+                  }
+                ]
+              },
+              "not_found": {"movies": [], "shows": []}
+            }
+            """,
+        ).toListMutationReceipt(listOf(request), json)
+
+        val updated = SimklSyncSnapshot().applyMutationReceipt(receipt, 1_700_000_000_000L)
+
+        val entry = updated.entries.single()
+        assertEquals(SimklMediaType.ANIME, entry.mediaType)
+        assertEquals("tv", entry.animeType)
+        assertFalse(receipt.requiresReconciliation)
+    }
+
+    @Test
     fun `history response records episode and resolved anime classification locally`() {
         val request = TrackingHistoryItem(
             media = anime(TrackingEpisode(number = 3)),
