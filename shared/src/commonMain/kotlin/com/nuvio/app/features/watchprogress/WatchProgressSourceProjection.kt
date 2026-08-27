@@ -45,3 +45,30 @@ fun projectWatchProgressUiState(
     hasLoadedRemoteProgress =
         providerSnapshot?.hasLoadedRemoteProgress ?: hasLoadedNuvioRemoteProgress,
 )
+
+/**
+ * BUG-76: every show the user has progress on, regardless of which source is active — local ∪
+ * provider, deduped on [resolvedProgressKey] with the provider's row winning.
+ *
+ * The deliberate contrast with [projectWatchProgressSourceEntries] above: that answers "what
+ * should Continue Watching show?" and is therefore source-scoped, correctly going empty when the
+ * active provider has no history. This answers "which shows does this user follow?", which no
+ * source flip should change. `UpcomingEpisodesRepository` seeds its air-date sweep from progress ∪
+ * library and needs the second question — while it asked the first, a Trakt→Simkl flip emptied
+ * half the seed and took down a row that only depends on the Library.
+ */
+fun unionFollowedShowEntries(
+    nuvioEntries: Collection<WatchProgressEntry>,
+    providerEntries: Collection<WatchProgressEntry>,
+): List<WatchProgressEntry> {
+    if (providerEntries.isEmpty()) return nuvioEntries.toList()
+    if (nuvioEntries.isEmpty()) return providerEntries.toList()
+    val merged = providerEntries.toMutableList()
+    val providerKeys = providerEntries.mapTo(mutableSetOf()) { entry -> entry.resolvedProgressKey() }
+    nuvioEntries.forEach { localEntry ->
+        if (localEntry.resolvedProgressKey() !in providerKeys) {
+            merged += localEntry
+        }
+    }
+    return merged
+}

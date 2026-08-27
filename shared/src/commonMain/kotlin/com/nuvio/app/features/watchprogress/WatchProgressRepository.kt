@@ -293,6 +293,20 @@ object WatchProgressRepository {
     private val _uiState = MutableStateFlow(WatchProgressUiState())
     val uiState: StateFlow<WatchProgressUiState> = _uiState.asStateFlow()
 
+    /**
+     * BUG-76: every show the user has progress on, **deliberately NOT source-projected** — the
+     * union of the local store and the active provider's snapshot.
+     *
+     * [uiState]'s entries answer "what should Continue Watching show?", so they are scoped to the
+     * active watch-progress source and correctly go empty when that provider has no history.
+     * Consumers that mean "which shows does this user follow?" must not inherit that scoping:
+     * `UpcomingEpisodesRepository` seeds its air-date sweep from progress ∪ library, and while it
+     * read [uiState] a Trakt→Simkl flip emptied half the seed and took the whole Upcoming row down
+     * with it — a row that depends on the Library, not on the progress source.
+     */
+    private val _followedShows = MutableStateFlow<List<WatchProgressEntry>>(emptyList())
+    val followedShows: StateFlow<List<WatchProgressEntry>> = _followedShows.asStateFlow()
+
     private var hasLoaded = false
     private var hasLoadedNuvioRemoteProgress = false
     private var currentProfileId: Int = 1
@@ -1598,6 +1612,10 @@ object WatchProgressRepository {
         val entries = currentEntries()
         val sortedEntries = entries.sortedByDescending { it.lastUpdatedEpochMs }
         val providerSnapshot = activeProgressProvider()?.snapshot()
+        _followedShows.value = unionFollowedShowEntries(
+            nuvioEntries = localEntriesSnapshot(),
+            providerEntries = providerSnapshot?.entries.orEmpty(),
+        )
         _uiState.value = projectWatchProgressUiState(
             source = activeSource,
             entries = sortedEntries,

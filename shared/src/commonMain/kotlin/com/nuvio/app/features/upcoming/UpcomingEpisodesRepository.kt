@@ -234,13 +234,16 @@ object UpcomingEpisodesRepository {
     @OptIn(FlowPreview::class)
     private suspend fun observeShowSet() {
         combine(
-            WatchProgressRepository.uiState,
+            // BUG-76: `followedShows`, NOT `uiState.entries` — the latter is scoped to the active
+            // watch-progress source, so flipping that source to a provider with no history emptied
+            // half this seed and hid a row that only depends on the Library.
+            WatchProgressRepository.followedShows,
             LibraryRepository.uiState,
             AddonRepository.uiState,
             TmdbSettingsRepository.uiState,
         ) { progress, library, addons, tmdb ->
             SweepTrigger(
-                refs = collectUpcomingShowRefs(progress.entries, library.items),
+                refs = collectUpcomingShowRefs(progress, library.items),
                 providerSignature = providerSignature(addons, tmdb),
             )
         }
