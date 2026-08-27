@@ -78,7 +78,9 @@ final class TopShelfUpdater: ObservableObject {
             return
         }
 
-        let entries = WatchProgressRepository.shared.continueWatching()
+        // BUG-75: same provider-aware row Home builds (dropped shows and out-of-window entries
+        // filtered), scanned short — Top Shelf only ever shows the first 10.
+        let entries = WatchProgressRepository.shared.continueWatchingRow(limit: 20)
         let items = entries.prefix(10).map { entry in
             TopShelfItemSnapshot(
                 videoId: entry.videoId,

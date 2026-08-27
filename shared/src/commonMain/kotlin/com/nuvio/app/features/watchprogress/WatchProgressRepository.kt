@@ -20,6 +20,7 @@ import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
 import com.nuvio.app.features.tracking.providerId
+import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.watching.application.WatchingActions
 import com.nuvio.app.features.watching.sync.ProgressDeltaEvent
 import com.nuvio.app.features.watching.sync.ProgressSyncRecord
@@ -1318,6 +1319,24 @@ object WatchProgressRepository {
     fun continueWatching(): List<WatchProgressEntry> {
         ensureLoaded()
         return currentEntries().continueWatchingEntries()
+    }
+
+    /**
+     * Provider-aware Continue Watching row. [continueWatching] stays as the unfiltered legacy path.
+     */
+    fun continueWatchingRow(limit: Int = ContinueWatchingRowScanLimit): List<WatchProgressEntry> {
+        ensureLoaded()
+        TraktSettingsRepository.ensureLoaded()
+        val cutoffEpochMs = activeProviderContinueWatchingCutoffEpochMs(
+            daysCap = TraktSettingsRepository.uiState.value.continueWatchingDaysCap,
+            nowEpochMs = WatchProgressClock.nowEpochMs(),
+        )
+        return buildContinueWatchingRowEntries(
+            entries = currentEntries(),
+            isDroppedShow = ::isDroppedShow,
+            recencyCutoffEpochMs = cutoffEpochMs,
+            limit = limit,
+        )
     }
 
     fun refreshEpisodeProgress(contentId: String, forceRefresh: Boolean = false) {

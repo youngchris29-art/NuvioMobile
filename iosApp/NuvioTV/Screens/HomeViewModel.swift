@@ -54,6 +54,11 @@ final class HomeViewModel: ObservableObject {
     private var addonWatcher: FlowWatcher?
     private var homeWatcher: FlowWatcher?
     private var progressWatcher: FlowWatcher?
+    private var progressSourceWatcher: FlowWatcher?
+    private var traktSettingsWatcher: FlowWatcher?
+    /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
+    /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
+    private var lastTraktContinueWatchingDaysCap: Int32?
     private var upcomingWatcher: FlowWatcher?
     private var collectionsWatcher: FlowWatcher?
     private var catalogSettingsWatcher: FlowWatcher?
@@ -268,7 +273,27 @@ final class HomeViewModel: ObservableObject {
         // Watch progress → Continue Watching row.
         progressWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] _ in
             guard let self, self.pipelineGeneration == gen else { return }
-            self.continueWatching = WatchProgressRepository.shared.continueWatching()
+            self.refreshContinueWatching()
+        }
+
+        // BUG-75: the row's two gates (the active provider's dropped-show filter and its recency
+        // window) live OUTSIDE `uiState` — switching progress source or changing the Trakt
+        // continue-watching days cap changes what the row should contain without touching a single
+        // progress entry. Without these two watchers the row keeps the previous gates until the
+        // next unrelated progress emission.
+        progressSourceWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.activeSourceState) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.refreshContinueWatching()
+        }
+        // `TraktSettingsUiState` also carries library/more-like-this preferences the row does not
+        // read, so recompute only when the days cap actually moved — a republished row otherwise
+        // re-renders (and can disturb focus) for a setting it does not depend on.
+        traktSettingsWatcher = FlowWatcherKt.watch(TraktSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, self.pipelineGeneration == gen,
+                  let state = emitted as? TraktSettingsUiState else { return }
+            guard self.lastTraktContinueWatchingDaysCap != state.continueWatchingDaysCap else { return }
+            self.lastTraktContinueWatchingDaysCap = state.continueWatchingDaysCap
+            self.refreshContinueWatching()
         }
 
         AddonRepository.shared.initialize()
@@ -318,6 +343,15 @@ final class HomeViewModel: ObservableObject {
     }
     #endif
 
+    /// Rebuilds the Continue Watching row from the shared provider-aware builder. Called by every
+    /// watcher that can change what the row contains: the progress entries themselves, the active
+    /// progress source, and the Trakt continue-watching days cap.
+    private func refreshContinueWatching() {
+        continueWatching = WatchProgressRepository.shared.continueWatchingRow(
+            limit: ContinueWatchingRowKt.ContinueWatchingRowScanLimit
+        )
+    }
+
     /// The real teardown. Idempotent (`started` gates it) so a hard `stop()` on an already-stopped
     /// model is a no-op and, crucially, does NOT emit a spurious `vm stop` probe line — those two
     /// lines keep meaning "the pipeline actually started/stopped", never "someone asked".
@@ -333,11 +367,16 @@ final class HomeViewModel: ObservableObject {
         addonWatcher?.cancel()
         homeWatcher?.cancel()
         progressWatcher?.cancel()
+        progressSourceWatcher?.cancel()
+        traktSettingsWatcher?.cancel()
         collectionsWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
         addonWatcher = nil
         homeWatcher = nil
         progressWatcher = nil
+        progressSourceWatcher = nil
+        traktSettingsWatcher = nil
+        lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
         stopUpcoming()

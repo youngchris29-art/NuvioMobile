@@ -14,6 +14,25 @@ class SeriesContinuityTest {
     )
 
     @Test
+    fun continueWatchingProgressEntries_defaults_to_the_pinned_legacy_limit() {
+        assertEquals(20, DefaultContinueWatchingLimit)
+
+        val result = continueWatchingProgressEntries(
+            progressRecords = (1..DefaultContinueWatchingLimit + 5).map { index ->
+                WatchingProgressRecord(
+                    content = WatchingContentRef(type = "movie", id = "movie-$index"),
+                    videoId = "movie-$index",
+                    lastUpdatedEpochMs = index * 100L,
+                    lastPositionMs = 10_000L,
+                )
+            },
+        )
+
+        assertEquals(DefaultContinueWatchingLimit, result.size)
+        assertEquals("movie-${DefaultContinueWatchingLimit + 5}", result.first().videoId)
+    }
+
+    @Test
     fun continueWatchingProgressEntries_drops_older_resume_when_latest_series_progress_is_completed() {
         val result = continueWatchingProgressEntries(
             progressRecords = listOf(
