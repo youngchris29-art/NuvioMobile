@@ -349,6 +349,14 @@ object WatchProgressRepository {
             }
         }
 
+        // A connect/disconnect changes which snapshots `followedShows` may include, and it does
+        // not necessarily emit through any provider's `changes`.
+        syncScope.launch {
+            TrackingProviderRegistry.connectedProviderIds.collectLatest {
+                publishFollowedShows()
+            }
+        }
+
         syncScope.launch {
             AddonRepository.uiState.collectLatest { state ->
                 retryMetadataResolutionWhenAddonMetaProvidersReady(state)
@@ -1769,7 +1777,11 @@ object WatchProgressRepository {
     private fun publishFollowedShows() {
         _followedShows.value = unionFollowedShowEntries(
             nuvioEntries = localEntriesSnapshot(),
+            // CONNECTED providers only. Disconnecting Trakt clears its credentials but not
+            // `TraktProgressRepository`, so an unfiltered union would keep serving that history to
+            // the Upcoming row for the rest of the session.
             providerEntries = TrackingProviderRegistry.progressProviders()
+                .filter { provider -> TrackingProviderRegistry.isAuthenticated(provider.providerId) }
                 .flatMap { provider -> provider.snapshot().entries },
         )
     }
