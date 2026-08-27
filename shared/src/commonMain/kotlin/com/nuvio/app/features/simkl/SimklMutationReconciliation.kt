@@ -29,8 +29,12 @@ private fun SimklSyncSnapshot.withListMutations(
         val media = mutation.responseMedia.mergeMissing(requestMedia)
         val index = updated.indexOfMatchingMedia(media)
         val existing = updated.getOrNull(index)
-        val mediaType = existing?.mediaType
-            ?: mutation.resolvedMediaType
+        // Response first, existing second (fork divergence from upstream 5003d298, which preserves
+        // existing first): the server's classification must be able to REPAIR an entry a pre-fix
+        // mutation stored as SHOWS/MOVIES, and this matches withResolvedHistoryStatus's own
+        // mutation-first precedence below.
+        val mediaType = mutation.resolvedMediaType
+            ?: existing?.mediaType
             ?: mutation.request.kind.toSimklMediaType()
         val mergedMedia = media.mergeMissing(existing?.media)
         val entry = (existing ?: SimklLibraryEntry()).copy(

@@ -147,6 +147,45 @@ class SimklMutationReconciliationTest {
     }
 
     @Test
+    fun `list response repairs an existing entry misclassified before the anime fix`() {
+        val ids = """{"simkl": 2090, "imdb": "tt1520211"}"""
+        val preFix = response(
+            """
+            {
+              "added": {
+                "movies": [],
+                "shows": [
+                  {"to": "plantowatch", "ids": $ids, "type": "show"}
+                ]
+              },
+              "not_found": {"movies": [], "shows": []}
+            }
+            """,
+        ).toListMutationReceipt(listOf(show()), json)
+        val misclassified = SimklSyncSnapshot().applyMutationReceipt(preFix, 1_700_000_000_000L)
+        assertEquals(SimklMediaType.SHOWS, misclassified.entries.single().mediaType)
+
+        val repair = response(
+            """
+            {
+              "added": {
+                "movies": [],
+                "shows": [
+                  {"to": "watching", "ids": $ids, "type": "anime", "anime_type": "tv"}
+                ]
+              },
+              "not_found": {"movies": [], "shows": []}
+            }
+            """,
+        ).toListMutationReceipt(listOf(show()), json)
+        val repaired = misclassified.applyMutationReceipt(repair, 1_700_000_100_000L)
+
+        val entry = repaired.entries.single()
+        assertEquals(SimklMediaType.ANIME, entry.mediaType)
+        assertEquals("tv", entry.animeType)
+    }
+
+    @Test
     fun `history response records episode and resolved anime classification locally`() {
         val request = TrackingHistoryItem(
             media = anime(TrackingEpisode(number = 3)),
