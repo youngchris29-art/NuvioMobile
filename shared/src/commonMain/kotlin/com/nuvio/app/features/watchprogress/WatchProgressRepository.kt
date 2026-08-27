@@ -1316,6 +1316,11 @@ object WatchProgressRepository {
         return currentEntries().resumeEntryForSeries(metaId)
     }
 
+    /**
+     * Legacy 20-item row, deliberately retained with no callers as the rollback path for
+     * [continueWatchingRow] (BUG-75's product decision) — remove once the provider-aware row
+     * has survived a release in the wild.
+     */
     fun continueWatching(): List<WatchProgressEntry> {
         ensureLoaded()
         return currentEntries().continueWatchingEntries()

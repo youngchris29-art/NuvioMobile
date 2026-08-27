@@ -104,6 +104,7 @@ private fun buildHomeCatalogDescriptorSignature(
     signature.add(catalog.id)
     signature.add(catalog.name)
     signature.add(catalog.supportsPagination())
+    signature.add(catalog.extra.size)
     catalog.extra.forEach { extra ->
         signature.add(extra.name)
         signature.add(extra.isRequired)

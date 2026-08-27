@@ -80,33 +80,38 @@ object TraktSettingsRepository {
 
     private val _uiState = MutableStateFlow(TraktSettingsUiState())
 
-    // BUG-75: session-scoped, per-profile count of *user* edits to the three synced
+    // BUG-75: session-scoped, per-profile record of *user* edits to the three synced
     // tracking-source fields. TrackingSourceSettingsSyncService reads it to tell a real edit
     // apart from a profile-switch reload or a remote apply, both of which also emit through
     // uiState — keyed by profile so one profile's edit can never lend provenance to another
-    // profile's reload emission.
-    private val userTrackingEditCounts = atomic(mapOf<Int, Int>())
-    internal fun userTrackingEditCount(profileId: Int): Int = userTrackingEditCounts.value[profileId] ?: 0
+    // profile's reload emission. The count and the edit's resulting selection live in ONE atomic
+    // value: updated separately, a concurrent pull could observe the bumped count with the
+    // previous selection and reconcile the new edit against a value that was never pushed. The
+    // selection is kept because the ordered sync's ProfileSettings step can overwrite live state
+    // with an older platform blob after the edit — pushing "current selection" for an
+    // unreconciled edit would push the stale platform value. Only ever read count-guarded.
+    internal data class UserTrackingEdit(
+        val count: Int,
+        val selection: TrackingSourceSelection,
+    )
 
-    // The last user edit's resulting selection, kept alongside the count: the ordered sync's
-    // ProfileSettings step can overwrite the live state with an older platform blob AFTER the
-    // edit, so pushing "current selection" for an unreconciled edit would push the stale platform
-    // value. Only ever read count-guarded (an unreconciled count is what makes this current).
-    private val userTrackingEditSelections = atomic(mapOf<Int, TrackingSourceSelection>())
+    private val userTrackingEdits = atomic(mapOf<Int, UserTrackingEdit>())
+    internal fun userTrackingEditCount(profileId: Int): Int = userTrackingEdits.value[profileId]?.count ?: 0
     internal fun lastUserTrackingEditSelection(profileId: Int): TrackingSourceSelection? =
-        userTrackingEditSelections.value[profileId]
+        userTrackingEdits.value[profileId]?.selection
 
     private fun recordUserTrackingEdit(next: TraktSettingsUiState) {
+        // Attribution deliberately follows the ACTIVE profile — persist() below writes to the
+        // active profile's storage, so provenance must track where the write actually lands.
         val profileId = ProfileRepository.activeProfileId
-        userTrackingEditCounts.value = userTrackingEditCounts.value.let {
-            it + (profileId to ((it[profileId] ?: 0) + 1))
+        val selection = TrackingSourceSelection(
+            watchProgressSource = next.watchProgressSource,
+            librarySourceMode = next.librarySourceMode,
+            continueWatchingDaysCap = next.continueWatchingDaysCap,
+        )
+        userTrackingEdits.value = userTrackingEdits.value.let {
+            it + (profileId to UserTrackingEdit(count = (it[profileId]?.count ?: 0) + 1, selection = selection))
         }
-        userTrackingEditSelections.value = userTrackingEditSelections.value +
-            (profileId to TrackingSourceSelection(
-                watchProgressSource = next.watchProgressSource,
-                librarySourceMode = next.librarySourceMode,
-                continueWatchingDaysCap = next.continueWatchingDaysCap,
-            ))
     }
     val uiState: StateFlow<TraktSettingsUiState> = _uiState.asStateFlow()
 
@@ -126,8 +131,7 @@ object TraktSettingsRepository {
         _uiState.value = TraktSettingsUiState()
         // Account-scoped: profile ids repeat across accounts, and a count surviving the wipe
         // would read as a user edit for the next account's same-numbered profile.
-        userTrackingEditCounts.value = emptyMap()
-        userTrackingEditSelections.value = emptyMap()
+        userTrackingEdits.value = emptyMap()
     }
 
     // `profileId` is unused since the pending-change outbox was removed (BUG-75: the shared sync
