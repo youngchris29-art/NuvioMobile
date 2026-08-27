@@ -159,58 +159,75 @@ object TrackingSourceSettingsSyncService {
         val selection: TrackingSourceSelection,
     )
 
+    // Last push that failed in transit. In-memory only: within the session every later pull and
+    // every later emission retries it; a process death before that loses only the *push* — the
+    // edit itself is persisted locally, and the restart's first pull will see it as a mid-window
+    // divergence only if a pending/user-edit marker exists, so a stale remote can still win after
+    // a restart that follows a failed push. Accepted residual — fixing it would mean persisting a
+    // dirty flag, i.e. rebuilding the outbox this service replaced.
+    @Volatile
+    private var failedPushSelection: TrackingSourceSelection? = null
+
+    // Snapshot of TraktSettingsRepository.userTrackingEditCount at the last observer emission,
+    // used to tell real user edits from profile-switch reloads flowing through the same state.
+    @Volatile
+    private var lastObservedEditCount: Int = 0
+
     suspend fun pullFromServer(profileId: Int) {
-        runCatching {
-            val pullToken = currentPullToken(profileId) ?: return
-            TrackingSettingsRepository.ensureLoaded()
-            val localSelection = currentSelection()
-            val remoteJson = fetchRemoteSettingsJson(profileId)
-            cachedSharedSettings = CachedSharedSettings(
-                token = pullToken,
-                settingsJson = remoteJson ?: buildJsonObject { },
-            )
+        val pullToken = currentPullToken(profileId) ?: return
+        TrackingSettingsRepository.ensureLoaded()
+        val editCountAtEntry = TraktSettingsRepository.userTrackingEditCount
+        val localSelection = currentSelection()
+        // A fetch failure propagates so runOrderedProfileSync records this step as failed and the
+        // full pull is retried, instead of the sync being stamped fresh with the shared selection
+        // silently unapplied.
+        val remoteJson = fetchRemoteSettingsJson(profileId)
+        cachedSharedSettings = CachedSharedSettings(
+            token = pullToken,
+            settingsJson = remoteJson ?: buildJsonObject { },
+        )
 
-            if (remoteJson == null) {
-                // Seed: nothing under the shared namespace yet, so this client's current selection
-                // becomes its first value — otherwise the namespace stays empty until someone
-                // changes a setting, and a TV that never changes one never publishes anything.
-                log.i { "pullFromServer — no remote tracking source settings found; seeding from local" }
-                // Re-read so an edit that raced this pull (recorded or mid-RPC) seeds the
-                // namespace with the user's latest choice rather than the entry-time snapshot.
-                pendingPrePullEdit = null
-                pushToRemote(pullToken, currentSelection())
-                markInitialPullComplete(pullToken)
-                return
-            }
-
-            val remoteSelection = decodeTrackingSourceSelectionPreservingLocal(remoteJson, localSelection)
-            if (remoteSelection == null) {
-                log.w { "pullFromServer — failed to parse remote tracking source settings" }
-                markInitialPullComplete(pullToken)
-                return
-            }
-
-            // A local edit that raced this pull wins over the remote value: either the push
-            // observer recorded it while the gate was closed, or the selection moved between this
-            // function's entry and now (an edit landing mid-RPC). Applying remote here would
-            // silently revert the user's choice, so push the local edit instead.
-            val pending = pendingPrePullEdit?.takeIf { it.token == pullToken }
+        if (remoteJson == null) {
+            // Seed: nothing under the shared namespace yet, so this client's current selection
+            // becomes its first value — otherwise the namespace stays empty until someone
+            // changes a setting, and a TV that never changes one never publishes anything.
+            log.i { "pullFromServer — no remote tracking source settings found; seeding from local" }
+            // Re-read so an edit that raced this pull seeds the namespace with the user's latest
+            // choice rather than the entry-time snapshot.
             pendingPrePullEdit = null
-            val freshLocal = currentSelection()
-            if (pending != null || freshLocal != localSelection) {
-                log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
-                markInitialPullComplete(pullToken)
-                pushToRemote(pullToken, freshLocal)
-                return
-            }
-
-            applyRemoteSelection(remoteSelection)
-            log.i { "pullFromServer — applied remote tracking source settings" }
+            val seeded = pushToRemote(pullToken, currentSelection())
             markInitialPullComplete(pullToken)
-        }.onFailure { e ->
-            isSyncingFromRemote = false
-            log.e(e) { "pullFromServer — FAILED" }
+            if (!seeded) error("seeding the shared tracking source namespace failed")
+            return
         }
+
+        val remoteSelection = decodeTrackingSourceSelectionPreservingLocal(remoteJson, localSelection)
+        if (remoteSelection == null) {
+            log.w { "pullFromServer — failed to parse remote tracking source settings" }
+            markInitialPullComplete(pullToken)
+            return
+        }
+
+        // A *user* edit that raced this pull wins over the remote value: either the push observer
+        // recorded one while the gate was closed, or the edit count moved during the RPC, or an
+        // earlier push of it failed and is still owed. Profile-switch reloads deliberately do not
+        // count (they move the selection without moving the edit count) — for those the remote
+        // value is the newer truth and applies below.
+        val pending = pendingPrePullEdit?.takeIf { it.token == pullToken }
+        pendingPrePullEdit = null
+        val editedDuringPull = TraktSettingsRepository.userTrackingEditCount != editCountAtEntry
+        if (pending != null || editedDuringPull || failedPushSelection != null) {
+            log.i { "pullFromServer — local tracking source edit raced the initial pull; keeping local and pushing" }
+            markInitialPullComplete(pullToken)
+            if (!pushToRemote(pullToken, currentSelection())) {
+                error("pushing the raced local tracking source edit failed")
+            }
+            return
+        }
+
+        applyRemoteSelection(remoteSelection)
+        log.i { "pullFromServer — applied remote tracking source settings" }
+        markInitialPullComplete(pullToken)
     }
 
     @OptIn(FlowPreview::class)
@@ -230,22 +247,31 @@ object TrackingSourceSettingsSyncService {
                 .drop(1)
                 .debounce(PUSH_DEBOUNCE_MS)
                 .collect { selection ->
+                    val editCount = TraktSettingsRepository.userTrackingEditCount
+                    val isUserEdit = editCount != lastObservedEditCount
+                    lastObservedEditCount = editCount
                     val token = currentPullToken() ?: return@collect
                     // Pushing before the pull lands would publish this device's stale selection
                     // over the account's newer one.
                     if (!hasCompletedInitialPull(token)) {
-                        // Record the edit instead of discarding it: pullFromServer reconciles a
-                        // pending edit by keeping local and pushing, rather than applying remote
-                        // over it (this flow never re-emits an unchanged value, so a plain skip
-                        // here would lose the edit permanently).
-                        pendingPrePullEdit = PendingPrePullEdit(token, selection)
-                        log.d { "push — deferred until the initial tracking source pull completes" }
+                        if (isUserEdit) {
+                            // Record the edit instead of discarding it: pullFromServer reconciles
+                            // a pending edit by keeping local and pushing, rather than applying
+                            // remote over it (this flow never re-emits an unchanged value, so a
+                            // plain skip here would lose the edit permanently). Profile-switch
+                            // reloads land here too but must NOT be recorded — they are not edits,
+                            // and recording one would push a platform-local value over the shared
+                            // namespace during every slow profile pull.
+                            pendingPrePullEdit = PendingPrePullEdit(token, selection)
+                            log.d { "push — deferred until the initial tracking source pull completes" }
+                        }
                         return@collect
                     }
                     if (isSyncingFromRemote) return@collect
                     // The apply above emits through this same flow; without this the pull would
-                    // echo straight back as a push of the value we just received.
-                    if (selection == cachedRemoteSelection(token)) return@collect
+                    // echo straight back as a push of the value we just received. A still-owed
+                    // failed push bypasses the skip so it finally lands.
+                    if (failedPushSelection == null && selection == cachedRemoteSelection(token)) return@collect
                     pushToRemote(token, selection)
                 }
         }
@@ -257,9 +283,10 @@ object TrackingSourceSettingsSyncService {
         completedInitialPull = null
         cachedSharedSettings = null
         pendingPrePullEdit = null
+        failedPushSelection = null
     }
 
-    private suspend fun pushToRemote(token: PullToken, selection: TrackingSourceSelection) {
+    private suspend fun pushToRemote(token: PullToken, selection: TrackingSourceSelection): Boolean =
         runCatching {
             val jsonElement = mergedSharedPayloadJson(token, selection)
 
@@ -271,11 +298,19 @@ object TrackingSourceSettingsSyncService {
             }
             SupabaseProvider.client.postgrest.rpc("sync_push_profile_settings_blob", params)
             cachedSharedSettings = CachedSharedSettings(token = token, settingsJson = jsonElement)
+            failedPushSelection = null
             log.d { "pushToRemote — success" }
-        }.onFailure { e ->
-            log.e(e) { "pushToRemote — FAILED" }
-        }
-    }
+        }.fold(
+            onSuccess = { true },
+            onFailure = { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                // Keep the selection owed: the next pull retries it (local-wins branch), and any
+                // later emission bypasses the echo skip while this is set.
+                failedPushSelection = selection
+                log.e(e) { "pushToRemote — FAILED" }
+                false
+            },
+        )
 
     private fun currentPullToken(profileId: Int = ProfileRepository.activeProfileId): PullToken? {
         val authState = AuthRepository.state.value

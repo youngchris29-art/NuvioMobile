@@ -4,6 +4,7 @@ import com.nuvio.app.features.library.LibrarySourceMode
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.simkl.DEFAULT_SIMKL_ANIME_ID_PREFERENCE
 import com.nuvio.app.features.simkl.SimklAnimeIdPreference
+import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -77,6 +78,12 @@ object TraktSettingsRepository {
     }
 
     private val _uiState = MutableStateFlow(TraktSettingsUiState())
+
+    // BUG-75: session-scoped count of *user* edits to the three synced tracking-source fields.
+    // TrackingSourceSettingsSyncService reads it to tell a real edit apart from a profile-switch
+    // reload or a remote apply, both of which also emit through uiState.
+    private val userTrackingEditCounter = atomic(0)
+    internal val userTrackingEditCount: Int get() = userTrackingEditCounter.value
     val uiState: StateFlow<TraktSettingsUiState> = _uiState.asStateFlow()
 
     private var hasLoaded = false
@@ -103,6 +110,7 @@ object TraktSettingsRepository {
     ) {
         ensureLoaded()
         if (_uiState.value.watchProgressSource == source) return
+        userTrackingEditCounter.incrementAndGet()
         val nextState = _uiState.value.copy(watchProgressSource = source)
         persist(nextState)
         _uiState.value = nextState
@@ -135,6 +143,7 @@ object TraktSettingsRepository {
         ensureLoaded()
         val normalized = normalizeTraktContinueWatchingDaysCap(days)
         if (_uiState.value.continueWatchingDaysCap == normalized) return
+        userTrackingEditCounter.incrementAndGet()
         _uiState.value = _uiState.value.copy(continueWatchingDaysCap = normalized)
         persist()
     }
@@ -142,6 +151,7 @@ object TraktSettingsRepository {
     fun setLibrarySourceMode(mode: LibrarySourceMode) {
         ensureLoaded()
         if (_uiState.value.librarySourceMode == mode) return
+        userTrackingEditCounter.incrementAndGet()
         _uiState.value = _uiState.value.copy(librarySourceMode = mode)
         persist()
     }
