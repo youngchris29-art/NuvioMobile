@@ -2,13 +2,14 @@ package com.nuvio.app.features.tracking
 
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
-import com.nuvio.app.core.auth.AuthRepository
-import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.sync.CachedSharedSettings
+import com.nuvio.app.core.sync.SettingsPullToken
 import com.nuvio.app.core.sync.TRACKING_SOURCE_SHARED_SYNC_PLATFORM
+import com.nuvio.app.core.sync.currentSettingsPullToken
+import com.nuvio.app.core.sync.mergeSharedSettingsJson
 import com.nuvio.app.core.sync.putSyncOriginClientId
 import com.nuvio.app.features.library.LibrarySourceMode
-import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.trakt.normalizeTraktContinueWatchingDaysCap
 import io.github.jan.supabase.postgrest.postgrest
@@ -54,46 +55,11 @@ private data class SupabaseTrackingSourceSettingsBlob(
     @SerialName("settings_json") val settingsJson: JsonObject? = null,
 )
 
-private data class PullToken(
-    val userId: String,
-    val profileId: Int,
-)
-
-/**
- * Snapshot of the shared-namespace settings blob fetched during the most recent [PullToken], kept
- * so the push path can merge against it without a second remote fetch, and so a push whose values
- * already match the server can be skipped outright. Invalidated implicitly: a push under a stale
- * [PullToken] (account/profile switched mid-flight) merges remote-less rather than reading data
- * for the wrong account.
- *
- * Same knowingly-imperfect tradeoff [com.nuvio.app.features.home.HomeCatalogSettingsSyncService]
- * carries: the RPC is replace-style, so another client writing an unknown-to-this-client field
- * BETWEEN this session's pull and a later push has that field overwritten with the cached value.
- * Fetch-before-every-push only shrinks that window, never closes it.
- */
-private data class CachedSharedSettings(
-    val token: PullToken,
-    val settingsJson: JsonObject,
-)
-
 internal data class TrackingSourceSelection(
     val watchProgressSource: WatchProgressSource,
     val librarySourceMode: LibrarySourceMode,
     val continueWatchingDaysCap: Int,
 )
-
-/**
- * Pure merge of the shared-namespace remote blob with this client's local payload: remote entries
- * first, local overwrites on key collision. Kept top-level (not a member) so it is unit-testable
- * without touching [TrackingSourceSettingsSyncService]'s network/auth state.
- */
-internal fun mergeTrackingSourceSettingsJson(
-    remoteJson: JsonObject?,
-    localJson: JsonObject,
-): JsonObject = buildJsonObject {
-    remoteJson?.forEach { (key, value) -> put(key, value) }
-    localJson.forEach { (key, value) -> put(key, value) }
-}
 
 /**
  * Presence-gated decode: only the keys the writing client actually modelled override [local]. A
@@ -148,7 +114,7 @@ object TrackingSourceSettingsSyncService {
     private var observeJob: Job? = null
 
     @Volatile
-    private var completedInitialPull: PullToken? = null
+    private var completedInitialPull: SettingsPullToken? = null
 
     @Volatile
     private var cachedSharedSettings: CachedSharedSettings? = null
@@ -173,12 +139,12 @@ object TrackingSourceSettingsSyncService {
     private var failedPush: FailedPush? = null
 
     private data class FailedPush(
-        val token: PullToken,
+        val token: SettingsPullToken,
         val selection: TrackingSourceSelection,
     )
 
     suspend fun pullFromServer(profileId: Int) {
-        val pullToken = currentPullToken(profileId) ?: return
+        val pullToken = currentSettingsPullToken(profileId) ?: return
         TrackingSettingsRepository.ensureLoaded()
         val localSelection = currentSelection()
         // A fetch failure propagates so runOrderedProfileSync records this step as failed and the
@@ -188,7 +154,7 @@ object TrackingSourceSettingsSyncService {
         // The account or active profile can change while the RPC is in flight (tvOS sign-out does
         // not cancel an active SyncManager pull before wiping). Everything below reads or writes
         // ACTIVE-scoped state, so a stale token must abandon the pull here.
-        if (currentPullToken() != pullToken) {
+        if (currentSettingsPullToken() != pullToken) {
             log.i { "pullFromServer — pull token changed mid-fetch; abandoning" }
             return
         }
@@ -288,7 +254,7 @@ object TrackingSourceSettingsSyncService {
                 .drop(1)
                 .debounce(PUSH_DEBOUNCE_MS)
                 .collect { selection ->
-                    val token = currentPullToken() ?: return@collect
+                    val token = currentSettingsPullToken() ?: return@collect
                     // Pushing before the pull lands would publish this device's stale selection
                     // over the account's newer one. Skipping is safe for edits too: any user edit
                     // is counted synchronously at its setter, and the pull keeps-and-pushes local
@@ -340,9 +306,10 @@ object TrackingSourceSettingsSyncService {
         cachedSharedSettings = null
         failedPush = null
         editCountsReconciled = emptyMap()
+        preSyncSelection = null
     }
 
-    private suspend fun pushToRemote(token: PullToken, selection: TrackingSourceSelection): Boolean =
+    private suspend fun pushToRemote(token: SettingsPullToken, selection: TrackingSourceSelection): Boolean =
         runCatching {
             val jsonElement = mergedSharedPayloadJson(token, selection)
 
@@ -368,19 +335,10 @@ object TrackingSourceSettingsSyncService {
             },
         )
 
-    private fun currentPullToken(profileId: Int = ProfileRepository.activeProfileId): PullToken? {
-        val authState = AuthRepository.state.value
-        if (authState !is AuthState.Authenticated || authState.isAnonymous) return null
-        return PullToken(
-            userId = authState.userId,
-            profileId = profileId,
-        )
-    }
-
-    private fun hasCompletedInitialPull(token: PullToken): Boolean =
+    private fun hasCompletedInitialPull(token: SettingsPullToken): Boolean =
         completedInitialPull == token
 
-    private fun markInitialPullComplete(token: PullToken) {
+    private fun markInitialPullComplete(token: SettingsPullToken) {
         completedInitialPull = token
     }
 
@@ -424,7 +382,7 @@ object TrackingSourceSettingsSyncService {
         return result.decodeList<SupabaseTrackingSourceSettingsBlob>().firstOrNull()?.settingsJson
     }
 
-    private fun cachedRemoteSelection(token: PullToken): TrackingSourceSelection? {
+    private fun cachedRemoteSelection(token: SettingsPullToken): TrackingSourceSelection? {
         val cached = cachedSharedSettings?.takeIf { it.token == token }?.settingsJson ?: return null
         val decoded = runCatching {
             trackingSourceJson.decodeFromJsonElement(SyncTrackingSourcePayload.serializer(), cached)
@@ -440,7 +398,7 @@ object TrackingSourceSettingsSyncService {
     }
 
     private fun mergedSharedPayloadJson(
-        token: PullToken,
+        token: SettingsPullToken,
         selection: TrackingSourceSelection,
     ): JsonObject {
         val localJson = trackingSourceJson.encodeToJsonElement(
@@ -454,6 +412,6 @@ object TrackingSourceSettingsSyncService {
         val remoteJson = cachedSharedSettings
             ?.takeIf { cached -> cached.token == token }
             ?.settingsJson
-        return mergeTrackingSourceSettingsJson(remoteJson = remoteJson, localJson = localJson)
+        return mergeSharedSettingsJson(remoteJson = remoteJson, localJson = localJson)
     }
 }

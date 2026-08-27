@@ -1,7 +1,6 @@
 package com.nuvio.app.features.home
 
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlin.test.Test
@@ -9,42 +8,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * Ported from upstream `f9c13a9b` ("perf(home): remove legacy catalog sync reads"): exercises
- * the pure [mergeHomeCatalogSettingsJson] helper that backs the cached-remote push merge, and
- * the presence-gated [decodeHomeCatalogPayloadPreservingLocalDefaults] whose null return
- * pullFromServer turns into a failed (and therefore retried) sync step.
+ * The presence-gated [decodeHomeCatalogPayloadPreservingLocalDefaults] whose null return
+ * pullFromServer turns into a failed (and therefore retried) sync step. The cached-remote push
+ * merge this class used to cover lives in
+ * [com.nuvio.app.core.sync.SharedSettingsSyncSupportTest] since the helper was deduplicated.
  */
 class HomeCatalogSettingsSyncServiceTest {
-    @Test
-    fun `shared settings merge preserves unknown remote fields`() {
-        val remote = buildJsonObject {
-            put("future_setting", "preserved")
-            put("show_catalog_type", false)
-        }
-        val local = buildJsonObject {
-            put("show_catalog_type", true)
-            put("hide_unreleased_content", true)
-        }
-
-        val merged = mergeHomeCatalogSettingsJson(remoteJson = remote, localJson = local)
-
-        assertEquals("preserved", merged.getValue("future_setting").jsonPrimitive.content)
-        assertEquals(true, merged.getValue("show_catalog_type").jsonPrimitive.content.toBoolean())
-        assertEquals(true, merged.getValue("hide_unreleased_content").jsonPrimitive.content.toBoolean())
-    }
-
-    @Test
-    fun `null remote json falls back to local only`() {
-        val local = buildJsonObject {
-            put("show_catalog_type", true)
-        }
-
-        val merged = mergeHomeCatalogSettingsJson(remoteJson = null, localJson = local)
-
-        assertEquals(1, merged.size)
-        assertEquals(true, merged.getValue("show_catalog_type").jsonPrimitive.content.toBoolean())
-    }
-
     @Test
     fun `malformed remote blob decodes to null so the sync step can fail`() {
         // Not this payload's shape at all: `items` must be an array.

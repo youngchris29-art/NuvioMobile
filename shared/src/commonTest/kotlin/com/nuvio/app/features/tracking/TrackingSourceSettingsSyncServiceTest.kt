@@ -3,16 +3,16 @@ package com.nuvio.app.features.tracking
 import com.nuvio.app.features.library.LibrarySourceMode
 import com.nuvio.app.features.trakt.TRAKT_CONTINUE_WATCHING_DAYS_CAP_ALL
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * BUG-75: the pure halves of the shared tracking-source namespace — the cached-remote push merge
- * and the presence-gated decode. Modeled on `HomeCatalogSettingsSyncServiceTest`. The local
- * selection deliberately differs from the shipped defaults so "preserved local" and "fell back to
- * the default" cannot be confused.
+ * BUG-75: the presence-gated decode of the shared tracking-source namespace. Modeled on
+ * `HomeCatalogSettingsSyncServiceTest`. The local selection deliberately differs from the shipped
+ * defaults so "preserved local" and "fell back to the default" cannot be confused. The
+ * cached-remote push merge this class used to cover lives in
+ * [com.nuvio.app.core.sync.SharedSettingsSyncSupportTest] since the helper was deduplicated.
  */
 class TrackingSourceSettingsSyncServiceTest {
 
@@ -21,36 +21,6 @@ class TrackingSourceSettingsSyncServiceTest {
         librarySourceMode = LibrarySourceMode.SIMKL,
         continueWatchingDaysCap = 60,
     )
-
-    @Test
-    fun `shared settings merge preserves unknown remote fields`() {
-        val remote = buildJsonObject {
-            put("future_setting", "preserved")
-            put("watch_progress_source", "TRAKT")
-        }
-        val localJson = buildJsonObject {
-            put("watch_progress_source", "SIMKL")
-            put("library_source_mode", "SIMKL")
-        }
-
-        val merged = mergeTrackingSourceSettingsJson(remoteJson = remote, localJson = localJson)
-
-        assertEquals("preserved", merged.getValue("future_setting").jsonPrimitive.content)
-        assertEquals("SIMKL", merged.getValue("watch_progress_source").jsonPrimitive.content)
-        assertEquals("SIMKL", merged.getValue("library_source_mode").jsonPrimitive.content)
-    }
-
-    @Test
-    fun `null remote json falls back to local only`() {
-        val localJson = buildJsonObject {
-            put("watch_progress_source", "SIMKL")
-        }
-
-        val merged = mergeTrackingSourceSettingsJson(remoteJson = null, localJson = localJson)
-
-        assertEquals(1, merged.size)
-        assertEquals("SIMKL", merged.getValue("watch_progress_source").jsonPrimitive.content)
-    }
 
     @Test
     fun `present remote keys override the local selection`() {

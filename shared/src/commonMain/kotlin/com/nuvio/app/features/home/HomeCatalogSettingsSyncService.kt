@@ -2,12 +2,13 @@ package com.nuvio.app.features.home
 
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
-import com.nuvio.app.core.auth.AuthRepository
-import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.sync.CachedSharedSettings
 import com.nuvio.app.core.sync.HOME_CATALOG_SHARED_SYNC_PLATFORM
+import com.nuvio.app.core.sync.SettingsPullToken
+import com.nuvio.app.core.sync.currentSettingsPullToken
+import com.nuvio.app.core.sync.mergeSharedSettingsJson
 import com.nuvio.app.core.sync.putSyncOriginClientId
-import com.nuvio.app.features.profiles.ProfileRepository
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlin.concurrent.Volatile
@@ -65,49 +66,13 @@ private const val SHOW_CATALOG_TYPE_KEY = "show_catalog_type"
 private const val HIDE_CATALOG_UNDERLINE_KEY = "hide_catalog_underline"
 private const val HIDE_DISCOVER_KEY = "hide_discover"
 
-private data class PullToken(
-    val userId: String,
-    val profileId: Int,
-)
-
-/**
- * Snapshot of the shared-platform settings blob fetched during the most recent [PullToken],
- * kept so [HomeCatalogSettingsSyncService]'s push path can merge against it without issuing a
- * second remote fetch on every push (ported from upstream `f9c13a9b`). Invalidated implicitly:
- * a push under a stale [PullToken] (account/profile switched mid-flight) falls back to a
- * remote-less merge rather than reading data for the wrong account.
- *
- * Knowingly imperfect, upstream-faithful tradeoff (Codex 2026-08-24): the cache is refreshed on
- * pull and after each successful push, but another client writing an unknown-to-this-client field
- * BETWEEN this session's pull and a later push gets that field overwritten with the cached value
- * (the RPC is replace-style). The pre-`f9c13a9b` fetch-before-every-push only shrank that race
- * window, never closed it, and upstream deliberately traded it for one fewer RPC per push —
- * diverging here would fork merge semantics from upstream's apps on the same account.
- */
-private data class CachedSharedSettings(
-    val token: PullToken,
-    val settingsJson: JsonObject,
-)
-
-/**
- * Pure merge of the shared-platform remote blob with this client's local payload: remote entries
- * first, local overwrites on key collision. Kept top-level (not a member) so it is unit-testable
- * without touching [HomeCatalogSettingsSyncService]'s network/auth state.
- */
-internal fun mergeHomeCatalogSettingsJson(
-    remoteJson: JsonObject?,
-    localJson: JsonObject,
-): JsonObject = buildJsonObject {
-    remoteJson?.forEach { (key, value) -> put(key, value) }
-    localJson.forEach { (key, value) -> put(key, value) }
-}
-
 /**
  * Presence-gated decode: only the toggles the writing client actually modelled override
  * [localPayload]'s values — a client on an older schema omits a key entirely, and absence must
  * mean "not modelled" rather than "reset to the default". Returns null when [settingsJson] is not
  * this payload's shape at all; the caller turns that into a failed sync step. Kept top-level (not
- * a member) for the same unit-testability reason as [mergeHomeCatalogSettingsJson].
+ * a member) so it is unit-testable without touching [HomeCatalogSettingsSyncService]'s
+ * network/auth state.
  */
 internal fun decodeHomeCatalogPayloadPreservingLocalDefaults(
     settingsJson: JsonObject,
@@ -148,7 +113,7 @@ object HomeCatalogSettingsSyncService {
     private var pushJob: Job? = null
 
     @Volatile
-    private var completedInitialPull: PullToken? = null
+    private var completedInitialPull: SettingsPullToken? = null
 
     @Volatile
     private var cachedSharedSettings: CachedSharedSettings? = null
@@ -158,10 +123,10 @@ object HomeCatalogSettingsSyncService {
     // and repair the blob; cleared once a pull for the token completes. Session-scoped like
     // [completedInitialPull]; the token's userId keeps it inert across account switches.
     @Volatile
-    private var localEditAwaitingInitialPull: PullToken? = null
+    private var localEditAwaitingInitialPull: SettingsPullToken? = null
 
     suspend fun pullFromServer(profileId: Int) {
-        val pullToken = currentPullToken(profileId) ?: return
+        val pullToken = currentSettingsPullToken(profileId) ?: return
         val localPayload = HomeCatalogSettingsRepository.exportToSyncPayload()
         // A fetch failure propagates so runOrderedProfileSync records this step as failed and
         // the full pull is retried, instead of the sync being stamped fresh with the remote
@@ -213,7 +178,7 @@ object HomeCatalogSettingsSyncService {
     }
 
     fun triggerPush() {
-        val requestedToken = currentPullToken()
+        val requestedToken = currentSettingsPullToken()
         if (requestedToken == null || !hasCompletedInitialPull(requestedToken)) {
             // Every call here is a genuine local mutation (applyFromRemote never triggers a
             // push), so a skip means a local edit raced the incomplete initial pull — remember
@@ -228,12 +193,12 @@ object HomeCatalogSettingsSyncService {
         pushJob = scope.launch {
             delay(500)
             if (isSyncingFromRemote) return@launch
-            if (currentPullToken() != requestedToken) return@launch
+            if (currentSettingsPullToken() != requestedToken) return@launch
             pushToRemote(requestedToken)
         }
     }
 
-    private suspend fun pushToRemote(token: PullToken): Boolean =
+    private suspend fun pushToRemote(token: SettingsPullToken): Boolean =
         runCatching {
             val payload = HomeCatalogSettingsRepository.exportToSyncPayload()
             val jsonElement = mergedSharedPayloadJson(token, payload)
@@ -256,19 +221,10 @@ object HomeCatalogSettingsSyncService {
             },
         )
 
-    private fun currentPullToken(profileId: Int = ProfileRepository.activeProfileId): PullToken? {
-        val authState = AuthRepository.state.value
-        if (authState !is AuthState.Authenticated || authState.isAnonymous) return null
-        return PullToken(
-            userId = authState.userId,
-            profileId = profileId,
-        )
-    }
-
-    private fun hasCompletedInitialPull(token: PullToken): Boolean =
+    private fun hasCompletedInitialPull(token: SettingsPullToken): Boolean =
         completedInitialPull == token
 
-    private fun markInitialPullComplete(token: PullToken) {
+    private fun markInitialPullComplete(token: SettingsPullToken) {
         completedInitialPull = token
         if (localEditAwaitingInitialPull == token) localEditAwaitingInitialPull = null
     }
@@ -296,13 +252,13 @@ object HomeCatalogSettingsSyncService {
     }
 
     private fun mergedSharedPayloadJson(
-        token: PullToken,
+        token: SettingsPullToken,
         payload: SyncHomeCatalogPayload,
     ): JsonObject {
         val localJson = homeCatalogJson.encodeToJsonElement(SyncHomeCatalogPayload.serializer(), payload).jsonObject
         val remoteJson = cachedSharedSettings
             ?.takeIf { cached -> cached.token == token }
             ?.settingsJson
-        return mergeHomeCatalogSettingsJson(remoteJson = remoteJson, localJson = localJson)
+        return mergeSharedSettingsJson(remoteJson = remoteJson, localJson = localJson)
     }
 }
