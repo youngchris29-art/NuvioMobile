@@ -338,6 +338,12 @@ object WatchProgressRepository {
                         if (hasLoaded && !provider.providesCompleteMetadata) {
                             resolveRemoteMetadata()
                         }
+                    } else {
+                        // BUG-76: an inactive provider still feeds `followedShows`, so its
+                        // changes matter here even though they must not touch `uiState` — most
+                        // importantly a profile switch, which clears the outgoing profile's
+                        // snapshot only after loadFromDisk() has already published.
+                        publishFollowedShows()
                     }
                 }
             }
@@ -1612,14 +1618,7 @@ object WatchProgressRepository {
         val entries = currentEntries()
         val sortedEntries = entries.sortedByDescending { it.lastUpdatedEpochMs }
         val providerSnapshot = activeProgressProvider()?.snapshot()
-        // Every REGISTERED provider, not just the active one: Trakt-imported history lives in
-        // Trakt's snapshot and never in the local store, so a Trakt→Simkl flip would otherwise
-        // still drop it here. `snapshot()` is a StateFlow read on every provider — no I/O.
-        _followedShows.value = unionFollowedShowEntries(
-            nuvioEntries = localEntriesSnapshot(),
-            providerEntries = TrackingProviderRegistry.progressProviders()
-                .flatMap { provider -> provider.snapshot().entries },
-        )
+        publishFollowedShows()
         _uiState.value = projectWatchProgressUiState(
             source = activeSource,
             entries = sortedEntries,
@@ -1754,6 +1753,25 @@ object WatchProgressRepository {
         } else {
             providerMetadataOverlay.project(source = activeSource, entries = projectedEntries)
         }
+    }
+
+    /**
+     * Recomputes [followedShows] from every REGISTERED provider, not just the active one:
+     * Trakt-imported history lives in Trakt's snapshot and never in the local store, so a
+     * Trakt→Simkl flip would otherwise drop it. `snapshot()` is a StateFlow read per provider —
+     * no I/O.
+     *
+     * Called from [publish] AND from an inactive provider's change: on a profile switch,
+     * `loadFromDisk()` publishes before the inactive providers clear their snapshots, so without
+     * the second call this flow would keep serving the previous profile's titles to the Upcoming
+     * row. `uiState` and metadata resolution stay correctly active-only.
+     */
+    private fun publishFollowedShows() {
+        _followedShows.value = unionFollowedShowEntries(
+            nuvioEntries = localEntriesSnapshot(),
+            providerEntries = TrackingProviderRegistry.progressProviders()
+                .flatMap { provider -> provider.snapshot().entries },
+        )
     }
 
     private fun localEntriesSnapshot(): List<WatchProgressEntry> =
