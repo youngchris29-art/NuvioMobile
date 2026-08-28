@@ -694,6 +694,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func startTraktScrobble() {
         guard !traktScrobbleRequested else { return }
+        // Error/placeholder clips (debrid cache-sync stubs, error videos) must not
+        // open a Trakt session — mirrors the shared short-placeholder guard.
+        if WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(state.durationSec * 1000)) { return }
         traktScrobbleRequested = true
         TraktScrobbleRepository.shared.buildItem(
             contentType: context.contentType,
@@ -722,10 +725,13 @@ final class MPVTVPlayerViewController: UIViewController {
         traktSessionClosed = true
         guard let item = traktScrobbleItem else { return }
         traktScrobbleItem = nil
+        // A session can open before a placeholder's short duration is known; close
+        // it at 0% so Trakt never marks the stub watched.
+        let short = WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(state.durationSec * 1000))
         TraktScrobbleRepository.shared.scrobbleStop(
             profileId: ActiveProfileProvider.shared.activeProfileId,
             item: item,
-            progressPercent: currentProgressPercent()
+            progressPercent: short ? 0 : currentProgressPercent()
         ) { _ in }
     }
 

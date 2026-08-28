@@ -10,6 +10,13 @@ private const val CompletionThresholdFraction = 0.90
 private const val ProgressStoreThresholdMs = 1_000L
 private const val UpcomingNextSeasonWindowDays = 7
 
+/**
+ * Streams shorter than this are treated as error/placeholder clips (e.g. debrid
+ * cache-sync placeholders, "service unavailable" error videos, RAR-only torrents),
+ * not real episodes. Mirrors the internal-player guard in NuvioTV.
+ */
+private const val MinRealContentDurationMs = 121_000L
+
 fun watchedKey(
     content: WatchingContentRef,
     seasonNumber: Int? = null,
@@ -19,19 +26,37 @@ fun watchedKey(
 fun shouldStoreProgress(
     positionMs: Long,
     durationMs: Long,
-): Boolean = positionMs >= ProgressStoreThresholdMs
+): Boolean {
+    // Short error/placeholder clips must not create Continue Watching entries —
+    // same rationale as the isProgressComplete guard below.
+    if (isShortPlaceholderDuration(durationMs)) return false
+    return positionMs >= ProgressStoreThresholdMs
+}
 
 fun isProgressComplete(
     positionMs: Long,
     durationMs: Long,
     isEnded: Boolean,
 ): Boolean {
+    // Broader than upstream 31f5d0e6, which only guards the isEnded branch and
+    // relies on a Compose-player-side skip (MainAppContent.kt) for the rest.
+    // tvOS never reports isEnded — every write reaches the fraction path — so the
+    // guard must cover both branches here, or short error clips still complete.
+    if (isShortPlaceholderDuration(durationMs)) return false
     if (isEnded) return true
     if (durationMs <= 0L) return false
 
     val watchedFraction = positionMs.toDouble() / durationMs.toDouble()
     return watchedFraction >= CompletionThresholdFraction
 }
+
+/**
+ * Returns `true` when the duration looks like an error clip or debrid cache-sync
+ * placeholder rather than real content. A zero/negative duration is left to the
+ * normal path so that players which only report "ended" still work.
+ */
+fun isShortPlaceholderDuration(durationMs: Long): Boolean =
+    durationMs in 1 until MinRealContentDurationMs
 
 fun isReleasedBy(
     todayIsoDate: String,

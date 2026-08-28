@@ -23,6 +23,7 @@ fun selectHeroTrailer(trailers: List<MetaTrailer>, preferredLanguage: String?): 
     return trailers
         .asSequence()
         .filter { it.isPlayableYouTubeTrailerCandidate() }
+        .distinctBy { it.key }
         .maxWithOrNull(
             compareBy<MetaTrailer>(
                 { it.metadataLanguagePriority(preferredLanguage) },

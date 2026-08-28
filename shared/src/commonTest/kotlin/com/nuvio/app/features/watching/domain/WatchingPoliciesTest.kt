@@ -297,4 +297,49 @@ class WatchingPoliciesTest {
         assertEquals(19416L, isoEpochDay("2023-02-28"))
         assertEquals(19417L, isoEpochDay("2023-03-01"))
     }
+
+    @Test
+    fun `isShortPlaceholderDuration correctly identifies placeholder durations`() {
+        assertFalse(isShortPlaceholderDuration(0L))
+        assertTrue(isShortPlaceholderDuration(1L))
+        assertTrue(isShortPlaceholderDuration(60_000L))
+        assertTrue(isShortPlaceholderDuration(120_999L))
+        assertFalse(isShortPlaceholderDuration(121_000L))
+        assertFalse(isShortPlaceholderDuration(121_001L))
+    }
+
+    @Test
+    fun `isProgressComplete returns false for short placeholder duration when ended`() {
+        assertFalse(
+            isProgressComplete(
+                positionMs = 60_000L,
+                durationMs = 60_000L,
+                isEnded = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `isProgressComplete returns false for short placeholder duration on the fraction path`() {
+        // tvOS players never report isEnded, so the guard must also cover the
+        // watched-fraction branch.
+        assertFalse(
+            isProgressComplete(
+                positionMs = 59_000L,
+                durationMs = 60_000L,
+                isEnded = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `isProgressComplete returns true for normal-length content when ended`() {
+        assertTrue(
+            isProgressComplete(
+                positionMs = 180_000L,
+                durationMs = 180_000L,
+                isEnded = true,
+            ),
+        )
+    }
 }

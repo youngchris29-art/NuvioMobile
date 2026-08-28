@@ -78,6 +78,9 @@ final class PlaybackProgressRecorder {
 
     func startTrakt(positionSec: Double, durationSec: Double) {
         guard !traktRequested else { return }
+        // Error/placeholder clips (debrid cache-sync stubs, error videos) must not
+        // open a Trakt session — mirrors the shared short-placeholder guard.
+        if WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) { return }
         traktRequested = true
         TraktScrobbleRepository.shared.buildItem(
             contentType: context.contentType,
@@ -105,10 +108,13 @@ final class PlaybackProgressRecorder {
         traktClosed = true
         guard let item = traktItem else { return }
         traktItem = nil
+        // A session can open before a placeholder's short duration is known; close
+        // it at 0% so Trakt never marks the stub watched.
+        let short = WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000))
         TraktScrobbleRepository.shared.scrobbleStop(
             profileId: ActiveProfileProvider.shared.activeProfileId,
             item: item,
-            progressPercent: Self.percent(positionSec, durationSec)
+            progressPercent: short ? 0 : Self.percent(positionSec, durationSec)
         ) { _ in }
     }
 

@@ -8,6 +8,7 @@ import com.nuvio.app.features.tracking.TrackingMutationResolution
 import com.nuvio.app.features.tracking.TrackingMutationResult
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -263,8 +264,10 @@ private fun JsonObject.objectValue(key: String): JsonObject? =
     runCatching { get(key)?.jsonObject }.getOrNull()
 
 private fun JsonObject.stringValue(key: String): String? =
-    runCatching { get(key)?.jsonPrimitive?.content }
+    runCatching { get(key)?.jsonPrimitive }
         .getOrNull()
+        ?.takeIf { primitive -> primitive !is JsonNull }
+        ?.content
         ?.trim()
         ?.takeIf(String::isNotEmpty)
 
