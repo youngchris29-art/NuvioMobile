@@ -30,6 +30,12 @@ The release notes always include a "What's new" changelog: commit subjects
 previous tvos-v* tag, plus a compare link. Pass --changelog to prepend
 hand-written highlights above the generated list.
 
+The generated list is sanitized for the public: internal tracker IDs
+(BUG-xx/FEAT-xx/UX-x), Codex review rounds, wave/gate markers, and
+process-only commits (docs/ci/tests/harness/diagnostics/release plumbing)
+never appear in the published notes — testers only read what was added or
+fixed. Check the sanitized output with --dry-run before publishing.
+
 Before building, the script checks that the public repo's README.md (or
 design/screenshots/) has been touched since the previous tvos-v* release —
 every beta must update the README's feature list + screenshots for whatever
@@ -197,6 +203,40 @@ fi
 
 echo "==> Release tag: $TAG (version $MARKETING_VERSION build $BUILD_NUMBER, commit ${HEAD_SHA:0:8} on $BRANCH)"
 
+# The commit list is published to testers — strip the internal tracker/process
+# vocabulary before it goes anywhere public. Two passes:
+#   1) drop commits that are pure process (docs/ci/tests/harness/diagnostics/
+#      release plumbing) — nothing user-facing to say about them;
+#   2) scrub surviving subjects: BUG-xx/FEAT-xx/UX-x IDs, "round N" suffixes,
+#      §-section refs, conventional-commit type prefixes, "Merge " lead-ins,
+#      and parentheticals that reference internal process (Codex rounds, wave/
+#      gate numbers, device-pass notes, upstream SHAs, test/harness ids).
+# Best-effort by design: --changelog highlights remain the curated channel, and
+# --dry-run shows exactly what would be published.
+sanitize_changelog() {
+  perl -CSD -ne '
+    next if /^-\s*(?:docs?|ci|tests?|test\d+|chore|comms|readme|harness|diagnostics|release[ -]?notes?)\s*[:(]/i;
+    next if /^-\s*beta\.[\d.]+\s*:\s*build\b/i;
+    next if /^-\s*beta\.[\d.]+\s+batch\s+\d+\s*:/i;
+    next if /^-\s*Merge (?:branch|remote-tracking)/;
+    s/^(-\s*)Merge\s+/$1/;
+    s/^(-\s*)(?:feat|fix|perf|refactor|style|l10n)(?:\([^)]*\))?!?:\s*/$1/i;
+    s/\b(?:BUG|FEAT|UX)-\d+(?:\s*\/\s*(?:BUG|FEAT|UX)-\d+)*(?:\s+round\s+\S+)?\s*[:\x{2014}\x{2013}-]?\s*/ /gi;
+    s/\x{00A7}\s*\d+\s*[:\x{2014}\x{2013}-]?\s*/ /g;
+    s/\s*\((?=[^)]*(?:codex|wave\s*\d|gate\s*r?\d|harness|device[- ]pass|upstream|info-panel|test\s*\d|beta\.\d|\br\d+\b|W\d))[^)]*\)//gi;
+    s/\s+into\s+beta[\w.\/-]*\s*$//i;
+    s{/(?=\s)}{}g;
+    s/^(-\s*)[\x{2014}\x{2013}:;,-]+\s*/$1/;
+    s/\s{2,}/ /g;
+    s/\s+$//;
+    next if /^-?\s*$/;
+    # ucfirst only all-lowercase first words (leave tvOS, ALL-CAPS, snake_case
+    # identifiers alone). Copy $1 first: the inner match would clobber it.
+    s/^- (\S+)/($w = $1) =~ m{[A-Z_]} ? "- $w" : "- " . ucfirst($w)/e;
+    print "$_\n";
+  '
+}
+
 # Changelog: commit subjects since the previous tvos-v* tag. --first-parent so an
 # upstream catch-up merge collapses to its single merge-commit line instead of
 # spraying hundreds of upstream subjects into the notes. gh-created tags only
@@ -206,9 +246,15 @@ git fetch --tags --quiet origin \
 PREV_TAG="$(git tag --list 'tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
 CHANGELOG_BODY=""
 if [[ -n "$PREV_TAG" ]]; then
-  CHANGELOG_BODY="$(git log --first-parent --pretty='- %s' "$PREV_TAG..$HEAD_SHA" \
+  RAW_CHANGELOG="$(git log --first-parent --pretty='- %s' "$PREV_TAG..$HEAD_SHA" \
     | grep -iv '^- bump version$' || true)"
-  echo "==> Changelog: $(printf '%s\n' "$CHANGELOG_BODY" | grep -c '^- ' || true) commit(s) since $PREV_TAG"
+  CHANGELOG_BODY="$(printf '%s\n' "$RAW_CHANGELOG" | sanitize_changelog || true)"
+  if [[ -n "$RAW_CHANGELOG" && -z "$CHANGELOG_BODY" ]]; then
+    # Every commit since the previous tag was internal-only. Saying "no code
+    # changes" would be false — say what a tester needs to know instead.
+    CHANGELOG_BODY="- Internal maintenance and stability work (no user-visible changes)."
+  fi
+  echo "==> Changelog: $(printf '%s\n' "$CHANGELOG_BODY" | grep -c '^- ' || true) public line(s) from $(printf '%s\n' "${RAW_CHANGELOG:-}" | grep -c '^- ' || true) commit(s) since $PREV_TAG"
 else
   echo "==> Changelog: no previous tvos-v* tag found — treating as first beta of v${MARKETING_VERSION}"
 fi
