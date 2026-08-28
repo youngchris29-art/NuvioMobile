@@ -12,12 +12,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -33,6 +36,11 @@ import com.nuvio.app.core.i18n.resourceString
 
 object SubtitleRepository {
     private const val ADDON_READY_TIMEOUT_MS = 8_000L
+
+    // Per-addon network budget for the parallel fetch below. This STACKS on the readiness wait
+    // above — the wait runs first, then every addon gets its own 10s — so a cold start whose
+    // addons never answer is ~18s worst case before the fetch reports completion.
+    private const val ADDON_FETCH_TIMEOUT_MS = 10_000L
 
     private val kermit = Logger.withTag("SubtitleRepo")
 
@@ -99,81 +107,130 @@ object SubtitleRepository {
             } ?: log.w { "Addon repository not ready after ${ADDON_READY_TIMEOUT_MS}ms — fetching with current snapshot" }
             val addons = AddonRepository.uiState.value.addons.enabledAddons()
             log.d { "Fetching subtitles type=$requestType id=$videoId across ${addons.size} enabled addons" }
-            val allSubs = mutableListOf<AddonSubtitle>()
 
-            for (addon in addons) {
+            val subtitleAddons = addons.filter { addon ->
                 val manifest = addon.manifest
                 if (manifest == null) {
                     log.d { "Skip ${addon.displayTitle}: no manifest" }
-                    continue
+                    return@filter false
                 }
                 val subtitleResource = manifest.resources.find { it.name.isSubtitleResourceName() }
                 if (subtitleResource == null) {
                     log.d { "Skip ${addon.displayTitle}: no subtitles resource" }
-                    continue
+                    return@filter false
                 }
                 if (!subtitleResource.supportsSubtitleType(requestType, videoId)) {
                     log.d {
                         "Skip ${addon.displayTitle}: type/id mismatch (types=${subtitleResource.types} " +
                             "idPrefixes=${subtitleResource.idPrefixes} vs type=$requestType id=$videoId)"
                     }
-                    continue
+                    return@filter false
                 }
-
-                val subtitleUrl = buildAddonResourceUrl(
-                    manifestUrl = manifest.transportUrl,
-                    resource = "subtitles",
-                    type = requestType,
-                    id = videoId,
-                )
-                log.d { "Querying ${addon.displayTitle}: $subtitleUrl" }
-
-                val addonStart = TimeSource.Monotonic.markNow()
-                val before = allSubs.size
-                try {
-                    val response = withContext(Dispatchers.Default) {
-                        fetchAddonResponseText(subtitleUrl)
-                    }
-                    val parsed = json.parseToJsonElement(response).jsonObject
-                    val subtitlesArray = parsed["subtitles"]?.jsonArray ?: continue
-
-                    for (element in subtitlesArray) {
-                        val obj = element.jsonObject
-                        val id = obj.stringValue("id")
-                            ?: "${manifest.id}_${allSubs.size}"
-                        val url = obj.stringValue("url") ?: continue
-                        val rawLang = obj.subtitleLanguage() ?: "unknown"
-                        val normalizedLang = normalizeLanguageCode(rawLang) ?: rawLang
-
-                        allSubs.add(
-                            AddonSubtitle(
-                                id = id,
-                                url = url,
-                                language = normalizedLang,
-                                display = run {
-                                    val languageLabel =
-                                        SubtitleLanguageLabelProvider.labeler.label(rawLang)
-                                    resourceString(
-                                        "$languageLabel (${addon.displayTitle})",
-                                        StringKey.player_addon_subtitle_display_format,
-                                        languageLabel,
-                                        addon.displayTitle,
-                                    )
-                                },
-                                addonName = addon.displayTitle,
-                            )
-                        )
-                    }
-                    log.d { "${addon.displayTitle}: ${allSubs.size - before} subtitles in ${addonStart.elapsedNow()}" }
-                } catch (error: Throwable) {
-                    if (error is CancellationException) throw error
-                    log.w { "${addon.displayTitle}: subtitle fetch failed after ${addonStart.elapsedNow()} — $error" }
-                }
+                true
             }
 
-            log.d { "Subtitle fetch done: ${allSubs.size} total in ${fetchStart.elapsedNow()}" }
-            _addonSubtitles.value = allSubs
-            if (allSubs.isEmpty() && addons.any { it.manifest?.resources?.any { r -> r.name.isSubtitleResourceName() } == true }) {
+            if (subtitleAddons.isEmpty()) {
+                log.d { "No subtitle-capable addon for type=$requestType id=$videoId — nothing to query" }
+                // An addon that declares a subtitles resource but doesn't cover this type/id is
+                // still a real empty result, so keep the fork's user-visible message for it.
+                if (addons.any { it.manifest?.resources?.any { r -> r.name.isSubtitleResourceName() } == true }) {
+                    _error.value = resourceString(
+                        "No subtitles found",
+                        StringKey.compose_player_no_subtitles_found,
+                    )
+                }
+                // Terminal path — both tvOS players poll `completedRequest`
+                // (NativePlaybackCoordinator.subsFetchCompleted, MPVPlayerView's prefetch
+                // side-load). Returning without setting it hangs the native player's subtitle wait.
+                _completedRequest.value = key
+                _isLoading.value = false
+                return@launch
+            }
+
+            // One coroutine per addon: a slow/dead addon no longer delays the ones behind it, and
+            // each addon's results are published as they land instead of at the very end.
+            supervisorScope {
+                subtitleAddons.map { addon ->
+                    async {
+                        val manifest = addon.manifest ?: return@async
+                        val subtitleUrl = buildAddonResourceUrl(
+                            manifestUrl = manifest.transportUrl,
+                            resource = "subtitles",
+                            type = requestType,
+                            id = videoId,
+                        )
+                        log.d { "Querying ${addon.displayTitle}: $subtitleUrl" }
+
+                        val addonStart = TimeSource.Monotonic.markNow()
+                        try {
+                            val response = withTimeoutOrNull(ADDON_FETCH_TIMEOUT_MS) {
+                                withContext(Dispatchers.Default) {
+                                    fetchAddonResponseText(subtitleUrl)
+                                }
+                            }
+                            if (response == null) {
+                                log.w {
+                                    "${addon.displayTitle}: subtitle fetch timed out after " +
+                                        "${addonStart.elapsedNow()} (budget ${ADDON_FETCH_TIMEOUT_MS}ms)"
+                                }
+                                return@async
+                            }
+
+                            val parsed = json.parseToJsonElement(response).jsonObject
+                            val subtitlesArray = parsed["subtitles"]?.jsonArray
+                            if (subtitlesArray == null) {
+                                log.d { "${addon.displayTitle}: response has no subtitles array" }
+                                return@async
+                            }
+
+                            val addonSubs = mutableListOf<AddonSubtitle>()
+                            for (element in subtitlesArray) {
+                                val obj = element.jsonObject
+                                val id = obj.stringValue("id")
+                                    ?: "${manifest.id}_${addonSubs.size}"
+                                val url = obj.stringValue("url") ?: continue
+                                val rawLang = obj.subtitleLanguage() ?: "unknown"
+                                val normalizedLang = normalizeLanguageCode(rawLang) ?: rawLang
+
+                                addonSubs.add(
+                                    AddonSubtitle(
+                                        id = id,
+                                        url = url,
+                                        language = normalizedLang,
+                                        display = run {
+                                            val languageLabel =
+                                                SubtitleLanguageLabelProvider.labeler.label(rawLang)
+                                            resourceString(
+                                                "$languageLabel (${addon.displayTitle})",
+                                                StringKey.player_addon_subtitle_display_format,
+                                                languageLabel,
+                                                addon.displayTitle,
+                                            )
+                                        },
+                                        addonName = addon.displayTitle,
+                                    )
+                                )
+                            }
+
+                            log.d { "${addon.displayTitle}: ${addonSubs.size} subtitles in ${addonStart.elapsedNow()}" }
+                            // Atomic CAS append — several addons can land at once. Re-check the
+                            // request key so a superseded fetch that slipped past cancellation
+                            // can't splice a previous title's subtitles into the current list.
+                            if (addonSubs.isNotEmpty() && activeKey == key) {
+                                _addonSubtitles.update { current -> current + addonSubs }
+                            }
+                        } catch (error: Throwable) {
+                            if (error is CancellationException) throw error
+                            log.w { "${addon.displayTitle}: subtitle fetch failed after ${addonStart.elapsedNow()} — $error" }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            val total = _addonSubtitles.value.size
+            log.d { "Subtitle fetch done: $total total in ${fetchStart.elapsedNow()}" }
+            // Every addon here declared support for this type/id, so an empty list is a real miss.
+            if (total == 0) {
                 _error.value = resourceString(
                     "No subtitles found",
                     StringKey.compose_player_no_subtitles_found,
