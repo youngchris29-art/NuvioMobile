@@ -298,6 +298,24 @@ class PlayerTrackSelectionTest {
     }
 
     @Test
+    fun genericPortugueseTargetSkipsExplicitlyTaggedBrazilianTrack() {
+        val selectedIndex = findPreferredSubtitleTrackIndex(
+            tracks = listOf(
+                subtitleTrack(
+                    index = 0,
+                    language = "pt-BR",
+                    label = "Portuguese",
+                    isForced = false,
+                ),
+            ),
+            targets = listOf("pt"),
+            mode = SubtitleAutoSelectionMode.NORMAL_ONLY,
+        )
+
+        assertEquals(-1, selectedIndex)
+    }
+
+    @Test
     fun castilianLabelIsNotMisreadAsLatinAmerican() {
         assertEquals("es", SubtitleLanguageMatching.normalizeLanguageCode("Spanish Castellano"))
         assertEquals("es-419", SubtitleLanguageMatching.normalizeLanguageCode("Spanish LA"))

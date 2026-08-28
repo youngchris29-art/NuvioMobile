@@ -224,7 +224,11 @@ fun findBestInternalSubtitleTrackIndex(
                     name = track.label,
                     trackId = track.id,
                 )
-                if (variant != normalizedTarget && variant != track.language?.lowercase()) {
+                // No second clause on the track's raw language code — it equals the
+                // variant exactly when the track is explicitly tagged (pt-BR,
+                // es-419), which is the case this guard exists for. Upstream's
+                // form accepts those for generic pt/es targets (report candidate).
+                if (variant != normalizedTarget) {
                     continue
                 }
             }
