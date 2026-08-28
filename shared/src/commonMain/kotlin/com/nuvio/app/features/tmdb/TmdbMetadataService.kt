@@ -220,7 +220,7 @@ object TmdbMetadataService {
     private fun mapPersonMovieCreditsFromCast(
         cast: List<TmdbPersonCreditCast>,
         preferredLanguage: String,
-        englishTitlesById: Map<Int, String>,
+        englishTitlesById: Map<String, String>,
     ): List<MetaPreview> {
         val seen = mutableSetOf<Int>()
         return cast
@@ -231,7 +231,7 @@ object TmdbMetadataService {
                 val title = resolvePersonName(
                     localizedName = credit.title ?: credit.name,
                     originalName = credit.originalTitle ?: credit.originalName,
-                    fallbackEnglishName = englishTitlesById[credit.id],
+                    fallbackEnglishName = englishTitlesById["movie:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
                 val poster = buildImageUrl(credit.posterPath, "w500")
@@ -255,7 +255,7 @@ object TmdbMetadataService {
     private fun mapPersonMovieCreditsFromCrew(
         crew: List<TmdbPersonCreditCrew>,
         preferredLanguage: String,
-        englishTitlesById: Map<Int, String>,
+        englishTitlesById: Map<String, String>,
     ): List<MetaPreview> {
         val seen = mutableSetOf<Int>()
         return crew
@@ -266,7 +266,7 @@ object TmdbMetadataService {
                 val title = resolvePersonName(
                     localizedName = credit.title ?: credit.name,
                     originalName = credit.originalTitle ?: credit.originalName,
-                    fallbackEnglishName = englishTitlesById[credit.id],
+                    fallbackEnglishName = englishTitlesById["movie:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
                 val poster = buildImageUrl(credit.posterPath, "w500")
@@ -290,7 +290,7 @@ object TmdbMetadataService {
     private fun mapPersonTvCreditsFromCast(
         cast: List<TmdbPersonCreditCast>,
         preferredLanguage: String,
-        englishTitlesById: Map<Int, String>,
+        englishTitlesById: Map<String, String>,
     ): List<MetaPreview> {
         val seen = mutableSetOf<Int>()
         return cast
@@ -301,7 +301,7 @@ object TmdbMetadataService {
                 val title = resolvePersonName(
                     localizedName = credit.name ?: credit.title,
                     originalName = credit.originalName ?: credit.originalTitle,
-                    fallbackEnglishName = englishTitlesById[credit.id],
+                    fallbackEnglishName = englishTitlesById["tv:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
                 val poster = buildImageUrl(credit.posterPath, "w500")
@@ -325,7 +325,7 @@ object TmdbMetadataService {
     private fun mapPersonTvCreditsFromCrew(
         crew: List<TmdbPersonCreditCrew>,
         preferredLanguage: String,
-        englishTitlesById: Map<Int, String>,
+        englishTitlesById: Map<String, String>,
     ): List<MetaPreview> {
         val seen = mutableSetOf<Int>()
         return crew
@@ -336,7 +336,7 @@ object TmdbMetadataService {
                 val title = resolvePersonName(
                     localizedName = credit.name ?: credit.title,
                     originalName = credit.originalName ?: credit.originalTitle,
-                    fallbackEnglishName = englishTitlesById[credit.id],
+                    fallbackEnglishName = englishTitlesById["tv:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
                 val poster = buildImageUrl(credit.posterPath, "w500")
@@ -1140,10 +1140,21 @@ object TmdbMetadataService {
         if (!needsFallback) return emptyMap()
 
         return runCatching {
-            val englishCredits = fetch<TmdbCreditsResponse>(
-                endpoint = "$mediaType/$numericId/credits",
-                query = mapOf("language" to "en-US"),
-            )
+            // Mirror the localized fetch: TV cast/crew come from aggregate_credits,
+            // so the English fallback must too, or aggregate-only guest cast and
+            // episode crew never get a fallback name. Upstream still queries the
+            // series-level credits endpoint here (report candidate).
+            val englishCredits = if (mediaType == "tv") {
+                fetch<TmdbAggregateCreditsResponse>(
+                    endpoint = "tv/$numericId/aggregate_credits",
+                    query = mapOf("language" to "en-US"),
+                )?.toStandard()
+            } else {
+                fetch<TmdbCreditsResponse>(
+                    endpoint = "movie/$numericId/credits",
+                    query = mapOf("language" to "en-US"),
+                )
+            }
             val englishTvDetails = if (mediaType == "tv" && details.createdBy.isNotEmpty()) {
                 fetch<TmdbDetailsResponse>(
                     endpoint = "tv/$numericId",
@@ -1611,20 +1622,24 @@ private fun personCreditsContainCjkTitles(credits: TmdbPersonCombinedCreditsResp
         credits.crew.any { containsCjkOrHangul(it.title ?: it.name ?: return@any false) }
 }
 
-private fun englishCreditTitlesById(credits: TmdbPersonCombinedCreditsResponse?): Map<Int, String> {
+private fun englishCreditTitlesById(credits: TmdbPersonCombinedCreditsResponse?): Map<String, String> {
     if (credits == null) return emptyMap()
-    val titles = linkedMapOf<Int, String>()
-    fun putTitle(id: Int, title: String?, name: String?) {
+    val titles = linkedMapOf<String, String>()
+    // Movie and TV ids are separate TMDB namespaces, so the key must carry the
+    // media type — upstream keys by bare id and can attach the wrong English
+    // title when a movie and a series share a numeric id (report candidate).
+    fun putTitle(mediaType: String?, id: Int, title: String?, name: String?) {
         val text = title?.trim()?.takeIf { it.isNotBlank() }
             ?: name?.trim()?.takeIf { it.isNotBlank() }
             ?: return
         if (!containsCjkOrHangul(text)) {
+            val key = "${mediaType ?: if (title != null) "movie" else "tv"}:$id"
             // Fork deviation: see englishDiscoverTitlesById — no common-stdlib putIfAbsent.
-            if (!titles.containsKey(id)) titles[id] = text
+            if (!titles.containsKey(key)) titles[key] = text
         }
     }
-    credits.cast.forEach { putTitle(it.id, it.title, it.name) }
-    credits.crew.forEach { putTitle(it.id, it.title, it.name) }
+    credits.cast.forEach { putTitle(it.mediaType, it.id, it.title, it.name) }
+    credits.crew.forEach { putTitle(it.mediaType, it.id, it.title, it.name) }
     return titles
 }
 
