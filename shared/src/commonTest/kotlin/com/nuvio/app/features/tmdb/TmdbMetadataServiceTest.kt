@@ -1,0 +1,180 @@
+package com.nuvio.app.features.tmdb
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/**
+ * Upstream `c66e80e6` / `e6314ba2` / `754605cb`: TMDB returns native-script (CJK/Hangul) names and
+ * titles whenever the requested metadata language has no translation, so cast/crew, filmography and
+ * network-browse rails all fall back to the Romaji/English form for non-CJK locales.
+ */
+class TmdbMetadataServiceTest {
+
+    @Test
+    fun containsCjkOrHangulDetectsJapaneseChineseAndKoreanScripts() {
+        assertTrue(containsCjkOrHangul("田中敦子"))
+        assertTrue(containsCjkOrHangul("成龙"))
+        assertTrue(containsCjkOrHangul("김수현"))
+        assertFalse(containsCjkOrHangul("Atsuko Tanaka"))
+        assertFalse(containsCjkOrHangul("Scarlett Johansson"))
+    }
+
+    @Test
+    fun resolvePersonNameFallsBackJapaneseNamesToRomajiForNonJapaneseLocales() {
+        assertEquals(
+            "Atsuko Tanaka",
+            resolvePersonName("田中敦子", "Atsuko Tanaka", null, "tr-TR"),
+        )
+        assertEquals(
+            "Atsuko Tanaka",
+            resolvePersonName("田中敦子", "田中敦子", "Atsuko Tanaka", "de-DE"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameKeepsJapaneseNamesWhenUserLanguageIsJapanese() {
+        assertEquals(
+            "田中敦子",
+            resolvePersonName("田中敦子", "Atsuko Tanaka", "Atsuko Tanaka", "ja-JP"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameFallsBackHangulNamesToLatinForNonKoreanLocales() {
+        assertEquals(
+            "Kim Soo-hyun",
+            resolvePersonName("김수현", "Kim Soo-hyun", null, "de-DE"),
+        )
+        assertEquals(
+            "Kim Soo-hyun",
+            resolvePersonName("김수현", "김수현", "Kim Soo-hyun", "fr-FR"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameKeepsHangulWhenUserLanguageIsKorean() {
+        assertEquals(
+            "김수현",
+            resolvePersonName("김수현", "Kim Soo-hyun", "Kim Soo-hyun", "ko-KR"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameFallsBackChineseHanziToStageNameForNonChineseLocales() {
+        assertEquals(
+            "Jackie Chan",
+            resolvePersonName("成龙", "Jackie Chan", null, "es-ES"),
+        )
+        assertEquals(
+            "Jackie Chan",
+            resolvePersonName("成龙", "成龙", "Jackie Chan", "en-US"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameKeepsHanziWhenUserLanguageIsChinese() {
+        assertEquals(
+            "成龙",
+            resolvePersonName("成龙", "Jackie Chan", "Jackie Chan", "zh-CN"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameLeavesAlreadyLatinNamesUnchanged() {
+        assertEquals(
+            "Scarlett Johansson",
+            resolvePersonName("Scarlett Johansson", "Scarlett Johansson", null, "tr-TR"),
+        )
+        assertEquals(
+            "Tom Hanks",
+            resolvePersonName("Tom Hanks", "Tom Hanks", null, "ja-JP"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameHandlesNullAndBlankInputs() {
+        assertEquals("Takuya Kimura", resolvePersonName(null, "Takuya Kimura", null, "tr-TR"))
+        assertEquals("Scarlett Johansson", resolvePersonName("Scarlett Johansson", null, null, "tr-TR"))
+        assertNull(resolvePersonName(null, null, null, "tr-TR"))
+        assertEquals(
+            "Takuya Kimura",
+            resolvePersonName("  木村拓哉  ", "Takuya Kimura", null, "fr-FR"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameFallsBackCjkFilmographyTitlesToEnglish() {
+        assertEquals(
+            "Ghost in the Shell: Stand Alone Complex",
+            resolvePersonName(
+                "攻殻機動隊 STAND ALONE COMPLEX",
+                "攻殻機動隊 STAND ALONE COMPLEX",
+                "Ghost in the Shell: Stand Alone Complex",
+                "pl-PL",
+            ),
+        )
+        assertEquals(
+            "Make My Day",
+            resolvePersonName("Make My Day", "Make My Day", null, "pl-PL"),
+        )
+    }
+
+    @Test
+    fun resolvePersonNameKeepsCjkFilmographyTitlesForJapaneseLocale() {
+        assertEquals(
+            "攻殻機動隊 STAND ALONE COMPLEX",
+            resolvePersonName(
+                "攻殻機動隊 STAND ALONE COMPLEX",
+                "攻殻機動隊 STAND ALONE COMPLEX",
+                "Ghost in the Shell: Stand Alone Complex",
+                "ja-JP",
+            ),
+        )
+    }
+
+    @Test
+    fun networkBrowseFallsBackCjkTitlesToEnglish() {
+        val localizedResults = listOf(
+            TmdbDiscoverResult(
+                id = 57775,
+                name = "ちびまる子ちゃん",
+                originalName = "ちびまる子ちゃん",
+                posterPath = "/maruko.jpg",
+                firstAirDate = "1990-01-07",
+            ),
+            TmdbDiscoverResult(
+                id = 37854,
+                name = "One Piece",
+                originalName = "ワンピース",
+                posterPath = "/op.jpg",
+                firstAirDate = "1999-10-20",
+            ),
+        )
+        val englishResults = listOf(
+            TmdbDiscoverResult(
+                id = 57775,
+                name = "Chibi Maruko-chan",
+                originalName = "ちびまる子ちゃん",
+                posterPath = "/maruko.jpg",
+            ),
+        )
+
+        assertTrue(discoverResultsContainCjkTitles(localizedResults))
+        val englishTitlesById = englishDiscoverTitlesById(englishResults)
+
+        val titles = localizedResults.associate { result ->
+            result.id to resolvePersonName(
+                localizedName = result.title ?: result.name,
+                originalName = result.originalTitle ?: result.originalName,
+                fallbackEnglishName = englishTitlesById[result.id],
+                preferredLanguage = "tr-TR",
+            )
+        }
+
+        assertEquals("Chibi Maruko-chan", titles[57775])
+        assertEquals("One Piece", titles[37854])
+    }
+}
