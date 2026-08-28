@@ -158,10 +158,11 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// after it are invisible to AVPlayer. Streams rarely attach their own subtitles.
     private var addonSubtitles: [SubtitleFile] = []
     private var addonSubsWatcher: FlowWatcher?
-    /// Fetch lifecycle: done when the repo's `completedRequest` state matches this content's
+    /// Fetch lifecycle: done ONLY when the repo's `completedRequest` state matches this content's
     /// request key (state, not an edge — a fetch that finished before we looked, or was
-    /// deduplicated against the stream picker's prefetch, still reads as complete), or when a
-    /// non-empty list arrives (results and completion are equivalent for gating).
+    /// deduplicated against the stream picker's prefetch, still reads as complete). Addon results
+    /// now arrive incrementally (per addon, as each finishes), so a non-empty `addonSubtitles`
+    /// list is NOT a completion signal by itself — only `subsFetchCompleted()`'s poll sets this.
     private var subsFetchDone = false
     private var subsRequestKey = ""
     /// Embedded text tracks offered as renditions this session (Info tab row).
@@ -180,7 +181,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         // pollForFirstSegment — no watcher races; this watcher only mirrors the list (its
         // StateFlow replay also delivers results prefetched before this coordinator existed).
         // Settings first: the addon-subtitle watcher below filters by them.
-        resolveLanguagePlan(selectedAudioLanguage: nil)
+        resolveLanguagePlan(selectedAudioTrack: nil)
         // Persisted subtitle delay for this title/episode (profile-scoped, shared with mobile).
         // Loaded before the server exists, so the very first VTT body is already re-timed.
         subtitleDelayMs = Self.clampSubtitleDelay(
@@ -201,8 +202,10 @@ final class NativePlaybackCoordinator: ObservableObject {
                     SubtitleFile(url: $0.url, language: $0.language, name: $0.display)
                 }
                 if !subs.isEmpty {
-                    self.subsFetchDone = true
-                    print("[NativePlayer] addon subtitles arrived: \(subs.count)\(self.server == nil ? "" : " (after master — too late this session)")")
+                    // Incremental emission: this may be just one addon's results, not the whole
+                    // fetch — completion is decided solely by `subsFetchCompleted()` polling
+                    // `completedRequest` against `subsRequestKey`, not by this arriving non-empty.
+                    print("[NativePlayer] addon subtitles updated: \(subs.count)\(self.server == nil ? "" : " (after master — too late this session)")")
                 }
             }
         }
@@ -213,7 +216,7 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Resolve the language plan from the shared player settings (same helpers + semantics as the
     /// mpv screen's `autoSelectPreferredTracks`). Called at start (audio unknown) and again once
     /// the remux has picked the audio track, because the forced-only decision depends on it.
-    private func resolveLanguagePlan(selectedAudioLanguage: String?) {
+    private func resolveLanguagePlan(selectedAudioTrack: AudioTrack?) {
         PlayerSettingsRepository.shared.ensureLoaded()
         guard let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState else { return }
         playerSettings = settings
@@ -237,7 +240,7 @@ final class NativePlaybackCoordinator: ObservableObject {
         // secondary) it can yield a forced-only plan in the audio's language when "Use forced
         // subtitles" is on and the audio matches a preferred audio language (mpv parity).
         if let shared = PlayerTrackSelectionKt.resolveSubtitleAutoSelectionPlan(
-            selectedAudioLanguage: selectedAudioLanguage,
+            selectedAudioTrack: selectedAudioTrack,
             preferredAudioTargets: audioTargets,
             preferredSubtitleTargets: subTargets,
             useForcedSubtitles: settings.subtitleStyle.useForcedSubtitles
@@ -494,11 +497,11 @@ final class NativePlaybackCoordinator: ObservableObject {
         audioRenditionsByName = Dictionary(uniqueKeysWithValues: audioRenditions.map { ($0.name, $0.streamIndex) })
         selectedAudioBox.value = selectedAudio?.streamIndex
         // The forced-only decision needs the audio the viewer will hear (shared plan semantics).
-        resolveLanguagePlan(selectedAudioLanguage: selectedAudio.flatMap { track in
-            PlayerTrackSelectionKt.resolveAudioTrackLanguageTarget(track: AudioTrack(
+        resolveLanguagePlan(selectedAudioTrack: selectedAudio.map { track in
+            AudioTrack(
                 index: 0, id: String(track.streamIndex),
                 label: track.title ?? track.language ?? "",
-                language: track.language, isSelected: true))
+                language: track.language, isSelected: true)
         })
         let server = LocalHLSServer(rootDir: remux.outputDir, map: map,
                                     signaling: signaling,
