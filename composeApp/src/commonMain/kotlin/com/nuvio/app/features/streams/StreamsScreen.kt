@@ -1268,6 +1268,13 @@ private fun EmptyStateBlock(
             message = stringResource(Res.string.streams_empty_load_failed_message)
         }
 
+        StreamsEmptyStateReason.IncompatibleContentId -> {
+            // tvOS has bespoke copy for this state (StreamsViewModel.describe);
+            // reuse the closest existing mobile strings here.
+            title = stringResource(Res.string.streams_empty_no_stream_addon_title)
+            message = stringResource(Res.string.streams_empty_no_stream_addon_message)
+        }
+
         StreamsEmptyStateReason.NoStreamsFound, null -> {
             title = stringResource(Res.string.compose_player_no_streams_found)
             message = stringResource(Res.string.streams_empty_no_streams_message)

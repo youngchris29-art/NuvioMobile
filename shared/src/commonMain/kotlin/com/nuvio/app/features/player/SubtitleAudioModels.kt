@@ -26,12 +26,6 @@ data class AddonSubtitle(
     val isSelected: Boolean = false,
 )
 
-enum class AddonSubtitleStartupMode {
-    FAST_STARTUP,
-    PREFERRED_ONLY,
-    ALL_SUBTITLES,
-}
-
 const val SUBTITLE_DELAY_MIN_MS = -60_000
 const val SUBTITLE_DELAY_MAX_MS = 60_000
 const val SUBTITLE_DELAY_STEP_MS = 100
@@ -39,6 +33,7 @@ const val SUBTITLE_AUTO_SYNC_REACTION_COMPENSATION_MS = 300L
 
 data class SubtitleSyncCue(
     val startTimeMs: Long,
+    val endTimeMs: Long = startTimeMs + 5_000L,
     val text: String,
 )
 

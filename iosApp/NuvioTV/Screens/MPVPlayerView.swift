@@ -506,15 +506,13 @@ final class MPVTVPlayerViewController: UIViewController {
         let effectiveAudio = audioInfos.first { $0.id == pickedAudioId }
             ?? audioInfos.first { $0.selected }
             ?? audioInfos.first
-        let selectedAudioLanguage = effectiveAudio.flatMap { info -> String? in
-            PlayerTrackSelectionKt.resolveAudioTrackLanguageTarget(
-                track: AudioTrack(
-                    index: 0,
-                    id: String(info.id),
-                    label: info.title.isEmpty ? info.lang : info.title,
-                    language: info.lang.isEmpty ? nil : info.lang,
-                    isSelected: true
-                )
+        let effectiveAudioTrack: AudioTrack? = effectiveAudio.map { info in
+            AudioTrack(
+                index: 0,
+                id: String(info.id),
+                label: info.title.isEmpty ? info.lang : info.title,
+                language: info.lang.isEmpty ? nil : info.lang,
+                isSelected: true
             )
         }
 
@@ -526,7 +524,7 @@ final class MPVTVPlayerViewController: UIViewController {
         )
         guard !subInfos.isEmpty,
               let plan = PlayerTrackSelectionKt.resolveSubtitleAutoSelectionPlan(
-                  selectedAudioLanguage: selectedAudioLanguage,
+                  selectedAudioTrack: effectiveAudioTrack,
                   preferredAudioTargets: audioTargets,
                   preferredSubtitleTargets: subTargets,
                   useForcedSubtitles: settings.subtitleStyle.useForcedSubtitles
@@ -544,7 +542,7 @@ final class MPVTVPlayerViewController: UIViewController {
             )
         }
         let match = PlayerTrackSelectionKt.findPreferredSubtitleTrackIndex(
-            tracks: sharedSubs, targets: plan.targets, mode: plan.mode
+            tracks: sharedSubs, targets: plan.targets, mode: plan.mode, selectedAudioTrack: effectiveAudioTrack
         )
         if match >= 0 {
             let sid = Int64(subInfos[Int(match)].id)
@@ -817,8 +815,8 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func addAddonSubtitles(_ subs: [AddonSubtitle]) {
         guard fileLoaded else { return }
-        // PREFERRED_ONLY / "Show only preferred languages": same shared filter the native path and
-        // the mobile runtime apply, so the settings aren't engine-dependent.
+        // "Show only preferred languages": same shared filter the native path and the mobile
+        // runtime apply, so the setting isn't engine-dependent.
         let kept = playerSettings.map {
             PlayerTrackSelectionKt.filterAddonSubtitlesForSettings(subtitles: subs, settings: $0)
         } ?? subs
