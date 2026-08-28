@@ -168,8 +168,7 @@ fun filterAddonSubtitlesForSettings(
     subtitles: List<AddonSubtitle>,
     settings: PlayerSettingsUiState,
 ): List<AddonSubtitle> {
-    val shouldFilter = settings.subtitleStyle.showOnlyPreferredLanguages ||
-        settings.addonSubtitleStartupMode == AddonSubtitleStartupMode.PREFERRED_ONLY
+    val shouldFilter = settings.subtitleStyle.showOnlyPreferredLanguages
     if (!shouldFilter) return subtitles
 
     val targets = preferredSubtitleTargetsForSettings(settings)

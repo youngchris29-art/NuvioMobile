@@ -59,7 +59,7 @@ object PlayerSubtitleCueParser {
                 val body = lines.drop(timingIndex + 1)
                     .joinToString(" ")
                     .cleanSubtitleCueText()
-                if (body.isBlank()) null else SubtitleSyncCue(start, body)
+                if (body.isBlank()) null else SubtitleSyncCue(start, text = body)
             }
             .sortedBy { it.startTimeMs }
 
@@ -78,7 +78,7 @@ object PlayerSubtitleCueParser {
                 val body = lines.drop(timingIndex + 1)
                     .joinToString(" ")
                     .cleanSubtitleCueText()
-                if (body.isBlank()) null else SubtitleSyncCue(start, body)
+                if (body.isBlank()) null else SubtitleSyncCue(start, text = body)
             }
             .sortedBy { it.startTimeMs }
 
@@ -125,7 +125,7 @@ object PlayerSubtitleCueParser {
         val body = parts[textIndex]
             .cleanAssCueText()
             .cleanSubtitleCueText()
-        return if (body.isBlank()) null else SubtitleSyncCue(start, body)
+        return if (body.isBlank()) null else SubtitleSyncCue(start, text = body)
     }
 
     private fun parseTtml(text: String): List<SubtitleSyncCue> =
@@ -140,7 +140,7 @@ object PlayerSubtitleCueParser {
                 val body = match.groupValues[2]
                     .replace(Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE), " ")
                     .cleanSubtitleCueText()
-                if (body.isBlank()) null else SubtitleSyncCue(start, body)
+                if (body.isBlank()) null else SubtitleSyncCue(start, text = body)
             }
             .sortedBy { it.startTimeMs }
             .toList()

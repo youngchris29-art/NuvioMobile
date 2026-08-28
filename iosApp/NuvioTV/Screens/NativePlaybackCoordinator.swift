@@ -90,7 +90,8 @@ final class NativePlaybackCoordinator: ObservableObject {
         var onlyPreferredLanguages = false
     }
     @Published private(set) var languagePlan = LanguagePlan()
-    /// Shared player settings snapshot behind the plan (also drives the addon-subtitle startup mode).
+    /// Shared player settings snapshot behind the plan (also drives the "show only preferred
+    /// languages" addon-subtitle filter).
     private var playerSettings: PlayerSettingsUiState?
     /// The current item's legible selection group, cached async after readyToPlay (Info tab row +
     /// the top panel's Subtitles tab).
@@ -190,11 +191,9 @@ final class NativePlaybackCoordinator: ObservableObject {
             guard let subs = emitted as? [AddonSubtitle] else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                // "Only preferred languages" / PREFERRED_ONLY startup mode (shared settings, the
-                // latter cloud-synced from mobile): drop non-preferred renditions at the source with
-                // the same shared filter the mobile runtime and the mpv screen apply. (FAST_STARTUP
-                // is deliberately NOT honoured on tvOS — there is no manual subtitle search here, so
-                // skipping the automatic fetch would mean no addon subtitles at all.)
+                // "Show only preferred languages" (shared subtitle-style setting, cloud-synced from
+                // mobile): drop non-preferred renditions at the source with the same shared filter
+                // the mobile runtime and the mpv screen apply.
                 let kept = self.playerSettings.map {
                     PlayerTrackSelectionKt.filterAddonSubtitlesForSettings(subtitles: subs, settings: $0)
                 } ?? subs

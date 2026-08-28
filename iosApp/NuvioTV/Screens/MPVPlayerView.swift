@@ -811,8 +811,8 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func addAddonSubtitles(_ subs: [AddonSubtitle]) {
         guard fileLoaded else { return }
-        // PREFERRED_ONLY / "Show only preferred languages": same shared filter the native path and
-        // the mobile runtime apply, so the settings aren't engine-dependent.
+        // "Show only preferred languages": same shared filter the native path and the mobile
+        // runtime apply, so the setting isn't engine-dependent.
         let kept = playerSettings.map {
             PlayerTrackSelectionKt.filterAddonSubtitlesForSettings(subtitles: subs, settings: $0)
         } ?? subs
