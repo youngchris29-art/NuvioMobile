@@ -363,8 +363,10 @@ object SubtitleLanguageMatching {
         val haystack = listOfNotNull(name, language, trackId)
             .joinToString(" ")
             .lowercase()
+        // Boundary-aware for the name too — plain contains() lets "Malayalam"
+        // match target "ms"/"malay" (upstream bug, report candidate).
         return languageCodeAppearsInHaystack(haystack, normalizedTarget) ||
-            (targetName.isNotBlank() && haystack.contains(targetName))
+            (targetName.isNotBlank() && languageCodeAppearsInHaystack(haystack, targetName))
     }
 
     fun subtitleHasAnyTag(name: String?, language: String?, trackId: String?, tags: List<String>): Boolean {

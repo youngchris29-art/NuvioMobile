@@ -322,6 +322,24 @@ class PlayerTrackSelectionTest {
     }
 
     @Test
+    fun malayalamTrackDoesNotMatchMalayTarget() {
+        assertEquals(
+            false,
+            subtitleTrackMatchesLanguage(
+                subtitleTrack(index = 0, language = null, label = "Malayalam", isForced = false),
+                "ms",
+            ),
+        )
+        assertEquals(
+            true,
+            subtitleTrackMatchesLanguage(
+                subtitleTrack(index = 0, language = null, label = "Malay", isForced = false),
+                "ms",
+            ),
+        )
+    }
+
+    @Test
     fun forcedAddonMatchIgnoresRegularTranslationAddons() {
         val regular = addonSubtitle(id = "english", language = "en")
         val forced = addonSubtitle(
