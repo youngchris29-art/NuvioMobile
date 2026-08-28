@@ -26,7 +26,12 @@ fun watchedKey(
 fun shouldStoreProgress(
     positionMs: Long,
     durationMs: Long,
-): Boolean = positionMs >= ProgressStoreThresholdMs
+): Boolean {
+    // Short error/placeholder clips must not create Continue Watching entries —
+    // same rationale as the isProgressComplete guard below.
+    if (isShortPlaceholderDuration(durationMs)) return false
+    return positionMs >= ProgressStoreThresholdMs
+}
 
 fun isProgressComplete(
     positionMs: Long,
