@@ -33,7 +33,11 @@ fun isProgressComplete(
     durationMs: Long,
     isEnded: Boolean,
 ): Boolean {
-    if (isEnded && isShortPlaceholderDuration(durationMs)) return false
+    // Broader than upstream 31f5d0e6, which only guards the isEnded branch and
+    // relies on a Compose-player-side skip (MainAppContent.kt) for the rest.
+    // tvOS never reports isEnded — every write reaches the fraction path — so the
+    // guard must cover both branches here, or short error clips still complete.
+    if (isShortPlaceholderDuration(durationMs)) return false
     if (isEnded) return true
     if (durationMs <= 0L) return false
 

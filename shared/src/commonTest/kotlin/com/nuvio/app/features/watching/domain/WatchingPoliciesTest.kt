@@ -320,6 +320,19 @@ class WatchingPoliciesTest {
     }
 
     @Test
+    fun `isProgressComplete returns false for short placeholder duration on the fraction path`() {
+        // tvOS players never report isEnded, so the guard must also cover the
+        // watched-fraction branch.
+        assertFalse(
+            isProgressComplete(
+                positionMs = 59_000L,
+                durationMs = 60_000L,
+                isEnded = false,
+            ),
+        )
+    }
+
+    @Test
     fun `isProgressComplete returns true for normal-length content when ended`() {
         assertTrue(
             isProgressComplete(
