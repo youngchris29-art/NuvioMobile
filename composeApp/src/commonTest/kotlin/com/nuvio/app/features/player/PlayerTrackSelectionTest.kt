@@ -281,6 +281,29 @@ class PlayerTrackSelectionTest {
     }
 
     @Test
+    fun nonForcedRestoreSkipsForcedTrackListedFirst() {
+        val selectedIndex = findPersistedSubtitleTrackIndex(
+            tracks = listOf(
+                subtitleTrack(index = 0, language = "en", isForced = true),
+                subtitleTrack(index = 1, language = "en", isForced = false),
+            ),
+            preference = PersistedPlayerTrackPreference(
+                subtitleType = PersistedSubtitleSelectionType.INTERNAL,
+                subtitleLanguage = "en",
+                subtitleIsForced = false,
+            ),
+        )
+
+        assertEquals(1, selectedIndex)
+    }
+
+    @Test
+    fun castilianLabelIsNotMisreadAsLatinAmerican() {
+        assertEquals("es", SubtitleLanguageMatching.normalizeLanguageCode("Spanish Castellano"))
+        assertEquals("es-419", SubtitleLanguageMatching.normalizeLanguageCode("Spanish LA"))
+    }
+
+    @Test
     fun forcedAddonMatchIgnoresRegularTranslationAddons() {
         val regular = addonSubtitle(id = "english", language = "en")
         val forced = addonSubtitle(

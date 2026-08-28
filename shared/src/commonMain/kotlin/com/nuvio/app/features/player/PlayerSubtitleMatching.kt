@@ -241,7 +241,11 @@ object SubtitleLanguageMatching {
         }
 
         if (containsAny("spanish", "espanol", "español", "castellano")) {
-            return if (containsAny(
+            // "la" must match as a whole word — substring matching misreads
+            // "castellano" as Latin American (upstream bug, report candidate).
+            val hasLaWord = tokenized.split(' ').contains("la")
+            return if (hasLaWord ||
+                containsAny(
                     "latin",
                     "latino",
                     "latinoamerica",
@@ -250,7 +254,6 @@ object SubtitleLanguageMatching {
                     "latam",
                     "es 419",
                     "es419",
-                    "la",
                     "(419)",
                 )
             ) {
