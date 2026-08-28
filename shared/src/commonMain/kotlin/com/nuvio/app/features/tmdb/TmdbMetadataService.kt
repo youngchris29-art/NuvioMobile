@@ -1664,10 +1664,17 @@ internal fun resolvePersonName(
     val original = originalName?.trim()?.takeIf { it.isNotBlank() }
     val fallback = fallbackEnglishName?.trim()?.takeIf { it.isNotBlank() }
 
-    if (name == null) return original ?: fallback
     val lang = preferredLanguage.lowercase()
+    val prefersCjk = lang.startsWith("ja") || lang.startsWith("ko") || lang.startsWith("zh")
 
-    if (lang.startsWith("ja") || lang.startsWith("ko") || lang.startsWith("zh")) {
+    if (name == null) {
+        // Upstream returns a CJK original here even when an English fallback was
+        // fetched (report candidate); prefer the fallback for non-CJK locales.
+        if (original != null && (prefersCjk || !containsCjkOrHangul(original))) return original
+        return fallback ?: original
+    }
+
+    if (prefersCjk) {
         return name
     }
 

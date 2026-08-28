@@ -106,6 +106,16 @@ class TmdbMetadataServiceTest {
     }
 
     @Test
+    fun resolvePersonNamePrefersEnglishFallbackWhenLocalizedNameIsAbsent() {
+        // Localized name missing, CJK original, English fallback available.
+        assertEquals("Takuya Kimura", resolvePersonName(null, "木村拓哉", "Takuya Kimura", "de-DE"))
+        // CJK locales keep the CJK original even with a fallback present.
+        assertEquals("木村拓哉", resolvePersonName(null, "木村拓哉", "Takuya Kimura", "ja-JP"))
+        // No fallback: the CJK original is still better than nothing.
+        assertEquals("木村拓哉", resolvePersonName(null, "木村拓哉", null, "de-DE"))
+    }
+
+    @Test
     fun resolvePersonNameFallsBackCjkFilmographyTitlesToEnglish() {
         assertEquals(
             "Ghost in the Shell: Stand Alone Complex",
