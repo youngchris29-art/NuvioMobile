@@ -57,13 +57,34 @@ enum SettingsRowIconTint {
 /// `.primary` so the system's own light/dark label flip on the near-white platter applies. Pinning
 /// the accent through focus is the BUG-4/33/45/65 family, and the White theme's near-white accent
 /// (0xF5F5F5) would disappear into the platter outright.
+///
+/// BUG-65 container half: `\.isFocused` alone is not enough for a kit row hosted inside a CUSTOM
+/// container (the Home Screen pane's collapsible groups) — that container is a single tvOS list
+/// row, so its near-white platter is up whenever ANY of its children has focus, and an at-rest
+/// accent then sits on white. `settingsRowPlatterActive` reports that; `settingsRowIsFocused`
+/// reports the row's own device-proven `@FocusState`. Both default false, so the sidebar and the
+/// six panes that publish neither are unchanged.
+///
+/// The `colorScheme` write-back is what makes handing the colour to `.primary` safe in those
+/// containers: on a native list row the system flips the row's label appearance itself, but a
+/// custom container's children never got that flip, so `.primary` resolved to the app's dark-mode
+/// white — the failure this modifier is supposed to prevent. Writing the INHERITED value back in
+/// the at-rest case (rather than a literal `.dark`) keeps it a true no-op: it can never clobber a
+/// flip the system already performed.
 struct SettingsAccentTint: ViewModifier {
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+    @Environment(\.colorScheme) private var inheritedScheme
+
+    private var onPlatter: Bool { isFocused || rowFocused || platterActive }
 
     func body(content: Content) -> some View {
-        content.foregroundStyle(
-            isFocused ? AnyShapeStyle(.primary) : AnyShapeStyle(Theme.Palette.accent)
-        )
+        content
+            .foregroundStyle(
+                onPlatter ? AnyShapeStyle(.primary) : AnyShapeStyle(Theme.Palette.accent)
+            )
+            .environment(\.colorScheme, onPlatter ? .light : inheritedScheme)
     }
 }
 
@@ -85,6 +106,22 @@ struct SettingsRowLabel: View {
     var subtitle: String?
     var systemImage: String?
     var iconTint: SettingsRowIconTint = .accent
+
+    /// BUG-65 container half. In a native list row this stays false and the block below is a
+    /// no-op — the system inverts the row's label colour and the kit's colour rule holds as
+    /// written. Inside a CUSTOM container (the Home Screen pane's collapsible groups) the
+    /// container is one list row whose platter is up whenever any child has focus, and its
+    /// children never got that inversion, so `.primary`/`.secondary` resolved white-on-white.
+    /// See `settingsRowPlatterActive` / `settingsRowIsFocused` in FlatControlStyles.swift.
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+    /// Written straight back when the platter is down, so this can never clobber a `colorScheme`
+    /// flip the system already applied to a native row — the over-correction the kit's header
+    /// comment warns about. Nothing here pins a fixed colour onto the platter either: the label
+    /// stays semantic and only the SCHEME it resolves against changes.
+    @Environment(\.colorScheme) private var inheritedScheme
+
+    private var onPlatter: Bool { rowFocused || platterActive }
 
     var body: some View {
         HStack(spacing: Theme.Spacing.md) {
@@ -109,6 +146,7 @@ struct SettingsRowLabel: View {
                 }
             }
         }
+        .environment(\.colorScheme, onPlatter ? .light : inheritedScheme)
     }
 }
 

@@ -242,6 +242,21 @@ private struct HeroSourcesGroup: View {
     let onToggle: (_ key: String, _ enabled: Bool) -> Void
     @State private var isExpanded = false
 
+    /// BUG-65 container half (device video 2026-08-29). This whole group is ONE tvOS list row, so
+    /// the system raises its near-white focus platter as soon as ANY child takes focus, and every
+    /// child — not just the focused one — ends up drawn on white. `\.isFocused` is the read that
+    /// dies on hardware, so the group derives that state from a `@FocusState` its children bind
+    /// (BUG-45's device-proven mechanism) and publishes it as `settingsRowPlatterActive`.
+    ///
+    /// STRICTLY READ-ONLY: nothing ever writes `focusedChild`. That matters here — a write would
+    /// be a focus retarget, and the whole point of the surrounding comments is that this group
+    /// hands focus reassignment to the system when its rows are removed.
+    @FocusState private var focusedChild: String?
+
+    /// Tag for the always-mounted header row; catalog rows use their own `key`, which cannot
+    /// collide with it.
+    private static let headerFocusTag = "\u{0000}header"
+
     private var selectedCount: Int {
         items.filter { $0.heroSourceEnabled }.count
     }
@@ -274,7 +289,10 @@ private struct HeroSourcesGroup: View {
                 subtitle: summary,
                 // The chevron reports what is actually on screen, not the raw state, so it can't
                 // point "up" at a platter that `showsRows` has already withheld.
-                isExpanded: showsRows
+                isExpanded: showsRows,
+                focusBinding: $focusedChild,
+                focusTag: Self.headerFocusTag,
+                focusedTag: focusedChild
             ) {
                 isExpanded.toggle()
             }
@@ -284,7 +302,9 @@ private struct HeroSourcesGroup: View {
                     ForEach(items, id: \.key) { item in
                         HeroSourceRow(
                             item: item,
-                            interactive: item.heroSourceEnabled || selectedCount < limit
+                            interactive: item.heroSourceEnabled || selectedCount < limit,
+                            focusBinding: $focusedChild,
+                            focusedTag: focusedChild
                         ) { enabled in
                             onToggle(item.key, enabled)
                         }
@@ -293,6 +313,9 @@ private struct HeroSourcesGroup: View {
                 .padding(.leading, Theme.Spacing.md)
             }
         }
+        // BUG-65 container half: tell every child that this list row's platter is up — see
+        // `focusedChild` above. Inert (false) until one of them actually holds focus.
+        .environment(\.settingsRowPlatterActive, focusedChild != nil)
         // NO `.animation(_:value: isExpanded)` and no `.transition(.opacity)` here any more, and
         // that is the fix, not an oversight (device video 2026-08-29, §(b) "removing a catalog →
         // big white screen"). This group is ONE List row holding a `ForEach` of focusable toggle
@@ -334,6 +357,14 @@ private struct HomeCatalogsGroup: View {
     let onDown: (HomeCatalogSettingsItem) -> Void
     @State private var isExpanded = false
 
+    /// See `HeroSourcesGroup.focusedChild`. This is the group the device video caught blank: its
+    /// rows put their text and their reorder chips straight into the list row rather than into a
+    /// control's label, so NONE of them got the system's focused-row inversion and the platter
+    /// came up empty. Read-only, never written.
+    @FocusState private var focusedChild: String?
+
+    private static let headerFocusTag = "\u{0000}header"
+
     private var enabledCount: Int {
         items.filter { $0.enabled }.count
     }
@@ -347,7 +378,10 @@ private struct HomeCatalogsGroup: View {
             SettingsDisclosureRow(
                 title: String(localized: "Catalogs"),
                 subtitle: String(localized: "\(enabledCount) of \(items.count) enabled"),
-                isExpanded: showsRows
+                isExpanded: showsRows,
+                focusBinding: $focusedChild,
+                focusTag: Self.headerFocusTag,
+                focusedTag: focusedChild
             ) {
                 isExpanded.toggle()
             }
@@ -357,6 +391,8 @@ private struct HomeCatalogsGroup: View {
                     ForEach(items, id: \.key) { item in
                         CatalogSettingRow(
                             item: item,
+                            focusBinding: $focusedChild,
+                            focusedTag: focusedChild,
                             onToggle: { onToggle(item) },
                             onUp: { onUp(item) },
                             onDown: { onDown(item) }
@@ -366,6 +402,8 @@ private struct HomeCatalogsGroup: View {
                 .padding(.leading, Theme.Spacing.md)
             }
         }
+        // BUG-65 container half — see `focusedChild` above.
+        .environment(\.settingsRowPlatterActive, focusedChild != nil)
         // The animation and the opacity transition are gone on purpose — this is the group the
         // 2026-08-29 device video died in ("removing a catalog → big white screen"). It is ONE List
         // row wrapping a `ForEach` of focusable rows, so removing an add-on deletes rows out from
@@ -390,13 +428,33 @@ private struct HomeCatalogsGroup: View {
 /// a live summary subtitle + a chevron that rotates 180° between collapsed (pointing down) and
 /// expanded (pointing up). C4: converted off the legacy full-width row button style and its
 /// focus-aware text-colour modifier onto a plain default-style `Button` (`SettingsActionRow`'s
-/// pattern) with a trailing chevron the system list row draws and inverts on focus for free, same
-/// as every other kit row in this file.
+/// pattern) with a trailing chevron. C4 assumed the system would draw and invert this row like
+/// every other kit row; the 2026-08-29 device video is the counter-example — see below.
+///
+/// BUG-65 container half: unlike every other kit row, this Button is NOT a list row of its own —
+/// it lives inside the group's `VStack`, i.e. inside a list row it shares with the expanded
+/// content. The device video caught it both ways: legible when the platter's inversion reached it
+/// (3:56) and a near-white ghost with an invisible subtitle and chevron when it did not (4:02).
+/// It therefore takes the group's focus binding: that is how the group knows its platter is up,
+/// and it lets this row colour itself from a signal that survives on hardware.
 private struct SettingsDisclosureRow: View {
     let title: String
     let subtitle: String
     let isExpanded: Bool
+    let focusBinding: FocusState<String?>.Binding
+    let focusTag: String
+    /// The group's CURRENT focus tag, passed as a plain value on purpose. Reading
+    /// `focusBinding.wrappedValue` here would compile, but a `FocusState.Binding` is the same
+    /// value on every pass (it wraps the parent's storage), so SwiftUI could skip re-running this
+    /// body when focus moves between two children and leave the published colour stale. A plain
+    /// property is a real dependency.
+    let focusedTag: String?
     let action: () -> Void
+
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+    @Environment(\.colorScheme) private var inheritedScheme
+
+    private var focused: Bool { focusedTag == focusTag }
 
     var body: some View {
         Button(action: action) {
@@ -407,7 +465,15 @@ private struct SettingsDisclosureRow: View {
                     .font(SettingsRowFont.title)
                     .foregroundStyle(.secondary)
             }
+            // The chevron is a SIBLING of `SettingsRowLabel`, not part of it, so the label's own
+            // platter handling does not reach it — hence the flip at the HStack. Written back
+            // unchanged while the platter is down, so it can never clobber a system inversion.
+            .environment(\.colorScheme, (focused || platterActive) ? .light : inheritedScheme)
         }
+        .focused(focusBinding, equals: focusTag)
+        // Belt-and-braces alongside the group-wide platter flag: this row's own focus, published
+        // the documented way, so its label flips even if the group's flag ever lags a frame.
+        .environment(\.settingsRowIsFocused, focused)
     }
 }
 
@@ -419,6 +485,13 @@ private struct SettingsDisclosureRow: View {
 private struct HeroSourceRow: View {
     let item: HomeCatalogSettingsItem
     let interactive: Bool
+    /// BUG-65 container half: binding this row into the group's focus state is what tells the
+    /// group its list-row platter is up (see `HeroSourcesGroup.focusedChild`). This row's own text
+    /// is a `Toggle` LABEL, which the device video showed the system does still invert (3:56) — it
+    /// is bound for the group's sake, and the published value below is the belt-and-braces half.
+    let focusBinding: FocusState<String?>.Binding
+    /// See `SettingsDisclosureRow.focusedTag` for why the value travels alongside the binding.
+    let focusedTag: String?
     let onToggle: (Bool) -> Void
 
     var body: some View {
@@ -430,16 +503,42 @@ private struct HeroSourceRow: View {
                 set: { onToggle($0) }
             )
         )
+        .focused(focusBinding, equals: item.key)
+        .environment(\.settingsRowIsFocused, focusedTag == item.key)
         .disabled(!interactive)
     }
 }
 
 /// A Home-catalog row: title + add-on, with reorder (up/down) and an enable toggle.
+///
+/// BUG-65 container half — this is the row the 2026-08-29 device video showed as blank white
+/// (frame 3:38). Unlike every other Settings row, its text is NOT a control's label: it is plain
+/// `Text` sitting directly in the group's list row, and the system's focused-row label inversion
+/// only reaches control labels. So `Theme.Palette.textPrimary`/`textSecondary` (both semantic —
+/// `Color.primary`/`.secondary`) kept resolving against the app's dark scheme and rendered white
+/// on the white platter, while the chips' glyphs were forced dark-scheme by `ChipButtonStyle`.
+/// Everything below reads the group's published platter state instead of `\.isFocused`.
 private struct CatalogSettingRow: View {
     let item: HomeCatalogSettingsItem
+    let focusBinding: FocusState<String?>.Binding
+    /// See `SettingsDisclosureRow.focusedTag` for why the value travels alongside the binding —
+    /// it matters most here, where focus moves BETWEEN this row's three chips without the group's
+    /// platter flag changing at all.
+    let focusedTag: String?
     let onToggle: () -> Void
     let onUp: () -> Void
     let onDown: () -> Void
+
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+    @Environment(\.colorScheme) private var inheritedScheme
+
+    /// One tag per focusable control in the row — the group needs to hear from ALL of them, or its
+    /// platter flag stays false for whichever chip the user is actually standing on.
+    private func focusTag(_ control: String) -> String { "\(item.key)|\(control)" }
+
+    private func isFocused(_ control: String) -> Bool {
+        focusedTag == focusTag(control)
+    }
 
     var body: some View {
         HStack(spacing: Theme.Spacing.md) {
@@ -453,18 +552,28 @@ private struct CatalogSettingRow: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .lineLimit(1)
             }
+            // The colours above stay exactly as they were — semantic, and carrying the
+            // enabled/disabled distinction. Only the scheme they resolve against changes, and only
+            // while the platter is up; at rest the inherited value is written straight back, so
+            // this is a no-op everywhere else.
+            .environment(\.colorScheme, platterActive ? .light : inheritedScheme)
+
             Spacer(minLength: Theme.Spacing.lg)
 
             Button(action: onUp) {
                 Image(systemName: "chevron.up")
             }
             .buttonStyle(.chip)
+            .focused(focusBinding, equals: focusTag("up"))
+            .environment(\.settingsRowIsFocused, isFocused("up"))
             .accessibilityLabel(String(localized: "Move Up"))
 
             Button(action: onDown) {
                 Image(systemName: "chevron.down")
             }
             .buttonStyle(.chip)
+            .focused(focusBinding, equals: focusTag("down"))
+            .environment(\.settingsRowIsFocused, isFocused("down"))
             .accessibilityLabel(String(localized: "Move Down"))
 
             Button(action: onToggle) {
@@ -472,6 +581,8 @@ private struct CatalogSettingRow: View {
                     .rowAccentTint(item.enabled)
             }
             .buttonStyle(.chip)
+            .focused(focusBinding, equals: focusTag("toggle"))
+            .environment(\.settingsRowIsFocused, isFocused("toggle"))
             .accessibilityLabel(item.enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
         }
         .padding(.vertical, Theme.Spacing.xs)

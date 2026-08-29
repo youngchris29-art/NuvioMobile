@@ -42,6 +42,39 @@ extension EnvironmentValues {
     }
 }
 
+/// BUG-65, container half (u/mrStevenx3's device video 2026-08-29, frames 3:38/3:56 — the Home
+/// Screen pane's two collapsible groups). A custom container — a `VStack` of focusable rows —
+/// placed in a tvOS `List` is ONE list row, and the system paints that row's near-white focus
+/// platter whenever the row CONTAINS focus. So the whole group turns white, and EVERY child sits
+/// on the platter, not just the focused one. The video pins exactly which children survive that:
+/// content that is a control's LABEL (`SettingsRowLabel` inside a `Toggle`/`Button`) gets the
+/// system's label inversion and reads dark-on-white, while content that is merely free-standing
+/// inside the cell — the plain `Text`s and the `.chip` glyphs of `CatalogSettingRow` — keeps the
+/// app's dark-scheme `.primary`/`.secondary` and vanishes. Only the accent-tinted state circles
+/// stayed visible, which is what made the row look "completely blank".
+///
+/// This is deliberately a SECOND key rather than a wider publication of `settingsRowIsFocused`.
+/// That key means "this control has focus", and `SettingsRowButtonStyle`/`ChipButtonStyle` render
+/// the full focus treatment from it (white capsule, lift, shadow) — publishing it container-wide
+/// would draw every sibling chip as though it were the focused one. `settingsRowPlatterActive`
+/// carries strictly less: "the surface under this content is the near-white platter". Consumers
+/// use it to pick platter-safe colours, never to fake focus.
+///
+/// Published by the container that owns the focus state (`HeroSourcesGroup`/`HomeCatalogsGroup`),
+/// derived from a `@FocusState` its children bind — the same device-proven mechanism as the key
+/// above, because `\.isFocused` is the read that dies on hardware. Defaults false, so every screen
+/// that does not publish it renders byte-identically.
+private struct SettingsRowPlatterActiveKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var settingsRowPlatterActive: Bool {
+        get { self[SettingsRowPlatterActiveKey.self] }
+        set { self[SettingsRowPlatterActiveKey.self] = newValue }
+    }
+}
+
 /// Full-width text row style used by Settings (pending the native List conversion) and a few
 /// content rows. Transparent at rest; focused it renders the system look: near-white platter,
 /// dark label, slight lift.
@@ -103,12 +136,24 @@ struct ChipButtonStyle: ButtonStyle {
         let selected: Bool
         @Environment(\.isFocused) private var isFocused
         @Environment(\.settingsRowIsFocused) private var externalFocus
+        // BUG-65 container half: this chip can be sitting on a near-white platter that a SIBLING's
+        // focus put up (see SettingsRowPlatterActiveKey) — the reorder chevrons in the Home Screen
+        // pane's catalog group are exactly that case, and on device they disappeared outright.
+        @Environment(\.settingsRowPlatterActive) private var platterActive
 
         private var focused: Bool { isFocused || externalFocus }
+
+        /// Anything drawn against the near-white platter — this chip's own, or the container's.
+        private var onPlatter: Bool { focused || platterActive }
 
         private var fill: Color {
             if focused { return FocusLook.platter }
             if selected { return Theme.Palette.accent }
+            // At rest on a container platter the 10%-white pill is invisible against the platter it
+            // sits on; the same 10% the other way round reads as a light-grey pill on white, and
+            // keeps the focused chip (a FULL-white platter, plus lift and shadow) distinguishable
+            // from its unfocused neighbours.
+            if platterActive { return Color.black.opacity(0.1) }
             return Color.white.opacity(0.1)
         }
 
@@ -122,8 +167,11 @@ struct ChipButtonStyle: ButtonStyle {
             configuration.label
                 .foregroundStyle(labelColor)
                 // Same semantic-color flip as SettingsRowButtonStyle — chip labels with their own
-                // .secondary text stay legible on the white focus platter.
-                .environment(\.colorScheme, focused ? .light : .dark)
+                // .secondary text stay legible on the white focus platter. `onPlatter`, not
+                // `focused`: an unfocused chip on a container platter forced .dark here, which is
+                // what turned `labelColor`'s semantic `textPrimary` into white-on-white (device
+                // video 3:38 — the catalog rows' up/down chevrons were simply not there).
+                .environment(\.colorScheme, onPlatter ? .light : .dark)
                 // BUG-65: same custom-ButtonStyle label env gap as SettingsRowButtonStyle —
                 // `chipMetaText` inside chip labels needs the style's known-good focus value.
                 .environment(\.settingsRowIsFocused, focused)
@@ -251,12 +299,24 @@ struct RowAccentTint: ViewModifier {
     var inactiveColor: Color = Theme.Palette.textSecondary
     @Environment(\.isFocused) private var isFocused
     @Environment(\.settingsRowIsFocused) private var rowFocused
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+
+    private var color: Color {
+        // BUG-65: OR in the style-published focus value — see SettingsRowIsFocusedKey.
+        if isFocused || rowFocused { return FocusLook.onPlatter }
+        // BUG-65 container half: unfocused, but on a platter a sibling's focus put up. The accent
+        // is the one colour this modifier exists to keep OFF the platter — the White theme's
+        // ~#F5F5F5 accent is invisible on it, which is the original BUG-22 report. The state
+        // circles in the Home Screen pane's catalog group were the only thing still visible in the
+        // device video precisely BECAUSE that theme's accent happened to be blue; on the White
+        // theme the row would have had nothing at all. Dark-vs-dimmed keeps the enabled/disabled
+        // distinction the accent was carrying, and the glyph shape carries it too.
+        if platterActive { return active ? FocusLook.onPlatter : inactiveColor }
+        return active ? Theme.Palette.accent : inactiveColor
+    }
 
     func body(content: Content) -> some View {
-        // BUG-65: OR in the style-published focus value — see SettingsRowIsFocusedKey.
-        content.foregroundStyle(
-            (isFocused || rowFocused) ? FocusLook.onPlatter : (active ? Theme.Palette.accent : inactiveColor)
-        )
+        content.foregroundStyle(color)
     }
 }
 
