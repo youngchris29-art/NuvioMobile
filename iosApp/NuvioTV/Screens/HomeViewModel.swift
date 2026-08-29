@@ -52,6 +52,9 @@ final class HomeViewModel: ObservableObject {
     private let cinemetaManifestUrl = "https://v3-cinemeta.strem.io/manifest.json"
 
     private var addonWatcher: FlowWatcher?
+    /// Addon-wipe guard (2026-08-28): watches `AddonRepository.serverPullSettled` so a gated seed
+    /// (see `maybeSeedDefaultAddon()`) gets retried once the signed-in account's first pull lands.
+    private var seedGateWatcher: FlowWatcher?
     private var homeWatcher: FlowWatcher?
     private var progressWatcher: FlowWatcher?
     private var progressSourceWatcher: FlowWatcher?
@@ -270,6 +273,19 @@ final class HomeViewModel: ObservableObject {
             self.onAddonsChanged(state)
         }
 
+        // Addon-wipe guard (2026-08-28): covers the signed-in fresh-account case. The addon list's
+        // own empty-state emission is gated by `maybeSeedDefaultAddon()` while the first server pull
+        // hasn't settled yet, so nothing re-evaluates the seed once that emission has already come
+        // and gone — this watcher is what retries it: when the pull settles and the current addon
+        // state is STILL empty (a genuinely empty account, not one whose addons just arrived), seed.
+        seedGateWatcher = FlowWatcherKt.watch(AddonRepository.shared.serverPullSettled) { [weak self] emitted in
+            guard let self, self.pipelineGeneration == gen else { return }
+            let settled = (emitted as? KotlinBoolean)?.boolValue == true
+            guard settled else { return }
+            guard let state = AddonRepository.shared.uiState.value_ as? AddonsUiState, state.addons.isEmpty else { return }
+            self.maybeSeedDefaultAddon()
+        }
+
         // Watch progress → Continue Watching row.
         progressWatcher = FlowWatcherKt.watch(WatchProgressRepository.shared.uiState) { [weak self] _ in
             guard let self, self.pipelineGeneration == gen else { return }
@@ -365,6 +381,7 @@ final class HomeViewModel: ObservableObject {
             HomeHeroProbe.log(String(format: "vm stop id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
         }
         addonWatcher?.cancel()
+        seedGateWatcher?.cancel()
         homeWatcher?.cancel()
         progressWatcher?.cancel()
         progressSourceWatcher?.cancel()
@@ -372,6 +389,7 @@ final class HomeViewModel: ObservableObject {
         collectionsWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
         addonWatcher = nil
+        seedGateWatcher = nil
         homeWatcher = nil
         progressWatcher = nil
         progressSourceWatcher = nil
@@ -474,13 +492,23 @@ final class HomeViewModel: ObservableObject {
     private var lastTracedRowCount = 0
     #endif
 
+    /// Addon-wipe guard (2026-08-28, docs/addon-wipe-investigation-2026-08-28.md): the seed used to
+    /// fire on the FIRST empty emission, which on a clean install + sign-in is before the account's
+    /// addon list has ever been pulled — and addAddon's debounced full-replace push then overwrote
+    /// the account's addons with just Cinemeta. Guests still seed immediately (nothing to pull);
+    /// a signed-in account seeds only after the first pull settles (`seedingAllowed()`), with the
+    /// `serverPullSettled` watcher below re-attempting once the pull lands on a still-empty list.
+    private func maybeSeedDefaultAddon() {
+        guard !didSeed else { return }
+        guard AddonRepository.shared.seedingAllowed() else { return }
+        didSeed = true
+        AddonRepository.shared.addAddon(rawUrl: cinemetaManifestUrl) { _, _ in }
+    }
+
     private func onAddonsChanged(_ state: AddonsUiState) {
         // First run with an empty store → seed Cinemeta, then wait for the next emission.
         if state.addons.isEmpty {
-            if !didSeed {
-                didSeed = true
-                AddonRepository.shared.addAddon(rawUrl: cinemetaManifestUrl) { _, _ in }
-            }
+            maybeSeedDefaultAddon()
             return
         }
 
@@ -513,6 +541,7 @@ final class HomeViewModel: ObservableObject {
 
     deinit {
         addonWatcher?.cancel()
+        seedGateWatcher?.cancel()
         homeWatcher?.cancel()
         upcomingWatcher?.cancel()
     }
