@@ -3279,10 +3279,12 @@ final class NuvioTVUITests: XCTestCase {
     /// tvOS's lift turns out to be, the ring must not change it.
     func test44RingLiftMatchesSystemLift() throws {
         // Ring state comes from the ARGUMENT DOMAIN. `ensureToggleRow` cannot read a toggle inside
-        // the beta.15 native `List` (it reports `value=Optional()`), and this profile's
-        // `accent_focus_ring` is SYNCED ON, so a local `defaults write` is clobbered by the next
-        // cloud pull. NSArgumentDomain outranks both. An earlier version drove the real toggle and
-        // silently measured one state twice — identical gap arrays, a perfect match, a vacuous pass.
+        // the beta.15 native `List` (it reports `value=Optional()`), and `accent_focus_ring` is a
+        // plain local-only `@AppStorage` key (never synced) that this fixture profile simply has
+        // enabled, so a local `defaults write` would stick — but NSArgumentDomain is used anyway
+        // to outrank the fixture's own value deterministically. An earlier version drove the real
+        // toggle and silently measured one state twice — identical gap arrays, a perfect match, a
+        // vacuous pass.
         //
         // Each measurement is self-contained within ONE screenshot: the focused card's top edge is
         // compared against an UNFOCUSED neighbour's in the same frame, and normalised by that

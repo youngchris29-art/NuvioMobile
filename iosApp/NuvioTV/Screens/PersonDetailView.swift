@@ -200,7 +200,7 @@ struct PersonDetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.borderless)
+                            .cardFocusButtonStyle()
                             .posterButtonShape()
                         }
                     }

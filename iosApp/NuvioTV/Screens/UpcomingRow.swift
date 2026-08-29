@@ -46,7 +46,7 @@ struct UpcomingRow: View {
                             .padding(.top, cardTopReach)
                             .padding(.bottom, cardBottomReach)
                         }
-                        .buttonStyle(.borderless)
+                        .cardFocusButtonStyle()
                         .posterButtonShape()
                         .focused($focusedKey, equals: item.showKey)
                         .id(item.showKey)

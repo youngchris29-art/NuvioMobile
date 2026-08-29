@@ -817,6 +817,9 @@ struct InlineTrailerCard: View {
     /// with the ring on, it visibly disappeared the instant a trailer started playing. Read
     /// independently, same key/pattern as `PosterCard`'s copy of this property.
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// Read for the neutral still ring below (Codex 2026-08-29 round 6) — same key/pattern as
+    /// `PosterCard`'s copy.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     /// Landscape rows prefer the wide banner; a poster fallback is cropped to 16:9 by the tile's
     /// aspect-fill, which reads better than an empty slot.
@@ -986,6 +989,13 @@ struct InlineTrailerCard: View {
             if accentFocusRing && isFocused {
                 RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
                     .strokeBorder(Theme.Palette.focusRingColor, lineWidth: 4)
+            } else if noZoomOnFocus && isFocused {
+                // No-zoom + ring OFF (Codex 2026-08-29 round 6): with the system focus effect
+                // now genuinely disabled (the real BUG-64 fix) and the base card faded to 0
+                // under the expanded tile, this surface had NO focus indication left in that
+                // settings combination. Neutral still ring, same look as TileFocusLift's.
+                RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
+                    .strokeBorder(stillHighlight, lineWidth: ringWidth)
             }
         }
         .shadow(color: .black.opacity(0.6), radius: 22, y: 10)

@@ -142,6 +142,10 @@ struct DetailView: View {
     /// "Press Back to exit" hint so it only shows for the surprise entry, not a deliberate tap.
     @State private var trailerPlaybackIsAutoPlay = false
     @State private var trailerHintVisible = false
+    /// Which cast card holds focus — feeds `cardFocusButtonStyle(stillFocused:)`'s generic
+    /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
+    /// 2026-08-29 rounds 3-4).
+    @FocusState private var focusedCastIndex: Int?
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -713,14 +717,20 @@ struct DetailView: View {
                     .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: Theme.Spacing.lg) {
-                        ForEach(Array(cast.enumerated()), id: \.offset) { _, person in
+                        ForEach(Array(cast.enumerated()), id: \.offset) { index, person in
                             // Cast members carry a TMDB id only when TMDB enrichment is on; make those
                             // tappable to a person page, leave the rest as plain (non-focusable) cards.
                             if let personId = person.tmdbId?.value {
                                 NavigationLink(value: PersonRoute(id: personId, name: person.name)) {
-                                    CastCard(person: person)
+                                    // stillFocused: CastCard draws its own no-zoom still ring on
+                                    // the avatar circle (Codex 2026-08-29 rounds 3-5) — focus
+                                    // truth from the row's FocusState, not a second binding.
+                                    CastCard(person: person, stillFocused: focusedCastIndex == index)
                                 }
-                                .buttonStyle(.borderless)
+                                // Card-like navigation element: joins the no-zoom sweep so the
+                                // setting stills every card on the page, not most (Codex 2026-08-29).
+                                .cardFocusButtonStyle()
+                                .focused($focusedCastIndex, equals: index)
                             } else {
                                 CastCard(person: person)
                             }
@@ -753,7 +763,7 @@ struct DetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.borderless)
+                            .cardFocusButtonStyle()
                             .posterButtonShape()
                         }
                     }
@@ -844,7 +854,7 @@ struct DetailView: View {
                                     height: Theme.Size.miniPosterHeight
                                 )
                             }
-                            .buttonStyle(.borderless)
+                            .cardFocusButtonStyle()
                             .posterButtonShape()
                         }
                     }
@@ -882,6 +892,12 @@ struct DetailView: View {
                         )) {
                             companyChip(entry.company)
                         }
+                        // Deliberately NOT cardFocusButtonStyle() (Codex 2026-08-29 P1): unlike
+                        // CastCard, the chip has no isFocused-dependent treatment of its own, so
+                        // disabling the system effect in no-zoom mode would leave remote focus on
+                        // this link with NO visible indication at all. The system lift on a small
+                        // chip is a wiggle, not a zoom; a still-mode chip treatment can join a
+                        // future pass if a no-zoom user reports it.
                         .buttonStyle(.borderless)
                     } else {
                         companyChip(entry.company)
@@ -969,7 +985,7 @@ struct DetailView: View {
                             } label: {
                                 TrailerThumbCard(trailer: trailer, isResolving: model.resolvingTrailerId == trailer.id)
                             }
-                            .buttonStyle(.borderless)
+                            .cardFocusButtonStyle()
                             .posterButtonShape() // BUG-32: honor the Corners setting
                         }
                     }
@@ -1190,7 +1206,13 @@ private struct InfoRow: Identifiable {
 /// non-tappable cast, where `isFocused` simply never fires.
 private struct CastCard: View {
     let person: MetaPerson
+    /// Caller-supplied focus truth for the no-zoom still ring (Codex 2026-08-29 rounds 3-5):
+    /// with the system focus effect disabled this card's only treatment was caption opacity, and
+    /// the generic outer-bounds ring wrapped the whole lockup — the ring belongs on the avatar
+    /// circle, whose geometry only this view knows.
+    var stillFocused: Bool = false
 
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
@@ -1210,6 +1232,11 @@ private struct CastCard: View {
             .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
             .clipShape(Circle())
             .nuvioCardDepth(Circle(), surface: .cast)
+            .overlay {
+                if noZoomOnFocus && stillFocused {
+                    Circle().strokeBorder(stillHighlight, lineWidth: ringWidth)
+                }
+            }
             Text(person.name)
                 .font(Theme.Font.caption)
                 .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))

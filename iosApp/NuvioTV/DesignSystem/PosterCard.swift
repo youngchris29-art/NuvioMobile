@@ -40,6 +40,42 @@ extension View {
     func posterButtonShape() -> some View { modifier(PosterButtonShape()) }
 }
 
+/// BUG-64 (the real one, survived multiple betas): `.buttonStyle(.borderless)`'s system focus
+/// effect — lift + real Siri-Remote-tracking parallax + specular highlight + shadow — moves the
+/// WHOLE button label (artwork + caption) and was never gated by "No Zoom on Focus"
+/// (`no_zoom_on_focus`). The setting only ever suppressed this file's own hover/scale treatments
+/// (`CardFocusTreatment`, `CardArtworkSystemLift`), so no-zoom users still watched every card rise
+/// and zoom on focus. Card call sites use this in place of a bare `.buttonStyle(.borderless)`.
+/// docs/steven-batch-plan-2026-08-29.md Wave 4 item 4.
+///
+/// `.focusEffectDisabled()` only turns the system effect off — it draws no replacement of its
+/// own. A focusable element must never end up with no visible focus indication at all, so this
+/// swaps effects rather than merely removing one: still mode's own indicator (`TileFocusLift`'s
+/// border/highlight via `CardFocusTreatment.still`) is unchanged and continues to mark focus once
+/// the system effect is disabled.
+struct CardFocusButtonStyle: ViewModifier {
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+
+    func body(content: Content) -> some View {
+        content
+            .buttonStyle(.borderless)
+            .focusEffectDisabled(noZoomOnFocus)
+    }
+}
+
+extension View {
+    /// Card buttons' replacement for a bare `.buttonStyle(.borderless)` — see
+    /// [CardFocusButtonStyle] for why the swap is needed.
+    ///
+    /// Labels with NO still-mode focus treatment of their own (FolderTile, CastCard) draw a
+    /// no-zoom still ring INSIDE the label, on their artwork surface, fed by the SITE's own
+    /// FocusState (Codex 2026-08-29 rounds 3-5: a modifier-installed `.focused` binding collides
+    /// with site bindings like `focusedFolderId`, and an outer-bounds ring here would wrap reach
+    /// padding + caption instead of the artwork — the label owns its geometry, so it owns the
+    /// ring).
+    func cardFocusButtonStyle() -> some View { modifier(CardFocusButtonStyle()) }
+}
+
 /// FEAT-14 accent focus ring (final architecture — the third and last one, 2026-08-02): the ring
 /// is a `.strokeBorder` drawn INSIDE the artwork's own `RoundedRectangle`, identical to the
 /// inline-trailer surface's ring in `InlineTrailerCard` — same shape, same color, same 4pt width,
@@ -70,7 +106,9 @@ extension View {
 ///   (same shape, same clip, "scales with the card as one unit" on paper), except on hardware the
 ///   system lift doesn't actually pull the overlay into its lifted layer, so the artwork's scaled
 ///   copy covers the ring at the corners. This is the failure the manual-scale swap above fixes.
-private let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
+// Internal, not private: FolderTile and CastCard draw their own no-zoom still rings with the
+// same width/colour so still-mode focus reads identically on every card class (Codex 2026-08-29).
+let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
 
 /// BUG-64 (beta.13, u/mrStevenx3 on beta.12): with the ring ON "the film ends up hidden behind
 /// the border" — an inside `strokeBorder` paints its whole 4 pt on top of the artwork, and in ring
@@ -265,7 +303,7 @@ struct CardFocusTreatment: ViewModifier {
 /// Near-white at partial opacity reads as the system's own highlight edge at 10 feet without
 /// impersonating the ring. File-scope (was `CardFocusTreatment`-private) so `TileFocusLift`
 /// draws the identical edge.
-private let stillHighlight = Color.white.opacity(0.85)
+let stillHighlight = Color.white.opacity(0.85)  // shared with FolderTile/CastCard's no-zoom rings
 
 /// BUG-31 (beta.12 device pass): "No Zoom on Focus" only ever reached the content cards —
 /// utility tiles that keep the whole-tile system lift (the See All tile, episode cards, the

@@ -1416,16 +1416,14 @@ object TmdbMetadataService {
             )
         }
 
+        val localizedTrailerLabel = resourceString("Trailer", StringKey.generic_trailer)
         val sortedCategories = byCategory.keys.sortedWith(
             compareBy<String> { category ->
-                when {
-                    category.equals(
-                        resourceString("Trailer", StringKey.generic_trailer),
-                        ignoreCase = true,
-                    ) -> 0
-                    byCategory[category].orEmpty().any { it.official } -> 1
-                    else -> 2
-                }
+                trailerCategoryRank(
+                    category = category,
+                    hasOfficialVideo = byCategory[category].orEmpty().any { it.official },
+                    localizedTrailerLabel = localizedTrailerLabel,
+                )
             }.thenBy { it.lowercase() }
         )
 
@@ -1485,6 +1483,37 @@ object TmdbMetadataService {
         )
         return response?.results.orEmpty()
     }
+}
+
+/**
+ * Sort rank for a Trailers & Extras category (lower sorts first): the Trailer group, then any
+ * category containing at least one official video, then everything else (both tiers then break
+ * ties alphabetically at the call site).
+ *
+ * [category] is a `byCategory` map key, which is either TMDB's wire `type` value ("Trailer",
+ * "Teaser", "Behind the Scenes", ...) or, for a blank wire type, a `resourceString()` fallback.
+ * The wire `type` is ALWAYS English, so this must compare against the literal `"Trailer"` — never
+ * against `resourceString("Trailer", StringKey.generic_trailer)`, which localizes (e.g.
+ * "Bande-annonce" on a French device). Comparing against the localized string never matched for
+ * non-English users, so the Trailer group lost rank 0, fell into the official/alphabetical tiers,
+ * and sorted LAST behind "Behind the Scenes" — the reported "Trailers & Extras row shows only
+ * Behind the Scenes clips" bug. The localized string is for DISPLAY only, never for matching wire
+ * values.
+ */
+internal fun trailerCategoryRank(
+    category: String,
+    hasOfficialVideo: Boolean,
+    localizedTrailerLabel: String? = null,
+): Int = when {
+    category.equals("Trailer", ignoreCase = true) -> 0
+    // Blank wire types are grouped under the LOCALIZED generic-trailer label (display needs the
+    // user's language), so that label must ALSO earn rank 0 — otherwise a video already
+    // classified as a trailer sorts behind other categories on non-English devices (Codex
+    // 2026-08-29 P2). Both are checked: the wire literal for real TMDB types, the localized
+    // label for the blank-type fallback group.
+    localizedTrailerLabel != null && category.equals(localizedTrailerLabel, ignoreCase = true) -> 0
+    hasOfficialVideo -> 1
+    else -> 2
 }
 
 data class TmdbEnrichment(

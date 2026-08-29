@@ -161,10 +161,79 @@ enum PinnedRowTitle {
         return v > 0 ? CGFloat(v) : nil
     }()
 
+    /// The slide cap resolved for ONE row, in that row's own units.
+    ///
+    /// Wave 4 item 6 (tester report `docs/steven-batch-plan-2026-08-29.md`, "the section title
+    /// slides down over the cards", worst on his Streaming Services collection folder tiles): the
+    /// cap used to be the bare `heroPinnedRowTitleMaxSlide` (72) — a fixed number with no knowledge
+    /// of the card it rides over. The slide is not what the viewer judges, though; the INTRUSION is
+    /// — how far the title's bottom edge ends up past the artwork's top edge:
+    ///
+    ///     clearance = artworkTop − (titleInset + titleHeight)
+    ///               = (Spacing.lg + reach) − (48 + ~38)
+    ///               = (24 + 88) − 86  ≈  26pt          // static gap, title bottom → art top
+    ///     intrusion = slide − clearance                //  = 46pt at the old fixed 72 cap
+    ///
+    /// and 46pt is 16.7% of a Small poster's 275pt art, 22.7% of a 203pt landscape card, and 25.1%
+    /// of a Small square/landscape FOLDER TILE (183pt — `FolderTile.artworkHeight` takes the height
+    /// of those shapes from `style.width`, correctly: they are a true square / true 16:9 of the
+    /// row's width, so they are simply SHORTER than a poster). On a folder tile that slice lands on
+    /// a centred wordmark rather than a poster's usually-empty top margin. Full arithmetic table in
+    /// `Theme.Size.heroPinnedRowTitleArtIntrusionFraction`.
+    ///
+    /// So the cap becomes proportional to the artwork it rides over:
+    ///
+    ///     cap = min(heroPinnedRowTitleMaxSlide,
+    ///               clearance + artworkHeight × heroPinnedRowTitleArtIntrusionFraction)
+    ///
+    /// i.e. the intrusion is capped at 9% of the row's art while the proven 72pt absolute still
+    /// bounds everything (a very tall row can never buy a bigger slide than the focus band was ever
+    /// shown to tolerate). Because the cap is `clearance + budget` it can never fall BELOW the
+    /// clearance a settled rest needs — the deterministic beta.12 rest (title bottom exactly at the
+    /// art top) is byte-identical at every Poster Size; only deeply-clipped rows give up slide.
+    ///
+    /// `titleHeight` comes from the title's own proxy rather than a constant, so Bold Text and
+    /// larger type shrink the clearance term the same way they shrink the real gap. `artworkHeight`
+    /// is nil for a call site that cannot size itself confidently — then only the absolute cap
+    /// applies, i.e. exactly the pre-Wave-4 behavior. `cardTopReach` is the row's reach band; the
+    /// `Spacing.lg` half of `artworkTop` is the shelf's own vertical padding, which every pinned
+    /// row shares (CatalogRowView / UpcomingRow / Continue Watching `.padding(.vertical, .lg)`,
+    /// CollectionRowView `.padding(.top, .lg)` in pinned mode).
+    ///
+    /// `maxSlideOverride` deliberately BYPASSES the proportional term: that knob exists so a manual
+    /// device pass can bisect the visible trade live, and a clamp that silently overrode it would
+    /// make the knob a no-op at every value above the proportional cap.
+    ///
+    /// PROBE-ONLY as of Codex 2026-08-29 P1: `slide()` no longer clamps with this value — binding
+    /// a sub-absolute cap clips the title at deep rests (visibility beats bounded intrusion). The
+    /// probe still reports it as `cap=` so hardware passes can quantify per-row intrusion.
+    nonisolated static func maxSlide(titleHeight: CGFloat,
+                                     artworkHeight: CGFloat?,
+                                     cardTopReach: CGFloat) -> CGFloat {
+        if let override = maxSlideOverride { return override }
+        let absolute = Theme.Size.heroPinnedRowTitleMaxSlide
+        guard let artworkHeight, artworkHeight > 0 else { return absolute }
+        let artworkTop = Theme.Spacing.lg + cardTopReach
+        let clearance = max(artworkTop - (Theme.Size.heroPinnedRowTitleInset + titleHeight), 0)
+        let intrusionBudget = artworkHeight * Theme.Size.heroPinnedRowTitleArtIntrusionFraction
+        return min(absolute, clearance + intrusionBudget)
+    }
+
     /// How far the title must ride DOWN to stay fully inside the rows viewport, clamped.
-    /// `proxy` must be the TITLE's own geometry (local origin = the title's top-left).
-    nonisolated static func slide(_ proxy: GeometryProxy) -> CGFloat {
+    /// `proxy` must be the TITLE's own geometry (local origin = the title's top-left, `size` = the
+    /// title's own rendered size). The defaults reproduce the pre-Wave-4 clamp exactly, so any call
+    /// site that cannot state its artwork height keeps today's behavior.
+    nonisolated static func slide(_ proxy: GeometryProxy,
+                                  artworkHeight: CGFloat? = nil,
+                                  cardTopReach: CGFloat = Theme.Size.heroPinnedRowTopPad) -> CGFloat {
         guard let visible = visibleBounds(proxy) else { return 0 }
+        // The BINDING cap stays the absolute one (Codex 2026-08-29 P1): any cap below the rest's
+        // real minY trades intrusion for CLIPPING — the title parks partially off-screen, the
+        // original BUG-37 complaint class — and a settled rest deep enough to intrude is itself
+        // the bug (a stale reveal after a mixed-shape row's lazy relayout; see the scroll-repro
+        // trace in docs/steven-batch-plan-2026-08-29.md). Visibility wins; the proportional cap
+        // below (`maxSlide`) stays PROBE-ONLY so device passes can read how far each rest
+        // actually intruded per row and size until the settle-level fix removes the deep rests.
         return min(max(visible.minY, 0), maxSlideOverride ?? Theme.Size.heroPinnedRowTitleMaxSlide)
     }
 
@@ -180,8 +249,19 @@ extension View {
     /// Applies the BUG-37 slide, plus (knob on) the measurement the manual device pass needs.
     /// Attach to the TITLE TEXT ITSELF, BEFORE its `.padding(.top,)` — the modifier reads the
     /// text's own frame, so padding applied first would shift what it measures.
-    func pinnedRowTitleTracking(rowKey: String) -> some View {
-        modifier(PinnedRowTitleTrackingStyleGate(rowKey: rowKey))
+    ///
+    /// `artworkHeight` is the row's RESTING artwork height (art only — the caption slot is below
+    /// the art and irrelevant to an intrusion measured at its top edge), which is what makes the
+    /// slide clamp proportional to the card instead of a fixed 72pt against a scaled one — see
+    /// `PinnedRowTitle.maxSlide`. Rows whose cards are a single known shape can state it directly
+    /// (`CatalogRowView`); a mixed-shape row states its SHORTEST card (`CollectionRowView`), which
+    /// is the tile the clamp must protect. Leaving it nil is the documented opt-out for a call site
+    /// that cannot size itself confidently: the absolute cap alone then applies, exactly as before
+    /// this parameter existed (`UpcomingRow`, Home's Continue Watching — both fixed-height
+    /// `LandscapeCard` shelves whose height the focus-engine regime pins, so sizing them is a
+    /// separate, device-gated call).
+    func pinnedRowTitleTracking(rowKey: String, artworkHeight: CGFloat? = nil) -> some View {
+        modifier(PinnedRowTitleTrackingStyleGate(rowKey: rowKey, artworkHeight: artworkHeight))
     }
 }
 
@@ -204,21 +284,36 @@ extension View {
 /// on it would discard state (losing the eased-slide animation) on changes that don't need it.
 private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
     let rowKey: String
+    /// The row's resting artwork height, or nil (absolute cap only) — see `pinnedRowTitleTracking`.
+    let artworkHeight: CGFloat?
     @Environment(\.posterStyle) private var style
 
+    /// `art…` joins the key because it is what the Wave 4 clamp is computed from: for every call
+    /// site today it is DERIVED from the style fields already keyed here (so it adds no remounts in
+    /// practice), but a mixed-shape row can also change it on its own — a synced collection edit
+    /// that swaps a poster folder for a square one changes the row's shortest tile without touching
+    /// Poster Style — and the seeded offset must not outlive the clamp it was measured under.
     private var styleKey: String {
-        "\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-title\(style.showTitle)"
+        "\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-title\(style.showTitle)-art\(artworkHeight ?? -1)"
     }
 
     func body(content: Content) -> some View {
         content
-            .modifier(PinnedRowTitleTracking(rowKey: rowKey))
+            .modifier(PinnedRowTitleTracking(rowKey: rowKey, artworkHeight: artworkHeight))
             .id(styleKey)
     }
 }
 
 private struct PinnedRowTitleTracking: ViewModifier {
     let rowKey: String
+    /// Wave 4 item 6: the row's resting artwork height, feeding the proportional slide clamp
+    /// (`PinnedRowTitle.maxSlide`). nil = absolute cap only, i.e. the pre-Wave-4 behavior.
+    let artworkHeight: CGFloat?
+    /// The reach band this row's cards extend upward through — the other half of "where the
+    /// artwork's top edge is" (art top = `Spacing.lg` shelf padding + reach). Read from the
+    /// environment rather than assumed to be `heroPinnedRowTopPad` so the clamp stays correct if a
+    /// host ever runs a different reach; the title only renders at all when this is > 0.
+    @Environment(\.rowCardTopReach) private var cardTopReach
 
     /// BUG-61 (beta.12): the original `visualEffect` recomputed the slide at draw time with no
     /// transaction of its own, so a focus-driven reveal — whose layout shift lands in ONE frame —
@@ -238,7 +333,11 @@ private struct PinnedRowTitleTracking: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        content
+        // Hoisted to locals so the geometry closures below capture two plain CGFloats instead of
+        // this (view-isolated) modifier — the same rule the probe already follows for `rowKey`.
+        let clampArtworkHeight = artworkHeight
+        let clampReach = cardTopReach
+        return content
             // ALL offsetting stays inside `visualEffect` (Codex gate 1, round 2): a plain
             // `.offset` participates in the coordinate conversions the geometry observer below
             // uses, so measuring a view shifted by the state it feeds is a feedback loop that
@@ -252,10 +351,12 @@ private struct PinnedRowTitleTracking: ViewModifier {
             // Until the first measurement lands, the draw-time computation carries the offset;
             // the seed stores the same value into `slide`, so the handoff renders no change.
             .visualEffect { effect, proxy in
-                effect.offset(y: hasSeeded ? slide : PinnedRowTitle.slide(proxy))
+                effect.offset(y: hasSeeded
+                    ? slide
+                    : PinnedRowTitle.slide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach))
             }
             .onGeometryChange(for: CGFloat.self, of: { proxy in
-                PinnedRowTitle.slide(proxy)
+                PinnedRowTitle.slide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach)
             }, action: { newValue in
                 // Seeding must be recorded even when the first measurement equals the initial 0 —
                 // otherwise the first REAL change would take the unanimated seed path and snap,
@@ -270,31 +371,51 @@ private struct PinnedRowTitleTracking: ViewModifier {
                     withAnimation(.easeOut(duration: 0.22)) { slide = newValue }
                 }
             })
-            .modifier(PinnedRowTitleProbe(rowKey: rowKey, enabled: HomeGeometryProbe.enabled))
+            .modifier(PinnedRowTitleProbe(rowKey: rowKey,
+                                          artworkHeight: artworkHeight,
+                                          cardTopReach: cardTopReach,
+                                          enabled: HomeGeometryProbe.enabled))
     }
 }
 
-/// `[HomeScrollProbe] title row=… margin=… slide=… net=…`, so a single manual up-walk MEASURES
-/// BUG-37 instead of eyeballing it, per row:
+/// `[HomeScrollProbe] title row=… margin=… slide=… net=… cap=… intr=…`, so a single manual up-walk
+/// MEASURES BUG-37 instead of eyeballing it, per row:
 ///  - `margin` — title top vs the viewport's top edge BEFORE the slide. Negative is round 8's
 ///    failure reproducing, and its magnitude is that rest's share of the 0–67pt envelope.
 ///  - `slide`  — how far this fix moved the title (0 at a true rest).
-///  - `net`    — what the viewer actually sees. **This must stay ≥ 0**; a negative `net` means the
-///    rest exceeded `heroPinnedRowTitleMaxSlide` and the clamp needs raising.
+///  - `net`    — what the viewer actually sees. A negative `net` means the rest exceeded the row's
+///    resolved cap. Before Wave 4 that read "the clamp needs raising"; now it is also the EXPECTED
+///    reading for a deeply-clipped row, because the cap deliberately stops short of covering the
+///    whole envelope rather than push the title further onto the art (see `PinnedRowTitle.maxSlide`).
+///    What must still hold at a SETTLED rest is `net ≥ 0` — that is the regression to watch.
+///  - `cap`    — the row's resolved clamp (Wave 4): `clearance + 9% of the artwork`, absolute-capped.
+///  - `intr`   — how far the title's bottom edge is currently past the artwork's top edge, i.e. the
+///    number the tester actually complained about. `≤ 0` means it is clear of the art; the design
+///    budget is `artworkHeight × heroPinnedRowTitleArtIntrusionFraction`.
 /// Not attached at all when the knob is off, so disabled builds evaluate none of it.
 private struct PinnedRowTitleProbe: ViewModifier {
     let rowKey: String
+    let artworkHeight: CGFloat?
+    let cardTopReach: CGFloat
     let enabled: Bool
 
     func body(content: Content) -> some View {
         if enabled {
-            // Captured by value so the geometry closure holds a plain String rather than this
-            // (view-isolated) modifier.
+            // Captured by value so the geometry closure holds a plain String and two CGFloats
+            // rather than this (view-isolated) modifier.
             let key = rowKey
+            let clampArtworkHeight = artworkHeight
+            let clampReach = cardTopReach
             content.onGeometryChange(for: String.self, of: { proxy in
                 guard let margin = PinnedRowTitle.rawMargin(proxy) else { return "" }
-                let slide = PinnedRowTitle.slide(proxy)
-                return "row=\(key) margin=\(probeBucket(margin)) slide=\(probeBucket(slide)) net=\(probeBucket(margin + slide))"
+                let slide = PinnedRowTitle.slide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach)
+                let cap = PinnedRowTitle.maxSlide(titleHeight: proxy.size.height,
+                                                  artworkHeight: clampArtworkHeight,
+                                                  cardTopReach: clampReach)
+                // Title bottom vs artwork top, in the same shelf-relative units the clamp uses.
+                let intrusion = (Theme.Size.heroPinnedRowTitleInset + proxy.size.height + slide)
+                    - (Theme.Spacing.lg + clampReach)
+                return "row=\(key) margin=\(probeBucket(margin)) slide=\(probeBucket(slide)) net=\(probeBucket(margin + slide)) cap=\(probeBucket(cap)) intr=\(probeBucket(intrusion))"
             }, action: { _, value in
                 guard !value.isEmpty else { return }
                 NSLog("[HomeScrollProbe] title %@", value)
@@ -452,6 +573,19 @@ struct CatalogRowView: View {
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
 
+    /// Wave 4 item 6: the RESTING artwork height of this row's cards, handed to the pinned title's
+    /// slide clamp so the title's intrusion is a fraction of the card rather than a fixed 46pt of
+    /// whatever size the user picked (see `PinnedRowTitle.maxSlide`).
+    ///
+    /// Mirrors `InlineTrailerCard.artworkHeight`, which is the same expression and — deliberately —
+    /// CONSTANT across the inline-trailer morph ("the height never changes so the row never
+    /// breathes vertically"), so one number describes the row in both states. The caption slot
+    /// (`style.showTitle`) is excluded: it sits BELOW the art and cannot be intruded on from above.
+    @Environment(\.posterStyle) private var posterStyle
+    private var rowArtworkHeight: CGFloat {
+        posterStyle.landscapeCatalogRows ? Theme.Size.landscapeHeight : posterStyle.height
+    }
+
     /// Home's "Trailer Location: Hero" mode — see `trailerPlaysInHero`. False (no-op) everywhere
     /// except Home in that mode, so Search and every other host keeps the inline morph.
     @Environment(\.trailerPlaysInHero) private var trailerPlaysInHero
@@ -495,7 +629,7 @@ struct CatalogRowView: View {
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
                                     }
-                                        .buttonStyle(.borderless)
+                                        .cardFocusButtonStyle()
                                         .posterButtonShape()
                                 } else {
                                     NavigationLink(value: TitleRoute(preview: item)) {
@@ -503,7 +637,7 @@ struct CatalogRowView: View {
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
                                     }
-                                    .buttonStyle(.borderless)
+                                    .cardFocusButtonStyle()
                                     .posterButtonShape()
                                 }
                             }
@@ -524,7 +658,7 @@ struct CatalogRowView: View {
                                     .padding(.top, cardTopReach)
                                     .padding(.bottom, cardBottomReach)
                             }
-                            .buttonStyle(.borderless)
+                            .cardFocusButtonStyle()
                             .posterButtonShape()
                         }
                     }
@@ -552,7 +686,7 @@ struct CatalogRowView: View {
                             // against the clip edge and can overlap the top of the artwork. Over
                             // the flat background of a true rest this is invisible.
                             .shadow(color: .black.opacity(0.7), radius: 8, y: 2)
-                            .pinnedRowTitleTracking(rowKey: section.key)
+                            .pinnedRowTitleTracking(rowKey: section.key, artworkHeight: rowArtworkHeight)
                             .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                             .allowsHitTesting(false)
                     }

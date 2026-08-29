@@ -208,7 +208,7 @@ struct SearchView: View {
                     NavigationLink(value: TitleRoute(preview: item)) {
                         PosterCard(title: item.name, imageURL: item.poster)
                     }
-                    .buttonStyle(.borderless)
+                    .cardFocusButtonStyle()
                     .posterButtonShape()
                     .onAppear { model.discoverItemAppeared(at: index) }
                 }

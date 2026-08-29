@@ -298,7 +298,7 @@ struct EntityBrowseView: View {
                                 height: Theme.Size.miniPosterHeight
                             )
                         }
-                        .buttonStyle(.borderless)
+                        .cardFocusButtonStyle()
                         .posterButtonShape()
                         .onAppear { model.itemAppeared(railId: rail.id, index: index) }
                     }

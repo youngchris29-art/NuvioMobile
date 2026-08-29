@@ -44,7 +44,7 @@ struct LibraryView: View {
                                     NavigationLink(value: TitleRoute(preview: item.toMetaPreview())) {
                                         PosterCard(title: item.name, imageURL: item.poster)
                                     }
-                                    .buttonStyle(.borderless)
+                                    .cardFocusButtonStyle()
                                     .posterButtonShape()
                                     .contextMenu {
                                         Button(role: .destructive) {

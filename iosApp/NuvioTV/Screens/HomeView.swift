@@ -1685,7 +1685,7 @@ struct ContinueWatchingRow: View {
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
                             }
-                            .buttonStyle(.borderless)
+                            .cardFocusButtonStyle()
                             .posterButtonShape()
                             .focused($focusedVideoId, equals: entry.videoId)
                             .contextMenu {

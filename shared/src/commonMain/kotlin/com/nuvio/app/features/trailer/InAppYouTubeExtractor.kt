@@ -74,6 +74,11 @@ private data class ManifestBestVariant(
     val width: Int,
     val height: Int,
     val bandwidth: Long,
+    // Whether the selected variant is SDR (or unmarked = SDR per the HLS spec). Carried up so the
+    // CROSS-manifest pick can prefer another client's SDR manifest over this one's HDR-only
+    // fallback — filtering per-manifest alone still let a PQ-only manifest win on height
+    // (Codex 2026-08-29 P2).
+    val isSdr: Boolean,
 )
 
 internal data class ManifestCandidate(
@@ -83,6 +88,7 @@ internal data class ManifestCandidate(
     val selectedVariantUrl: String,
     val height: Int,
     val bandwidth: Long,
+    val isSdr: Boolean = true,
 )
 
 internal data class TrailerRequestResponse(
@@ -92,6 +98,61 @@ internal data class TrailerRequestResponse(
     val url: String,
     val body: String,
 )
+
+/** One `#EXT-X-STREAM-INF` variant parsed out of an HLS master manifest, pre-selection. */
+internal data class HlsVariantCandidate(
+    val url: String,
+    val width: Int,
+    val height: Int,
+    val bandwidth: Long,
+    /** Raw VIDEO-RANGE attribute value, or null when the tag omits it. */
+    val videoRange: String?,
+)
+
+/**
+ * Picks the best HLS variant for the SABR-fallback path, which renders on a bare
+ * (non-EDR) `AVPlayerLayer` by design — BUG-18/59 retired the alternative because a
+ * plain sublayer never negotiates HDR. `TrailerHeroPlayerView.swift` still plays this
+ * variant on that layer, so a PQ or HLG VIDEO-RANGE renders milky/washed-out even
+ * though the same segment would look correct on an EDR-aware layer. A variant whose
+ * VIDEO-RANGE is present and not "SDR" is therefore skipped; a variant with NO
+ * VIDEO-RANGE attribute is SDR per the HLS spec and is kept. If the manifest only
+ * offers HDR variants, filtering would leave nothing to play, so this falls back to
+ * the unfiltered best pick — a washed-out trailer still beats no trailer. Height →
+ * bandwidth → width ordering among the surviving candidates is unchanged from before
+ * this guard existed. The local-HLS repack path already pins avc1/SDR for its own
+ * reasons (see `bestAvcVideo` in [InAppYouTubeExtractor]); this brings the HLS
+ * fallback picker in line with it.
+ * Ref: docs/steven-batch-plan-2026-08-29.md Wave 4 item 3.
+ */
+internal fun selectBestHlsVariant(candidates: List<HlsVariantCandidate>): HlsVariantCandidate? {
+    fun isSdr(candidate: HlsVariantCandidate): Boolean {
+        val range = candidate.videoRange
+        return range == null || range.equals("SDR", ignoreCase = true)
+    }
+
+    fun bestOf(pool: List<HlsVariantCandidate>): HlsVariantCandidate? {
+        var best: HlsVariantCandidate? = null
+        for (candidate in pool) {
+            if (
+                best == null ||
+                candidate.height > best.height ||
+                (candidate.height == best.height && candidate.bandwidth > best.bandwidth) ||
+                (
+                    candidate.height == best.height &&
+                        candidate.bandwidth == best.bandwidth &&
+                        candidate.width > best.width
+                    )
+            ) {
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    val sdrOnly = candidates.filter(::isSdr)
+    return bestOf(sdrOnly) ?: bestOf(candidates)
+}
 
 private val JSON = Json { ignoreUnknownKeys = true }
 
@@ -347,11 +408,19 @@ class InAppYouTubeExtractor {
                     selectedVariantUrl = variant.url,
                     height = variant.height,
                     bandwidth = variant.bandwidth,
+                    isSdr = variant.isSdr,
                 )
+                // SDR dominates the cross-manifest pick: a client whose manifest fell back to an
+                // HDR-only variant must lose to any client offering SDR, whatever the heights —
+                // per-manifest filtering alone still let a PQ-only manifest win here on height
+                // and reach the non-EDR AVPlayerLayer washed out (Codex 2026-08-29 P2).
                 if (
                     bestManifest == null ||
-                    candidate.height > bestManifest.height ||
-                    (candidate.height == bestManifest.height && candidate.bandwidth > bestManifest.bandwidth)
+                    (candidate.isSdr && !bestManifest.isSdr) ||
+                    (candidate.isSdr == bestManifest.isSdr && (
+                        candidate.height > bestManifest.height ||
+                        (candidate.height == bestManifest.height && candidate.bandwidth > bestManifest.bandwidth)
+                    ))
                 ) {
                     bestManifest = candidate
                 }
@@ -460,7 +529,7 @@ class InAppYouTubeExtractor {
             .filter { it.isNotBlank() }
             .toList()
 
-        var bestVariant: ManifestBestVariant? = null
+        val candidates = mutableListOf<HlsVariantCandidate>()
         for (index in lines.indices) {
             val line = lines[index]
             if (!line.startsWith("#EXT-X-STREAM-INF:")) continue
@@ -473,28 +542,28 @@ class InAppYouTubeExtractor {
             val (width, height) = parseResolution(resolution)
             val bandwidth = attrs["BANDWIDTH"]?.toLongOrNull() ?: 0L
 
-            val candidate = ManifestBestVariant(
+            candidates += HlsVariantCandidate(
                 url = absolutizeUrl(manifestUrl, nextLine),
                 width = width,
                 height = height,
                 bandwidth = bandwidth,
+                videoRange = attrs["VIDEO-RANGE"],
             )
-
-            if (
-                bestVariant == null ||
-                candidate.height > bestVariant.height ||
-                (candidate.height == bestVariant.height && candidate.bandwidth > bestVariant.bandwidth) ||
-                (
-                    candidate.height == bestVariant.height &&
-                        candidate.bandwidth == bestVariant.bandwidth &&
-                        candidate.width > bestVariant.width
-                    )
-            ) {
-                bestVariant = candidate
-            }
         }
 
-        return bestVariant
+        // See selectBestHlsVariant's kdoc: skips HDR (PQ/HLG) variants for the non-EDR
+        // AVPlayerLayer fallback, falling back to the unfiltered pick if that leaves nothing.
+        val bestVariant = selectBestHlsVariant(candidates) ?: return null
+        val bestVariantIsSdr = bestVariant.videoRange == null ||
+            bestVariant.videoRange.equals("SDR", ignoreCase = true)
+
+        return ManifestBestVariant(
+            url = bestVariant.url,
+            width = bestVariant.width,
+            height = bestVariant.height,
+            bandwidth = bestVariant.bandwidth,
+            isSdr = bestVariantIsSdr,
+        )
     }
 
     private fun extractVideoId(input: String): String? {

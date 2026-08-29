@@ -46,7 +46,7 @@ struct EpisodesSection: View {
                                         isSelected: season == current
                                     )
                                 }
-                                .buttonStyle(.borderless)
+                                .cardFocusButtonStyle()
                                 // BUG-32: follow the user's Corners setting (system radius
                                 // otherwise overrides it — the BUG-25 class).
                                 .posterButtonShape()
@@ -97,7 +97,7 @@ struct EpisodesSection: View {
                                     isWatched: isWatched(episode)
                                 )
                             }
-                            .buttonStyle(.borderless)
+                            .cardFocusButtonStyle()
                             .posterButtonShape() // BUG-32: honor the Corners setting
                             .focused($focusedEpisodeId, equals: episode.id)
                             .id(episode.id)

@@ -187,4 +187,54 @@ class TmdbMetadataServiceTest {
         assertEquals("Chibi Maruko-chan", titles[57775])
         assertEquals("One Piece", titles[37854])
     }
+
+    /**
+     * Bug report (French tvOS tester): the Trailers & Extras row showed ONLY "Behind the Scenes"
+     * clips. Root cause was `fetchTrailers`' category rank-0 test comparing the group key — TMDB's
+     * wire `type` value, always English — against the *localized* `resourceString("Trailer", ...)`
+     * display string, which never matches for a non-English StringProvider. `trailerCategoryRank`
+     * is the extracted, pure rank function these tests exercise directly.
+     */
+    @Test
+    fun trailerCategoryRankPutsTrailerFirstRegardlessOfLocalizedDisplayString() {
+        assertEquals(0, trailerCategoryRank("Trailer", hasOfficialVideo = false))
+        // Case-insensitive, as the call site's `.equals(ignoreCase = true)` already was.
+        assertEquals(0, trailerCategoryRank("trailer", hasOfficialVideo = false))
+        assertEquals(0, trailerCategoryRank("TRAILER", hasOfficialVideo = true))
+    }
+
+    @Test
+    fun trailerCategoryRankNeverMatchesALocalizedDisplayString() {
+        // Simulates what the old, buggy compare effectively did: on a French device
+        // resourceString("Trailer", StringKey.generic_trailer) resolves to "Bande-annonce", which
+        // must NOT be treated as the Trailer group.
+        assertEquals(2, trailerCategoryRank("Bande-annonce", hasOfficialVideo = false))
+        assertEquals(1, trailerCategoryRank("Bande-annonce", hasOfficialVideo = true))
+    }
+
+    @Test
+    fun trailerCategoryRankRanksOfficialCategoriesAboveUnofficialNonTrailerCategories() {
+        assertEquals(1, trailerCategoryRank("Behind the Scenes", hasOfficialVideo = true))
+        assertEquals(2, trailerCategoryRank("Clip", hasOfficialVideo = false))
+        assertEquals(2, trailerCategoryRank("Teaser", hasOfficialVideo = false))
+    }
+
+    @Test
+    fun sortedCategoriesPutTrailerFirstEvenWhenBehindTheScenesIsOfficialAndAlphabeticallyEarlier() {
+        // Reproduces the tester's exact category set: "Behind the Scenes" (official) would sort
+        // ahead of "Trailer" both alphabetically and, before the fix, because the localized
+        // rank-0 compare never matched "Trailer" for a non-English StringProvider.
+        val categories = mapOf(
+            "Behind the Scenes" to true,
+            "Clip" to false,
+            "Trailer" to true,
+            "Teaser" to false,
+        )
+        val sorted = categories.keys.sortedWith(
+            compareBy<String> { category -> trailerCategoryRank(category, categories.getValue(category)) }
+                .thenBy { it.lowercase() },
+        )
+        assertEquals(listOf("Trailer", "Behind the Scenes", "Clip", "Teaser"), sorted)
+        assertEquals("Trailer", sorted.first())
+    }
 }

@@ -356,6 +356,37 @@ enum Theme {
         /// how far a deeply-clipped row's title may ride over its own artwork (worst case ~62pt
         /// of a 330pt poster, at rests where the clip edge is cutting that art anyway).
         static let heroPinnedRowTitleMaxSlide: CGFloat = 72
+        /// Wave 4 item 6 (tester report, `docs/steven-batch-plan-2026-08-29.md`): how much of a
+        /// row's ARTWORK a slid title may cover, as a fraction of that artwork's height.
+        ///
+        /// `heroPinnedRowTitleMaxSlide` bounds the SLIDE; what the viewer actually judges is the
+        /// INTRUSION — how far the title's bottom edge ends up PAST the artwork's top edge. At a
+        /// settled rest the title's bottom sits `(Spacing.lg + heroPinnedRowTopPad) −
+        /// (heroPinnedRowTitleInset + titleHeight)` = (24 + 88) − (48 + ~38) ≈ **26pt** above the
+        /// art, so a full 72pt slide intrudes ≈ **46pt**. That 46 is a FIXED number measured
+        /// against a SCALED card:
+        ///
+        ///     Poster Size       artwork height              46pt intrusion
+        ///     Small  (105 dp)   275pt (183 × 1.5)           16.7%
+        ///     Medium (126 dp)   330pt                       13.9%
+        ///     Large  (154 dp)   403pt                       11.4%
+        ///     Landscape rows    203pt                       22.7%
+        ///     Folder tile,      183pt (square/16:9 folder   25.1%  ← the tester's
+        ///       Small             tiles take their height           "Streaming Services" row
+        ///                         from `style.width`)
+        ///
+        /// A poster's top sixth is usually empty margin, so the fixed cap reads as harmless there;
+        /// a folder tile's is not — square/landscape folder covers are CENTRED WORDMARKS on a short
+        /// tile, so the same 46pt lands on the only thing the tile exists to show.
+        ///
+        /// 9% is the budget: under the ~10% top band that stays visually empty on virtually all
+        /// poster art, and never tighter than the ~26pt of static clearance a deterministic beta.12
+        /// rest needs — the resolved cap is `clearance + budget` (see `PinnedRowTitle.maxSlide`),
+        /// so a settled rest, which parks the title's bottom exactly at the artwork's top edge, is
+        /// unchanged at every Poster Size. Only deeply-clipped rows (mid-scroll, or a row well
+        /// above the focused one) give up slide, and those are rows whose art the clip edge is
+        /// cutting anyway.
+        static let heroPinnedRowTitleArtIntrusionFraction: CGFloat = 0.09
     }
 }
 

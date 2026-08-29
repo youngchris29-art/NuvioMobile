@@ -24,6 +24,31 @@ struct CardDepthStyle: Equatable {
     static func partialCoverageRailBoost(edge: Double) -> Double {
         min(max(edge, 0) * 1.5, 0.9)
     }
+
+    /// Tester (u/mrStevenx3-class report, beta.15): "Card Depth appears thick even when I select
+    /// Subtle." Root cause: the partial-coverage rail's `lineWidth` used to be keyed on COVERAGE
+    /// (Top/Half vs Full), not on the user's STRENGTH choice — every partial-coverage rail drew at
+    /// 2pt regardless of Subtle/Balanced/Bold. Since Subtle+Top is the *default* combination, that
+    /// made the out-of-the-box look thicker and brighter than even Bold+Full's 1pt closed stroke —
+    /// exactly backwards from what "Subtle" should mean.
+    ///
+    /// Width now follows edge STRENGTH instead: at/below the Subtle preset band the rail stays a 1pt
+    /// hairline; above it, 2pt as before. Full coverage is untouched — it never calls this, and stays
+    /// a pixel-identical 1pt closed stroke at every strength.
+    ///
+    /// The `28` threshold mirrors `AppearanceSettingsPane`'s Subtle/Balanced/Bold preset mapping
+    /// (28/42/56 out of 0…100). That mapping is UI-layer and not shared with this design-system file,
+    /// so the value is duplicated here rather than importing the pane — keep the two in sync by hand
+    /// if the presets ever move.
+    ///
+    /// BUG-57 interplay: dropping to 1pt does NOT drop the opacity boost from
+    /// `partialCoverageRailBoost` above. BUG-57's finding was that a bare 1pt rail at partial coverage
+    /// reads as nothing from a couch — a 1pt rail needs the boost *more* than a 2pt one does, not
+    /// less, so the boost stays applied at both widths. Only the width follows strength; the boost
+    /// keeps doing its job of making a thin rail visible.
+    static func partialCoverageRailWidth(edgeStrength: Int) -> CGFloat {
+        edgeStrength <= 28 ? 1 : 2
+    }
     var enabled = false
     /// 0…100. Opacity of the inset edge highlight at the top of the card. Default mirrors the shared
     /// `DefaultCardDepthEdgeStrength` (28).
@@ -181,10 +206,17 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// works well." Sim A/B at 1:1 (2026-08-16, Bold edge): what Top left on screen was a 1 pt
     /// hairline at ≤56 % white over the top edge and corner shoulders — from a couch that reads as
     /// NOTHING, while Full's closed hairline still reads as an outline because a closed shape
-    /// registers where a short arc does not. The partial modes therefore draw a heavier rail:
-    /// 2 pt instead of 1, with the top stop lifted (×1.5, capped) so a "lit from above" edge is
+    /// registers where a short arc does not. The partial modes therefore draw a heavier rail at low
+    /// strength: up to 2 pt, with the top stop lifted (×1.5, capped) so a "lit from above" edge is
     /// actually visible at the same setting; the geometric mask is unchanged (still no side rails,
     /// no bottom). Full is untouched — same 1 pt closed stroke, pixel-identical to before.
+    ///
+    /// Tester follow-up ("Card Depth appears thick even when I select Subtle"): the line width used
+    /// to be fixed at 2 pt for every partial-coverage rail, keyed only on coverage — so the default
+    /// Subtle+Top combination drew thicker than Bold+Full. See
+    /// `CardDepthStyle.partialCoverageRailWidth(edgeStrength:)` — width now follows the user's
+    /// strength choice (1 pt at/below the Subtle preset, 2 pt above), while the opacity boost below
+    /// still applies at both widths per BUG-57.
     @ViewBuilder
     private func edgeHighlight(edge: Double, coverage: Double) -> some View {
         if coverage >= 1 {
@@ -196,7 +228,7 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
                 top: lift,
                 mid: edge * (0.33 + 0.67 * coverage),
                 bottom: edge * coverage,
-                lineWidth: 2
+                lineWidth: CardDepthStyle.partialCoverageRailWidth(edgeStrength: style.edgeStrength)
             )
             .mask { coverageMask(coverage) }
         }

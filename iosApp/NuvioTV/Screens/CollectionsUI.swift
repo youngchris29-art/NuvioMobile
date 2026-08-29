@@ -60,6 +60,24 @@ struct CollectionRowView: View {
     /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    @Environment(\.posterStyle) private var style
+
+    /// Wave 4 item 6 (tester: the section title sliding onto his "Streaming Services" tiles): the
+    /// SHORTEST artwork height in this row, handed to the pinned title's slide clamp so its
+    /// intrusion is a fraction of the tile rather than a fixed 46pt — which on a Small square
+    /// folder tile (183pt) was a quarter of the artwork, landing on the centred wordmark that IS
+    /// the tile's content. See `PinnedRowTitle.maxSlide`.
+    ///
+    /// The MINIMUM, not the average: this row is deliberately mixed-shape (poster / landscape /
+    /// square folders side by side, top-aligned so their reach frames share a top edge), one title
+    /// rides over all of them, and the clamp has to protect the tile with the least room. Empty
+    /// rows fall back to the poster height — nothing is drawn over, and it matches what a folder
+    /// added later would most likely be.
+    private var shortestTileHeight: CGFloat {
+        collection.folders
+            .map { FolderTile.artworkHeight(for: $0, style: style) }
+            .min() ?? style.height
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -81,11 +99,19 @@ struct CollectionRowView: View {
                            spacing: Theme.Spacing.rowGap) {
                     ForEach(collection.folders, id: \.id) { folder in
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
-                            FolderTile(folder: folder, collectionBackdropUrl: collection.backdropImageUrl, collectionId: collection.id)
+                            FolderTile(
+                                folder: folder,
+                                collectionBackdropUrl: collection.backdropImageUrl,
+                                collectionId: collection.id,
+                                // Focus truth from the row's own FocusState (Codex rounds 3-5:
+                                // a second .focused binding collides with focusedFolderId's, and
+                                // the ring must hug the tile artwork, so it's drawn inside).
+                                stillFocused: focusedFolderId == folder.id
+                            )
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
                         }
-                        .buttonStyle(.borderless)
+                        .cardFocusButtonStyle()
                         .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
                         .focused($focusedFolderId, equals: folder.id)
                     }
@@ -106,7 +132,7 @@ struct CollectionRowView: View {
                         // BUG-37: same clip-edge slide the catalog/CW shelves got — short
                         // real-swipe rests must never leave this row's title off-screen.
                         .shadow(color: .black.opacity(0.7), radius: 8, y: 2)
-                        .pinnedRowTitleTracking(rowKey: collection.id)
+                        .pinnedRowTitleTracking(rowKey: collection.id, artworkHeight: shortestTileHeight)
                         .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                         .allowsHitTesting(false)
                 }
@@ -168,6 +194,12 @@ struct FolderTile: View {
     /// BUG-38 probe: folder ids are unique per COLLECTION, so the diagnostics key on both.
     var collectionId: String = ""
 
+    /// Caller-supplied focus truth for the no-zoom still ring (Codex 2026-08-29 rounds 3-5):
+    /// this tile has no focus treatment of its own, and the ring must hug the ARTWORK frame —
+    /// only this view knows it — not the padded outer button bounds.
+    var stillFocused: Bool = false
+
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
 
@@ -218,7 +250,21 @@ struct FolderTile: View {
         folder.posterShape == PosterShape.landscape ? style.width * 16 / 9 : style.width
     }
 
-    private var tileHeight: CGFloat {
+    private var tileHeight: CGFloat { FolderTile.artworkHeight(for: folder, style: style) }
+
+    /// A folder tile's ARTWORK height, without instantiating the tile — the pinned row needs it up
+    /// front to size its title's slide clamp (Wave 4 item 6; see `PinnedRowTitle.maxSlide`).
+    ///
+    /// The square/landscape branches taking their height from `style.WIDTH` is correct, not a typo
+    /// for `style.height`: a folder tile's shape is defined against the row's width dial, so
+    /// landscape = `width × 16/9` wide by `width` tall (a true 16:9) and square = `width × width`
+    /// (a true square). What follows is that non-poster tiles are simply SHORTER than a poster
+    /// (`width` / `width × 1.5`), which is why a FIXED title intrusion eats a much larger share of
+    /// them — the clamp is where that is fixed, not here: growing these tiles would change card
+    /// layout heights, and the pinned focus-engine regime (link frames resting under the clip edge;
+    /// this row's `LazyHStack` is top-aligned in pinned mode precisely so mixed shapes keep a
+    /// common reach-frame top) is calibrated against the heights as they stand.
+    static func artworkHeight(for folder: CollectionFolder, style: PosterStyle) -> CGFloat {
         switch folder.posterShape {
         case PosterShape.landscape: return style.width
         case PosterShape.square: return style.width
@@ -328,6 +374,13 @@ struct FolderTile: View {
             }
             .frame(width: tileWidth, height: tileHeight)
             .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+            .overlay {
+                if noZoomOnFocus && stillFocused {
+                    // No-zoom still ring on the artwork itself, mirroring TileFocusLift's look.
+                    RoundedRectangle(cornerRadius: style.cornerRadius)
+                        .strokeBorder(stillHighlight, lineWidth: ringWidth)
+                }
+            }
             // BUG-38: keyed on the folder's Kotlin data-class hash (NOT `isFocused` — see the
             // BUG-19 comment above on why this tile must never key off focus), so a cloud-sync
             // edit that keeps the folder's id but changes its sources/cover/emoji re-runs the
@@ -639,7 +692,7 @@ struct FolderDetailView: View {
                                 NavigationLink(value: TitleRoute(preview: item)) {
                                     PosterCard(title: item.name, imageURL: item.poster)
                                 }
-                                .buttonStyle(.borderless)
+                                .cardFocusButtonStyle()
                                 .posterButtonShape()
                                 .onAppear { model.itemAppeared(at: index) }
                             }

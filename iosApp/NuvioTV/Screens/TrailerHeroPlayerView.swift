@@ -762,11 +762,12 @@ final class TrailerLetterboxProbe {
     /// One measurement per probe: `tick()` can reach the sample target and the tick ceiling in the
     /// same pass, and a second `finish()` would re-log and re-animate an identical zoom.
     private var finished = false
-    /// BUG-59: whatever non-final zoom is currently on screen — a persisted value measured on a
-    /// different stream of this title, or an early measurement of this one. Log/teardown state.
+    /// BUG-59: whatever early zoom THIS stream's own samples have produced ahead of the final
+    /// measurement. Log/teardown state only — never seeded from a persisted entry, even a
+    /// different-stream one (see the token-mismatch handling in `start()`): a value this field
+    /// didn't measure itself would misreport what's actually on screen if the probe aborts.
     private var interimZoom: CGFloat?
-    /// BUG-59: true once THIS stream's own samples produced an interim; a persisted-mismatch value
-    /// applied in `start()` does not count, so fresh samples always get to correct it.
+    /// BUG-59: true once THIS stream's own samples produced an interim.
     private var interimMeasured = false
     /// BUG-59 (reveal gate): whether the surface is visible. Starts true and stays true on every
     /// persisted-hit path (the zoom is already right, or near enough); flips false only when
@@ -801,29 +802,48 @@ final class TrailerLetterboxProbe {
     ///
     /// * Persisted entry whose token matches this stream (or a direct URL with no token on either
     ///   side) → apply as final, no probe.
-    /// * Persisted entry measured on a DIFFERENT stream of the same title → apply it as the
-    ///   interim (it is almost always right — same film, same bars) and re-measure.
+    /// * Persisted entry measured on a DIFFERENT stream of the same title (BUG-59 collision fix,
+    ///   2026-08-28: `zoomKey` is title-keyed, so this is the hero trailer's cache entry read by
+    ///   a Trailers & Extras clip, or vice versa) → treat exactly like no entry at all: parity
+    ///   floor, concealed, re-measure from scratch. The old crop is not this stream's crop.
     /// * Nothing → parity floor, measure.
     func start() {
         if let cached = TrailerZoomCache.shared.entry(for: zoomKey) {
             // A blob entry with no token (never written by this build, but decodable) never matches.
             let tokenMatches = cached.token == token
-            apply(cached.zoom, animated: false)
             if TrailerProbe.enabled {
                 NSLog("[TrailerZoom] persisted-hit key=%@ zoom=%.3f token=%@ surface=%@ cardFrame=%@",
                       zoomKey, cached.zoom, tokenMatches ? "match" : "mismatch", surface, cardFrameDescription())
             }
-            if tokenMatches { return }
-            interimZoom = cached.zoom
-        } else {
-            // Parity floor first, un-animated: until the measurement lands, every surface renders
-            // exactly what it rendered before UX-9 — but CONCEALED now (reveal gate): with no
-            // memory of this title, the floor would show a letterboxed source's bars for the
-            // ~0.5–1.5 s until the interim lands, once per title, on nearly every fresh dwell.
-            // The static art / backdrop behind the surface stays up instead.
-            apply(TrailerHeroPlayer.parityZoom, animated: false)
-            conceal()
+            if tokenMatches {
+                // Only a token MATCH may show the cached crop un-concealed: this exact stream is
+                // what measured it, so it's known-good.
+                apply(cached.zoom, animated: false)
+                return
+            }
+            // BUG-59 collision (tester report, 2026-08-28): `zoomKey` is keyed by TITLE, not by
+            // stream — every video on a Detail page (the hero trailer AND every Trailers & Extras
+            // clip) shares one `TrailerZoomCache` entry. This branch used to apply the cached zoom
+            // to the live layer UNCONDITIONALLY, before the token check below it even ran, and on
+            // a mismatch left that wrong crop on screen (seeded into `interimZoom`, never
+            // concealed) instead of re-measuring. Net effect: opening a 16:9 Behind-the-Scenes
+            // clip right after the hero trailer inherited the hero's persisted 2.39:1 crop and
+            // started visibly zoomed (~1.34) from the first frame, all the way until the probe's
+            // interim landed 0.5–12s later. A token mismatch means THIS stream was never measured
+            // — that's a cold start in every sense, so fall through to the exact same parity-floor
+            // + conceal path as "no entry at all" below. Do NOT seed `interimZoom` with the stale
+            // cached zoom: nothing of the old measurement is trustworthy for this stream, and
+            // `interimZoom` exists purely to log what's actually on screen if the probe aborts —
+            // seeding it with a value that was never applied here would make that log lie.
         }
+        // Parity floor first, un-animated: until the measurement lands, every surface renders
+        // exactly what it rendered before UX-9 — but CONCEALED now (reveal gate): with no
+        // memory of this title (or, per the collision fix above, no memory of THIS stream), the
+        // floor would show a letterboxed source's bars for the ~0.5–1.5 s until the interim lands,
+        // once per title, on nearly every fresh dwell. The static art / backdrop behind the
+        // surface stays up instead.
+        apply(TrailerHeroPlayer.parityZoom, animated: false)
+        conceal()
         // BUG-59: attach the output NOW rather than on the first tick, so the very first tick can
         // already read a frame (the item exists before `play()` on both surfaces).
         attachOutputIfNeeded()
