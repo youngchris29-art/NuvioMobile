@@ -81,6 +81,95 @@ object ProfileSettingsSync {
     @Volatile
     private var skipNextPushSignature: String? = null
 
+    // Identity of the last SETTLED pull — "settled" meaning we definitively observed the remote
+    // namespace for this (user, profile): applied a blob, found it matching, or found it provably
+    // empty (incl. the legacy-seed path). A decode failure, a features-less blob, or a thrown
+    // fetch is NOT settled: the namespace may hold data this client couldn't read, and the
+    // observer's full-replace push must never be composed against unknown remote state — that is
+    // the addon-wipe shape (docs/addon-wipe-investigation-2026-08-28.md). Mirrors
+    // TrackingSourceSettingsSyncService.completedInitialPull.
+    @Volatile
+    private var completedInitialPull: SettingsPullToken? = null
+
+    // Signature of an observer emission the settle gate skipped, kept so a user edit made
+    // BEFORE the first pull settles is pushed right after it does (Codex 2026-08-28 P2) —
+    // `distinctUntilChanged` would otherwise never re-emit it, leaving the edit local-only
+    // until some unrelated setting changes.
+    @Volatile
+    private var pendingGatedPushSignature: String? = null
+
+    // Identity of the most recent pull — used only to drop a stale `skipNextPushSignature` when
+    // the (user, profile) changes between pulls (see the reset in `pull`).
+    @Volatile
+    private var lastPullToken: SettingsPullToken? = null
+
+    private fun hasCompletedInitialPull(token: SettingsPullToken): Boolean =
+        settingsPushAllowed(completedInitialPull, token)
+
+    /// Settles the gate with the identity the pull STARTED under — and only if that identity is
+    /// still current on BOTH axes: `currentSettingsPullToken()` reads the live user AND the live
+    /// active profile, so a mid-pull account switch or profile switch (the pull suspends across
+    /// RPCs) can never settle a namespace that was not the one pulled (Codex 2026-08-28 P1 ×2 —
+    /// the first round compared against `token.profileId`, which masked profile switches).
+    private fun markInitialPullComplete(token: SettingsPullToken) {
+        if (token != currentSettingsPullToken()) {
+            log.d { "settle skipped — identity changed mid-pull (profile ${token.profileId})" }
+            return
+        }
+        completedInitialPull = token
+        maybeRetryGatedPush(token)
+    }
+
+    /// If the gate skipped an emission before settling, push now that it is safe — unless the
+    /// current state is exactly what the pull just applied (`skipNextPushSignature`), in which
+    /// case the server already holds it and the owed push would be a redundant rewrite.
+    ///
+    /// Known, deliberate limit (Codex 2026-08-28 P2, declined): only the SIGNATURE is retained,
+    /// so a pre-settle edit that the pull's remote apply then overwrites locally is not restored
+    /// — the post-apply state matches the server and this returns without pushing. Restoring a
+    /// captured pre-settle payload would be worse: that payload is mostly unhydrated defaults,
+    /// and re-applying it post-settle is exactly the full-replace wipe this gate exists to stop.
+    /// Doing this properly needs per-setter edit provenance (the
+    /// TrackingSourceSettingsSyncService model) across all 17 repositories — out of scope. The
+    /// window is the few seconds before the ordered sync's FIRST step settles, the loss is one
+    /// visible-in-UI setting reverting to the account's value, and the pre-gate behavior for the
+    /// same window was pushing the whole unhydrated blob over the account.
+    private fun maybeRetryGatedPush(token: SettingsPullToken) {
+        pendingGatedPushSignature ?: return
+        pendingGatedPushSignature = null
+        if (currentObservedStateSignature() == skipNextPushSignature) {
+            // Consumed WITH the echo (Codex 2026-08-28 P2 round 7): left set, a later user edit
+            // that restores exactly this state would have its emission mistaken for the old echo
+            // by the observer's skip branch and never pushed.
+            skipNextPushSignature = null
+            return
+        }
+        // The launch runs after the settling pull releases syncMutex; the identity can change in
+        // that gap, and pushCurrentProfileToRemote() exports whatever profile is active at push
+        // time — so the push must be pinned to the settled token and revalidated under the mutex
+        // (Codex 2026-08-28 P1 round 6), or a profile switched to mid-gap would be pushed unpulled.
+        scope.launch { pushProfileToRemoteIfCurrent(token) }
+    }
+
+    /// pushCurrentProfileToRemote(), but only if the given settled identity is STILL the live
+    /// (user, profile) once the mutex is held — the deferred-push path's guard against pushing a
+    /// namespace that was never pulled.
+    private suspend fun pushProfileToRemoteIfCurrent(token: SettingsPullToken): Boolean {
+        ensureRepositoriesLoaded()
+        return syncMutex.withLock {
+            if (token != currentSettingsPullToken()) {
+                log.d { "deferred push skipped — identity changed before it ran (profile ${token.profileId})" }
+                return@withLock false
+            }
+            runCatching {
+                pushToRemoteLocked(token.profileId, exportSettingsBlob())
+                true
+            }.onFailure { error ->
+                log.e(error) { "deferred push for profile ${token.profileId} FAILED" }
+            }.getOrDefault(false)
+        }
+    }
+
     private var observeJob: Job? = null
 
     fun startObserving() {
@@ -95,6 +184,9 @@ object ProfileSettingsSync {
         observeJob?.cancel()
         observeJob = null
         skipNextPushSignature = null
+        completedInitialPull = null
+        pendingGatedPushSignature = null
+        lastPullToken = null
         ProviderCredentialSync.clearAccountState()
         TrackingSourceSettingsSyncService.clearAccountState()
     }
@@ -105,6 +197,21 @@ object ProfileSettingsSync {
             if (ProfileRepository.activeProfileId != profileId) {
                 log.d { "pull(profileId=$profileId) — skipped because profile is no longer active" }
                 return@withLock false
+            }
+            // The identity every settle in this pull is stamped with — captured BEFORE the first
+            // suspension so a mid-pull account switch can never settle the new user's gate.
+            val pullToken = currentSettingsPullToken(profileId) ?: run {
+                log.d { "pull(profileId=$profileId) — skipped: no signed-in non-anonymous account" }
+                return@withLock false
+            }
+            // A skip signature is only meaningful for the identity whose apply produced it: left
+            // global, a stale value could (on an exact composite-signature collision) swallow a
+            // DIFFERENT profile's deferred push in maybeRetryGatedPush (Codex 2026-08-28 P2
+            // round 6). Dropping it on identity change is free — the old echo emission would
+            // compute the new profile's signature and never match it anyway.
+            if (lastPullToken != pullToken) {
+                skipNextPushSignature = null
+                lastPullToken = pullToken
             }
             isServerSyncInFlight = true
             try {
@@ -118,7 +225,7 @@ object ProfileSettingsSync {
                 if (remoteJson == null) {
                     // BUG-20: no blob under our own namespace yet — one-shot migration seed from
                     // the legacy scope(s) this client used to share with other apps.
-                    return@withLock seedFromLegacyPlatformsLocked(profileId)
+                    return@withLock seedFromLegacyPlatformsLocked(profileId, pullToken)
                 }
 
                 isApplyingRemoteBlob = true
@@ -139,6 +246,7 @@ object ProfileSettingsSync {
                     // short-circuit.
                     val remoteSignature = buildSignature(withoutBlobCredentials(remoteBlob))
                     if (remoteSignature == localSignature && !blobCarriesCredentials(remoteBlob)) {
+                        markInitialPullComplete(pullToken)
                         log.d { "pull(profileId=$profileId) — remote matches local" }
                         return@withLock false
                     }
@@ -153,6 +261,7 @@ object ProfileSettingsSync {
                     isApplyingRemoteBlob = false
                 }
 
+                markInitialPullComplete(pullToken)
                 log.i { "pull(profileId=$profileId) — applied remote settings blob" }
                 true
             } catch (error: Exception) {
@@ -180,11 +289,19 @@ object ProfileSettingsSync {
      * carry), and immediately writes the seeded state to our OWN namespace so later pulls find
      * it there. The legacy scope is never written: other clients keep their blob untouched.
      */
-    private suspend fun seedFromLegacyPlatformsLocked(profileId: Int): Boolean {
+    private suspend fun seedFromLegacyPlatformsLocked(profileId: Int, pullToken: SettingsPullToken): Boolean {
+        // A legacy fetch that THREW is inconclusive — that namespace may hold a migratable blob we
+        // simply couldn't reach, and settling anyway would let the observer create our own-platform
+        // blob from defaults, after which pulls never consult the legacy namespace again and the
+        // user's legacy settings are stranded (Codex 2026-08-28 P1). A blob that fetched fine but
+        // is undecodable / features-less is NOT inconclusive: it is definitively unusable and will
+        // be on every retry, so it must not hold the gate closed forever.
+        var legacyLookupInconclusive = false
         for (legacyPlatform in SyncPlatformProvider.legacySettingsPlatforms) {
             val legacyJson = runCatching { fetchRemoteSettingsJson(profileId, legacyPlatform) }
                 .getOrElse { error ->
                     log.e(error) { "pull(profileId=$profileId) — legacy '$legacyPlatform' fetch FAILED" }
+                    legacyLookupInconclusive = true
                     null
                 } ?: continue
             if (ProfileRepository.activeProfileId != profileId) return false
@@ -227,10 +344,20 @@ object ProfileSettingsSync {
                     log.e(error) { "pull(profileId=$profileId) — seed push to '${SyncPlatformProvider.platform}' FAILED" }
                 }
 
+            markInitialPullComplete(pullToken)
             log.i { "pull(profileId=$profileId) — seeded '${SyncPlatformProvider.platform}' settings from legacy '$legacyPlatform'" }
             return true
         }
 
+        if (legacyLookupInconclusive) {
+            log.w { "pull(profileId=$profileId) — legacy lookup inconclusive; gate stays closed, retried next sync" }
+            return false
+        }
+        // Fresh-account case: no blob under our own namespace and none under any legacy
+        // namespace either — this account's settings namespace is provably empty, not unread.
+        // Without marking here a brand-new account could never pass the observer's gate and
+        // would be unable to push settings for the very first time.
+        markInitialPullComplete(pullToken)
         log.i { "pull(profileId=$profileId) — no remote settings blob found" }
         return false
     }
@@ -280,6 +407,30 @@ object ProfileSettingsSync {
                 .collect { signature ->
                     val authState = AuthRepository.state.value
                     if (authState !is AuthState.Authenticated || authState.isAnonymous) return@collect
+                    // Addon-wipe class guard (docs/addon-wipe-investigation-2026-08-28.md): the profile fan-out
+                    // mutates these 17 flows automatically, so an emission arriving before this (user, profile)'s
+                    // first settled pull would full-replace the account's blob with unhydrated local defaults.
+                    val token = currentSettingsPullToken() ?: return@collect
+                    if (!hasCompletedInitialPull(token)) {
+                        // Remembered, not dropped: `distinctUntilChanged` never re-emits this
+                        // signature, so a genuine pre-settle user edit is owed a push once the
+                        // pull settles — see maybeRetryGatedPush().
+                        pendingGatedPushSignature = signature
+                        // Re-check AFTER recording (Codex 2026-08-28 P2 round 6): settling can
+                        // race this collector between the gate read above and the record — the
+                        // marker's retry would have found no pending yet. Either the marker sees
+                        // the pending, or this re-check sees the settle; both firing just makes
+                        // the second a no-op on the cleared pending. On a settled re-check the
+                        // emission goes through the token-pinned retry, NOT the fall-through path
+                        // below — the settling pull can still hold `isServerSyncInFlight`, whose
+                        // bailout would drop the pending this branch just recorded (round 7).
+                        if (hasCompletedInitialPull(token)) {
+                            maybeRetryGatedPush(token)
+                        } else {
+                            log.d { "push — deferred until initial settings pull settles for profile ${token.profileId}" }
+                        }
+                        return@collect
+                    }
                     if (isApplyingRemoteBlob || isServerSyncInFlight) return@collect
                     if (signature == skipNextPushSignature) {
                         skipNextPushSignature = null
@@ -641,3 +792,10 @@ private data class SettingsBlobResponse(
     @SerialName("settings_json") val settingsJson: JsonObject? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
 )
+
+/// A settings push may only run when the CURRENT (user, profile) identity has a settled pull
+/// recorded — non-null current token (authenticated, non-anonymous) matching the settled one.
+internal fun settingsPushAllowed(
+    settledToken: SettingsPullToken?,
+    currentToken: SettingsPullToken?,
+): Boolean = currentToken != null && settledToken == currentToken
