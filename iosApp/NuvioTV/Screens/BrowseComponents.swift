@@ -226,7 +226,24 @@ enum PinnedRowTitle {
     nonisolated static func slide(_ proxy: GeometryProxy,
                                   artworkHeight: CGFloat? = nil,
                                   cardTopReach: CGFloat = Theme.Size.heroPinnedRowTopPad) -> CGFloat {
-        guard let visible = visibleBounds(proxy) else { return 0 }
+        slideMeasurement(proxy, artworkHeight: artworkHeight, cardTopReach: cardTopReach) ?? 0
+    }
+
+    /// Optional-returning twin of `slide` (Wave 4 item 6, `docs/steven-batch-plan-2026-08-29.md`):
+    /// `slide()` collapses "couldn't measure" (no enclosing scroll view resolved yet — e.g. mid a
+    /// mixed-shape row's lazy relayout) and "measured, and the true slide is 0" into the same `0`
+    /// return, which is correct for `slide()`'s two callers — the pre-seed draw-time branch (no
+    /// prior state to hold, so 0 is the right default) and the probe (a blank measurement is
+    /// already dropped by its own `guard`). It is NOT correct for `PinnedRowTitleTracking`'s
+    /// `onGeometryChange`: that call site persists whatever it's handed into `@State`, so a
+    /// transient nil read there un-parks a title that was correctly slid — a snap-then-flash the
+    /// tester's scroll-right-then-up repro would see as the title jumping onto the clip edge and
+    /// back. This variant lets that one caller tell the two cases apart and hold the previous
+    /// value on nil instead of overwriting it with a false 0.
+    nonisolated static func slideMeasurement(_ proxy: GeometryProxy,
+                                             artworkHeight: CGFloat? = nil,
+                                             cardTopReach: CGFloat = Theme.Size.heroPinnedRowTopPad) -> CGFloat? {
+        guard let visible = visibleBounds(proxy) else { return nil }
         // The BINDING cap stays the absolute one (Codex 2026-08-29 P1): any cap below the rest's
         // real minY trades intrusion for CLIPPING — the title parks partially off-screen, the
         // original BUG-37 complaint class — and a settled rest deep enough to intrude is itself
@@ -293,8 +310,16 @@ private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
     /// practice), but a mixed-shape row can also change it on its own — a synced collection edit
     /// that swaps a poster folder for a square one changes the row's shortest tile without touching
     /// Poster Style — and the seeded offset must not outlive the clamp it was measured under.
+    /// Wave 4 item 4 (device round, `docs/steven-batch-plan-2026-08-29.md`): `rowKey` joins the
+    /// identity too. Every pinned title used to share one gate id (this struct's own type
+    /// identity), which is fine inside a `ForEach` scoped by element identity but not between
+    /// CONDITIONAL SIBLINGS — `ContinueWatchingRow` and `UpcomingRow` sit as `if`/conditional
+    /// branches in Home's `LazyVStack`, and when one appears or disappears SwiftUI can re-match
+    /// the surviving branch's subtree onto the other's old identity, migrating one row's seeded
+    /// `slide`/`hasSeeded` state onto a title that was never actually mid-slide. Folding `rowKey`
+    /// into the id scopes the reset to the row it actually belongs to.
     private var styleKey: String {
-        "\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-title\(style.showTitle)-art\(artworkHeight ?? -1)"
+        "\(rowKey)-\(style.width)x\(style.height)-land\(style.landscapeCatalogRows)-title\(style.showTitle)-art\(artworkHeight ?? -1)"
     }
 
     func body(content: Content) -> some View {
@@ -355,9 +380,21 @@ private struct PinnedRowTitleTracking: ViewModifier {
                     ? slide
                     : PinnedRowTitle.slide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach))
             }
-            .onGeometryChange(for: CGFloat.self, of: { proxy in
-                PinnedRowTitle.slide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach)
+            .onGeometryChange(for: CGFloat?.self, of: { proxy in
+                PinnedRowTitle.slideMeasurement(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach)
             }, action: { newValue in
+                // Wave 4 item 6: a nil reading is "couldn't measure" (the enclosing scroll view
+                // hasn't resolved this pass — e.g. a mixed-shape row's lazy relayout mid-settle),
+                // never "measured 0". Assigning 0 here would un-park a correctly-slid title for a
+                // frame and then heal back — the clipped-title flash class. Hold `slide` at
+                // whatever it already is and wait for the next real measurement.
+                //
+                // This must NOT touch `hasSeeded`: if a nil precedes the very first real
+                // measurement, that measurement is still the FIRST one this modifier has ever
+                // seen and must still take the seed branch below (store directly, no animation) —
+                // skipping the whole action on nil, rather than only skipping the assignment,
+                // is what keeps that guarantee for free.
+                guard let newValue else { return }
                 // Seeding must be recorded even when the first measurement equals the initial 0 —
                 // otherwise the first REAL change would take the unanimated seed path and snap,
                 // which is the exact defect this modifier exists to remove.

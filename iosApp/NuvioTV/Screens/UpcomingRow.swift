@@ -62,7 +62,12 @@ struct UpcomingRow: View {
                         .font(Theme.Font.sectionTitle)
                         .foregroundStyle(Theme.Palette.textPrimary)
                         .shadow(color: .black.opacity(0.7), radius: 8, y: 2)
-                        .pinnedRowTitleTracking(rowKey: "upcoming")
+                        // Wave 4 item 5: a fixed-height LandscapeCard shelf can state its artwork
+                        // height directly — Theme.Size.landscapeHeight is LandscapeCard's own
+                        // default `height` param, which this row never overrides. Cosmetically
+                        // this only makes the probe's `cap=`/`intr=` readings truthful for this
+                        // row (the cap itself stays PROBE-ONLY — see `PinnedRowTitle.slide`).
+                        .pinnedRowTitleTracking(rowKey: "upcoming", artworkHeight: Theme.Size.landscapeHeight)
                         .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                         .allowsHitTesting(false)
                 }

@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UIKit
 import SharedCore
 // Kotlin's `Collection` model collides with Swift's stdlib `Collection` protocol, and plain
 // `SharedCore.Collection` doesn't work either (the framework also exports a *class* named
@@ -79,6 +80,74 @@ struct CollectionRowView: View {
             .min() ?? style.height
     }
 
+    /// Wave 4 item 2 (the source fix; tester repro: scroll a mixed-shape collection row right,
+    /// then back up — the pinned title parks ON the card artwork, worst at Large).
+    ///
+    /// `LazyHStack` sizes itself to its REALIZED subviews only. This row deliberately mixes
+    /// shapes — poster folders are `1.5 × style.width` tall, square/landscape folders are only
+    /// `style.width` tall (`FolderTile.artworkHeight` takes that height from the row's width dial
+    /// on purpose — see that function's own comment) — so scrolling past the last poster-shaped
+    /// tile drops the stack's natural height by up to `0.5 × style.width` (≈134pt at Large), then
+    /// regrows it scrolling back. The up-reveal's settle target is computed against whatever
+    /// height happened to be realized at that moment, so a rest taken mid this collapse/regrow
+    /// settles against stale geometry and the overlaid title parks on the artwork instead of
+    /// above it.
+    ///
+    /// The fix: float the stack's height on a floor that does NOT depend on which tiles are
+    /// currently realized — the max artwork height over `collection.folders`, the MODEL array
+    /// (scroll-stable, unlike the `LazyHStack`'s realized children), plus the fixed vertical
+    /// chrome every realized subview carries around its own artwork inside this stack:
+    ///
+    ///     minHeight = maxArtworkHeight                  // tallest folder's own artwork
+    ///               + Theme.Spacing.sm                  // FolderTile's VStack spacing between
+    ///                                                    //   its artwork ZStack and its caption
+    ///               + folderCaptionHeight                // Theme.Font.cardTitle (.caption2)
+    ///                                                    //   single-line caption — see that
+    ///                                                    //   constant's own comment for the 23pt
+    ///               + cardTopReach + cardBottomReach     // the reach padding: NOT inside
+    ///                                                    //   FolderTile — CollectionRowView adds
+    ///                                                    //   it OUTSIDE the tile, directly on the
+    ///                                                    //   NavigationLink button label, so it
+    ///                                                    //   is still part of what the LazyHStack
+    ///                                                    //   would naturally realize as height
+    ///
+    /// The caption term is a constant worst case, not a per-folder measurement: every folder tile
+    /// carries the same VStack spacing and, whenever it's showing plain text rather than an
+    /// already-loaded title logo, the same single-line caption. Charging it even for a tile
+    /// currently mid-logo-load only makes the floor very slightly taller than that one tile's own
+    /// realized height — `minHeight` absorbs that as harmless extra room below the shelf, never a
+    /// clip. Classic mode (`cardTopReach == 0`) gets the same floor for free: it can only ever
+    /// GROW the shelf up to its tallest tile's natural size, never shrink one, so it is a no-op
+    /// wherever classic already rendered correctly.
+    private var shelfMinHeight: CGFloat {
+        // PER-FOLDER floor (Codex 2026-08-29 P2 ×2): the max of each folder's artwork PLUS that
+        // folder's OWN caption chrome — a caption on a shorter tile must not be billed to the
+        // tallest artwork (no rendered child has that combined height, and the oversized frame
+        // floats classic mode's centered children), and an all-hidden row gets no caption term
+        // at all. The caption height comes from live type metrics, not a constant: the caption
+        // is semantic `.caption2`, which grows under Larger Text — a fixed 23pt floor would sit
+        // below the realized tile and the LazyHStack would still collapse on recycle, the exact
+        // instability this frame exists to prevent.
+        // Alignment note (Codex 2026-08-29 P2 round 3): the floor is applied `.top`-aligned in
+        // BOTH modes. It can legitimately exceed every rendered child — a folder with
+        // hideTitle=false whose title LOGO loads drops its text caption, a state unknowable at
+        // layout time — and top alignment turns that overshoot into stable bottom padding
+        // instead of a centered mid-frame float that jumps when the logo arrives.
+        let captionChrome = Theme.Spacing.sm + Self.folderCaptionHeight
+        let maxTileHeight = collection.folders
+            .map { FolderTile.artworkHeight(for: $0, style: style) + ($0.hideTitle ? 0 : captionChrome) }
+            .max() ?? style.height
+        return maxTileHeight + cardTopReach + cardBottomReach
+    }
+
+    /// `Theme.Font.cardTitle` (`.caption2`) single-line height under the CURRENT content size
+    /// category — 23pt at default scale (Theme.swift's own record for this style), taller under
+    /// Larger Text. `FolderTile`'s caption uses this style with `lineLimit(1)` and no extra
+    /// vertical padding.
+    private static var folderCaptionHeight: CGFloat {
+        UIFont.preferredFont(forTextStyle: .caption2).lineHeight.rounded(.up)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see
@@ -116,6 +185,12 @@ struct CollectionRowView: View {
                         .focused($focusedFolderId, equals: folder.id)
                     }
                 }
+                // Wave 4 item 2: floor the stack's height independent of scroll position — see
+                // `shelfMinHeight`'s own comment for the collapse/regrow mechanism this fixes and
+                // the arithmetic. Alignment matches the stack's own, so the extra room a shorter
+                // realized frame needs to reach the floor distributes the same way the tiles
+                // themselves are already aligned (top in pinned mode, center in classic).
+                .frame(minHeight: shelfMinHeight, alignment: .top)
                 // Always positive — the reach lives inside the buttons (see CatalogRowView).
                 // Pinned TOP matches the catalog/CW shelves' 24pt: `heroPinnedRowTitleInset`
                 // assumes a 24 + reach band, and the tighter 12pt here left the overlaid title

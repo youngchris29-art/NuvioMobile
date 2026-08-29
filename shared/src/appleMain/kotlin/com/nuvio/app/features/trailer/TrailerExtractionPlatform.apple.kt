@@ -142,8 +142,24 @@ internal actual object TrailerExtractionPlatform {
         // the common case once innertube stops returning hlsManifestUrl and the muxed progressive
         // is capped at 360p — expose it so tvOS can repackage a local byte-range HLS playlist.
         // Swift falls back to progressiveUrl if the repackage fails, so this is advisory.
+        //
+        // F1 (beta.16 regression fix): `>=`, not `>` — a repack pair that TIES the manifest
+        // height must still win. A repack is a guaranteed muxed A/V stream served from our own
+        // loopback; a pinned HLS variant playlist is video-only (YouTube masters reference audio
+        // via a sibling #EXT-X-MEDIA AUDIO group the extractor doesn't parse) and fragile
+        // (UA-bound URLs, short expiry) — a gamble even when its height matches. beta.15's
+        // android_vr client never returned a manifest at all (LOGIN_REQUIRED), so every trailer
+        // took the repack path and this tie could never occur; beta.16's visionos swap started
+        // returning 1080p manifests that tied the android client's 1080p avc pair, the strict `>`
+        // knocked repack out, and playback pinned to the silent, fragile variant path for nearly
+        // every trailer.
+        // Tie-break scope (Codex 2026-08-29 P2): `>=` applies ONLY when the competing fallback is
+        // an HLS MANIFEST (the silent, fragile path the beta.16 regression pinned playback to).
+        // A tie against a DIRECT muxed progressive MP4 keeps the strict `>` — that stream already
+        // carries audio, and repacking it buys nothing but two sidx fetches and loopback setup.
         val repackWorthwhile = bestAvcVideo != null && bestM4aAudio != null &&
-            bestAvcVideo.height > progressiveHeight
+            (if (bestCombinedIsManifest) bestAvcVideo.height >= progressiveHeight
+             else bestAvcVideo.height > progressiveHeight)
         if (bestAvcVideo != null && bestM4aAudio != null) {
             trailerDebugLog(
                 "repack decision: avc=${bestAvcVideo.height}p vs progressive=${progressiveHeight}p " +

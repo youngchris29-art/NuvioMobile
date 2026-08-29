@@ -2,8 +2,12 @@ package com.nuvio.app.features.trailer
 
 import co.touchlab.kermit.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -18,7 +22,36 @@ internal const val TRAILER_REQUEST_TIMEOUT_MS = 20_000L
  * it as the default for callers that don't impose a shorter deadline of their own — BUG-46/B4.
  */
 internal const val TRAILER_EXTRACTOR_TIMEOUT_MS = 30_000L
-private const val PREFERRED_SEPARATE_CLIENT = "visionos"
+
+// F3 (beta.16 hotfix): an ORDERED chain, not a single client. android_vr was observed
+// LOGIN_REQUIRED on one network (08-27 rig logs) but works on others; visionos works where
+// android_vr is gated, but its HLS manifests are what tripped the F1/F2 silent-playback
+// regression in the first place. Neither client alone is safe to hardcode as the only
+// separate-A/V source, so [pickBestForClient] walks this list in order — the first client
+// that contributed ANY candidates wins outright — before falling back to pooling across all
+// clients. Costs one extra innertube POST when the first client fails or is empty.
+private val PREFERRED_SEPARATE_CLIENTS = listOf("android_vr", "visionos")
+
+// Per-request bounds for the concurrent innertube/manifest batches (Codex 2026-08-29 P1):
+// awaitAll() completes when the SLOWEST request does, and each HTTP call otherwise allows 20s
+// while the inline card's whole extraction deadline is 15s — one stalled client would still time
+// the caller out with healthy responses in hand. Bounding every request keeps the batch's worst
+// case at the bound itself, safely inside the deadline. The two phases run SEQUENTIALLY and
+// share that deadline with the watch-page fetch and the reachability probes (Codex 2026-08-29
+// P1 round 5), so their bounds are budgeted to sum well under it: 5s + 4s = 9s worst case,
+// leaving ~6s of the tvOS caller's 15s for the preamble and probes. A healthy endpoint answers
+// in well under 2s; only a genuinely stalled one ever meets these bounds.
+//
+// Platform honesty (Codex 2026-08-29 P2, declined-documented): withTimeoutOrNull can only
+// interrupt a COOPERATIVE call. On tvOS — the platform that ships this path — the Darwin Ktor
+// client suspends and cancels properly, so the bound holds. On JVM/Android the actual is a
+// blocking call the wrapper cannot interrupt, so the bound degrades to the platform's own ~20s
+// ceiling — still strictly better than the pre-fix serial loop (ONE stall caps the whole
+// concurrent batch, instead of stalls summing across clients). Plumbing a per-request timeout
+// through the expect/actual HTTP seam is the follow-up if a mobile frontend ever ships this
+// extractor.
+private const val PLAYER_FETCH_TIMEOUT_MS = 5_000L
+private const val MANIFEST_FETCH_TIMEOUT_MS = 4_000L
 
 private val VIDEO_ID_REGEX = Regex("^[a-zA-Z0-9_-]{11}$")
 private val API_KEY_REGEX = Regex("\"INNERTUBE_API_KEY\":\"([^\"]+)\"")
@@ -107,6 +140,13 @@ internal data class HlsVariantCandidate(
     val bandwidth: Long,
     /** Raw VIDEO-RANGE attribute value, or null when the tag omits it. */
     val videoRange: String?,
+    /**
+     * Raw AUDIO attribute value (the `#EXT-X-MEDIA` group-id this variant's audio lives in), or
+     * null when the tag omits it. F2 (beta.16 regression): a non-null group means the variant
+     * URL itself is VIDEO-ONLY — the audio is a sibling rendition this extractor never parses —
+     * so [resolvePlaybackUrl] must hand back the master manifest instead.
+     */
+    val audioGroup: String? = null,
 )
 
 /**
@@ -154,9 +194,51 @@ internal fun selectBestHlsVariant(candidates: List<HlsVariantCandidate>): HlsVar
     return bestOf(sdrOnly) ?: bestOf(candidates)
 }
 
+/**
+ * F2 (beta.16 regression fix): resolves the playback URL for a picked HLS variant. A variant
+ * with a separate AUDIO group ([HlsVariantCandidate.audioGroup] non-null) is video-only when
+ * played directly — the audio lives in a sibling `#EXT-X-MEDIA` rendition this extractor never
+ * parses, which is why trailers went silent once the visionos client swap made manifests (and
+ * therefore this variant-only path) common. Handing AVPlayer the MASTER manifest instead keeps
+ * the audio rendition — AVPlayer then does its own ABR over the master.
+ *
+ * Tradeoff, accepted: master-URL ABR may roam variants, including any HDR ones on an HDR
+ * upload, which could reach the non-EDR `AVPlayerLayer` washed out (see [selectBestHlsVariant]).
+ * Accepted because (a) F1 makes this path rare — a repack tie now wins over a pinned variant —
+ * and (b) audio beats a possible washout; the SDR preference in [selectBestHlsVariant] still
+ * shapes which manifest wins the cross-client pick, it just no longer pins AVPlayer to a single
+ * segment set once a separate audio group is involved.
+ */
+internal fun resolvePlaybackUrl(winner: HlsVariantCandidate, masterUrl: String): String {
+    return if (winner.audioGroup != null) masterUrl else winner.url
+}
+
 private val JSON = Json { ignoreUnknownKeys = true }
 
 private val CLIENTS = listOf(
+    // F3 (beta.16 hotfix): restored verbatim from pre-swap history (commit dc8281c2, the
+    // parent of a6fb2aed which replaced this with visionos) — see PREFERRED_SEPARATE_CLIENTS
+    // above for why both clients are kept.
+    YouTubeClient(
+        key = "android_vr",
+        id = "28",
+        version = "1.56.21",
+        userAgent = "com.google.android.apps.youtube.vr.oculus/1.56.21 " +
+            "(Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1) gzip",
+        context = jsonObjectOf(
+            "clientName" to "ANDROID_VR",
+            "clientVersion" to "1.56.21",
+            "deviceMake" to "Oculus",
+            "deviceModel" to "Quest 3",
+            "osName" to "Android",
+            "osVersion" to "12",
+            "platform" to "MOBILE",
+            "androidSdkVersion" to 32,
+            "hl" to "en",
+            "gl" to "US",
+        ),
+        priority = 0,
+    ),
     YouTubeClient(
         key = "visionos",
         id = "101",
@@ -173,7 +255,7 @@ private val CLIENTS = listOf(
             "hl" to "en",
             "gl" to "US",
         ),
-        priority = 0,
+        priority = 1,
     ),
     YouTubeClient(
         key = "android",
@@ -190,7 +272,7 @@ private val CLIENTS = listOf(
             "hl" to "en",
             "gl" to "US",
         ),
-        priority = 1,
+        priority = 2,
     ),
     YouTubeClient(
         key = "ios",
@@ -207,7 +289,7 @@ private val CLIENTS = listOf(
             "hl" to "en",
             "gl" to "US",
         ),
-        priority = 2,
+        priority = 3,
     ),
 )
 
@@ -259,15 +341,32 @@ class InAppYouTubeExtractor {
         val adaptiveAudio = mutableListOf<StreamCandidate>()
         val manifestUrls = mutableListOf<Triple<String, Int, String>>()
 
-        for (client in CLIENTS) {
-            runCatching {
-                val playerResponse = fetchPlayerResponse(
-                    apiKey = apiKey,
-                    videoId = videoId,
-                    client = client,
-                    visitorData = watchConfig.visitorData,
-                )
-
+        // Fetch every client's player response CONCURRENTLY (Codex 2026-08-29 P1): the chain is
+        // walked serially at PICK time, but fetching serially would let one stalled client — an
+        // android_vr that hangs instead of failing fast — consume the inline card's 15s deadline
+        // before visionos was ever asked, defeating the fallback the chain exists for. A failed
+        // fetch contributes nothing (same as runCatching before); results are PROCESSED in
+        // CLIENTS order so candidate-list contents stay deterministic.
+        val fetchedResponses = coroutineScope {
+            CLIENTS.map { client ->
+                async {
+                    withTimeoutOrNull(PLAYER_FETCH_TIMEOUT_MS) {
+                        runCatching {
+                            fetchPlayerResponse(
+                                apiKey = apiKey,
+                                videoId = videoId,
+                                client = client,
+                                visitorData = watchConfig.visitorData,
+                            )
+                        }.onFailure {
+                            trailerDebugLog("client=${client.key} REQUEST FAILED: ${it.message?.take(80)}")
+                        }.getOrNull()?.let { client to it }
+                    }
+                }
+            }.awaitAll()
+        }
+        for ((client, playerResponse) in fetchedResponses.filterNotNull()) {
+            run {
                 val streamingData = playerResponse.objectValue("streamingData")
                 if (streamingData == null) {
                     val status = playerResponse.objectValue("playabilityStatus")
@@ -276,7 +375,7 @@ class InAppYouTubeExtractor {
                             "(playability=${status?.stringValue("status")} " +
                             "reason=${status?.stringValue("reason")?.take(60)})"
                     )
-                    return@runCatching
+                    return@run
                 }
                 val hlsManifestUrl = streamingData.stringValue("hlsManifestUrl")
                 trailerDebugLog(
@@ -383,8 +482,6 @@ class InAppYouTubeExtractor {
                         )
                     }
                 }
-            }.onFailure {
-                trailerDebugLog("client=${client.key} REQUEST FAILED: ${it.message?.take(80)}")
             }
         }
 
@@ -392,13 +489,30 @@ class InAppYouTubeExtractor {
             return null
         }
 
+        // Manifest GETs are fetched/parsed CONCURRENTLY for the same reason the player POSTs are
+        // (Codex 2026-08-29 P2): with two preferred clients both returning manifests, a stalled
+        // android_vr manifest GET at the front of a serial loop would eat the inline card's
+        // deadline before visionos's healthy manifest was ever read. Results are REDUCED in the
+        // original list order so the pick stays deterministic.
+        val parsedManifests = coroutineScope {
+            manifestUrls.map { (clientKey, priority, manifestUrl) ->
+                async {
+                    val variant = withTimeoutOrNull(MANIFEST_FETCH_TIMEOUT_MS) {
+                        runCatching { parseHlsManifest(manifestUrl) }
+                            .onFailure { trailerDebugLog("manifest client=$clientKey FETCH/PARSE FAILED: ${it.message?.take(80)}") }
+                            .getOrNull()
+                    }
+                    Triple(clientKey, priority, manifestUrl) to variant
+                }
+            }.awaitAll()
+        }
         var bestManifest: ManifestCandidate? = null
-        for ((clientKey, priority, manifestUrl) in manifestUrls) {
-            runCatching {
-                val variant = parseHlsManifest(manifestUrl)
+        for ((meta, variant) in parsedManifests) {
+            val (clientKey, priority, manifestUrl) = meta
+            run {
                 if (variant == null) {
                     trailerDebugLog("manifest client=$clientKey parsed but no variants")
-                    return@runCatching
+                    return@run
                 }
                 trailerDebugLog("manifest client=$clientKey top variant ${variant.width}x${variant.height}")
                 val candidate = ManifestCandidate(
@@ -424,8 +538,6 @@ class InAppYouTubeExtractor {
                 ) {
                     bestManifest = candidate
                 }
-            }.onFailure {
-                trailerDebugLog("manifest client=$clientKey FETCH/PARSE FAILED: ${it.message?.take(80)}")
             }
         }
 
@@ -435,22 +547,22 @@ class InAppYouTubeExtractor {
                 "progressive=${bestProgressive?.height ?: "none"} " +
                 "(manifests collected=${manifestUrls.size})"
         )
-        val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENT)
-        val bestAudio = pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENT)
+        val bestVideo = pickBestForClient(adaptiveVideo, PREFERRED_SEPARATE_CLIENTS)
+        val bestAudio = pickBestForClient(adaptiveAudio, PREFERRED_SEPARATE_CLIENTS)
 
         // AVPlayer-decodable demuxed pair for local HLS repackaging (SABR fallback): H.264 fMP4
-        // video + AAC fMP4 audio, both with init/index ranges. Audio prefers the video's client so
-        // the pair shares one CDN session shape.
-        val bestAvcVideo = pickBestForClient(
-            adaptiveVideo.filter { it.ext == "mp4" && it.codecs.startsWith("avc1") && it.hasSegmentRanges },
-            PREFERRED_SEPARATE_CLIENT,
-        )
-        val bestM4aAudio = bestAvcVideo?.let { video ->
-            pickBestForClient(
-                adaptiveAudio.filter { it.ext == "m4a" && it.codecs.startsWith("mp4a") && it.hasSegmentRanges },
-                video.client,
-            )
-        }
+        // video + AAC fMP4 audio, both with init/index ranges, from ONE client so the pair shares
+        // a CDN session shape. The pair is chosen as a PAIR (Codex 2026-08-29 P2 round 6): the
+        // first preferred client offering BOTH tracks wins — picking the video independently let
+        // an android_vr with AVC-but-no-M4A poison the pair and knock repack out while visionos
+        // held a complete one. Falls back to any single client (by candidate priority) that has
+        // both.
+        val repackVideos = adaptiveVideo.filter { it.ext == "mp4" && it.codecs.startsWith("avc1") && it.hasSegmentRanges }
+        val repackAudios = adaptiveAudio.filter { it.ext == "m4a" && it.codecs.startsWith("mp4a") && it.hasSegmentRanges }
+        val pairClient = (PREFERRED_SEPARATE_CLIENTS + (repackVideos.map { it.client } + repackAudios.map { it.client }).distinct())
+            .firstOrNull { key -> repackVideos.any { it.client == key } && repackAudios.any { it.client == key } }
+        val bestAvcVideo = pairClient?.let { key -> sortCandidates(repackVideos.filter { it.client == key }).firstOrNull() }
+        val bestM4aAudio = pairClient?.let { key -> sortCandidates(repackAudios.filter { it.client == key }).firstOrNull() }
         trailerDebugLog(
             "repack candidates: avcVideo=${bestAvcVideo?.let { "${it.height}p ${it.codecs} (${it.client})" } ?: "none"} " +
                 "m4aAudio=${bestM4aAudio?.let { "${it.codecs} (${it.client})" } ?: "none"}"
@@ -548,6 +660,9 @@ class InAppYouTubeExtractor {
                 height = height,
                 bandwidth = bandwidth,
                 videoRange = attrs["VIDEO-RANGE"],
+                // F2: the variant's AUDIO attribute names the #EXT-X-MEDIA group its audio
+                // lives in — non-null means the variant URL itself is video-only.
+                audioGroup = attrs["AUDIO"],
             )
         }
 
@@ -558,7 +673,10 @@ class InAppYouTubeExtractor {
             bestVariant.videoRange.equals("SDR", ignoreCase = true)
 
         return ManifestBestVariant(
-            url = bestVariant.url,
+            // F2: resolvePlaybackUrl swaps in the master manifest URL when the winning variant
+            // has a separate audio group, so AVPlayer keeps the audio rendition. Height/bandwidth
+            // metadata below still describes the picked variant, not the master.
+            url = resolvePlaybackUrl(bestVariant, manifestUrl),
             width = bestVariant.width,
             height = bestVariant.height,
             bandwidth = bestVariant.bandwidth,
@@ -601,7 +719,8 @@ class InAppYouTubeExtractor {
         return WatchConfig(apiKey = apiKey, visitorData = visitorData)
     }
 
-    private fun parseHlsAttributeList(line: String): Map<String, String> {
+    /** `internal` (was `private`) so tests can pin AUDIO/VIDEO-RANGE attribute parsing directly. */
+    internal fun parseHlsAttributeList(line: String): Map<String, String> {
         val index = line.indexOf(':')
         if (index == -1) return emptyMap()
 
@@ -693,12 +812,29 @@ class InAppYouTubeExtractor {
         )
     }
 
-    private fun pickBestForClient(items: List<StreamCandidate>, clientKey: String): StreamCandidate? {
-        val sameClient = items.filter { it.client == clientKey }
-        if (sameClient.isNotEmpty()) {
-            return sortCandidates(sameClient).firstOrNull()
+    /**
+     * Picks the best candidate from [items], preferring each client key in [clientKeys] in
+     * order — the first client that CONTRIBUTED any candidate wins outright, even if a
+     * later-listed client's candidates would score higher; only when NONE of [clientKeys]
+     * contributed anything does this fall back to pooling the best across all clients.
+     * F3 (beta.16 hotfix): with a single hardcoded preferred client, that client being gated
+     * (LOGIN_REQUIRED, etc.) on some networks was a single point of failure for the whole
+     * separate-A/V path; an ordered chain gives it a fallback. `internal` so it's directly
+     * testable with constructed [StreamCandidate]s.
+     */
+    internal fun pickBestForClient(items: List<StreamCandidate>, clientKeys: List<String>): StreamCandidate? {
+        for (clientKey in clientKeys) {
+            val sameClient = items.filter { it.client == clientKey }
+            if (sameClient.isNotEmpty()) {
+                return sortCandidates(sameClient).firstOrNull()
+            }
         }
         return sortCandidates(items).firstOrNull()
+    }
+
+    /** Single-client convenience overload — e.g. pairing audio with one specific video's client. */
+    internal fun pickBestForClient(items: List<StreamCandidate>, clientKey: String): StreamCandidate? {
+        return pickBestForClient(items, listOf(clientKey))
     }
 
     private fun containerPreference(ext: String): Int {
