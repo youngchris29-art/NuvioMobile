@@ -5,6 +5,7 @@ import com.nuvio.app.features.collection.Collection
 import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
+import co.touchlab.kermit.Logger
 import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
@@ -99,6 +100,8 @@ private data class StoredHomeCatalogSettingsPayload(
 object HomeCatalogSettingsRepository {
     const val HERO_SOURCE_SELECTION_LIMIT = 2
 
+    private val log = Logger.withTag("HomeCatalogSettingsRepository")
+
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -155,7 +158,20 @@ object HomeCatalogSettingsRepository {
 
     fun syncCatalogs(addons: List<ManagedAddon>) {
         ensureLoaded()
-        definitions = buildHomeCatalogDefinitions(addons)
+        val incomingDefinitions = buildHomeCatalogDefinitions(addons)
+        if (!shouldReplaceCatalogDefinitions(definitions.size, incomingDefinitions.size)) {
+            // Deliberate tradeoff (Codex 2026-08-29, declined twice): yes, this also rejects the
+            // one LEGITIMATE empty — the user removing/disabling their last addon mid-session,
+            // whose dead rows then linger in Home Rows. But `definitions` is session-scoped
+            // in-memory state: the very next launch starts empty and shows the true empty state,
+            // while ACCEPTING empties here reopens the blank-pane clobber this guard exists for
+            // (no caller can distinguish "last addon removed" from "manifests not fetched yet"
+            // without new cross-layer plumbing). Stale-for-a-session beats blank-forever; profile
+            // switches and wipes clear through onProfileChanged()/clearLocalState() as before.
+            log.w { "syncCatalogs() — ignored an empty definition set; keeping ${definitions.size} known catalogs (transient addon emission must not blank Home Rows)" }
+            return
+        }
+        definitions = incomingDefinitions
         collectionDefinitions = buildCollectionDefinitions(CollectionRepository.collections.value)
         if (definitions.isEmpty() && collectionDefinitions.isEmpty()) {
             publish()
@@ -702,3 +718,10 @@ internal fun buildCollectionDefinitions(collections: List<Collection>): List<Col
             isPinnedToTop = collection.pinToTop,
         )
     }
+
+/// Whether an incoming syncCatalogs() definition set may replace the current one. A transient
+/// EMPTY set (an addon emission whose manifests haven't loaded yet, a removal pass, a
+/// mid-bootstrap snapshot) must never wipe a non-empty set — profile switches and account wipes
+/// clear definitions through onProfileChanged()/clearLocalState(), never through syncCatalogs().
+internal fun shouldReplaceCatalogDefinitions(currentCount: Int, incomingCount: Int): Boolean =
+    incomingCount > 0 || currentCount == 0

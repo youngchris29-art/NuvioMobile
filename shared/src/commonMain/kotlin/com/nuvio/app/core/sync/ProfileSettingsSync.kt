@@ -11,6 +11,7 @@ import com.nuvio.app.features.debrid.DebridSettingsRepository
 import com.nuvio.app.features.debrid.DebridSettingsStorage
 import com.nuvio.app.features.details.MetaScreenSettingsStorage
 import com.nuvio.app.features.details.MetaScreenSettingsRepository
+import com.nuvio.app.features.home.HomeCatalogSettingsSyncService
 import com.nuvio.app.features.mdblist.MdbListMetadataService
 import com.nuvio.app.features.mdblist.MdbListSettingsStorage
 import com.nuvio.app.features.mdblist.MdbListSettingsRepository
@@ -189,6 +190,7 @@ object ProfileSettingsSync {
         lastPullToken = null
         ProviderCredentialSync.clearAccountState()
         TrackingSourceSettingsSyncService.clearAccountState()
+        HomeCatalogSettingsSyncService.clearAccountState()
     }
 
     suspend fun pull(profileId: Int): Boolean {

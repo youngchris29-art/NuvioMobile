@@ -32,6 +32,12 @@ struct HomeScreenSettingsPane: View {
         SettingsSection(String(localized: "Home Rows")) {
             // Catalog-independent: the Upcoming row is fed by watch progress + Library, so its
             // switch must stay reachable when no catalog add-on is installed (Codex round 1).
+            //
+            // It is also this pane's BUG-47 floor, and that is load-bearing, not incidental:
+            // it sits OUTSIDE the `model.catalogs.isEmpty` branch below, so whatever the catalog
+            // list does — arrives, shrinks, empties — the Home Screen pane always has at least one
+            // focusable row for the focus engine to land on, and the sidebar can always enter it.
+            // Do not move this row inside the branch.
             SettingsToggleRow(
                 title: String(localized: "Upcoming Episodes"),
                 subtitle: upcomingRowEnabled
@@ -44,6 +50,30 @@ struct HomeScreenSettingsPane: View {
                 Text("Install add-ons to customize your Home rows.")
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
+
+                // Prevents the "removing a catalog gives a big white screen" report (device video
+                // 2026-08-29, §(b) of the batch plan). This branch is not just an empty state the
+                // user arrives on — it is a state the pane can FLIP INTO while the user's focus is
+                // on a catalog toggle in the `else` branch: an add-on removal, a profile switch, or
+                // the definitions clobber this batch's `SettingsViewModel` guards close, and the
+                // entire focusable subtree below (hero sources, catalog rows, both expanded groups)
+                // disappears in ONE update pass. With only static `Text` here, the branch that
+                // replaces it has nothing focusable in it at all, so the engine has to jump the
+                // length of the section for a survivor — a focusable row standing where the removed
+                // content stood gives it a local landing target instead.
+                //
+                // Refresh is also the honest recovery action for the state that actually produced
+                // the report: the add-ons are still installed, their manifests just aren't loaded,
+                // so re-fetching them repopulates the catalog definitions without quitting the app.
+                // With genuinely zero add-ons installed it is a no-op (`refreshAll()` iterates the
+                // enabled list) — the row still earns its place as this branch's focusable anchor.
+                SettingsActionRow(
+                    title: String(localized: "Refresh Add-ons"),
+                    subtitle: String(localized: "Re-check installed add-ons for catalogs."),
+                    systemImage: "arrow.clockwise"
+                ) {
+                    AddonRepository.shared.refreshAll()
+                }
             } else {
                 // FEAT-15 (and BUG-24, the same request in disguise): OFF no longer means "no
                 // hero region". It means "no ROTATING banner" — the top of Home becomes the
@@ -86,6 +116,13 @@ struct HomeScreenSettingsPane: View {
                         isOn: $heroNuvioStyle
                     )
 
+                    // Focus note (2026-08-29): this guard removes the whole group — header
+                    // included — when the last non-collection catalog goes away, so a focused hero
+                    // source row loses its entire subtree in one pass. That is tolerable ONLY
+                    // because the "Nuvio-Style Hero" toggle directly above is an adjacent
+                    // focusable row in the same List section for the engine to fall back to;
+                    // the group is never the only focusable thing on screen. Keep it that way if
+                    // this branch is ever rearranged.
                     let heroSourceCatalogs = model.catalogs.filter { !$0.isCollection }
                     if !heroSourceCatalogs.isEmpty {
                         HeroSourcesGroup(
@@ -194,9 +231,12 @@ struct HomeScreenSettingsPane: View {
 /// note on `StreamPickerView.groupHeader`), so this is a plain `Button` header + conditional
 /// content, not a DisclosureGroup. `isExpanded` is plain `@State` (no persistence): the section
 /// starts collapsed every time this view is (re)built, i.e. on every visit to Settings. Collapsing
-/// only ever happens from the header row's own Button action, so focus is already on the header
+/// normally happens from the header row's own Button action, so focus is already on the header
 /// at that moment — no separate FocusState retargeting is needed the way StreamPickerView's
-/// multi-trigger expansion needs it.
+/// multi-trigger expansion needs it. The one collapse that is NOT user-driven is the empty-`items`
+/// guard in `body`, and it deliberately doesn't retarget focus either: by the time it fires, every
+/// row it could have retargeted to is already gone, and the header it collapses back to is the
+/// focusable row that stayed mounted through the whole pass.
 private struct HeroSourcesGroup: View {
     let items: [HomeCatalogSettingsItem]
     let onToggle: (_ key: String, _ enabled: Bool) -> Void
@@ -221,17 +261,25 @@ private struct HeroSourcesGroup: View {
         return String(localized: "\(selectedCount) of \(limit) selected \u{00B7} \(joined)")
     }
 
+    /// Rows show only when the user expanded the group AND there is something to show. Gating the
+    /// content on the data as well as on `isExpanded` means the expanded platter can never render
+    /// with zero focusable children inside it — not even for the single frame between `items`
+    /// shrinking to empty and the `onChange` below resetting the expansion state.
+    private var showsRows: Bool { isExpanded && !items.isEmpty }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             SettingsDisclosureRow(
                 title: String(localized: "Hero Sources"),
                 subtitle: summary,
-                isExpanded: isExpanded
+                // The chevron reports what is actually on screen, not the raw state, so it can't
+                // point "up" at a platter that `showsRows` has already withheld.
+                isExpanded: showsRows
             ) {
                 isExpanded.toggle()
             }
 
-            if isExpanded {
+            if showsRows {
                 VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                     ForEach(items, id: \.key) { item in
                         HeroSourceRow(
@@ -243,10 +291,30 @@ private struct HeroSourcesGroup: View {
                     }
                 }
                 .padding(.leading, Theme.Spacing.md)
-                .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: isExpanded)
+        // NO `.animation(_:value: isExpanded)` and no `.transition(.opacity)` here any more, and
+        // that is the fix, not an oversight (device video 2026-08-29, §(b) "removing a catalog →
+        // big white screen"). This group is ONE List row holding a `ForEach` of focusable toggle
+        // rows, so an add-on emission can delete the row that currently holds focus. The two
+        // modifiers could not be scoped to "expansion only": the empty-`items` guard below changes
+        // `isExpanded` in the SAME transaction as the shrink, which is exactly the transaction an
+        // `.animation(value:)` picks up — so the focus engine would be reassigning against a
+        // subtree that is mid-fade rather than one that is simply gone. Unanimated, the removal
+        // lands in a single pass and the system reassigns to a surviving sibling row on its own,
+        // which is the behaviour this repo prefers over any hand-rolled retarget. Correctness over
+        // polish: the price is that expanding/collapsing now snaps.
+        //
+        // The guard itself: if the list empties while expanded, drop back to the collapsed header —
+        // never leave an expanded platter whose entire focusable subtree just vanished (BUG-47
+        // class). The header row is a plain `Button` that stays mounted in every state, so it is
+        // the stable focusable ancestor the engine lands on. Defensive as written — the call site
+        // only builds this group when the filtered list is non-empty, so today the group is removed
+        // wholesale instead (focus then falls to the adjacent "Nuvio-Style Hero" toggle row) — but
+        // the invariant now lives with the view that has to honour it.
+        .onChange(of: items.isEmpty) { _, isEmpty in
+            if isEmpty { isExpanded = false }
+        }
     }
 }
 
@@ -254,6 +322,11 @@ private struct HeroSourcesGroup: View {
 /// behind a header row ("Catalogs" + "N of M enabled" summary + chevron), matching the Hero
 /// Sources treatment above per the same device feedback. Expanding reveals the existing
 /// `CatalogSettingRow` list unchanged — enable/move up/move down behave exactly as before.
+///
+/// Same focus contract as `HeroSourcesGroup`: no animation over a data-driven row removal, and an
+/// empty `items` collapses back to the header rather than leaving an expanded platter behind. This
+/// is the group the tester was standing in when the screen died, so the reasoning is spelled out
+/// again at the guard in `body` rather than cross-referenced away.
 private struct HomeCatalogsGroup: View {
     let items: [HomeCatalogSettingsItem]
     let onToggle: (HomeCatalogSettingsItem) -> Void
@@ -265,17 +338,21 @@ private struct HomeCatalogsGroup: View {
         items.filter { $0.enabled }.count
     }
 
+    /// See `HeroSourcesGroup.showsRows` — expanded content is gated on the data as well as on the
+    /// user's expansion state, so an emptied list can never render as a platter with no rows.
+    private var showsRows: Bool { isExpanded && !items.isEmpty }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             SettingsDisclosureRow(
                 title: String(localized: "Catalogs"),
                 subtitle: String(localized: "\(enabledCount) of \(items.count) enabled"),
-                isExpanded: isExpanded
+                isExpanded: showsRows
             ) {
                 isExpanded.toggle()
             }
 
-            if isExpanded {
+            if showsRows {
                 VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     ForEach(items, id: \.key) { item in
                         CatalogSettingRow(
@@ -287,10 +364,25 @@ private struct HomeCatalogsGroup: View {
                     }
                 }
                 .padding(.leading, Theme.Spacing.md)
-                .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: isExpanded)
+        // The animation and the opacity transition are gone on purpose — this is the group the
+        // 2026-08-29 device video died in ("removing a catalog → big white screen"). It is ONE List
+        // row wrapping a `ForEach` of focusable rows, so removing an add-on deletes rows out from
+        // under the user's focus; animating that deletion (which an `.animation(value: isExpanded)`
+        // does as soon as anything also flips `isExpanded` in the same transaction, e.g. the guard
+        // below) leaves the focus engine reassigning against a fading subtree. Unanimated, the rows
+        // vanish in one pass and the system moves focus to a surviving sibling row by itself —
+        // system focus behaviour, not a hand-rolled retarget.
+        //
+        // Empty-list guard: collapse back to the header, which is focusable and stays mounted, so
+        // the expanded platter is never left with an empty focusable subtree (BUG-47 class).
+        // Defensive today — the pane swaps to its `model.catalogs.isEmpty` branch (which now
+        // carries its own focusable row) before this group can be handed an empty list — but the
+        // group no longer depends on that call-site detail to stay focus-safe.
+        .onChange(of: items.isEmpty) { _, isEmpty in
+            if isEmpty { isExpanded = false }
+        }
     }
 }
 

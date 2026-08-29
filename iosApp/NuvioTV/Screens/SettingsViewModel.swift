@@ -175,7 +175,17 @@ final class SettingsViewModel: ObservableObject {
             self.enabledAddons = enabled
             // FEAT-10: keep the Search Sources rows in step with the installed addons.
             self.searchSourceOptions = SearchRepository.shared.searchCatalogOptions(addons: enabled)
-            HomeCatalogSettingsRepository.shared.syncCatalogs(addons: enabled)
+            // "Home Rows blank" bug (docs/steven-batch-plan-2026-08-29.md, "data clobber"):
+            // HomeCatalogSettingsRepository derives its published items ONLY from the in-memory
+            // `definitions` set here. Feeding it an empty/pending-manifest emission — app start
+            // pre-refresh, a server pull publishing addons whose manifests haven't fetched yet,
+            // a profile switch, or an addon removal — used to zero `definitions` and blank the
+            // Home Rows / catalog selection section. Mirror HomeViewModel.onAddonsChanged's
+            // guards (only addons with a loaded manifest can contribute catalogs, and never sync
+            // an empty result), which is why Home never blanked from this same emission stream.
+            let ready = enabled.filter { $0.manifest != nil }
+            guard !ready.isEmpty else { return }
+            HomeCatalogSettingsRepository.shared.syncCatalogs(addons: ready)
         }
         catalogWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? HomeCatalogSettingsUiState else { return }
@@ -191,6 +201,13 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? SearchUiState else { return }
             self.lastSearchFanOut = state.lastFanOut
         }
+
+        // "Home Rows blank" bug: Settings must not depend on Home/Search having mounted first to
+        // hydrate the addon list. Without this call, entering Settings directly — post-wipe or
+        // post-profile-switch, before Home ever ran its own `AddonRepository.initialize()` — left
+        // `AddonRepository.shared.uiState` at its initial empty state forever, so the addon
+        // watcher above never saw a ready addon and the catalog pane stayed permanently blank.
+        AddonRepository.shared.initialize()
     }
 
     func stop() {
