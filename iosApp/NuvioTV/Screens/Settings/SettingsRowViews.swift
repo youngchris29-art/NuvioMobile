@@ -140,6 +140,11 @@ struct SettingsSection<Content: View>: View {
             if let title, !title.isEmpty {
                 Text(title)
                     .font(SettingsRowFont.sectionHeader)
+                    // The focused row's platter scales up past the row bounds and was covering the
+                    // header at the stock distance (device pass 2026-08-28: "Account" clipped behind
+                    // the focused Sign Out row). `sm` of extra bottom padding keeps the header clear
+                    // of the platter without visibly loosening the section rhythm.
+                    .padding(.bottom, Theme.Spacing.sm)
             }
         } footer: {
             if let footer, !footer.isEmpty {

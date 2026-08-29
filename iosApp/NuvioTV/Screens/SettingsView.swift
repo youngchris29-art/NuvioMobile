@@ -255,15 +255,21 @@ struct SettingsView: View {
                     if settingsStyle == "minimal" {
                         Text(category.title)
                     } else {
+                        // HStack, not `Label`: the system label's icon-to-title spacing is too tight in a tvOS
+                        // List row (device pass 2026-08-28, and the tester's "icons overlap the text" report) —
+                        // this matches the detail rows' `SettingsRowLabel` spacing instead.
                         // Icon in the theme accent at rest, `.primary` under the focus platter —
                         // same `SettingsAccentTint` the detail rows use. The label itself keeps
                         // NO explicit colour (BUG-45: an accent label here was white-on-white for
                         // the White theme's near-white accent).
-                        Label {
-                            Text(category.title)
-                        } icon: {
+                        HStack(spacing: Theme.Spacing.md) {
                             Image(systemName: category.icon)
                                 .settingsAccentTint()
+                                // Decorative: `Label` used to fold the symbol into one
+                                // accessibility element; the raw HStack must not let VoiceOver
+                                // announce the symbol's generated name before the title.
+                                .accessibilityHidden(true)
+                            Text(category.title)
                         }
                     }
                 }
