@@ -194,7 +194,18 @@ final class DetailViewModel: ObservableObject {
     func playTrailer(_ trailer: MetaTrailer) {
         guard resolvingTrailerId == nil else { return }
         resolvingTrailerId = trailer.id
-        HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: trailer.youtubePlaybackUrl()) { [weak self] source, _ in
+        var youtubeUrl = trailer.youtubePlaybackUrl()
+        // Repro-gap fix (2026-08-30 investigation): `resolveTrailerIfNeeded` above honors
+        // `debug.trailerSmokeVideoId` (paired with `debug.trailerProbe`, same discipline as
+        // `InlineTrailerCardModel.resolve`) so the Detail hero can be pinned to a deterministic
+        // video in the simulator; this row-clip path never did, so there was no way to force a
+        // "Trailers & Extras" clip to a known stream for repro/soak work. Substituting AFTER
+        // `trailer.id` is what keys `resolvingTrailerId`/the eventual `TrailerPlaybackItem.zoomKey`
+        // keeps per-card state distinct even though every forced clip resolves the same video.
+        if TrailerProbe.enabled, let forced = TrailerProbe.smokeVideoId {
+            youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
+        }
+        HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { [weak self] source, _ in
             DispatchQueue.main.async {
                 guard let self, let source else {
                     self?.resolvingTrailerId = nil
@@ -204,7 +215,14 @@ final class DetailViewModel: ObservableObject {
                     guard let self else { return }
                     self.resolvingTrailerId = nil
                     guard let url else { return }
-                    self.trailerPlayback = TrailerPlaybackItem(id: trailer.id, url: url, title: trailer.name)
+                    // C3 (2026-08-30 investigation): a per-clip zoom key, NOT `trailerZoomKey` — see
+                    // `TrailerPlaybackItem.zoomKey`'s doc comment. The hero trailer and every row
+                    // clip used to share one title-keyed `TrailerZoomCache` entry, so whichever
+                    // measured last stomped the other's crop.
+                    self.trailerPlayback = TrailerPlaybackItem(
+                        id: trailer.id, url: url, title: trailer.name,
+                        zoomKey: "\(self.trailerZoomKey):clip:\(trailer.id)"
+                    )
                 }
             }
         }
@@ -365,4 +383,13 @@ struct TrailerPlaybackItem: Identifiable {
     let id: String
     let url: String
     let title: String
+    /// C3 (2026-08-30 investigation): the identity `TrailerLetterboxProbe`/`TrailerZoomCache`
+    /// remembers this clip's measured letterbox zoom under. The Detail hero "Watch Trailer" button
+    /// and the auto-play item play the SAME video the Detail hero background loop does, so they use
+    /// the canonical title key (`DetailViewModel.trailerZoomKey`) and correctly share its entry.
+    /// Every "Trailers & Extras" row clip (`DetailViewModel.playTrailer(_:)`) is a DIFFERENT stream
+    /// of the same title, and used to collide on that one title-keyed entry — opening a row clip
+    /// right after the hero (or vice versa) inherited whichever measurement ran last, then visibly
+    /// re-zoomed mid-playback once its own probe landed. Row clips get their own per-trailer-id key.
+    let zoomKey: String
 }

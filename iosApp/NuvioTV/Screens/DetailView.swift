@@ -336,9 +336,12 @@ struct DetailView: View {
             // UX-9: the player scales itself past fill (parityZoom) to crop baked-in letterbox
             // bars; end-of-playback dismisses back to Detail rather than resting on a black
             // frame, since the controls-free surface has no replay affordance.
+            // C3: `item.zoomKey`, not `model.trailerZoomKey` — the hero button/autoplay items carry
+            // the canonical title key (same stream as the hero loop), row-clip items carry their
+            // own per-trailer-id key (see `TrailerPlaybackItem.zoomKey`).
             FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                 model.trailerPlayback = nil
-            }, zoomKey: model.trailerZoomKey)
+            }, zoomKey: item.zoomKey)
                 .ignoresSafeArea()
                 .overlay(alignment: .bottom) {
                     if trailerPlaybackIsAutoPlay {
@@ -634,7 +637,11 @@ struct DetailView: View {
                     // `trailerPlayback == nil`).
                     Button {
                         if let trailer = model.trailerVideoURL {
-                            model.trailerPlayback = TrailerPlaybackItem(id: "hero-trailer", url: trailer, title: title)
+                            // C3: same video as the Detail hero background loop — the canonical
+                            // title key is correct here (see `TrailerPlaybackItem.zoomKey`).
+                            model.trailerPlayback = TrailerPlaybackItem(
+                                id: "hero-trailer", url: trailer, title: title, zoomKey: model.trailerZoomKey
+                            )
                         }
                     } label: {
                         actionButtonPadding(
@@ -1129,7 +1136,11 @@ struct DetailView: View {
         // mute-reset-on-dismiss dance) for free. Neither this nor the button touches
         // `HeroTrailerAudioState`: `FullScreenTrailerPlayer` is a brand-new `AVPlayer` instance that
         // is never muted, so both entries already play with sound without any extra unmuting.
-        model.trailerPlayback = TrailerPlaybackItem(id: "hero-trailer", url: trailer, title: title)
+        // C3: same video as the Detail hero background loop — the canonical title key is correct
+        // here (see `TrailerPlaybackItem.zoomKey`).
+        model.trailerPlayback = TrailerPlaybackItem(
+            id: "hero-trailer", url: trailer, title: title, zoomKey: model.trailerZoomKey
+        )
     }
 
     private func cancelAutoPlayTrailer() {

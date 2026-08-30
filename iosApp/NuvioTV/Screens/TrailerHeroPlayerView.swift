@@ -523,12 +523,14 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
 /// focus started at the 1.08 floor and the ~90% letterbox the reporter counted is exactly that.
 ///
 /// What is stored: `{zoom, token, at}` under the title key, capped at 300 entries (LRU by `at`),
-/// as one JSON blob in `UserDefaults` under `trailerZoom.v1`. Reads CLAMP every value into
-/// `[1.0, TrailerLetterboxProbe.maxZoom]`, drop entries older than 30 days, and drop the whole
-/// blob if its `version` differs — that last rule is the escape hatch for the "every trailer was
-/// extremely zoomed until I reinstalled" report: a bad blob can never outlive a version bump. The
-/// `token` (`TrailerLocalHLS` repack token, nil for direct URLs) says WHICH stream the zoom was
-/// measured on: a match applies it as final; a mismatch applies it as the interim and re-measures.
+/// as one JSON blob in `UserDefaults` under `storageKey` (`trailerZoom.v2` as of the C1 fix below).
+/// Reads CLAMP every value into `[1.0, TrailerLetterboxProbe.maxZoom]`, drop entries older than 30
+/// days, and drop the whole blob if its `version` differs — that last rule is the escape hatch for
+/// the "every trailer was extremely zoomed until I reinstalled" report: a bad blob can never
+/// outlive a version bump. The `token` (`TrailerLocalHLS` repack token, nil for direct URLs) says
+/// WHICH stream the zoom was measured on: a match applies it immediately and arms the probe in
+/// VERIFY mode (C1, 2026-08-30 investigation — see `TrailerLetterboxProbe.start()`); a mismatch
+/// applies the parity floor, conceals, and re-measures from scratch.
 ///
 /// NSLock-guarded rather than `@MainActor`, matching `TrailerPipelineCounters`: the probe reads it
 /// from `TrailerHeroPlayer.Coordinator.attach`, which is not actor-isolated. Writes to
@@ -546,8 +548,18 @@ final class TrailerZoomCache: @unchecked Sendable {
         let entries: [String: Entry]
     }
 
-    static let storageKey = "trailerZoom.v1"
-    static let version = 1
+    static let storageKey = "trailerZoom.v2"
+    static let version = 2
+    /// C1 (2026-08-30 investigation): the pre-fix key, kept only so `loadIfNeeded()` can delete it.
+    /// A `repack:<token>` identity is content-stable across app releases (the loopback repack token
+    /// derives from the extracted stream, not the process), so a bad entry measured under betas ≤16
+    /// — where a token MATCH applied and returned before the probe could ever re-check it (see
+    /// `start()`) — would otherwise keep applying for up to `maxAge` (30 days) even after this fix
+    /// ships, simply by surviving the app upgrade under the old key. Bumping `storageKey`/`version`
+    /// is the hard reset: nothing written under `legacyStorageKey` is ever read again, and
+    /// `loadIfNeeded()` deletes the dead blob outright on first launch of the fixed build instead of
+    /// leaving it to rot in `UserDefaults`.
+    private static let legacyStorageKey = "trailerZoom.v1"
     private static let capacity = 300
     private static let maxAge: TimeInterval = 30 * 24 * 60 * 60
 
@@ -613,6 +625,11 @@ final class TrailerZoomCache: @unchecked Sendable {
     private func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
+        // C1 (2026-08-30 investigation): purge the pre-fix blob unconditionally, every launch that
+        // still finds it — see `legacyStorageKey`'s doc comment for why it can never be trusted.
+        if defaults.object(forKey: Self.legacyStorageKey) != nil {
+            defaults.removeObject(forKey: Self.legacyStorageKey)
+        }
         guard let data = defaults.data(forKey: Self.storageKey) else {
             if TrailerProbe.enabled { NSLog("[TrailerZoom] store loaded n=0 version=%d (empty)", Self.version) }
             return
@@ -773,6 +790,18 @@ final class TrailerLetterboxProbe {
     /// persisted-hit path (the zoom is already right, or near enough); flips false only when
     /// `start()` conceals a cold surface, and back only through `reveal(reason:)`.
     private var revealed = true
+    /// C1 (2026-08-30 investigation): true for the remainder of this probe's lifetime once `start()`
+    /// took the token-MATCH branch. A token match still applies the cached zoom immediately and
+    /// un-concealed (unchanged UX for a good entry — `revealed` never flips false on this path), but
+    /// the probe now arms behind it instead of trusting the entry forever. Sampling and `finish()`
+    /// run exactly as on the cold path EXCEPT: `applyInterim()` never fires (an interim correction
+    /// mid-playback would look like drifting zoom for a surface that's already showing something
+    /// reasonable — only `finish()`'s final verdict may adjust it), and `finish()` compares its
+    /// result against `verifyAppliedZoom` instead of unconditionally persisting+applying.
+    private var verifyMode = false
+    /// The cached zoom `start()` applied on the token-match branch — `finish()`'s verify-mode
+    /// comparison baseline. Set once, alongside `verifyMode = true`, never touched by sampling.
+    private var verifyAppliedZoom: CGFloat?
 
     init(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String? = nil, surface: String) {
         self.view = view
@@ -819,6 +848,17 @@ final class TrailerLetterboxProbe {
                 // Only a token MATCH may show the cached crop un-concealed: this exact stream is
                 // what measured it, so it's known-good.
                 apply(cached.zoom, animated: false)
+                // C1 (2026-08-30 investigation): no longer a `return` here. A token match used to
+                // apply-and-trust forever — but `repack:<token>` is content-stable across app
+                // releases, so a bad entry measured under a build with a measurement bug (not just
+                // a stale/mismatched token) would silently reapply for up to `maxAge` (30 days),
+                // which is exactly what betas ≤16 hit. Arm the probe in VERIFY mode instead: the
+                // applied crop stays on screen exactly as before (no conceal, no re-animation) while
+                // `finish()` quietly checks it against a fresh measurement.
+                verifyMode = true
+                verifyAppliedZoom = cached.zoom
+                attachOutputIfNeeded()
+                armSamplingTimer()
                 return
             }
             // BUG-59 collision (tester report, 2026-08-28): `zoomKey` is keyed by TITLE, not by
@@ -847,6 +887,13 @@ final class TrailerLetterboxProbe {
         // BUG-59: attach the output NOW rather than on the first tick, so the very first tick can
         // already read a frame (the item exists before `play()` on both surfaces).
         attachOutputIfNeeded()
+        armSamplingTimer()
+    }
+
+    /// Starts the 0.25s-tick sampling timer. Shared by the cold (no/mismatched entry) and VERIFY
+    /// (C1, token-match) paths — sampling and `tick()` behave identically either way; only what
+    /// `applyInterim()`/`finish()` do with the result differs (`verifyMode` gates both).
+    private func armSamplingTimer() {
         let timer = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
             self?.tick()
         }
@@ -863,13 +910,23 @@ final class TrailerLetterboxProbe {
         // so a completed measurement never double-logs.
         if timer != nil, !finished, TrailerProbe.enabled {
             finished = true
-            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d interimApplied=%d revealed=%d surface=%@ key=%@ — %@ kept, not cached",
-                  samples.count, ticks, interimZoom == nil ? 0 : 1, revealed ? 1 : 0, surface, zoomKey,
-                  interimZoom == nil ? "floor" : "interim")
+            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d interimApplied=%d revealed=%d verify=%d surface=%@ key=%@ — %@ kept, not cached",
+                  samples.count, ticks, interimZoom == nil ? 0 : 1, revealed ? 1 : 0, verifyMode ? 1 : 0,
+                  surface, zoomKey, keptDescription())
         }
         timer?.invalidate()
         timer = nil
         detachOutput()
+    }
+
+    /// C1 (2026-08-30 investigation): what's actually on screen if the probe never reaches a verdict
+    /// — used by both the `abandoned` (stop-before-finish) and `insufficient` (finish-but-no-usable-
+    /// samples) log lines so they can't disagree. Verify mode never touched `interimZoom` (it can't —
+    /// `applyInterim()` is skipped in that mode), so it needs its own branch rather than falling into
+    /// the floor/interim wording, which would misreport the cached crop as the parity floor.
+    private func keptDescription() -> String {
+        if verifyMode { return "verified-cached" }
+        return interimZoom == nil ? "floor" : "interim"
     }
 
     // MARK: Sampling
@@ -918,7 +975,11 @@ final class TrailerLetterboxProbe {
             samples.append(bars)
             sampleTimes.append(seconds)
         }
-        if samples.count >= Self.interimSampleCount, !interimMeasured {
+        // C1 (2026-08-30 investigation): interim corrections never fire in VERIFY mode — the surface
+        // is already showing the cached crop, and a mid-playback interim nudge would look like
+        // drifting zoom rather than a deliberate correction. Only `finish()`'s final verdict may
+        // adjust a verified stream.
+        if samples.count >= Self.interimSampleCount, !interimMeasured, !verifyMode {
             applyInterim()
         }
         if samples.count >= Self.sampleTarget { finish() }
@@ -1053,12 +1114,15 @@ final class TrailerLetterboxProbe {
             // whose measurement can't complete stays at the 1.08 floor (the reporter's Lucky
             // case), so the WHY has to be readable off a log pull.
             if TrailerProbe.enabled {
-                NSLog("[TrailerZoom] insufficient samples=%d span=%.2fs frame=%dx%d ticks=%d interimApplied=%d surface=%@ key=%@ — %@ kept, not cached",
+                NSLog("[TrailerZoom] insufficient samples=%d span=%.2fs frame=%dx%d ticks=%d interimApplied=%d verify=%d surface=%@ key=%@ — %@ kept, not cached",
                       collected.count, span, Int(size.width), Int(size.height), ticks,
-                      interimZoom == nil ? 0 : 1, surface, zoomKey, interimZoom == nil ? "floor" : "interim")
+                      interimZoom == nil ? 0 : 1, verifyMode ? 1 : 0, surface, zoomKey, keptDescription())
             }
             // Reveal gate: normally long since revealed (the 3 s cap fires at tick 12, this bail
             // at tick 48) — belt-and-braces so no path can end a live playback still concealed.
+            // No-op in verify mode (already revealed at `start()`; nothing to compare, so the
+            // cached entry is left exactly as it was — untouched, un-refreshed — and the next play
+            // verifies again).
             reveal(reason: "insufficient")
             return
         }
@@ -1069,6 +1133,51 @@ final class TrailerLetterboxProbe {
         }
         let zoom = result.zoom
         let measured = result.measured
+
+        // C2 (2026-08-30 investigation): mirrors `applyInterim()`'s clamp rationale — a FINAL
+        // measurement that still hits the ceiling is the same fade/opaque-overlay signature (a
+        // logo or title card, not real bars), not a trustworthy answer, and unlike the interim path
+        // there is no next sample to retry with. Reveal (belt-and-braces on the cold path; a no-op
+        // in verify mode, already revealed) but never persist or apply it — on the cold path that
+        // means leaving whatever is already on screen (interim, else the parity floor); in verify
+        // mode it means leaving the cached entry completely alone, including its timestamp, so an
+        // entry this stream genuinely can't re-verify neither gets stomped by a bogus reading nor
+        // silently ages out early.
+        guard CGFloat(measured) < Self.maxZoom else {
+            if TrailerProbe.enabled {
+                NSLog("[TrailerZoom] final-clamped key=%@ measured=%.3f verify=%d surface=%@",
+                      zoomKey, measured, verifyMode ? 1 : 0, surface)
+            }
+            reveal(reason: "clamped")
+            return
+        }
+
+        if verifyMode {
+            // C1 (2026-08-30 investigation): the applied-and-trusted-forever behavior this fix
+            // replaces. `verifyAppliedZoom` is always set on this path (see `start()`); the `?? zoom`
+            // fallback only guards a theoretical future call ordering and, if it ever hit, would
+            // correctly read as "nothing to correct."
+            let appliedZoom = verifyAppliedZoom ?? zoom
+            if abs(zoom - appliedZoom) > 0.02 {
+                TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token)
+                apply(zoom, animated: true)
+                if TrailerProbe.enabled {
+                    NSLog("[TrailerZoom] verify-corrected key=%@ old=%.3f new=%.3f surface=%@",
+                          zoomKey, appliedZoom, zoom, surface)
+                }
+            } else {
+                // Confirmed good: re-store the SAME zoom purely to refresh `Entry.at`, so a title
+                // that's still being watched correctly never ages out of the 30-day cache just
+                // because its crop hasn't needed to change. Nothing on screen moves.
+                TrailerZoomCache.shared.store(appliedZoom, for: zoomKey, token: token)
+                if TrailerProbe.enabled {
+                    NSLog("[TrailerZoom] verify-confirmed key=%@ zoom=%.3f surface=%@", zoomKey, appliedZoom, surface)
+                }
+            }
+            reveal(reason: "final") // No-op: verify mode is revealed from `start()` onward.
+            return
+        }
+
         let bars = collected.reduce(Bars(top: 1, bottom: 1, left: 1, right: 1)) { acc, next in
             Bars(top: min(acc.top, next.top), bottom: min(acc.bottom, next.bottom),
                  left: min(acc.left, next.left), right: min(acc.right, next.right))
