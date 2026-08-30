@@ -449,6 +449,17 @@ struct FolderTile: View {
             }
             .frame(width: tileWidth, height: tileHeight)
             .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+            // 2026-08-30 no-zoom investigation: same overpaint as TileFocusLift's ring, same fix —
+            // the ring used to strokeBorder straight over this tile's own cover/logo/GIF stack.
+            // That stack's internal layout (the logo overlay in particular) is pinned to this
+            // view's own `tileWidth`/`tileHeight` instance properties, so it can't be redrawn at a
+            // smaller size the way PosterCard redraws its own artwork frame — shrunk in place with
+            // the same static, never-focus-linked `.scaleEffect` TileFocusLift uses instead, which
+            // leaves the `.overlay` below measuring the TRUE, unscaled tile bounds.
+            .scaleEffect(
+                x: noZoomOnFocus && tileWidth > 0 ? max(0, tileWidth - 2 * ringWidth) / tileWidth : 1,
+                y: noZoomOnFocus && tileHeight > 0 ? max(0, tileHeight - 2 * ringWidth) / tileHeight : 1
+            )
             .overlay {
                 if noZoomOnFocus && stillFocused {
                     // No-zoom still ring on the artwork itself, mirroring TileFocusLift's look.

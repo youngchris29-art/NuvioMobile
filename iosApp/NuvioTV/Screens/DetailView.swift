@@ -1243,6 +1243,14 @@ private struct CastCard: View {
             .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
             .clipShape(Circle())
             .nuvioCardDepth(Circle(), surface: .cast)
+            // 2026-08-30 no-zoom investigation: same overpaint/fix as TileFocusLift/FolderTile —
+            // the ring used to strokeBorder straight over the avatar's own true edge. Static,
+            // never-focus-linked shrink (matches `ringInset`'s "always reserved, never pops"
+            // contract) so the `.overlay` below measures the avatar's TRUE, unscaled bounds. A
+            // single scalar is enough — the avatar is always a perfect circle/square.
+            .scaleEffect(noZoomOnFocus && Theme.Size.castAvatar > 0
+                ? max(0, Theme.Size.castAvatar - 2 * ringWidth) / Theme.Size.castAvatar
+                : 1)
             .overlay {
                 if noZoomOnFocus && stillFocused {
                     Circle().strokeBorder(stillHighlight, lineWidth: ringWidth)

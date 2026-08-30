@@ -40,6 +40,29 @@ extension View {
     func posterButtonShape() -> some View { modifier(PosterButtonShape()) }
 }
 
+/// 2026-08-30 no-zoom investigation: still mode's press feedback, deliberately minimal — see
+/// `CardFocusButtonStyle` below for why this exists instead of relying on `.focusEffectDisabled`.
+/// Mirrors `FocusLook.pressScale`/`FocusLook.pressAnim` in FlatControlStyles.swift (that enum is
+/// file-private there, so the values are duplicated here rather than shared — same numbers, same
+/// "press only, no focus treatment" contract `ChipButtonStyle` already applies).
+private enum StillButtonLook {
+    static let pressScale: CGFloat = 0.97
+    static let pressAnim = Animation.easeOut(duration: 0.12)
+}
+
+/// Still mode's `ButtonStyle`, used instead of `.borderless` — see `CardFocusButtonStyle`. Draws
+/// nothing but the label itself plus the standard press-down feedback: no lift, no platter, no
+/// specular highlight, because a custom `ButtonStyle` never gets a system focus effect to
+/// suppress in the first place. Still mode's own focus indicator (the neutral/accent ring drawn
+/// by `CardFocusTreatment`/`TileFocusLift`/the site-owned rings elsewhere) is what marks focus.
+private struct StillCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? StillButtonLook.pressScale : 1)
+            .animation(StillButtonLook.pressAnim, value: configuration.isPressed)
+    }
+}
+
 /// BUG-64 (the real one, survived multiple betas): `.buttonStyle(.borderless)`'s system focus
 /// effect — lift + real Siri-Remote-tracking parallax + specular highlight + shadow — moves the
 /// WHOLE button label (artwork + caption) and was never gated by "No Zoom on Focus"
@@ -48,18 +71,31 @@ extension View {
 /// and zoom on focus. Card call sites use this in place of a bare `.buttonStyle(.borderless)`.
 /// docs/steven-batch-plan-2026-08-29.md Wave 4 item 4.
 ///
-/// `.focusEffectDisabled()` only turns the system effect off — it draws no replacement of its
-/// own. A focusable element must never end up with no visible focus indication at all, so this
-/// swaps effects rather than merely removing one: still mode's own indicator (`TileFocusLift`'s
-/// border/highlight via `CardFocusTreatment.still`) is unchanged and continues to mark focus once
-/// the system effect is disabled.
+/// 2026-08-30 no-zoom investigation: a beta tester STILL saw the lift after this shipped.
+/// `.focusEffectDisabled()` only turns the system effect off and draws no replacement of its own
+/// — whether it actually suppresses `.borderless`'s lift on tvOS 26 HARDWARE was never proven (the
+/// specced rise test was never written, see `test46StillModeRiseIsZero`), and the report says it
+/// doesn't. A custom `ButtonStyle` can never receive the system lift in the first place — this
+/// app's own custom styles (e.g. `ChipButtonStyle` in FlatControlStyles.swift) provably get no
+/// system lift — so still mode now swaps to `StillCardButtonStyle` instead of trying to suppress
+/// `.borderless`'s. A focusable element must never end up with no visible focus indication at all,
+/// so this still swaps treatments rather than merely removing one: still mode's own indicator
+/// (`TileFocusLift`'s border/highlight via `CardFocusTreatment.still`) is unchanged and continues
+/// to mark focus. `.focusEffectDisabled(true)` is kept on the still branch too, belt-and-braces,
+/// in case any other system chrome still consults it — it costs nothing now that the style itself
+/// can't lift. The zoom-on branch is untouched: still exactly the bare `.borderless` it always was.
 struct CardFocusButtonStyle: ViewModifier {
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     func body(content: Content) -> some View {
-        content
-            .buttonStyle(.borderless)
-            .focusEffectDisabled(noZoomOnFocus)
+        if noZoomOnFocus {
+            content
+                .buttonStyle(StillCardButtonStyle())
+                .focusEffectDisabled(true)
+        } else {
+            content
+                .buttonStyle(.borderless)
+        }
     }
 }
 
@@ -120,7 +156,18 @@ let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
 /// always-reserved band costs 4 pt of artwork nobody notices at 10 feet. The card frame, its
 /// clip, the depth overlay and the ring itself all keep the OUTER geometry, so BUG-36's "ring
 /// scales with the card as one layer" contract and the graveyard above are untouched.
-private func ringInset(_ accentFocusRing: Bool) -> CGFloat { accentFocusRing ? ringWidth : 0 }
+/// 2026-08-30 no-zoom investigation: still mode's own neutral ring (`CardFocusTreatment.still`,
+/// drawn whenever `no_zoom_on_focus` is on and the accent ring isn't already drawing) was hitting
+/// the exact BUG-64 overpaint the accent ring was fixed for above — this function only ever
+/// reserved the band for the ACCENT ring, so a no-zoom user with the accent ring off got a
+/// `strokeBorder` painted straight over the poster's outer edge (the tester's "cuts off the
+/// posters"). Reserve the identical band whenever EITHER ring is going to draw. Still
+/// static/settings-driven, not focus-time, for the same reason the original BUG-64 fix gives: an
+/// always-reserved band costs 4pt of artwork nobody notices at 10 feet, while a focus-time inset
+/// would shrink the picture at the moment it should read as marked.
+private func ringInset(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CGFloat {
+    (accentFocusRing || noZoomOnFocus) ? ringWidth : 0
+}
 
 /// The magnitude of the system `.hoverEffect(.highlight)` lift on a poster — **measured**, not
 /// estimated (test44, tvOS 26.5 sim, 2026-08-25: focused artwork top edge rises 20.0pt on a 330pt
@@ -320,11 +367,45 @@ struct TileFocusLift: ViewModifier {
     @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let cornerRadius: CGFloat
+    /// 2026-08-30 no-zoom investigation: `content`'s own fixed size, needed to reserve the still
+    /// ring's band the way `ringInset` reserves it for PosterCard/LandscapeCard — but this
+    /// modifier's public signature (`tileFocusLift(cornerRadius:)`) is used across several files
+    /// this fix isn't scoped to touch, so it can't just take the size as a second parameter the
+    /// way that would normally be done. Every call site already gives `content` a fixed `.frame`
+    /// before attaching this modifier, so instead it's read back with a `.background`
+    /// `GeometryReader` — `.background` never influences what a view reports for ITS OWN layout,
+    /// so this measurement is purely observational, never a second source of truth for size.
+    @State private var measuredSize: CGSize = .zero
 
     func body(content: Content) -> some View {
         if noZoomOnFocus {
             let shape = RoundedRectangle(cornerRadius: cornerRadius)
+            // 2026-08-30 no-zoom investigation: the still ring used to `strokeBorder` straight
+            // over `content`'s own outer edge — the same BUG-64 overpaint PosterCard's accent ring
+            // was fixed for, just never ported to these utility tiles. `content` arrives
+            // pre-sized, so it can't be redrawn smaller the way PosterCard redraws its own artwork
+            // frame; instead it's shrunk in place with a static (never focus-linked — same
+            // "always reserved, never pops" contract as `ringInset`) `.scaleEffect`, computed
+            // per-axis from `measuredSize` so a fixed `ringWidth` margin lands on every edge
+            // regardless of the tile's aspect ratio. Before the very first layout pass measures a
+            // size, the guards below fall back to no shrink (1) rather than collapsing to zero.
+            // `.scaleEffect` is a paint-only transform — it doesn't change what `content` reports
+            // for layout — so the `.overlay` below still measures against the tile's TRUE,
+            // unscaled bounds, and the ring lands exactly in the vacated margin instead of on top
+            // of the artwork.
+            let scaleX = measuredSize.width > 0
+                ? max(0, measuredSize.width - 2 * ringWidth) / measuredSize.width : 1
+            let scaleY = measuredSize.height > 0
+                ? max(0, measuredSize.height - 2 * ringWidth) / measuredSize.height : 1
             content
+                .background {
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { measuredSize = geo.size }
+                            .onChange(of: geo.size) { _, newSize in measuredSize = newSize }
+                    }
+                }
+                .scaleEffect(x: scaleX, y: scaleY)
                 // Behind the (opaque) tile face, so only the spill reads — same weight as
                 // `.still`'s shadow.
                 .background {
@@ -465,7 +546,7 @@ struct PosterCard: View {
     }
 
     var body: some View {
-        let inset = ringInset(accentFocusRing) // BUG-64
+        let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
             CachedAsyncImage(string: imageURL)
                 .frame(width: resolvedWidth - 2 * inset, height: resolvedHeight - 2 * inset)
@@ -573,7 +654,7 @@ struct LandscapeCard: View {
     }
 
     var body: some View {
-        let inset = ringInset(accentFocusRing) // BUG-64
+        let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: imageURL)

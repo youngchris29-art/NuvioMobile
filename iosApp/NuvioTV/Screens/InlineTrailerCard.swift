@@ -915,7 +915,18 @@ struct InlineTrailerCard: View {
     /// The tile itself: landscape art as soon as the card expands, trailer fading in over it once
     /// resolved. The frame is the animated one, so this *is* the morphing artwork region.
     private var trailerSurface: some View {
-        ZStack {
+        // 2026-08-30 no-zoom investigation: whenever either ring is going to draw below, reserve
+        // its band the same way `ringInset` reserves it for PosterCard — settings-driven, not
+        // focus-time, so the shrink never pops in/out as focus changes. Computed from the
+        // per-axis `artworkWidth`/`artworkHeight` (not a single scalar) so a fixed `ringWidth`
+        // margin lands on every edge regardless of aspect ratio (this tile is 16:9, PosterCard's
+        // is 2:3).
+        let ringBandActive = accentFocusRing || noZoomOnFocus
+        let ringScaleX = ringBandActive && artworkWidth > 0
+            ? max(0, artworkWidth - 2 * ringWidth) / artworkWidth : 1
+        let ringScaleY = ringBandActive && artworkHeight > 0
+            ? max(0, artworkHeight - 2 * ringWidth) / artworkHeight : 1
+        return ZStack {
             if model.isExpanded {
                 // BUG-59 (reveal-gate wave): with the video side bar-proof (measured zoom + the
                 // probe's reveal gate), this art — on screen from the morph until the video is
@@ -953,6 +964,14 @@ struct InlineTrailerCard: View {
         }
         .frame(width: artworkWidth, height: artworkHeight)
         .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
+        // 2026-08-30 no-zoom investigation: shrink the ALREADY-CLIPPED video/art visually — a
+        // post-render `.scaleEffect`, not a real resize. `TrailerHeroPlayer`'s own UX-9/BUG-59
+        // zoom math is calibrated against `artworkWidth`/`artworkHeight` as passed to it above, so
+        // those props stay untouched; only the finished pixels get pulled in. `.scaleEffect`
+        // doesn't change the reported layout size, so the title/ring overlays below still measure
+        // against the tile's TRUE, unscaled bounds — the ring lands in the vacated margin instead
+        // of on top of the (possibly playing) video, and the title overlay is unaffected.
+        .scaleEffect(x: ringScaleX, y: ringScaleY)
         // FEAT-18 (u/mrStevenx3, asked twice): "the title (logo) disappears while the trailer is
         // playing, whereas in Nuvio it remains visible." With Hide Labels on there is NO caption
         // under the tile, so a playing trailer carried no title at all (reporter's frame,
@@ -985,6 +1004,14 @@ struct InlineTrailerCard: View {
         // stays in the view tree at opacity 0 while idle/dwelling (see `expandedTile`'s doc), and
         // this mirrors PosterCard's own `accentFocusRing && isFocused` guard rather than assuming
         // the morph phase alone proves focus.
+        //
+        // 2026-08-30 no-zoom investigation: this "paints strictly within the shape it clips to"
+        // was exactly the BUG-64 overpaint on PosterCard's artwork, just never fixed here — this
+        // stroke sat directly on the video's true edge with no reserved margin, for BOTH the
+        // accent ring and the neutral still ring. `ringScaleX`/`ringScaleY` above now reserve that
+        // margin for whichever ring is active, so this overlay (unchanged: still gated on
+        // `isFocused`, still drawn at the tile's true outer bounds) lands in the vacated band
+        // instead of over the artwork.
         .overlay {
             if accentFocusRing && isFocused {
                 RoundedRectangle(cornerRadius: posterStyle.cornerRadius)

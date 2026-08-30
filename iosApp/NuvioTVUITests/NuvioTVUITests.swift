@@ -3617,4 +3617,227 @@ final class NuvioTVUITests: XCTestCase {
             "Catalogs enabled count did not return to its original value (\(String(describing: restoredCount)) vs \(beforeCount)) — fixture left mutated"
         )
     }
+
+    // MARK: - 2026-08-30 no-zoom investigation: the missing rise test
+
+    /// The specced rise test for "No Zoom on Focus" that was never written. `CardFocusButtonStyle`
+    /// (PosterCard.swift) was the ENTIRE no-zoom mechanism — `.buttonStyle(.borderless)` plus
+    /// `.focusEffectDisabled(noZoomOnFocus)` — and it shipped with ZERO automated verification.
+    /// test44 above measures the ring's manual-scale-vs-system-lift equivalence but explicitly
+    /// launches with `-no_zoom_on_focus NO`; no test ever put the setting itself under measurement.
+    /// A beta tester then reported "the posters continue to zoom in… Ring Focus (even when it is
+    /// turned off) is still applied with a zoom, which cuts off the posters" — i.e.
+    /// `.focusEffectDisabled` was not actually suppressing `.borderless`'s system lift on tvOS 26
+    /// hardware, which is why `CardFocusButtonStyle` was reworked to swap in a custom
+    /// `StillCardButtonStyle` instead (a custom `ButtonStyle` can never receive the system lift in
+    /// the first place). This is that test.
+    ///
+    /// Same luma-edge-finder technique as test44 (read that test's doc first): the focused card's
+    /// TOP edge, measured against an UNFOCUSED neighbour's in the same screenshot, no `hasFocus`
+    /// reliance (the tvOS 27.0 runtime never reports it), loud prerequisite `XCTSkip`/`XCTFail`
+    /// rather than a silent vacuous pass.
+    func test46StillModeRiseIsZero() throws {
+        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES"], forceFreshLaunch: true)
+        openTab(app, named: "Home")
+        press(.down, times: 3)
+        press(.left, times: 6, gap: 0.3)
+        pause(2)
+        guard let card = focusedButton(app), card.frame.width > 80, card.frame.height > card.frame.width else {
+            throw XCTSkip("no focused poster card reported (the 27.0 runtime never reports hasFocus)")
+        }
+        let f = card.frame
+        let shot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
+        attachment.name = "46a_still_mode"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        let artH = f.width * 1.5
+
+        // 2026-08-30 device rerun #2: rise read 4.0pt EXACTLY, not a real lift. In still mode
+        // EVERY card's artwork is inset by the reserved ring band (BUG-64 / 2026-08-30 no-zoom
+        // investigation — see `ringInset` in PosterCard.swift), but only the FOCUSED card actually
+        // draws the neutral `stillHighlight` ring (`Color.white.opacity(0.85)`) into that band —
+        // an unfocused neighbour's band stays transparent, so its detected top-edge step is its
+        // ARTWORK's own top (outer+ringWidth). The focused card's STRONGEST step is instead the
+        // bright ring itself, right at the card's OUTER bounds (outer+0) — so a raw edge-to-edge
+        // comparison reads a phantom `ringWidth`pt "rise" that has nothing to do with lift.
+        // `ringWidth` itself lives in PosterCard.swift, which this UI test target cannot see (no
+        // `@testable import` — it drives the app as a black box) — duplicated here as a literal,
+        // matching PosterCard.swift's own `let ringWidth: CGFloat = 4`. Shared by both the rise
+        // measurement below and the left-edge check further down, which has the identical
+        // ring-vs-artwork ambiguity.
+        let ringWidthPt: CGFloat = 4
+        // Composited near-white (`Color.white.opacity(0.85)` over whatever's behind the card, i.e.
+        // the row/page background) reads far brighter than ordinary poster artwork at this
+        // resolution — a generous-but-honest cut, not tuned to any one poster.
+        let ringBrightness = 0.6
+
+        /// Mean of `profile` immediately AFTER `edgeIndex`, over a `ringWidthPt`-wide band
+        /// (converted to pixels via `ptPerPx`) — used to tell whether a detected step is the
+        /// bright still-mode ring or an ordinary (possibly dark) artwork edge. Generic over rows
+        /// or columns, same as `topEdgeIndex` itself.
+        func bandLumaAfter(_ profile: [Double], edgeIndex: Int, ptPerPx: CGFloat) -> Double {
+            let bandPixels = max(1, Int((ringWidthPt / ptPerPx).rounded()))
+            let start = edgeIndex + 1
+            let end = min(profile.count, start + bandPixels)
+            guard start < end else { return 0 }
+            let slice = profile[start..<end]
+            return slice.reduce(0, +) / Double(slice.count)
+        }
+
+        /// Top edge at a single column centred on `centreX`, within a card whose own top sits at
+        /// `topY` (not always `f.minY` — a rest candidate can be a different card in the row).
+        /// Same strip geometry as test44's local `topEdge`, kept as its own copy here rather than
+        /// shared because test44's closes over that test's own `f`/`artH`/`shot`/`app`. Also
+        /// reports the brightness of the band right after the step (`bandLumaAfter` above), so
+        /// callers can tell a bright ring edge from an ordinary artwork edge.
+        func topEdge(centreX: CGFloat, topY: CGFloat) -> (y: CGFloat, strength: Double, bandLumaAfter: Double)? {
+            let strip = CGRect(
+                x: centreX - f.width * 0.2, y: topY - artH * 0.25,
+                width: f.width * 0.4, height: artH * 0.5
+            )
+            guard strip.minX > 0, strip.maxX < app.frame.maxX, strip.minY > 0 else { return nil }
+            guard let (rows, ptPerPx) = try? rowLuma(in: shot.image, pointRect: strip, windowSize: app.frame.size) else { return nil }
+            guard let edge = topEdgeIndex(rows) else { return nil }
+            let band = bandLumaAfter(rows, edgeIndex: edge.index, ptPerPx: ptPerPx)
+            return (strip.minY + CGFloat(edge.index) * ptPerPx, edge.strength, band)
+        }
+
+        /// 2026-08-30 device rerun: the fixture skipped with "focused 0.808, rest 0.026" — the
+        /// single centred column on the REST card landed on near-black artwork (The Hunting
+        /// Party's poster has a black top) and read as no edge at all, even though the card's
+        /// true top edge was perfectly detectable a few points either side. Sample several evenly
+        /// spaced columns across `frame`'s own width (relative fractions of `frame.width`, so this
+        /// keeps working at any Poster Size — Large, Medium, whatever the fixture is running) and
+        /// keep the strongest, the same "take the best step" idea `topEdgeIndex` already applies
+        /// within one column's row profile, one dimension out.
+        func bestTopEdge(in frame: CGRect) -> (y: CGFloat, strength: Double, bandLumaAfter: Double)? {
+            let sampleCount = 6
+            var best: (y: CGFloat, strength: Double, bandLumaAfter: Double)?
+            for i in 0..<sampleCount {
+                // Middle 70% of the card's width — the outer margins are where a strip can clip
+                // the card's own rounded corner, a weaker step than the flat top just inboard.
+                let t = (CGFloat(i) + 0.5) / CGFloat(sampleCount)
+                let centreX = frame.minX + frame.width * (0.15 + 0.7 * t)
+                guard let candidate = topEdge(centreX: centreX, topY: frame.minY) else { continue }
+                if best == nil || candidate.strength > best!.strength { best = candidate }
+            }
+            return best
+        }
+
+        guard let focusedTopRaw = bestTopEdge(in: f) else {
+            throw XCTSkip("no usable top edge anywhere on the focused card — cannot measure still-mode rise")
+        }
+        guard focusedTopRaw.strength > 0.05 else {
+            throw XCTSkip("top-edge step too weak on the focused card itself (\(focusedTopRaw.strength)) — dark artwork, rerun")
+        }
+        // The ring-aware adjustment: if the strongest step found on the focused card is the bright
+        // still-mode ring rather than the artwork itself, the artwork's true top is `ringWidthPt`
+        // further down — the same band `ringInset` reserved for it. Honest either way: a card with
+        // NO ring drawn here (e.g. a zoom-ON regression where this setting silently stopped
+        // applying) has an ordinary, non-bright band and is compared RAW/unadjusted, so a real
+        // system lift (~20pt+) still fails loudly instead of being "corrected" away.
+        let focusedIsRingEdge = focusedTopRaw.bandLumaAfter > ringBrightness
+        let focusedArtworkY = focusedIsRingEdge ? focusedTopRaw.y + ringWidthPt : focusedTopRaw.y
+
+        // Rest baseline: try the immediate neighbour first (cheap, matches test44's own idiom),
+        // then fall back to every OTHER unfocused poster-shaped button visible on screen — read
+        // from the accessibility tree the same way `focusedButton`/`buttonSnapshots` already find
+        // cards elsewhere in this suite, nearest to the focused card first. Only a card that never
+        // yields a usable edge anywhere skips; a single dark column on one candidate no longer
+        // does.
+        let gapGuess = f.width * 0.18
+        var restCandidates: [(label: String, frame: CGRect)] = [
+            ("immediate neighbour (guessed)", CGRect(x: f.maxX + gapGuess, y: f.minY, width: f.width, height: f.height))
+        ]
+        let otherCards = buttonSnapshots(app)
+            .filter { !$0.hasFocus && $0.frame.width > 80 && $0.frame.height > $0.frame.width }
+            // Same row only — an accessibility frame's TOP is a layout property, unaffected by any
+            // paint-time focus transform, so every poster in this row shares `f.minY` regardless
+            // of which one is focused.
+            .filter { abs($0.frame.minY - f.minY) < 15 }
+            .filter { $0.frame != f }
+            .sorted { abs($0.frame.midX - f.midX) < abs($1.frame.midX - f.midX) }
+        for (i, snap) in otherCards.enumerated() {
+            restCandidates.append(("AX-tree card #\(i) at x=\(Int(snap.frame.minX))", snap.frame))
+        }
+
+        var restTop: (y: CGFloat, strength: Double, bandLumaAfter: Double)?
+        var triedStrengths: [String] = []
+        for candidate in restCandidates {
+            guard let edge = bestTopEdge(in: candidate.frame) else {
+                triedStrengths.append("\(candidate.label)=none")
+                continue
+            }
+            triedStrengths.append("\(candidate.label)=\(String(format: "%.3f", edge.strength))")
+            if edge.strength > 0.05 {
+                restTop = edge
+                break
+            }
+        }
+        guard let restTop else {
+            throw XCTSkip("no rest card yielded a usable top edge after trying \(restCandidates.count) candidate(s): \(triedStrengths.joined(separator: ", ")) — dark artwork, rerun")
+        }
+        // A rest candidate is UNFOCUSED (filtered by `hasFocus` above), so it never draws the
+        // still ring — its detected step is already its artwork's own top, no adjustment needed.
+        // Comparing it against `focusedArtworkY` (not the raw, possibly-ring `focusedTopRaw.y`) is
+        // what removes the phantom `ringWidthPt` reading.
+        let rise = restTop.y - focusedArtworkY
+        let report = XCTAttachment(string: "still mode focusedRaw=\(focusedTopRaw) focusedIsRingEdge=\(focusedIsRingEdge) focusedArtworkY=\(focusedArtworkY) restTop=\(restTop) rise=\(rise)pt artH=\(artH) frame=\(f)")
+        report.name = "46b_edges"
+        report.lifetime = .keepAlways
+        add(report)
+        NSLog("[BUG64] still mode rise=%.2fpt artH=%.1f ringEdge=%d strengths=%.3f/%.3f", rise, artH, focusedIsRingEdge ? 1 : 0, focusedTopRaw.strength, restTop.strength)
+
+        // The core assertion: still mode must not raise the focused card at all. Any measurable
+        // rise here means the button style (or something else) reintroduced a scale/lift — exactly
+        // what the beta report described ("posters continue to zoom in" with the setting on).
+        XCTAssertEqual(
+            rise, 0, accuracy: 2,
+            "still mode raised the focused card by \(rise)pt — 'No Zoom on Focus' must produce zero rise"
+        )
+
+        // Cheap layout-regression guard, same screenshot: the still ring's reserved band (BUG-64 /
+        // 2026-08-30 no-zoom investigation — see `ringInset` in PosterCard.swift) must not have
+        // shifted the artwork's LEFT edge by more than the band itself plus a point of slack. Not
+        // an equality check — the point is to catch a broken inset (e.g. a sign error, or the
+        // shrink applied at several times the intended width) breaking layout, not to pin the
+        // exact geometry. `columnLuma`/`topEdgeIndex` are the horizontal cousins of the vertical
+        // scan above (`topEdgeIndex` is a generic step-finder — it doesn't care whether the 1-D
+        // profile it's given came from rows or columns). Same ring-vs-artwork ambiguity as the
+        // rise measurement above applies here too: the focused card's strongest LEFT step can be
+        // the bright ring at the true outer edge rather than the inset artwork, so this is
+        // adjusted with the same `bandLumaAfter` technique (to the right of the step, not below).
+        func leftEdge(nearX: CGFloat) throws -> (x: CGFloat, strength: Double, bandLumaAfter: Double)? {
+            let strip = CGRect(
+                x: nearX - artH * 0.15, y: f.midY - f.width * 0.1,
+                width: artH * 0.3, height: f.width * 0.2
+            )
+            guard strip.minX > 0, strip.maxY < app.frame.maxY, let cgWidth = shot.image.cgImage?.width, cgWidth > 0 else { return nil }
+            let cols = try columnLuma(in: shot.image, pointRect: strip, windowSize: app.frame.size)
+            guard let edge = topEdgeIndex(cols) else { return nil }
+            let ptPerPx = app.frame.width / CGFloat(cgWidth)
+            let band = bandLumaAfter(cols, edgeIndex: edge.index, ptPerPx: ptPerPx)
+            return (strip.minX + CGFloat(edge.index) * ptPerPx, edge.strength, band)
+        }
+        if let left = try leftEdge(nearX: f.minX), left.strength > 0.05 {
+            let leftIsRingEdge = left.bandLumaAfter > ringBrightness
+            let artworkX = leftIsRingEdge ? left.x + ringWidthPt : left.x
+            let shift = artworkX - f.minX
+            NSLog("[BUG64] still mode left-edge shift=%.2fpt (measured=%.2f ringEdge=%d frameMinX=%.2f)", shift, left.x, leftIsRingEdge ? 1 : 0, f.minX)
+            XCTAssertLessThanOrEqual(
+                shift, ringWidthPt + 1,
+                "still mode's neutral ring inset shifted the artwork's left edge by \(shift)pt — the reserved band should be about \(ringWidthPt)pt, not more"
+            )
+            XCTAssertGreaterThanOrEqual(
+                shift, -1,
+                "still mode's artwork left edge sits OUTSIDE its own layout frame by \(shift)pt — the inset math went the wrong way"
+            )
+        }
+        // No `else`/skip here on purpose: a weak or unlocatable left-edge step is common (a bright
+        // poster edge next to a bright neighbour, or an off-screen strip near the row's leading
+        // edge) and this sub-check is explicitly the cheap, best-effort one — the rise assertion
+        // above is this test's real gate.
+    }
 }
