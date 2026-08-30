@@ -85,6 +85,17 @@ private data class StoredHomeCatalogPreference(
     val enabled: Boolean = true,
     val heroSourceEnabled: Boolean = true,
     val order: Int = 0,
+    /**
+     * The owning addon's sync id, stamped at write time from the definition that produced this
+     * entry ("" for collections and for records written before 2026-08-30). The drift-refill in
+     * [HomeCatalogSettingsRepository.normalizePreferences] needs "is this orphaned key's addon
+     * still present?", and the key alone cannot answer that: keys are "<addonId>:<type>:<catalogId>"
+     * where BOTH the addon id and the catalog id may contain ':', so every prefix heuristic has a
+     * collision (Codex 2026-08-30 rounds 3-4: loaded "foo" vs loading "foo:movie"). Exact id
+     * comparison against the current definition set is unambiguous; "" fails closed (never counts
+     * as a vanished selection). Local storage only — the sync payload has its own addon_id field.
+     */
+    val addonId: String = "",
 )
 
 @Serializable
@@ -373,9 +384,9 @@ object HomeCatalogSettingsRepository {
 
     private fun normalizePreferences() = synchronized(preferencesMutationLock) {
         val current = preferences
-        data class UnifiedEntry(val key: String, val isCollection: Boolean)
-        val catalogEntries = definitions.map { UnifiedEntry(it.key, false) }
-        val collectionEntries = collectionDefinitions.map { UnifiedEntry(it.key, true) }
+        data class UnifiedEntry(val key: String, val isCollection: Boolean, val addonId: String)
+        val catalogEntries = definitions.map { UnifiedEntry(it.key, false, it.addonIdForSync()) }
+        val collectionEntries = collectionDefinitions.map { UnifiedEntry(it.key, true, "") }
         val allEntries = catalogEntries + collectionEntries
         val knownKeys = allEntries.mapTo(linkedSetOf(), UnifiedEntry::key)
         var nextOrder = (current.values.maxOfOrNull(StoredHomeCatalogPreference::order) ?: -1) + 1
@@ -414,8 +425,77 @@ object HomeCatalogSettingsRepository {
                 enabled = stored?.enabled ?: true,
                 heroSourceEnabled = heroSourceEnabled,
                 order = stored?.order ?: nextOrder++,
+                addonId = entry.addonId,
             )
         }
+
+        // Drift-refill (bug reproduced live 2026-08-29/30): the loop above only auto-enables an
+        // entry that has NO stored preference at all (`stored?.heroSourceEnabled ?: true`). On a
+        // long-lived profile every beyond-the-cap entry already carries a stored
+        // heroSourceEnabled=false — normalize itself wrote it there on an earlier pass — so if the
+        // two previously-selected keys ever drop out of `definitions`/`collectionDefinitions` (an
+        // addon manifest reshuffled catalog ids, or the addon was removed), every SURVIVING entry
+        // is "stored=false" and the loop lands on zero enabled. There is no future pass where any
+        // of those keys would organically regain stored=true — the selection is stranded empty
+        // forever, and hero trailer location silently degrades along with it.
+        //
+        // Distinguish that DRIFT (a selection stranded on vanished keys) from a user who
+        // deliberately turned every hero source off on catalogs that are still here, AND from an
+        // addon that simply has not loaded yet. A key only counts as VANISHED when all three hold:
+        // its stored preference says heroSourceEnabled=true, it no longer resolves to any
+        // definition, and its stamped `addonId` matches an addon in the current definition set —
+        // an EXACT id comparison, never a key-prefix heuristic: addon ids and catalog ids may both
+        // contain ':', so every prefix parse of a key has a collision (Codex rounds 3-4). Records
+        // stamped "" (pre-2026-08-30, or collections) fail closed and never count as vanished.
+        // That last clause is what makes this safe under
+        // incremental manifest loading (Codex 2026-08-30 P1): on a cold start the callers feed
+        // syncCatalogs() only the addons whose manifests are READY, so the selection's addon can
+        // be legitimately absent for a while — its keys are then "not known" but must not be
+        // treated as gone, or an unlucky manifest completion order would reassign (and, worse,
+        // consume) a perfectly valid selection on an ordinary launch. The price: a selection held
+        // by an addon that was genuinely REMOVED stays stranded at zero rather than refilled —
+        // but the Settings rows are reachable and honest about "0 of 2 selected", so the user can
+        // recover manually, and no data is ever destroyed by guessing wrong.
+        val presentAddonIds = definitions.mapTo(mutableSetOf()) { it.addonIdForSync() }
+        val vanishedSelectionKeys = current.keys.filter { key ->
+            val pref = current.getValue(key)
+            pref.heroSourceEnabled &&
+                key !in knownKeys &&
+                pref.addonId.isNotEmpty() &&
+                pref.addonId in presentAddonIds
+        }
+        if (vanishedSelectionKeys.isNotEmpty()) {
+            var refilled = 0
+            if (enabledHeroSourceCount == 0 && orderedEntries.any { !it.isCollection }) {
+                orderedEntries.forEach { entry ->
+                    if (refilled >= HERO_SOURCE_SELECTION_LIMIT) return@forEach
+                    if (entry.isCollection) return@forEach
+                    val existing = normalized[entry.key] ?: return@forEach
+                    if (existing.heroSourceEnabled) return@forEach
+                    normalized[entry.key] = existing.copy(heroSourceEnabled = true)
+                    refilled += 1
+                }
+            }
+            // Consume the drift signal unconditionally once the keys are PROVABLY stale — their
+            // addon answered this sync and no longer offers them (Codex 2026-08-30 P2: consuming
+            // only inside the refill branch left the markers alive whenever a newly-added catalog
+            // had already defaulted a slot to true, and a user's later deliberate all-off was then
+            // misclassified as drift on the next pass). The entry itself stays in the map
+            // (order/customTitle survive), it just no longer votes as a stranded selection; if the
+            // same catalog id ever returns it re-enters the ordinary cap logic like any other
+            // entry with a stored preference.
+            vanishedSelectionKeys.forEach { key ->
+                normalized[key]?.let { pref ->
+                    normalized[key] = pref.copy(heroSourceEnabled = false)
+                }
+            }
+            log.i {
+                "normalizePreferences() — hero-source selection keys ${vanishedSelectionKeys.size} " +
+                    "vanished from their (still-present) addon's catalogs; refilled $refilled " +
+                    "entr${if (refilled == 1) "y" else "ies"} in display order and consumed the markers"
+            }
+        }
+
         preferences = normalized.toMap()
     }
 
@@ -598,6 +678,15 @@ object HomeCatalogSettingsRepository {
                     enabled = item.enabled,
                     heroSourceEnabled = existingHeroState[key] ?: true,
                     order = item.order,
+                    // Owner stamp: PRESERVE the local one, never adopt the remote's (Codex
+                    // 2026-08-30 round 5 P2). The remote `addon_id` can come from the exporter's
+                    // legacy `split(':', limit = 3)` fallback, which mis-splits colon-containing
+                    // addon ids ("foo:sub:movie:c1" → "foo") — adopting it would overwrite an
+                    // exact local stamp with an ambiguous one and reopen the false-vanished
+                    // consumption this field exists to prevent. Keys the local definition set
+                    // knows are re-stamped exactly by the normalizePreferences() call right below;
+                    // unknown keys keep their prior exact stamp or fail closed at "".
+                    addonId = preferences[key]?.addonId.orEmpty(),
                 )
             }
             val remoteKeys = remotePreferences.keys
@@ -668,6 +757,7 @@ object HomeCatalogSettingsRepository {
                 selectedHeroSourceCount(excludingKey = key) < HERO_SOURCE_SELECTION_LIMIT,
             order = _uiState.value.items.firstOrNull { it.key == key }?.order
                 ?: ((preferences.values.maxOfOrNull { it.order } ?: -1) + 1),
+            addonId = definitions.firstOrNull { it.key == key }?.addonIdForSync().orEmpty(),
         )
     }
 

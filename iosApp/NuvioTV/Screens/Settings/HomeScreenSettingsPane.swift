@@ -5,6 +5,17 @@ import SharedCore
 /// type labels, and the Home Rows enable/reorder list. Extracted from SettingsView.swift (Phase 2
 /// HIG revamp file split) — logic and wiring preserved verbatim, only regrouped into a
 /// per-category pane.
+///
+/// 2026-08-30 fix: "Hero Sources" and "Catalogs" used to be single composite child views
+/// (`HeroSourcesGroup`/`HomeCatalogsGroup`), each rendering a disclosure header PLUS every
+/// expanded row inside its own body. Because every direct child of `SettingsSection` here is ONE
+/// tvOS `List` row, and a `List` row exposes exactly ONE focus target, that made every expanded
+/// toggle row and every catalog chip permanently unreachable — down from an expanded header
+/// skipped straight to the next section row, and right did nothing. This is the root cause behind
+/// the beta tester's repeated "impossible to select the catalogs for the home page or the Hero"
+/// report across three betas (reproduced in the simulator 2026-08-29/30). The fix hoists every
+/// expanded row to be a direct `SettingsSection` child in its own right — see the per-view
+/// comments below for what that retired.
 struct HomeScreenSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
 
@@ -27,6 +38,12 @@ struct HomeScreenSettingsPane: View {
     /// Where the "Trailers on Focus" muted preview plays: the poster card itself (default) or the
     /// hero banner. Only meaningful while `inlineTrailersEnabled` is on. Local-only, not synced.
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
+
+    /// 2026-08-30 fix: replaces the `isExpanded` that used to live inside the now-deleted
+    /// `HeroSourcesGroup`/`HomeCatalogsGroup`. Plain `@State`, same behavior as before — no
+    /// persistence, so both sections start collapsed on every (re)visit to Settings.
+    @State private var heroSourcesExpanded = false
+    @State private var catalogsExpanded = false
 
     var body: some View {
         SettingsSection(String(localized: "Home Rows")) {
@@ -93,10 +110,6 @@ struct HomeScreenSettingsPane: View {
                     )
                 )
 
-                // Collections are hard-forced to heroSourceEnabled = false on the
-                // Kotlin side (HomeCatalogSettingsRepository.normalizePreferences),
-                // so they never appear as a hero source — filter defensively here too.
-                //
                 // Everything inside this branch configures the ROTATING banner specifically —
                 // its layout and which catalogs feed it — so it stays hidden with Show Hero off,
                 // where there are no hero pages to lay out or source (FEAT-15: the focus panel
@@ -116,19 +129,45 @@ struct HomeScreenSettingsPane: View {
                         isOn: $heroNuvioStyle
                     )
 
-                    // Focus note (2026-08-29): this guard removes the whole group — header
-                    // included — when the last non-collection catalog goes away, so a focused hero
-                    // source row loses its entire subtree in one pass. That is tolerable ONLY
-                    // because the "Nuvio-Style Hero" toggle directly above is an adjacent
-                    // focusable row in the same List section for the engine to fall back to;
-                    // the group is never the only focusable thing on screen. Keep it that way if
-                    // this branch is ever rearranged.
+                    // Collections are hard-forced to heroSourceEnabled = false on the Kotlin side
+                    // (HomeCatalogSettingsRepository.normalizePreferences), so they never appear
+                    // as a hero source — filter defensively here too.
+                    //
+                    // Focus note (2026-08-30): "Hero Sources" is a `SettingsDisclosureRow` header
+                    // row followed, only while expanded, by one `HeroSourceRow` per item below it
+                    // — each a SEPARATE `SettingsSection` child, i.e. a separate List row with its
+                    // own native focus target. Before this fix, the header and every expanded row
+                    // lived together inside one `HeroSourcesGroup` view that was itself a single
+                    // List row, so tvOS's one-focus-target-per-row rule meant none of the expanded
+                    // toggles could ever be focused (see the file header comment for the device
+                    // repro). There is no more group-local `isExpanded`, no `focusedChild`
+                    // `@FocusState`, and no `settingsRowPlatterActive` publication to keep in sync
+                    // with the data here — a removed row is just a removed List row, and the
+                    // system reassigns focus to a surviving sibling on its own. If this list ever
+                    // empties while expanded, `heroSourcesExpanded` simply stops mattering: the
+                    // `if !heroSourceCatalogs.isEmpty` guard around the header below removes the
+                    // header too, and the adjacent "Nuvio-Style Hero" toggle above is the
+                    // guaranteed-present fallback landing row (same BUG-47 reasoning as always).
                     let heroSourceCatalogs = model.catalogs.filter { !$0.isCollection }
                     if !heroSourceCatalogs.isEmpty {
-                        HeroSourcesGroup(
-                            items: heroSourceCatalogs,
-                            onToggle: { key, enabled in model.setHeroSource(key: key, enabled: enabled) }
-                        )
+                        SettingsDisclosureRow(
+                            title: String(localized: "Hero Sources"),
+                            subtitle: heroSourcesSummary,
+                            isExpanded: heroSourcesExpanded && !heroSourceCatalogs.isEmpty
+                        ) {
+                            heroSourcesExpanded.toggle()
+                        }
+
+                        if heroSourcesExpanded && !heroSourceCatalogs.isEmpty {
+                            ForEach(heroSourceCatalogs, id: \.key) { item in
+                                HeroSourceRow(
+                                    item: item,
+                                    interactive: item.heroSourceEnabled || heroSelectedCount < heroLimit
+                                ) { enabled in
+                                    model.setHeroSource(key: item.key, enabled: enabled)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -169,13 +208,53 @@ struct HomeScreenSettingsPane: View {
                     )
                 )
 
-                HomeCatalogsGroup(
-                    items: model.catalogs,
-                    onToggle: { model.toggleCatalog($0) },
-                    onUp: { model.moveUp($0) },
-                    onDown: { model.moveDown($0) }
-                )
+                // Focus note (2026-08-30): same hoist as Hero Sources above — "Catalogs" is a
+                // header row followed, only while expanded, by one `CatalogSettingRow` per
+                // catalog, each its own `SettingsSection` child / List row. This is the group the
+                // device video (2026-08-29) caught rendering blank: `HomeCatalogsGroup` put its
+                // rows' text and reorder chips straight into a shared List row, where none of them
+                // ever got the system's focused-row label inversion, and (independently) none of
+                // them could ever actually receive focus for the reason in the file header
+                // comment. `CatalogSettingRow` is also reshaped below — see its own comment — so a
+                // single row can stay reachable without needing three separate focus targets.
+                SettingsDisclosureRow(
+                    title: String(localized: "Catalogs"),
+                    subtitle: catalogsSummary,
+                    isExpanded: catalogsExpanded && !model.catalogs.isEmpty
+                ) {
+                    catalogsExpanded.toggle()
+                }
+
+                if catalogsExpanded && !model.catalogs.isEmpty {
+                    ForEach(model.catalogs, id: \.key) { item in
+                        CatalogSettingRow(
+                            item: item,
+                            onToggle: { model.toggleCatalog(item) },
+                            onUp: { model.moveUp(item) },
+                            onDown: { model.moveDown(item) }
+                        )
+                    }
+                }
             }
+        }
+        // The expansion flags now outlive the branches that render their groups (they used to be
+        // `@State` INSIDE the group views, destroyed with them), so reset them when the owning
+        // branch disappears — otherwise toggling Show Hero off and on, or the catalog list
+        // emptying and repopulating, would resurrect a stale expanded state instead of the
+        // documented collapsed-on-recreation behavior (Codex 2026-08-30 P3).
+        .onChange(of: model.heroEnabled) { _, enabled in
+            if !enabled { heroSourcesExpanded = false }
+        }
+        .onChange(of: model.catalogs.isEmpty) { _, isEmpty in
+            if isEmpty {
+                heroSourcesExpanded = false
+                catalogsExpanded = false
+            }
+        }
+        // The Hero Sources group can also vanish alone: every remaining catalog being a
+        // collection removes just that header while the pane and Catalogs group stay.
+        .onChange(of: model.catalogs.contains(where: { !$0.isCollection })) { _, hasCatalogSources in
+            if !hasCatalogSources { heroSourcesExpanded = false }
         }
     }
 
@@ -219,242 +298,61 @@ struct HomeScreenSettingsPane: View {
                 .foregroundStyle(Theme.Palette.textSecondary)
         }
     }
-}
 
-/// The "Hero Sources" sub-list under Show Hero: collapsed by default behind a single focusable
-/// header row (title + live "N of 2 selected" summary + chevron); pressing Select reveals the
-/// per-catalog toggle rows inline. Mirrors the Compose `HeroSourcesDropdown`
-/// (HomescreenSettingsPage.kt) logic — an OFF row goes non-interactive once the limit is reached;
-/// ON rows can always toggle off.
-///
-/// tvOS has no usable `DisclosureGroup` (poor/inconsistent focus highlighting — see the identical
-/// note on `StreamPickerView.groupHeader`), so this is a plain `Button` header + conditional
-/// content, not a DisclosureGroup. `isExpanded` is plain `@State` (no persistence): the section
-/// starts collapsed every time this view is (re)built, i.e. on every visit to Settings. Collapsing
-/// normally happens from the header row's own Button action, so focus is already on the header
-/// at that moment — no separate FocusState retargeting is needed the way StreamPickerView's
-/// multi-trigger expansion needs it. The one collapse that is NOT user-driven is the empty-`items`
-/// guard in `body`, and it deliberately doesn't retarget focus either: by the time it fires, every
-/// row it could have retargeted to is already gone, and the header it collapses back to is the
-/// focusable row that stayed mounted through the whole pass.
-private struct HeroSourcesGroup: View {
-    let items: [HomeCatalogSettingsItem]
-    let onToggle: (_ key: String, _ enabled: Bool) -> Void
-    @State private var isExpanded = false
+    // MARK: - Hero Sources summary (moved out of the deleted `HeroSourcesGroup`, 2026-08-30)
 
-    /// BUG-65 container half (device video 2026-08-29). This whole group is ONE tvOS list row, so
-    /// the system raises its near-white focus platter as soon as ANY child takes focus, and every
-    /// child — not just the focused one — ends up drawn on white. `\.isFocused` is the read that
-    /// dies on hardware, so the group derives that state from a `@FocusState` its children bind
-    /// (BUG-45's device-proven mechanism) and publishes it as `settingsRowPlatterActive`.
-    ///
-    /// STRICTLY READ-ONLY: nothing ever writes `focusedChild`. That matters here — a write would
-    /// be a focus retarget, and the whole point of the surrounding comments is that this group
-    /// hands focus reassignment to the system when its rows are removed.
-    @FocusState private var focusedChild: String?
-
-    /// Tag for the always-mounted header row; catalog rows use their own `key`, which cannot
-    /// collide with it.
-    private static let headerFocusTag = "\u{0000}header"
-
-    private var selectedCount: Int {
-        items.filter { $0.heroSourceEnabled }.count
+    /// Collections are hard-forced to `heroSourceEnabled = false` on the Kotlin side
+    /// (HomeCatalogSettingsRepository.normalizePreferences); filtered out here too, matching the
+    /// `heroSourceCatalogs` filter at the call site above.
+    private var heroSelectedCount: Int {
+        model.catalogs.filter { !$0.isCollection && $0.heroSourceEnabled }.count
     }
 
-    private var limit: Int {
+    private var heroLimit: Int {
         Int(HomeCatalogSettingsRepository.shared.HERO_SOURCE_SELECTION_LIMIT)
     }
 
     /// "N of 2 selected", plus the selected catalogs' display titles once at least one is on —
     /// gives the collapsed header a useful preview instead of just a count.
-    private var summary: String {
-        let selectedNames = items.filter { $0.heroSourceEnabled }.map(\.displayTitle)
+    private var heroSourcesSummary: String {
+        let selectedNames = model.catalogs
+            .filter { !$0.isCollection && $0.heroSourceEnabled }
+            .map(\.displayTitle)
         guard !selectedNames.isEmpty else {
-            return String(localized: "\(selectedCount) of \(limit) selected")
+            return String(localized: "\(heroSelectedCount) of \(heroLimit) selected")
         }
         let joined = selectedNames.joined(separator: ", ")
-        return String(localized: "\(selectedCount) of \(limit) selected \u{00B7} \(joined)")
+        return String(localized: "\(heroSelectedCount) of \(heroLimit) selected \u{00B7} \(joined)")
     }
 
-    /// Rows show only when the user expanded the group AND there is something to show. Gating the
-    /// content on the data as well as on `isExpanded` means the expanded platter can never render
-    /// with zero focusable children inside it — not even for the single frame between `items`
-    /// shrinking to empty and the `onChange` below resetting the expansion state.
-    private var showsRows: Bool { isExpanded && !items.isEmpty }
+    // MARK: - Catalogs summary (moved out of the deleted `HomeCatalogsGroup`, 2026-08-30)
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            SettingsDisclosureRow(
-                title: String(localized: "Hero Sources"),
-                subtitle: summary,
-                // The chevron reports what is actually on screen, not the raw state, so it can't
-                // point "up" at a platter that `showsRows` has already withheld.
-                isExpanded: showsRows,
-                focusBinding: $focusedChild,
-                focusTag: Self.headerFocusTag,
-                focusedTag: focusedChild
-            ) {
-                isExpanded.toggle()
-            }
-
-            if showsRows {
-                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    ForEach(items, id: \.key) { item in
-                        HeroSourceRow(
-                            item: item,
-                            interactive: item.heroSourceEnabled || selectedCount < limit,
-                            focusBinding: $focusedChild,
-                            focusedTag: focusedChild
-                        ) { enabled in
-                            onToggle(item.key, enabled)
-                        }
-                    }
-                }
-                .padding(.leading, Theme.Spacing.md)
-            }
-        }
-        // BUG-65 container half: tell every child that this list row's platter is up — see
-        // `focusedChild` above. Inert (false) until one of them actually holds focus.
-        .environment(\.settingsRowPlatterActive, focusedChild != nil)
-        // NO `.animation(_:value: isExpanded)` and no `.transition(.opacity)` here any more, and
-        // that is the fix, not an oversight (device video 2026-08-29, §(b) "removing a catalog →
-        // big white screen"). This group is ONE List row holding a `ForEach` of focusable toggle
-        // rows, so an add-on emission can delete the row that currently holds focus. The two
-        // modifiers could not be scoped to "expansion only": the empty-`items` guard below changes
-        // `isExpanded` in the SAME transaction as the shrink, which is exactly the transaction an
-        // `.animation(value:)` picks up — so the focus engine would be reassigning against a
-        // subtree that is mid-fade rather than one that is simply gone. Unanimated, the removal
-        // lands in a single pass and the system reassigns to a surviving sibling row on its own,
-        // which is the behaviour this repo prefers over any hand-rolled retarget. Correctness over
-        // polish: the price is that expanding/collapsing now snaps.
-        //
-        // The guard itself: if the list empties while expanded, drop back to the collapsed header —
-        // never leave an expanded platter whose entire focusable subtree just vanished (BUG-47
-        // class). The header row is a plain `Button` that stays mounted in every state, so it is
-        // the stable focusable ancestor the engine lands on. Defensive as written — the call site
-        // only builds this group when the filtered list is non-empty, so today the group is removed
-        // wholesale instead (focus then falls to the adjacent "Nuvio-Style Hero" toggle row) — but
-        // the invariant now lives with the view that has to honour it.
-        .onChange(of: items.isEmpty) { _, isEmpty in
-            if isEmpty { isExpanded = false }
-        }
+    private var catalogsSummary: String {
+        let enabledCount = model.catalogs.filter { $0.enabled }.count
+        return String(localized: "\(enabledCount) of \(model.catalogs.count) enabled")
     }
 }
 
-/// The per-catalog enable/reorder list under "Show Catalog Type in Titles": collapsed by default
-/// behind a header row ("Catalogs" + "N of M enabled" summary + chevron), matching the Hero
-/// Sources treatment above per the same device feedback. Expanding reveals the existing
-/// `CatalogSettingRow` list unchanged — enable/move up/move down behave exactly as before.
-///
-/// Same focus contract as `HeroSourcesGroup`: no animation over a data-driven row removal, and an
-/// empty `items` collapses back to the header rather than leaving an expanded platter behind. This
-/// is the group the tester was standing in when the screen died, so the reasoning is spelled out
-/// again at the guard in `body` rather than cross-referenced away.
-private struct HomeCatalogsGroup: View {
-    let items: [HomeCatalogSettingsItem]
-    let onToggle: (HomeCatalogSettingsItem) -> Void
-    let onUp: (HomeCatalogSettingsItem) -> Void
-    let onDown: (HomeCatalogSettingsItem) -> Void
-    @State private var isExpanded = false
-
-    /// See `HeroSourcesGroup.focusedChild`. This is the group the device video caught blank: its
-    /// rows put their text and their reorder chips straight into the list row rather than into a
-    /// control's label, so NONE of them got the system's focused-row inversion and the platter
-    /// came up empty. Read-only, never written.
-    @FocusState private var focusedChild: String?
-
-    private static let headerFocusTag = "\u{0000}header"
-
-    private var enabledCount: Int {
-        items.filter { $0.enabled }.count
-    }
-
-    /// See `HeroSourcesGroup.showsRows` — expanded content is gated on the data as well as on the
-    /// user's expansion state, so an emptied list can never render as a platter with no rows.
-    private var showsRows: Bool { isExpanded && !items.isEmpty }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            SettingsDisclosureRow(
-                title: String(localized: "Catalogs"),
-                subtitle: String(localized: "\(enabledCount) of \(items.count) enabled"),
-                isExpanded: showsRows,
-                focusBinding: $focusedChild,
-                focusTag: Self.headerFocusTag,
-                focusedTag: focusedChild
-            ) {
-                isExpanded.toggle()
-            }
-
-            if showsRows {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    ForEach(items, id: \.key) { item in
-                        CatalogSettingRow(
-                            item: item,
-                            focusBinding: $focusedChild,
-                            focusedTag: focusedChild,
-                            onToggle: { onToggle(item) },
-                            onUp: { onUp(item) },
-                            onDown: { onDown(item) }
-                        )
-                    }
-                }
-                .padding(.leading, Theme.Spacing.md)
-            }
-        }
-        // BUG-65 container half — see `focusedChild` above.
-        .environment(\.settingsRowPlatterActive, focusedChild != nil)
-        // The animation and the opacity transition are gone on purpose — this is the group the
-        // 2026-08-29 device video died in ("removing a catalog → big white screen"). It is ONE List
-        // row wrapping a `ForEach` of focusable rows, so removing an add-on deletes rows out from
-        // under the user's focus; animating that deletion (which an `.animation(value: isExpanded)`
-        // does as soon as anything also flips `isExpanded` in the same transaction, e.g. the guard
-        // below) leaves the focus engine reassigning against a fading subtree. Unanimated, the rows
-        // vanish in one pass and the system moves focus to a surviving sibling row by itself —
-        // system focus behaviour, not a hand-rolled retarget.
-        //
-        // Empty-list guard: collapse back to the header, which is focusable and stays mounted, so
-        // the expanded platter is never left with an empty focusable subtree (BUG-47 class).
-        // Defensive today — the pane swaps to its `model.catalogs.isEmpty` branch (which now
-        // carries its own focusable row) before this group can be handed an empty list — but the
-        // group no longer depends on that call-site detail to stay focus-safe.
-        .onChange(of: items.isEmpty) { _, isEmpty in
-            if isEmpty { isExpanded = false }
-        }
-    }
-}
-
-/// Shared collapsed/expanded header row for the two collapsible Home Screen groups above: title +
+/// Shared collapsed/expanded header row for the two collapsible Home Screen lists above: title +
 /// a live summary subtitle + a chevron that rotates 180° between collapsed (pointing down) and
-/// expanded (pointing up). C4: converted off the legacy full-width row button style and its
-/// focus-aware text-colour modifier onto a plain default-style `Button` (`SettingsActionRow`'s
-/// pattern) with a trailing chevron. C4 assumed the system would draw and invert this row like
-/// every other kit row; the 2026-08-29 device video is the counter-example — see below.
+/// expanded (pointing up).
 ///
-/// BUG-65 container half: unlike every other kit row, this Button is NOT a list row of its own —
-/// it lives inside the group's `VStack`, i.e. inside a list row it shares with the expanded
-/// content. The device video caught it both ways: legible when the platter's inversion reached it
-/// (3:56) and a near-white ghost with an invisible subtitle and chevron when it did not (4:02).
-/// It therefore takes the group's focus binding: that is how the group knows its platter is up,
-/// and it lets this row colour itself from a signal that survives on hardware.
+/// 2026-08-30 fix: this is now a plain `SettingsActionRow`-shaped `Button` — no focus-binding
+/// params, no `settingsRowPlatterActive`/`settingsRowIsFocused` reads, no `colorScheme` flip. It
+/// used to take a `@FocusState` binding from its parent group so the group could tell whether ITS
+/// one List row's platter was up (BUG-65 container half), because the header shared that List row
+/// with every expanded child. Now this row is its OWN `SettingsSection` child, i.e. its own List
+/// row, so the system's native focused-row label inversion reaches the whole Button label the
+/// ordinary way every other kit row gets it — the same way `SettingsActionRow` always has. That
+/// retires the container-focus problem for this file specifically (BUG-65's platter-legibility
+/// fix, the env keys in DesignSystem/FlatControlStyles.swift, and the `@FocusState`-publishing
+/// pattern all still apply to other custom containers elsewhere in the app — nothing here changes
+/// them, they just have no publisher left in this file, so they default to false / are inert).
 private struct SettingsDisclosureRow: View {
     let title: String
     let subtitle: String
     let isExpanded: Bool
-    let focusBinding: FocusState<String?>.Binding
-    let focusTag: String
-    /// The group's CURRENT focus tag, passed as a plain value on purpose. Reading
-    /// `focusBinding.wrappedValue` here would compile, but a `FocusState.Binding` is the same
-    /// value on every pass (it wraps the parent's storage), so SwiftUI could skip re-running this
-    /// body when focus moves between two children and leave the published colour stale. A plain
-    /// property is a real dependency.
-    let focusedTag: String?
     let action: () -> Void
-
-    @Environment(\.settingsRowPlatterActive) private var platterActive
-    @Environment(\.colorScheme) private var inheritedScheme
-
-    private var focused: Bool { focusedTag == focusTag }
 
     var body: some View {
         Button(action: action) {
@@ -465,33 +363,24 @@ private struct SettingsDisclosureRow: View {
                     .font(SettingsRowFont.title)
                     .foregroundStyle(.secondary)
             }
-            // The chevron is a SIBLING of `SettingsRowLabel`, not part of it, so the label's own
-            // platter handling does not reach it — hence the flip at the HStack. Written back
-            // unchanged while the platter is down, so it can never clobber a system inversion.
-            .environment(\.colorScheme, (focused || platterActive) ? .light : inheritedScheme)
         }
-        .focused(focusBinding, equals: focusTag)
-        // Belt-and-braces alongside the group-wide platter flag: this row's own focus, published
-        // the documented way, so its label flips even if the group's flag ever lags a frame.
-        .environment(\.settingsRowIsFocused, focused)
     }
 }
 
 /// A single Hero Sources row: catalog title + add-on, with an on/off indicator. Non-interactive
-/// (dimmed, disabled) when the 2-source limit is reached and this row is currently off. C4:
-/// converted onto `SettingsToggleRow` (a real `Toggle`) instead of the hand-rolled checkmark
-/// Button — the disabled state now uses `.disabled`, which the system already dims/ignores input
-/// for, so the manual `.opacity(interactive ? 1 : 0.4)` is gone too.
+/// (dimmed, disabled) when the 2-source limit is reached and this row is currently off — `Toggle`
+/// + `.disabled` does the dimming/input-ignoring for free, so there is no manual opacity here.
+///
+/// 2026-08-30 fix: as of this fix each `HeroSourceRow` is its own `SettingsSection` child / List
+/// row (see the call site in `HomeScreenSettingsPane.body`), so it is a genuinely independent
+/// focus target — down/up from one row lands on the next, same as every other Settings row. It no
+/// longer takes or publishes any focus-binding params: those existed only so `HeroSourcesGroup`
+/// (deleted) could detect that a child of its single shared List row had focus. At the 2-source
+/// limit, a disabled OFF row is simply focus-skipped by the system, same as any other disabled
+/// control — the ON rows stay reachable to free up a slot.
 private struct HeroSourceRow: View {
     let item: HomeCatalogSettingsItem
     let interactive: Bool
-    /// BUG-65 container half: binding this row into the group's focus state is what tells the
-    /// group its list-row platter is up (see `HeroSourcesGroup.focusedChild`). This row's own text
-    /// is a `Toggle` LABEL, which the device video showed the system does still invert (3:56) — it
-    /// is bound for the group's sake, and the published value below is the belt-and-braces half.
-    let focusBinding: FocusState<String?>.Binding
-    /// See `SettingsDisclosureRow.focusedTag` for why the value travels alongside the binding.
-    let focusedTag: String?
     let onToggle: (Bool) -> Void
 
     var body: some View {
@@ -503,89 +392,54 @@ private struct HeroSourceRow: View {
                 set: { onToggle($0) }
             )
         )
-        .focused(focusBinding, equals: item.key)
-        .environment(\.settingsRowIsFocused, focusedTag == item.key)
         .disabled(!interactive)
     }
 }
 
-/// A Home-catalog row: title + add-on, with reorder (up/down) and an enable toggle.
+/// A Home-catalog row: title + add-on, with an enable/disable indicator and reorder via long-press
+/// context menu.
 ///
-/// BUG-65 container half — this is the row the 2026-08-29 device video showed as blank white
-/// (frame 3:38). Unlike every other Settings row, its text is NOT a control's label: it is plain
-/// `Text` sitting directly in the group's list row, and the system's focused-row label inversion
-/// only reaches control labels. So `Theme.Palette.textPrimary`/`textSecondary` (both semantic —
-/// `Color.primary`/`.secondary`) kept resolving against the app's dark scheme and rendered white
-/// on the white platter, while the chips' glyphs were forced dark-scheme by `ChipButtonStyle`.
-/// Everything below reads the group's published platter state instead of `\.isFocused`.
+/// 2026-08-30 fix, full redesign: the previous shape put three independent focus targets (an
+/// enable toggle chip plus up/down reorder chips) inside one row. Hoisting `CatalogSettingRow`
+/// itself out to be its own List row (see the call site above) fixes reachability for the row as a
+/// whole, but three chips *within* one row would just recreate the identical one-focus-target trap
+/// one level down — a List row still exposes only one focus target, so at most one of those three
+/// chips could ever be focused. Rather than hoist the chips too (which would triple the row count
+/// and make "enable" and "reorder" show up as separate list entries), the whole row is now ONE
+/// `Button` whose primary action is the enable toggle, with reorder moved to a long-press
+/// `.contextMenu` (same pattern as the Library tab's remove-from-library menu, see
+/// `LibraryView.swift`). Down/up navigation between catalogs — the reorder gesture people actually
+/// reach for while scanning a list — now just works, and Select+hold reaches the rarer reorder
+/// action without needing its own focus target.
 private struct CatalogSettingRow: View {
     let item: HomeCatalogSettingsItem
-    let focusBinding: FocusState<String?>.Binding
-    /// See `SettingsDisclosureRow.focusedTag` for why the value travels alongside the binding —
-    /// it matters most here, where focus moves BETWEEN this row's three chips without the group's
-    /// platter flag changing at all.
-    let focusedTag: String?
     let onToggle: () -> Void
     let onUp: () -> Void
     let onDown: () -> Void
 
-    @Environment(\.settingsRowPlatterActive) private var platterActive
-    @Environment(\.colorScheme) private var inheritedScheme
-
-    /// One tag per focusable control in the row — the group needs to hear from ALL of them, or its
-    /// platter flag stays false for whichever chip the user is actually standing on.
-    private func focusTag(_ control: String) -> String { "\(item.key)|\(control)" }
-
-    private func isFocused(_ control: String) -> Bool {
-        focusedTag == focusTag(control)
-    }
-
     var body: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                Text(item.displayTitle)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(item.enabled ? Theme.Palette.textPrimary : Theme.Palette.textSecondary)
-                    .lineLimit(1)
-                Text(item.addonName)
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                    .lineLimit(1)
-            }
-            // The colours above stay exactly as they were — semantic, and carrying the
-            // enabled/disabled distinction. Only the scheme they resolve against changes, and only
-            // while the platter is up; at rest the inherited value is written straight back, so
-            // this is a no-op everywhere else.
-            .environment(\.colorScheme, platterActive ? .light : inheritedScheme)
-
-            Spacer(minLength: Theme.Spacing.lg)
-
-            Button(action: onUp) {
-                Image(systemName: "chevron.up")
-            }
-            .buttonStyle(.chip)
-            .focused(focusBinding, equals: focusTag("up"))
-            .environment(\.settingsRowIsFocused, isFocused("up"))
-            .accessibilityLabel(String(localized: "Move Up"))
-
-            Button(action: onDown) {
-                Image(systemName: "chevron.down")
-            }
-            .buttonStyle(.chip)
-            .focused(focusBinding, equals: focusTag("down"))
-            .environment(\.settingsRowIsFocused, isFocused("down"))
-            .accessibilityLabel(String(localized: "Move Down"))
-
-            Button(action: onToggle) {
+        Button(action: onToggle) {
+            HStack(spacing: Theme.Spacing.lg) {
+                SettingsRowLabel(title: item.displayTitle, subtitle: item.addonName)
+                    .opacity(item.enabled ? 1 : 0.55)
+                Spacer()
                 Image(systemName: item.enabled ? "checkmark.circle.fill" : "circle")
                     .rowAccentTint(item.enabled)
             }
-            .buttonStyle(.chip)
-            .focused(focusBinding, equals: focusTag("toggle"))
-            .environment(\.settingsRowIsFocused, isFocused("toggle"))
-            .accessibilityLabel(item.enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
         }
-        .padding(.vertical, Theme.Spacing.xs)
-        .frame(maxWidth: .infinity)
+        .contextMenu {
+            Button {
+                onUp()
+            } label: {
+                Label(String(localized: "Move Up"), systemImage: "chevron.up")
+            }
+            Button {
+                onDown()
+            } label: {
+                Label(String(localized: "Move Down"), systemImage: "chevron.down")
+            }
+        }
+        .accessibilityLabel(item.displayTitle)
+        .accessibilityValue(item.enabled ? Text("Enabled") : Text("Disabled"))
     }
 }

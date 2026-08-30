@@ -3457,4 +3457,164 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(relaunched.buttons["Emerald"].waitForExistence(timeout: 6), "still on the Appearance pane")
         XCTAssertTrue(relaunched.state == .runningForeground)
     }
+
+    // MARK: - Home Screen "Catalogs" expandable group: regression gate for the blank-pane bug
+
+    /// 2026-08-29/30 finding (see `HomeScreenSettingsPane.swift`'s file header comment, and
+    /// CLAUDE.md's "Home Rows blank pane" entry): the Settings → Home Screen "Hero Sources" and
+    /// "Catalogs" expandable groups used to render their disclosure header AND every expanded row
+    /// inside ONE native `List` row. tvOS exposes exactly one focus target per `List` row, so once
+    /// a group was expanded none of the individual catalog rows could ever actually receive
+    /// focus — a Select press one row below the header landed back on the header itself (re-
+    /// collapsing it) rather than on the first catalog. The beta tester's "impossible to select
+    /// the catalogs for the home page" report shipped across three betas because no automated
+    /// test ever walked focus INTO an expanded group, only asserted the group's existence. The
+    /// pane was restructured so each expanded catalog row (`CatalogSettingRow`) is hoisted out to
+    /// be its own `SettingsSection` child / List row, with its own focus target. This test is the
+    /// regression gate for that fix: it proves a Select press with focus one row below the
+    /// expanded "Catalogs" header actually toggles the FIRST catalog row (the header's "N of M
+    /// enabled" count changes), not the header's own collapse action.
+    func test45CatalogsGroupFocusReachesExpandedRows() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        openTab(app, named: "Settings")
+        let homeScreen = app.buttons["Home Screen"]
+        _ = moveToSidebarRow(app, .down, named: "Home Screen", max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+        let homeScreenSidebarX = homeScreen.frame.maxX
+
+        // Step 1: loud prerequisite failure, not a silent pass — the fixture must have at least
+        // one add-on with catalogs installed, or "Catalogs" never renders at all.
+        // `walkToRowByTreeIndex` itself XCTFails if the row never materialises; the explicit
+        // check below (same idiom as test04SettingsRows' `rowExists`) makes that requirement
+        // visible at this test's call site too.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Catalogs", sidebarMaxX: homeScreenSidebarX, category: "Home Screen")
+        func catalogsHeaderCandidates() -> [XCUIElement] {
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label BEGINSWITH 'Catalogs'"))
+                .allElementsBoundByIndex
+        }
+        XCTAssertTrue(catalogsHeaderCandidates().contains { $0.exists },
+                      "Catalogs disclosure row missing — fixture must have an add-on with catalogs installed")
+
+        // Step 2: record "N of M enabled" from the header's composed label before touching
+        // anything. `SettingsDisclosureRow` is a plain Button (not a Toggle), so — like the
+        // "Hero Sources, <summary>" composition documented in HomeScreenSettingsPane.swift — its
+        // accessibility label combines the title and the live subtitle: "Catalogs, N of M
+        // enabled". Scan every same-labeled candidate (mirrors `ensureToggleRow`'s
+        // `describeCandidates` idiom) and take the first one this regex actually parses.
+        func enabledCount(fromLabel label: String) -> Int? {
+            guard let range = label.range(of: #"\d+ of \d+ enabled"#, options: .regularExpression) else { return nil }
+            guard let firstToken = label[range].split(separator: " ").first else { return nil }
+            return Int(firstToken)
+        }
+        func readEnabledCount() -> Int? {
+            for candidate in catalogsHeaderCandidates() {
+                if let count = enabledCount(fromLabel: candidate.label) { return count }
+            }
+            return nil
+        }
+        func describeCatalogsCandidates() -> String {
+            catalogsHeaderCandidates().map { "l=<\($0.label)>" }.joined(separator: " | ")
+        }
+        guard let beforeCount = readEnabledCount() else {
+            XCTFail("could not parse 'N of M enabled' out of the Catalogs row — candidates: \(describeCatalogsCandidates())")
+            return
+        }
+        shot(app, "45a_catalogs_collapsed")
+
+        // Step 3: expand. Focus is already parked on the Catalogs row (walkToRowByTreeIndex's
+        // postcondition) — same "press Select right after the walk" idiom `ensureToggleRow` uses.
+        remote.press(.select)
+        pause(1.5)
+        shot(app, "45b_catalogs_expanded")
+
+        // At least one catalog row must now exist — `CatalogSettingRow` carries
+        // `.accessibilityValue("Enabled"/"Disabled")`, read the same way `toggleState` reads a
+        // Toggle's `.value`. Only existence is checked, never a specific catalog's title, so this
+        // holds regardless of which add-ons the fixture happens to have.
+        func catalogRowCount() -> Int {
+            app.buttons.allElementsBoundByIndex.filter {
+                let v = $0.value as? String
+                return v == "Enabled" || v == "Disabled"
+            }.count
+        }
+        // Poll a few samples — same tolerant shape `pollHeroPhase` uses elsewhere in this suite —
+        // in case the expand animation hasn't settled the List yet.
+        var rowCountAfterExpand = catalogRowCount()
+        if rowCountAfterExpand == 0 {
+            for _ in 1...4 {
+                pause(0.5)
+                rowCountAfterExpand = catalogRowCount()
+                if rowCountAfterExpand > 0 { break }
+            }
+        }
+        // ABORTING guard, not a soft assertion (Codex 2026-08-30 round 5 P2): with zero rows on
+        // screen, focus is standing on an unknown settings row — pressing Down+Select from here
+        // would toggle some unrelated setting, and the later early-returns would then skip the
+        // restore step and leave the signed-in fixture mutated. Fail loudly and send no more
+        // remote input.
+        guard rowCountAfterExpand > 0 else {
+            XCTFail("no catalog row appeared after expanding Catalogs — aborting before any further remote input can mutate the fixture")
+            return
+        }
+
+        // Step 4 (the core assertion): one Down (into the group) + Select must toggle the FIRST
+        // catalog row if and only if focus actually entered the group. If focus never left the
+        // header, Select re-collapses it instead (rows vanish) or lands somewhere the header's
+        // own count doesn't reflect — either way the count below would NOT change, which is
+        // exactly the regression this test guards against.
+        // The toggle persists AND pushes to the account (`toggleCatalog` → persist + sync), so a
+        // failure path between the toggle press and the inline restore must not strand the
+        // signed-in fixture mutated (Codex 2026-08-30 round 6 P2). The teardown fires the restore
+        // press whenever the inline path didn't get to it; focus hasn't moved on any of those
+        // paths, so a second Select at the same position flips the same row back.
+        var needsRestore = false
+        addTeardownBlock { [self] in
+            if needsRestore {
+                remote.press(.select)
+                pause(1.5)
+            }
+        }
+
+        remote.press(.down)
+        pause(1)
+        remote.press(.select)
+        needsRestore = true
+        pause(1.5)
+        shot(app, "45c_after_toggle_press")
+
+        // Step 6: collapse detection first — a clean XCTFail naming the regression beats a
+        // confusing "count did not change" failure when the real cause is that the group closed.
+        if catalogRowCount() == 0 {
+            // Select hit the HEADER (collapse), not a catalog row — nothing was toggled, and a
+            // teardown Select would just re-expand the header. Cancel the restore.
+            needsRestore = false
+            XCTFail("focus did not enter the expanded Catalogs group — Select re-collapsed the header instead of toggling a catalog row")
+            return
+        }
+        guard let afterToggleCount = readEnabledCount() else {
+            // The toggle DID land; the teardown block above restores it on this early exit.
+            XCTFail("could not parse 'N of M enabled' after toggling — candidates: \(describeCatalogsCandidates())")
+            return
+        }
+        XCTAssertNotEqual(
+            afterToggleCount, beforeCount,
+            "Select one row below the Catalogs header did not change the enabled count (stayed at \(beforeCount)) — focus did not reach the expanded group"
+        )
+
+        // Step 5: restore. Select again at the same focus position flips the same catalog row
+        // back, leaving the signed-in fixture unchanged.
+        remote.press(.select)
+        needsRestore = false
+        pause(1.5)
+        shot(app, "45d_restored")
+        let restoredCount = readEnabledCount()
+        XCTAssertEqual(
+            restoredCount, beforeCount,
+            "Catalogs enabled count did not return to its original value (\(String(describing: restoredCount)) vs \(beforeCount)) — fixture left mutated"
+        )
+    }
 }
