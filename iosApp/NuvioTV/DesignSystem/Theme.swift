@@ -387,6 +387,31 @@ enum Theme {
         /// above the focused one) give up slide, and those are rows whose art the clip edge is
         /// cutting anyway.
         static let heroPinnedRowTitleArtIntrusionFraction: CGFloat = 0.09
+        /// Allowance for the SYSTEM focus lift, in points — how far a focused card's artwork rises
+        /// above its resting top under `CardFocusMode.systemLift`, and therefore how much deeper a
+        /// slid title cuts into the art the viewer is actually looking at.
+        ///
+        /// Pixel-measured on the FA87 sim fixture (2026-08-30) and — the part that matters —
+        /// measured as the SAME ~20pt at Medium AND at Large. It is deliberately NOT derived from
+        /// `cardSystemLiftScale`: the SYSTEM hover effect's rise does not grow with the card, which
+        /// is precisely why the rc1 report ("titles continue to overlap the posters … only at
+        /// Large") is not a lift problem and why nothing here is allowed to become a reason to
+        /// touch that constant.
+        ///
+        /// This is ONE of three cases. `PinnedRowTitle.focusLiftAllowance` (BrowseComponents)
+        /// resolves the active focus mode the same way `CardFocusMode.resolve` does and returns 0
+        /// for "No Zoom on Focus" (Wave 7 made that genuinely zero-lift) or a scale-derived rise
+        /// for ring mode; this constant is the default mode's value. Nothing lays out against it —
+        /// it feeds the settle re-reveal's correction budget, the visibility belt's threshold, and
+        /// the `intrLifted=` probe field.
+        static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
+        /// Hard ceiling on ONE settle re-reveal correction (`PinnedRowSettle`, BrowseComponents).
+        ///
+        /// The measured Large failure needs ~90pt (sim probe 2026-08-30: `margin=-86..-100`,
+        /// `slide=72` saturated, `net` negative). 220 leaves generous room for a taller card or
+        /// text configuration while making it impossible for one bad measurement to fling the
+        /// page: a correction larger than this is a broken measurement, not a rest worth chasing.
+        static let heroPinnedRowSettleMaxNudge: CGFloat = 220
     }
 }
 

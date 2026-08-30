@@ -433,6 +433,24 @@ struct HomeView: View {
     }
 
     #if DEBUG
+    /// Last settle line from the pinned settle re-reveal, surfaced to the harness as
+    /// `debug_pinned` (test47). One write per SETTLE — not per scroll frame — so the churn is the
+    /// same order as `heroIndex`'s, and in release the sink below is nil and nothing is written at
+    /// all.
+    @State private var debugPinnedSettle = "-"
+    #endif
+
+    /// DEBUG-only sink handed to `PinnedRowSettleRevealModifier`. nil in release: the corrector
+    /// itself is release code (the bug is a release bug), but its readout is harness-only.
+    private var settleProbeSink: ((String) -> Void)? {
+        #if DEBUG
+        return { debugPinnedSettle = $0 }
+        #else
+        return nil
+        #endif
+    }
+
+    #if DEBUG
     /// Short code for the hero trailer model's live phase, for the `debug_hero` probe's `hph=`
     /// field — the harness reads fixed-width-ish tokens, not Swift's synthesized descriptions
     /// (`playing(_:)` would otherwise splat a resolved URL key into the string).
@@ -467,6 +485,17 @@ struct HomeView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")
+                // 2026-08-30 settle re-reveal (invisible, harness-readable): the last settled
+                // pinned rest, as the corrector itself measured it — `margin`/`net` are the exact
+                // quantities the `[HomeScrollProbe] title` line reports, so test47 asserts on the
+                // app's own geometry rather than on pixels. A pixel oracle cannot do this job
+                // here: the title's AX frame does NOT include its `visualEffect` slide (that is
+                // the whole point of using `visualEffect`), and its rendered luma is not separable
+                // from bright poster art.
+                Text("debug_pinned \(debugPinnedSettle)")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_pinned")
                 #endif
 
                 // Full-bleed hero backdrop runs to every edge (and under the floating glass tab
@@ -548,10 +577,10 @@ struct HomeView: View {
                                 if heroHeaderVisible {
                                     pinnedHeroHeader
                                 }
-                                rowsScroll(pinned: heroHeaderVisible)
+                                rowsScroll(pinned: heroHeaderVisible, settleReveal: true)
                             }
                         } else {
-                            rowsScroll(pinned: false)
+                            rowsScroll(pinned: false, settleReveal: false)
                         }
                     }
                     // BUG-27: from down the page, Menu jumps back to the top and hands focus to
@@ -786,13 +815,22 @@ struct HomeView: View {
     /// never duplicated. `pinned` (Nuvio-style) flips exactly three things and nothing else:
     /// the in-scroll hero branch (classic only), scroll clipping, and the content insets.
     ///
+    /// `settleReveal` arms the pinned settle re-reveal (2026-08-30) on this ScrollView. It is a
+    /// per-call-site CONSTANT, deliberately not `pinned`: `pinned` is the header's LOAD boundary
+    /// and flips empty→loaded mid-session, and gating a modifier on it would re-identify the whole
+    /// rows subtree at that boundary (the one thing this function's comments have protected since
+    /// device round 4). The pinned CONTAINER, which is what this flag follows, only changes with
+    /// the Settings toggle — the same boundary that already swaps containers in `body`. Inside the
+    /// pinned container before the header loads, rows carry `rowCardTopReach == 0`, so there is no
+    /// overlaid title to protect and the armed modifier simply never receives a measurement.
+    ///
     /// Clipping: classic keeps `.scrollClipDisabled()` so focused cards may lift past the scroll
     /// bounds. Pinned deliberately keeps DEFAULT clipping — that hard edge just under the pinned
     /// hero is what hides rows scrolled past the viewport top (it replaces the fade mask the sim
     /// pass falsified). The focus lift stays inside the clip because the content insets below
     /// keep every card away from the viewport edges.
     @ViewBuilder
-    private func rowsScroll(pinned: Bool) -> some View {
+    private func rowsScroll(pinned: Bool, settleReveal: Bool) -> some View {
         ScrollView(.vertical) {
             // Lazy so row construction (and each row's poster loads) is deferred to
             // scroll position — an eager VStack builds every catalog row up front,
@@ -950,6 +988,12 @@ struct HomeView: View {
         //   defaults write com.nuvio.media.NuvioTV debug.homeScrollProbe -bool YES
         .modifier(HomeScrollProbeModifier(enabled: homeScrollProbeEnabled,
                                           mode: probeMode(pinned: pinned)))
+        // Settle re-reveal (rc1 tester report, sim-reproduced 2026-08-30: a settled pinned rest
+        // logging `margin=-86..-100 slide=72 net=-14..-28` at Poster Size = Large, i.e. the row
+        // title painted 46pt into the artwork it is supposed to sit above). Only the ROWS scroll
+        // view moves; the pinned hero is a sibling above it in the VStack split. Full mechanism,
+        // bounds and anti-oscillation argument: `PinnedRowSettle` in BrowseComponents.
+        .modifier(PinnedRowSettleRevealModifier(enabled: settleReveal, onSettle: settleProbeSink))
         // BUG-30 A/B knob (see `homeScrollEdgeHard`). Not attached unless the knob is set, so
         // the shipped tree is unchanged.
         .modifier(HomeScrollEdgeStyleModifier(hard: homeScrollEdgeHard))
@@ -1715,7 +1759,11 @@ struct ContinueWatchingRow: View {
                             // LandscapeCard's own default `height` param, which this row never
                             // overrides. Cosmetic: only makes the probe's `cap=`/`intr=` readings
                             // truthful for this row (the cap itself stays PROBE-ONLY).
-                            .pinnedRowTitleTracking(rowKey: "continue-watching", artworkHeight: Theme.Size.landscapeHeight)
+                            // Codex r7 P2: `isFocused` picks which clearance the belt judges this
+                            // row by — only a FOCUSED row's cards are raised by the treatment.
+                            .pinnedRowTitleTracking(rowKey: "continue-watching",
+                                                    artworkHeight: Theme.Size.landscapeHeight,
+                                                    isFocused: focusedVideoId != nil)
                             .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                             .allowsHitTesting(false)
                     }
@@ -1732,6 +1780,9 @@ struct ContinueWatchingRow: View {
             }
         }
         .focusSection()
+        // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
+        // `pinnedRowSettleTracking` in BrowseComponents for the mechanism and its guarantees.
+        .pinnedRowSettleTracking(rowKey: "continue-watching", isFocused: focusedVideoId != nil)
         .onChange(of: focusedVideoId) { _, newId in
             onItemFocusChange?(newId.flatMap { id in entries.first { $0.videoId == id } })
         }

@@ -207,13 +207,31 @@ struct CollectionRowView: View {
                         // BUG-37: same clip-edge slide the catalog/CW shelves got — short
                         // real-swipe rests must never leave this row's title off-screen.
                         .shadow(color: .black.opacity(0.7), radius: 8, y: 2)
-                        .pinnedRowTitleTracking(rowKey: collection.id, artworkHeight: shortestTileHeight)
+                        // Codex r7 P2: `isFocused` picks which clearance the belt judges this row
+                        // by — only a FOCUSED row's tiles are raised by the focus treatment.
+                        //
+                        // Codex r9 P2: and `.plainBorderless` is what decides HOW MUCH. This row
+                        // is the one pinned row whose cards do NOT go through `CardFocusTreatment`
+                        // — `FolderTile` draws its own still-mode shrink-and-ring and never adopts
+                        // ring mode's manual scale, so its zoom-on branch is the bare `.borderless`
+                        // native lift whatever the accent-ring setting says. Left on the default
+                        // (`.cardTreatment`) the allowance was a scale derived from this row's
+                        // SHORTEST tile, well under the real ~20pt, so a ring-on user's title could
+                        // still sit on the focused folder's artwork.
+                        .pinnedRowTitleTracking(rowKey: collection.id,
+                                                artworkHeight: shortestTileHeight,
+                                                isFocused: focusedFolderId != nil,
+                                                treatment: .plainBorderless)
                         .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                         .allowsHitTesting(false)
                 }
             }
         }
         .focusSection()
+        // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
+        // `pinnedRowSettleTracking` in BrowseComponents. This row is the mixed-shape one, so it is
+        // also the one whose stale-relayout rests Wave 4 item 2 could only floor, not correct.
+        .pinnedRowSettleTracking(rowKey: collection.id, isFocused: focusedFolderId != nil)
         .onChange(of: focusedFolderId) { _, id in
             onFolderFocusChange?(id.flatMap { fid in collection.folders.first { $0.id == fid } })
         }

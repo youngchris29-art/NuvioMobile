@@ -3840,4 +3840,147 @@ final class NuvioTVUITests: XCTestCase {
         // edge) and this sub-check is explicitly the cheap, best-effort one — the rise assertion
         // above is this test's real gate.
     }
+
+
+    // MARK: - rc1 (2026-08-30): pinned row titles on the artwork, only at Poster Size = Large
+
+    /// Reads `k=v` out of one of Home's invisible DEBUG probe labels (`debug_env`,
+    /// `debug_pinned`). Returns nil when the key is absent or not an integer, so callers can fail
+    /// loudly with the raw label rather than assert on a silently-defaulted 0.
+    private static func probeValue(_ label: String, key: String) -> Int? {
+        for token in label.split(separator: " ") {
+            let parts = token.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2, String(parts[0]) == key else { continue }
+            return Int(parts[1])
+        }
+        return nil
+    }
+
+    /// rc1 tester report: "Titles continue to overlap the posters and thumbnails, whether I move to
+    /// the right or not. Only at Large poster size."
+    ///
+    /// Sim-reproduced on the FA87 fixture 2026-08-30 with hard numbers: a focused poster catalog
+    /// row at a SETTLED rest logged `[HomeScrollProbe] title row=…recs_series_for_you
+    /// margin=-86..-100 slide=72 net=-14..-28 cap=64 intr=46`. The row's top parked ~90-100pt under
+    /// the pinned hero's clip edge, the BUG-37 slide saturated at its absolute 72pt cap, `net` went
+    /// NEGATIVE — the invariant `PinnedRowTitleProbe`'s own doc names as the regression to watch —
+    /// and the title painted 46pt into the first poster's artwork (66pt on the FOCUSED card, once
+    /// the ~20pt system lift is counted; see `intrLifted=`). At Medium the focusable link frame
+    /// fits the rows viewport and none of it fires, which is the report's "only at Large".
+    ///
+    /// The fix under test is the settle re-reveal (`PinnedRowSettle`, BrowseComponents): once the
+    /// scroll settles with the focused row's title clipped, the ROWS scroll view (never the pinned
+    /// hero) is animated down by exactly the shortfall, bounded so the focused card stays visible.
+    ///
+    /// **Oracle: the app's own geometry**, via the `debug_pinned` probe, not pixels — deliberately,
+    /// and the reason is worth keeping: the pinned title is offset by a `visualEffect`, which is a
+    /// RENDER-time transform and by design invisible to layout, so the title's AX frame reports its
+    /// UN-slid position and a frame-based clearance check would pass while the rendered title sat
+    /// on the artwork (a vacuous green of exactly the kind this suite has been burned by). A
+    /// luma-based check on the rendered title is no better: near-white caption text over bright
+    /// poster art has no separable signature. `debug_pinned` carries the same `margin`/`net` the
+    /// device log prints, measured from the real geometry including the slide — so it is both
+    /// exact and the number the report is written in. A screenshot is still attached for review.
+    ///
+    /// Prerequisites fail LOUDLY (suite convention): a missing probe is an `XCTFail`, a fixture in
+    /// the wrong Poster Size or hero mode is a self-describing `XCTSkip`.
+    func test47LargePinnedRowTitleClearsArtwork() throws {
+        let app = launchToHome()
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        // Poster Size gate. The fixture is currently at Large, but this must not DEPEND on that
+        // silently: `debug_env` already publishes the live `PosterStyle.width`, so read it.
+        // Artwork height is width x 1.5 (Theme.Size's own table): Small 183pt wide, Medium 220,
+        // Large ~269 — so >= 260 is Large.
+        let env = app.staticTexts["debug_env"]
+        guard env.waitForExistence(timeout: 15) else {
+            XCTFail("debug_env probe missing — it is DEBUG-only (HomeView.swift); is this a Release build, or did Home never mount?")
+            return
+        }
+        let envLabel = env.label
+        guard let posterWidth = Self.probeValue(envLabel, key: "w") else {
+            XCTFail("could not parse `w=` out of debug_env ('\(envLabel)') — the probe's spelling changed; it is append-only by contract")
+            return
+        }
+        guard posterWidth >= 260 else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — Poster Size is not Large (debug_env w=\(posterWidth); Large is ~269pt). The rc1 defect this gate covers only reproduces at Large, where the focusable link frame (artwork + 175.5 ~= 579pt) hits the reveal regime that parks tall frames under the pinned clip edge (PosterCard.swift ~L730). Set Settings > Appearance > Poster Size to Large on this fixture and rerun.")
+        }
+
+        // Walk down off the hero CTA into the rows. Existence-driven, no `hasFocus` reliance
+        // (house rule — the 27.0 runtime never reports it); three Downs clears Continue Watching /
+        // Upcoming into a poster catalog row on this fixture, the same walk test44/test46 use.
+        press(.down, times: 3, gap: 0.9)
+        // Comfortably longer than everything the rest has to get through: the settle debounce
+        // (0.25s), the correction animation (0.25s), the belt's fadeDelay (0.7s), and the
+        // corrector's own re-check chain (up to 3 hops of 0.25s — the `clearance-late` path, which
+        // gate 2 below fails on rather than skips). 3s rather than a tighter number specifically
+        // so that gate 2's XCTFail can never be a timing artefact.
+        pause(3.0)
+        shot(app, "47a_focused_poster_row_settled")
+
+        let probe = app.staticTexts["debug_pinned"]
+        guard probe.waitForExistence(timeout: 10) else {
+            XCTFail("debug_pinned probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return
+        }
+        let line = probe.label
+        let report = XCTAttachment(string: "\(line)\n(env: \(envLabel))")
+        report.name = "47b_settle_line"
+        report.lifetime = .keepAlways
+        add(report)
+        NSLog("[RC1] %@", line)
+
+        guard !line.hasSuffix(" -") else {
+            throw XCTSkip("no pinned settle was ever reported ('\(line)') — the settle re-reveal is armed only in Home's PINNED (Nuvio-style) hero container, so this fixture is running the classic in-scroll hero. Turn Settings > Home Screen > Nuvio-style hero on and rerun.")
+        }
+        guard Self.probeValue(line, key: "margin") != nil else {
+            throw XCTSkip("the last settle reported no focused pinned row ('\(line)') — the Down walk did not land inside a pinned row, so there is nothing to measure. Rerun; if it persists the walk needs re-tuning for this fixture's row order.")
+        }
+        guard let net = Self.probeValue(line, key: "net"),
+              let margin = Self.probeValue(line, key: "margin") else {
+            XCTFail("could not parse `net=`/`margin=` out of debug_pinned ('\(line)')")
+            return
+        }
+
+        // Gate 1 — VISIBILITY. `net` is the title's top relative to the clip edge AFTER the slide.
+        // `net >= 0` is the settled-rest invariant (BrowseComponents ~L427); below it the title is
+        // cut off at the top. 2pt of slack is the probe's own bucket width, not a tolerance for
+        // the defect (which measured -14..-28).
+        XCTAssertGreaterThanOrEqual(
+            net, -2,
+            "settled pinned rest still leaves net=\(net) (margin=\(margin)) — the row title is clipped at the pinned hero's edge, which is the rc1 report reproducing at Poster Size = Large. Full settle line: \(line)"
+        )
+
+        // Gate 2 — INTRUSION, which is what the tester actually complained about ("titles overlap
+        // the posters"). Asserted on the LIFTED metric (`intrLifted`), not the pre-lift `intr`:
+        // the title rides over whichever card holds FOCUS, and the system focus lift has already
+        // raised that card's artwork ~20pt, so the pre-lift number is systematically 20pt
+        // optimistic. That was the exact blind spot in the rc1 device log — its `intr=46` was
+        // really 66 on the card being looked at — and asserting on it would let this gate pass
+        // green while the tester still saw the overlap.
+        //
+        // Codex r1 P1 is why this is a separate assertion rather than a corollary of gate 1: a
+        // rest can satisfy `net >= 0` while still painting title onto the poster. The corrector
+        // now targets exactly this number — a corrected rest lands at `slide == clearanceLift`,
+        // i.e. `intrLifted == 0`.
+        //
+        // A missing `intrLifted=` is a FAILURE, not a skip (Codex r5 P2-2). Skipping it silently
+        // is exactly the vacuous-green class this harness documents: the test would pass on `net`
+        // alone while the intrusion — the thing the tester actually reported — went unverified.
+        // The field is absent only when the settle report says `clearance=?`, i.e. the row's title
+        // never published its measurement, and that is itself a regression this gate should catch:
+        // the corrector re-checks and re-arms for precisely that case (`clearance-late`,
+        // BrowseComponents), so a measurement still missing three seconds after the walk is a
+        // broken title, not a slow one.
+        XCTAssertEqual(app.state, .runningForeground, "app must survive the settle re-reveal's scroll correction")
+        guard let liftedIntrusion = Self.probeValue(line, key: "intrLifted") else {
+            XCTFail("settle report carried no clearance — title measurement missing, intrusion unverified. Full settle line: \(line)")
+            return
+        }
+        XCTAssertLessThanOrEqual(
+            liftedIntrusion, 2,
+            "settled pinned rest leaves the row title \(liftedIntrusion)pt past the FOCUSED card's artwork top edge — this is the rc1 report verbatim (the sim repro measured intr=46 pre-lift at Large, 66 once the ~20pt focus lift is counted). Full settle line: \(line)"
+        )
+    }
 }

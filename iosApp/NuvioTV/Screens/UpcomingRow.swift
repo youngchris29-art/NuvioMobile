@@ -67,7 +67,11 @@ struct UpcomingRow: View {
                         // default `height` param, which this row never overrides. Cosmetically
                         // this only makes the probe's `cap=`/`intr=` readings truthful for this
                         // row (the cap itself stays PROBE-ONLY — see `PinnedRowTitle.slide`).
-                        .pinnedRowTitleTracking(rowKey: "upcoming", artworkHeight: Theme.Size.landscapeHeight)
+                        // Codex r7 P2: `isFocused` picks which clearance the belt judges this row
+                        // by — only a FOCUSED row's cards are raised by the focus treatment.
+                        .pinnedRowTitleTracking(rowKey: "upcoming",
+                                                artworkHeight: Theme.Size.landscapeHeight,
+                                                isFocused: focusedKey != nil)
                         .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                         .allowsHitTesting(false)
                 }
@@ -75,6 +79,9 @@ struct UpcomingRow: View {
             .scrollClipDisabled()
         }
         .focusSection()
+        // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
+        // `pinnedRowSettleTracking` in BrowseComponents for the mechanism and its guarantees.
+        .pinnedRowSettleTracking(rowKey: "upcoming", isFocused: focusedKey != nil)
         .onChange(of: focusedKey) { _, newKey in
             onItemFocusChange?(newKey.flatMap { key in items.first { $0.showKey == key } })
         }
