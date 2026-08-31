@@ -3884,6 +3884,17 @@ final class NuvioTVUITests: XCTestCase {
     /// Reads `k=v` out of one of Home's invisible DEBUG probe labels (`debug_env`,
     /// `debug_pinned`). Returns nil when the key is absent or not an integer, so callers can fail
     /// loudly with the raw label rather than assert on a silently-defaulted 0.
+    /// String twin of `probeValue`, for probe fields that carry a token rather than a number
+    /// (`beltFadeReason=standdown`). Same exact-key parsing.
+    private static func probeToken(_ label: String, key: String) -> String? {
+        for token in label.split(separator: " ") {
+            let parts = token.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2, String(parts[0]) == key else { continue }
+            return String(parts[1])
+        }
+        return nil
+    }
+
     private static func probeValue(_ label: String, key: String) -> Int? {
         for token in label.split(separator: " ") {
             let parts = token.split(separator: "=", maxSplits: 1)
@@ -4093,10 +4104,14 @@ final class NuvioTVUITests: XCTestCase {
             return line
         }
 
-        /// Settle window: must outlast the settle debounce, the correction and its retries, the
-        /// belt's `fadeDelay`, AND the belt's terminal ceiling (`fadeMaxDefer`, 2.5s), so a fade
-        /// that is merely being deferred has still landed before the line is read.
-        let settleWindow: TimeInterval = 5.0
+        /// Settle window. Wave 9b made the expected path much shorter: on an unfixable rest the
+        /// corrector's `standDown` now fires the belt immediately, so the fade lands at roughly
+        /// (settle debounce 0.25 + up to two 0.25s corrections and their settles) ≈ 1.5s. The
+        /// window still has to cover the FALLBACK, though — an episode that never reaches a
+        /// stand-down waits `fadeDelay` (0.7) and at worst the ceiling plus one recheck floor
+        /// (2.5 + 0.1), ≈ 2.9s from the last press. 4s keeps a full second of headroom over that
+        /// while cutting a second off every cycle.
+        let settleWindow: TimeInterval = 4.0
 
         // ── Leg A: the device-failure gate ───────────────────────────────────────────────────
         // Hunt for a rest that is BOTH clipped and on the artwork, the shape the device produced.
@@ -4151,6 +4166,22 @@ final class NuvioTVUITests: XCTestCase {
             Self.probeValue(deepRest, key: "beltFaded"), 1,
             "the corrector could not fix this rest (net=\(deepNet), intr=\(deepIntr), title partially visible and sitting on the poster) and the visibility belt did NOT hide it — this is the Living Room ATV failure reproducing: a title left painted across the artwork at a settled rest, for as long as the tester watched, because the corrector's re-fired corrections kept stamping motion and the belt's rest-gate never saw stillness. The belt must fire within fadeDelay + fadeMaxDefer whatever the corrector and the focus engine are doing. Full settle line: \(deepRest)"
         )
+
+        // Wave 9b: the corrector stands down on exactly this shape of rest, and a stand-down is
+        // supposed to hide the title immediately rather than let the belt's timers run. Device
+        // video showed that wait as ~1-2s of title painted across the posters before it vanished,
+        // so `reason=rest`/`ceiling` here would mean the fast path did not engage and the visible
+        // beat is back — a regression the `beltFaded=1` assertion above cannot see on its own.
+        // Soft on a missing field (older builds, or a fade that legitimately predates the reason
+        // plumbing) rather than failing on absence.
+        if let fadeReason = Self.probeToken(deepRest, key: "beltFadeReason"), fadeReason != "-" {
+            XCTAssertEqual(
+                fadeReason, "standdown",
+                "the belt hid the title via '\(fadeReason)' rather than the corrector's stand-down — on a rest the corrector has explicitly given up (bound-blocked or nudge-exhausted) the handoff should be immediate, not timed out. That difference is the ~1-2s of title-on-the-artwork the device video caught. Full settle line: \(deepRest)"
+            )
+        } else {
+            NSLog("[WAVE9] no beltFadeReason on the settle line — fast-path assertion skipped: %@", deepRest)
+        }
 
         // ── Leg B: the false-positive guard ──────────────────────────────────────────────────
         // A plain downward walk parks these rows top-visible (abandoned attempt #1 above), which is
