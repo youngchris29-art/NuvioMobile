@@ -114,82 +114,16 @@ internal fun pluginAesEncrypt(
         require(iv.isNotEmpty()) { "AES mode $mode requires an IV" }
     }
 
-    val isGcm = mode.uppercase().contains("GCM")
-    if (isGcm) {
-        var encryptedData: ByteArray? = null
-        memScoped {
-            val cryptorRefVar = alloc<com.nuvio.app.features.plugins.cryptointerop.CCCryptorRefVar>()
-            
-            key.usePinned { pinnedKey ->
-                iv.usePinned { pinnedIv ->
-                    data.usePinned { pinnedData ->
-                        val keyPtr = if (key.isNotEmpty()) pinnedKey.addressOf(0) else null
-                        val ivPtr = if (iv.isNotEmpty()) pinnedIv.addressOf(0) else null
-                        val dataPtr = if (data.isNotEmpty()) pinnedData.addressOf(0) else null
-                        
-                        val status = CCCryptorCreateWithMode(
-                            op = kCCEncrypt,
-                            mode = kCCModeGCM,
-                            alg = kCCAlgorithmAES,
-                            padding = ccNoPadding,
-                            iv = ivPtr,
-                            key = keyPtr,
-                            keyLength = key.size.toULong(),
-                            tweak = null,
-                            tweakLength = 0UL,
-                            numRounds = 0,
-                            options = 0U,
-                            cryptorRef = cryptorRefVar.ptr
-                        )
-                        
-                        if (status != kCCSuccess) {
-                            error("CCCryptorCreateWithMode failed with status: $status")
-                        }
-                        
-                        val cryptorRef = cryptorRefVar.value ?: error("Cryptor reference was null")
-                        
-                        try {
-                            val cipherTextBytes = ByteArray(data.size)
-                            cipherTextBytes.usePinned { pinnedCipher ->
-                                val cipherPtr = if (data.isNotEmpty()) pinnedCipher.addressOf(0) else null
-                                val cryptStatus = CCCryptorGCMEncrypt(
-                                    cryptorRef = cryptorRef,
-                                    dataIn = dataPtr,
-                                    dataInLength = data.size.toULong(),
-                                    dataOut = cipherPtr
-                                )
-                                if (cryptStatus != kCCSuccess) {
-                                    error("CCCryptorGCMEncrypt failed with status: $cryptStatus")
-                                }
-                            }
-                            
-                            val tagBytes = ByteArray(16)
-                            val tagLengthVar = alloc<platform.posix.size_tVar>()
-                            tagLengthVar.value = 16UL
-                            
-                            tagBytes.usePinned { pinnedTag ->
-                                val tagPtr = pinnedTag.addressOf(0)
-                                val finalStatus = CCCryptorGCMFinal(
-                                    cryptorRef = cryptorRef,
-                                    tag = tagPtr,
-                                    tagLength = tagLengthVar.ptr
-                                )
-                                if (finalStatus != kCCSuccess) {
-                                    error("CCCryptorGCMFinal failed with status: $finalStatus")
-                                }
-                            }
-                            
-                            encryptedData = cipherTextBytes + tagBytes
-                        } finally {
-                            CCCryptorRelease(cryptorRef)
-                        }
-                    }
-                }
-            }
+    if (mode.uppercase().contains("GCM")) {
+        val cipherText = ByteArray(data.size)
+        val tag = ByteArray(GCM_TAG_LENGTH)
+        val status = gcmOneshot(encrypt = true, key = key, iv = iv, input = data, output = cipherText, tag = tag)
+        if (status != kCCSuccess) {
+            error("CCCryptorGCMOneshotEncrypt failed with status: $status")
         }
-        return encryptedData ?: ByteArray(0)
+        return cipherText + tag
     }
-    
+
     val isEcb = mode.uppercase().contains("ECB")
     val isNoPadding = mode.uppercase().contains("NOPADDING")
 
@@ -253,87 +187,19 @@ internal fun pluginAesDecrypt(
         require(iv.isNotEmpty()) { "AES mode $mode requires an IV" }
     }
 
-    val isGcm = mode.uppercase().contains("GCM")
-    if (isGcm) {
-        require(data.size >= 16) { "Data too short for GCM decryption" }
-        val ciphertextLen = data.size - 16
-        val ciphertext = data.copyOfRange(0, ciphertextLen)
-        val tagBytes = data.copyOfRange(ciphertextLen, data.size)
-        
-        var decryptedData: ByteArray? = null
-        
-        memScoped {
-            val cryptorRefVar = alloc<com.nuvio.app.features.plugins.cryptointerop.CCCryptorRefVar>()
-            
-            key.usePinned { pinnedKey ->
-                iv.usePinned { pinnedIv ->
-                    ciphertext.usePinned { pinnedCipher ->
-                        tagBytes.usePinned { pinnedTag ->
-                            val keyPtr = if (key.isNotEmpty()) pinnedKey.addressOf(0) else null
-                            val ivPtr = if (iv.isNotEmpty()) pinnedIv.addressOf(0) else null
-                            val cipherPtr = if (ciphertext.isNotEmpty()) pinnedCipher.addressOf(0) else null
-                            val tagPtr = pinnedTag.addressOf(0)
-                            
-                            val status = CCCryptorCreateWithMode(
-                                op = kCCDecrypt,
-                                mode = kCCModeGCM,
-                                alg = kCCAlgorithmAES,
-                                padding = ccNoPadding,
-                                iv = ivPtr,
-                                key = keyPtr,
-                                keyLength = key.size.toULong(),
-                                tweak = null,
-                                tweakLength = 0UL,
-                                numRounds = 0,
-                                options = 0U,
-                                cryptorRef = cryptorRefVar.ptr
-                            )
-                            
-                            if (status != kCCSuccess) {
-                                error("CCCryptorCreateWithMode failed with status: $status")
-                            }
-                            
-                            val cryptorRef = cryptorRefVar.value ?: error("Cryptor reference was null")
-                            
-                            try {
-                                val plainTextBytes = ByteArray(ciphertextLen)
-                                plainTextBytes.usePinned { pinnedPlain ->
-                                    val plainPtr = if (ciphertextLen > 0) pinnedPlain.addressOf(0) else null
-                                    val cryptStatus = CCCryptorGCMDecrypt(
-                                        cryptorRef = cryptorRef,
-                                        dataIn = cipherPtr,
-                                        dataInLength = ciphertextLen.toULong(),
-                                        dataOut = plainPtr
-                                    )
-                                    if (cryptStatus != kCCSuccess) {
-                                        error("CCCryptorGCMDecrypt failed with status: $cryptStatus")
-                                    }
-                                }
-                                
-                                val tagLengthVar = alloc<platform.posix.size_tVar>()
-                                tagLengthVar.value = 16UL
-                                
-                                val finalStatus = CCCryptorGCMFinal(
-                                    cryptorRef = cryptorRef,
-                                    tag = tagPtr,
-                                    tagLength = tagLengthVar.ptr
-                                )
-                                if (finalStatus != kCCSuccess) {
-                                    error("CCCryptorGCMFinal failed with status: $finalStatus (tag verification failed)")
-                                }
-                                
-                                decryptedData = plainTextBytes
-                            } finally {
-                                CCCryptorRelease(cryptorRef)
-                            }
-                        }
-                    }
-                }
-            }
+    if (mode.uppercase().contains("GCM")) {
+        require(data.size >= GCM_TAG_LENGTH) { "Data too short for GCM decryption" }
+        val cipherTextLength = data.size - GCM_TAG_LENGTH
+        val cipherText = data.copyOfRange(0, cipherTextLength)
+        val tag = data.copyOfRange(cipherTextLength, data.size)
+        val plainText = ByteArray(cipherTextLength)
+        val status = gcmOneshot(encrypt = false, key = key, iv = iv, input = cipherText, output = plainText, tag = tag)
+        if (status != kCCSuccess) {
+            error("AES-GCM decryption failed with status: $status (tag verification failed)")
         }
-        return decryptedData ?: ByteArray(0)
+        return plainText
     }
-    
+
     val isEcb = mode.uppercase().contains("ECB")
     val isNoPadding = mode.uppercase().contains("NOPADDING")
 
@@ -383,6 +249,66 @@ internal fun pluginAesDecrypt(
     }
     
     return finalData ?: ByteArray(0)
+}
+
+// WebCrypto's AES-GCM default: 128-bit tag appended to the ciphertext. The plugin JS bridge
+// exposes no AAD parameter, so associated data is always empty.
+private const val GCM_TAG_LENGTH = 16
+
+@OptIn(ExperimentalForeignApi::class)
+private fun gcmOneshot(
+    encrypt: Boolean,
+    key: ByteArray,
+    iv: ByteArray,
+    input: ByteArray,
+    output: ByteArray,
+    tag: ByteArray,
+): Int {
+    // usePinned cannot produce a pointer into an empty array; CommonCrypto accepts any valid
+    // pointer alongside a zero length, so empty in/out buffers pin a 1-byte stand-in instead.
+    val inputBuffer = if (input.isEmpty()) ByteArray(1) else input
+    val outputBuffer = if (output.isEmpty()) ByteArray(1) else output
+    return key.usePinned { pinnedKey ->
+        iv.usePinned { pinnedIv ->
+            inputBuffer.usePinned { pinnedInput ->
+                outputBuffer.usePinned { pinnedOutput ->
+                    tag.usePinned { pinnedTag ->
+                        if (encrypt) {
+                            CCCryptorGCMOneshotEncrypt(
+                                alg = kCCAlgorithmAES,
+                                key = pinnedKey.addressOf(0),
+                                keyLength = key.size.toULong(),
+                                iv = pinnedIv.addressOf(0),
+                                ivLength = iv.size.toULong(),
+                                aData = null,
+                                aDataLength = 0UL,
+                                dataIn = pinnedInput.addressOf(0),
+                                dataInLength = input.size.toULong(),
+                                cipherOut = pinnedOutput.addressOf(0),
+                                tagOut = pinnedTag.addressOf(0),
+                                tagLength = tag.size.toULong(),
+                            )
+                        } else {
+                            CCCryptorGCMOneshotDecrypt(
+                                alg = kCCAlgorithmAES,
+                                key = pinnedKey.addressOf(0),
+                                keyLength = key.size.toULong(),
+                                iv = pinnedIv.addressOf(0),
+                                ivLength = iv.size.toULong(),
+                                aData = null,
+                                aDataLength = 0UL,
+                                dataIn = pinnedInput.addressOf(0),
+                                dataInLength = input.size.toULong(),
+                                dataOut = pinnedOutput.addressOf(0),
+                                tagIn = pinnedTag.addressOf(0),
+                                tagLength = tag.size.toULong(),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 internal fun pluginSign(algorithm: String, privateKey: ByteArray, data: ByteArray): ByteArray {

@@ -115,76 +115,42 @@ CCCryptorStatus CCCrypt(
     size_t *dataOutMoved
 );
 
-typedef uint32_t CCMode;
-enum {
-    kCCModeECB = 1,
-    kCCModeCBC = 2,
-    kCCModeCFB = 3,
-    kCCModeOFB = 4,
-    kCCModeCFB8 = 5,
-    kCCModeCTR = 6,
-    kCCModeF8 = 7,
-    kCCModeLRW = 8,
-    kCCModeOFB8 = 9,
-    kCCModeXTS = 10,
-    kCCModeRC4 = 11,
-    kCCModeCFB128 = 12,
-    kCCModeGCM = 13,
-    kCCModeCCM = 14,
-};
-
-typedef uint32_t CCPadding;
-enum {
-    ccNoPadding = 0,
-    ccPKCS7Padding = 1,
-};
-
-typedef uint32_t CCModeOptions;
-
-typedef struct _CCCryptor *CCCryptorRef;
-
-CCCryptorStatus CCCryptorCreateWithMode(
-    CCOperation op,
-    CCMode mode,
+/*
+ * AES-GCM one-shot SPI (CommonCryptoSPI.h; symbols exported from libSystem since
+ * iOS/tvOS 11). Only these entry points are declared on purpose: the deprecated
+ * streaming sequence (CCCryptorCreateWithMode + CCCryptorGCMEncrypt/GCMFinal)
+ * ignores the create-time IV unless CCCryptorGCMAddIV is called, and GCMFinal
+ * OUTPUTS the computed tag rather than verifying one, so it invites exactly the
+ * unauthenticated-decrypt misuse this shim once carried. The one-shot decrypt
+ * verifies tagIn internally and returns a non-zero status on mismatch.
+ */
+CCCryptorStatus CCCryptorGCMOneshotEncrypt(
     CCAlgorithm alg,
-    CCPadding padding,
-    const void *iv,
     const void *key,
     size_t keyLength,
-    const void *tweak,
-    size_t tweakLength,
-    int numRounds,
-    CCModeOptions options,
-    CCCryptorRef *cryptorRef
-);
-
-CCCryptorStatus CCCryptorGCMAddAAD(
-    CCCryptorRef cryptorRef,
+    const void *iv,
+    size_t ivLength,
     const void *aData,
-    size_t aDataLen
-);
-
-CCCryptorStatus CCCryptorGCMEncrypt(
-    CCCryptorRef cryptorRef,
+    size_t aDataLength,
     const void *dataIn,
     size_t dataInLength,
-    void *dataOut
+    void *cipherOut,
+    void *tagOut,
+    size_t tagLength
 );
 
-CCCryptorStatus CCCryptorGCMDecrypt(
-    CCCryptorRef cryptorRef,
+CCCryptorStatus CCCryptorGCMOneshotDecrypt(
+    CCAlgorithm alg,
+    const void *key,
+    size_t keyLength,
+    const void *iv,
+    size_t ivLength,
+    const void *aData,
+    size_t aDataLength,
     const void *dataIn,
     size_t dataInLength,
-    void *dataOut
-);
-
-CCCryptorStatus CCCryptorGCMFinal(
-    CCCryptorRef cryptorRef,
-    void *tag,
-    size_t *tagLength
-);
-
-CCCryptorStatus CCCryptorRelease(
-    CCCryptorRef cryptorRef
+    void *dataOut,
+    const void *tagIn,
+    size_t tagLength
 );
 
