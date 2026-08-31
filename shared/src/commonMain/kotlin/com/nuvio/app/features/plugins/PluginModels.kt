@@ -56,6 +56,45 @@ data class PluginRepositoryItem(
     val errorMessage: String? = null,
 )
 
+/**
+ * One row of the `sync_push_plugins` RPC payload. Lives in commonMain (rather than next to the
+ * tvosMain producer) so [buildPluginPushSnapshot] is unit-testable from commonTest.
+ */
+@Serializable
+internal data class PluginPushItem(
+    val url: String,
+    val name: String = "",
+    val enabled: Boolean = true,
+    @SerialName("sort_order") val sortOrder: Int = 0,
+)
+
+/**
+ * A push payload paired with the profile row it was computed under. Both halves must be captured
+ * in the same synchronous frame as the mutation that triggered the push — the upload coroutine
+ * runs later, and a profile switch can reset the repository state in between, so a push that
+ * re-reads live state at execution time uploads the new profile's (or the empty transitional)
+ * list over whichever remote row the current profile id points at by then.
+ */
+internal data class PluginPushSnapshot(
+    val profileId: Int,
+    val items: List<PluginPushItem>,
+)
+
+internal fun buildPluginPushSnapshot(
+    profileId: Int,
+    repositories: List<PluginRepositoryItem>,
+): PluginPushSnapshot = PluginPushSnapshot(
+    profileId = profileId,
+    items = repositories.mapIndexed { index, repo ->
+        PluginPushItem(
+            url = repo.manifestUrl,
+            name = repo.name,
+            enabled = true,
+            sortOrder = index,
+        )
+    },
+)
+
 data class PluginScraper(
     val id: String,
     val repositoryUrl: String,

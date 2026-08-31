@@ -40,14 +40,6 @@ private data class PluginRow(
     @SerialName("sort_order") val sortOrder: Int = 0,
 )
 
-@Serializable
-private data class PluginPushItem(
-    val url: String,
-    val name: String = "",
-    val enabled: Boolean = true,
-    @SerialName("sort_order") val sortOrder: Int = 0,
-)
-
 object PluginRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("TvOsPluginRepository"))
     private val log = Logger.withTag("PluginRepository")
@@ -458,20 +450,21 @@ object PluginRepository {
     }
 
     private fun pushToServer() {
+        // Fork divergence from upstream's PluginRepository (Codex 2026-08-30 P1, upstream-report
+        // candidate): the payload and target profile row must be snapshotted HERE, synchronously
+        // in the mutating caller's frame — the launched coroutine used to read _uiState and
+        // currentProfileId only once it began executing, so a quick profile switch (which resets
+        // both) could upload the new profile's — or the empty transitional — repository list to
+        // the wrong remote row. The initialized guard covers the callers that are NOT in a
+        // mutation frame (refreshRepository's pushAfterRefresh resuming after onProfileChanged /
+        // clearLocalState already tore the state down): skip rather than push torn-down state.
+        if (!initialized) return
+        val snapshot = buildPluginPushSnapshot(currentProfileId, _uiState.value.repositories)
         scope.launch {
             runCatching {
-                val repos = _uiState.value.repositories.mapIndexed { index, repo ->
-                    PluginPushItem(
-                        url = repo.manifestUrl,
-                        name = repo.name,
-                        enabled = true,
-                        sortOrder = index,
-                    )
-                }
-
                 val params = buildJsonObject {
-                    put("p_profile_id", currentProfileId)
-                    put("p_plugins", json.encodeToJsonElement(repos))
+                    put("p_profile_id", snapshot.profileId)
+                    put("p_plugins", json.encodeToJsonElement(snapshot.items))
                 }
                 SupabaseProvider.client.postgrest.rpc("sync_push_plugins", params)
             }.onFailure { error ->
