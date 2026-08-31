@@ -367,32 +367,93 @@ private struct SettingsDisclosureRow: View {
     }
 }
 
-/// A single Hero Sources row: catalog title + add-on, with an on/off indicator. Non-interactive
-/// (dimmed, disabled) when the 2-source limit is reached and this row is currently off — `Toggle`
-/// + `.disabled` does the dimming/input-ignoring for free, so there is no manual opacity here.
+/// A single Hero Sources row: catalog title + add-on, with an on/off indicator. At the 2-source
+/// limit an OFF row is INERT — it still takes focus and still reads normally, it just refuses the
+/// toggle and says why.
 ///
 /// 2026-08-30 fix: as of this fix each `HeroSourceRow` is its own `SettingsSection` child / List
 /// row (see the call site in `HomeScreenSettingsPane.body`), so it is a genuinely independent
 /// focus target — down/up from one row lands on the next, same as every other Settings row. It no
 /// longer takes or publishes any focus-binding params: those existed only so `HeroSourcesGroup`
-/// (deleted) could detect that a child of its single shared List row had focus. At the 2-source
-/// limit, a disabled OFF row is simply focus-skipped by the system, same as any other disabled
-/// control — the ON rows stay reachable to free up a slot.
+/// (deleted) could detect that a child of its single shared List row had focus. That is also why
+/// the plain `\.isFocused` read below is sufficient here where BUG-65 needed the three-way
+/// `onPlatter` test: this file has no custom container left to publish the other two.
+///
+/// Wave 9(b), device pass on the Living Room ATV: `.disabled(!interactive)` was a FOCUS TRAP. With
+/// 2 of 2 selected, every OFF row is disabled, so tvOS skips all of them — and from the last
+/// selected row an up-swipe does not land on the row above (there isn't a focusable one), it
+/// EJECTS to the tab bar. That is the BUG-47 empty-pushed-view class wearing a different hat: a
+/// region whose only reachable controls have been removed stops being navigable. It also hides the
+/// reason — a dimmed unfocusable row explains nothing about why it cannot be turned on.
+///
+/// So: keep the row focusable, refuse the write at the binding, de-emphasize it visually only
+/// while it is NOT on the focus platter (dimming a focused row is the BUG-58/65 contrast class —
+/// on the near-white platter a 0.4-opacity label is exactly the "vanishes into the platter"
+/// failure those bugs are about), and replace the subtitle with the reason. Turning any ON row off
+/// re-enables the rest immediately: `interactive` is recomputed from `heroSelectedCount` at the
+/// call site on every model publish, so the captions and the toggles come back together.
 private struct HeroSourceRow: View {
     let item: HomeCatalogSettingsItem
     let interactive: Bool
     let onToggle: (Bool) -> Void
 
+    fileprivate static let limitReachedCaption = String(
+        localized: "Limit reached — turn another source off first"
+    )
+
+    /// Built from a bare `Toggle` rather than `SettingsToggleRow` for one reason: the focus-aware
+    /// dimming has to live INSIDE the toggle's label (Codex Wave 9 r3). SwiftUI populates
+    /// `\.isFocused` for the focusable control and its DESCENDANTS; it never propagates upward. The
+    /// first version of this fix read it on the view that CONTAINS the toggle, so it was
+    /// permanently false and an inert row stayed at 0.4 opacity even while focused — dim text on
+    /// the near-white platter, which is precisely the BUG-58/65 contrast failure the guard existed
+    /// to avoid. `SettingsToggleRow` builds its own label and takes no label closure, so the label
+    /// is constructed here instead; everything else it does is reproduced exactly, including the
+    /// `.accessibilityValue` the harness's `toggleState` helper reads (beta.13 wave 2).
+    ///
+    /// Interactive rows are unchanged by construction: same `Toggle` over the same
+    /// `SettingsRowLabel` with the same accessibility value, `dimmed: false` makes the opacity a
+    /// literal 1, and an empty hint is what VoiceOver already reports for a row with no hint.
     var body: some View {
-        SettingsToggleRow(
-            title: item.displayTitle,
-            subtitle: item.addonName,
-            isOn: Binding(
-                get: { item.heroSourceEnabled },
-                set: { onToggle($0) }
+        Toggle(isOn: Binding(
+            get: { item.heroSourceEnabled },
+            // Inert, not disabled: the row keeps focus and the press is simply not honoured.
+            set: { newValue in
+                guard interactive else { return }
+                onToggle(newValue)
+            }
+        )) {
+            HeroSourceRowLabel(
+                title: item.displayTitle,
+                subtitle: interactive ? item.addonName : Self.limitReachedCaption,
+                dimmed: !interactive
             )
-        )
-        .disabled(!interactive)
+        }
+        // Kept from `SettingsToggleRow`: the UITest harness's state-aware toggle helper reads this
+        // exact value, and it is a friendlier VoiceOver value than "1"/"0".
+        .accessibilityValue(item.heroSourceEnabled ? Text("On") : Text("Off"))
+        // VoiceOver gets the same sentence the caption shows, since the caption is the only thing
+        // distinguishing an inert row from an ordinary off one.
+        .accessibilityHint(interactive ? Text("") : Text(Self.limitReachedCaption))
+    }
+}
+
+/// The label half of a `HeroSourceRow`, split out purely so `\.isFocused` is read from inside the
+/// toggle's label — the only place SwiftUI populates it. See `HeroSourceRow.body`.
+private struct HeroSourceRowLabel: View {
+    let title: String
+    let subtitle: String
+    let dimmed: Bool
+    @Environment(\.isFocused) private var isFocused
+
+    /// The pre-C4 dimming value, kept so an at-limit row still reads as unavailable at 10 feet.
+    private static let inertRowOpacity: Double = 0.4
+
+    var body: some View {
+        SettingsRowLabel(title: title, subtitle: subtitle)
+            // Never dim what the platter is currently lighting: on the near-white focus platter a
+            // 0.4-opacity label is the "vanishes into the platter" failure (BUG-58/65).
+            .opacity(dimmed && !isFocused ? Self.inertRowOpacity : 1)
     }
 }
 

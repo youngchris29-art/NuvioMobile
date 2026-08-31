@@ -456,6 +456,11 @@ enum PinnedRowTitle {
         /// holds whatever it has, so a rest sitting exactly at the corrected fixpoint
         /// (`liftedIntrusion == 0`) can never flicker.
         var showAgain: Bool
+        /// How far the title's bottom currently sits past THIS row's artwork top, judged against
+        /// the clearance its own cards are actually in (lifted while focused, at rest otherwise).
+        /// Carried for the belt's probe lines; it is an affine function of `slide`, which is
+        /// already here, so it adds no `onGeometryChange` fires of its own.
+        var intrusion: CGFloat
     }
 
     /// The two geometry inputs a `Reading` is computed from, cached by `PinnedRowTitleTracking` so
@@ -550,7 +555,8 @@ enum PinnedRowTitle {
         return Reading(slide: slide,
                        clearances: clearances,
                        hideCandidate: stillOnScreen && (overshoot > 1 || intrusion > fadeIntrusionArm),
-                       showAgain: overshoot <= 0 && intrusion <= 0)
+                       showAgain: overshoot <= 0 && intrusion <= 0,
+                       intrusion: intrusion)
     }
 
     /// Arm threshold for the visibility belt's intrusion half — how far a title may ride onto its
@@ -726,6 +732,11 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// Cancellation token for the delayed hide (see `updateFade`). Bumped when the belt's arm state
     /// TRANSITIONS and on each re-arm of the deferred check, never once per measurement.
     @State private var fadeToken = 0
+    /// When this title last STOPPED being acceptable — set on the transition out of `showAgain`,
+    /// cleared on the transition back into it, deliberately NOT reset by re-arming. The ceiling
+    /// (`fadeMaxDefer`) therefore measures the whole episode, so a title that keeps flickering in
+    /// and out of the arm band while the page churns still fades on schedule.
+    @State private var fadeArmedAt: Date?
 
     /// Longer than `PinnedRowSettle.settleDelay + nudgeDuration` on purpose: this is what gives the
     /// settle re-reveal first refusal at every rest. The corrector decides at 0.25s and its scroll
@@ -737,6 +748,31 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// Floor on the deferred check's re-arm interval while the page is still moving, so a long
     /// scroll costs a handful of trivial main-queue hops rather than one per frame.
     private static let fadeRecheckFloor: TimeInterval = 0.1
+    /// TERMINAL ceiling on how long the belt may be deferred by motion (Wave 9(a)). Once a title
+    /// has been continuously unacceptable for this long it fades whatever the page is doing.
+    ///
+    /// This is what makes the belt genuinely terminal, and the device pass is why it has to be.
+    /// The rest-gate alone is a liveness hazard: the corrector's own correction stamps motion by
+    /// design (so it keeps first refusal), and on an unsatisfiable rest it can keep re-firing
+    /// against a reveal that pulls the row straight back — motion forever, fade never. The device
+    /// log shows exactly that steady state (`net=-27`, `intr=45`, title on the poster for seconds).
+    ///
+    /// Chosen over the narrower "stop counting the corrector's OWN scrolls as motion": attribution
+    /// only covers the half of the loop we issue. The focus engine's counter-reveal is real motion
+    /// from anyone's point of view, and it was the other half. A ceiling covers both by
+    /// construction and needs no attribution at all.
+    ///
+    /// 2.5s is comfortably longer than a correction plus its settle (0.25 + 0.25, twice over, plus
+    /// the 0.7s gate) so a rest that IS fixable is always fixed first, and short enough that the
+    /// tester never sees the "title painted on the poster for many seconds" the device video shows.
+    ///
+    /// **Worst case, stated honestly (Codex Wave 9 r2): `fadeMaxDefer + fadeRecheckFloor` — 2.6s.**
+    /// This is a ceiling on when the next CHECK may run, not a timer that fires on its own, so the
+    /// bound is the ceiling plus one wake-up interval. `scheduleFadeCheck` now sleeps the SMALLER
+    /// of the motion remainder and the ceiling remainder, which is what keeps that second term at
+    /// the floor; before it slept the motion remainder unconditionally and a title armed at 2.4s
+    /// still waited another 0.7s, making the real bound 3.2s while this comment claimed 2.5s.
+    private static let fadeMaxDefer: TimeInterval = 2.5
 
     /// The two Appearance settings the lift allowance branches on, as REACTIVE inputs (Codex r10
     /// P2). `@AppStorage` rather than the bare `UserDefaults` reads the computation used to do on
@@ -856,6 +892,31 @@ private struct PinnedRowTitleTracking: ViewModifier {
             .onChange(of: liftMode) { _, newMode in
                 republishForModeChange(newMode)
             }
+            // Codex Wave 9 r1: this title's belt state dies with the view. A faded title that is
+            // evicted (lazy recycling, leaving Home, a theme `.id()` swap) never passes back
+            // through `showAgain`, so nothing else would ever drop its key — see
+            // `PinnedRowSettle.clearBeltFaded` for what that stranded. Bumping `fadeToken` in the
+            // same breath kills any pending deferred fade check: that chain re-arms itself while
+            // the page is moving, so without this it could keep waking up for seconds after the
+            // row it belongs to has gone.
+            .onDisappear {
+                fadeToken &+= 1
+                PinnedRowSettle.clearBeltFaded(rowKey: rowKey)
+                // Codex Wave 9 r3: reset the LOCAL verdict too, not just the shared key. A
+                // retained subtree — leaving Home without destruction — comes back with its
+                // `@State` intact, so clearing only the shared set left a title still invisible
+                // while every settle line reported `beltFaded=0`: an invisible title with a probe
+                // swearing it was visible, and no way for the harness or a device log to tell.
+                //
+                // Hiding is a per-VISIT verdict, not a property of the row. It is only ever
+                // justified by a rest that is on screen right now, and this row is leaving; if the
+                // same bad geometry is still there when it returns, the first measurement arms the
+                // belt again and it re-fires on its own schedule. Recovery is coherent in both
+                // directions: the view comes back visible with the set empty, and its next genuine
+                // fade computes `changed == true` and republishes `beltFaded=1`.
+                faded = false
+                fadeArmedAt = nil
+            }
             .modifier(PinnedRowTitleProbe(rowKey: rowKey,
                                           artworkHeight: artworkHeight,
                                           cardTopReach: cardTopReach,
@@ -911,14 +972,21 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// never the whole stack above it.
     private func updateFade(previous: PinnedRowTitle.Reading?, current: PinnedRowTitle.Reading) {
         if current.showAgain {
+            fadeArmedAt = nil
             if faded {
                 fadeToken &+= 1          // cancels any pending hide
                 faded = false
+                beltLog("recover", current)
+                PinnedRowSettle.noteBeltFaded(rowKey: rowKey, faded: false)
             } else if previous?.hideCandidate == true {
                 fadeToken &+= 1
             }
             return
         }
+        // Not acceptable any more. Stamp WHEN that started, once per episode — the terminal ceiling
+        // is measured from here, not from the latest arm, so a title flickering between the arm
+        // band and the hysteresis band cannot defer itself indefinitely.
+        if fadeArmedAt == nil { fadeArmedAt = Date() }
         guard current.hideCandidate else {
             // The hysteresis band between the two edges: hold whatever state we have, but drop a
             // pending hide — this title is no longer in a state worth hiding for.
@@ -926,17 +994,25 @@ private struct PinnedRowTitleTracking: ViewModifier {
             return
         }
         // Already armed by an earlier transition (or already hidden) — the standing deferred check
-        // owns it from here.
+        // owns it from here. Note `previous == nil` (this title's FIRST measurement) takes the arm
+        // path, so a title that publishes already inside the arm band is armed immediately rather
+        // than waiting for a transition that already happened.
         guard previous?.hideCandidate != true, !faded else { return }
+        beltLog("arm", current)
         scheduleFadeCheck(after: Self.fadeDelay)
     }
 
-    /// Fires the hide once the scroll has been still for `fadeDelay`, re-arming itself for the
-    /// remainder whenever it wakes up to find the page still moving.
+    /// Fires the hide once the scroll has been still for `fadeDelay` — or once the title has been
+    /// unacceptable for `fadeMaxDefer` regardless of motion, whichever comes first.
     ///
-    /// Terminates: every re-arm waits at least `fadeRecheckFloor`, and the chain dies the moment
-    /// the title leaves the arm band (`updateFade` bumps `fadeToken`) or the hide lands. While the
-    /// page is moving it is a handful of trivial main-queue hops per second, not one per frame.
+    /// Terminates three ways over: every re-arm waits at least `fadeRecheckFloor`, the chain dies
+    /// the moment the title leaves the arm band (`updateFade` bumps `fadeToken`) or the hide lands,
+    /// and the ceiling bounds the whole episode even if the page never goes still. That last one is
+    /// Wave 9(a): without it the corrector and the belt could livelock, and on hardware they did.
+    ///
+    /// The re-arm delay is bounded by BOTH remainders (Codex Wave 9 r2) so the ceiling is not
+    /// overshot by a whole `fadeDelay` — see `fadeMaxDefer` for the arithmetic and the honest
+    /// `fadeMaxDefer + fadeRecheckFloor` worst case.
     private func scheduleFadeCheck(after delay: TimeInterval) {
         fadeToken &+= 1
         let token = fadeToken
@@ -945,12 +1021,44 @@ private struct PinnedRowTitleTracking: ViewModifier {
             // this scheduled check is stale.
             guard token == fadeToken, !faded else { return }
             let sinceMotion = PinnedRowSettle.secondsSinceMotion()
-            guard sinceMotion >= Self.fadeDelay else {
-                scheduleFadeCheck(after: max(Self.fadeDelay - sinceMotion, Self.fadeRecheckFloor))
+            let armedFor = fadeArmedAt.map { Date().timeIntervalSince($0) } ?? 0
+            if sinceMotion < Self.fadeDelay, armedFor < Self.fadeMaxDefer {
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] belt %@",
+                          "defer row=\(rowKey) sinceMotion=\(Int(sinceMotion * 1000))ms armedFor=\(Int(armedFor * 1000))ms")
+                }
+                // Codex Wave 9 r2: the next wake-up is bounded by BOTH remainders. Sleeping the
+                // full motion remainder alone could overshoot the ceiling by up to `fadeDelay` —
+                // at `armedFor = 2.4` the old form still slept 0.7s and fired at ~3.1s, so the
+                // "terminal" bound was 3.2s in practice, not 2.5s. Taking the smaller of the two
+                // means the chain wakes when the ceiling expires if that comes first; the floor
+                // still bounds the wake-up rate, so it terminates exactly as before.
+                let motionRemainder = Self.fadeDelay - sinceMotion
+                let ceilingRemainder = Self.fadeMaxDefer - armedFor
+                scheduleFadeCheck(after: max(min(motionRemainder, ceilingRemainder),
+                                             Self.fadeRecheckFloor))
                 return
             }
+            if HomeGeometryProbe.enabled {
+                NSLog("[HomeScrollProbe] belt %@",
+                      "fire row=\(rowKey) sinceMotion=\(Int(sinceMotion * 1000))ms armedFor=\(Int(armedFor * 1000))ms"
+                        + " ceiling=\(armedFor >= Self.fadeMaxDefer ? 1 : 0)")
+            }
             faded = true
+            PinnedRowSettle.noteBeltFaded(rowKey: rowKey, faded: true)
         }
+    }
+
+    /// One greppable `[HomeScrollProbe] belt …` line per state change. The belt used to log
+    /// NOTHING, which is why the device pass could see the title painted on the artwork and not
+    /// tell whether the belt had never armed, was deferring forever, or had fired and been undone.
+    private func beltLog(_ event: String, _ reading: PinnedRowTitle.Reading) {
+        guard HomeGeometryProbe.enabled else { return }
+        NSLog("[HomeScrollProbe] belt %@",
+              "\(event) row=\(rowKey) slide=\(Int(reading.slide.rounded()))"
+                + " intr=\(Int(reading.intrusion.rounded()))"
+                + " clearance=\(Int(reading.clearances.atRest.rounded()))"
+                + " clearanceLift=\(Int(reading.clearances.focused.rounded()))")
     }
 }
 
@@ -1092,6 +1200,35 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///     not-yet-settled measurement, and re-arms a fresh settle so the new row gets its own full
 ///     `settleDelay` (Codex r3 P2-2). The tracked focus covers a catalog row's trailing See All
 ///     tile too, which is part of the row and needs the same correction (Codex r3 P2-1).
+/// **The handoff, and why it cannot livelock (Wave 9(a), device pass on the Living Room ATV).**
+/// Some rests are simply UNSATISFIABLE: hardware parks rows ~75pt deeper than the simulator does
+/// (tab-bar occlusion, the BUG-66 family — device `margin=-99 rowB=480` against sim `-25 / 404` at
+/// the same `vh=455`), and a Large focusable frame taller than the effective viewport cannot be
+/// made to show its title band AND its card at once. No amount of correcting fixes that; the
+/// visibility belt (`PinnedRowTitleTracking`) is the terminal fallback, and the corrector's job is
+/// to get out of its way.
+///
+/// It did not, at first, and the failure is worth keeping because it was a genuine LIVELOCK rather
+/// than a wrong number. The device trace ran `nudge=19 bound=19 n=1`, then `n=2`, then handed its
+/// budget straight back and started over — because a transient unmeasurable geometry pass (lazy
+/// row realization, `contentH` climbing 17449→20650 across the walk) used to `clear` the focused
+/// row, which ends the epoch and resets `consecutiveNudges`. Each re-fired correction animated for
+/// 0.25s and stamped `lastMotionAt`; the reveal pulled the rest back to the same `margin=-99`; and
+/// the belt's rest-gate never saw its 0.7s of stillness, so a title sat on the artwork for as long
+/// as the tester watched. The disarm that should have noticed corrections weren't landing was
+/// itself neutralized — the same content growth VOIDed every verification, so no MISS was counted.
+///
+/// Three changes close it, and each is sufficient on its own for a different reason:
+///   - `MeasurementReport.unmeasured` HOLDS instead of clearing, so the stand-down sticks. This is
+///     the root cause; the rest are belt and braces.
+///   - `standDown` records the handoff in the log, so the trace shows the corrector yielding.
+///   - `PinnedRowTitleTracking.fadeMaxDefer` bounds the belt's motion deferral absolutely. This is
+///     the liveness guarantee: the belt fires within `fadeMaxDefer + fadeRecheckFloor` (2.6s) of
+///     the title becoming unacceptable NO MATTER what the corrector, the focus engine, or lazy
+///     layout are doing, so no future interaction between them can starve it again. The extra
+///     `fadeRecheckFloor` is real and deliberate — the ceiling gates a scheduled CHECK rather than
+///     firing a timer of its own, so the bound is the ceiling plus one wake-up interval.
+///
 ///  6. **It self-disarms if it is ever wrong.** Each correction records where it asked the scroll
 ///     view to land; the next settle checks. Two misses and the whole mechanism switches off for
 ///     the session with a loud log line, leaving beta.15 behavior plus the belt. Only a correction
@@ -1165,6 +1302,25 @@ enum PinnedRowSettle {
             if let focusedLockupExtent { return rowTop + focusedLockupExtent }
             return rowBottom - Theme.Size.heroPinnedRowBottomReach
         }
+    }
+
+    /// What one pinned row's settle tracker saw this geometry pass (Wave 9(a)).
+    ///
+    /// `unmeasured` exists because collapsing it into `inactive` cost the belt its whole reason to
+    /// exist on hardware: a device walk realizes lazy rows continuously (`contentH` 17449→20650
+    /// across one walk), every such pass can leave the enclosing scroll view unresolved for a
+    /// frame, and each of those frames used to `clear` the focused row — which ends the correction
+    /// epoch and hands the corrector a FRESH nudge budget on the very next measurement. The
+    /// corrector then re-fired a bound-clamped nudge forever, and each 0.25s animation stamped
+    /// motion, so the belt's rest-gate never saw its `fadeDelay` of stillness. Holding on
+    /// `unmeasured` is what lets the stand-down actually stick.
+    // `nonisolated`: same @Sendable-transform requirement as PinnedRowTitle.Reading above.
+    nonisolated enum MeasurementReport: Equatable, Sendable {
+        case measured(Measurement)
+        /// Focused, but this pass could not resolve the enclosing scroll view — hold.
+        case unmeasured
+        /// Nothing in this row holds focus (or it is a classic-mode row) — clear.
+        case inactive
     }
 
     // `nonisolated`: same @Sendable-transform requirement as PinnedRowTitle.Reading above.
@@ -1250,6 +1406,12 @@ enum PinnedRowSettle {
     /// the moment that row's clearance lands or its epoch ends; while set, `noteClearances` knows
     /// there is a rest waiting on it.
     nonisolated(unsafe) private static var clearanceLatePending: String?
+    /// The row the corrector has most recently declared unsatisfiable — see `standDown`. Deduping
+    /// key for that log line only; nothing branches on it.
+    nonisolated(unsafe) private static var standDownRow: String?
+    /// Rows whose title the visibility belt currently has hidden — see `noteBeltFaded`. Bounded by
+    /// the number of pinned rows; membership is published by each title's own belt state.
+    nonisolated(unsafe) private static var beltFadedRows: Set<String> = []
 
     /// The reveal modifier's deferred-settle scheduler, installed by whichever pinned rows
     /// ScrollView is mounted (Codex r6).
@@ -1294,6 +1456,41 @@ enum PinnedRowSettle {
         guard latest?.rowKey == rowKey else { return }
         latest = nil
         invalidateEpoch(rowGainedFocus: false)
+    }
+
+    /// Publishes whether a row's title is currently hidden by the visibility belt (Wave 9(a)).
+    ///
+    /// Two jobs, both diagnostic. It puts `beltFaded=` on the settle line, which is what makes the
+    /// handoff observable at all — from a device log or from the harness's `debug_pinned` oracle,
+    /// neither of which can see an `NSLog` or a zero-opacity view. And because the belt fires long
+    /// after the settle that gave up on the rest, it re-arms one settle so a fresh line actually
+    /// carries the new state; without that the last report would forever predate the fade.
+    ///
+    /// Same guards as the other backstops: only on a real change, only when nothing else is armed
+    /// (so the paths cannot stale each other's tokens), and a clean stand-down with no scheduler.
+    /// The re-armed settle cannot restart the corrector — a belt fire means the rest was already
+    /// declared unsatisfiable, so `deficit` is 0 or the bound is spent and it declines again.
+    nonisolated static func noteBeltFaded(rowKey: String, faded: Bool) {
+        let changed = faded ? beltFadedRows.insert(rowKey).inserted : (beltFadedRows.remove(rowKey) != nil)
+        guard changed, !armed, let scheduler else { return }
+        let token = rearm()
+        MainActor.assumeIsolated { scheduler(token) }
+    }
+
+    /// Drops a row's belt state because its title VIEW is going away — lazy eviction, leaving Home,
+    /// a theme `.id()` swap (Codex Wave 9 r1).
+    ///
+    /// Separate from `noteBeltFaded(rowKey:faded: false)` on purpose, in both directions. It must
+    /// not re-arm a settle: the row is being torn down, so there is nothing left to correct and
+    /// nothing that should schedule work against it. And it must not be skipped: a faded title
+    /// that disappears never passes back through `showAgain`, so without this its key outlived it.
+    /// A recreated title then starts `faded == false` while every settle line still reported
+    /// `beltFaded=1`, AND its next genuine fade computed `changed == false` — so the diagnostic
+    /// settle was never re-armed and the stale `1` was the last word. test48 could have passed on
+    /// state from a view that no longer existed. Removing the key here restores the invariant that
+    /// `changed` tracks a live title, so the re-arm fires again after recreation.
+    nonisolated static func clearBeltFaded(rowKey: String) {
+        beltFadedRows.remove(rowKey)
     }
 
     /// Publishes one row's clearances — see `PinnedRowTitle.Clearances`.
@@ -1497,6 +1694,13 @@ enum PinnedRowSettle {
         sample = nil
         lastMotionAt = nil
         motionWindow.removeAll()
+        standDownRow = nil
+        // Belt state is host-scoped diagnostic state like everything else here: it describes titles
+        // that belonged to the OUTGOING host's rows, and every one of them is being torn down with
+        // it. A surviving key would make the incoming host's settle lines report `beltFaded=1` for
+        // a freshly-mounted, un-faded title — and, worse, suppress the re-arm on its next real fade
+        // (see `clearBeltFaded`). Each row republishes its own state on its first measurement.
+        beltFadedRows.removeAll()
         // Stale every token handed out under the previous host, so nothing scheduled before the
         // handover can resolve against the new one's state.
         generation &+= 1
@@ -1616,6 +1820,9 @@ enum PinnedRowSettle {
             + " vh=\(Int(m.viewportHeight.rounded())) rowB=\(Int(m.rowBottom.rounded()))"
             + " protB=\(Int(m.protectedBottom.rounded()))"
             + " y=\(Int(sample.offsetY.rounded())) inset=\(Int(sample.insetTop.rounded()))"
+            // Wave 9(a): the handoff, observable. `beltFaded=1` on a `nudge=0` line is the whole
+            // contract working — the corrector gave the rest up and the belt took it.
+            + " beltFaded=\(beltFadedRows.contains(m.rowKey) ? 1 : 0)"
 
         // The correction targets ARTWORK INTRUSION, not raw margin (Codex r1 P1) — and it measures
         // that intrusion against the FOCUSED card, not the row's resting geometry (Codex r4 P1).
@@ -1694,6 +1901,7 @@ enum PinnedRowSettle {
                         retryAfter: max(deadline.timeIntervalSinceNow, 0) + 0.05)
         }
         guard consecutiveNudges < maxConsecutiveNudges else {
+            standDown(rowKey: m.rowKey, reason: "exhausted")
             return Plan(report: line + " nudge=0 exhausted=1", targetY: nil)
         }
 
@@ -1706,6 +1914,7 @@ enum PinnedRowSettle {
         guard correction >= 2 else {
             // Nothing useful left to give — the row is too tall for this viewport to show both its
             // title band and its card. The visibility belt handles the title from here.
+            standDown(rowKey: m.rowKey, reason: "bound")
             return Plan(report: line + " nudge=0 bound=\(Int(bottomRoom.rounded()))", targetY: nil)
         }
 
@@ -1722,6 +1931,19 @@ enum PinnedRowSettle {
         line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded())) n=\(consecutiveNudges)"
         if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
         return Plan(report: line, targetY: target)
+    }
+
+    /// Records — once per row, so a stationary rest logs one line and not one per settle — that
+    /// the corrector has given this rest up and the visibility belt now owns it (Wave 9(a)). Purely
+    /// diagnostic: the stand-down itself is the `guard`s above declining to nudge. Having it in the
+    /// log is what lets a device pass distinguish "the corrector never tried" from "the corrector
+    /// tried, could not, and handed over" — the exact question the hardware trace could not answer.
+    nonisolated private static func standDown(rowKey: String, reason: String) {
+        guard standDownRow != rowKey else { return }
+        standDownRow = rowKey
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "standdown row=\(rowKey) reason=\(reason) — belt owns this rest")
+        }
     }
 
     /// The cap `net` is reported against — the same one `PinnedRowTitle.reading` binds with, so
@@ -1767,20 +1989,32 @@ private struct PinnedRowSettleTracking: ViewModifier {
         let key = rowKey
         let active = isFocused && cardTopReach > 0
         let lockupExtent = focusedLockupExtent
-        return content.onGeometryChange(for: PinnedRowSettle.Measurement?.self, of: { proxy in
-            guard active, let visible = PinnedRowTitle.visibleBounds(proxy) else { return nil }
+        // Wave 9(a): THREE states, not two. Collapsing "this row is not focused" and "the enclosing
+        // scroll view didn't resolve this pass" into one `nil` is what livelocked the corrector
+        // against the belt on hardware — see `PinnedRowSettle.clear` and the device trace in the
+        // header. It is the same distinction Wave 4 item 6 already had to draw for the TITLE's own
+        // measurement (`slideMeasurement` vs `slide`): an unmeasurable pass must HOLD, never clear.
+        return content.onGeometryChange(for: PinnedRowSettle.MeasurementReport.self, of: { proxy in
+            guard active else { return .inactive }
+            guard let visible = PinnedRowTitle.visibleBounds(proxy) else { return .unmeasured }
             // `visible` is the rows viewport expressed in THIS ROW's local space, so `-minY` is
             // the row's top edge measured from the viewport's top edge — the same quantity, and
             // the same sign convention, as `PinnedRowTitle.rawMargin`.
-            return PinnedRowSettle.Measurement(rowKey: key,
-                                               rowTop: -visible.minY,
-                                               rowHeight: proxy.size.height,
-                                               viewportHeight: visible.height,
-                                               focusedLockupExtent: lockupExtent)
+            return .measured(PinnedRowSettle.Measurement(rowKey: key,
+                                                         rowTop: -visible.minY,
+                                                         rowHeight: proxy.size.height,
+                                                         viewportHeight: visible.height,
+                                                         focusedLockupExtent: lockupExtent))
         }, action: { newValue in
-            if let newValue {
-                PinnedRowSettle.report(newValue)
-            } else {
+            switch newValue {
+            case .measured(let measurement):
+                PinnedRowSettle.report(measurement)
+            case .unmeasured:
+                // Hold. This row still holds focus and its last measurement is still the best
+                // description of it; clearing here would end the correction epoch and hand the
+                // corrector a fresh nudge budget for a rest it has already given up on.
+                break
+            case .inactive:
                 PinnedRowSettle.clear(rowKey: key)
             }
         })

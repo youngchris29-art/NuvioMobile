@@ -309,6 +309,15 @@ kotlin {
             }
         }
     }
+    // The cinterop task's up-to-date check tracks only the .def file; headers pulled in via
+    // `compilerOpts -I` are invisible to Gradle, so a header-only shim change (the 2026-08-30
+    // GCM oneshot declarations) left every not-cleanly-rebuilt target on a STALE klib —
+    // "Unresolved reference 'CCCryptorGCMOneshotEncrypt'" on whichever slice hadn't re-run
+    // cinterop, while freshly-built slices were green. Declaring the shim as an explicit task
+    // input makes a header edit invalidate every target's cinterop the normal way.
+    project.tasks.matching { it.name.startsWith("cinteropCommoncrypto") }.configureEach {
+        inputs.file(project.file("src/nativeInterop/cinterop/commoncrypto_shim.h"))
+    }
 
     sourceSets {
         commonMain {

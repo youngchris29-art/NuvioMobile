@@ -4020,4 +4020,164 @@ final class NuvioTVUITests: XCTestCase {
             "settled pinned rest leaves the row title \(liftedIntrusion)pt past the FOCUSED card's artwork top edge — this is the rc1 report verbatim (the sim repro measured intr=46 pre-lift at Large, 66 once the ~20pt focus lift is counted). Full settle line: \(line)"
         )
     }
+
+
+    // MARK: - Wave 9(a): the visibility belt is the TERMINAL fallback
+
+    /// Device pass, Living Room ATV: on hardware the pinned rows park ~75pt deeper than the
+    /// simulator's (tab-bar occlusion, the BUG-66 family — device `margin=-99 rowB=480` against sim
+    /// `-25 / 404` at the same `vh=455`). That makes some Large rests UNSATISFIABLE: the corrector
+    /// was honest about it (`nudge=19 bound=19`, then `bound=0`), but the title still sat painted
+    /// across the poster for seconds, because the belt that exists for exactly this case never
+    /// fired. The corrector and the belt had livelocked — every re-fired correction stamped motion,
+    /// and the belt's rest-gate waits for stillness. See `PinnedRowSettle`'s header for the full
+    /// chain and the three changes that close it.
+    ///
+    /// **Two abandoned repro attempts, both worth keeping so they are not retried.**
+    ///
+    /// 1. A straight-down walk (2026-08-31 run #1). It settled at `margin=+24 net=+24 deficit=0` —
+    ///    a healthy top-visible rest where `beltFaded=0` is the CORRECT answer. Downward reveals
+    ///    park Large rows top-visible in the simulator; there was no clipping to hide.
+    ///
+    /// 2. Forcing the clip with `-debug.pinnedTitleMaxSlide 2` (2026-08-31 run #2). It produced
+    ///    `net=-78 intr=-25 beltFaded=0` — and that is ALSO correct behaviour, for a reason worth
+    ///    stating: pinning the slide at 2pt leaves the title fully clipped ABOVE the edge, i.e.
+    ///    invisible, with zero artwork contamination. `PinnedRowTitle.reading`'s `stillOnScreen`
+    ///    term stands the belt down there by design — there is nothing on the poster to hide. The
+    ///    override PREVENTS the intrusion instead of exhibiting it, so it is the wrong tool: the
+    ///    defect is a title that is PARTIALLY visible and sitting on artwork, which a cap that
+    ///    small cannot produce. The override is gone from this test entirely.
+    ///
+    /// What actually reproduces it is the natural geometry: go one or two rows PAST a row and come
+    /// back UP into it. An upward reveal bottom-anchors the focused frame, and a Large focusable
+    /// frame (~579pt) bottom-anchored in the ~455pt rows viewport necessarily parks its top — and
+    /// its title band — above the clip edge, with the rest of the title on the artwork. That run
+    /// measured `margin=-80 net=-8 intr=45 bound=0`, which is the Living Room state to the point,
+    /// and the belt fired. Leg A's premise is written as that pair — `net < 0` (clipped) AND
+    /// `intr > 4` (on the artwork) — because run #2 proved `margin < -2` alone admits the
+    /// fully-clipped variant the belt is supposed to ignore.
+    ///
+    /// `-no_zoom_on_focus YES` throughout: it pins the lift allowance at 0, so `clearances.focused`
+    /// equals `clearances.atRest` and the settle line's `intr` and `intrLifted` agree in every
+    /// focus mode. The assertions read `intrLifted` where present anyway, since that is the number
+    /// the belt actually judges a focused row by.
+    func test48BeltHidesUncorrectableTitle() throws {
+        /// `PinnedRowTitle.fadeIntrusionArm` — how far onto the artwork the title must sit before
+        /// the belt arms. Duplicated as a literal: this target drives the app as a black box.
+        let intrusionArm = 4
+        /// Healthy-rest premise for leg B. 2pt of slack is the settle line's own rounding.
+        let healthyMarginCutoff = -2
+
+        /// The intrusion the BELT judges by: `intrLifted` when the line carries it, else `intr`.
+        /// With no-zoom pinned they are equal, but preferring the lifted one keeps this honest if
+        /// the fixture is ever run in another focus mode.
+        func intrusion(_ line: String) -> Int? {
+            Self.probeValue(line, key: "intrLifted") ?? Self.probeValue(line, key: "intr")
+        }
+
+        /// Reads the settle line the app is currently reporting, with a screenshot and an
+        /// attachment for the record.
+        func settleLine(_ app: XCUIApplication, _ shotName: String) -> String? {
+            shot(app, shotName)
+            let probe = app.staticTexts["debug_pinned"]
+            guard probe.waitForExistence(timeout: 10) else {
+                XCTFail("debug_pinned probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+                return nil
+            }
+            let line = probe.label
+            let report = XCTAttachment(string: line)
+            report.name = "\(shotName)_settle_line"
+            report.lifetime = .keepAlways
+            add(report)
+            NSLog("[WAVE9] %@ %@", shotName, line)
+            return line
+        }
+
+        /// Settle window: must outlast the settle debounce, the correction and its retries, the
+        /// belt's `fadeDelay`, AND the belt's terminal ceiling (`fadeMaxDefer`, 2.5s), so a fade
+        /// that is merely being deferred has still landed before the line is read.
+        let settleWindow: TimeInterval = 5.0
+
+        // ── Leg A: the device-failure gate ───────────────────────────────────────────────────
+        // Hunt for a rest that is BOTH clipped and on the artwork, the shape the device produced.
+        let app = launchToHome(
+            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)   // off the hero CTA, into the poster-row region
+        pause(1.0)
+
+        var tried: [String] = []
+        var deepRest: String?
+        // Opportunistic only (see the header's abandoned attempt #2): a fully-clipped rest — off
+        // the top edge, nothing on the artwork — must NOT be faded. Not hunted for, because
+        // without a cap override the geometry makes it unreachable: `net < 0` requires the slide
+        // saturated at its 72pt cap, which by itself puts `intr` at ~45. Asserted if one ever
+        // shows up, so the `stillOnScreen` stand-down is stated where a future cap override would
+        // resurrect it.
+        var fullyClipped: [String] = []
+        for cycle in 0..<3 {
+            press(.down, times: 2, gap: 0.9)   // past the target row…
+            pause(1.0)
+            press(.up, times: 1, gap: 0.9)     // …then back up into it: bottom-anchored reveal
+            pause(settleWindow)
+            guard let line = settleLine(app, "48a\(cycle)_deep_rest") else { return }
+            tried.append(line)
+            guard let net = Self.probeValue(line, key: "net"), let intr = intrusion(line) else { continue }
+            if net < 0, intr > intrusionArm { deepRest = line; break }
+            if net < 0, intr <= 0 { fullyClipped.append(line) }
+        }
+
+        for line in fullyClipped {
+            XCTAssertEqual(
+                Self.probeValue(line, key: "beltFaded"), 0,
+                "the belt hid a title that was fully clipped ABOVE the edge (net<0, intr<=0) — there is no artwork contamination in that state and `stillOnScreen` is supposed to stand the belt down. Full settle line: \(line)"
+            )
+        }
+
+        guard tried.contains(where: { Self.probeValue($0, key: "margin") != nil }) else {
+            throw XCTSkip("no focused pinned settle was reported across \(tried.count) attempt(s) — the settle re-reveal and its belt are armed only in Home's PINNED (Nuvio-style) hero container, so this fixture is running the classic in-scroll hero. Turn Settings > Home Screen > Nuvio-style hero on and rerun. Lines: \(tried.joined(separator: " | "))")
+        }
+        guard let deepRest else {
+            XCTFail("PREMISE UNREACHABLE — this is NOT a belt failure. No rest the down→up re-entry produced was both CLIPPED (net < 0) and ON THE ARTWORK (intr > \(intrusionArm)), which is the device-observed shape this gate covers. Every rest was either healthy or fully clipped off the top edge, and the belt is correct to leave both alone. The walk needs to reach a partially-visible deep rest before the assertion below means anything. Lines tried: \(tried.joined(separator: " | "))")
+            return
+        }
+
+        let deepNet = Self.probeValue(deepRest, key: "net") ?? 0
+        let deepIntr = intrusion(deepRest) ?? 0
+        XCTAssertEqual(
+            Self.probeValue(deepRest, key: "beltFaded"), 1,
+            "the corrector could not fix this rest (net=\(deepNet), intr=\(deepIntr), title partially visible and sitting on the poster) and the visibility belt did NOT hide it — this is the Living Room ATV failure reproducing: a title left painted across the artwork at a settled rest, for as long as the tester watched, because the corrector's re-fired corrections kept stamping motion and the belt's rest-gate never saw stillness. The belt must fire within fadeDelay + fadeMaxDefer whatever the corrector and the focus engine are doing. Full settle line: \(deepRest)"
+        )
+
+        // ── Leg B: the false-positive guard ──────────────────────────────────────────────────
+        // A plain downward walk parks these rows top-visible (abandoned attempt #1 above), which is
+        // exactly the healthy rest this leg wants: the belt must leave it alone. Without this, a
+        // belt that simply hid every title would pass leg A.
+        let healthyApp = launchToHome(
+            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(healthyApp, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)
+        pause(settleWindow)
+        guard let healthyLine = settleLine(healthyApp, "48b_healthy_rest") else { return }
+        guard let healthyMargin = Self.probeValue(healthyLine, key: "margin"),
+              let healthyIntr = intrusion(healthyLine) else {
+            throw XCTSkip("no focused pinned settle on the healthy leg ('\(healthyLine)') — rerun")
+        }
+        // Loud if the premise is unreachable: a leg B that silently ran on a clipped rest would
+        // assert the opposite of what it means to.
+        guard healthyMargin >= healthyMarginCutoff, healthyIntr <= 0 else {
+            XCTFail("PREMISE UNREACHABLE for the false-positive guard: the straight-down walk did not land on a healthy rest (margin=\(healthyMargin), intr=\(healthyIntr); wanted margin >= \(healthyMarginCutoff) and intr <= 0). Downward reveals are supposed to park these rows top-visible — if they no longer do, this guard needs a different entry. Full settle line: \(healthyLine)")
+            return
+        }
+        XCTAssertEqual(
+            Self.probeValue(healthyLine, key: "beltFaded"), 0,
+            "the belt hid a row title on a perfectly healthy rest (margin=\(healthyMargin), intr=\(healthyIntr) — clear of the artwork) — the terminal fallback is firing where it is not wanted, which would cost the title on ordinary rows too. Full settle line: \(healthyLine)"
+        )
+    }
 }
