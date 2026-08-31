@@ -148,6 +148,55 @@ struct CollectionRowView: View {
         UIFont.preferredFont(forTextStyle: .caption2).lineHeight.rounded(.up)
     }
 
+    /// Distance from this row's TOP edge to the FOCUSED folder tile's lockup BOTTOM — the bound the
+    /// settle re-reveal's correction must respect (Codex r11 P2-2).
+    ///
+    /// Only this row needs to state it. `shelfMinHeight` floors the shelf at the TALLEST folder's
+    /// lockup, and the `LazyHStack` is top-aligned in pinned mode, so a focused square or landscape
+    /// tile (which takes its height from `style.width`, not `style.height` — see
+    /// `FolderTile.artworkHeight`) ends far above the row's own bottom edge. Bounding the correction
+    /// by the row bottom therefore reported little or no room on exactly the tiles the tester's
+    /// "Streaming Services" complaint was about, refusing a correction the focused tile could have
+    /// absorbed whole and handing the title to the visibility belt to hide instead.
+    ///
+    /// The arithmetic walks the same layout the row builds: row top → the shelf's pinned top
+    /// padding (`Spacing.lg`, matched to `heroPinnedRowTitleInset`'s assumption) → the card reach
+    /// band the `NavigationLink` label carries → the tile's own artwork and, only when the tile is
+    /// actually RENDERING one, its caption chrome. Nil while nothing here holds focus, or in
+    /// classic mode, where the row's own frame is already the right bound.
+    ///
+    /// The caption term goes through `FolderTile.rendersTextCaption` rather than `hideTitle` alone
+    /// (Codex r11 round 2): a folder whose `titleLogoUrl` has LOADED draws the logo instead of the
+    /// text, so charging the chrome anyway overstated the protected bottom by ~31pt and refused
+    /// corrections that were perfectly safe — reintroducing, on exactly the wordmark tiles this
+    /// bound exists for, the title-on-artwork the corrector is supposed to remove.
+    ///
+    /// Error direction, applied the same way as the shortest-vs-focused argument above:
+    /// over-counting only refuses corrections (recoverable, and the belt still hides the title),
+    /// while under-counting pushes real artwork past the fold (not recoverable). So every state
+    /// that still shows the text — no logo URL, load failed, and the TRANSITIONAL still-loading
+    /// state — keeps the chrome; only a confirmed cache hit drops it.
+    ///
+    /// Staleness note: `ArtworkStore.cached` is not observable, so a logo that finishes loading
+    /// while its tile is already focused does not by itself re-render this row — the extent stays
+    /// on the conservative (chrome-counted) side until the next body pass. The logo's arrival does
+    /// change the tile's layout, so the row's own `onGeometryChange` re-fires and the MEASUREMENT
+    /// refreshes; it is only this parameter that waits. In practice the next focus move recomputes
+    /// it (`focusedFolderId` is a body dependency), and by the time a tile is focused its logo has
+    /// almost always already loaded — it has been on screen. Conservative direction, bounded
+    /// window, no correctness hazard.
+    private var focusedTileLockupExtent: CGFloat? {
+        guard cardTopReach > 0,
+              let focusedFolderId,
+              let folder = collection.folders.first(where: { $0.id == focusedFolderId })
+        else { return nil }
+        let caption = FolderTile.rendersTextCaption(for: folder)
+            ? Theme.Spacing.sm + Self.folderCaptionHeight
+            : 0
+        return Theme.Spacing.lg + cardTopReach
+            + FolderTile.artworkHeight(for: folder, style: style) + caption
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             // Pinned mode overlays the title inside the shelf's reach band instead (see
@@ -231,7 +280,12 @@ struct CollectionRowView: View {
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
         // `pinnedRowSettleTracking` in BrowseComponents. This row is the mixed-shape one, so it is
         // also the one whose stale-relayout rests Wave 4 item 2 could only floor, not correct.
-        .pinnedRowSettleTracking(rowKey: collection.id, isFocused: focusedFolderId != nil)
+        // `focusedLockupExtent` (Codex r11 P2-2): this is the one mixed-shape pinned row, so its
+        // own frame — floored at the TALLEST tile — overstates where the focused tile actually
+        // ends. See `focusedTileLockupExtent`.
+        .pinnedRowSettleTracking(rowKey: collection.id,
+                                 isFocused: focusedFolderId != nil,
+                                 focusedLockupExtent: focusedTileLockupExtent)
         .onChange(of: focusedFolderId) { _, id in
             onFolderFocusChange?(id.flatMap { fid in collection.folders.first { $0.id == fid } })
         }
@@ -331,12 +385,34 @@ struct FolderTile: View {
     /// wordmark is the worse failure, so any own cover keeps suppressing the logo. The
     /// `[CollectionCover]` probe (`debug.collectionCoverProbe`) is what answers the reporter's
     /// "title images don't show" — it names the payload keys this build reads and doesn't.
-    private var titleLogoURL: URL? {
+    private var titleLogoURL: URL? { Self.titleLogoURL(for: folder) }
+
+    /// The gate above, as a static so `CollectionRowView` can ask the same question without
+    /// re-deriving (and drifting from) its precedence rules — the same reason
+    /// `artworkHeight(for:style:)` is a static.
+    static func titleLogoURL(for folder: CollectionFolder) -> URL? {
         let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         if !(ownCover?.isEmpty ?? true) { return nil }
         guard let raw = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return nil }
         return URL(string: raw)
+    }
+
+    /// Whether this folder's tile is currently rendering its plain-text caption BELOW the artwork
+    /// — i.e. whether the caption chrome is part of its lockup height right now.
+    ///
+    /// Mirrors the render condition exactly (`!folder.hideTitle && titleLogoImage == nil`, see the
+    /// caption's own branch): a loaded title logo REPLACES the text. `titleLogoImage` is the tile's
+    /// own `@State`, but it is populated from `ArtworkStore` — and the tile's `.task` takes a
+    /// synchronous `ArtworkStore.cached` hit as "render immediately" — so a warm cache answers this
+    /// without reaching into the child's state.
+    ///
+    /// The three nil cases stay on the caption side, which is the correct direction: no logo URL,
+    /// still loading, and load failure all render the text, so all three keep the chrome.
+    static func rendersTextCaption(for folder: CollectionFolder) -> Bool {
+        guard !folder.hideTitle else { return false }
+        guard let url = titleLogoURL(for: folder) else { return true }
+        return ArtworkStore.cached(url) == nil
     }
 
     private var tileWidth: CGFloat {

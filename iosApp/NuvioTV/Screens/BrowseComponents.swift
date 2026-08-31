@@ -1133,6 +1133,22 @@ enum PinnedRowSettle {
         var rowTop: CGFloat
         var rowHeight: CGFloat
         var viewportHeight: CGFloat
+        /// Distance from the row's TOP edge to the FOCUSED card's lockup BOTTOM, for rows that can
+        /// state it more precisely than their own frame does (Codex r11 P2-2).
+        ///
+        /// nil — every uniform-card row (catalog, Continue Watching, Upcoming) — means the row's
+        /// own bottom already IS the focused card's lockup bottom plus the transparent chrome, so
+        /// `protectedBottom` derives it exactly as before.
+        ///
+        /// The one row that needs this is the MIXED-SHAPE collection row. Its height comes from
+        /// `shelfMinHeight`, i.e. the TALLEST folder tile, while its `LazyHStack` is top-aligned in
+        /// pinned mode — so a focused square or landscape tile ends far above the row's bottom
+        /// edge. Bounding that correction by the row's bottom reported no room at all and refused a
+        /// correction the focused tile could have absorbed completely, leaving the belt to hide a
+        /// title that never needed hiding. Note the approximation runs the WRONG way if inverted:
+        /// bounding a tall focused tile by a short one's extent would push real artwork off the
+        /// fold, which is why this is the focused tile's own extent and not the row's shortest.
+        var focusedLockupExtent: CGFloat?
 
         /// The title's top vs the viewport's top edge — the probe's `margin`, reproduced from the
         /// ROW's frame. The pinned title is an overlay at the shelf's top-leading corner inset by
@@ -1140,6 +1156,15 @@ enum PinnedRowSettle {
         /// row's VStack has no other child in pinned mode, so row top + inset IS title top.
         var margin: CGFloat { rowTop + Theme.Size.heroPinnedRowTitleInset }
         var rowBottom: CGFloat { rowTop + rowHeight }
+
+        /// The lowest point that must stay inside the viewport for a correction to be safe: the
+        /// focused card's lockup bottom. Everything below it in the row's frame is transparent —
+        /// the downward reach band, and (for the row's own bottom padding) shelf chrome — and may
+        /// leave the viewport without hiding any artwork.
+        var protectedBottom: CGFloat {
+            if let focusedLockupExtent { return rowTop + focusedLockupExtent }
+            return rowBottom - Theme.Size.heroPinnedRowBottomReach
+        }
     }
 
     // `nonisolated`: same @Sendable-transform requirement as PinnedRowTitle.Reading above.
@@ -1191,6 +1216,11 @@ enum PinnedRowSettle {
     /// (~0.4pt/frame) and an order of magnitude below a real reveal's per-frame travel, so it can
     /// neither swallow a real scroll nor be fooled by the drift.
     nonisolated static let driftTolerance: CGFloat = 4
+    /// Sliding window for the CUMULATIVE motion test, and the path length within it that counts as
+    /// motion — see the two-test explanation in `noteScroll` for the arithmetic that places 18pt
+    /// (≈60pt/s) between the measured creep and a slow swipe's deceleration tail.
+    nonisolated static let motionWindowSeconds: TimeInterval = 0.3
+    nonisolated static let motionWindowDisplacement: CGFloat = 18
     nonisolated static let maxConsecutiveNudges = 2
     /// How far a landed correction may miss its requested offset before it counts as a miss. Wide
     /// enough to absorb a concurrent focus-driven adjustment, narrow enough to catch a scroll API
@@ -1204,9 +1234,12 @@ enum PinnedRowSettle {
     nonisolated(unsafe) private static var armed = false
     nonisolated(unsafe) private static var consecutiveNudges = 0
     nonisolated(unsafe) private static var nudgeDeadline: Date?
-    /// When the rows scroll view last actually MOVED (a step past `driftTolerance`). Read by the
-    /// visibility belt — see `secondsSinceMotion`.
+    /// When the rows scroll view last actually MOVED. Read by the visibility belt — see
+    /// `secondsSinceMotion`.
     nonisolated(unsafe) private static var lastMotionAt: Date?
+    /// Per-callback displacements inside the last `motionWindowSeconds`, for the cumulative motion
+    /// test in `noteScroll`. Bounded by the callback rate times the window — ~20 entries at 60Hz.
+    nonisolated(unsafe) private static var motionWindow: [(at: Date, delta: CGFloat)] = []
     nonisolated(unsafe) private static var pendingVerification: Verification?
     nonisolated(unsafe) private static var verifyFailures = 0
     nonisolated(unsafe) private static var disarmed = false
@@ -1374,19 +1407,43 @@ enum PinnedRowSettle {
     nonisolated static func noteScroll(_ newSample: ScrollSample) -> Int? {
         let previous = sample?.offsetY
         sample = newSample
-        // Re-arm only on a real MOVE — a STEP larger than the tolerance — and compare against the
-        // PREVIOUS sample, not against the offset the timer was armed at. That distinction is the
-        // whole fix for the creep: the drift is small per sample (~0.4pt/frame for the measured
-        // 14pt/600ms) but unbounded in total, so an arm-time comparison would cross 4pt within a
-        // few hundred milliseconds, re-arm, and the settle would never fire at all. A real
-        // focus-driven reveal moves tens of points per frame, so it still re-arms every frame
-        // until its own decelerating tail — by which point the remaining motion is under 4pt and
-        // the plan is computed from the LIVE sample anyway.
-        let isMove = previous.map { abs(newSample.offsetY - $0) > driftTolerance } ?? true
+        let now = Date()
+        let step: CGFloat? = previous.map { abs(newSample.offsetY - $0) }
+
+        // Motion is classified by TWO independent tests, OR'd — deliberately not merged, because
+        // they discriminate different things and a single threshold cannot do both jobs.
+        //
+        //  1. PER-SAMPLE step (`driftTolerance`, 4pt). The fast path: one big jump is obviously
+        //     motion and must re-arm on the spot without waiting for a window to fill. This is
+        //     also the test that keeps the LAZY-REALIZATION CREEP reading as stillness — measured
+        //     at ~0.4pt/frame (14pt over 600ms), an order of magnitude under the threshold. If the
+        //     creep ever re-armed the debounce, the settle would never fire at all and this whole
+        //     mechanism would silently stop existing.
+        //
+        //  2. CUMULATIVE displacement over `motionWindowSeconds` (Codex r11 P2-1). A deceleration
+        //     tail moving 2–4pt per callback passes test 1 (4 is not > 4) yet is unmistakably
+        //     motion: at 60Hz that is 120–240pt/s. Sustained slow motion could therefore hold
+        //     below the per-sample threshold for longer than `settleDelay`, letting a correction
+        //     fire at 250ms and the belt fade at 700ms while the page was visibly moving. Path
+        //     length over a short window is a velocity, which is the quantity that actually
+        //     separates the two regimes:
+        //
+        //         creep          ~23pt/s  →   ~7pt per 300ms window   (still)
+        //         slow-swipe tail 120pt/s →  ~36pt per 300ms window   (motion)
+        //
+        //     `motionWindowDisplacement` (18pt ≈ 60pt/s) sits between them with ~2.5x of margin on
+        //     each side. Erring HIGH is the safe direction: too high merely lets a very slow tail
+        //     read as a rest (cosmetic — the plan is computed from the live sample, and the next
+        //     real move re-arms), while too low resurrects the never-fires bug.
+        motionWindow.removeAll { now.timeIntervalSince($0.at) > motionWindowSeconds }
+        if let step { motionWindow.append((at: now, delta: step)) }
+        let windowed = motionWindow.reduce(CGFloat(0)) { $0 + $1.delta }
+        let isMove = step.map { $0 > driftTolerance || windowed > motionWindowDisplacement } ?? true
+
         // Stamped on every real move, including the corrector's OWN animated scroll — which is how
         // the visibility belt gets its "is the page actually still?" signal, and how the corrector
         // keeps first refusal at every rest (Codex r2 P2-1; see `secondsSinceMotion`).
-        if isMove { lastMotionAt = Date() }
+        if isMove { lastMotionAt = now }
         if armed, !isMove { return nil }
         generation &+= 1
         armed = true
@@ -1396,17 +1453,53 @@ enum PinnedRowSettle {
     /// Installs the deferred-settle scheduler — see `scheduler`. Returns a generation id the
     /// caller passes back to `hostDidDisappear` so a teardown can only ever clear its OWN
     /// registration, never a newer one that has already replaced it.
-    nonisolated static func registerScheduler(_ schedule: @escaping @MainActor (Int) -> Void) -> Int {
-        if scheduler != nil {
+    nonisolated static func registerScheduler(replacing previousID: Int,
+                                              _ schedule: @escaping @MainActor (Int) -> Void) -> Int {
+        // "A DIFFERENT host is taking over", not merely "a registration exists": a host whose
+        // `onAppear` runs again without an intervening teardown passes its own live id back and is
+        // a continuation, whose measurements are still its own.
+        if scheduler != nil, previousID != schedulerGeneration {
             // Not fatal — a theme `.id()` swap legitimately overlaps two hosts for one update, and
             // the newer one is the right winner. Logged so a genuinely unexpected second pinned
             // rows ScrollView shows up in a device log instead of silently taking over.
             NSLog("[HomeScrollProbe] settle %@",
                   "scheduler REREGISTERED — a second pinned rows ScrollView installed one; the newer host wins")
+            // Codex r11 round 2: the measurement cleanup has to happen HERE, not only in
+            // `hostDidDisappear`. In the swap ordering this file already guards against elsewhere,
+            // the INCOMING host registers first — bumping `schedulerGeneration` — so the outgoing
+            // host's later `hostDidDisappear` fails its generation guard and returns without
+            // clearing anything. The new host would then pair its first scroll sample with the old
+            // host's `latest` row frame and could correct a row nothing has focused. The
+            // replacement point is the unambiguous boundary: state from a host that is being
+            // replaced can never be valid for the one replacing it.
+            resetHostScopedState()
         }
         schedulerGeneration &+= 1
         scheduler = schedule
         return schedulerGeneration
+    }
+
+    /// Everything the corrector holds that belongs to ONE pinned rows ScrollView. Shared by the
+    /// teardown path (`hostDidDisappear`) and the takeover path (`registerScheduler`), because a
+    /// swap can deliver either one and only one of them.
+    ///
+    /// `clearances` deliberately survives: it is keyed by rowKey, not by host, and each row
+    /// republishes on its first measurement anyway. Dropping it would only manufacture
+    /// `clearance=?` declines on the way back in.
+    nonisolated private static func resetHostScopedState() {
+        pendingVerification = nil
+        nudgeDeadline = nil
+        armed = false
+        epochRearmPending = false
+        clearanceLatePending = nil
+        consecutiveNudges = 0
+        latest = nil
+        sample = nil
+        lastMotionAt = nil
+        motionWindow.removeAll()
+        // Stale every token handed out under the previous host, so nothing scheduled before the
+        // handover can resolve against the new one's state.
+        generation &+= 1
     }
 
     /// Tears the corrector's shared state down when its host goes away — but only if `id` is still
@@ -1420,14 +1513,19 @@ enum PinnedRowSettle {
     /// the product of focus restoration, not of the scroll API — and two false MISSes disarm the
     /// mechanism for the whole session. Everything else here is hygiene: no host means nothing can
     /// resolve an armed settle, so leaving one armed would be a phantom.
+    /// Codex r11 P2-3: the MEASUREMENTS are host-scoped and must go too. A recreated pinned host
+    /// publishes its first scroll sample before anything in it has taken focus, and `settlePlan`
+    /// pairs whatever `sample` it is given with whatever `latest` it still holds — so a surviving
+    /// row frame from the previous host would be combined with the new host's offset and could fire
+    /// a correction for a row that is not even focused. `sample` goes with it so the first sample
+    /// after recreation is treated as a first sample (motion, no step to compare), and the motion
+    /// window with it so a stale path length cannot make a fresh page look busy. All of that lives
+    /// in `resetHostScopedState`, which the takeover path calls too — this generation guard means
+    /// this function alone cannot be relied on to run.
     nonisolated static func hostDidDisappear(_ id: Int) {
         guard id == schedulerGeneration else { return }
         scheduler = nil
-        pendingVerification = nil
-        nudgeDeadline = nil
-        armed = false
-        epochRearmPending = false
-        clearanceLatePending = nil
+        resetHostScopedState()
     }
 
     /// Re-arms a settle without a scroll event, returning a token to schedule against, and stales
@@ -1512,7 +1610,11 @@ enum PinnedRowSettle {
         let slide = min(max(-m.margin, 0), cap)
         let net = m.margin + slide
         var line = "row=\(m.rowKey) margin=\(Int(m.margin.rounded())) net=\(Int(net.rounded()))"
+            // `protB` is what the correction is actually bounded by; on a mixed-shape row it sits
+            // well above `rowB` (Codex r11 P2-2), and the gap between them is the room the old
+            // row-bottom bound was throwing away.
             + " vh=\(Int(m.viewportHeight.rounded())) rowB=\(Int(m.rowBottom.rounded()))"
+            + " protB=\(Int(m.protectedBottom.rounded()))"
             + " y=\(Int(sample.offsetY.rounded())) inset=\(Int(sample.insetTop.rounded()))"
 
         // The correction targets ARTWORK INTRUSION, not raw margin (Codex r1 P1) — and it measures
@@ -1595,11 +1697,11 @@ enum PinnedRowSettle {
             return Plan(report: line + " nudge=0 exhausted=1", targetY: nil)
         }
 
-        // How far the content may move DOWN before the focused card's own lockup starts leaving
-        // the viewport. The row's bottom edge includes the transparent downward reach band, which
-        // holds no artwork and may leave the viewport freely — the shelf's own bottom padding is
-        // kept as extra slack rather than spent.
-        let bottomRoom = m.viewportHeight - m.rowBottom + Theme.Size.heroPinnedRowBottomReach
+        // How far the content may move DOWN before the FOCUSED card's own lockup starts leaving
+        // the viewport — see `Measurement.protectedBottom`, which is the row's bottom minus its
+        // transparent chrome for a uniform-card row, and the focused tile's own extent for the
+        // mixed-shape collection row (Codex r11 P2-2).
+        let bottomRoom = m.viewportHeight - m.protectedBottom
         let correction = min(deficit, max(bottomRoom, 0), Theme.Size.heroPinnedRowSettleMaxNudge)
         guard correction >= 2 else {
             // Nothing useful left to give — the row is too tall for this viewport to show both its
@@ -1638,14 +1740,24 @@ extension View {
     /// re-identify that row's subtree every time focus entered or left it — poster pipelines torn
     /// down and rebuilt per D-pad step, the BUG-19 class. When the row is unfocused (or classic
     /// mode, where `rowCardTopReach` is 0) the closure returns nil constantly and nothing fires.
-    func pinnedRowSettleTracking(rowKey: String, isFocused: Bool) -> some View {
-        modifier(PinnedRowSettleTracking(rowKey: rowKey, isFocused: isFocused))
+    ///
+    /// `focusedLockupExtent` is for MIXED-SHAPE rows only — the distance from the row's top edge to
+    /// the focused card's lockup bottom, when the row's own frame overstates it. Uniform-card rows
+    /// leave it nil and keep exactly today's bound; see `PinnedRowSettle.Measurement`.
+    func pinnedRowSettleTracking(rowKey: String,
+                                 isFocused: Bool,
+                                 focusedLockupExtent: CGFloat? = nil) -> some View {
+        modifier(PinnedRowSettleTracking(rowKey: rowKey,
+                                         isFocused: isFocused,
+                                         focusedLockupExtent: focusedLockupExtent))
     }
 }
 
 private struct PinnedRowSettleTracking: ViewModifier {
     let rowKey: String
     let isFocused: Bool
+    /// See `pinnedRowSettleTracking`. Constant per focused card, so it adds no observer fires.
+    let focusedLockupExtent: CGFloat?
     /// Pinned mode is the only mode with an overlaid title to protect; 0 = classic, inert.
     @Environment(\.rowCardTopReach) private var cardTopReach
 
@@ -1654,6 +1766,7 @@ private struct PinnedRowSettleTracking: ViewModifier {
         // this (view-isolated) modifier — the same rule the title probe already follows.
         let key = rowKey
         let active = isFocused && cardTopReach > 0
+        let lockupExtent = focusedLockupExtent
         return content.onGeometryChange(for: PinnedRowSettle.Measurement?.self, of: { proxy in
             guard active, let visible = PinnedRowTitle.visibleBounds(proxy) else { return nil }
             // `visible` is the rows viewport expressed in THIS ROW's local space, so `-minY` is
@@ -1662,7 +1775,8 @@ private struct PinnedRowSettleTracking: ViewModifier {
             return PinnedRowSettle.Measurement(rowKey: key,
                                                rowTop: -visible.minY,
                                                rowHeight: proxy.size.height,
-                                               viewportHeight: visible.height)
+                                               viewportHeight: visible.height,
+                                               focusedLockupExtent: lockupExtent)
         }, action: { newValue in
             if let newValue {
                 PinnedRowSettle.report(newValue)
@@ -1720,7 +1834,10 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 // deferred resolution every other settle uses — a fresh hop budget, since it
                 // starts a new chain rather than continuing a spent one.
                 .onAppear {
-                    schedulerID = PinnedRowSettle.registerScheduler { token in
+                    // `replacing:` is this host's own live id (0 before it has ever registered), so
+                    // the coordinator can tell a re-`onAppear` from the SAME host apart from a
+                    // different host taking over — only the latter invalidates the measurements.
+                    schedulerID = PinnedRowSettle.registerScheduler(replacing: schedulerID) { token in
                         scheduleSettle(token: token,
                                        after: PinnedRowSettle.settleDelay,
                                        hops: Self.maxSettleHops)

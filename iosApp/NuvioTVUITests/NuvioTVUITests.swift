@@ -3641,6 +3641,20 @@ final class NuvioTVUITests: XCTestCase {
         openTab(app, named: "Home")
         press(.down, times: 3)
         press(.left, times: 6, gap: 0.3)
+        // 2026-08-30 failure (rise = -39.5pt, physically impossible in still mode): the edge
+        // scan caught the PINNED ROW TITLE's white glyphs instead of an artwork top. The title is
+        // overlaid at the shelf's top-LEADING corner and is wide enough to cover the first card or
+        // two, and it renders INSIDE the card's accessibility frame — the reach band the pinned
+        // rows put above every card's artwork is exactly where the title lives — so no scan window
+        // anchored on `frame.minY` can exclude it by geometry alone. Worse, title pollution and a
+        // real system lift both raise a reading, so they cannot be told apart after the fact.
+        //
+        // The fix is to stop measuring under the title at all: two rights off the leading edge puts
+        // the focused card (and its right-hand neighbour, the first rest candidate) clear of the
+        // title's horizontal band. `press(.left, times: 6)` alone parked focus on card #1, directly
+        // beneath it. test44 uses the same leading-edge walk and carries the same exposure — it has
+        // simply not been unlucky yet; worth the same change next time it is touched.
+        press(.right, times: 2, gap: 0.3)
         pause(2)
         guard let card = focusedButton(app), card.frame.width > 80, card.frame.height > card.frame.width else {
             throw XCTSkip("no focused poster card reported (the 27.0 runtime never reports hasFocus)")
@@ -3693,8 +3707,16 @@ final class NuvioTVUITests: XCTestCase {
         /// reports the brightness of the band right after the step (`bandLumaAfter` above), so
         /// callers can tell a bright ring edge from an ordinary artwork edge.
         func topEdge(centreX: CGFloat, topY: CGFloat) -> (y: CGFloat, strength: Double, bandLumaAfter: Double)? {
+            // 2026-08-30: the window used to open `artH * 0.25` (≈101pt at Large) ABOVE the card's
+            // own accessibility frame, which reaches into whatever the PREVIOUS row is drawing.
+            // Anchor it just above the card instead — 12pt is enough headroom for
+            // `topEdgeIndex`'s 3-row gradient window plus a little AX/render slack, and the
+            // remaining `artH * 0.5` of height still comfortably contains the artwork's top edge
+            // at every Poster Size (Large: window ends ~189pt below the frame top, artwork top is
+            // ~88pt below it in pinned mode, 0pt in classic).
+            let scanTop = topY - 12
             let strip = CGRect(
-                x: centreX - f.width * 0.2, y: topY - artH * 0.25,
+                x: centreX - f.width * 0.2, y: scanTop,
                 width: f.width * 0.4, height: artH * 0.5
             )
             guard strip.minX > 0, strip.maxX < app.frame.maxX, strip.minY > 0 else { return nil }
@@ -3763,11 +3785,26 @@ final class NuvioTVUITests: XCTestCase {
             restCandidates.append(("AX-tree card #\(i) at x=\(Int(snap.frame.minX))", snap.frame))
         }
 
+        // Backstop for the same 2026-08-30 pollution class on the REST side, where it IS
+        // separable: an unfocused card's artwork can never sit ABOVE the focused card's in still
+        // mode (that is the definition of zero rise), so a rest edge measurably higher than the
+        // focused one is not a rest edge at all — it is the row title, or some other artefact
+        // above the artwork. One-sided ON PURPOSE: rejecting only edges that read HIGHER than the
+        // focused card can never mask the regression this test exists to catch, which shows up as
+        // the focused card reading higher (a POSITIVE rise). Rejected candidates fall through to
+        // the next card along, which is further from the title's leading-edge band.
+        let implausibleRiseCutoff: CGFloat = -12
         var restTop: (y: CGFloat, strength: Double, bandLumaAfter: Double)?
         var triedStrengths: [String] = []
         for candidate in restCandidates {
             guard let edge = bestTopEdge(in: candidate.frame) else {
                 triedStrengths.append("\(candidate.label)=none")
+                continue
+            }
+            let candidateRise = edge.y - focusedArtworkY
+            if candidateRise < implausibleRiseCutoff {
+                triedStrengths.append(
+                    "\(candidate.label)=REJECTED(rise=\(String(format: "%.1f", candidateRise))pt above the focused card — row-title glyphs, not an artwork edge)")
                 continue
             }
             triedStrengths.append("\(candidate.label)=\(String(format: "%.3f", edge.strength))")
@@ -3777,14 +3814,14 @@ final class NuvioTVUITests: XCTestCase {
             }
         }
         guard let restTop else {
-            throw XCTSkip("no rest card yielded a usable top edge after trying \(restCandidates.count) candidate(s): \(triedStrengths.joined(separator: ", ")) — dark artwork, rerun")
+            throw XCTSkip("no rest card yielded a usable top edge after trying \(restCandidates.count) candidate(s): \(triedStrengths.joined(separator: ", ")) — dark artwork, or every candidate sat under the row title (see the REJECTED notes); rerun")
         }
         // A rest candidate is UNFOCUSED (filtered by `hasFocus` above), so it never draws the
         // still ring — its detected step is already its artwork's own top, no adjustment needed.
         // Comparing it against `focusedArtworkY` (not the raw, possibly-ring `focusedTopRaw.y`) is
         // what removes the phantom `ringWidthPt` reading.
         let rise = restTop.y - focusedArtworkY
-        let report = XCTAttachment(string: "still mode focusedRaw=\(focusedTopRaw) focusedIsRingEdge=\(focusedIsRingEdge) focusedArtworkY=\(focusedArtworkY) restTop=\(restTop) rise=\(rise)pt artH=\(artH) frame=\(f)")
+        let report = XCTAttachment(string: "still mode focusedRaw=\(focusedTopRaw) focusedIsRingEdge=\(focusedIsRingEdge) focusedArtworkY=\(focusedArtworkY) restTop=\(restTop) rise=\(rise)pt artH=\(artH) frame=\(f) candidates=[\(triedStrengths.joined(separator: ", "))]")
         report.name = "46b_edges"
         report.lifetime = .keepAlways
         add(report)
