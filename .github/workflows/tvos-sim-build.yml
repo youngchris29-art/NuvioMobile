@@ -5,7 +5,12 @@ name: tvOS Simulator Build
 on:
   workflow_dispatch:
   push:
-    branches: ["claude/**"]
+    # tvos-shared-extraction is the fork's main development branch — without it here
+    # the advertised sim-build gate never ran on merges, only on claude/** work
+    # branches (2026-08-30 Codex review finding). No pull_request trigger: this fork
+    # has never taken a PR (development is direct-push), and cmp-rewrite doesn't
+    # carry this workflow file, so listing it would be inert.
+    branches: ["tvos-shared-extraction", "claude/**"]
     paths:
       - "iosApp/**"
       - "shared/**"
