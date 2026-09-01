@@ -412,6 +412,91 @@ enum Theme {
         /// text configuration while making it impossible for one bad measurement to fling the
         /// page: a correction larger than this is a broken measurement, not a rest worth chasing.
         static let heroPinnedRowSettleMaxNudge: CGFloat = 220
+
+        // MARK: Wave 10 — static hero compression
+
+        /// The pinned rows viewport as it stands with NO compression, in points.
+        ///
+        /// Device- and sim-verified: `vh=455` in both probes (2026-08-31). It is treated as a
+        /// measured platform constant rather than re-derived at layout time on purpose — the
+        /// compression it feeds CHANGES this viewport, so measuring the live value and feeding it
+        /// back would be a layout feedback loop on the single most regression-prone surface in the
+        /// app. `PinnedRowTitle.pinnedHeroCompression` logs loudly if the live `vh` ever disagrees
+        /// with `budget + compression`, so the assumption cannot rot silently.
+        static let heroPinnedRowsViewportBudget: CGFloat = 455
+        /// Hard ceiling on the compression: exactly what the pinned hero's internals can actually
+        /// yield, and not a point more.
+        ///
+        /// DERIVED, never a literal (Codex Wave 10 r4). It used to be a hand-picked 110 while the
+        /// hero could only give ~70, so a large enough demand shrank the FRAME up to ~40pt further
+        /// than the CONTENT shrank and the hero's own slots overflowed into the page dots and the
+        /// rows below. Computing it from the same three give values `HomeHeroForeground` spends
+        /// means a future slot or floor change moves the cap with it instead of silently
+        /// reopening that gap.
+        ///
+        /// That overflow was reachable in production, not just in theory: `PosterStyle.init(from:)`
+        /// takes `widthDp` straight off the synced `PosterCardStyleUiState` and computes
+        /// `height = width * 1.5` with no clamp to the three Poster Size presets. A width above
+        /// Large — written by another client, or by a future mobile build with a wider range — is
+        /// a perfectly ordinary payload here, and it drives `pinnedHeroCompression` toward whatever
+        /// ceiling this constant sets.
+        ///
+        /// Past the cap the geometry is honestly unsatisfiable again: `pinnedHeroCompression` logs
+        /// `compression CAPPED want=… — rows still short, belt remains in play`, and the
+        /// visibility belt covers the residue exactly as designed (see `PinnedRowSettle`'s handoff
+        /// contract). A too-tall poster costs a hidden row title, never a broken hero.
+        static let heroPinnedCompressionCap: CGFloat =
+            heroLogoSlotPinnedGive + heroSynopsisSlotPinnedGive + heroPinnedFrameSlack
+        /// Breathing room below the focused row's artwork at the canonical rest, so the poster's
+        /// bottom edge is not flush with the fold. Reuses the rows headroom rather than inventing
+        /// a number: it is the same "absorb the rest error" budget, spent at the other end.
+        ///
+        /// LOAD-BEARING for the "Medium and Small are bit-identical" guarantee. With
+        /// `requiredRowExtent = Spacing.lg (24) + heroPinnedRowTopPad (88) + artwork + cushion`:
+        ///
+        ///     Small      24 + 88 + 275.0 + 8 = 395.0  →  under 455, compression 0
+        ///     Medium     24 + 88 + 330.0 + 8 = 450.0  →  under 455, compression 0 (5pt spare)
+        ///     Large      24 + 88 + 403.3 + 8 = 523.3  →  compression 68.3
+        ///     Landscape  24 + 88 + 203.0 + 8 = 323.0  →  0 (landscape rows are shorter)
+        ///
+        /// A larger cushion would push Medium over the line and change a layout nobody complained
+        /// about; a smaller one buys Large nothing it needs. 8 is the value that satisfies both.
+        static let heroPinnedRowsSettledCushion: CGFloat = heroPinnedRowsHeadroom
+        /// Floors the compression may drive the pinned hero's two elastic slots down to. Compressing
+        /// these — rather than shrinking the hero's frame around fixed content — is what keeps the
+        /// hero from hard-clipping: the logo keeps a legible slot and the synopsis drops from two
+        /// lines to one. Their combined give is exactly 68pt (110→78 and 72→36), which covers
+        /// Large's 68.3pt requirement with the frame's own 2pt of slack (352 frame vs 350 content).
+        static let heroLogoSlotHeightPinnedFloor: CGFloat = 78
+        static let heroSynopsisSlotHeightPinnedFloor: CGFloat = 36
+
+        /// The three components of the pinned hero's SHRINK BUDGET — how much its internals can
+        /// actually give up. `HomeHeroForeground` spends the first two in this order, and
+        /// `heroPinnedCompressionCap` is their sum, so the budget and the ceiling can never drift
+        /// apart: change a slot or a floor and both move together.
+        static let heroLogoSlotPinnedGive: CGFloat =
+            heroLogoSlotHeightPinned - heroLogoSlotHeightPinnedFloor          // 110 → 78 = 32
+        static let heroSynopsisSlotPinnedGive: CGFloat =
+            heroSynopsisSlotHeightPinned - heroSynopsisSlotHeightPinnedFloor  // 72 → 36 = 36
+        /// The pinned hero's frame is 2pt taller than the content it holds — 352 against
+        /// `32 padding + 110 logo + 16 + 32 meta + 16 + 72 synopsis + 16 + 56 CTA = 350` (the
+        /// arithmetic `HomeHeroForeground.synopsisSlotHeight` documents). That slack is real give:
+        /// the frame can lose it without the content losing anything.
+        static let heroPinnedFrameSlack: CGFloat = 2
+
+        // MARK: Wave 10 — canonical rests
+
+        /// How far a settled pinned rest may sit from the canonical target (`margin == 0`) before
+        /// the corrector normalizes it. Comfortably above the probe's own 2pt quantization and any
+        /// sub-point layout noise, which is what stops noise alone from re-triggering a rest that
+        /// has already landed — see `PinnedRowSettle`'s anti-oscillation contract.
+        ///
+        /// A GATE, not a subtrahend: it decides WHETHER to correct and never shortens the
+        /// correction itself. Deducting it from the magnitude made corrections stop at the
+        /// boundary, so rests approached from opposite directions settled 4pt either side of the
+        /// target — an 8pt spread between rows that had both "converged", which is the inconsistent
+        /// landing the canonical rest exists to eliminate.
+        static let heroPinnedRowSettleDeadZone: CGFloat = 4
     }
 }
 

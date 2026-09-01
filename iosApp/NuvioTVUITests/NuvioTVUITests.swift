@@ -4030,6 +4030,62 @@ final class NuvioTVUITests: XCTestCase {
             liftedIntrusion, 2,
             "settled pinned rest leaves the row title \(liftedIntrusion)pt past the FOCUSED card's artwork top edge — this is the rc1 report verbatim (the sim repro measured intr=46 pre-lift at Large, 66 once the ~20pt focus lift is counted). Full settle line: \(line)"
         )
+
+        // Gate 3 (Wave 10) — CONSISTENCY. The tester's request was not only "the poster is never
+        // cut off" but "rows land in the same place every time", and the corrector now normalizes
+        // every settled focused rest to one canonical target (`margin == 0`). One row landing
+        // correctly proves the geometry; three rows landing in the SAME place proves the property
+        // the user actually feels. Walk down a row at a time, letting each settle, and collect the
+        // margins.
+        var margins: [(row: String, margin: Int)] = []
+        for step in 0..<3 {
+            press(.down, times: 1, gap: 0.9)
+            pause(2.5)   // settle debounce + up to two corrections and their settles
+            shot(app, "47c\(step)_canonical_rest")
+            let stepLine = probe.label
+            let stepReport = XCTAttachment(string: stepLine)
+            stepReport.name = "47c\(step)_settle_line"
+            stepReport.lifetime = .keepAlways
+            add(stepReport)
+            NSLog("[WAVE10] consistency step=%d %@", step, stepLine)
+            guard let stepMargin = Self.probeValue(stepLine, key: "margin") else { continue }
+            let stepRow = Self.probeToken(stepLine, key: "row") ?? "?"
+            // A row at the BOTTOM of the content legitimately cannot reach the canonical target —
+            // there is no scroll range left to move it with, so the corrector reports
+            // `endOfContent=1` and leaves it where it is (Codex Wave 10 r2). Excluding it is not
+            // papering over a failure: asserting the canonical margin on a row the geometry cannot
+            // move would be asserting something untrue, and the corrector is behaving correctly by
+            // declining. Deliberately NOT extended to any other `nudge=0` line — every other one
+            // means the rest already IS canonical.
+            if Self.probeValue(stepLine, key: "endOfContent") == 1 {
+                NSLog("[WAVE10] consistency step=%d skipped (end of content, cannot reach target): %@", step, stepLine)
+                continue
+            }
+            // Rows repeat only if the walk failed to move; dedupe so three readings of one row
+            // cannot pass this vacuously.
+            if !margins.contains(where: { $0.row == stepRow }) {
+                margins.append((row: stepRow, margin: stepMargin))
+            }
+        }
+
+        let summary = margins.map { "\($0.row)=\($0.margin)" }.joined(separator: ", ")
+        guard margins.count >= 3 else {
+            throw XCTSkip("only \(margins.count) distinct pinned row(s) settled during the consistency walk (\(summary)) — the walk did not reach three poster rows, or ran into the end of the content where the corrector cannot reach the canonical target. Nothing to compare. Rerun; if it persists the walk needs re-tuning for this fixture's row order.")
+        }
+        // Canonical target is margin 0 (`PinnedRowSettle.canonicalMarginTarget`); the corrector's
+        // dead zone is 4pt, so 5 is that plus the probe's own rounding.
+        let canonicalTolerance = 5
+        for entry in margins {
+            XCTAssertLessThanOrEqual(
+                abs(entry.margin), canonicalTolerance,
+                "row '\(entry.row)' settled at margin=\(entry.margin), outside ±\(canonicalTolerance) of the canonical target (0) — the settle corrector is supposed to normalize EVERY settled focused pinned rest to the clip edge. All rows this walk: \(summary)"
+            )
+        }
+        let spread = (margins.map(\.margin).max() ?? 0) - (margins.map(\.margin).min() ?? 0)
+        XCTAssertLessThanOrEqual(
+            spread, canonicalTolerance,
+            "three poster rows settled \(spread)pt apart (\(summary)) — rows are not landing in the same place, which is the tester's actual complaint even when each individual rest is legible."
+        )
     }
 
 
@@ -4059,7 +4115,31 @@ final class NuvioTVUITests: XCTestCase {
     ///    defect is a title that is PARTIALLY visible and sitting on artwork, which a cap that
     ///    small cannot produce. The override is gone from this test entirely.
     ///
-    /// What actually reproduces it is the natural geometry: go one or two rows PAST a row and come
+    /// Wave 10 update: the fix removed this geometry from the simulator entirely, in two steps,
+    /// and leg A now recreates both.
+    ///
+    /// The first attempt was `-debug.pinnedSettleDisarm YES` alone — turn the corrector off so a
+    /// deep park stays unfixed. That was not enough, and the 2026-09-01 run said why in the
+    /// clearest possible terms: `vh=524`. The hero compression had already given the rows the
+    /// 68pt they were short, so every down→up park settled HEALTHY at `margin≈+22` with nothing
+    /// for a corrector to fix or a belt to hide. The premise guard failed for the best available
+    /// reason — production geometry now fits.
+    ///
+    /// So the leg also passes `-debug.pinnedHeroCompressionOff YES`, which returns the pinned hero
+    /// to its pre-Wave-10 height and the rows viewport to ~455. That is honest archaeology rather
+    /// than a synthetic construction: the belt is being tested against the exact device geometry it
+    /// was built for, the geometry the Living Room ATV produced and the tester filmed. A safety net
+    /// still has to work when the thing it nets against comes back — past the compression cap, on
+    /// mixed-shape extremes, or on whatever the next device's rests turn out to be.
+    ///
+    /// The pairing also buys coverage the natural version never had: with no corrector there is no
+    /// stand-down either, so the belt must arrive via its `rest`/`ceiling` TIMER paths — the ones
+    /// the Wave 9b fast path bypasses on every naturally-unfixable rest.
+    ///
+    /// Leg B deliberately runs with NEITHER knob: today's real geometry, a healthy rest, and the
+    /// belt leaving it alone.
+    ///
+    /// What reproduces the deep park is the natural geometry: go one or two rows PAST a row and come
     /// back UP into it. An upward reveal bottom-anchors the focused frame, and a Large focusable
     /// frame (~579pt) bottom-anchored in the ~455pt rows viewport necessarily parks its top — and
     /// its title band — above the clip edge, with the rest of the title on the artwork. That run
@@ -4116,7 +4196,13 @@ final class NuvioTVUITests: XCTestCase {
         // ── Leg A: the device-failure gate ───────────────────────────────────────────────────
         // Hunt for a rest that is BOTH clipped and on the artwork, the shape the device produced.
         let app = launchToHome(
-            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
+            extraArguments: ["-no_zoom_on_focus", "YES",
+                             // Restores the pre-Wave-10 shortfall (vh 524 → ~455) so a deep park
+                             // clips again, and turns the corrector off so it stays clipped. See
+                             // the header for why both are needed.
+                             "-debug.pinnedHeroCompressionOff", "YES",
+                             "-debug.pinnedSettleDisarm", "YES",
+                             "-debug.homeScrollProbe", "YES"],
             forceFreshLaunch: true
         )
         openTab(app, named: "Home")
@@ -4174,19 +4260,28 @@ final class NuvioTVUITests: XCTestCase {
         // beat is back — a regression the `beltFaded=1` assertion above cannot see on its own.
         // Soft on a missing field (older builds, or a fade that legitimately predates the reason
         // plumbing) rather than failing on absence.
+        // Wave 10: with `-debug.pinnedSettleDisarm` the corrector never runs, so it never stands
+        // down either — the belt has to get there on its own. That makes this leg cover the
+        // rest/ceiling timer paths specifically, which the Wave 9b fast path otherwise bypasses on
+        // every naturally-unfixable rest. `standdown` here would mean the knob failed to disarm and
+        // the leg is silently testing the fast path again.
         if let fadeReason = Self.probeToken(deepRest, key: "beltFadeReason"), fadeReason != "-" {
-            XCTAssertEqual(
-                fadeReason, "standdown",
-                "the belt hid the title via '\(fadeReason)' rather than the corrector's stand-down — on a rest the corrector has explicitly given up (bound-blocked or nudge-exhausted) the handoff should be immediate, not timed out. That difference is the ~1-2s of title-on-the-artwork the device video caught. Full settle line: \(deepRest)"
+            XCTAssertTrue(
+                ["rest", "ceiling"].contains(fadeReason),
+                "the belt hid the title via '\(fadeReason)' with the corrector disarmed — expected one of the TIMER paths (rest|ceiling), which are the ones this leg exists to cover now that Wave 10's hero compression makes naturally-unfixable rests unreachable at Large. 'standdown' would mean -debug.pinnedSettleDisarm did not take effect. Full settle line: \(deepRest)"
             )
         } else {
-            NSLog("[WAVE9] no beltFadeReason on the settle line — fast-path assertion skipped: %@", deepRest)
+            NSLog("[WAVE10] no beltFadeReason on the settle line — timer-path assertion skipped: %@", deepRest)
         }
 
         // ── Leg B: the false-positive guard ──────────────────────────────────────────────────
         // A plain downward walk parks these rows top-visible (abandoned attempt #1 above), which is
         // exactly the healthy rest this leg wants: the belt must leave it alone. Without this, a
         // belt that simply hid every title would pass leg A.
+        // NEITHER knob here, deliberately: this leg runs against TODAY's real geometry — hero
+        // compressed, corrector live — which is the configuration a user actually gets. Leg A's
+        // knobs recreate history; this one has to prove the belt stays out of the way in the
+        // present.
         let healthyApp = launchToHome(
             extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
             forceFreshLaunch: true

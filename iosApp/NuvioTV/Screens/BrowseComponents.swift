@@ -559,6 +559,82 @@ enum PinnedRowTitle {
                        intrusion: intrusion)
     }
 
+    /// How far the pinned hero must yield, in points, so the focused row FITS at the canonical
+    /// rest for the current Poster Size (Wave 10).
+    ///
+    /// The structural problem this closes, device-verified: at Large the focused row needs the
+    /// title band (`Spacing.lg` + `heroPinnedRowTopPad` = 112) plus 403pt of artwork below the
+    /// pinned clip edge — ~515pt — and the pinned rows viewport is 455 in BOTH sim and device
+    /// probes. Every rest was therefore forced to choose between cutting the poster's top and
+    /// hiding the title; Waves 8/9 could only pick the least-bad option, never satisfy both. The
+    /// hero yields exactly the shortfall and the choice disappears.
+    ///
+    /// STATIC, keyed to `PosterStyle` alone. It changes when the user changes Poster Size and at
+    /// no other time — deliberately not per row, per focus, or per rest. A hero that resized as
+    /// you moved between rows of different heights ("breathing") was the rejected design: it makes
+    /// the clip edge a moving target, which is what the reveal regime is least able to cope with,
+    /// and the tester's actual request was the opposite — rows landing in the SAME place every
+    /// time.
+    ///
+    /// Small and Medium compute to exactly 0, so their layout is bit-identical to Wave 9 — see the
+    /// arithmetic table on `Theme.Size.heroPinnedRowsSettledCushion`.
+    nonisolated static func pinnedHeroCompression(rowArtworkHeight: CGFloat) -> CGFloat {
+        guard !heroCompressionDisabledByKnob else { return 0 }
+        let requiredRowExtent = Theme.Spacing.lg
+            + Theme.Size.heroPinnedRowTopPad
+            + rowArtworkHeight
+            + Theme.Size.heroPinnedRowsSettledCushion
+        let raw = max(requiredRowExtent - Theme.Size.heroPinnedRowsViewportBudget, 0)
+        let capped = min(raw, Theme.Size.heroPinnedCompressionCap)
+        if raw > capped, cappedCompressionLogged != rowArtworkHeight {
+            cappedCompressionLogged = rowArtworkHeight
+            // Loud on purpose: past the cap the geometry is again unsatisfiable and the belt is
+            // back in play, which is exactly the state a device pass needs to know it is looking at.
+            NSLog("[HomeScrollProbe] hero %@",
+                  "compression CAPPED want=\(Int(raw.rounded())) cap=\(Int(Theme.Size.heroPinnedCompressionCap))"
+                    + " artwork=\(Int(rowArtworkHeight.rounded())) — rows still short, belt remains in play")
+        }
+        return capped
+    }
+
+    nonisolated(unsafe) private static var cappedCompressionLogged: CGFloat?
+
+    /// `defaults write com.nuvio.media.NuvioTV debug.pinnedHeroCompressionOff -bool YES`, or as a
+    /// launch argument on device/CI. Forces `pinnedHeroCompression` to 0 at every Poster Size,
+    /// restoring the pre-Wave-10 geometry: the pinned rows viewport drops back to ~455 and a Large
+    /// focused row no longer fits below the clip edge.
+    ///
+    /// It exists for ONE reason — to keep the visibility belt's gate honest. Wave 10 fixed the
+    /// shortfall the belt was built for, which also deleted the belt's only reachable repro: with
+    /// the compression in place the 2026-09-01 run measured `vh=524` and every down→up park settled
+    /// healthy at `margin≈+22`, even with the corrector disarmed. A safety net whose failure mode
+    /// has become unreachable is a safety net nobody can test, and it still has to work — for
+    /// Poster Sizes past the compression cap, for mixed-shape extremes, and for whatever the next
+    /// device geometry turns out to be. Turning the compression off reproduces the exact historical
+    /// shortfall the belt was designed against, which makes test48 honest archaeology rather than a
+    /// synthetic construction.
+    ///
+    /// Read once at launch like every other probe knob, and release-inert unless it is passed.
+    nonisolated static let heroCompressionDisabledByKnob =
+        UserDefaults.standard.bool(forKey: "debug.pinnedHeroCompressionOff")
+
+    /// Verification for the constant `heroPinnedRowsViewportBudget` rests on: the live rows
+    /// viewport should be exactly `budget + compression`. Logged once per distinct disagreement so
+    /// a drifted platform metric shows up in a device log instead of silently mis-sizing the hero.
+    nonisolated static func verifyViewportBudget(liveViewport: CGFloat, compression: CGFloat) {
+        guard HomeGeometryProbe.enabled else { return }
+        let expected = Theme.Size.heroPinnedRowsViewportBudget + compression
+        guard abs(liveViewport - expected) > 4 else { return }
+        let key = (liveViewport / 2).rounded()
+        guard viewportBudgetMismatchLogged != key else { return }
+        viewportBudgetMismatchLogged = key
+        NSLog("[HomeScrollProbe] hero %@",
+              "viewport BUDGET MISMATCH live=\(Int(liveViewport.rounded())) expected=\(Int(expected.rounded()))"
+                + " (budget \(Int(Theme.Size.heroPinnedRowsViewportBudget)) + compression \(Int(compression.rounded())))")
+    }
+
+    nonisolated(unsafe) private static var viewportBudgetMismatchLogged: CGFloat?
+
     /// Arm threshold for the visibility belt's intrusion half — how far a title may ride onto its
     /// row's artwork (as that row's own cards are actually sitting: lifted if it holds focus, at
     /// rest otherwise) before "a missing title beats a title on the art" applies. Small, but above
@@ -1247,16 +1323,47 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///
 ///  1. **It only ever runs from a settled rest.** `noteScroll` arms a single debounce; a real
 ///     scroll (motion beyond `driftTolerance`) re-arms it, so nothing fires while the page moves.
-///  2. **It only ever moves content DOWN, and never past the target.** The correction is
-///     `d = min(deficit, bottomRoom, cap)` with `deficit = max(−margin − clearances.focused, 0)`,
-///     applied as a DECREASE of `contentOffset.y`. Moving content down can only raise `margin`,
-///     and `d` stops exactly at `margin = −clearances.focused` — the rest where the title's bottom
-///     edge meets the FOCUSED (lifted) card's artwork top — so a correction can never overshoot
-///     into needing another. **`liftedIntrusion ≤ 0` is the fixpoint** and the mechanism is
-///     monotone toward it; `net = 0` there too, so the title stays fully visible. Gating on the
-///     raw `margin` was Codex r1 P1 (it fired on already-clean `margin=-25 net=0` rests); gating on
-///     the PRE-LIFT intrusion was Codex r4 P1 (its fixpoint still left the focused card's artwork
-///     ~20pt under the title, so the gate could pass while the tester saw the overlap).
+///  2. **It is a CONTRACTION onto a single canonical rest (Wave 10).** Every settled focused rest
+///     is normalized to `margin == canonicalMarginTarget` (0) — the row's top exactly at the clip
+///     edge — which is what makes rows land in the same place every time. That means corrections
+///     are now BIDIRECTIONAL: a rest parked too low is pulled up as readily as one parked too high
+///     is pushed down. The monotone-in-one-direction argument earlier waves relied on no longer
+///     applies, so here is the replacement, and it is stronger:
+///
+///     - The target is a POINT, not a region, and every correction is computed from the LIVE
+///       sample at fire time — never from the stale measurement that armed the settle.
+///     - `magnitude = min(deficit, headroom, cap)`. The bounds can only ever SHORTEN a correction;
+///       none of them can invert its sign or extend it past the target. A single correction
+///       therefore lands on the target or short of it, and can never cross to the far side.
+///       `headroom` is direction-specific and both directions are bounded by REAL limits, not just
+///       the absolute cap: downward by `protectedBottom` (the focused card's lockup must stay in
+///       the viewport) and upward by the remaining scroll range (Codex Wave 10 r2). An unbounded
+///       upward correction on the last row would ask to scroll past the end, `scrollTo` would clamp
+///       it silently, and the verification would score a MISS — twice over, that sets the
+///       SESSION-WIDE disarm and kills corrections for every row. A bound that the scroll view
+///       would have enforced anyway has to be enforced HERE, where the promise is made.
+///     - The dead zone (`heroPinnedRowSettleDeadZone`, 4pt) decides WHETHER to correct, and
+///       nothing else. It deliberately does NOT shorten the correction: subtracting it from the
+///       magnitude made every correction stop at the boundary, so a rest approached from above
+///       parked at −4 and one approached from below at +4 — two rows that had both "converged"
+///       sitting 8pt apart, wider than the consistency gate's own tolerance and visible as exactly
+///       the inconsistent landing this design exists to remove. Corrections carry the full
+///       distance and land ON the target.
+///     - That introduces no oscillation, because a LANDED rest has `error ≈ 0`, which is inside
+///       the dead zone and therefore never re-triggers. The zone's only job is to stop churn on
+///       rests that are already good, and it exceeds the probe's own 2pt quantization and any
+///       sub-point layout noise, so noise alone can never push a settled rest back outside it.
+///
+///     Ping-pong would need a correction that overshoots the target; by the second bullet none
+///     exists. Combined with one correction per settle and the hop budget below, the mechanism
+///     converges in at most `maxConsecutiveNudges` steps or stands down.
+///
+///     Two earlier targets are recorded because both were wrong in instructive ways: gating on raw
+///     `margin` was Codex r1 P1 (it fired on already-clean `margin=-25 net=0` rests), and gating on
+///     PRE-LIFT intrusion was Codex r4 P1 (its fixpoint still left the focused card's artwork ~20pt
+///     under the title). The canonical rest subsumes both — at `margin == 0` the title sits in its
+///     designed band with the full static clearance beneath it, and with the Wave 10 hero
+///     compression the focused lift still clears the artwork.
 ///  3. **Bounded by the row's own geometry.** `bottomRoom` keeps the focused card inside the
 ///     viewport (only the transparent downward reach band is allowed to leave it), and
 ///     `heroPinnedRowSettleMaxNudge` caps everything absolutely.
@@ -1408,6 +1515,8 @@ enum PinnedRowSettle {
         /// Carried so a correction's verification can be VOIDED (rather than counted as a miss)
         /// when the content itself reflowed between firing and checking — see `settlePlan`.
         var contentHeight: CGFloat
+        /// The rows viewport's own height, for the Wave 10 budget verification.
+        var viewportHeight: CGFloat
     }
 
     // `nonisolated`: same @Sendable-transform requirement as PinnedRowTitle.Reading above.
@@ -1456,6 +1565,15 @@ enum PinnedRowSettle {
     nonisolated static let motionWindowSeconds: TimeInterval = 0.3
     nonisolated static let motionWindowDisplacement: CGFloat = 18
     nonisolated static let maxConsecutiveNudges = 2
+    /// The canonical rest every settled focused pinned row is normalized to (Wave 10): `margin`
+    /// zero, i.e. the row's top exactly at the pinned clip edge. Named rather than written as a
+    /// literal 0 so the contraction argument in the header has something to point at.
+    nonisolated static let canonicalMarginTarget: CGFloat = 0
+    /// `defaults write com.nuvio.media.NuvioTV debug.pinnedSettleDisarm -bool YES`, or as a launch
+    /// argument on device/CI. Turns the corrector off so a deep park stays uncorrected — the only
+    /// way to reach unsatisfiable geometry now that the hero compression removes it at Large. Read
+    /// once at launch, same as every other probe knob, and release-inert unless passed.
+    nonisolated static let disarmedByKnob = UserDefaults.standard.bool(forKey: "debug.pinnedSettleDisarm")
     /// How far a landed correction may miss its requested offset before it counts as a miss. Wide
     /// enough to absorb a concurrent focus-driven adjustment, narrow enough to catch a scroll API
     /// that turned out to interpret the target in a different coordinate space than assumed.
@@ -1970,7 +2088,26 @@ enum PinnedRowSettle {
         }
         clearanceLatePending = nil
         let liftedIntrusion = slide - clearance.focused
-        let deficit = max(-m.margin - clearance.focused, 0)
+        // Wave 10: the target is the CANONICAL REST — `margin == 0`, the row's top exactly at the
+        // pinned clip edge, which puts the title in its designed band with the full static
+        // clearance beneath it and (with the hero compression in place) the whole poster below
+        // that. Every settled focused rest is normalized to it, so rows land in the same place
+        // every time; that is the tester's actual request, and it subsumes the old
+        // fix-the-intrusion behaviour rather than sitting next to it.
+        //
+        // `error` is signed and the correction is now BIDIRECTIONAL: a rest parked too LOW (the
+        // row's top below the clip edge, wasting band) is pulled up just as one parked too high is
+        // pushed down. `deficit` is the magnitude outside the dead zone, kept under that name
+        // because the probe field and every device log written so far use it.
+        let error = m.margin - canonicalMarginTarget
+        // The dead zone decides WHETHER to correct. It must not also SHORTEN the correction, which
+        // is what `max(|error| − deadZone, 0)` did: a rest approached from above stopped at −4 and
+        // one approached from below stopped at +4, so two rows that both "converged" sat 8pt apart
+        // — wider than test47's own 5pt consistency assertion, and visible as exactly the
+        // inconsistent landing the canonical rest exists to remove. Corrections now carry the FULL
+        // distance to the target (still bounded by `headroom` and the absolute cap below).
+        let offTarget = abs(error)
+        let deficit = offTarget > Theme.Size.heroPinnedRowSettleDeadZone ? offTarget : 0
         // `lift=` is reported separately from the two clearances because `focused` clamps at 0:
         // once the active treatment's lift exceeds the static clearance (ring mode at Large does,
         // ~27 vs 26), the difference between the two clearances stops telling you the magnitude.
@@ -1980,11 +2117,13 @@ enum PinnedRowSettle {
             + " lift=\(Int(clearance.lift.rounded()))"
             + " intr=\(Int((slide - clearance.atRest).rounded()))"
             + " intrLifted=\(Int(liftedIntrusion.rounded()))"
+            + " err=\(Int(error.rounded()))"
             + " deficit=\(Int(deficit.rounded()))"
 
-        // A healthy rest closes the epoch: the guard counts consecutive FAILURES, so a row that
-        // settles correctly gets its full budget back next time it needs one.
-        guard deficit > 1 else {
+        // A rest inside the dead zone IS the canonical rest — nothing to do, and the epoch closes:
+        // the guard counts consecutive FAILURES, so a row that settles correctly gets its full
+        // budget back next time it needs one.
+        guard deficit > 0 else {
             consecutiveNudges = 0
             // This rest is fine, so the row is no longer given up on. Releasing the dedup here is
             // what lets the Wave 9b fast path fire AGAIN if the row later lands on another
@@ -1994,6 +2133,28 @@ enum PinnedRowSettle {
             return Plan(report: line + " nudge=0", targetY: nil)
         }
         guard !disarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
+        // Wave 10 gate knob: with the hero compression in place an unsatisfiable rest is no longer
+        // reachable at Large by walking, so test48's premise needs a way to put one back. Disarming
+        // the corrector leaves a deep park uncorrected, which is exactly the geometry the belt's
+        // rest/ceiling paths exist for. Read once at launch like every other probe knob, and inert
+        // unless it is passed.
+        //
+        // Deliberately NO `standDown` here, and the distinction is the whole point of the knob.
+        // A stand-down means "the corrector engaged, tried, and gave up", and it hands the rest to
+        // the belt immediately through the Wave 9b observer — which is why the first version of
+        // this branch made the gate report `beltFadeReason=standdown` and never exercised what it
+        // was written for. The knob simulates a corrector that NEVER ENGAGES AT ALL, so there is no
+        // handoff to make: the belt has to find the rest on its own clocks (`fadeDelay`, then the
+        // `fadeMaxDefer` ceiling), and covering those two timer paths is the coverage this leg
+        // exists to provide. No notification, and no `standDownRow` latch either — latching would
+        // suppress a genuine stand-down later in the same session.
+        guard !disarmedByKnob else {
+            if HomeGeometryProbe.enabled {
+                NSLog("[HomeScrollProbe] settle %@",
+                      "knob-disarmed row=\(m.rowKey) — corrector never engages; belt owns this rest on its own clocks")
+            }
+            return Plan(report: line + " nudge=0 knobDisarm=1", targetY: nil)
+        }
         // A correction is still animating — never stack a second one on top of it. Ask for one
         // re-check just past the deadline rather than dropping this rest (Codex r2 P2-2).
         if let deadline = nudgeDeadline, Date() < deadline {
@@ -2009,14 +2170,59 @@ enum PinnedRowSettle {
         // How far the content may move DOWN before the FOCUSED card's own lockup starts leaving
         // the viewport — see `Measurement.protectedBottom`, which is the row's bottom minus its
         // transparent chrome for a uniform-card row, and the focused tile's own extent for the
-        // mixed-shape collection row (Codex r11 P2-2).
+        // mixed-shape collection row (Codex r11 P2-2). It bounds DOWNWARD corrections only: moving
+        // the row UP can never push its bottom past the fold.
         let bottomRoom = m.viewportHeight - m.protectedBottom
-        let correction = min(deficit, max(bottomRoom, 0), Theme.Size.heroPinnedRowSettleMaxNudge)
-        guard correction >= 2 else {
-            // Nothing useful left to give — the row is too tall for this viewport to show both its
-            // title band and its card. The visibility belt handles the title from here.
-            standDown(rowKey: m.rowKey, reason: "bound")
-            return Plan(report: line + " nudge=0 bound=\(Int(bottomRoom.rounded()))", targetY: nil)
+        // …and its upward twin: how much SCROLL RANGE is left above the current offset. An upward
+        // correction raises `contentOffset.y`, and the last row in the list sits at (or near) the
+        // maximum, so a short final row settling with a positive margin could ask to scroll past
+        // the end. `scrollTo` clamps that silently, the correction lands short of where it said it
+        // would, and the verification counts a MISS — two of which set the SESSION-WIDE disarm and
+        // kill corrections for every row (Codex Wave 10 r2). Bounding it here is the mirror of what
+        // `protectedBottom` does for the downward direction.
+        //
+        // Conservative by construction: any bottom content inset would make the real maximum
+        // larger, so under-allowing is the safe side of the estimate.
+        let maxOffsetY = max(sample.contentHeight - sample.viewportHeight, 0)
+        let scrollRoomUp = max(maxOffsetY - sample.offsetY, 0)
+        // A row at the bottom of the content legitimately CANNOT reach the canonical target — there
+        // is no scroll left to give. That is the best rest the geometry allows, not a failure, so
+        // it closes the epoch like any other healthy rest rather than standing down: the title is
+        // fully visible (positive margin means no clipping and no intrusion), so there is nothing
+        // for the belt to own either.
+        if error > 0, scrollRoomUp <= Theme.Size.heroPinnedRowSettleDeadZone {
+            consecutiveNudges = 0
+            if standDownRow == m.rowKey { standDownRow = nil }
+            return Plan(report: line + " nudge=0 endOfContent=1 room=\(Int(scrollRoomUp.rounded()))",
+                        targetY: nil)
+        }
+        let headroom = error > 0 ? scrollRoomUp : max(bottomRoom, 0)
+        // Magnitude first, then the sign of the correction we actually apply. Unbounded, this is
+        // the FULL distance to the target, so a correction lands ON it; `min` can only ever
+        // SHORTEN that, never invert or extend it — which is what makes this a contraction (see
+        // the anti-oscillation contract in the header).
+        let magnitude = min(deficit, headroom, Theme.Size.heroPinnedRowSettleMaxNudge)
+        // Positive = move content DOWN (raise `margin`); negative = move content UP (lower it).
+        let correction = error < 0 ? magnitude : -magnitude
+        guard magnitude >= 2 else {
+            // Reachable in BOTH directions now that the upward branch is bounded too, and the two
+            // mean opposite things, so they must not share an outcome:
+            //
+            //  - DOWNWARD (`error < 0`): the row is clipped and `bottomRoom` has nothing left to
+            //    give — the row is too tall for this viewport to show its title band and its card
+            //    at once. That is the unsatisfiable geometry the visibility belt exists for, so
+            //    hand it over.
+            //  - UPWARD (`error > 0`): the row is merely parked a little low with under 2pt of
+            //    usable scroll left. The title is fully visible — a positive margin is neither
+            //    clipping nor intrusion — so there is nothing for the belt to own. Treat it as the
+            //    clean rest it is and close the epoch, exactly like the end-of-content case above.
+            if error < 0 {
+                standDown(rowKey: m.rowKey, reason: "bound")
+                return Plan(report: line + " nudge=0 bound=\(Int(bottomRoom.rounded()))", targetY: nil)
+            }
+            consecutiveNudges = 0
+            if standDownRow == m.rowKey { standDownRow = nil }
+            return Plan(report: line + " nudge=0 room=\(Int(scrollRoomUp.rounded()))", targetY: nil)
         }
 
         // Content-space vs offset-space: in Home's PINNED mode the rows ScrollView sits inside the
@@ -2029,6 +2235,8 @@ enum PinnedRowSettle {
         consecutiveNudges += 1
         nudgeDeadline = Date().addingTimeInterval(nudgeDuration + 0.2)
         pendingVerification = Verification(expectedY: target, contentHeight: sample.contentHeight)
+        // `nudge` stays signed in the log: positive moved the row DOWN toward the clip edge,
+        // negative pulled it UP. A device trace can read the direction straight off the line.
         line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded())) n=\(consecutiveNudges)"
         if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
         return Plan(report: line, targetY: target)
@@ -2179,6 +2387,10 @@ private struct PinnedRowSettleTracking: ViewModifier {
 /// frame and never at the `heroItems` empty→loaded boundary, so it can't re-identify the rows.
 struct PinnedRowSettleRevealModifier: ViewModifier {
     let enabled: Bool
+    /// Wave 10: the hero compression currently in effect, purely so this modifier — which already
+    /// observes the rows scroll geometry, and is only enabled in the pinned container — can verify
+    /// the constant the compression is sized against. Changes no behaviour.
+    var compression: CGFloat = 0
     /// DEBUG-only sink for the harness oracle (`debug_pinned`); nil in release, where nothing is
     /// written anywhere and the whole path is a static-storage update plus one scroll request.
     var onSettle: ((String) -> Void)? = nil
@@ -2201,8 +2413,17 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 .onScrollGeometryChange(for: PinnedRowSettle.ScrollSample.self, of: { geo in
                     PinnedRowSettle.ScrollSample(offsetY: geo.contentOffset.y,
                                                  insetTop: geo.contentInsets.top,
-                                                 contentHeight: geo.contentSize.height)
+                                                 contentHeight: geo.contentSize.height,
+                                                 viewportHeight: geo.containerSize.height)
                 }, action: { _, sample in
+                    // Wave 10: the compression is sized against a MEASURED constant
+                    // (`heroPinnedRowsViewportBudget`) rather than the live viewport, because
+                    // feeding the live value back would make the hero's height depend on the
+                    // height it produced. This is the guard on that assumption — it changes no
+                    // layout, it just says so in the log if the platform's rows viewport ever
+                    // stops matching `budget + compression`.
+                    PinnedRowTitle.verifyViewportBudget(liveViewport: sample.viewportHeight,
+                                                        compression: compression)
                     // nil = a debounce is already armed and this sample is within the creep
                     // tolerance of it, so there is nothing to schedule (see `noteScroll`).
                     guard let token = PinnedRowSettle.noteScroll(sample) else { return }

@@ -17,11 +17,24 @@ struct HomeView: View {
     @ObservedObject var model: HomeViewModel
     @State private var resume: ResumeTarget?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The Poster Style Home renders with. Read in RELEASE as well as debug builds as of Wave 10:
+    /// `pinnedHeroCompression` sizes the pinned hero from `height`, so this is now production
+    /// input, not just an audit hook.
+    ///
+    /// It used to live inside the `#if DEBUG` block below purely because the BUG-25 probe was its
+    /// only consumer and an unused property in release is noise. That made the compression
+    /// computation a Release-only build break ("cannot find 'debugPosterStyle' in scope") which a
+    /// Debug-configured gate run cannot see — hence the rename and the promotion. It is the plain
+    /// `\.posterStyle` key with no override of any kind, exactly as every other consumer reads it
+    /// (`PosterCard`, `CatalogRowView`, `FolderTile`, `SearchView`), so any test override still
+    /// flows through the environment the same way it always did.
+    @Environment(\.posterStyle) private var posterStyle
+
     #if DEBUG
-    /// BUG-25 audit hook (kept): exposes the poster/depth environment Home actually renders
-    /// with, as an invisible accessibility element the NuvioTVUITests harness reads
-    /// (test10RenderCheck). DEBUG-only; costs nothing in release builds.
-    @Environment(\.posterStyle) private var debugPosterStyle
+    /// BUG-25 audit hook (kept): exposes the depth environment Home actually renders with, as an
+    /// invisible accessibility element the NuvioTVUITests harness reads (test10RenderCheck).
+    /// DEBUG-only; costs nothing in release builds. Its poster-style half is now `posterStyle`
+    /// above, which release code needs too.
     @Environment(\.cardDepthStyle) private var debugCardDepth
     #endif
 
@@ -471,7 +484,7 @@ struct HomeView: View {
 
                 #if DEBUG
                 // BUG-25 diagnostic (invisible, harness-readable): the env values Home renders with.
-                Text("debug_env cr=\(Int(debugPosterStyle.cornerRadius)) w=\(Int(debugPosterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength)")
+                Text("debug_env cr=\(Int(posterStyle.cornerRadius)) w=\(Int(posterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_env")
@@ -993,7 +1006,9 @@ struct HomeView: View {
         // title painted 46pt into the artwork it is supposed to sit above). Only the ROWS scroll
         // view moves; the pinned hero is a sibling above it in the VStack split. Full mechanism,
         // bounds and anti-oscillation argument: `PinnedRowSettle` in BrowseComponents.
-        .modifier(PinnedRowSettleRevealModifier(enabled: settleReveal, onSettle: settleProbeSink))
+        .modifier(PinnedRowSettleRevealModifier(enabled: settleReveal,
+                                               compression: pinnedHeroCompression,
+                                               onSettle: settleProbeSink))
         // BUG-30 A/B knob (see `homeScrollEdgeHard`). Not attached unless the knob is set, so
         // the shipped tree is unchanged.
         .modifier(HomeScrollEdgeStyleModifier(hard: homeScrollEdgeHard))
@@ -1047,7 +1062,8 @@ struct HomeView: View {
                     HomeHeroForeground(item: hero, heroFocused: $heroFocused, compact: compact,
                                        showsCTA: heroCarouselActive,
                                        forceNuvioLayout: focusHeroActive,
-                                       folderRoute: isCollectionHero(hero) ? heroFolderRoutes[hero.id] : nil)
+                                       folderRoute: isCollectionHero(hero) ? heroFolderRoutes[hero.id] : nil,
+                                       compression: compact ? pinnedHeroCompression : 0)
                 }
             }
             // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
@@ -1057,7 +1073,12 @@ struct HomeView: View {
             // synopsis INSIDE the panel (see HomeHeroForeground), never given back to the rows,
             // so the pinned geometry the `heroPinned*` reach constants were tuned against
             // (device rounds 4–7) is identical in both modes.
-            .frame(height: compact ? Theme.Size.heroCarouselHeightPinned
+            // Wave 10: in pinned mode the hero yields `pinnedHeroCompression` so the focused row
+            // fits below the clip edge at the canonical rest. The inner slots below shrink by the
+            // same amount (see `HomeHeroForeground.compression`), so this is a graceful compression
+            // rather than a frame clipped around fixed content. 0 at Small/Medium — those layouts
+            // are bit-identical to Wave 9.
+            .frame(height: compact ? Theme.Size.heroCarouselHeightPinned - pinnedHeroCompression
                                    : Theme.Size.heroCarouselHeight)
             // BUG-30 (classic only, `topReach > 0`): grow the frame upward to the content top,
             // bottom-aligning the fixed-height slot above so the panel does not move a pixel.
@@ -1159,6 +1180,19 @@ struct HomeView: View {
         return EdgeInsets(top: heroInScroll ? 0 : Theme.Spacing.screen,
                           leading: Theme.Spacing.screen,
                           bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
+    }
+
+    /// Wave 10: how far the pinned hero yields to the rows below it, so the focused row fits below
+    /// the clip edge at the canonical rest. Derived from the CURRENT Poster Size and nothing else —
+    /// see `PinnedRowTitle.pinnedHeroCompression` for the arithmetic and for why this is static
+    /// rather than per-row.
+    ///
+    /// The tallest artwork any pinned row can present at a given size is the poster height:
+    /// landscape catalog rows (203) and folder tiles (square/landscape take their height from the
+    /// row's WIDTH dial) are all shorter, and Continue Watching/Upcoming are landscape cards. So
+    /// the poster height is the budget every row fits inside.
+    private var pinnedHeroCompression: CGFloat {
+        PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: posterStyle.height)
     }
 
     /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact
@@ -2426,7 +2460,31 @@ struct HomeHeroForeground: View {
     /// BUG-38 round three: set when `item` is a collection folder's preview — the CTA then opens
     /// the folder page instead of a Detail route for an id no addon can resolve.
     var folderRoute: FolderRoute? = nil
+    /// Wave 10: how many points the PINNED hero is yielding to the rows below it, so the focused
+    /// row fits at the canonical rest. Spent on the two elastic slots rather than clipped off the
+    /// frame — the logo slot first, then the synopsis — because a hard-clipped hero was the
+    /// alternative the product review rejected. 0 everywhere except pinned mode at a Poster Size
+    /// that needs it (Large today; Small/Medium compute 0 and are bit-identical to Wave 9).
+    var compression: CGFloat = 0
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
+
+    /// The compression split across the two elastic slots, each bounded by its own floor. The logo
+    /// gives first (`heroLogoSlotPinnedGive`, 110 → 78 = 32pt) and the synopsis takes the remainder
+    /// (`heroSynopsisSlotPinnedGive`, 72 → 36 = 36pt): together 68pt, which covers Large's 68.3pt
+    /// requirement against the frame's own 2pt of slack (352pt frame over 350pt of content).
+    ///
+    /// Both read the SAME constants `Theme.Size.heroPinnedCompressionCap` is summed from, so the
+    /// ceiling can never ask for more than these two can spend (Codex Wave 10 r4). When it could —
+    /// the cap was a hand-picked 110 against ~70pt of real give — a large enough demand shrank the
+    /// frame ~40pt further than the content and the hero overflowed into the page dots.
+    private var logoSlotGive: CGFloat {
+        guard compression > 0 else { return 0 }
+        return min(compression, Theme.Size.heroLogoSlotPinnedGive)
+    }
+    private var synopsisSlotGive: CGFloat {
+        guard compression > 0 else { return 0 }
+        return min(compression - logoSlotGive, Theme.Size.heroSynopsisSlotPinnedGive)
+    }
 
     private var usesNuvioLayout: Bool { forceNuvioLayout || heroNuvioStyle }
 
@@ -2481,7 +2539,7 @@ struct HomeHeroForeground: View {
     /// grows with the slot: 144pt fits four 29pt body lines, so the panel FEAT-15 asks for shows
     /// twice the description the pinned carousel could.
     private var synopsisSlotHeight: CGFloat {
-        let base = compact ? Theme.Size.heroSynopsisSlotHeightPinned
+        let base = compact ? Theme.Size.heroSynopsisSlotHeightPinned - synopsisSlotGive
                            : Theme.Size.heroSynopsisSlotHeightNuvio
         guard !showsCTA else { return base }
         return base + Theme.Size.heroButtonSlotHeight + Theme.Spacing.md
@@ -2489,7 +2547,10 @@ struct HomeHeroForeground: View {
 
     /// Lines the synopsis may use, tracking `synopsisSlotHeight` above.
     private var synopsisLineLimit: Int {
-        let base = compact ? 2 : 3
+        // Wave 10: a compressed synopsis slot must drop a line with it, or the text clips inside
+        // its own frame instead of shortening. The pinned slot is two 36pt lines, so any give at
+        // all takes it to one.
+        let base = compact ? (synopsisSlotGive > 0 ? 1 : 2) : 3
         return showsCTA ? base : base + 2
     }
 
@@ -2506,7 +2567,7 @@ struct HomeHeroForeground: View {
     private var nuvioLayout: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             HeroLogo(item: item)
-                .frame(height: compact ? Theme.Size.heroLogoSlotHeightPinned
+                .frame(height: compact ? Theme.Size.heroLogoSlotHeightPinned - logoSlotGive
                                        : Theme.Size.heroLogoSlotHeight,
                        alignment: .bottomLeading)
                 .frame(maxWidth: .infinity, alignment: .leading)
