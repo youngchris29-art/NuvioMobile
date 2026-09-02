@@ -181,6 +181,9 @@ object PlayerStreamsRepository {
             stateFlow.value = StreamsUiState(
                 groups = listOf(presentedGroup),
                 activeAddonIds = setOf("embedded"),
+                // Embedded streams come from the (installed) meta addon, so they classify as an
+                // installed-addon source for the auto-play scope (Codex r2 on the 58864ec1 port).
+                installedAddonIds = setOf("embedded"),
                 isAnyLoading = false,
             )
             return
@@ -314,6 +317,7 @@ object PlayerStreamsRepository {
         stateFlow.value = StreamsUiState(
             groups = initialGroups,
             activeAddonIds = initialGroups.map { it.addonId }.toSet(),
+            installedAddonIds = streamAddons.map { it.addonId }.toSet(),
             isAnyLoading = isInitiallyLoading,
         )
 

@@ -336,6 +336,11 @@ data class StreamsUiState(
     val requestToken: String? = null,
     val groups: List<AddonStreamGroup> = emptyList(),
     val activeAddonIds: Set<String> = emptySet(),
+    /// Fork addition (upstream 58864ec1 port): the installed-addon group ids of this fan-out, so a
+    /// consumer can apply [areAutoPlaySourcesLoaded] to [groups] without re-deriving the fork's
+    /// `streamAddonInstanceId` shape — tvOS's up-next engine reads it through SharedCore. Plugin
+    /// groups are everything NOT in this set.
+    val installedAddonIds: Set<String> = emptySet(),
     val selectedFilter: String? = null,
     val isAnyLoading: Boolean = false,
     val emptyStateReason: StreamsEmptyStateReason? = null,
