@@ -38,6 +38,11 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var upcoming: [UpcomingEpisodeItem] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var errorMessage: String?
+    /// Upstream 085e8dc6 (#1819): every enabled add-on's manifest failed to load and nothing is
+    /// still fetching. Distinct from `errorMessage` (HomeRepository's catalog error), which can
+    /// never fire here — HomeRepository is only refreshed once a manifest is ready — so without
+    /// this Home sat on "Setting up your catalogs…" forever with no error and no retry.
+    @Published private(set) var addonManifestError: String?
 
     /// H-1A (beta.15): a per-instance id from the shared hero probe counter, stamped into every
     /// probe line this view model logs (`vm=<n>`). A profile-scoped sync pull flipping the theme
@@ -192,6 +197,7 @@ final class HomeViewModel: ObservableObject {
         upcoming = []
         isLoading = false
         errorMessage = nil
+        addonManifestError = nil
         collections = []
         settingsItems = []
         lastNonEmptyHeroHead = nil
@@ -508,12 +514,19 @@ final class HomeViewModel: ObservableObject {
     private func onAddonsChanged(_ state: AddonsUiState) {
         // First run with an empty store → seed Cinemeta, then wait for the next emission.
         if state.addons.isEmpty {
+            addonManifestError = nil
             maybeSeedDefaultAddon()
             return
         }
 
         // Only addons whose manifest has actually loaded can contribute catalogs.
         let ready = AddonModelsKt.enabledAddons(state.addons).filter { $0.manifest != nil }
+        // Terminal manifest failure with nothing ready and nothing still fetching → surface it.
+        // Pending keeps the existing "Setting up your catalogs…" placeholder (already not a false
+        // empty state); Retry re-marks the addons refreshing, which clears this again.
+        addonManifestError = ready.isEmpty && !AddonModelsKt.hasPendingEnabledManifests(state.addons)
+            ? AddonModelsKt.firstEnabledManifestError(state.addons)
+            : nil
         guard !ready.isEmpty else { return }
 
         let signature = ready.map { $0.manifestUrl }.joined(separator: "|")

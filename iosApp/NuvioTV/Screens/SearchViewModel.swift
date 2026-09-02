@@ -40,6 +40,12 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var sections: [HomeCatalogSection] = []
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var emptyMessage: String?
+    /// Upstream 085e8dc6 / Codex r1+r4: a non-empty query that could not be searched because every
+    /// enabled add-on's MANIFEST failed to load — the state this batch introduced. Rendered with a
+    /// Retry that re-fetches the manifests. Deliberately NOT set for catalog-level RequestFailed:
+    /// the shared `toSection()` treats an empty catalog page as an error, so an all-empty search
+    /// also publishes RequestFailed and must keep reading as "No results." (pre-existing behaviour).
+    @Published private(set) var searchError: String?
     /// BUG-33 defect 1 instrumentation: passthrough of `SearchUiState.lastFanOut` — a
     /// human-readable "searched N of M catalogs" line set by the shared repo right after the
     /// last `search()` call. Settings → Content Sources → Search Sources renders the same value
@@ -62,6 +68,12 @@ final class SearchViewModel: ObservableObject {
     private var historyWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
     private var lastDiscoverAddonSignature: String?
+    /// Upstream 085e8dc6 (#1819): the trimmed query currently being searched (nil while the field
+    /// is empty). `SearchRepository.search` only recomputes its pending-manifest state when it is
+    /// called again, and this screen otherwise calls it only from the typing debounce — so an addon
+    /// manifest landing or failing mid-query has to re-issue the search itself.
+    private var activeQuery: String?
+    private var lastSearchAddonSignature: String?
     private var debounce: Task<Void, Never>?
     private var started = false
 
@@ -81,7 +93,15 @@ final class SearchViewModel: ObservableObject {
             guard let state = emitted as? SearchUiState else { return }
             self.isLoading = state.isLoading
             self.sections = state.sections
-            self.emptyMessage = state.sections.isEmpty && !state.isLoading && state.emptyStateReason != nil
+            let settledEmpty = state.sections.isEmpty && !state.isLoading
+            // KMP exports enum entries all-lowercase (like DiscoverEmptyStateReason.requestfailed).
+            // Manifest failure = RequestFailed while no enabled add-on has a manifest at all.
+            let manifestFailure = settledEmpty
+                && state.emptyStateReason == SearchEmptyStateReason.requestfailed
+                && !self.enabledAddons.contains(where: { $0.manifest != nil })
+            let errorText: String? = state.errorMessage
+            self.searchError = manifestFailure ? (errorText ?? String(localized: "Couldn't load your add-ons.")) : nil
+            self.emptyMessage = settledEmpty && !manifestFailure && state.emptyStateReason != nil
                 ? String(localized: "No results.")
                 : nil
             self.lastFanOut = state.lastFanOut
@@ -119,6 +139,7 @@ final class SearchViewModel: ObservableObject {
             guard let state = emitted as? AddonsUiState else { return }
             self.enabledAddons = AddonModelsKt.enabledAddons(state.addons)
             self.refreshDiscoverIfNeeded()
+            self.researchIfAddonsChanged()
         }
 
         AddonRepository.shared.initialize()
@@ -143,6 +164,10 @@ final class SearchViewModel: ObservableObject {
         // the signature already matches, so without this the section would never rebuild.
         // canReuseDiscoverState in the repository still avoids redundant network work.
         lastDiscoverAddonSignature = nil
+        // `activeQuery` deliberately survives: the view's `@State query` outlives a tab switch and
+        // `.onChange(of: query)` won't refire, so the next addon emission after start() must still
+        // be able to re-issue. The repository's same-key early return keeps that a no-op otherwise.
+        lastSearchAddonSignature = nil
     }
 
     /// Called as the search text changes; debounces, then queries (or resets on empty).
@@ -157,12 +182,16 @@ final class SearchViewModel: ObservableObject {
             SearchRepository.shared.clear()
             sections = []
             emptyMessage = nil
+            searchError = nil
+            activeQuery = nil
             return
         }
 
         debounce = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled, let self else { return }
+            self.activeQuery = trimmed
+            self.lastSearchAddonSignature = self.addonManifestSignature
             SearchRepository.shared.search(
                 query: trimmed,
                 addons: self.enabledAddons,
@@ -189,15 +218,48 @@ final class SearchViewModel: ObservableObject {
 
     // MARK: - Discover
 
+    /// Per-addon manifest-load state, not just the URL set: a manifest landing or failing changes
+    /// nothing about `manifestUrl`, so the old URL-only signature never re-armed Discover after the
+    /// initial pending state and the "Install and enable an add-on" copy stuck for an addon that
+    /// WAS installed (upstream 085e8dc6, #1819). Only flips when `manifest`/`isRefreshing` change,
+    /// so a normal launch with cached manifests still dedupes exactly as before.
+    private var addonManifestSignature: String {
+        enabledAddons
+            .map { "\($0.manifestUrl)|\($0.manifest != nil ? 1 : 0)|\($0.isRefreshing ? 1 : 0)" }
+            .sorted()
+            .joined(separator: ",")
+    }
+
     /// (Re)build the Discover catalog options when the enabled-addon set changes.
     private func refreshDiscoverIfNeeded() {
         // UX-8: nothing to build while the section is hidden — skips the addon fan-out too. The
         // catalog-settings watcher re-arms `lastDiscoverAddonSignature` when the flag clears.
         guard !hideDiscover else { return }
-        let signature = enabledAddons.map { $0.manifestUrl }.sorted().joined(separator: "|")
+        let signature = addonManifestSignature
         guard signature != lastDiscoverAddonSignature else { return }
         lastDiscoverAddonSignature = signature
         SearchRepository.shared.refreshDiscover(addons: enabledAddons, forceRefresh: false)
+    }
+
+    /// Retry for `searchError` (a manifest failure): re-fetch the manifests — the same recovery
+    /// Discover offers. The addon watcher then re-issues the active search when they land.
+    func retrySearch() {
+        AddonRepository.shared.refreshAll()
+    }
+
+    /// Re-issue the active search when an enabled addon's manifest state changes. The repository
+    /// keys requests on the pending flag + catalog set, so an unchanged fan-out is a no-op there.
+    private func researchIfAddonsChanged() {
+        guard let activeQuery else { return }
+        let signature = addonManifestSignature
+        guard signature != lastSearchAddonSignature else { return }
+        lastSearchAddonSignature = signature
+        SearchRepository.shared.search(
+            query: activeQuery,
+            addons: enabledAddons,
+            disabledCatalogKeys: Self.SearchSourceSettings.disabledKeys,
+            forceRefresh: false
+        )
     }
 
     func selectDiscoverType(_ type: String) {

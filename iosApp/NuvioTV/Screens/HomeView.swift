@@ -1341,6 +1341,29 @@ struct HomeView: View {
                 .font(Theme.Font.body)
                 .foregroundStyle(Theme.Palette.accent)
                 .padding(.vertical, Theme.Spacing.xl)
+        } else if let message = model.addonManifestError {
+            // Upstream 085e8dc6: all add-on manifests failed. Retry is the focusable anchor for
+            // this branch (BUG-47 rule) and the honest recovery — the add-ons are installed, their
+            // manifests just didn't load.
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Text("Couldn't load your add-ons.")
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.accent)
+                Text(message)
+                    .font(Theme.Font.meta)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .lineLimit(2)
+                Button {
+                    AddonRepository.shared.refreshAll()
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.md)
+                        .padding(.vertical, Theme.Spacing.xs)
+                }
+                .buttonStyle(.chip)
+            }
+            .padding(.vertical, Theme.Spacing.xl)
         } else {
             Text("Setting up your catalogs\u{2026}")
                 .font(Theme.Font.body)

@@ -90,6 +90,21 @@ struct SearchView: View {
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textSecondary)
             }
+        } else if let error = model.searchError {
+            // Codex r1 on upstream 085e8dc6: a failed fan-out is not "No results." — name it and
+            // offer the recovery (manifest re-fetch or a forced re-query, see retrySearch()).
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                Text(error).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
+                Button {
+                    model.retrySearch()
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .font(Theme.Font.meta)
+                        .padding(.horizontal, Theme.Spacing.md)
+                        .padding(.vertical, Theme.Spacing.xs)
+                }
+                .buttonStyle(.chip)
+            }
         } else if let message = model.emptyMessage {
             Text(message).font(Theme.Font.body).foregroundStyle(Theme.Palette.textSecondary)
         }
@@ -198,9 +213,30 @@ struct SearchView: View {
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
             } else if let reason = discover.emptyStateReason {
-                Text(discoverEmptyMessage(reason))
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                // Upstream 085e8dc6: RequestFailed with NO catalog options means an add-on MANIFEST
+                // failed (SearchRepository.refreshDiscover's early return), not a catalog page —
+                // say so and offer the honest recovery (re-fetch the manifests) instead of
+                // "try another genre". The root TextField keeps this screen focusable regardless.
+                if reason == DiscoverEmptyStateReason.requestfailed, discover.catalogOptions.isEmpty {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                        Text(widen(discover.errorMessage) ?? String(localized: "Couldn't load your add-ons."))
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                        Button {
+                            AddonRepository.shared.refreshAll()
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                                .font(Theme.Font.meta)
+                                .padding(.horizontal, Theme.Spacing.md)
+                                .padding(.vertical, Theme.Spacing.xs)
+                        }
+                        .buttonStyle(.chip)
+                    }
+                } else {
+                    Text(discoverEmptyMessage(reason))
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
             }
         } else {
             LazyVGrid(columns: gridColumns, spacing: Theme.Spacing.xl) {
