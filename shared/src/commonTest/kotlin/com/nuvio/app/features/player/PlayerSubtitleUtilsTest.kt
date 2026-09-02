@@ -71,4 +71,29 @@ class PlayerSubtitleUtilsTest {
         assertEquals(1, cues.size)
         assertEquals("Valid cue", cues[0].text)
     }
+
+    // Upstream 50ef6a84 (multiline TTML cues). First test here to go through `parse()` rather than
+    // `parseFromText()` — `parseFromText` deliberately returns empty for ASS/TTML, so the TTML branch
+    // is only reachable via `parse()` with a `.ttml` source name.
+    @Test
+    fun testParseMultilineTtmlCue() {
+        val ttmlText = """
+            <tt>
+              <body>
+                <div>
+                  <p begin="00:00:01.000" end="00:00:04.500">
+                    Hello<br/>world
+                  </p>
+                </div>
+              </body>
+            </tt>
+        """.trimIndent()
+
+        val cues = PlayerSubtitleCueParser.parse(ttmlText, "sub.ttml")
+
+        assertEquals(1, cues.size)
+        assertEquals(1000L, cues.single().startTimeMs)
+        assertEquals(4500L, cues.single().endTimeMs)
+        assertEquals("Hello\nworld", cues.single().text)
+    }
 }

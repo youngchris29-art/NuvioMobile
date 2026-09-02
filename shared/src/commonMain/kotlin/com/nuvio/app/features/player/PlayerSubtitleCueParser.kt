@@ -212,8 +212,11 @@ object PlayerSubtitleCueParser {
         return if (body.isBlank()) null else SubtitleSyncCue(startTimeMs = start, endTimeMs = end, text = body)
     }
 
+    // Upstream 50ef6a84 ("support multiline ttml cues") swapped the named-RegexOption form for inline
+    // flags. Probed 2026-09-01 before porting: the multiline cue test passes on BOTH jvmTest and
+    // tvosSimulatorArm64Test with the old setOf(RegexOption…) form, so this is parity, not a K/N fix.
     private fun parseTtml(text: String): List<SubtitleSyncCue> =
-        Regex("""<p\b([^>]*)>(.*?)</p>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        Regex("""(?is)<p\b([^>]*)>(.*?)</p>""")
             .findAll(text)
             .mapNotNull { match ->
                 val attrs = match.groupValues[1]
