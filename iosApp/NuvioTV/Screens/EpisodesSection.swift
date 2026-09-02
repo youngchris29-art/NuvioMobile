@@ -32,7 +32,7 @@ struct EpisodesSection: View {
                 // posters when any season has one, text chips otherwise; the poster's fallback is
                 // the show poster. No new setting this cycle (mobile's Posters/Text toggle stays
                 // out until someone asks), so no new strings either.
-                let posterBySeason = Self.seasonPosters(grouped)
+                let posterBySeason = Self.seasonPosters(grouped, meta: meta)
                 if posterBySeason.values.contains(where: { $0 != nil }) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: Theme.Spacing.rowGap) {
@@ -221,14 +221,24 @@ struct EpisodesSection: View {
         season <= 0 ? String(localized: "Specials") : String(localized: "Season \(season)")
     }
 
-    /// FEAT-24: first non-blank `seasonPoster` among each season's episodes (mobile's rule).
-    nonisolated private static func seasonPosters(_ grouped: [Int: [MetaVideo]]) -> [Int: String?] {
+    /// FEAT-24: first non-blank `seasonPoster` among each season's episodes (mobile's rule), then —
+    /// upstream 22096a1e parity — the addon's own `app_extras.seasonPosters` art for that season
+    /// number. Same precedence as mobile's `resolveSeasonPoster`: per-episode (TMDB enrichment or a
+    /// per-video addon field) first, addon season map second, and the caller's show poster/backdrop
+    /// last. The map is keyed by season NUMBER with specials at 0, matching `groupedEpisodes` keys.
+    nonisolated private static func seasonPosters(_ grouped: [Int: [MetaVideo]], meta: MetaDetails) -> [Int: String?] {
         var result: [Int: String?] = [:]
         for (season, episodes) in grouped {
             let poster = episodes.lazy
                 .compactMap { $0.seasonPoster?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .first { !$0.isEmpty }
-            result[season] = poster
+            // `Map<Int, String>` crosses the SharedCore boundary as `[KotlinInt: String]`.
+            let trimmedAddon: String? = meta.seasonPosters[KotlinInt(int: Int32(season))]?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let addonPoster: String? = (trimmedAddon?.isEmpty == false) ? trimmedAddon : nil
+            // Explicit `String?` so `??` doesn't infer against the dictionary's `String??` value type.
+            let resolved: String? = poster ?? addonPoster
+            result[season] = resolved
         }
         return result
     }
