@@ -80,6 +80,7 @@ struct NativePlayerScreen: View {
                             coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
                         },
                         onPlayNow: { [weak upNext] in _ = upNext?.playNow() },
+                        onDismissUpNext: { [weak upNext] in upNext?.dismissIfVisible() ?? false },
                         onPanelOpenChanged: { open in panelOpen = open }
                     )
                     .ignoresSafeArea()
@@ -238,6 +239,8 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
     let panelModel: PlayerTopPanelModel
     let onSkip: (Double) -> Void
     let onPlayNow: () -> Void
+    /// Menu while the up-next chip is showing → dismiss it (returns true) instead of exiting.
+    let onDismissUpNext: () -> Bool
     let onPanelOpenChanged: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -257,6 +260,8 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             openChanged(true)
         }
         host.onPanelClosed = { openChanged(false) }
+        // Set once, like `onOpenPanel`: the closure captures the screen's stable `@StateObject`.
+        host.onMenuPress = onDismissUpNext
         return host
     }
 
@@ -292,6 +297,11 @@ private struct AVPlayerContainer: UIViewControllerRepresentable {
             let playNow = onPlayNow
             actions.append(UIAction(title: upNextAction.title,
                                     image: UIImage(systemName: PlayerChipStyle.nextSymbol)) { _ in playNow() })
+            // Discoverable twin of the Menu-press dismiss (transport-bar users never see a hint
+            // that Menu backs out of the chip). Same signature key as the play-next action.
+            let dismissUpNext = onDismissUpNext
+            actions.append(UIAction(title: String(localized: "Dismiss"),
+                                    image: UIImage(systemName: "xmark")) { _ in _ = dismissUpNext() })
         }
         controller.contextualActions = actions
     }

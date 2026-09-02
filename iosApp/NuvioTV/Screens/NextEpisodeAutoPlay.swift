@@ -90,6 +90,7 @@ final class NextEpisodeEngine: ObservableObject {
         prime()
         state.upNextPlayNow = { [weak self] in self?.playNow() ?? false }
         state.upNextCancel = { [weak self] in self?.cancel() }
+        state.upNextDismiss = { [weak self] in self?.dismissIfVisible() ?? false }
     }
 
     /// Engine-agnostic start for the native AVPlayer path: same settings watch + next-episode
@@ -300,6 +301,22 @@ final class NextEpisodeEngine: ObservableObject {
         immediatePlay = false
         phase = .hidden
         tearDownSearch()
+    }
+
+    /// Menu/back while the up-next chip is up (any non-hidden phase: "Finding source…", the
+    /// countdown, "Still watching?", or the no-stream toast): dismiss it for the rest of this
+    /// playback session — the sticky `cancelled` flag keeps the threshold from re-firing, which is
+    /// the state half of upstream 4026ec92 (#858) tvOS already had; this is the gesture half it
+    /// lacked (Menu used to exit the whole player straight through the chip). Returns true when
+    /// the press was consumed so the caller does NOT also exit; false when nothing is showing, so
+    /// Menu falls through to its normal exit. `.stillWatching` → `.hidden` lets the mpv post-play
+    /// cover appear at EOF exactly as after a seek-cancel.
+    func dismissIfVisible() -> Bool {
+        guard phase != .hidden else { return false }
+        // A press is proof someone's watching (the native path has no other reset point).
+        Self.consecutiveAutoPlays = 0
+        cancel()
+        return true
     }
 
     // MARK: - Search + selection

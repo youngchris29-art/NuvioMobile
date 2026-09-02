@@ -69,6 +69,9 @@ final class MPVPlaybackState: ObservableObject {
     /// consumed, so the skip pill doesn't also fire); backward seek cancels the countdown.
     var upNextPlayNow: (() -> Bool)?
     var upNextCancel: (() -> Void)?
+    /// Menu while the up-next chip is visible dismisses the chip instead of exiting the player;
+    /// returns true when it consumed the press. The next Menu exits as before (upstream 4026ec92).
+    var upNextDismiss: (() -> Bool)?
 
     let title: String
     init(title: String) { self.title = title }
@@ -160,6 +163,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
     /// Called when the user presses Menu, so the SwiftUI cover can dismiss.
     var onExit: (() -> Void)?
+    /// Set when a Menu press was consumed by the up-next dismiss so the matching release is
+    /// swallowed too (same pattern as `PlayerPanelHostController`) — nothing above sees a half press.
+    private var swallowMenuRelease = false
     /// Open the swipe-down top panel (D-pad Down with nothing else to do, or a down swipe).
     var onOpenPanel: (() -> Void)?
 
@@ -1133,7 +1139,14 @@ final class MPVTVPlayerViewController: UIViewController {
                     handled = true
                 }
             case .menu:
-                onExit?(); handled = true
+                // Back out of the transient up-next chip first; the next Menu exits (same
+                // convention as the top panel: overlay first, player second).
+                if state.upNextDismiss?() == true {
+                    swallowMenuRelease = true
+                } else {
+                    onExit?()
+                }
+                handled = true
             default:
                 break
             }
@@ -1148,6 +1161,10 @@ final class MPVTVPlayerViewController: UIViewController {
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var handled = false
+        if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
+            swallowMenuRelease = false
+            handled = true
+        }
         for press in presses where press.type == .leftArrow || press.type == .rightArrow {
             endSeek(); handled = true
         }

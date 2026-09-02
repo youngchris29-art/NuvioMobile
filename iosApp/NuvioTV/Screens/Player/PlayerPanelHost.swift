@@ -24,6 +24,11 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
     var onOpenPanel: (() -> Void)?
     /// Fired after a presented panel has been dismissed (any way: Menu, swipe up, programmatic).
     var onPanelClosed: (() -> Void)?
+    /// Menu press hook (upstream 4026ec92 parity): return true to consume it — the up-next chip
+    /// was dismissed — or false to let the press continue up to SwiftUI, whose `fullScreenCover`
+    /// pops the player exactly as today.
+    var onMenuPress: (() -> Bool)?
+    private var swallowMenuRelease = false
     private(set) var panelHost: PlayerPanelPresenting?
     private var downPress: UITapGestureRecognizer!
     private var downSwipe: UISwipeGestureRecognizer!
@@ -62,6 +67,29 @@ final class NativePlayerHostController: UIViewController, UIGestureRecognizerDel
         guard panelHost == nil, presentedViewController == nil,
               playerVC.presentedViewController == nil else { return }
         onOpenPanel?()
+    }
+
+    // This controller sits between AVPlayerViewController and the SwiftUI host in the focused
+    // responder chain, so a Menu the system player did not consume (transport bar hidden) passes
+    // through here on its way to the cover's default exit. Not while our panel or one of AVPVC's
+    // own popovers is up — those own Menu themselves (same guard as `handleOpenGesture`).
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }),
+           panelHost == nil, presentedViewController == nil, playerVC.presentedViewController == nil,
+           onMenuPress?() == true {
+            swallowMenuRelease = true
+            return
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Swallow the matching Menu release too, so nothing above sees a half press.
+        if swallowMenuRelease, presses.contains(where: { $0.type == .menu }) {
+            swallowMenuRelease = false
+            return
+        }
+        super.pressesEnded(presses, with: event)
     }
 
     /// Present the panel over the live player. `crossDissolve` fades the host; the panel content
