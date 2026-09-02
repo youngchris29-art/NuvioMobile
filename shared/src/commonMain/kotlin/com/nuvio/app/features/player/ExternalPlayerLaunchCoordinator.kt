@@ -30,6 +30,7 @@ suspend fun prepareExternalPlayerLaunch(
     request: ExternalPlayerPlaybackRequest,
     type: String,
     videoId: String,
+    contentId: String? = null,
     forwardSubtitles: Boolean,
     sendSkipSegments: Boolean,
     preferredLanguage: String,
@@ -63,7 +64,7 @@ suspend fun prepareExternalPlayerLaunch(
     }
 
     val skipSegmentsDeferred = if (sendSkipSegments) {
-        async { resolveSkipSegmentsJson(videoId, request.season, request.episode) }
+        async { resolveSkipSegmentsJson(videoId, request.season, request.episode, contentId) }
     } else {
         null
     }
@@ -87,18 +88,21 @@ suspend fun prepareExternalPlayerLaunch(
  * intentionally independent of the in-app skip-intro toggle (requireSkipIntroEnabled = false):
  * this is its own opt-in setting.
  */
-private suspend fun resolveSkipSegmentsJson(videoId: String, season: Int?, episode: Int?): String? {
+private suspend fun resolveSkipSegmentsJson(videoId: String, season: Int?, episode: Int?, contentId: String?): String? {
     val ep = episode ?: return null
+    // Upstream f212242a: an IMDB parent id lets the anime paths skip Simkl's TVDB episode mapping
+    // and query IntroDB with the caller's own season/episode directly.
+    val imdbFromContent = contentId?.takeIf { it.startsWith("tt") }
     val intervals = skipResolveScope.async {
         withTimeoutOrNull(SkipSegmentResolveTimeoutMs) {
             when {
                 videoId.startsWith("mal:") -> {
                     val malId = videoId.removePrefix("mal:").substringBefore(':')
-                    SkipIntroRepository.getSkipIntervalsForMal(malId, ep, requireSkipIntroEnabled = false)
+                    SkipIntroRepository.getSkipIntervalsForMal(malId, ep, requireSkipIntroEnabled = false, imdbId = imdbFromContent, imdbSeason = season, imdbEpisode = episode)
                 }
                 videoId.startsWith("kitsu:") -> {
                     val kitsuId = videoId.removePrefix("kitsu:").substringBefore(':')
-                    SkipIntroRepository.getSkipIntervalsForKitsu(kitsuId, ep, requireSkipIntroEnabled = false)
+                    SkipIntroRepository.getSkipIntervalsForKitsu(kitsuId, ep, requireSkipIntroEnabled = false, imdbId = imdbFromContent, imdbSeason = season, imdbEpisode = episode)
                 }
                 else -> {
                     val imdbId = videoId.substringBefore(':').takeIf { it.startsWith("tt") } ?: return@withTimeoutOrNull null
