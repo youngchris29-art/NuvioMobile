@@ -1,6 +1,7 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "": {},
     "%.1f GB": {
       "localizations": {
         "de": {
@@ -35,6 +36,7 @@
         }
       }
     },
+    "%@": {},
     "%@ - %@ Instant": {
       "localizations": {
         "de": {
@@ -69,6 +71,7 @@
         }
       }
     },
+    "%@ f=%lld t=%lld y=%lld i=%lld r=%lld": {},
     "%@ rejected the saved sign-in. Press to disconnect, then connect again.": {
       "localizations": {
         "de": {
@@ -205,6 +208,7 @@
         }
       }
     },
+    "%@ · skipped when searching": {},
     "%@ · v%@": {
       "localizations": {
         "de": {
@@ -2212,6 +2216,10 @@
         }
       }
     },
+    "A muted trailer plays behind the description on detail pages": {},
+    "A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse": {},
+    "A row under Continue Watching with your shows' next episodes airing in the next 14 days": {},
+    "API key saved": {},
     "About": {
       "localizations": {
         "fr": {
@@ -2620,6 +2628,7 @@
         }
       }
     },
+    "Add one in Settings → Content Sources → Addons.": {},
     "Add to Library": {
       "localizations": {
         "de": {
@@ -2790,6 +2799,7 @@
         }
       }
     },
+    "After relaunching, this launch's hero paint log appears below — photograph it when reporting": {},
     "Alcohol & Drugs": {
       "localizations": {
         "de": {
@@ -3232,6 +3242,7 @@
         }
       }
     },
+    "Artwork shows while the hero is highlighted and hides once you move down into the rows": {},
     "Audio": {
       "localizations": {
         "de": {
@@ -3572,6 +3583,7 @@
         }
       }
     },
+    "BUG-30: try if Home's tab bar still reappears clipped after scrolling up": {},
     "Back": {
       "localizations": {
         "fr": {
@@ -4252,6 +4264,7 @@
         }
       }
     },
+    "Buttons show icons only": {},
     "Cache": {
       "localizations": {
         "de": {
@@ -4933,6 +4946,7 @@
         }
       }
     },
+    "Classic layout with the logo on the lower left": {},
     "Clear All Filters": {
       "localizations": {
         "de": {
@@ -6157,6 +6171,7 @@
         }
       }
     },
+    "Couldn't load your add-ons.": {},
     "Couldn't resolve a playback link.": {
       "localizations": {
         "de": {
@@ -6327,6 +6342,7 @@
         }
       }
     },
+    "Couldn’t look this title up with your stream addons.": {},
     "Couldn’t open the external player — playing in NuvioTV.": {
       "localizations": {
         "de": {
@@ -9115,6 +9131,8 @@
         }
       }
     },
+    "Focused artwork shows a ring in your accent color": {},
+    "Focused cards keep their size — highlight and shadow only": {},
     "Forced": {
       "localizations": {
         "fr": {
@@ -9761,6 +9779,7 @@
         }
       }
     },
+    "Hard Top Scroll Edge (A/B)": {},
     "Hardware decode": {
       "localizations": {
         "de": {
@@ -11054,6 +11073,7 @@
         }
       }
     },
+    "It was opened from a TMDB source and has no matching IMDb id, which is what stream addons need. Opening it from search or a different row usually works.": {},
     "Italian": {
       "localizations": {
         "de": {
@@ -11768,6 +11788,7 @@
         }
       }
     },
+    "Limit reached — turn another source off first": {},
     "Loading catalogs…": {
       "localizations": {
         "de": {
@@ -12924,6 +12945,7 @@
         }
       }
     },
+    "No Upcoming row on Home": {},
     "No Zoom on Focus": {
       "localizations": {
         "de": {
@@ -13367,6 +13389,7 @@
         }
       }
     },
+    "No rotating banner — the top of Home shows the focused title's artwork and description": {},
     "No search performed yet.": {
       "localizations": {
         "de": {
@@ -13469,6 +13492,7 @@
         }
       }
     },
+    "No stream lookups yet — press Play on the title that fails.": {},
     "No streaming addons installed — only a metadata catalog (Cinemeta) is set up.": {
       "localizations": {
         "de": {
@@ -13605,6 +13629,7 @@
         }
       }
     },
+    "None of your addons provide streams for this title.": {},
     "Not available": {
       "localizations": {
         "de": {
@@ -16635,6 +16660,7 @@
         }
       }
     },
+    "Play the trailer full screen shortly after opening a title": {},
     "Playback": {
       "localizations": {
         "de": {
@@ -17111,6 +17137,8 @@
         }
       }
     },
+    "Posters play a muted trailer preview after a moment of focus": {},
+    "Posters show artwork only": {},
     "Prefer IMDB": {
       "localizations": {
         "de": {
@@ -17791,6 +17819,7 @@
         }
       }
     },
+    "Re-check installed add-ons for catalogs.": {},
     "Re-download provider code from every repository.": {
       "localizations": {
         "de": {
@@ -17995,6 +18024,7 @@
         }
       }
     },
+    "Refresh Add-ons": {},
     "Refresh Plugins": {
       "localizations": {
         "de": {
@@ -18743,6 +18773,40 @@
         }
       }
     },
+    "Retry": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réessayer"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reintentar"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erneut versuchen"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riprova"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thử lại"
+          }
+        }
+      }
+    },
     "Review": {
       "localizations": {
         "de": {
@@ -19457,6 +19521,7 @@
         }
       }
     },
+    "Scroll-geometry and push/pop counters below — photograph after testing": {},
     "Search": {
       "localizations": {
         "de": {
@@ -19560,6 +19625,8 @@
         }
       }
     },
+    "Search shows only the search field and recent searches": {},
+    "Search shows the Discover section (types, catalogs, genres) below the field": {},
     "Searching addon subtitles…": {
       "localizations": {
         "de": {
@@ -20512,6 +20579,7 @@
         }
       }
     },
+    "Show the title's poster on the right side of detail pages": {},
     "Show the video size (GB/MB) as a chip on stream results.": {
       "localizations": {
         "de": {
@@ -22042,6 +22110,7 @@
         }
       }
     },
+    "Stream Diagnostics": {},
     "Stream Info": {
       "localizations": {
         "de": {
@@ -22110,6 +22179,7 @@
         }
       }
     },
+    "Stream lookups are logged below — open the title that fails, press Play, then come back and photograph": {},
     "Streaming Buffer": {
       "localizations": {
         "de": {
@@ -23028,6 +23098,7 @@
         }
       }
     },
+    "TMDB air dates override add-on release dates": {},
     "TMDB key set": {
       "localizations": {
         "de": {
@@ -23606,6 +23677,9 @@
         }
       }
     },
+    "The hero plays a muted trailer preview after a moment of focus on a poster": {},
+    "The hero plays its trailer by itself, without waiting for focus": {},
+    "The hero shows artwork only": {},
     "The provider returned an unplayable link.": {
       "localizations": {
         "de": {
@@ -24354,6 +24428,7 @@
         }
       }
     },
+    "Title and description on the left, artwork on the right, hero pinned while rows scroll": {},
     "Too many attempts. Try again in %ds.": {
       "localizations": {
         "de": {
@@ -24864,6 +24939,7 @@
         }
       }
     },
+    "Trailers start with sound; play/pause mutes": {},
     "Trakt": {
       "localizations": {
         "de": {
@@ -25068,6 +25144,9 @@
         }
       }
     },
+    "Turn on before walking Home down and back up, or running Detail push/pop cycles": {},
+    "Turn on if asked to capture a hero artwork report, then relaunch the app": {},
+    "Turn on if asked to capture why a title finds no streams": {},
     "Two-letter ISO 3166-1 country code.": {
       "localizations": {
         "de": {
@@ -26700,6 +26779,7 @@
         }
       }
     },
+    "Your installed addons either don’t serve streams, or don’t cover this content type.": {},
     "Your library is empty": {
       "localizations": {
         "de": {
@@ -26836,6 +26916,7 @@
         }
       }
     },
+    "add-on release dates are used as-is": {},
     "add-on settings changed": {
       "localizations": {
         "de": {
@@ -27040,6 +27121,7 @@
         }
       }
     },
+    "debug_pinned %@": {},
     "debug_trailers n=%lld thumbs=%lld": {
       "localizations": {
         "de": {
@@ -27142,6 +27224,7 @@
         }
       }
     },
+    "depth=%lld cycles=%lld": {},
     "en": {
       "localizations": {
         "de": {
@@ -27346,6 +27429,8 @@
         }
       }
     },
+    "rows read like “Popular - Movies”": {},
+    "rows use the add-on's catalog name": {},
     "searching…": {
       "localizations": {
         "de": {
