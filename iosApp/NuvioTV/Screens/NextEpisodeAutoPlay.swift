@@ -381,9 +381,29 @@ final class NextEpisodeEngine: ObservableObject {
         if state.isAnyLoading {
             // Early exit while still loading: only for a same-binge-group match (mobile parity).
             attemptBingeGroupOnlySelection(groups: groups, settings: settings)
+            // Upstream 58864ec1 (#1825): "still loading" is judged inside the configured auto-play
+            // source scope. Once every in-scope source has finished, an out-of-scope source still
+            // fetching must neither delay the pick nor be picked — the selector already filters
+            // by scope, so a miss here is terminal, not "wait for more". With the default
+            // ALL_SOURCES scope this is exactly the old `!isAnyLoading` condition.
+            guard selectedStream == nil, !cancelled else { return }
+            let scope = effectiveAutoPlaySource(settings)
+            if StreamAutoPlayLoadingPolicyKt.areAutoPlaySourcesLoaded(groups, source: scope, installedAddonIds: state.installedAddonIds) {
+                print("[UpNext] in-scope sources loaded (\(scope)) while others still fetch — selecting now")
+                attemptSelection(groups: groups, settings: settings, loadFinished: true, installedAddonIds: state.installedAddonIds)
+            }
         } else {
-            attemptSelection(groups: groups, settings: settings, loadFinished: true)
+            attemptSelection(groups: groups, settings: settings, loadFinished: true, installedAddonIds: state.installedAddonIds)
         }
+    }
+
+    /// Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection over
+    /// every source; otherwise the user's configured scope applies. Shared by the loading policy
+    /// and the selector so they can never disagree about what "in scope" means.
+    private func effectiveAutoPlaySource(_ settings: PlayerSettingsUiState) -> StreamAutoPlaySource {
+        let manualAutoSelect = settings.streamAutoPlayMode == StreamAutoPlayMode.manual &&
+            (settings.streamAutoPlayNextEpisodeEnabled || settings.streamAutoPlayPreferBingeGroup)
+        return manualAutoSelect ? StreamAutoPlaySource.allSources : settings.streamAutoPlaySource
     }
 
     private func allStreams(_ groups: [AddonStreamGroup]) -> [StreamItem] {
@@ -402,21 +422,25 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func attemptBingeGroupOnlySelection(groups: [AddonStreamGroup], settings: PlayerSettingsUiState) {
         guard settings.streamAutoPlayPreferBingeGroup, context.bingeGroup != nil else { return }
-        if let match = select(from: groups, settings: settings, bingeGroupOnly: true) {
+        if let match = select(from: groups, settings: settings, bingeGroupOnly: true,
+                              installedAddonIds: latestStreamsState?.installedAddonIds ?? []) {
             didSelect(match)
         }
     }
 
-    private func attemptSelection(groups: [AddonStreamGroup], settings: PlayerSettingsUiState, loadFinished: Bool) {
+    private func attemptSelection(groups: [AddonStreamGroup], settings: PlayerSettingsUiState, loadFinished: Bool,
+                                  installedAddonIds: Set<String>? = nil) {
         guard selectedStream == nil, !cancelled else { return }
-        if let match = select(from: groups, settings: settings, bingeGroupOnly: false) {
+        let installed = installedAddonIds ?? latestStreamsState?.installedAddonIds ?? []
+        if let match = select(from: groups, settings: settings, bingeGroupOnly: false, installedAddonIds: installed) {
             didSelect(match)
         } else if loadFinished {
             finishWithoutStream()
         }
     }
 
-    private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool) -> StreamItem? {
+    private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
+                        installedAddonIds: Set<String>) -> StreamItem? {
         let streams = allStreams(groups)
         guard !streams.isEmpty else { return nil }
 
@@ -432,7 +456,7 @@ final class NextEpisodeEngine: ObservableObject {
             settings.streamAutoPlayPreferBingeGroup
 
         let effectiveMode = manualAutoSelect ? StreamAutoPlayMode.firstStream : settings.streamAutoPlayMode
-        let effectiveSource = manualAutoSelect ? StreamAutoPlaySource.allSources : settings.streamAutoPlaySource
+        let effectiveSource = effectiveAutoPlaySource(settings)
         let effectiveAddons: Set<String> = manualAutoSelect ? [] : settings.streamAutoPlaySelectedAddons
         let effectivePlugins: Set<String> = manualAutoSelect ? [] : settings.streamAutoPlaySelectedPlugins
         let effectiveRegex = manualAutoSelect ? "" : settings.streamAutoPlayRegex
@@ -441,7 +465,12 @@ final class NextEpisodeEngine: ObservableObject {
         if bingeGroupOnly && preferredBingeGroup == nil { return nil }
 
         let debrid = DebridSettingsRepository.shared.snapshot()
-        let installedAddonNames = Set(groups.map { $0.addonName })
+        // Only the groups the shared repository marked as installed addons count as "addons" for the
+        // source scope; the rest are plugin groups. Previously every group was treated as an installed
+        // addon, so INSTALLED_ADDONS_ONLY let plugins through and ENABLED_PLUGINS_ONLY matched nothing.
+        // The set is authoritative — an EMPTY set is a valid plugin-only fan-out (Codex r1), not
+        // "unknown", so there is deliberately no all-groups fallback.
+        let installedAddonNames = Set(groups.filter { installedAddonIds.contains($0.addonId) }.map { $0.addonName })
 
         return StreamAutoPlaySelector.shared.selectAutoPlayStream(
             streams: streams,
