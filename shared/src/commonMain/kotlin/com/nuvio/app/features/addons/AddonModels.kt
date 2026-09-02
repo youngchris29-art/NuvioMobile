@@ -83,6 +83,31 @@ fun List<ManagedAddon>.toOverview(): AddonOverview =
 fun List<ManagedAddon>.enabledAddons(): List<ManagedAddon> =
     filter { it.enabled }
 
+// Upstream 085e8dc6 (#1819): the three predicates behind "delayed addon content states". Public
+// (upstream has them `internal`) because tvOS's HomeViewModel/SearchViewModel consume them through
+// the SharedCore framework, exactly like `enabledAddons` above.
+
+/// An enabled addon whose manifest fetch is still in flight. While true, "no active addons" is not
+/// yet a fact — Search/Discover/Home publish a loading state instead of a false empty state.
+fun List<ManagedAddon>.hasPendingEnabledManifests(): Boolean =
+    any { addon -> addon.enabled && addon.isRefreshing }
+
+/// Enabled addons exist, none has a manifest yet, and at least one is still fetching.
+fun List<ManagedAddon>.isWaitingForFirstEnabledManifest(): Boolean {
+    val enabledAddons = enabledAddons()
+    return enabledAddons.isNotEmpty() &&
+        enabledAddons.none { addon -> addon.manifest != null } &&
+        enabledAddons.any { addon -> addon.isRefreshing }
+}
+
+/// First non-blank manifest-load error among enabled addons that still have no manifest (a stale
+/// refresh error on an addon whose manifest IS loaded is ignored).
+fun List<ManagedAddon>.firstEnabledManifestError(): String? =
+    asSequence()
+        .filter { addon -> addon.enabled && addon.manifest == null }
+        .mapNotNull { addon -> addon.errorMessage?.takeIf(String::isNotBlank) }
+        .firstOrNull()
+
 sealed interface AddAddonResult {
     data class Success(val manifest: AddonManifest) : AddAddonResult
     data class Error(val message: String) : AddAddonResult

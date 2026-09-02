@@ -7,6 +7,8 @@ import com.nuvio.app.features.addons.AddonCatalog
 import com.nuvio.app.features.addons.AddonExtraProperty
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.enabledAddons
+import com.nuvio.app.features.addons.firstEnabledManifestError
+import com.nuvio.app.features.addons.hasPendingEnabledManifests
 import com.nuvio.app.features.catalog.CATALOG_PAGE_SIZE
 import com.nuvio.app.features.catalog.CatalogPage
 import com.nuvio.app.features.catalog.CatalogTarget
@@ -56,6 +58,13 @@ object SearchRepository {
     private var lastRequestKey: String? = null
     private var discoverSources: List<DiscoverCatalogOption> = emptyList()
     private var lastDiscoverHideUnreleasedContent: Boolean? = null
+    /// Upstream 085e8dc6 / Codex r3: whether an enabled addon's manifest was still loading when the
+    /// Discover feed was last prepared. Carried into loadDiscoverFeed's terminal publishes so an
+    /// empty/failed page from an already-loaded addon doesn't become a terminal empty state while
+    /// another addon may still bring catalogs; the previous value lets refreshDiscover notice the
+    /// settle and re-run for an empty grid (see the reuse guard).
+    private var discoverManifestsPending = false
+    private var lastDiscoverHasPendingAddonManifests: Boolean? = null
 
     fun search(
         query: String,
@@ -69,12 +78,23 @@ object SearchRepository {
             return
         }
 
-        val activeAddons = addons.enabledAddons().filter { it.manifest != null }
+        // Upstream 085e8dc6 (#1819): manifests still loading are not "no addons" — publish loading,
+        // or the first manifest error, and only fall back to NoActiveAddons once everything settled.
+        val enabledAddons = addons.enabledAddons()
+        val hasPendingAddonManifests = enabledAddons.hasPendingEnabledManifests()
+        val addonManifestErrorMessage = enabledAddons.firstEnabledManifestError()
+        val activeAddons = enabledAddons.filter { it.manifest != null }
         if (activeAddons.isEmpty()) {
             activeJob?.cancel()
             lastRequestKey = null
             _uiState.value = SearchUiState(
-                emptyStateReason = SearchEmptyStateReason.NoActiveAddons,
+                isLoading = hasPendingAddonManifests,
+                emptyStateReason = when {
+                    hasPendingAddonManifests -> null
+                    addonManifestErrorMessage != null -> SearchEmptyStateReason.RequestFailed
+                    else -> SearchEmptyStateReason.NoActiveAddons
+                },
+                errorMessage = addonManifestErrorMessage,
             )
             return
         }
@@ -92,7 +112,8 @@ object SearchRepository {
             activeJob?.cancel()
             lastRequestKey = null
             _uiState.value = SearchUiState(
-                emptyStateReason = SearchEmptyStateReason.NoSearchCatalogs,
+                isLoading = hasPendingAddonManifests,
+                emptyStateReason = if (hasPendingAddonManifests) null else SearchEmptyStateReason.NoSearchCatalogs,
                 lastFanOut = fanOutLine,
             )
             return
@@ -102,6 +123,11 @@ object SearchRepository {
             append(normalizedQuery.lowercase())
             append('|')
             append(HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent)
+            append('|')
+            // Upstream 085e8dc6: the final publish below can be "loading" purely because a manifest
+            // is still pending; the flag must be part of the key or the same query re-issued after
+            // that manifest fails is deduped by the same-key guard and the state never settles.
+            append(hasPendingAddonManifests)
             append('|')
             append(
                 requests.joinToString(separator = "|") { request ->
@@ -175,10 +201,11 @@ object SearchRepository {
             val allFailed = completedResults.isNotEmpty() && completedResults.all { it.error != null }
 
             _uiState.value = SearchUiState(
-                isLoading = false,
+                isLoading = sections.isEmpty() && hasPendingAddonManifests,
                 sections = sections,
                 emptyStateReason = when {
                     sections.isNotEmpty() -> null
+                    hasPendingAddonManifests -> null
                     allFailed -> SearchEmptyStateReason.RequestFailed
                     else -> SearchEmptyStateReason.NoResults
                 },
@@ -200,6 +227,8 @@ object SearchRepository {
         lastRequestKey = null
         discoverSources = emptyList()
         lastDiscoverHideUnreleasedContent = null
+        discoverManifestsPending = false
+        lastDiscoverHasPendingAddonManifests = null
         _uiState.value = SearchUiState()
         _discoverUiState.value = DiscoverUiState()
     }
@@ -208,14 +237,27 @@ object SearchRepository {
         addons: List<ManagedAddon>,
         forceRefresh: Boolean = false,
     ) {
-        val activeAddons = addons.enabledAddons().filter { it.manifest != null }
+        // Upstream 085e8dc6 (#1819), same shape as search(): pending manifests → loading, a
+        // manifest failure → RequestFailed + its message, NoActiveAddons only once settled.
+        val enabledAddons = addons.enabledAddons()
+        val hasPendingAddonManifests = enabledAddons.hasPendingEnabledManifests()
+        val addonManifestErrorMessage = enabledAddons.firstEnabledManifestError()
+        val activeAddons = enabledAddons.filter { it.manifest != null }
         if (activeAddons.isEmpty()) {
             activeDiscoverJob?.cancel()
             discoverSources = emptyList()
             lastDiscoverHideUnreleasedContent = null
-            log.d { "Discover refresh aborted: no active addons" }
+            discoverManifestsPending = hasPendingAddonManifests
+            lastDiscoverHasPendingAddonManifests = hasPendingAddonManifests
+            log.d { "Discover refresh aborted: no active addons (pending=$hasPendingAddonManifests)" }
             _discoverUiState.value = DiscoverUiState(
-                emptyStateReason = DiscoverEmptyStateReason.NoActiveAddons,
+                isLoading = hasPendingAddonManifests,
+                emptyStateReason = when {
+                    hasPendingAddonManifests -> null
+                    addonManifestErrorMessage != null -> DiscoverEmptyStateReason.RequestFailed
+                    else -> DiscoverEmptyStateReason.NoActiveAddons
+                },
+                errorMessage = addonManifestErrorMessage,
             )
             return
         }
@@ -227,8 +269,19 @@ object SearchRepository {
         // flight; tvOS keeps the completed-state reuse for non-forced calls because SearchViewModel
         // re-arms refreshDiscover on every screen re-entry — without it, each Search-tab visit
         // would blank and refetch the Discover grid.
+        // Deviation from upstream 085e8dc6, which keys its whole DiscoverRequestKey on
+        // hasPendingAddonManifests (so every settle blank-and-refetches, even a populated grid —
+        // the exact thing this reuse exists to prevent). Here the settle only bypasses reuse when
+        // the grid is EMPTY: that is the case where the feed was held in a pending "loading" state
+        // (see loadDiscoverFeed) and now needs its real terminal state. The two pending
+        // placeholders above/below are unreachable by this guard anyway (the empty branch nulls
+        // lastDiscoverHideUnreleasedContent; the no-sources branch leaves selectedType null).
+        val manifestsJustSettled = lastDiscoverHasPendingAddonManifests == true && !hasPendingAddonManifests
+        lastDiscoverHasPendingAddonManifests = hasPendingAddonManifests
+        discoverManifestsPending = hasPendingAddonManifests
         if (
             !forceRefresh &&
+            !(manifestsJustSettled && current.items.isEmpty()) &&
             sources == discoverSources &&
             lastDiscoverHideUnreleasedContent == hideUnreleasedContent &&
             (current.canReuseDiscoverState(sources) || activeDiscoverJob?.isActive == true)
@@ -244,9 +297,10 @@ object SearchRepository {
         lastDiscoverHideUnreleasedContent = hideUnreleasedContent
         if (sources.isEmpty()) {
             activeDiscoverJob?.cancel()
-            log.d { "Discover refresh found no compatible discover catalogs" }
+            log.d { "Discover refresh found no compatible discover catalogs (pending=$hasPendingAddonManifests)" }
             _discoverUiState.value = DiscoverUiState(
-                emptyStateReason = DiscoverEmptyStateReason.NoDiscoverCatalogs,
+                isLoading = hasPendingAddonManifests,
+                emptyStateReason = if (hasPendingAddonManifests) null else DiscoverEmptyStateReason.NoDiscoverCatalogs,
             )
             return
         }
@@ -774,12 +828,15 @@ object SearchRepository {
                             "merged=${mergedItems.size} rawItemCount=${page.rawItemCount} nextSkip=${page.nextSkip} " +
                             "sample=${page.items.previewNames()}"
                     }
+                    // Codex r3: an empty page is not terminal while another addon's manifest may
+                    // still bring catalogs — hold "loading"; refreshDiscover re-runs on settle.
+                    val holdForManifests = mergedItems.isEmpty() && discoverManifestsPending
                     _discoverUiState.value = latest.copy(
                         items = mergedItems,
-                        isLoading = false,
+                        isLoading = holdForManifests,
                         nextSkip = paginationState.nextSkip,
                         consecutiveDuplicatePages = paginationState.consecutiveDuplicatePages,
-                        emptyStateReason = if (mergedItems.isEmpty()) DiscoverEmptyStateReason.NoResults else null,
+                        emptyStateReason = if (mergedItems.isEmpty() && !holdForManifests) DiscoverEmptyStateReason.NoResults else null,
                         errorMessage = null,
                     )
                 },
@@ -802,12 +859,14 @@ object SearchRepository {
                             "type=${selectedCatalog.type} catalogId=${selectedCatalog.catalogId} " +
                             "genre=${current.selectedGenre ?: "<all>"} skip=$requestedSkip url=$requestUrl"
                     }
+                    val remainingItems = if (reset) emptyList() else latest.items
+                    val holdForManifests = remainingItems.isEmpty() && discoverManifestsPending
                     _discoverUiState.value = latest.copy(
-                        items = if (reset) emptyList() else latest.items,
-                        isLoading = false,
+                        items = remainingItems,
+                        isLoading = holdForManifests,
                         nextSkip = null,
-                        emptyStateReason = DiscoverEmptyStateReason.RequestFailed,
-                        errorMessage = error.message ?: resourceString("The selected catalog failed to return discover items.", StringKey.discover_empty_load_failed_message),
+                        emptyStateReason = if (holdForManifests) null else DiscoverEmptyStateReason.RequestFailed,
+                        errorMessage = if (holdForManifests) null else error.message ?: resourceString("The selected catalog failed to return discover items.", StringKey.discover_empty_load_failed_message),
                     )
                 },
             )
