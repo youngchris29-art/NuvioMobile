@@ -26,6 +26,7 @@ object MetaDetailsParser {
         val meta = root.extractMetaObject()
             ?: error("Response did not contain a valid meta object")
         val links = meta.links()
+        val videos = meta.videos()
 
         return MetaDetails(
             id = meta.requiredString("id"),
@@ -39,7 +40,7 @@ object MetaDetailsParser {
             lastAirDate = meta.string("lastAirDate"),
             status = meta.string("status"),
             imdbRating = meta.string("imdbRating"),
-            ageRating = meta.string("ageRating"),
+            ageRating = meta.ageRating(),
             runtime = meta.string("runtime"),
             genres = meta.stringList("genres"),
             director = meta.directors(links),
@@ -53,7 +54,8 @@ object MetaDetailsParser {
             defaultVideoId = meta.behaviorHints().string("defaultVideoId"),
             trailers = meta.trailers(),
             links = links,
-            videos = meta.videos(),
+            seasonPosters = meta.seasonPosters(videos),
+            videos = videos,
         )
     }
 
@@ -113,6 +115,19 @@ object MetaDetailsParser {
 
     private fun JsonObject.looksLikeMetaObject(): Boolean =
         string("id") != null && string("type") != null && string("name") != null
+
+    // Upstream 0504af98: addons (AIOMetadata) publish certifications under `app_extras` — a
+    // localized board rating first, then the default one — when the top-level `ageRating` is absent.
+    private fun JsonObject.ageRating(): String? {
+        val appExtras = this["app_extras"] as? JsonObject
+        return listOf(
+            string("ageRating"),
+            appExtras?.string("certificationLocal"),
+            appExtras?.string("certification"),
+        ).firstNotNullOfOrNull { value ->
+            value?.trim()?.takeIf(String::isNotBlank)
+        }
+    }
 
     private fun JsonObject.directors(links: List<MetaLink>): List<String> {
         val appExtras = this["app_extras"] as? JsonObject
@@ -238,6 +253,32 @@ object MetaDetailsParser {
                 streams = video.embeddedStreams(),
             )
         }
+
+    // Upstream 22096a1e end-state (supersedes f5726012's positional `index + 1`): the poster array is
+    // aligned to the DISTINCT season numbers the videos declare, so a leading specials entry maps to
+    // season 0 instead of shifting every real season by one. Falls back to positive seasons only when
+    // the addon omitted a specials poster, and to positional numbering when nothing lines up.
+    private fun JsonObject.seasonPosters(videos: List<MetaVideo>): Map<Int, String> {
+        val appExtras = this["app_extras"] as? JsonObject ?: return emptyMap()
+        val posters = appExtras["seasonPosters"] as? JsonArray ?: return emptyMap()
+        val seasons = videos
+            .mapNotNull(MetaVideo::season)
+            .filter { it >= SPECIALS_SEASON_NUMBER }
+            .distinct()
+            .sorted()
+        val positiveSeasons = seasons.filter { it > SPECIALS_SEASON_NUMBER }
+        val posterSeasons = when {
+            seasons.size == posters.size -> seasons
+            positiveSeasons.size == posters.size -> positiveSeasons
+            else -> List(posters.size) { index -> index + 1 }
+        }
+        return posters.mapIndexedNotNull { index, element ->
+            (element as? JsonPrimitive)?.contentOrNull
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+                ?.let { posterSeasons[index] to it }
+        }.toMap()
+    }
 
     private fun JsonObject.trailers(): List<MetaTrailer> =
         array("trailers").mapNotNull { element ->

@@ -1,3 +1,8 @@
+// Shared-module twin of composeApp/src/commonTest/.../details/MetaDetailsParserTest.kt (same FQN,
+// separate test compilation — composeApp's tests depend on :shared's MAIN, not its tests). Lives
+// here so the parser cases run under the tvOS-native gate (:shared:tvosSimulatorArm64Test), which
+// composeApp's iosSimulatorArm64Test never exercises. Cases mirror upstream through 22096a1e
+// (season posters, specials mapping) + 0504af98 (certification fallback chain).
 package com.nuvio.app.features.details
 
 import kotlin.test.Test

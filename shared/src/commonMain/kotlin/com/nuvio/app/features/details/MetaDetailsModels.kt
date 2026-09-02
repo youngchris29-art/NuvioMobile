@@ -37,6 +37,10 @@ data class MetaDetails(
     val collectionItems: List<MetaPreview> = emptyList(),
     val trailers: List<MetaTrailer> = emptyList(),
     val links: List<MetaLink> = emptyList(),
+    /// Upstream f5726012/22096a1e: addon-supplied season art (`app_extras.seasonPosters`), keyed by
+    /// season NUMBER (specials = 0), not by array position. A fallback for seasons whose episodes
+    /// carry no `MetaVideo.seasonPoster` (TMDB enrichment or per-video addon field) — not an override.
+    val seasonPosters: Map<Int, String> = emptyMap(),
     val videos: List<MetaVideo> = emptyList(),
 )
 
