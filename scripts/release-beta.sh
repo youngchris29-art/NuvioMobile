@@ -348,9 +348,9 @@ echo "    $(du -h "$IPA_NAME" | cut -f1 | tr -d ' ') $PRODUCTS_DIR/$IPA_NAME"
 NOTES_FILE="$(mktemp)"
 trap 'rm -f "$NOTES_FILE"' EXIT
 cat > "$NOTES_FILE" <<EOF
-# NuvioTV for Apple TV — Beta (v${MARKETING_VERSION})
+# NuvioTV for Apple TV: Beta (v${MARKETING_VERSION})
 
-Unsigned tvOS IPA for beta testing. This is a **fresh build** — no account, no addons. Sign in with your own Nuvio account and install your own addons after installing.
+Unsigned tvOS IPA for beta testing. This is a **fresh build**, with no account and no addons. Sign in with your own Nuvio account and install your own addons after installing.
 
 ## What's new in this build
 
@@ -380,25 +380,25 @@ cat >> "$NOTES_FILE" <<EOF
 
 You sideload this yourself with a **free Apple ID**. The signature is created on your machine at install time.
 
-### Option A — Sideloadly (Mac/Windows)
+### Option A: Sideloadly (Mac/Windows)
 1. Download \`NuvioTV.ipa\` from the assets below.
 2. Install [Sideloadly](https://sideloadly.io/).
 3. Make sure your computer and Apple TV are on the same network. Pair the Apple TV if prompted (on the Apple TV: Settings → Remotes and Devices → Remote App and Devices shows the pairing code).
 4. Select your Apple TV as the target device in Sideloadly, drag \`NuvioTV.ipa\` in, enter your Apple ID, and hit **Start**.
 
-### Option B — atvloadly (self-hosted / Docker)
-See [atvloadly](https://github.com/bitxeno/atvloadly) — a web UI for sideloading to Apple TV over the network, with automatic re-signing.
+### Option B: atvloadly (self-hosted / Docker)
+[atvloadly](https://github.com/bitxeno/atvloadly) is a web UI for sideloading to Apple TV over the network, with automatic re-signing.
 
 ### First launch
 Trust the developer certificate on the Apple TV when prompted (Settings → General → Privacy & Security).
 
 ## Free Apple ID limits (normal, not bugs)
-- The app signature expires after **7 days** — just re-sideload (Sideloadly's background daemon or atvloadly can auto-refresh).
+- The app signature expires after **7 days**, so just re-sideload (Sideloadly's background daemon or atvloadly can auto-refresh).
 - Max **3 sideloaded apps** per free Apple ID at once.
 
 ## Build info
 - Version ${MARKETING_VERSION} (build ${BUILD_NUMBER}), built from \`${HEAD_SHA:0:8}\` on \`${BRANCH}\`
-- Includes MPV-based player (MPVKit). The Top Shelf extension is not bundled in the sideload IPA — free-Apple-ID re-signing breaks extension signatures (crashes on tvOS 27), so it ships only in from-source builds.
+- Includes MPV-based player (MPVKit). The Top Shelf extension is not bundled in the sideload IPA, because free-Apple-ID re-signing breaks extension signatures (crashes on tvOS 27), so it ships only in from-source builds.
 EOF
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
