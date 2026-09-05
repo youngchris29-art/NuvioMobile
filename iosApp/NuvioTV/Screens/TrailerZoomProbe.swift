@@ -35,7 +35,10 @@ enum TrailerZoomProbe {
     static let maxLines = 40
 
     private static let lock = NSLock()
-    private static var _lines: [String] = []
+    /// nonisolated(unsafe), matching HomeHeroProbe (HomeView.swift): the accessors below are
+    /// nonisolated, and this storage is protected by the NSLock above, so it must be nonisolated
+    /// too under any default actor isolation.
+    nonisolated(unsafe) private static var _lines: [String] = []
     private static let t0 = Date()
 
     /// Snapshot for readers (the About pane's 1 Hz `TimelineView`) — safe from any thread.
