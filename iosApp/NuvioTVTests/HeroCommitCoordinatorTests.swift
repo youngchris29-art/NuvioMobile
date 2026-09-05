@@ -182,6 +182,55 @@ final class HeroCommitCoordinatorTests: XCTestCase {
         XCTAssertEqual(HeroPublishRoute.decide(gateReleased: true, gateReason: nil, heroIsEmpty: true), .noHero)
     }
 
+    // MARK: - AddonChangeRoute (Codex branch review round 8: renames must reach the metadata path)
+
+    func testAddonChangeRouteNoneWhenNothingMoved() {
+        XCTAssertEqual(
+            AddonChangeRoute.decide(previousManifestSignature: "a|b", manifestSignature: "a|b",
+                                    previousTitleSignature: "a#One|b#Two", titleSignature: "a#One|b#Two"),
+            .none)
+    }
+
+    /// The bug this fix closes: a cloud-synced `displayTitle` rename moves the title signature but
+    /// not the manifest-URL signature. That must route to a non-forced (`.metadataOnly`) refresh,
+    /// not fall through the old manifest-only guard and get silently dropped.
+    func testAddonChangeRouteMetadataOnlyWhenOnlyATitleMoved() {
+        XCTAssertEqual(
+            AddonChangeRoute.decide(previousManifestSignature: "a|b", manifestSignature: "a|b",
+                                    previousTitleSignature: "a#One|b#Two", titleSignature: "a#Renamed|b#Two"),
+            .metadataOnly)
+    }
+
+    func testAddonChangeRouteRefreshWhenTheManifestSetChanged() {
+        // An addon installed: the manifest signature gained a member, so the title signature moved
+        // too (every manifest-URL change moves both signatures at once).
+        XCTAssertEqual(
+            AddonChangeRoute.decide(previousManifestSignature: "a|b", manifestSignature: "a|b|c",
+                                    previousTitleSignature: "a#One|b#Two", titleSignature: "a#One|b#Two|c#Three"),
+            .refresh)
+    }
+
+    func testAddonChangeRouteRefreshWhenAnAddonWasRemoved() {
+        XCTAssertEqual(
+            AddonChangeRoute.decide(previousManifestSignature: "a|b", manifestSignature: "a",
+                                    previousTitleSignature: "a#One|b#Two", titleSignature: "a#One"),
+            .refresh)
+    }
+
+    /// A re-sort with no rename and no manifest-set change (SET semantics, not list order) must
+    /// stay `.none` — both signatures are built from a `.sorted()` array, so re-ordering the
+    /// underlying `ready` list produces byte-identical signatures.
+    func testAddonChangeRouteNoneOnReorderWithNoRename() {
+        let previousManifest = ["a", "b"].sorted().joined(separator: "|")
+        let previousTitle = ["a#One", "b#Two"].sorted().joined(separator: "|")
+        let reorderedManifest = ["b", "a"].sorted().joined(separator: "|")
+        let reorderedTitle = ["b#Two", "a#One"].sorted().joined(separator: "|")
+        XCTAssertEqual(
+            AddonChangeRoute.decide(previousManifestSignature: previousManifest, manifestSignature: reorderedManifest,
+                                    previousTitleSignature: previousTitle, titleSignature: reorderedTitle),
+            .none)
+    }
+
     // MARK: - HeroPendingCommitRoute (Codex r1 P2: the in-flight head is preserved, not restarted)
 
     func testPendingRouteAbsorbsAPublishForTheHeadAlreadyPreparing() {

@@ -57,6 +57,46 @@ enum HeroPublishRoute: Equatable {
     }
 }
 
+/// Codex branch review round 8: what `HomeViewModel.onAddonsChanged` does about a change in the
+/// ready-addon set, decided purely from before/after signatures so the routing is unit-testable
+/// without a live pipeline (`HeroCommitCoordinatorTests`).
+///
+/// tvOS used to key its "did the ready set change" guard on manifest URLs alone. A cloud-synced
+/// rename (`ManagedAddon.displayTitle`, from a pulled `userSetName`) never moves a manifest URL, so
+/// the guard swallowed the change entirely: `syncCatalogs` never ran (Home Rows settings kept the
+/// stale `addonName`) and `HomeRepository.refresh` never ran (the row subtitle kept the stale
+/// name) until an unrelated manifest change or relaunch. Compose does not have this bug because its
+/// trigger signature already includes `displayTitle` (`HomeCatalogDefinitions.buildHomeCatalogRefreshSignature`).
+///
+/// `.metadataOnly` and `.refresh` both mean "call `syncCatalogs` and `refresh`" — they differ only
+/// in the `force` flag passed to `HomeRepository.refresh`. A manifest-URL-set change needs
+/// `force: true` (new content to fetch). A title-only change needs `force: false`, so the shared
+/// `refresh()` can take its own `isMetadataOnlyDefinitionChange` branch and republish the existing
+/// sections under the new name/caption instead of re-fetching, pruning or moving the pinned hero
+/// (see `HomeCatalogDefinitions.kt`, `HomeRepository.kt:refresh`). `force: true` always skips that
+/// branch on the Kotlin side, so routing every rename through it as before would have refetched.
+enum AddonChangeRoute: Equatable {
+    /// Neither the manifest-URL set nor any display title changed. Nothing to do.
+    case none
+    /// The manifest-URL set is unchanged; only a display title moved. Sync + non-forced refresh.
+    case metadataOnly
+    /// The manifest-URL set itself changed (an addon installed, removed, enabled or disabled).
+    /// Sync + forced refresh, same as before this fix.
+    case refresh
+
+    /// - Parameters:
+    ///   - previousManifestSignature: the manifest-URL-only signature stored from the last call.
+    ///   - manifestSignature: the manifest-URL-only signature for the CURRENT ready set.
+    ///   - previousTitleSignature: the combined (manifest URL + display title) signature stored
+    ///     from the last call.
+    ///   - titleSignature: the combined signature for the CURRENT ready set.
+    static func decide(previousManifestSignature: String, manifestSignature: String,
+                       previousTitleSignature: String, titleSignature: String) -> AddonChangeRoute {
+        guard titleSignature != previousTitleSignature else { return .none }
+        return manifestSignature == previousManifestSignature ? .metadataOnly : .refresh
+    }
+}
+
 @MainActor
 final class HomeViewModel: ObservableObject {
     @Published private(set) var heroItems: [MetaPreview] = []
@@ -104,7 +144,16 @@ final class HomeViewModel: ObservableObject {
     private var settingsItems: [HomeCatalogSettingsItem] = []
     private var didSeed = false
     /// Guards against redundant `refresh` calls — only re-refresh when the ready-addon set changes.
+    /// Combined signature: manifest URL AND display title per ready addon (`AddonChangeRoute`
+    /// Codex round 8). A rename alone moves this even though `lastManifestSignature` does not, so
+    /// the guard no longer swallows a cloud-synced `displayTitle` change the way a manifest-URL-only
+    /// signature did.
     private var lastRefreshSignature = ""
+    /// Manifest-URL-only signature for the ready set, tracked separately from
+    /// `lastRefreshSignature` so `onAddonsChanged` can tell a rename (same manifest set, force:
+    /// false) apart from an actual add/remove/enable/disable (different manifest set, force: true)
+    /// — see `AddonChangeRoute.decide`.
+    private var lastManifestSignature = ""
     /// Wave H (BUG-86): the Swift half of the hero commit protocol — see `HomeHeroCommit.swift`.
     /// Owns the committed head identity/hash and prewarms its artwork before `homeWatcher` assigns
     /// `heroItems`/`sections`. Reset in `stop()` (profile-scoped, like the model itself).
@@ -257,6 +306,7 @@ final class HomeViewModel: ObservableObject {
         // `HomeRepository` — leaving Home empty; `didSeed` would likewise block Cinemeta seeding
         // for a newly selected empty profile.
         lastRefreshSignature = ""
+        lastManifestSignature = ""
         didSeed = false
         // Codex wave-4 r2 (P1): the published content and internal snapshots are profile-scoped
         // too. Left populated, the next profile's `HomeView` renders the PREVIOUS profile's hero,
@@ -910,9 +960,23 @@ final class HomeViewModel: ObservableObject {
         // Wave H (Hole E follow-on): SET semantics, not list order — a server-driven re-sort of the
         // same addons must not read as "the ready set changed" and force a redundant full refresh
         // (the same principle `HomeCatalogDefinitions.kt`'s cacheKey fix applies on the Kotlin side).
-        let signature = ready.map { $0.manifestUrl }.sorted().joined(separator: "|")
-        guard signature != lastRefreshSignature else { return }
-        lastRefreshSignature = signature
+        let manifestSignature = ready.map { $0.manifestUrl }.sorted().joined(separator: "|")
+        // Codex branch review round 8: carries `displayTitle` too, so a cloud rename (same manifest
+        // URLs, new `userSetName`) moves this signature even though `manifestSignature` above does
+        // not — see `AddonChangeRoute`.
+        let titleSignature = ready
+            .map { "\($0.manifestUrl)#\($0.displayTitle)" }
+            .sorted()
+            .joined(separator: "|")
+        let route = AddonChangeRoute.decide(
+            previousManifestSignature: lastManifestSignature,
+            manifestSignature: manifestSignature,
+            previousTitleSignature: lastRefreshSignature,
+            titleSignature: titleSignature
+        )
+        guard route != .none else { return }
+        lastRefreshSignature = titleSignature
+        lastManifestSignature = manifestSignature
 
         // BUG-12: register the catalog definitions with the Home Rows settings BEFORE refreshing,
         // mirroring mobile (HomeScreen.kt:538-541). Without this, `settingsItems` only ever knows
@@ -921,10 +985,14 @@ final class HomeViewModel: ObservableObject {
         // the user happened to open Settings — the "collections are scrambled" report.
         if HomeHeroProbe.enabled {
             let catalogs = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
-            HomeHeroProbe.log(String(format: "addonsChanged vm=%d ready=%d catalogs=%d sinceLaunch=%dms", vmId, ready.count, catalogs, HomeHeroProbe.sinceLaunchMs))
+            let routeLabel = route == .metadataOnly ? "metadataOnly" : "refresh"
+            HomeHeroProbe.log(String(format: "addonsChanged vm=%d ready=%d catalogs=%d sinceLaunch=%dms addonRoute=%@", vmId, ready.count, catalogs, HomeHeroProbe.sinceLaunchMs, routeLabel))
         }
+        // A manifest-set change needs the fetch (`force: true`); a rename-only change asks
+        // `HomeRepository.refresh` for its non-forced, metadata-only republish path instead — see
+        // `AddonChangeRoute`'s doc comment for why `force: true` cannot take that path.
         HomeCatalogSettingsRepository.shared.syncCatalogs(addons: ready)
-        HomeRepository.shared.refresh(addons: ready, force: true)
+        HomeRepository.shared.refresh(addons: ready, force: route == .refresh)
     }
 
     /// BUG-35 (beta.12): a catalog row scrolled into view — ask the shared repo to localize its
