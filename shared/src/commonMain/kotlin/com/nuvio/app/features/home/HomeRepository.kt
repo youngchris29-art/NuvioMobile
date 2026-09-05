@@ -255,6 +255,7 @@ object HomeRepository {
         // so a publish from the load scope could evaluate against a pruned cache with isLoading
         // still false and drop the hero head, then reseed `heroRandom` from the new requestKey.
         val proceed = synchronized(heroSelectionLock) {
+            val previousDefinitions = currentDefinitions
             currentDefinitions = requests
             val requestKeys = requests.mapTo(mutableSetOf(), HomeCatalogDefinition::key)
             val cachedBefore = cachedSections.size
@@ -264,6 +265,20 @@ object HomeRepository {
             currentRequestKey = requestKey
 
             if (!force && activeRequestKey == requestKey && _uiState.value.isLoading) {
+                false
+            } else if (!force && isMetadataOnlyDefinitionChange(previousDefinitions, requests)) {
+                // Hole E follow-on (Codex branch review round 6): an add-on RENAME reaches this
+                // point. It moves the trigger signature but not a single cache key, so every
+                // section above is still valid content under a new caption. Adopting the new
+                // definitions and republishing is the whole fix: the fan-out below would re-fetch
+                // every catalog, flip `isLoading` and re-arm the commit gate to change one string.
+                // Nothing here prunes, so no row is rebuilt; `requestKey` is unchanged, so the hero
+                // seed, the ranking and the pinned head come out of the publish identical.
+                log.i { "refresh() metadata-only definition change; republishing ${requests.size} catalogs without a re-fetch" }
+                publishCurrentStateLocked(
+                    isLoading = _uiState.value.isLoading,
+                    requestKey = requestKey,
+                )
                 false
             } else {
                 activeRequestKey = requestKey
@@ -793,8 +808,13 @@ object HomeRepository {
                 val section = cachedSections[definition.key]?.withReleaseFilter() ?: return@mapNotNull null
                 if (section.items.isEmpty()) return@mapNotNull null
                 val customTitle = preference?.customTitle.orEmpty()
-                section.copy(
-                    title = customTitle.ifBlank { definition.titleFor(snapshot.showCatalogType) },
+                // The DEFINITION owns the row's display fields, not the fetch that filled it: a
+                // section cached before an add-on rename still carries the old add-on name, and the
+                // rename deliberately does not re-fetch it (see `withCurrentMetadata`).
+                section.withCurrentMetadata(
+                    definition = definition,
+                    customTitle = customTitle,
+                    showCatalogType = snapshot.showCatalogType,
                 )
             }
 

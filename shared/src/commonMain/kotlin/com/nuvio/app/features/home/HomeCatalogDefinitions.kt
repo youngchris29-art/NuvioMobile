@@ -27,15 +27,68 @@ data class HomeCatalogDefinition(
         if (showCatalogType) defaultTitle else catalogName
 }
 
+/**
+ * The catalog TRIGGER signature: what a frontend keys its "re-sync the catalogs" effect on
+ * (composeApp's `LaunchedEffect(catalogRefreshKey)` in `HomeScreen.kt`).
+ *
+ * It deliberately carries one field the IDENTITY signature ([HomeCatalogDefinition.cacheKey]) does
+ * not: the add-on's [ManagedAddon.displayTitle]. A rename - a `userSetName` landing from a cloud
+ * pull - has to reach the row subtitle and the Home Rows settings caption, but it must never change
+ * what a fetched section IS; see the Hole E note in [buildHomeCatalogDescriptorSignature] for what
+ * happened when it did. Keeping the title in the trigger and out of the identity is what separates
+ * "repaint the name" from "throw the fetched content away": [HomeRepository.refresh] answers the
+ * resulting call with a metadata-only republish (see [isMetadataOnlyDefinitionChange]) instead of a
+ * network fan-out.
+ */
 fun buildHomeCatalogRefreshSignature(addons: List<ManagedAddon>): List<String> =
     addons.enabledAddons().mapNotNull { addon ->
         val manifest = addon.manifest ?: return@mapNotNull null
         addon to manifest
     }.flatMap { (addon, manifest) ->
         manifest.catalogs.map { catalog ->
-            buildHomeCatalogDescriptorSignature(addon, manifest, catalog)
+            val descriptor = buildHomeCatalogDescriptorSignature(addon, manifest, catalog)
+            "$descriptor@${addon.displayTitle}"
         }
     }.sorted()
+
+/**
+ * True when [incoming] describes exactly the same catalogs as [current] - same count, same
+ * [HomeCatalogDefinition.cacheKey] in the same order - while at least one definition differs.
+ *
+ * Only two parts of a definition are not pinned by its cache key: [HomeCatalogDefinition.addonName]
+ * (the add-on's display title, which a rename moves) and the localized half of
+ * [HomeCatalogDefinition.defaultTitle]. An equal-keys-but-unequal-definitions pair is therefore a
+ * rename or a locale change by construction, never new or different content, so the caller may
+ * adopt it and republish rather than re-fetch. An IDENTICAL pair returns false: there is nothing to
+ * repaint, and the caller's normal path already handles a redundant refresh.
+ */
+internal fun isMetadataOnlyDefinitionChange(
+    current: List<HomeCatalogDefinition>,
+    incoming: List<HomeCatalogDefinition>,
+): Boolean {
+    if (current.isEmpty() || current.size != incoming.size) return false
+    if (current == incoming) return false
+    return current.indices.all { index -> current[index].cacheKey == incoming[index].cacheKey }
+}
+
+/**
+ * Re-derives a cached section's DISPLAY fields from the definition currently in force.
+ *
+ * A section carries the add-on name it was fetched under. That snapshot outlives a rename, because
+ * the rename does not move the cache key and so does not re-fetch the section (by design - see
+ * [buildHomeCatalogRefreshSignature]). Publishing through here makes the definition, not the fetch,
+ * the source of truth for the row's title and its add-on caption.
+ */
+internal fun HomeCatalogSection.withCurrentMetadata(
+    definition: HomeCatalogDefinition,
+    customTitle: String,
+    showCatalogType: Boolean,
+): HomeCatalogSection =
+    copy(
+        title = customTitle.ifBlank { definition.titleFor(showCatalogType) },
+        subtitle = definition.addonName,
+        addonName = definition.addonName,
+    )
 
 fun buildHomeCatalogDefinitions(addons: List<ManagedAddon>): List<HomeCatalogDefinition> =
     addons.enabledAddons().mapNotNull { addon ->
@@ -78,6 +131,8 @@ private fun buildHomeCatalogDescriptorSignature(
     // skeleton rebuild 1.1 s after first paint in the tester's cold-launch video, independent of
     // any ordering change. The signature now describes only what the catalog IS (its transport and
     // its shape), so a cosmetic rename or a refresh flag no longer invalidates fetched content.
+    // The rename is not dropped, only routed: it rides buildHomeCatalogRefreshSignature() instead,
+    // and lands as a metadata-only republish in HomeRepository.refresh().
     signature.add(addon.manifestUrl)
     signature.add(manifest.id)
     signature.add(manifest.name)
