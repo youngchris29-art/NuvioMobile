@@ -526,21 +526,29 @@ struct DetailView: View {
             // C3: `item.zoomKey`, not `model.trailerZoomKey` — the hero button/autoplay items carry
             // the canonical title key (same stream as the hero loop), row-clip items carry their
             // own per-trailer-id key (see `TrailerPlaybackItem.zoomKey`).
-            FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
-                model.trailerPlayback = nil
-            }, zoomKey: item.zoomKey, videoId: item.videoId, onWillDismiss: {
-                // FEAT-32: the system dismissal has begun (Back). SwiftUI only reports it once it
-                // has ENDED (cover binding nil, `onDismiss` and the player teardown all land in
-                // the same millisecond), so this is the one moment to drop the black and land the
-                // enlarged still before the cover, now transparent, reveals it.
-                TrailerZoomProbe.log("bridge cover-will-disappear")
-                NotificationCenter.default.post(name: .trailerBridgeCoverWillDismiss, object: nil)
-                endTrailerBridge()
-            })
+            ZStack {
+                // FEAT-32: the cover's own copy of the enlarged still, under the player. When the
+                // dismissal starts the player surface is blanked and THIS is what the system
+                // crossfades over the description, which is showing the same image at the same
+                // scale: a seamless hard cut without making the cover transparent. (A clear
+                // presentation background was tried first: it keeps the presenting view alive
+                // under the cover, and one Menu press then both dismissed the cover and popped the
+                // detail page, test51 run of 2026-09-05 18:15.)
+                backdropImage
+                    .scaleEffect(TrailerBridgeChoreography.returnScale)
+                FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
+                    model.trailerPlayback = nil
+                }, zoomKey: item.zoomKey, videoId: item.videoId, onWillDismiss: {
+                    // FEAT-32: the system dismissal has begun (Back). SwiftUI only reports it once
+                    // it has ENDED (cover binding nil, `onDismiss` and the player teardown all
+                    // land in the same millisecond), so this is the one moment to drop the black
+                    // and land the enlarged still before the cover reveals the description.
+                    TrailerZoomProbe.log("bridge cover-will-disappear")
+                    NotificationCenter.default.post(name: .trailerBridgeCoverWillDismiss, object: nil)
+                    endTrailerBridge()
+                })
+            }
                 .ignoresSafeArea()
-                // FEAT-32: nothing of the cover's own behind the player, so a blanked surface
-                // shows the description through.
-                .presentationBackground(.clear)
                 // FEAT-32: title + Back hint, bottom-left, for a beat after playback starts. The
                 // auto-play entry keeps its longer dwell (BUG-18: a 4 s hint was reported as
                 // "doesn't stay on the screen" on TVs that blank at playback start).
@@ -612,6 +620,10 @@ struct DetailView: View {
             // `onDismiss` settles once the cover is actually gone.
             presentedTrailer = nil
         } else {
+            // Codex round 2 (P3): no cover means no `onDismiss`, which is where this marker is
+            // normally cleared; left set, the next manual trailer would keep auto-play's longer
+            // caption dwell.
+            trailerPlaybackIsAutoPlay = false
             settleTrailerBridge()
         }
     }

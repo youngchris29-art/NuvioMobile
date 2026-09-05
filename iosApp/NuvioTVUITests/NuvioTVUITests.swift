@@ -5599,7 +5599,10 @@ final class NuvioTVUITests: XCTestCase {
 
         // Watch Trailer only renders once the hero trailer resolved, which is auto-play's
         // precondition too.
-        let watch = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Trailer'")).firstMatch
+        // Exact label: a CONTAINS 'Trailer' match also hit the "Trailers & Extras" cards on a page
+        // whose hero trailer never resolved, and the test then pressed Menu on a page with no
+        // cover and popped it (two runs, 2026-09-05 18:20).
+        let watch = app.buttons["Watch Trailer"]
         guard watch.waitForExistence(timeout: 12) else {
             throw XCTSkip("no trailer resolved for the fixture's first title; the bridge has nothing to play")
         }
