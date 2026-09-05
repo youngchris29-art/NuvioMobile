@@ -536,6 +536,11 @@ struct DetailView: View {
                 // detail page, test51 run of 2026-09-05 18:15.)
                 backdropImage
                     .scaleEffect(TrailerBridgeChoreography.returnScale)
+                // Codex round 3 (P2): composed exactly as the description composes it underneath
+                // (scrim, then the scroll dim at its current value; the poster layer is held for
+                // the whole bridge), or the crossfade runs between a raw and a darkened frame.
+                scrimOverlay(posterBackdropVisible: false)
+                ScrollDimOverlay(model: dimModel, trailerActive: false, glassFlat: chipGlassFlat)
                 FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                     model.trailerPlayback = nil
                 }, zoomKey: item.zoomKey, videoId: item.videoId, onWillDismiss: {
