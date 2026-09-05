@@ -143,6 +143,19 @@ extension View {
     /// band across artwork + title. BUG-36 moved the cards' focus treatment up to the lockup and
     /// deliberately left this modifier down on the artwork for exactly that reason — the coverage
     /// geometry below is unchanged and stays anchored where it always was.
+    ///
+    /// BUG-91 sharpens "the artwork" into **the INSET artwork frame, with the inset radius**.
+    /// `PosterCard`/`LandscapeCard` reserve a `ringWidth` band around the picture whenever either
+    /// focus ring can draw (`ringInset`), and they used to attach this modifier after re-framing
+    /// back up to the card's outer size - so the rail traced the OUTER rect and stood 4pt off the
+    /// picture on every edge of every card, at rest, which is what the beta.17 report calls "an
+    /// empty band between the artwork and the card frame". Both cards now attach it to the smaller,
+    /// clipped artwork box and pass `max(0, cornerRadius - inset)` - the same radius the artwork's
+    /// own `clipShape` uses, so the rail is concentric with the picture's corner rather than with
+    /// the ring's. Nothing about the geometry below changes: every fraction is relative to whatever
+    /// box this lands on, so a 4pt-shorter box moves the bands by the same 4pt the picture moved.
+    /// With no band reserved (ring off, zoom on) the two attachment points are the same rect and
+    /// the render is unchanged.
     func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface) -> some View {
         modifier(CardDepthModifier(shape: shape, surface: surface))
     }
@@ -192,6 +205,11 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
             }
         }
         .allowsHitTesting(false)
+        // BUG-91 gate (test50): this ZStack fills whatever box `nuvioCardDepth` was attached to, so
+        // its frame IS the rail's rect. Publishing it lets the harness assert "the rail hugs the
+        // picture" against real geometry instead of hunting a 1-2pt hairline in a screenshot.
+        // DEBUG-only, identifier-only - see `DebugAXIdentifier` (PosterCard.swift).
+        .modifier(DebugAXIdentifier("card_depth_rail"))
     }
 
     /// The inset edge highlight, cut down to `coverage`.

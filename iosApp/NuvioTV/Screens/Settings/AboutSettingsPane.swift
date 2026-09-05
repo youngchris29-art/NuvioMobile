@@ -40,6 +40,29 @@ struct AboutSettingsPane: View {
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
+    /// BUG-81 (Wave F item C): same release-safe toggle pattern as the three probes above — a
+    /// tester on a release sideload can't `defaults write com.nuvio.media.NuvioTV debug.trailerProbe
+    /// -bool YES`, so `TrailerZoomProbe`'s buffer gets its own switch, live in-session (no relaunch:
+    /// the capture protocol is "turn on, open the zoomed title, let it play ~10s, come back here and
+    /// photograph").
+    @AppStorage("debug.trailerDiagnostics") private var trailerDiagnostics = false
+    /// Bumped by the "Reset trailer zoom cache" button so `trailerZoomCacheCount` below — a plain
+    /// read of a non-`@Published` singleton — has a `@State` dependency to invalidate on, the same
+    /// way `heroProbeLines`/`StreamProbe.lines` get their re-renders from a toggle or a `TimelineView`
+    /// tick rather than from Combine.
+    @State private var trailerZoomCacheGeneration = 0
+
+    /// BUG-41 (Wave F item D, DetailView.swift): `debug.detailScrollAB`/`debug.detailScrollProbe`
+    /// are both LIVE reads on the DetailView side (`DetailScrollAB.leg`, `DetailScrollProbe.enabled`)
+    /// — F-C only owns the About-pane control surface here, not the probe or the A/B legs themselves.
+    @AppStorage("debug.detailScrollAB") private var detailScrollAB = 0
+    @AppStorage("debug.detailScrollProbe") private var detailScrollProbeEnabled = false
+
+    private var trailerZoomCacheCount: Int {
+        _ = trailerZoomCacheGeneration // dependency only — see the property's doc comment
+        return TrailerZoomCache.shared.count
+    }
+
     var body: some View {
         SettingsSection(String(localized: "About")) {
             SettingsValueRow(
@@ -70,7 +93,7 @@ struct AboutSettingsPane: View {
             SettingsToggleRow(
                 title: String(localized: "Hero Paint Diagnostics"),
                 subtitle: heroDiagnostics
-                    ? String(localized: "After relaunching, this launch's hero paint log appears below \u{2014} photograph it when reporting")
+                    ? String(localized: "Relaunch, wait 90 seconds without touching the remote, then photograph this pane.")
                     : String(localized: "Turn on if asked to capture a hero artwork report, then relaunch the app"),
                 isOn: $heroDiagnostics
             )
@@ -206,6 +229,83 @@ struct AboutSettingsPane: View {
                 SettingsValueRow(
                     title: String(localized: "Accent Focus Ring"),
                     value: accentFocusRing ? String(localized: "On") : String(localized: "Off")
+                )
+            }
+
+            // Grouped so this whole block (Trailer Diagnostics + BUG-41's Detail Scroll controls)
+            // occupies one slot in `SettingsSection`'s own @ViewBuilder, same reasoning as the
+            // block above it.
+            Group {
+                SettingsToggleRow(
+                    title: String(localized: "Trailer Diagnostics"),
+                    subtitle: trailerDiagnostics
+                        ? String(localized: "Open the title whose trailer looks zoomed, let it play 10 seconds, come back and photograph this pane.")
+                        : String(localized: "Turn on if asked to capture why a trailer looks zoomed or letterboxed"),
+                    isOn: $trailerDiagnostics
+                )
+
+                if trailerDiagnostics {
+                    // 1 Hz re-read, same reasoning as the tab-bar/stream readouts above:
+                    // `TrailerZoomProbe` is a plain lock-guarded buffer with no publisher.
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        let lines = TrailerZoomProbe.lines
+                        VStack(alignment: .leading, spacing: 2) {
+                            if lines.isEmpty {
+                                Text(String(localized: "No trailer measurements yet \u{2014} open a title and let its trailer play."))
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                            } else {
+                                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.system(size: 20, design: .monospaced))
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                        }
+                        // Hidden single-Text blob (mirrors `hero_probe_blob`): the visible
+                        // per-line `Text` children beyond the List row's clipped height never
+                        // enter the accessibility tree, so a UITest reads the WHOLE buffer
+                        // through this one element instead.
+                        .overlay(alignment: .topLeading) {
+                            Text(lines.joined(separator: "\n"))
+                                .font(.system(size: 4))
+                                .opacity(0.011)
+                                .accessibilityIdentifier("trailer_probe_blob")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("trailer_probe_lines")
+                }
+
+                SettingsValueRow(
+                    title: String(localized: "Trailer zoom cache"),
+                    value: trailerZoomCacheCount == 1
+                        ? String(localized: "1 entry")
+                        : String(localized: "\(trailerZoomCacheCount) entries")
+                )
+
+                SettingsActionRow(title: String(localized: "Reset trailer zoom cache")) {
+                    TrailerZoomCache.shared.removeAll()
+                    trailerZoomCacheGeneration += 1
+                }
+
+                // BUG-41 (Wave F item D): the five-leg on-device A/B knob DetailView reads live —
+                // this pane is the only lawful lever a sideloaded tester has over it.
+                SettingsPickerRow(
+                    title: String(localized: "Detail Scroll A/B"),
+                    selection: $detailScrollAB,
+                    options: [0, 1, 2, 3, 4],
+                    label: { leg in
+                        leg == 0 ? String(localized: "Off") : "\(leg)"
+                    }
+                )
+
+                SettingsToggleRow(
+                    title: String(localized: "Detail Scroll Probe"),
+                    subtitle: String(localized: "BUG-41: logs a hitch counter for one Detail visit on Menu-back"),
+                    isOn: $detailScrollProbeEnabled
                 )
             }
         }

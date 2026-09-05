@@ -46,7 +46,8 @@ struct EpisodesSection: View {
                                         isSelected: season == current
                                     )
                                 }
-                                .cardFocusButtonStyle()
+                                // BUG-93: SeasonPosterCard has no manual treatment - keep the native lift in ring mode.
+                                .cardFocusButtonStyle(lift: .plain)
                                 // BUG-32: follow the user's Corners setting (system radius
                                 // otherwise overrides it — the BUG-25 class).
                                 .posterButtonShape()
@@ -97,7 +98,8 @@ struct EpisodesSection: View {
                                     isWatched: isWatched(episode)
                                 )
                             }
-                            .cardFocusButtonStyle()
+                            // BUG-93: EpisodeThumbCard uses tileFocusLift, not CardFocusTreatment - keep the native lift in ring mode.
+                            .cardFocusButtonStyle(lift: .plain)
                             .posterButtonShape() // BUG-32: honor the Corners setting
                             .focused($focusedEpisodeId, equals: episode.id)
                             .id(episode.id)

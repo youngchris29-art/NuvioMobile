@@ -43,6 +43,13 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     private var tokenOrder: [String] = []
     private static let maxTokens = 200
 
+    /// token → content identity ("id=<videoId>"), captured at mint time in `repack()` from the
+    /// same video URL `token(video:audio:)` hashed. Never derivable FROM the token itself (a
+    /// one-way SHA256 digest with nothing to recover), so this is a lookup table, not a parser —
+    /// evicted in lockstep with `playlists`/`tokenOrder` so an identity can never outlive the
+    /// token it describes. See `contentIdentity(forToken:)`.
+    private var contentIdentities: [String: String] = [:]
+
     private init() {}
 
     /// Sendable snapshot of a Kotlin `TrailerAdaptiveTrack` (KMP classes aren't Sendable; the
@@ -78,12 +85,19 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     /// progressive/HLS URL exactly as before, else nil. Completion on the main queue.
     func playbackURL(for source: TrailerPlaybackSource, completion: @escaping @Sendable (String?) -> Void) {
         let progressive: String? = (source.progressiveUrl?.isEmpty == false) ? source.progressiveUrl : nil
+        // BUG-81: this is the single choke point every trailer surface's playback URL comes out of,
+        // so it is where the YouTube video id gets attached to that URL. See
+        // `TrailerVideoIdRegistry` for why a side table rather than a threaded parameter.
+        let videoId = source.videoId
         guard let video = source.adaptiveVideo, let audio = source.adaptiveAudio else {
+            TrailerVideoIdRegistry.register(videoId, forPlaybackURL: progressive)
             DispatchQueue.main.async { completion(progressive) }
             return
         }
         repack(video: Track(video), audio: Track(audio)) { local in
-            DispatchQueue.main.async { completion(local ?? progressive) }
+            let url = local ?? progressive
+            TrailerVideoIdRegistry.register(videoId, forPlaybackURL: url)
+            DispatchQueue.main.async { completion(url) }
         }
     }
 
@@ -110,6 +124,77 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         return playlists[token] != nil
     }
 
+    /// BUG-81 investigation (Wave F item C follow-up): a stable identity for `token`'s VIDEO
+    /// stream, or nil when `token` was never minted (evicted, never seen by this server instance,
+    /// or its video URL carried no `id` query item — nothing content-stable to report, same as
+    /// `stableIdentity`'s own no-id fallback).
+    ///
+    /// Deliberately excludes the itag. YouTube's H.264 format ladder for one video (itags like
+    /// 133-137/160/298/299) is one continuously-cropped source encoded at different
+    /// resolutions/bitrates — never a different picture — and `TrailerExtractionPlatform.apple.kt`
+    /// always selects the highest-resolution AVC rung it finds, so a fresh extraction of the SAME
+    /// trailer can legitimately land on a different itag than the one a persisted zoom was
+    /// measured against. `stableIdentity`'s own `token(video:audio:)` hash treats that as a brand
+    /// new stream (by design — see its doc), so on the repack path `TrailerLetterboxProbe` was
+    /// never able to VERIFY a persisted zoom against a re-extraction that picked a different rung:
+    /// `token=mismatch` on effectively every relaunch, cold re-measure at the parity floor every
+    /// time, a persisted zoom never confirmed OR corrected. This identity is the crop-relevant
+    /// subset of that hash's input — same video, itag-independent — so `streamIdentity(of:)` in
+    /// `TrailerHeroPlayerView.swift` can key the VERIFY comparison on it instead.
+    ///
+    /// Byte-range offsets and signed-URL expiry were never part of `stableIdentity` either — both
+    /// are per-extraction serving plumbing, not picture geometry.
+    ///
+    /// Crop-geometry risk: sharing identity across itags assumes every AVC rung of one video shares
+    /// one crop/letterbox. That holds for YouTube's ladder (one encode pipeline per upload, same
+    /// aspect ratio at every rung) but isn't a protocol guarantee. If it were ever violated —
+    /// e.g. a rendition family mixing a 4:3 SD source with a 16:9 HD re-master — the practical
+    /// exposure is bounded, not silent: `TrailerLetterboxProbe.start()`'s VERIFY branch always
+    /// re-measures behind a token match and calls `finish()`, which corrects (re-persists) any
+    /// drift over `0.02`. Worst case is one relaunch showing a stale-but-plausible crop for the
+    /// ~0.5-1.5s until the interim/final measurement lands, not a permanently wrong one.
+    ///
+    /// EMPIRICAL CORRECTION (sim soak, 2026-09-04, `TrailerSoakTests.testColdStoreFirstDwellRevealProfile`
+    /// harvested against `-debug.trailerSmokeVideoId` — one fixed YouTube video, extracted three
+    /// separate times): `itag` stayed `137` on every extraction, but the googlevideo `id=` query
+    /// item itself was a DIFFERENT value every time (`o-AJbEeBZ...`, `o-AMk-fCjYnp...`,
+    /// `o-APyRTSGf...`, …) — none sharing even a prefix. So this function's itag-only unification
+    /// does NOT resolve the `persisted-hit token=mismatch` symptom by itself: `id=` reads as a
+    /// per-extraction-request token minted by the CDN, not a stable identifier of the source
+    /// video, contrary to `stableIdentity`'s own doc comment (which this function otherwise
+    /// mirrors). The itag-sharing this function does provide is still correct and still the right
+    /// behavior when itag IS the only thing that changed — it just isn't sufficient on its own.
+    /// A real fix needs a video-id-stable identity that doesn't round-trip through the signed
+    /// googlevideo URL at all — e.g. the actual YouTube video id (`rNZ0xKaCdus`-shaped, visible in
+    /// the shared Kotlin extractor's own `[TrailerExtract] video=…` logs) threaded through
+    /// `TrailerAdaptiveTrack`/`TrailerPlaybackSource` (`shared/.../trailer/TrailerPlaybackSource.kt`)
+    /// down to this Swift layer, which is outside this type's current inputs.
+    ///
+    /// SUPERSEDED (2026-09-04): that real fix now exists. `TrailerPlaybackSource.videoId` carries
+    /// the YouTube video id from the shared extractor, `TrailerVideoIdRegistry` (below) attaches it
+    /// to the playback URL, and `TrailerLetterboxProbe.streamIdentity(of:videoId:)` prefers a
+    /// `yt:<videoId>` identity over anything derived from the googlevideo URL. This function stays
+    /// as the fallback for a URL with no registered video id (a source that never came from the
+    /// YouTube extractor, or a registry entry evicted mid-session) — it is still strictly better
+    /// than the raw repack token, just no longer the primary identity.
+    static func contentIdentity(forToken token: String) -> String? {
+        shared.lock.lock()
+        defer { shared.lock.unlock() }
+        return shared.contentIdentities[token]
+    }
+
+    /// Test seam: registers the token/content-identity pair `repack(...)` would produce for this
+    /// URL pair, without the sidx network fetch a real repack needs (unit tests can't drive that).
+    /// `contentIdentity(forToken:)` coverage needs a real minted entry to look up — this is the
+    /// only way to get one outside the live extraction pipeline. Returns the minted token.
+    static func registerContentIdentityForTesting(videoURL: String, audioURL: String) -> String {
+        let token = Self.token(videoURL: videoURL, audioURL: audioURL)
+        shared.lock.lock()
+        shared.contentIdentities[token] = Self.contentIdentity(videoURL: videoURL)
+        shared.lock.unlock()
+        return token
+    }
+
     // MARK: - Repackaging
 
     private func repack(video: Track, audio: Track,
@@ -131,7 +216,7 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
                 let videoMedia = Self.mediaPlaylist(track: video, sidx: videoSidx)
                 let audioMedia = Self.mediaPlaylist(track: audio, sidx: audioSidx)
                 let token = Self.token(video: video, audio: audio)
-                self.store(token: token, files: [
+                self.store(token: token, contentIdentity: Self.contentIdentity(videoURL: video.url), files: [
                     "master.m3u8": Data(master.utf8),
                     "video.m3u8": Data(videoMedia.utf8),
                     "audio.m3u8": Data(audioMedia.utf8),
@@ -290,8 +375,27 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     /// part is the stream selection itself — the `id` + `itag` query items — with the full URL
     /// kept only as a fallback for URLs that carry neither.
     private static func token(video: Track, audio: Track) -> String {
-        let digest = SHA256.hash(data: Data("\(stableIdentity(video.url))\n\(stableIdentity(audio.url))".utf8))
+        token(videoURL: video.url, audioURL: audio.url)
+    }
+
+    /// URL-string form of the derivation above, byte-identical to it (`token(video:audio:)` just
+    /// delegates here) — factored out so `registerContentIdentityForTesting(videoURL:audioURL:)`
+    /// can mint a real token without constructing a Kotlin `TrailerAdaptiveTrack`.
+    private static func token(videoURL: String, audioURL: String) -> String {
+        let digest = SHA256.hash(data: Data("\(stableIdentity(videoURL))\n\(stableIdentity(audioURL))".utf8))
         return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The picture-geometry-relevant identity for a video URL: the `id` query item alone, itag and
+    /// everything else `stableIdentity` keeps dropped. Nil when the URL carries no `id` (mirrors
+    /// `stableIdentity`'s own no-id fallback) — nothing content-stable to report, so
+    /// `contentIdentity(forToken:)` returns nil and callers fall back to the opaque per-mint token.
+    private static func contentIdentity(videoURL: String) -> String? {
+        guard let components = URLComponents(string: videoURL) else { return nil }
+        guard let id = (components.queryItems ?? []).first(where: { $0.name == "id" })?.value, !id.isEmpty else {
+            return nil
+        }
+        return "id=\(id)"
     }
 
     private static func stableIdentity(_ urlString: String) -> String {
@@ -308,7 +412,7 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         return "id=\(id)&itag=\(itag ?? "-")"
     }
 
-    private func store(token: String, files: [String: Data]) {
+    private func store(token: String, contentIdentity: String?, files: [String: Data]) {
         lock.lock()
         // A re-store is a refresh of an existing trailer, not a new entry: replace the files and
         // move the token to the back of the eviction line rather than double-listing it.
@@ -316,10 +420,16 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
             tokenOrder.removeAll { $0 == token }
         }
         playlists[token] = files
+        if let contentIdentity {
+            contentIdentities[token] = contentIdentity
+        } else {
+            contentIdentities.removeValue(forKey: token)
+        }
         tokenOrder.append(token)
         while tokenOrder.count > Self.maxTokens {
             let evicted = tokenOrder.removeFirst()
             playlists.removeValue(forKey: evicted)
+            contentIdentities.removeValue(forKey: evicted)
             if TrailerProbe.enabled {
                 NSLog("[TrailerRepack] token evict token=%@ stored=%d max=%d", evicted, tokenOrder.count, Self.maxTokens)
             }
@@ -461,5 +571,57 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         var payload = Data(head.utf8)
         if !isHead { payload.append(body) }
         connection.send(content: payload, completion: .contentProcessed { _ in connection.cancel() })
+    }
+}
+
+/// BUG-81: playback URL → YouTube video id, so `TrailerLetterboxProbe` can key a persisted zoom on
+/// the one identifier that survives a re-extraction of the same trailer.
+///
+/// A side table rather than a parameter threaded through every surface, because the playback URL is
+/// all some call sites have left: `TrailerResolutionCache` memoizes a *URL string* per title, so a
+/// second dwell on a title inside one launch replays that URL with no `TrailerPlaybackSource`
+/// anywhere in scope. Registering at `TrailerLocalHLS.playbackURL(for:)` — the single choke point
+/// every surface's URL comes out of — covers the Detail hero, the Trailers row clips, the inline
+/// catalog cards and the Home hero alike, cache hits included. Surfaces that DO still hold the
+/// source pass the id explicitly instead (`TrailerHeroPlayer.videoId`), which wins over this table.
+///
+/// Process-local and bounded; nothing is persisted. A cold launch starts empty and re-extraction
+/// re-registers, which is exactly the flow the persisted zoom cache is verified against.
+enum TrailerVideoIdRegistry {
+    /// Matches `TrailerLocalHLS.maxTokens` / `TrailerResolutionCache.capacity`: one entry per
+    /// distinct trailer URL, evicted on the same scale as the stores it shadows.
+    private static let capacity = 200
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var ids: [String: String] = [:]
+    nonisolated(unsafe) private static var order: [String] = []
+
+    /// No-op for a nil/empty URL or video id — an unregistered URL simply falls back to the
+    /// URL-derived identity, which is what shipped before.
+    static func register(_ videoId: String?, forPlaybackURL url: String?) {
+        guard let url, !url.isEmpty, let videoId, !videoId.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        if ids.updateValue(videoId, forKey: url) == nil {
+            order.append(url)
+            while order.count > capacity {
+                ids.removeValue(forKey: order.removeFirst())
+            }
+        }
+    }
+
+    static func videoId(forPlaybackURL url: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids[url]
+    }
+
+    /// Test seam: unit tests share one process, so a registry left populated by one case would leak
+    /// into the next.
+    static func removeAllForTesting() {
+        lock.lock()
+        defer { lock.unlock() }
+        ids.removeAll()
+        order.removeAll()
     }
 }

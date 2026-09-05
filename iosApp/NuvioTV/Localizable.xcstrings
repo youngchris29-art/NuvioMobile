@@ -618,6 +618,40 @@
         }
       }
     },
+    "%lld entries": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld Einträge"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld entradas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld entrées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld voci"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld mục"
+          }
+        }
+      }
+    },
     "%lld found": {
       "localizations": {
         "de": {
@@ -1294,6 +1328,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "1 (tệp này không có âm thanh thay thế)"
+          }
+        }
+      }
+    },
+    "1 entry": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 Eintrag"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 entrada"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 entrée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 voce"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 mục"
           }
         }
       }
@@ -2799,7 +2867,6 @@
         }
       }
     },
-    "After relaunching, this launch's hero paint log appears below — photograph it when reporting": {},
     "Alcohol & Drugs": {
       "localizations": {
         "de": {
@@ -3584,6 +3651,40 @@
       }
     },
     "BUG-30: try if Home's tab bar still reappears clipped after scrolling up": {},
+    "BUG-41: logs a hitch counter for one Detail visit on Menu-back": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-41: Protokolliert einen Ruckler-Zähler für einen Detailbesuch beim Zurückgehen über die Menütaste"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-41: Registra un contador de tirones para una visita a Detalle al volver con Menú"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-41 : enregistre un compteur de saccades pour une visite Détail au retour via Menu"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-41: registra un contatore di scatti per una visita al dettaglio al ritorno con Menu"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-41: ghi lại bộ đếm giật hình cho một lần xem Chi tiết khi quay lại bằng nút Menu"
+          }
+        }
+      }
+    },
     "Back": {
       "localizations": {
         "fr": {
@@ -7053,6 +7154,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "Xóa hồ sơ"
+          }
+        }
+      }
+    },
+    "Detail Scroll A/B": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detail-Scroll A/B"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desplazamiento de detalle A/B"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Défilement des détails A/B"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scorrimento dettagli A/B"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuộn chi tiết A/B"
+          }
+        }
+      }
+    },
+    "Detail Scroll Probe": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detail-Scroll-Sonde"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonda de desplazamiento de detalle"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonde de défilement des détails"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonda di scorrimento dettagli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đầu dò cuộn chi tiết"
           }
         }
       }
@@ -13629,6 +13798,40 @@
         }
       }
     },
+    "No trailer measurements yet — open a title and let its trailer play.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noch keine Trailer-Messungen — öffne einen Titel und lass seinen Trailer abspielen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aún no hay mediciones de tráiler — abre un título y deja que se reproduzca su tráiler."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune mesure de bande-annonce pour l'instant — ouvre un titre et laisse sa bande-annonce se lancer."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nessuna misurazione del trailer ancora — apri un titolo e lascia riprodurre il suo trailer."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa có số đo trailer nào — mở một tựa đề và để trailer của nó phát."
+          }
+        }
+      }
+    },
     "None of your addons provide streams for this title.": {},
     "Not available": {
       "localizations": {
@@ -15946,6 +16149,40 @@
         }
       }
     },
+    "Open the title whose trailer looks zoomed, let it play 10 seconds, come back and photograph this pane.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Öffne den Titel, dessen Trailer gezoomt aussieht, lass ihn 10 Sekunden laufen, komm zurück und fotografiere diesen Bereich."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el título cuyo tráiler se ve con zoom, déjalo reproducir 10 segundos, vuelve y fotografía este panel."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvre le titre dont la bande-annonce semble zoomée, laisse-la jouer 10 secondes, reviens et prends cet écran en photo."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apri il titolo il cui trailer sembra ingrandito, lascialo riprodurre per 10 secondi, torna e fotografa questo pannello."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mở tựa đề có trailer trông như bị phóng to, để nó phát 10 giây, quay lại và chụp ảnh bảng này."
+          }
+        }
+      }
+    },
     "Or continue another way": {
       "localizations": {
         "de": {
@@ -18093,6 +18330,40 @@
         }
       }
     },
+    "Relaunch, wait 90 seconds without touching the remote, then photograph this pane.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neu starten, 90 Sekunden lang die Fernbedienung nicht berühren, dann dieses Fenster fotografieren."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reinicia, espera 90 segundos sin tocar el mando y luego fotografía esta pantalla."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relancez, attendez 90 secondes sans toucher la télécommande, puis photographiez cet écran."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riavvia, attendi 90 secondi senza toccare il telecomando, poi fotografa questa schermata."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khởi động lại, đợi 90 giây mà không chạm vào remote, sau đó chụp ảnh màn hình này."
+          }
+        }
+      }
+    },
     "Release date": {
       "localizations": {
         "de": {
@@ -18701,6 +18972,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đặt lại mặc định"
+          }
+        }
+      }
+    },
+    "Reset trailer zoom cache": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer-Zoom-Cache zurücksetzen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restablecer caché de zoom de tráiler"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réinitialiser le cache de zoom des bandes-annonces"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reimposta cache dello zoom del trailer"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt lại bộ nhớ đệm thu phóng trailer"
           }
         }
       }
@@ -24633,6 +24938,40 @@
         }
       }
     },
+    "Trailer Diagnostics": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer-Diagnose"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnóstico de tráiler"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic de bande-annonce"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostica trailer"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chẩn đoán trailer"
+          }
+        }
+      }
+    },
     "Trailer Duration": {
       "localizations": {
         "de": {
@@ -24833,6 +25172,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trailer đang bật tiếng — nhấn phát/tạm dừng để tắt tiếng"
+          }
+        }
+      }
+    },
+    "Trailer zoom cache": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trailer-Zoom-Cache"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caché de zoom de tráiler"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache de zoom des bandes-annonces"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache dello zoom del trailer"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bộ nhớ đệm thu phóng trailer"
           }
         }
       }
@@ -25147,6 +25520,40 @@
     "Turn on before walking Home down and back up, or running Detail push/pop cycles": {},
     "Turn on if asked to capture a hero artwork report, then relaunch the app": {},
     "Turn on if asked to capture why a title finds no streams": {},
+    "Turn on if asked to capture why a trailer looks zoomed or letterboxed": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aktivieren, wenn du gebeten wirst zu erfassen, warum ein Trailer gezoomt oder mit Letterbox aussieht"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actívalo si te piden capturar por qué un tráiler se ve con zoom o con bandas negras"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active si on te demande de relever pourquoi une bande-annonce semble zoomée ou avec des bandes noires"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva se ti viene chiesto di rilevare perché un trailer sembra ingrandito o con bande nere"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật nếu được yêu cầu ghi lại lý do trailer trông bị phóng to hoặc có viền đen"
+          }
+        }
+      }
+    },
     "Two-letter ISO 3166-1 country code.": {
       "localizations": {
         "de": {

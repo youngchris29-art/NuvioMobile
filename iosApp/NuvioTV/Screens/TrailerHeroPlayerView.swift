@@ -43,6 +43,12 @@ final class TrailerPlayerUIView: UIView {
     /// through `setCropZoom(_:animated:)`.
     private var cropZoom: CGFloat = 1
 
+    /// BUG-92 concentricity check (Wave F item C): what the last `layer` probe line reported, so
+    /// `logLayerIfNeeded()` only logs when the zoom or the bounds actually changed instead of on
+    /// every layout pass (this view's `layoutSubviews` fires far more often than the crop does).
+    private var lastLoggedZoom: CGFloat?
+    private var lastLoggedBoundsSize: CGSize?
+
     /// Phase 0 (BUG-46): ground truth for the live-pipeline leak probe, independent of the
     /// `Coordinator.attach`/`teardown()` bookkeeping — a `liveViews` count that climbs while
     /// browsing proves the leak even if some future attach/teardown accounting drifts.
@@ -74,6 +80,7 @@ final class TrailerPlayerUIView: UIView {
         playerLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
         playerLayer.setAffineTransform(CGAffineTransform(scaleX: cropZoom, y: cropZoom))
         CATransaction.commit()
+        logLayerIfNeeded()
     }
 
     /// The one write path for the crop zoom (probe interim/final/persisted). Render-only: bounds
@@ -86,6 +93,25 @@ final class TrailerPlayerUIView: UIView {
         if animated { CATransaction.setAnimationDuration(0.25) }
         playerLayer.setAffineTransform(CGAffineTransform(scaleX: zoom, y: zoom))
         CATransaction.commit()
+        // A zoom change alone doesn't always invalidate layout (bounds/position are unchanged),
+        // so nudge one so `logLayerIfNeeded()` (in `layoutSubviews`) actually runs and the BUG-92
+        // concentricity check gets a fresh `dx=`/`dy=` reading close to when the crop changed.
+        setNeedsLayout()
+    }
+
+    /// BUG-92 concentricity check: `dx`/`dy` are the player layer's centre offset from this view's
+    /// own centre. `layoutSubviews` always re-centres the layer by construction (see above), so a
+    /// non-zero reading here means something OTHER than this transform is pushing the video off
+    /// centre — expected `dx=0.00 dy=0.00` on every sample.
+    private func logLayerIfNeeded() {
+        guard lastLoggedZoom != cropZoom || lastLoggedBoundsSize != bounds.size else { return }
+        lastLoggedZoom = cropZoom
+        lastLoggedBoundsSize = bounds.size
+        let frame = playerLayer.frame
+        let dx = frame.midX - bounds.midX
+        let dy = frame.midY - bounds.midY
+        TrailerZoomProbe.log(String(format: "layer bounds=%.0fx%.0f zoom=%.3f dx=%.2f dy=%.2f",
+                                     bounds.width, bounds.height, cropZoom, dx, dy))
     }
 
     deinit {
@@ -122,6 +148,14 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     /// learned on every relaunch. `nil` falls back to the URL (unit tests / callers without a
     /// title).
     var zoomKey: String? = nil
+    /// BUG-81: the YouTube video id this surface's stream was extracted from
+    /// (`TrailerPlaybackSource.videoId`), when the caller still holds it. It is the only identifier
+    /// of "which trailer is this" that survives a re-extraction, so the letterbox probe keys its
+    /// persisted-zoom VERIFY comparison on it. `nil` is fine and common — the probe then looks the
+    /// URL up in `TrailerVideoIdRegistry` (which the resolver populates for every surface,
+    /// including the ones that replay a memoized URL with no source in scope) and falls back to the
+    /// URL-derived identity from there.
+    var videoId: String? = nil
     /// `true` (the default, and what the Detail hero uses) keeps the endless `AVPlayerLooper` this
     /// view was written for. `false` plays the item exactly once and reports the end through
     /// `onPlaybackEnded` — the inline catalog card uses that to collapse itself back to a poster
@@ -158,7 +192,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         // clips.
         view.clipsToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
-        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey)
+        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId)
         return view
     }
 
@@ -210,7 +244,8 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             self.onPlaybackEnded = onPlaybackEnded
         }
 
-        func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true, zoomKey: String? = nil) {
+        func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true, zoomKey: String? = nil,
+                    videoId: String? = nil) {
             attachedURLString = urlString
             attachedView = view
             guard let url = URL(string: urlString) else { fail(.badURL); return }
@@ -286,7 +321,12 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             // the same reason the presentationSize probe below is — and the probe reads
             // `player.currentItem` on every sample rather than capturing `item`, so the `loops`
             // path measures the copies `AVPlayerLooper` actually plays.
-            letterboxProbe = TrailerLetterboxProbe(view: view, player: queue, urlString: urlString, zoomKey: zoomKey, surface: "hero")
+            //
+            // Trailer Diagnostics surface naming: `loops == true` is the Detail hero's endless
+            // background loop (`hero`); `loops == false` is the catalog inline preview tile
+            // (`inline`, `InlineTrailerCard`'s only caller) — the two share this one representable,
+            // so the surface name has to come from which mode the caller asked for.
+            letterboxProbe = TrailerLetterboxProbe(view: view, player: queue, urlString: urlString, zoomKey: zoomKey, videoId: videoId, surface: loops ? "hero" : "inline")
             letterboxProbe?.start()
 
             #if DEBUG
@@ -405,6 +445,8 @@ struct FullScreenTrailerPlayer: View {
     var onPlaybackEnded: () -> Void = {}
     /// BUG-59: see `TrailerHeroPlayer.zoomKey`.
     var zoomKey: String? = nil
+    /// BUG-81: see `TrailerHeroPlayer.videoId`.
+    var videoId: String? = nil
 
     /// Stable across body re-evals (@State keeps the instance); bridges the play/pause command
     /// to the representable's player without making the surface observable.
@@ -414,7 +456,7 @@ struct FullScreenTrailerPlayer: View {
         // UX-9: no `.scaleEffect` any more — the zoom is measured per stream and applied to the
         // player layer itself (`TrailerLetterboxProbe`), with `parityZoom` as its floor, so this
         // surface still renders exactly as before for a bar-free 16:9 source.
-        FullScreenTrailerSurface(urlString: urlString, zoomKey: zoomKey, control: control, onPlaybackEnded: onPlaybackEnded)
+        FullScreenTrailerSurface(urlString: urlString, zoomKey: zoomKey, videoId: videoId, control: control, onPlaybackEnded: onPlaybackEnded)
             .ignoresSafeArea()
             .onPlayPauseCommand { control.togglePause() }
     }
@@ -437,6 +479,7 @@ final class FullScreenTrailerControl {
 private struct FullScreenTrailerSurface: UIViewRepresentable {
     let urlString: String
     let zoomKey: String?
+    let videoId: String?
     let control: FullScreenTrailerControl
     let onPlaybackEnded: () -> Void
 
@@ -455,7 +498,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             view.playerLayer.player = player
             control.player = player
             context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
-            context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey)
+            context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId)
             // Phase 0 (BUG-46): full-screen plays share `TrailerPipelineCounters` with the
             // inline/hero surfaces (`TrailerHeroPlayer.Coordinator`) so a full-screen "Watch
             // Trailer" doesn't misread as a leak in the inline/hero attach/teardown numbers.
@@ -497,8 +540,9 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         /// UX-9: same probe the inline/hero surfaces use, so all three get their zoom from one
         /// implementation (and share its per-URL session cache — a title watched full-screen right
         /// after its inline preview starts already measured).
-        func startLetterboxProbe(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String?) {
-            letterboxProbe = TrailerLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, surface: "full")
+        func startLetterboxProbe(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String?,
+                                 videoId: String?) {
+            letterboxProbe = TrailerLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId, surface: "full")
             letterboxProbe?.start()
         }
 
@@ -542,6 +586,13 @@ final class TrailerZoomCache: @unchecked Sendable {
         let zoom: CGFloat
         let token: String?
         let at: TimeInterval
+        /// C1 (2026-08-30) VERIFY-mode miss counter — BUG-81 item 2. `nil` for every entry written
+        /// before this field existed (blob `version` stays 2; a missing key just decodes to `nil`,
+        /// same as any other optional `Codable` property) and for a fresh cold-path `store()`, which
+        /// has no verify history yet. Only the VERIFY path (`finish()`'s `insufficient` guard) ever
+        /// increments it, and only `verify-confirmed`/`verify-corrected` ever reset it to 0 — a
+        /// stream that keeps re-verifying cleanly never accumulates misses just from being watched.
+        var verifyMisses: Int?
     }
     private struct Blob: Codable {
         let version: Int
@@ -588,10 +639,13 @@ final class TrailerZoomCache: @unchecked Sendable {
     /// Kept for callers that only have a URL (and as the shape the pre-BUG-59 probe used).
     func zoom(for key: String) -> CGFloat? { entry(for: key)?.zoom }
 
-    func store(_ zoom: CGFloat, for key: String, token: String) {
+    /// `verifyMisses` defaults to `nil` (a fresh cold-path measurement — no verify history yet);
+    /// the VERIFY paths (`finish()`'s `verify-confirmed`/`verify-corrected` branches) pass `0`
+    /// explicitly to reset a stream's miss count the moment it re-verifies cleanly.
+    func store(_ zoom: CGFloat, for key: String, token: String, verifyMisses: Int? = nil) {
         lock.lock(); defer { lock.unlock() }
         loadIfNeeded()
-        values[key] = Entry(zoom: Self.sanitized(zoom), token: token, at: Date().timeIntervalSince1970)
+        values[key] = Entry(zoom: Self.sanitized(zoom), token: token, at: Date().timeIntervalSince1970, verifyMisses: verifyMisses)
         if values.count > Self.capacity {
             let overflow = values.count - Self.capacity
             for (key, _) in values.sorted(by: { $0.value.at < $1.value.at }).prefix(overflow) {
@@ -608,6 +662,39 @@ final class TrailerZoomCache: @unchecked Sendable {
         values.removeAll()
         loaded = true
         defaults.removeObject(forKey: Self.storageKey)
+    }
+
+    /// BUG-81 item 1: evicts one entry outright — the VERIFY path's `final-clamped` escape used to
+    /// leave a bad cached crop untouched for up to `maxAge` (30 days); this is what lets it demand
+    /// a fresh cold measurement on the next play instead. A no-op (still persists nothing) when the
+    /// key isn't cached.
+    func remove(for key: String) {
+        lock.lock(); defer { lock.unlock() }
+        loadIfNeeded()
+        guard values[key] != nil else { return }
+        values[key] = nil
+        persist()
+    }
+
+    /// BUG-81 item 2: the VERIFY path's `insufficient` outcome (too few/too-close samples to
+    /// re-verify the cached crop) — three of these in a row on the same entry is a stream that
+    /// simply can't re-verify, so it's evicted the same way `remove(for:)` evicts a clamped one.
+    /// Returns the miss count AFTER this call (post-eviction, when it fires, so the log line still
+    /// reads the count that triggered it). `0` when the key isn't cached — nothing to note a miss
+    /// against.
+    @discardableResult
+    func noteVerifyMiss(for key: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        loadIfNeeded()
+        guard let existing = values[key] else { return 0 }
+        let misses = (existing.verifyMisses ?? 0) + 1
+        if misses >= 3 {
+            values[key] = nil
+        } else {
+            values[key] = Entry(zoom: existing.zoom, token: existing.token, at: existing.at, verifyMisses: misses)
+        }
+        persist()
+        return misses
     }
 
     var count: Int {
@@ -631,24 +718,25 @@ final class TrailerZoomCache: @unchecked Sendable {
             defaults.removeObject(forKey: Self.legacyStorageKey)
         }
         guard let data = defaults.data(forKey: Self.storageKey) else {
-            if TrailerProbe.enabled { NSLog("[TrailerZoom] store loaded n=0 version=%d (empty)", Self.version) }
+            TrailerZoomProbe.log("store loaded n=0 version=\(Self.version) (empty)")
             return
         }
         guard let blob = try? JSONDecoder().decode(Blob.self, from: data), blob.version == Self.version else {
             // Unknown/older shape: never trust it (see the type doc), start clean.
             defaults.removeObject(forKey: Self.storageKey)
-            if TrailerProbe.enabled { NSLog("[TrailerZoom] store loaded n=0 version=%d (dropped stale blob)", Self.version) }
+            TrailerZoomProbe.log("store loaded n=0 version=\(Self.version) (dropped stale blob)")
             return
         }
         let cutoff = Date().timeIntervalSince1970 - Self.maxAge
         var kept: [String: Entry] = [:]
         for (key, entry) in blob.entries where entry.at >= cutoff && entry.zoom.isFinite {
-            kept[key] = Entry(zoom: Self.sanitized(entry.zoom), token: entry.token, at: entry.at)
+            // `verifyMisses` carried over unchanged — this loop only sanitizes/expires the zoom
+            // and drops stale rows, it must not silently reset a stream's miss count on every
+            // cold load.
+            kept[key] = Entry(zoom: Self.sanitized(entry.zoom), token: entry.token, at: entry.at, verifyMisses: entry.verifyMisses)
         }
         values = kept
-        if TrailerProbe.enabled {
-            NSLog("[TrailerZoom] store loaded n=%d version=%d (dropped %d expired)", kept.count, Self.version, blob.entries.count - kept.count)
-        }
+        TrailerZoomProbe.log("store loaded n=\(kept.count) version=\(Self.version) (dropped \(blob.entries.count - kept.count) expired)")
     }
 
     private func persist() {
@@ -759,9 +847,10 @@ final class TrailerLetterboxProbe {
     /// BUG-59: what the measurement is remembered under (the title key, else the URL).
     private let zoomKey: String
     /// Stream identity stored with the measurement so a persisted entry knows whether it was
-    /// measured on THIS stream: the `TrailerLocalHLS` repack token for loopback URLs, else a
-    /// stable digest of a direct URL (`streamIdentity(of:)`). Never nil, so two different direct
-    /// streams of one title (hero trailer vs a Trailers & Extras pick) can't read as "a match".
+    /// measured on THIS stream: the YouTube video id when one is known (BUG-81), else the
+    /// `TrailerLocalHLS` repack token for loopback URLs, else a stable digest of a direct URL
+    /// (`streamIdentity(of:videoId:)`). Never nil, so two different direct streams of one title
+    /// (hero trailer vs a Trailers & Extras pick) can't read as "a match".
     private let token: String
     /// `hero` (inline card + Detail hero) or `full` — log disambiguation only.
     private let surface: String
@@ -803,28 +892,77 @@ final class TrailerLetterboxProbe {
     /// comparison baseline. Set once, alongside `verifyMode = true`, never touched by sampling.
     private var verifyAppliedZoom: CGFloat?
 
-    init(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String? = nil, surface: String) {
+    init(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String? = nil,
+         videoId: String? = nil, surface: String) {
         self.view = view
         self.player = player
         self.urlString = urlString
         self.zoomKey = zoomKey ?? urlString
-        self.token = Self.streamIdentity(of: urlString)
+        self.token = Self.streamIdentity(of: urlString, videoId: videoId)
         self.surface = surface
     }
 
-    /// Repack token for a loopback URL; for a direct progressive/HLS URL, `host/path` plus the
-    /// `id` and `itag` query items when present (stable across googlevideo's rotating `expire`/
-    /// signature params, distinct across videos and renditions), else the whole URL.
-    static func streamIdentity(of urlString: String) -> String {
-        if let token = TrailerLocalHLS.token(inPlaybackURL: urlString) { return "repack:\(token)" }
-        guard let comps = URLComponents(string: urlString) else { return "url:\(urlString)" }
-        let stable = (comps.queryItems ?? [])
-            .filter { $0.name == "id" || $0.name == "itag" }
-            .sorted { $0.name < $1.name }
-            .map { "\($0.name)=\($0.value ?? "")" }
-            .joined(separator: "&")
-        let base = "\(comps.host ?? "")\(comps.path)"
-        return stable.isEmpty ? "url:\(urlString)" : "direct:\(base)?\(stable)"
+    /// Content identity for a loopback repack URL when the local server still knows it; else its
+    /// raw repack token. For a direct progressive/HLS URL, the `id` query item alone, else the
+    /// whole URL.
+    ///
+    /// BUG-81 item 3 (Wave F design correction ii): this used to key a direct URL on
+    /// `host+path+id+itag`, and googlevideo rotates the CDN HOST per extraction (see
+    /// `TrailerLocalHLS.stableIdentity(_:)`'s own doc comment — the repack token already learned
+    /// this lesson and drops the host) — so on a device that plays direct URLs (no loopback repack
+    /// in the path), every single play read as a brand-new stream identity, the VERIFY branch in
+    /// `start()` could never trigger (token never matched), and every play cold-re-measured at the
+    /// `parityZoom` floor. `itag` is dropped too: it names a format-ladder rung the extractor can
+    /// legitimately pick differently between requests for the exact same video, and the crop a
+    /// given video needs doesn't depend on which rung serves it.
+    ///
+    /// BUG-81 investigation follow-up: the fix above never reached the REPACK path, which is what
+    /// most YouTube trailers actually use. `TrailerLocalHLS`'s own `token(video:audio:)` hash is
+    /// itag-sensitive by design (it exists to dedupe/evict playlists, not to describe a picture),
+    /// so the extractor legitimately choosing a different AVC rung on every extraction meant every
+    /// relaunch read `token=mismatch` in the `persisted-hit` log, VERIFY mode never armed, and a
+    /// persisted zoom was never confirmed or corrected — a plausible mechanism for zoom that looks
+    /// "stuck" across sessions. `TrailerLocalHLS.contentIdentity(forToken:)` strips the itag (and
+    /// the byte-range/expiry plumbing) the same way this function already strips it for direct
+    /// URLs; when the local server can't resolve the token (evicted, or a different process/run
+    /// than the one that minted it) this falls back to the literal token, same as before.
+    /// BUG-81 round three, the actual fix: prefer the YOUTUBE VIDEO ID over anything derived from
+    /// the playback URL. The sim soak that closed out round two (2026-09-04, one video pinned with
+    /// `-debug.trailerSmokeVideoId`, extracted three times) showed the googlevideo `id=` query item
+    /// both branches below key on is a per-request token minted by the CDN — three extractions of
+    /// ONE video produced `o-AJbEeBZ…`, `o-AMk-fCj…`, `o-APyRTSG…`, sharing not even a prefix. So
+    /// `direct:id=` and `repack:<contentIdentity>` alike still read as a brand-new stream on every
+    /// play, `persisted-hit … token=mismatch` fired on every relaunch, VERIFY mode never armed, and
+    /// a persisted zoom was never confirmed OR corrected — which is the "zoom stuck across
+    /// sessions" shape the tester reports.
+    ///
+    /// The video id has none of that: the shared Kotlin extractor parses it out of the trailer's
+    /// own YouTube URL before it makes a single request (`TrailerPlaybackSource.videoId`, logged as
+    /// `[TrailerExtract] video=…`), so it is identical on every extraction, on both transports, and
+    /// across launches and app versions. `videoId` is the caller's own copy when a surface still
+    /// holds the source; `TrailerVideoIdRegistry` covers the surfaces that replay a memoized URL.
+    ///
+    /// The URL-derived branches stay as the fallback for a stream with no video id: a non-YouTube
+    /// source, or a registry entry evicted mid-session.
+    static func streamIdentity(of urlString: String, videoId: String? = nil) -> String {
+        // An empty string is not an id — normalize it away before the registry fallback, or a
+        // caller that passed `""` would skip the registry AND the `yt:` branch both.
+        let explicit = (videoId?.isEmpty == false) ? videoId : nil
+        if let id = explicit ?? TrailerVideoIdRegistry.videoId(forPlaybackURL: urlString) {
+            return "yt:\(id)"
+        }
+        if let token = TrailerLocalHLS.token(inPlaybackURL: urlString) {
+            if let identity = TrailerLocalHLS.contentIdentity(forToken: token) {
+                return "repack:\(identity)"
+            }
+            return "repack:\(token)"
+        }
+        guard let comps = URLComponents(string: urlString),
+              let id = (comps.queryItems ?? []).first(where: { $0.name == "id" })?.value,
+              !id.isEmpty else {
+            return "url:\(urlString)"
+        }
+        return "direct:id=\(id)"
     }
 
     /// Applies the starting zoom and decides whether to measure. Main-thread only.
@@ -837,13 +975,15 @@ final class TrailerLetterboxProbe {
     ///   floor, concealed, re-measure from scratch. The old crop is not this stream's crop.
     /// * Nothing → parity floor, measure.
     func start() {
+        logAttach()
         if let cached = TrailerZoomCache.shared.entry(for: zoomKey) {
             // A blob entry with no token (never written by this build, but decodable) never matches.
             let tokenMatches = cached.token == token
-            if TrailerProbe.enabled {
-                NSLog("[TrailerZoom] persisted-hit key=%@ zoom=%.3f token=%@ surface=%@ cardFrame=%@",
-                      zoomKey, cached.zoom, tokenMatches ? "match" : "mismatch", surface, cardFrameDescription())
-            }
+            TrailerZoomProbe.log(String(
+                format: "persisted-hit key=%@ zoom=%.3f token=%@ cached=%@ this=%@ surface=%@ cardFrame=%@",
+                zoomKey, cached.zoom, tokenMatches ? "match" : "mismatch",
+                Self.logToken(cached.token ?? "-"), Self.logToken(token), surface, cardFrameDescription()
+            ))
             if tokenMatches {
                 // Only a token MATCH may show the cached crop un-concealed: this exact stream is
                 // what measured it, so it's known-good.
@@ -890,6 +1030,54 @@ final class TrailerLetterboxProbe {
         armSamplingTimer()
     }
 
+    /// BUG-81 item 4/Trailer Diagnostics: one line per attach, before anything else runs, so a
+    /// device photo has the full context (which surface, which title, the metadata language a
+    /// French tester's device carries, and which identity branch `streamIdentity(of:)` produced)
+    /// even if the probe never reaches a verdict.
+    private func logAttach() {
+        let (src, tok) = Self.sourceAndTokenPrefix(token)
+        let lang = TmdbSettingsRepository.shared.snapshot().language
+        TrailerZoomProbe.log(String(format: "attach surface=%@ clip=%@ lang=%@ src=%@ tok=%@", surface, zoomKey, lang, src, tok))
+    }
+
+    /// `src`/`tok` for the `attach` log line — `token` is one of `yt:<videoId>`, `repack:<hex>`,
+    /// `direct:id=<id>`, or `url:<full url>` (`streamIdentity(of:videoId:)`); this reads the source
+    /// kind off the prefix. `yt:` says the identity is the stable YouTube video id and reports the
+    /// prefix in `tok` too, since that is the one distinction worth reading at a glance. `url:` (no
+    /// `id` query item present) reads as `direct` — still a non-repack stream, just one
+    /// `streamIdentity` couldn't shorten.
+    private static func sourceAndTokenPrefix(_ identity: String) -> (src: String, tok: String) {
+        if identity.hasPrefix("yt:") {
+            return ("yt", logToken(identity))
+        }
+        if identity.hasPrefix("repack:") {
+            return ("repack", tokenPrefix(String(identity.dropFirst("repack:".count))))
+        }
+        if identity.hasPrefix("direct:") {
+            return ("direct", tokenPrefix(String(identity.dropFirst("direct:".count))))
+        }
+        if identity.hasPrefix("url:") {
+            return ("direct", tokenPrefix(String(identity.dropFirst("url:".count))))
+        }
+        return ("direct", tokenPrefix(identity))
+    }
+
+    /// Short form of a stream identity for the `attach` and `persisted-hit` lines. A video-id
+    /// identity KEEPS its `yt:` prefix (BUG-81 round three): a log reader has to be able to tell at
+    /// a glance whether a `token=mismatch` was compared on the stable video id or on one of the
+    /// URL-derived fallbacks, and the two answers mean very different things.
+    private static func logToken(_ identity: String) -> String {
+        if identity.hasPrefix("yt:") {
+            return "yt:\(tokenPrefix(String(identity.dropFirst("yt:".count))))"
+        }
+        for prefix in ["repack:", "direct:", "url:"] where identity.hasPrefix(prefix) {
+            return tokenPrefix(String(identity.dropFirst(prefix.count)))
+        }
+        return tokenPrefix(identity)
+    }
+
+    private static func tokenPrefix(_ value: String) -> String { String(value.prefix(8)) }
+
     /// Starts the 0.25s-tick sampling timer. Shared by the cold (no/mismatched entry) and VERIFY
     /// (C1, token-match) paths — sampling and `tick()` behave identically either way; only what
     /// `applyInterim()`/`finish()` do with the result differs (`verifyMode` gates both).
@@ -908,11 +1096,13 @@ final class TrailerLetterboxProbe {
         // many-pipeline-lines-zero-zoom-lines exactly. `timer != nil` keeps cache-hit surfaces
         // (probe never armed) quiet; `finished` is already true when `finish()` reaches here,
         // so a completed measurement never double-logs.
-        if timer != nil, !finished, TrailerProbe.enabled {
+        if timer != nil, !finished {
             finished = true
-            NSLog("[TrailerZoom] abandoned samples=%d ticks=%d interimApplied=%d revealed=%d verify=%d surface=%@ key=%@ — %@ kept, not cached",
-                  samples.count, ticks, interimZoom == nil ? 0 : 1, revealed ? 1 : 0, verifyMode ? 1 : 0,
-                  surface, zoomKey, keptDescription())
+            TrailerZoomProbe.log(String(
+                format: "abandoned samples=%d ticks=%d interimApplied=%d revealed=%d verify=%d surface=%@ key=%@ — %@ kept, not cached",
+                samples.count, ticks, interimZoom == nil ? 0 : 1, revealed ? 1 : 0, verifyMode ? 1 : 0,
+                surface, zoomKey, keptDescription()
+            ))
         }
         timer?.invalidate()
         timer = nil
@@ -997,11 +1187,9 @@ final class TrailerLetterboxProbe {
         interimMeasured = true
         interimZoom = zoom
         apply(zoom, animated: true)
-        if TrailerProbe.enabled {
-            let span = (sampleTimes.last ?? 0) - (sampleTimes.first ?? 0)
-            NSLog("[TrailerZoom] interim samples=%d span=%.2fs applied=%.3f surface=%@ key=%@",
-                  samples.count, span, zoom, surface, zoomKey)
-        }
+        let span = (sampleTimes.last ?? 0) - (sampleTimes.first ?? 0)
+        TrailerZoomProbe.log(String(format: "interim samples=%d span=%.2fs applied=%.3f surface=%@ key=%@",
+                                     samples.count, span, zoom, surface, zoomKey))
         // Reveal gate: the crop is decided (for now) — this is the earliest a cold surface may
         // appear, and it appears already zoomed. Logged after the interim line so the soak's
         // ordering oracle (`reveal` never precedes a measurement on the cold path) reads cleanly.
@@ -1113,11 +1301,21 @@ final class TrailerLetterboxProbe {
             // to tell whether the measurement never ran or kept failing. A letterboxed source
             // whose measurement can't complete stays at the 1.08 floor (the reporter's Lucky
             // case), so the WHY has to be readable off a log pull.
-            if TrailerProbe.enabled {
-                NSLog("[TrailerZoom] insufficient samples=%d span=%.2fs frame=%dx%d ticks=%d interimApplied=%d verify=%d surface=%@ key=%@ — %@ kept, not cached",
-                      collected.count, span, Int(size.width), Int(size.height), ticks,
-                      interimZoom == nil ? 0 : 1, verifyMode ? 1 : 0, surface, zoomKey, keptDescription())
+            //
+            // BUG-81 item 2: in VERIFY mode this IS a failed re-verify — note the miss (evicts at
+            // 3 in a row, so a stream that structurally can never re-verify — always too short, or
+            // stalls before the span floor — doesn't hold a possibly-bad crop for the full 30-day
+            // cache lifetime). Cold-path misses aren't counted: there's no cache entry yet to note
+            // one against.
+            var verifyMisses = 0
+            if verifyMode {
+                verifyMisses = TrailerZoomCache.shared.noteVerifyMiss(for: zoomKey)
             }
+            TrailerZoomProbe.log(String(
+                format: "insufficient samples=%d span=%.2fs frame=%dx%d ticks=%d interimApplied=%d verify=%d verifyMisses=%d surface=%@ key=%@ — %@ kept, not cached",
+                collected.count, span, Int(size.width), Int(size.height), ticks,
+                interimZoom == nil ? 0 : 1, verifyMode ? 1 : 0, verifyMisses, surface, zoomKey, keptDescription()
+            ))
             // Reveal gate: normally long since revealed (the 3 s cap fires at tick 12, this bail
             // at tick 48) — belt-and-braces so no path can end a live playback still concealed.
             // No-op in verify mode (already revealed at `start()`; nothing to compare, so the
@@ -1143,11 +1341,20 @@ final class TrailerLetterboxProbe {
         // mode it means leaving the cached entry completely alone, including its timestamp, so an
         // entry this stream genuinely can't re-verify neither gets stomped by a bogus reading nor
         // silently ages out early.
+        //
+        // BUG-81 item 1: a clamped FINAL in verify mode means this play could not re-verify the
+        // cached crop at all (the fresh measurement is unusable, not just different) — evict the
+        // entry instead of leaving a possibly-bad crop cached for up to 30 more days. This play's
+        // on-screen crop (the cached one, applied un-concealed back in `start()`) is untouched;
+        // the NEXT play of this title starts cold and measures from scratch.
         guard CGFloat(measured) < Self.maxZoom else {
-            if TrailerProbe.enabled {
-                NSLog("[TrailerZoom] final-clamped key=%@ measured=%.3f verify=%d surface=%@",
-                      zoomKey, measured, verifyMode ? 1 : 0, surface)
+            var evicted = 0
+            if verifyMode {
+                TrailerZoomCache.shared.remove(for: zoomKey)
+                evicted = 1
             }
+            TrailerZoomProbe.log(String(format: "final-clamped key=%@ measured=%.3f verify=%d evicted=%d surface=%@",
+                                         zoomKey, measured, verifyMode ? 1 : 0, evicted, surface))
             reveal(reason: "clamped")
             return
         }
@@ -1159,20 +1366,18 @@ final class TrailerLetterboxProbe {
             // correctly read as "nothing to correct."
             let appliedZoom = verifyAppliedZoom ?? zoom
             if abs(zoom - appliedZoom) > 0.02 {
-                TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token)
+                // `verifyMisses: 0` — a stream that just re-verified (however the comparison came
+                // out) starts its miss count clean; misses only ever come from `insufficient`.
+                TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token, verifyMisses: 0)
                 apply(zoom, animated: true)
-                if TrailerProbe.enabled {
-                    NSLog("[TrailerZoom] verify-corrected key=%@ old=%.3f new=%.3f surface=%@",
-                          zoomKey, appliedZoom, zoom, surface)
-                }
+                TrailerZoomProbe.log(String(format: "verify-corrected key=%@ old=%.3f new=%.3f surface=%@",
+                                             zoomKey, appliedZoom, zoom, surface))
             } else {
                 // Confirmed good: re-store the SAME zoom purely to refresh `Entry.at`, so a title
                 // that's still being watched correctly never ages out of the 30-day cache just
                 // because its crop hasn't needed to change. Nothing on screen moves.
-                TrailerZoomCache.shared.store(appliedZoom, for: zoomKey, token: token)
-                if TrailerProbe.enabled {
-                    NSLog("[TrailerZoom] verify-confirmed key=%@ zoom=%.3f surface=%@", zoomKey, appliedZoom, surface)
-                }
+                TrailerZoomCache.shared.store(appliedZoom, for: zoomKey, token: token, verifyMisses: 0)
+                TrailerZoomProbe.log(String(format: "verify-confirmed key=%@ zoom=%.3f surface=%@", zoomKey, appliedZoom, surface))
             }
             reveal(reason: "final") // No-op: verify mode is revealed from `start()` onward.
             return
@@ -1187,11 +1392,11 @@ final class TrailerLetterboxProbe {
         apply(zoom, animated: true)
         reveal(reason: "final")
 
-        if TrailerProbe.enabled {
-            NSLog("[TrailerZoom] final frame=%dx%d bars top=%.3f bottom=%.3f left=%.3f right=%.3f samples=%d span=%.2fs measured=%.3f applied=%.3f persisted=1 surface=%@ key=%@ cardFrame=%@",
-                  Int(size.width), Int(size.height), bars.top, bars.bottom, bars.left, bars.right, collected.count,
-                  span, measured, zoom, surface, zoomKey, cardFrameDescription())
-        }
+        TrailerZoomProbe.log(String(
+            format: "final frame=%dx%d bars top=%.3f bottom=%.3f left=%.3f right=%.3f samples=%d span=%.2fs measured=%.3f applied=%.3f persisted=1 surface=%@ key=%@ cardFrame=%@",
+            Int(size.width), Int(size.height), bars.top, bars.bottom, bars.left, bars.right, collected.count,
+            span, measured, zoom, surface, zoomKey, cardFrameDescription()
+        ))
     }
 
     // MARK: Applying
@@ -1223,9 +1428,7 @@ final class TrailerLetterboxProbe {
     private func reveal(reason: String) {
         guard !revealed else { return }
         revealed = true
-        if TrailerProbe.enabled {
-            NSLog("[TrailerZoom] reveal reason=%@ ticks=%d frameTicks=%d surface=%@ key=%@", reason, ticks, frameTicks, surface, zoomKey)
-        }
+        TrailerZoomProbe.log(String(format: "reveal reason=%@ ticks=%d frameTicks=%d surface=%@ key=%@", reason, ticks, frameTicks, surface, zoomKey))
         guard let view else { return }
         UIView.animate(withDuration: 0.25) { view.alpha = 1 }
     }

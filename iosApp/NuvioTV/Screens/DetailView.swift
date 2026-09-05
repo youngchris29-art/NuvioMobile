@@ -1,4 +1,5 @@
 import Combine
+import QuartzCore
 import SwiftUI
 import SharedCore
 
@@ -18,6 +19,18 @@ private final class ScrollDimModel: ObservableObject {
 /// (the `[BUG41]` probe below is there for exactly that).
 private struct ScrollDimOverlay: View {
     @ObservedObject var model: ScrollDimModel
+    /// BUG-41: whether the live `AVPlayerLayer` hero trailer is currently mounted underneath this
+    /// overlay (`DetailView.trailerLayerVisible`). While it is, the trailer itself is already
+    /// re-rendering every frame, so `.animation`'s Core-Animation-server interpolation between the
+    /// 0.05 dim steps is pure extra resampling work over a surface that's changing anyway — skip it
+    /// and step flat. Once the trailer is gone (scrolled past, or never resolved for this title),
+    /// the dim is the only thing moving on screen again, so the smoothing earns its keep back.
+    let trailerActive: Bool
+    /// BUG-41 diagnostic (item 6): whether the top-block chips are rendering flat material instead
+    /// of `.glassEffect` right now (`DetailScrollAB.glassDisabled` OR a live trailer, mirroring
+    /// `detailChipBackground`'s own condition) — folded into `debug_ux6` alongside `trailer=`/`ab=`
+    /// so a UI test can read all four BUG-41 A/B signals off one accessibility node.
+    let glassFlat: Bool
 
     var body: some View {
         ZStack {
@@ -26,13 +39,15 @@ private struct ScrollDimOverlay: View {
             // P-2c: `.animation` interpolates between the (now coarser, 0.05-step) quantized
             // values in Core Animation's render server rather than SwiftUI stepping the opacity
             // directly — see the quantization comment on `DetailView`'s `.onScrollGeometryChange`
-            // for the full 0.01→0.05 reasoning this pairs with.
+            // for the full 0.01→0.05 reasoning this pairs with. BUG-41: that smoothing is skipped
+            // (nil animation = a flat step) while a trailer is actively mounted — see `trailerActive`.
             Color.black.opacity(model.value).ignoresSafeArea().allowsHitTesting(false)
-                .animation(.linear(duration: 0.12), value: model.value)
+                .animation(trailerActive ? nil : .linear(duration: 0.12), value: model.value)
             #if DEBUG
-            // UX-6 diagnostic (invisible, harness-readable): the live darkening value, so the
-            // UITest can prove whether focus-driven scrolling feeds the overlay at all.
-            Text("debug_ux6 dark=\(Int(model.value * 1000))")
+            // UX-6/BUG-41 diagnostic (invisible, harness-readable): the live darkening value plus
+            // the three A/B signals a UITest needs to attribute choppiness — append-only, `dark=`
+            // stays first so pre-existing reads of this token keep working.
+            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_ux6")
@@ -52,13 +67,61 @@ private struct ScrollDimOverlay: View {
 /// (`log show`) is the only diagnostic that comes back from a device pass. A probe gated behind
 /// `#if DEBUG` never runs on the builds that actually reproduce BUG-41.
 enum DetailScrollProbe {
-    nonisolated static let enabled = UserDefaults.standard.bool(forKey: "debug.detailScrollProbe")
+    /// BUG-41: a LIVE read (not launch-latched) so the About > Trailer Diagnostics pane's toggle for
+    /// this key (F-C's picker) can flip probing on/off without a relaunch — matches
+    /// `DetailScrollAB.leg` below.
+    nonisolated static var enabled: Bool { UserDefaults.standard.bool(forKey: "debug.detailScrollProbe") }
 }
 
-/// `debug.detailScrollAB` (Int, read once at launch): a four-leg on-device A/B knob that settles
-/// BUG-41's attribution question — is the reported scroll choppiness the UX-6 dim overlay, the
-/// Liquid Glass chips in the top block, or both — that the simulator has never been able to answer
-/// (BUG-41 history: sim never reproduced the choppiness). One build, four device legs:
+/// BUG-41 item 6: a device-side hitch counter for one Detail visit, armed only while
+/// `DetailScrollProbe.enabled`. `CADisplayLink` fires on every vsync (~60 Hz on Apple TV); any gap
+/// over 25ms between consecutive ticks (roughly 1.5 frames) is counted as a hitch. Summarized once,
+/// on `DetailView`'s `.onDisappear`, rather than logged per-frame — an NSLog on every vsync would
+/// itself be exactly the kind of main-thread work this probe exists to detect.
+private final class HitchCounter: NSObject, ObservableObject {
+    private var displayLink: CADisplayLink?
+    private var lastTimestamp: CFTimeInterval?
+    private var hitchCount = 0
+    private var frameCount = 0
+    private var maxGapMs: Double = 0
+
+    func start() {
+        guard DetailScrollProbe.enabled, displayLink == nil else { return }
+        hitchCount = 0
+        frameCount = 0
+        maxGapMs = 0
+        lastTimestamp = nil
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    func stopAndLog() {
+        guard displayLink != nil else { return }
+        displayLink?.invalidate()
+        displayLink = nil
+        NSLog("[BUG41] hitches=%d frames=%d maxGap=%.1fms", hitchCount, frameCount, maxGapMs)
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        frameCount += 1
+        if let last = lastTimestamp {
+            let gapMs = (link.timestamp - last) * 1000
+            if gapMs > 25 { hitchCount += 1 }
+            if gapMs > maxGapMs { maxGapMs = gapMs }
+        }
+        lastTimestamp = link.timestamp
+    }
+
+    deinit { displayLink?.invalidate() }
+}
+
+/// `debug.detailScrollAB` (Int, LIVE read — not launch-latched, so About's picker, F-C's, can flip
+/// legs without a relaunch): a five-leg on-device A/B knob that settles BUG-41's attribution
+/// question — is the reported scroll choppiness the UX-6 dim overlay, the Liquid Glass chips in the
+/// top block, the action-row button styles/container, or some combination — that the simulator has
+/// never been able to answer on its own (BUG-41 history: sim never reproduced the choppiness). One
+/// build, five device legs:
 ///
 ///     defaults write com.nuvio.media.NuvioTV debug.detailScrollAB -int 1
 ///
@@ -70,10 +133,15 @@ enum DetailScrollProbe {
 ///     `.glass`/`.glassProminent` BUTTON styles are left alone — button styles are a different
 ///     swap from the chip backgrounds this leg targets.
 ///   - 3: both 1 and 2.
+///   - 4: leg 3, plus `actionRow`'s buttons swap `.glass`/`.glassProminent` for
+///     `.bordered`/`.borderedProminent` and its `GlassEffectContainer` becomes a plain `HStack` —
+///     the one piece of glass legs 2/3 deliberately left alone.
 enum DetailScrollAB {
-    nonisolated static let leg = UserDefaults.standard.integer(forKey: "debug.detailScrollAB")
-    nonisolated static var dimDisabled: Bool { leg == 1 || leg == 3 }
-    nonisolated static var glassDisabled: Bool { leg == 2 || leg == 3 }
+    nonisolated static var leg: Int { UserDefaults.standard.integer(forKey: "debug.detailScrollAB") }
+    nonisolated static var dimDisabled: Bool { leg == 1 || leg == 3 || leg == 4 }
+    nonisolated static var glassDisabled: Bool { leg == 2 || leg == 3 || leg == 4 }
+    /// Leg 4 only — see the doc list above.
+    nonisolated static var buttonGlassDisabled: Bool { leg == 4 }
 }
 
 /// Full detail screen for a single title, fed by the shared `MetaDetailsRepository`.
@@ -131,6 +199,27 @@ struct DetailView: View {
     /// why the indirection matters for scroll smoothness.
     @StateObject private var dimModel = ScrollDimModel()
 
+    /// BUG-41: hysteresis latch on `dimModel.value` — true once it reaches 0.80, false again once
+    /// it drops below 0.55 (scrolling back up). Gates the hero-trailer `AVPlayerLayer` mount at
+    /// `trailerLayerVisible` below: at 0.80 of a ramp that saturates at 0.85 the trailer is
+    /// effectively invisible, so tearing it down stops it (and the glass chips re-sampling it) from
+    /// doing real GPU work for nothing; the reveal gate already handles the "no restart glitch on
+    /// remount" problem this reintroduces (`TrailerHeroPlayer`'s own attach/reveal machinery).
+    ///
+    /// Codex r3 (P2): the thresholds were 0.5 / 0.3. That dismounted a MOVING trailer and swapped
+    /// in the static backdrop while the scrim was only ~59% of the way to its ceiling, so the swap
+    /// was plainly visible, and remounting at 0.3 restarted it just as visibly. The BUG-41 saving
+    /// was never "stop at half dim", it was "stop once nobody can see it", which 0.80 delivers with
+    /// the same GPU relief. 0.80 and 0.55 are 5 quantization steps apart (the ramp is quantized to
+    /// 0.05), comfortably past the 4-step minimum, so a scroll parked on the boundary cannot flap.
+    /// A gap between the two thresholds (not one shared value) is what avoids that flapping, and it
+    /// is deliberately NOT derived inline from `dimModel.value` on every read, which would
+    /// re-evaluate `body` on every 0.05 step instead of only the two times this actually flips.
+    @State private var trailerDimmedOut = false
+
+    /// BUG-41 item 6 device diagnostic — see `HitchCounter`'s doc comment.
+    @StateObject private var hitchCounter = HitchCounter()
+
     /// One-shot per detail visit — never re-fires after the auto-played trailer is dismissed.
     @State private var didAutoPlayTrailer = false
     /// Set the moment the user swipes/moves focus at all (see `onMoveCommand` below); cancels the
@@ -178,8 +267,11 @@ struct DetailView: View {
             }
             // Tear the trailer's libmpv instance down while the stream player (also libmpv) is open,
             // so two GPU/Vulkan contexts never render at once; it resumes when the player dismisses.
-            // Also pause it while a full-screen trailer plays (no doubled decode/audio).
-            if backgroundTrailerEnabled, let trailer = model.trailerVideoURL, !showStreams, model.trailerPlayback == nil, !backgroundTrailerStopped {
+            // Also pause it while a full-screen trailer plays (no doubled decode/audio). BUG-41: also
+            // torn down once `trailerDimmedOut` — it's fully hidden under the UX-6 scrim by then, so
+            // there's no visible loss, only GPU/decode work saved (and one fewer surface for the
+            // glass chips above to re-sample every frame).
+            if trailerLayerVisible, let trailer = model.trailerVideoURL {
                 // UX-9: the zoom that hides the letterbox bars baked into our YouTube encodes is
                 // measured per stream and applied to the player layer itself now
                 // (`TrailerLetterboxProbe`, floor `TrailerHeroPlayer.parityZoom`) — no
@@ -187,14 +279,15 @@ struct DetailView: View {
                 // the overscale just pushes the bars past the screen edges — the screen bounds
                 // themselves do the clipping. The failure report is ignored: Detail has one hero
                 // trailer and no negative cache to scope (that's the inline card's problem).
-                TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() }, zoomKey: model.trailerZoomKey)
+                TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() },
+                                  zoomKey: model.trailerZoomKey, videoId: model.trailerVideoId)
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
             scrimOverlay(posterBackdropVisible: showPosterBackdrop)
             // UX-6/BUG-41: the dim overlay + its debug Text live in `ScrollDimOverlay`, the sole
             // observer of `dimModel` — see that type's doc comment for why.
-            ScrollDimOverlay(model: dimModel)
+            ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     topBlock
@@ -261,6 +354,18 @@ struct DetailView: View {
                 guard DetailScrollProbe.enabled else { return }
                 NSLog("[UX6] %@", v)
             })
+            // BUG-41: hysteresis latch driving `trailerLayerVisible` — see `trailerDimmedOut`'s doc
+            // comment. Wired on the outer ZStack (not inside `ScrollDimOverlay`) since it needs to
+            // reach the trailer-mount `if` above, not just the overlay's own opacity.
+            .onReceive(dimModel.$value) { newValue in
+                // Codex r3 (P2): 0.80 / 0.55, not 0.5 / 0.3 — the trailer stays mounted for as
+                // long as it is visibly exposed. See `trailerDimmedOut`'s doc comment.
+                if newValue >= 0.80 {
+                    if !trailerDimmedOut { trailerDimmedOut = true }
+                } else if newValue < 0.55 {
+                    if trailerDimmedOut { trailerDimmedOut = false }
+                }
+            }
         }
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
@@ -283,11 +388,16 @@ struct DetailView: View {
             // FEAT-8: one-shot per screen visit — a prior visit's expiry must not carry over.
             backgroundTrailerStopped = false
             cancelTrailerDurationTask()
+            // BUG-41 item 6: no-op unless `DetailScrollProbe.enabled` (checked inside `start()`).
+            hitchCounter.start()
         }
         .onDisappear {
             model.stop()
             cancelAutoPlayTrailer()
             cancelTrailerDurationTask()
+            // BUG-41 item 6: logs the visit's `[BUG41] hitches=… frames=… maxGap=…` summary; no-op
+            // if `start()` never armed the display link.
+            hitchCounter.stopAndLog()
         }
         .onChange(of: model.trailerVideoURL) { _, newValue in
             if newValue != nil {
@@ -341,7 +451,7 @@ struct DetailView: View {
             // own per-trailer-id key (see `TrailerPlaybackItem.zoomKey`).
             FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                 model.trailerPlayback = nil
-            }, zoomKey: item.zoomKey)
+            }, zoomKey: item.zoomKey, videoId: item.videoId)
                 .ignoresSafeArea()
                 .overlay(alignment: .bottom) {
                     if trailerPlaybackIsAutoPlay {
@@ -397,6 +507,19 @@ struct DetailView: View {
         backgroundTrailerEnabled && model.trailerVideoURL != nil && !showStreams
             && model.trailerPlayback == nil && !backgroundTrailerStopped
     }
+
+    /// BUG-41: `isTrailerActive` plus the scroll-dim hysteresis latch — whether the hero-trailer
+    /// `AVPlayerLayer` should actually be mounted right now. The single source of truth for both the
+    /// trailer's own `if` in `body` and the `trailerActive` flag `ScrollDimOverlay` uses to decide
+    /// whether to animate or step (see `trailerDimmedOut`'s doc comment for the "why tear it down"
+    /// reasoning).
+    private var trailerLayerVisible: Bool { isTrailerActive && !trailerDimmedOut }
+
+    /// BUG-41 leg 2/3/4 + "flatten while a trailer plays" (item 4): whether the top-block chips
+    /// (`metaChip`, parental-guide) should render flat translucent material instead of
+    /// `.glassEffect`. Mirrors `detailChipBackground`'s own condition; also folded into the
+    /// `debug_ux6` diagnostic's `glass=` token.
+    private var chipGlassFlat: Bool { isTrailerActive || DetailScrollAB.glassDisabled }
 
     /// The poster-backdrop layer only earns its keep when it would show something the plain
     /// backdrop doesn't already — skip when they're the same URL (`backgroundUrl` already falls
@@ -506,13 +629,13 @@ struct DetailView: View {
     @ViewBuilder
     private var header: some View {
         if let logoUrl, !logoUrl.isEmpty {
-            AsyncImage(url: URL(string: logoUrl)) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().aspectRatio(contentMode: .fit)
-                } else {
-                    Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
-                }
-            }
+            // BUG-41: CachedAsyncImage over the raw AsyncImage — main-thread, uncached decodes on
+            // every scroll-triggered re-render were one of the choppiness suspects. The failure
+            // builder keeps the title-text fallback a plain AsyncImage gave on a bad logo URL; the
+            // shimmer-during-load is the one deliberate visual delta from before (see report).
+            CachedAsyncImage(string: logoUrl, contentMode: .fit, failure: {
+                Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
+            })
             .frame(maxWidth: 600, maxHeight: 180, alignment: .leading)
         } else {
             Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
@@ -556,14 +679,16 @@ struct DetailView: View {
         .foregroundStyle(Theme.Palette.textSecondary)
     }
 
-    /// P-2b (BUG-41 attribution knob): wraps padded chip content in either the shipping Liquid
-    /// Glass capsule or, on `DetailScrollAB` leg 2/3, a plain translucent capsule fill — the
-    /// single swap point shared by `metaChip` and the parental-guide chips below so the two don't
-    /// duplicate the conditional. `actionRow`'s `.glass`/`.glassProminent` BUTTON styles are a
-    /// separate swap and are untouched by this leg.
+    /// P-2b (BUG-41 attribution knob) + item 4 (BUG-41 fix candidate #4): wraps padded chip content
+    /// in either the shipping Liquid Glass capsule or a plain translucent capsule fill — flat
+    /// whenever a trailer is actually playing behind these chips (re-sampling a live video frame
+    /// every render is real GPU work for a barely-visible effect) OR on `DetailScrollAB` leg 2/3/4
+    /// (`chipGlassFlat`). The single swap point shared by `metaChip` and the parental-guide chips
+    /// below so the two don't duplicate the conditional. `actionRow`'s buttons/container are a
+    /// separate swap (leg 4 / `DetailScrollAB.buttonGlassDisabled`) and are untouched by this one.
     @ViewBuilder
     private func detailChipBackground(@ViewBuilder _ content: () -> some View) -> some View {
-        if DetailScrollAB.glassDisabled {
+        if chipGlassFlat {
             content().background(Color.white.opacity(0.12), in: .capsule)
         } else {
             content().glassEffect(.regular, in: .capsule)
@@ -584,13 +709,57 @@ struct DetailView: View {
         }
     }
 
+    /// BUG-41 leg 4 (`DetailScrollAB.buttonGlassDisabled`): the Play/series-primary button's style
+    /// swap, `.glassProminent` → `.borderedProminent`. `prominentAccentLabel()` inside the label
+    /// (already proven for `.borderedProminent` sites, BUG-4) covers both states either way, so the
+    /// swap is purely the button chrome.
+    @ViewBuilder
+    private func prominentActionButtonStyle<Content: View>(_ content: Content) -> some View {
+        if DetailScrollAB.buttonGlassDisabled {
+            content.buttonStyle(.borderedProminent)
+        } else {
+            content.buttonStyle(.glassProminent)
+        }
+    }
+
+    /// BUG-41 leg 4 companion to `prominentActionButtonStyle` — `.glass` → `.bordered` for the
+    /// compact action-row buttons (Watch Trailer, Mark Watched, Add to Library).
+    @ViewBuilder
+    private func compactActionButtonStyle<Content: View>(_ content: Content) -> some View {
+        if DetailScrollAB.buttonGlassDisabled {
+            content.buttonStyle(.bordered)
+        } else {
+            content.buttonStyle(.glass)
+        }
+    }
+
     /// Play + library/watched controls as one Liquid Glass cluster. The container lets the
     /// individual glass shapes blend/morph as focus moves between them (mobile-reference look:
-    /// prominent Play pill next to compact glass buttons).
+    /// prominent Play pill next to compact glass buttons). BUG-41 leg 4: the container itself is
+    /// glass-only machinery (it coordinates `.glassEffect`/`.glass` morphing) — with every button
+    /// style flattened above, it has nothing left to do, so it's swapped for a plain `HStack`.
     private var actionRow: some View {
-        GlassEffectContainer(spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.md) {
-                if !isSeries {
+        Group {
+            if DetailScrollAB.buttonGlassDisabled {
+                actionRowButtons
+            } else {
+                GlassEffectContainer(spacing: Theme.Spacing.md) {
+                    actionRowButtons
+                }
+            }
+        }
+        // BUG-44: no longer its own `.focusSection()` — folded into `topBlock`'s single top-of-page
+        // section (header/metaLine/actionRow/genres/overview/info) so the section boundary can't
+        // fragment vertical navigation between this row and the content around it.
+    }
+
+    /// The actual button `HStack` shared by both `actionRow` branches (plain and
+    /// `GlassEffectContainer`-wrapped) — pulled out so BUG-41 leg 4 doesn't have to duplicate five
+    /// buttons' worth of logic across an `if`/`else`.
+    private var actionRowButtons: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            if !isSeries {
+                prominentActionButtonStyle(
                     Button {
                         showStreams = true
                     } label: {
@@ -607,9 +776,10 @@ struct DetailView: View {
                             horizontal: Theme.Spacing.lg
                         )
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(Theme.Palette.accent)
-                } else if let action = model.seriesAction, let meta = model.meta {
+                )
+                .tint(Theme.Palette.accent)
+            } else if let action = model.seriesAction, let meta = model.meta {
+                prominentActionButtonStyle(
                     Button {
                         seriesPlay = SeriesPlayRoute(meta: meta, action: action)
                     } label: {
@@ -621,26 +791,28 @@ struct DetailView: View {
                             horizontal: Theme.Spacing.lg
                         )
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(Theme.Palette.accent)
-                }
+                )
+                .tint(Theme.Palette.accent)
+            }
 
-                if model.trailerVideoURL != nil {
-                    // Explicit, focusable "watch it full screen" entry point (tester request — the
-                    // background hero loop below is muted and deliberately NON-focusable, since a
-                    // floating control over the hero area would be unreachable once the focus engine
-                    // routes Up-navigation to the tab bar; see `TrailerHeroPlayerView.swift`). Living
-                    // in the ordinary action-row focus flow instead, this just hands the already-
-                    // resolved hero trailer URL to the same `trailerPlayback` full-screen-cover
-                    // machinery the "Trailers & Extras" row uses below, which also takes care of
-                    // pausing/tearing down the background player for free (both are gated on
-                    // `trailerPlayback == nil`).
+            if model.trailerVideoURL != nil {
+                // Explicit, focusable "watch it full screen" entry point (tester request — the
+                // background hero loop below is muted and deliberately NON-focusable, since a
+                // floating control over the hero area would be unreachable once the focus engine
+                // routes Up-navigation to the tab bar; see `TrailerHeroPlayerView.swift`). Living
+                // in the ordinary action-row focus flow instead, this just hands the already-
+                // resolved hero trailer URL to the same `trailerPlayback` full-screen-cover
+                // machinery the "Trailers & Extras" row uses below, which also takes care of
+                // pausing/tearing down the background player for free (both are gated on
+                // `trailerPlayback == nil`).
+                compactActionButtonStyle(
                     Button {
                         if let trailer = model.trailerVideoURL {
                             // C3: same video as the Detail hero background loop — the canonical
                             // title key is correct here (see `TrailerPlaybackItem.zoomKey`).
                             model.trailerPlayback = TrailerPlaybackItem(
-                                id: "hero-trailer", url: trailer, title: title, zoomKey: model.trailerZoomKey
+                                id: "hero-trailer", url: trailer, title: title, zoomKey: model.trailerZoomKey,
+                                videoId: model.trailerVideoId
                             )
                         }
                     } label: {
@@ -650,9 +822,10 @@ struct DetailView: View {
                             horizontal: Theme.Spacing.md
                         )
                     }
-                    .buttonStyle(.glass)
-                }
+                )
+            }
 
+            compactActionButtonStyle(
                 Button {
                     model.toggleWatched()
                 } label: {
@@ -665,9 +838,10 @@ struct DetailView: View {
                         horizontal: Theme.Spacing.md
                     )
                 }
-                .buttonStyle(.glass)
-                .tint(model.isWatched ? Theme.Palette.accent : nil)
+            )
+            .tint(model.isWatched ? Theme.Palette.accent : nil)
 
+            compactActionButtonStyle(
                 Button {
                     model.toggleLibrary()
                 } label: {
@@ -680,13 +854,9 @@ struct DetailView: View {
                         horizontal: Theme.Spacing.md
                     )
                 }
-                .buttonStyle(.glass)
-                .tint(model.isSaved ? Theme.Palette.accent : nil)
-            }
+            )
+            .tint(model.isSaved ? Theme.Palette.accent : nil)
         }
-        // BUG-44: no longer its own `.focusSection()` — folded into `topBlock`'s single top-of-page
-        // section (header/metaLine/actionRow/genres/overview/info) so the section boundary can't
-        // fragment vertical navigation between this row and the content around it.
     }
 
     /// FEAT-9: the underlying `Label` for one action-row button — icon + text normally, icon-only
@@ -736,7 +906,8 @@ struct DetailView: View {
                                 }
                                 // Card-like navigation element: joins the no-zoom sweep so the
                                 // setting stills every card on the page, not most (Codex 2026-08-29).
-                                .cardFocusButtonStyle()
+                                // BUG-93: CastCard draws its own still ring and no manual scale, so ring mode leaves it on the native .borderless lift.
+                                .cardFocusButtonStyle(lift: .plain)
                                 .focused($focusedCastIndex, equals: index)
                             } else {
                                 CastCard(person: person)
@@ -992,7 +1163,8 @@ struct DetailView: View {
                             } label: {
                                 TrailerThumbCard(trailer: trailer, isResolving: model.resolvingTrailerId == trailer.id)
                             }
-                            .cardFocusButtonStyle()
+                            // BUG-93: TrailerThumbCard has no manual treatment - keep the native lift in ring mode.
+                            .cardFocusButtonStyle(lift: .plain)
                             .posterButtonShape() // BUG-32: honor the Corners setting
                         }
                     }
@@ -1139,7 +1311,8 @@ struct DetailView: View {
         // C3: same video as the Detail hero background loop — the canonical title key is correct
         // here (see `TrailerPlaybackItem.zoomKey`).
         model.trailerPlayback = TrailerPlaybackItem(
-            id: "hero-trailer", url: trailer, title: title, zoomKey: model.trailerZoomKey
+            id: "hero-trailer", url: trailer, title: title, zoomKey: model.trailerZoomKey,
+            videoId: model.trailerVideoId
         )
     }
 
@@ -1228,16 +1401,15 @@ private struct CastCard: View {
 
     var body: some View {
         VStack(spacing: Theme.Spacing.xs) {
-            AsyncImage(url: URL(string: person.photo ?? "")) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().aspectRatio(contentMode: .fill)
+            // BUG-41: CachedAsyncImage over the raw AsyncImage (cast rows re-decoded every photo on
+            // every scroll-triggered re-render before this). `person.photo` empty/nil is guarded
+            // outside the image (matching the old `URL(string: "")` == nil no-fetch behavior) so the
+            // person glyph appears immediately rather than after a load attempt.
+            Group {
+                if let photo = person.photo, !photo.isEmpty {
+                    CachedAsyncImage(string: photo, contentMode: .fill, failure: { CastCard.personFallback })
                 } else {
-                    ZStack {
-                        Theme.Palette.surface
-                        Image(systemName: "person.fill")
-                            .font(Theme.Font.screenTitle)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                    }
+                    CastCard.personFallback
                 }
             }
             .frame(width: Theme.Size.castAvatar, height: Theme.Size.castAvatar)
@@ -1271,6 +1443,18 @@ private struct CastCard: View {
         }
         .animation(.easeOut(duration: 0.15), value: isFocused)
     }
+
+    /// BUG-41 failure/no-photo fallback — pulled out of `body` so both the "no `person.photo`"
+    /// branch and `CachedAsyncImage`'s `failure:` builder render the identical glyph.
+    @ViewBuilder
+    private static var personFallback: some View {
+        ZStack {
+            Theme.Palette.surface
+            Image(systemName: "person.fill")
+                .font(Theme.Font.screenTitle)
+                .foregroundStyle(Theme.Palette.textSecondary)
+        }
+    }
 }
 
 /// Studio/network logo chip. Keeps the intentional white capsule (logo legibility); focus reads as
@@ -1281,13 +1465,14 @@ private struct CompanyChip: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        AsyncImage(url: URL(string: company.logo ?? "")) { phase in
-            if case .success(let image) = phase {
-                image.resizable().aspectRatio(contentMode: .fit)
+        // BUG-41: CachedAsyncImage over the raw AsyncImage (company logos re-decoded on every
+        // scroll-triggered re-render before this). `company.logo` empty/nil guarded outside the
+        // image, matching the old `URL(string: "")` == nil no-fetch behavior.
+        Group {
+            if let logo = company.logo, !logo.isEmpty {
+                CachedAsyncImage(string: logo, contentMode: .fit, failure: { CompanyChip.nameFallback(company.name) })
             } else {
-                Text(company.name)
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(.black)
+                CompanyChip.nameFallback(company.name)
             }
         }
         .frame(height: 36)
@@ -1295,6 +1480,13 @@ private struct CompanyChip: View {
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.xs)
         .background(Color.white.opacity(0.92), in: Capsule())
+    }
+
+    @ViewBuilder
+    private static func nameFallback(_ name: String) -> some View {
+        Text(name)
+            .font(Theme.Font.caption)
+            .foregroundStyle(.black)
     }
 }
 

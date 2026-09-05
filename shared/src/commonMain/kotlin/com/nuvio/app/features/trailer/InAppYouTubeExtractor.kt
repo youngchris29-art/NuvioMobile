@@ -318,7 +318,7 @@ class InAppYouTubeExtractor {
     }
 
     private suspend fun extractPlaybackSourceInternal(youtubeUrl: String): TrailerPlaybackSource? {
-        val videoId = extractVideoId(youtubeUrl) ?: return null
+        val videoId = extractYouTubeVideoId(youtubeUrl) ?: return null
 
         val watchUrl = "https://www.youtube.com/watch?v=$videoId&hl=en"
         val watchResponse = TrailerExtractionPlatform.performRequest(
@@ -568,6 +568,10 @@ class InAppYouTubeExtractor {
                 "m4aAudio=${bestM4aAudio?.let { "${it.codecs} (${it.client})" } ?: "none"}"
         )
 
+        // BUG-81: stamp the video id on the way out rather than threading it through the
+        // expect/actual `buildPlaybackSource` signature — every platform actual would have to take
+        // a parameter it does not use, and the value is the same on all of them. See
+        // `TrailerPlaybackSource.videoId` for what the tvOS letterbox probe does with it.
         return TrailerExtractionPlatform.buildPlaybackSource(
             bestManifest = bestManifest,
             bestProgressive = bestProgressive,
@@ -575,7 +579,7 @@ class InAppYouTubeExtractor {
             bestAudio = bestAudio,
             bestAvcVideo = bestAvcVideo,
             bestM4aAudio = bestM4aAudio,
-        )
+        )?.copy(videoId = videoId)
     }
 
     private suspend fun fetchPlayerResponse(
@@ -682,35 +686,6 @@ class InAppYouTubeExtractor {
             bandwidth = bestVariant.bandwidth,
             isSdr = bestVariantIsSdr,
         )
-    }
-
-    private fun extractVideoId(input: String): String? {
-        val trimmed = input.trim()
-        if (VIDEO_ID_REGEX.matches(trimmed)) return trimmed
-
-        val parsed = parseUrl(trimmed) ?: return null
-
-        if (parsed.host.endsWith("youtu.be")) {
-            val id = parsed.pathSegments.firstOrNull()
-            if (!id.isNullOrBlank() && VIDEO_ID_REGEX.matches(id)) {
-                return id
-            }
-        }
-
-        val queryId = parsed.query["v"]?.firstOrNull()
-        if (!queryId.isNullOrBlank() && VIDEO_ID_REGEX.matches(queryId)) {
-            return queryId
-        }
-
-        if (parsed.pathSegments.size >= 2) {
-            val first = parsed.pathSegments[0]
-            val second = parsed.pathSegments[1]
-            if ((first == "embed" || first == "shorts" || first == "live") && VIDEO_ID_REGEX.matches(second)) {
-                return second
-            }
-        }
-
-        return null
     }
 
     private fun getWatchConfig(html: String): WatchConfig {
@@ -873,6 +848,43 @@ private data class ParsedUrl(
     val pathSegments: List<String>,
     val query: Map<String, List<String>>,
 )
+
+/**
+ * The 11-character YouTube video id named by [input] — a bare id, a `watch?v=` URL, a `youtu.be`
+ * short link, or an `embed`/`shorts`/`live` path — or null when [input] names none. Top-level and
+ * internal (was a private member of [InAppYouTubeExtractor]) so it can be unit-tested: BUG-81
+ * threads its result through [TrailerPlaybackSource.videoId] as the cross-launch identity of a
+ * trailer, so a parse that silently returned null would quietly disable persisted-zoom
+ * verification for that title on tvOS.
+ */
+internal fun extractYouTubeVideoId(input: String): String? {
+    val trimmed = input.trim()
+    if (VIDEO_ID_REGEX.matches(trimmed)) return trimmed
+
+    val parsed = parseUrl(trimmed) ?: return null
+
+    if (parsed.host.endsWith("youtu.be")) {
+        val id = parsed.pathSegments.firstOrNull()
+        if (!id.isNullOrBlank() && VIDEO_ID_REGEX.matches(id)) {
+            return id
+        }
+    }
+
+    val queryId = parsed.query["v"]?.firstOrNull()
+    if (!queryId.isNullOrBlank() && VIDEO_ID_REGEX.matches(queryId)) {
+        return queryId
+    }
+
+    if (parsed.pathSegments.size >= 2) {
+        val first = parsed.pathSegments[0]
+        val second = parsed.pathSegments[1]
+        if ((first == "embed" || first == "shorts" || first == "live") && VIDEO_ID_REGEX.matches(second)) {
+            return second
+        }
+    }
+
+    return null
+}
 
 private fun parseUrl(input: String): ParsedUrl? {
     val trimmed = input.trim()

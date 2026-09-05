@@ -18,6 +18,11 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var isSaved: Bool = false
     /// Resolved, directly-playable trailer video URL for the hero (nil until/unless one resolves).
     @Published private(set) var trailerVideoURL: String?
+    /// BUG-81: the YouTube video id `trailerVideoURL` was extracted from, handed to the trailer
+    /// surfaces so the letterbox probe can key its persisted zoom on something that survives a
+    /// re-extraction. Always written together with `trailerVideoURL`, so the two never disagree
+    /// about which stream is on screen. See `TrailerHeroPlayer.videoId`.
+    @Published private(set) var trailerVideoId: String?
     /// Trakt community comments (empty while Trakt is disconnected — the shared repo no-ops).
     @Published private(set) var comments: [TraktCommentReview] = []
     /// IMDb episode ratings keyed "season:episode" (api.imdbapi.dev, keyless).
@@ -132,6 +137,7 @@ final class DetailViewModel: ObservableObject {
         progressWatcher?.cancel(); progressWatcher = nil
         cwPrefsWatcher?.cancel(); cwPrefsWatcher = nil
         trailerVideoURL = nil
+        trailerVideoId = nil
         didRequestTrailer = false
         // Only the current owner clears the shared repo — a source screen disappearing mid-push
         // must not cancel the destination's request (HI-005).
@@ -178,6 +184,7 @@ final class DetailViewModel: ObservableObject {
                 TrailerLocalHLS.shared.playbackURL(for: source) { [weak self] url in
                     guard let self, let url else { return }
                     self.trailerVideoURL = url
+                    self.trailerVideoId = source.videoId
                 }
             }
         }
@@ -187,6 +194,7 @@ final class DetailViewModel: ObservableObject {
     /// the static backdrop. Not retried for this title.
     func trailerFailed() {
         trailerVideoURL = nil
+        trailerVideoId = nil
     }
 
     /// Trailers row: resolve one trailer's YouTube URL into an AVPlayer-friendly stream and present
@@ -221,7 +229,8 @@ final class DetailViewModel: ObservableObject {
                     // measured last stomped the other's crop.
                     self.trailerPlayback = TrailerPlaybackItem(
                         id: trailer.id, url: url, title: trailer.name,
-                        zoomKey: "\(self.trailerZoomKey):clip:\(trailer.id)"
+                        zoomKey: "\(self.trailerZoomKey):clip:\(trailer.id)",
+                        videoId: source.videoId
                     )
                 }
             }
@@ -392,4 +401,7 @@ struct TrailerPlaybackItem: Identifiable {
     /// right after the hero (or vice versa) inherited whichever measurement ran last, then visibly
     /// re-zoomed mid-playback once its own probe landed. Row clips get their own per-trailer-id key.
     let zoomKey: String
+    /// BUG-81: the YouTube video id this clip's stream was extracted from. See
+    /// `TrailerHeroPlayer.videoId`; nil is a supported fallback, not an error.
+    var videoId: String? = nil
 }

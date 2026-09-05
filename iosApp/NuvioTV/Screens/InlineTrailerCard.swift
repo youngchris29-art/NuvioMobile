@@ -791,6 +791,35 @@ private final class ResumeLatch<T> {
     }
 }
 
+// MARK: - BUG-92 tile geometry
+
+/// Pure, unit-testable geometry for the inline trailer tile's concentric focus band (BUG-92,
+/// u/mrStevenx3 beta.17: "inline trailer on the GIGN card sits offset — dark band between the
+/// [ring] and the video"). Reference (official Nuvio's focused card): a continuous border, a thin
+/// inner gap, the video clipped concentric INSIDE that gap with a matching inner corner radius.
+///
+/// `band` is `trailerSurface`'s `ringWidth` reserved margin when either focus ring is active, 0
+/// otherwise — the same contract `PosterCard.swift`'s `ringInset` uses for the poster artwork.
+/// No `View`/environment dependency at all, so this is exercised directly by
+/// `InlineTrailerTileGeometryTests` without standing up a hosting view.
+enum InlineTrailerTileGeometry {
+    /// - Parameters:
+    ///   - outer: the tile's own layout size (`artworkWidth`/`artworkHeight` in `trailerSurface`).
+    ///   - band: the margin to reserve on every edge (0, or `ringWidth`, from the tile's caller).
+    ///   - cornerRadius: the OUTER corner radius the ring itself draws at (`posterStyle.cornerRadius`).
+    /// - Returns: `rect` — the inset rect within `outer`'s own coordinate space, i.e.
+    ///   `(band, band, outer.width - 2*band, outer.height - 2*band)` after `band` is clamped so it
+    ///   can never exceed half of either edge (a degenerate tiny tile can't invert to a negative
+    ///   size); `radius` — `max(0, cornerRadius - band)`, the matching inner corner radius, floored
+    ///   at 0 so an already-tight radius never goes negative.
+    static func inner(outer: CGSize, band: CGFloat, cornerRadius: CGFloat) -> (rect: CGRect, radius: CGFloat) {
+        let b = min(band, outer.width / 2, outer.height / 2)
+        let rect = CGRect(x: b, y: b, width: outer.width - 2 * b, height: outer.height - 2 * b)
+        let radius = max(0, cornerRadius - b)
+        return (rect, radius)
+    }
+}
+
 // MARK: - The card
 
 /// A catalog-row tile that grows a muted trailer preview after a focus dwell.
@@ -914,18 +943,29 @@ struct InlineTrailerCard: View {
 
     /// The tile itself: landscape art as soon as the card expands, trailer fading in over it once
     /// resolved. The frame is the animated one, so this *is* the morphing artwork region.
+    ///
+    /// BUG-92 (u/mrStevenx3, beta.17): this used to shrink the fully-clipped surface with a
+    /// per-axis `.scaleEffect` AFTER the outer clip — that distorted the video's aspect ratio and
+    /// de-concentred its corners from the ring stroked at the surface's TRUE (unscaled) bounds,
+    /// because `.scaleEffect` shrinks the rendered pixels without changing the reported layout
+    /// frame the ring/title overlays measured against. Reference (official Nuvio's focused card):
+    /// a continuous border, a thin inner gap, the video clipped concentric INSIDE that gap with a
+    /// matching inner corner radius. Now: `InlineTrailerTileGeometry.inner(...)` computes an
+    /// actual inset rect + radius (settings-driven, not focus-time — same reasoning `ringInset`
+    /// documents for `PosterCard`: an always-reserved band costs a few points of artwork nobody
+    /// notices at 10 feet, while a focus-time inset would shrink the picture at the moment it
+    /// should feel marked), the art/player are framed and clipped AT that inset size, the in-tile
+    /// title overlay moves inside the inset with it (so its scrim + logo are concentric with the
+    /// video too), and only then does the whole thing get centered back inside the tile's outer
+    /// frame — which is exactly where the ring below still draws.
     private var trailerSurface: some View {
-        // 2026-08-30 no-zoom investigation: whenever either ring is going to draw below, reserve
-        // its band the same way `ringInset` reserves it for PosterCard — settings-driven, not
-        // focus-time, so the shrink never pops in/out as focus changes. Computed from the
-        // per-axis `artworkWidth`/`artworkHeight` (not a single scalar) so a fixed `ringWidth`
-        // margin lands on every edge regardless of aspect ratio (this tile is 16:9, PosterCard's
-        // is 2:3).
         let ringBandActive = accentFocusRing || noZoomOnFocus
-        let ringScaleX = ringBandActive && artworkWidth > 0
-            ? max(0, artworkWidth - 2 * ringWidth) / artworkWidth : 1
-        let ringScaleY = ringBandActive && artworkHeight > 0
-            ? max(0, artworkHeight - 2 * ringWidth) / artworkHeight : 1
+        let band: CGFloat = ringBandActive ? ringWidth : 0
+        let geometry = InlineTrailerTileGeometry.inner(
+            outer: CGSize(width: artworkWidth, height: artworkHeight),
+            band: band,
+            cornerRadius: posterStyle.cornerRadius
+        )
         return ZStack {
             if model.isExpanded {
                 // BUG-59 (reveal-gate wave): with the video side bar-proof (measured zoom + the
@@ -962,16 +1002,12 @@ struct InlineTrailerCard: View {
                 .transition(.asymmetric(insertion: .opacity, removal: .identity))
             }
         }
-        .frame(width: artworkWidth, height: artworkHeight)
-        .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
-        // 2026-08-30 no-zoom investigation: shrink the ALREADY-CLIPPED video/art visually — a
-        // post-render `.scaleEffect`, not a real resize. `TrailerHeroPlayer`'s own UX-9/BUG-59
-        // zoom math is calibrated against `artworkWidth`/`artworkHeight` as passed to it above, so
-        // those props stay untouched; only the finished pixels get pulled in. `.scaleEffect`
-        // doesn't change the reported layout size, so the title/ring overlays below still measure
-        // against the tile's TRUE, unscaled bounds — the ring lands in the vacated margin instead
-        // of on top of the (possibly playing) video, and the title overlay is unaffected.
-        .scaleEffect(x: ringScaleX, y: ringScaleY)
+        // BUG-92: framed and clipped at the INSET size — a real resize, not a post-render scale —
+        // so the video's aspect ratio and the ring's reserved band agree with each other. Corner
+        // radius is the matching inner radius (`geometry.radius`), never the outer one, so the
+        // video's rounded corners land concentric with the ring drawn on the outer frame below.
+        .frame(width: geometry.rect.width, height: geometry.rect.height)
+        .clipShape(RoundedRectangle(cornerRadius: geometry.radius))
         // FEAT-18 (u/mrStevenx3, asked twice): "the title (logo) disappears while the trailer is
         // playing, whereas in Nuvio it remains visible." With Hide Labels on there is NO caption
         // under the tile, so a playing trailer carried no title at all (reporter's frame,
@@ -979,16 +1015,23 @@ struct InlineTrailerCard: View {
         // bottom scrim — the way Nuvio's TV app does. Only when the caption slot is hidden: users
         // whose caption survives playback would otherwise get the title twice. Anchored to the
         // BOTTOM of the tile so it can never meet the pinned row title band that slides down
-        // onto the artwork top in Nuvio-style Home (BUG-53/BUG-61 geometry stays untouched), and
-        // placed AFTER `.clipShape` for the same reason as the ring below (the letterboxed
-        // player's zoom transform is clipped only by this view's shape — UX-9/BUG-59).
+        // onto the artwork top in Nuvio-style Home (BUG-53/BUG-61 geometry stays untouched).
+        // BUG-92: moved inside the inset frame (sized/clipped to `geometry.rect`, not the outer
+        // tile) so the scrim + logo are concentric with the video instead of drawn at the outer,
+        // unreserved bounds.
         .overlay(alignment: .bottomLeading) {
             if showsInTileTitle {
-                InlineTrailerTitleOverlay(item: item, tileWidth: artworkWidth, tileHeight: artworkHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: posterStyle.cornerRadius))
+                InlineTrailerTitleOverlay(item: item, tileWidth: geometry.rect.width, tileHeight: geometry.rect.height)
+                    .clipShape(RoundedRectangle(cornerRadius: geometry.radius))
                     .transition(.opacity)
             }
         }
+        // BUG-92: re-center the inset content inside the tile's own layout size. SwiftUI's
+        // default `.frame(width:height:)` centering does the rest of the geometry's job here —
+        // `band` is reserved equally on every edge, so centering a `geometry.rect`-sized view
+        // inside an `artworkWidth`×`artworkHeight` frame lands it exactly at `(band, band)`,
+        // matching `geometry.rect.origin` without this view needing to know its own position.
+        .frame(width: artworkWidth, height: artworkHeight)
         // FEAT-14: the dwell-morph swaps the focused `PosterCard` out for this landscape tile, and
         // that card's own ring dies with it — so with the setting on, the ring visibly vanished
         // the moment a trailer started (device finding, 2026-08-02). This tile needs its own ring.
@@ -998,20 +1041,15 @@ struct InlineTrailerCard: View {
         // PosterCard grows its label (via `ringMargin` padding) would change the layout size the
         // row measures, risking that fix; (2) an inside stroke paints strictly within the shape
         // this view already clips to, so unlike an outside ring it can never be clipped by a
-        // parent's bounds — no `ringMargin`-style padding dance is needed here. Placed AFTER
-        // `.clipShape` so the ring paints on top of the (possibly playing) video's edge rather than
-        // being clipped away with it. Gated on `isFocused` too, not just the morph phase: the tile
-        // stays in the view tree at opacity 0 while idle/dwelling (see `expandedTile`'s doc), and
-        // this mirrors PosterCard's own `accentFocusRing && isFocused` guard rather than assuming
-        // the morph phase alone proves focus.
+        // parent's bounds — no `ringMargin`-style padding dance is needed here. Gated on
+        // `isFocused` too, not just the morph phase: the tile stays in the view tree at opacity 0
+        // while idle/dwelling (see `expandedTile`'s doc), and this mirrors PosterCard's own
+        // `accentFocusRing && isFocused` guard rather than assuming the morph phase alone proves
+        // focus.
         //
-        // 2026-08-30 no-zoom investigation: this "paints strictly within the shape it clips to"
-        // was exactly the BUG-64 overpaint on PosterCard's artwork, just never fixed here — this
-        // stroke sat directly on the video's true edge with no reserved margin, for BOTH the
-        // accent ring and the neutral still ring. `ringScaleX`/`ringScaleY` above now reserve that
-        // margin for whichever ring is active, so this overlay (unchanged: still gated on
-        // `isFocused`, still drawn at the tile's true outer bounds) lands in the vacated band
-        // instead of over the artwork.
+        // BUG-92: drawn at the OUTER frame (unchanged from before this fix), which is now exactly
+        // the reserved `band` outside the inset content above — so the ring lands in the vacated
+        // margin around the video instead of over it, concentric with the inset's rounded corner.
         .overlay {
             if accentFocusRing && isFocused {
                 RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
@@ -1025,8 +1063,33 @@ struct InlineTrailerCard: View {
                     .strokeBorder(stillHighlight, lineWidth: ringWidth)
             }
         }
-        .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
+        #if DEBUG
+        // BUG-92 diagnostic (invisible, harness-readable, `debug_ux6`'s pattern): the tile's live
+        // outer/inner geometry, so a UITest — or a device pass reading the AX tree — can prove the
+        // inset/ring/video actually agree instead of trusting a screenshot alone. Only while the
+        // tile is up; band/rOut/rIn included so a default-config run (band=0) reads as identity
+        // without cross-referencing the settings separately.
+        .overlay(alignment: .topLeading) {
+            if model.isExpanded {
+                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius))")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_trailerTile")
+            }
+        }
+        #endif
+        // BUG-92: the ring is the focus indicator in ring-band configurations (accent ring, or
+        // no-zoom's neutral still ring) — the reference card has no halo behind it, so drop the
+        // shadow whenever the band is reserved. Kept, unconditionally as before, in the
+        // ring-off/zoom-on default so the shipped default look is byte-identical.
+        .shadow(color: .black.opacity(ringBandActive ? 0 : 0.6), radius: ringBandActive ? 0 : 22, y: ringBandActive ? 0 : 10)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.playingURL)
+    }
+
+    /// One-decimal formatting for `debug_trailerTile` — matches `debug_ux6`'s "small, greppable,
+    /// harness-readable" contract without dragging a `NumberFormatter` into a hot render path.
+    private static func debugFmt(_ value: CGFloat) -> String {
+        String(format: "%.1f", value)
     }
 
     private var fadesBaseCard: Bool { !posterStyle.landscapeCatalogRows }

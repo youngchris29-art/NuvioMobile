@@ -14,7 +14,7 @@ import SwiftUI
 /// treatment off the WHOLE card; BUG-54 then found the system effect draws its standing platter at
 /// the attached view's bounds — a visible border around artwork + caption on every card — so the
 /// default mode's effect is back on the artwork container with structural guards for both BUG-36
-/// symptoms. See `CardFocusTreatment`, `CardArtworkSystemLift` and `CardCaptionFocusDrop`.
+/// symptoms. See `CardFocusTreatment`, `CardArtworkFocusLift` and `CardCaptionFocusDrop`.
 ///
 /// ```swift
 /// NavigationLink(value: route) { PosterCard(title: item.name, imageURL: item.poster) }
@@ -40,6 +40,63 @@ extension View {
     func posterButtonShape() -> some View { modifier(PosterButtonShape()) }
 }
 
+/// Publishes an accessibility identifier for a card sub-rect so a UI test can read its FRAME.
+/// DEBUG-only AND armed only by `-debug.cardGeometryProbe YES`, for two independent reasons.
+///
+/// **Why an overlay and not `.accessibilityElement` on the content itself.** The first version
+/// attached the element to the artwork directly and the harness read back 215pt of width where the
+/// layout box is 212: an image accessibility frame follows the image's own drawn extent, and
+/// `CachedAsyncImage` is `.fill`, so `.clipped()` crops the picture without shrinking what it
+/// reports. A `Color.clear` overlay has no content of its own, so its frame is exactly the box it
+/// is attached to. Never publish geometry from a view that has intrinsic content.
+///
+/// **Why the launch-argument gate.** A SwiftUI `Button` whose label contains explicit accessibility
+/// elements reports the UNION of those elements as its own frame, not its layout frame - measured,
+/// not assumed: with the ids always on, a still-mode poster button reported (390.5, 633, 215, 369.5)
+/// where its layout frame is (388, 629, 220, 373.5), losing the pinned rows' reach padding and the
+/// `ringInset` band. test32/test44/test46 all measure against `focusedButton(app).frame`, so an
+/// always-on probe would silently move the baseline of three shipping gates to buy one new one.
+/// Armed, every card also publishes `poster_card` at its OUTER frame, which restores the union to
+/// the card box and hands test50 an exact card rect to compare the rail against.
+///
+/// Read once, from the argument domain, at first use: it is a launch knob, never a live setting.
+///
+/// Introduced for BUG-91's gate (test50), which has to compare the card-depth rail's rect against
+/// the artwork's. A luma check cannot do that job: the rail is a 1-2pt white hairline whose own
+/// width and opacity are user settings, drawn over arbitrary poster art, and "is the rail 4pt
+/// outside the picture" is exactly the sub-band distinction the edge finder in test44/test46
+/// already has to hedge around. Geometry from the app's own layout is the honest oracle here, as
+/// `debug_pinned` is for the pinned-title corrector.
+struct DebugAXIdentifier: ViewModifier {
+    let identifier: String
+
+    init(_ identifier: String) { self.identifier = identifier }
+
+    #if DEBUG
+    /// `-debug.cardGeometryProbe YES` lands in NSArgumentDomain, which outranks everything else,
+    /// so no fixture state can arm this by accident.
+    static let armed = UserDefaults.standard.bool(forKey: "debug.cardGeometryProbe")
+    #endif
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if Self.armed {
+            content.overlay {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier(identifier)
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 /// 2026-08-30 no-zoom investigation: still mode's press feedback, deliberately minimal — see
 /// `CardFocusButtonStyle` below for why this exists instead of relying on `.focusEffectDisabled`.
 /// Mirrors `FocusLook.pressScale`/`FocusLook.pressAnim` in FlatControlStyles.swift (that enum is
@@ -63,11 +120,52 @@ private struct StillCardButtonStyle: ButtonStyle {
     }
 }
 
+/// BUG-93 (u/mrStevenx3, beta.17: with the ring on "the posters are cut off and the titles get a
+/// border around them"). Ring mode's `ButtonStyle`, byte-for-byte the same body as
+/// `StillCardButtonStyle` above but a separate type so the two branches can never be accidentally
+/// merged and so a future press/focus tweak to one is a deliberate decision about the other.
+///
+/// Why ring mode needs its own style at all: the zoom-on branch of `CardFocusButtonStyle` used to
+/// be a bare `.borderless` in BOTH zoom modes, and in `.manualScale` (ring on) nothing in the card
+/// declares a hover effect - `CardArtworkFocusLift` skipped that mode entirely. `.borderless` then
+/// fell back to its own default focus treatment at the LABEL's bounds, i.e. artwork PLUS caption
+/// (`posterButtonShape` only fixes the radius, not the extent), which is exactly the BUG-54
+/// platter/outline symptom: a border drawn around the titles. On top of that the system treatment
+/// compounded with ring mode's own manual scale, so a focused poster grew by roughly the product
+/// of the two and got clipped at the pinned rows' clip edge - the "cut off" half of the report.
+/// A custom `ButtonStyle` can never receive the system treatment in the first place (the same
+/// argument `StillCardButtonStyle` above rests on), so ring mode gets the manual lift and nothing
+/// else. Cards whose label owns no treatment of its own keep the native `.borderless` by passing
+/// `lift: .plain` - see `CardButtonLift`.
+private struct RingCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? StillButtonLook.pressScale : 1)
+            .animation(StillButtonLook.pressAnim, value: configuration.isPressed)
+    }
+}
+
+/// Which lift a card button's LABEL provides for itself, and therefore whether ring mode may take
+/// the system treatment away from it (BUG-93).
+///
+/// - `.card` - the label goes through `CardFocusTreatment`/`CardArtworkFocusLift` (`PosterCard`,
+///   `LandscapeCard`), so in ring mode it draws its own scale and shadow and must NOT also wear
+///   `.borderless`'s treatment.
+/// - `.plain` - the label owns no manual treatment (`CastCard`, `TrailerThumbCard`, `SeeAllCard`,
+///   `FolderTile`, `SeasonPosterCard`, `EpisodeThumbCard`). Ring mode is irrelevant to these: they
+///   have never had a `.manualScale` branch, so taking `.borderless` away would leave them with no
+///   focus motion at all. They keep the bare `.borderless` in every zoom-on state, which is what
+///   `PinnedRowTitle.RowCardTreatment.plainBorderless` in BrowseComponents already assumes.
+enum CardButtonLift {
+    case card
+    case plain
+}
+
 /// BUG-64 (the real one, survived multiple betas): `.buttonStyle(.borderless)`'s system focus
 /// effect — lift + real Siri-Remote-tracking parallax + specular highlight + shadow — moves the
 /// WHOLE button label (artwork + caption) and was never gated by "No Zoom on Focus"
 /// (`no_zoom_on_focus`). The setting only ever suppressed this file's own hover/scale treatments
-/// (`CardFocusTreatment`, `CardArtworkSystemLift`), so no-zoom users still watched every card rise
+/// (`CardFocusTreatment`, `CardArtworkFocusLift`), so no-zoom users still watched every card rise
 /// and zoom on focus. Card call sites use this in place of a bare `.buttonStyle(.borderless)`.
 /// docs/steven-batch-plan-2026-08-29.md Wave 4 item 4.
 ///
@@ -83,14 +181,31 @@ private struct StillCardButtonStyle: ButtonStyle {
 /// (`TileFocusLift`'s border/highlight via `CardFocusTreatment.still`) is unchanged and continues
 /// to mark focus. `.focusEffectDisabled(true)` is kept on the still branch too, belt-and-braces,
 /// in case any other system chrome still consults it — it costs nothing now that the style itself
-/// can't lift. The zoom-on branch is untouched: still exactly the bare `.borderless` it always was.
+/// can't lift.
+///
+/// BUG-93 (beta.17): the zoom-on branch is no longer unconditionally `.borderless`. Ring mode
+/// (`accent_focus_ring` on, zoom on) draws its own lift in `CardArtworkFocusLift`, so a card whose
+/// label carries that treatment now gets `RingCardButtonStyle` - see that type for why the bare
+/// `.borderless` was both bordering the titles and compounding with the manual scale. Default mode
+/// (both settings off) is still exactly the bare `.borderless` it always was, and so is every
+/// `lift: .plain` call site in every zoom-on state.
 struct CardFocusButtonStyle: ViewModifier {
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-93: read here as well as in the cards themselves, and with the same independent
+    /// `@AppStorage` read for the same reason - the modifier has to resolve the same three-way
+    /// branch `CardFocusMode.resolve` does, without a prop-drilling pass through 20 call sites.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// Whether this button's label supplies its own ring-mode lift - see `CardButtonLift`.
+    let lift: CardButtonLift
 
     func body(content: Content) -> some View {
         if noZoomOnFocus {
             content
                 .buttonStyle(StillCardButtonStyle())
+                .focusEffectDisabled(true)
+        } else if accentFocusRing, lift == .card {
+            content
+                .buttonStyle(RingCardButtonStyle())
                 .focusEffectDisabled(true)
         } else {
             content
@@ -109,7 +224,13 @@ extension View {
     /// with site bindings like `focusedFolderId`, and an outer-bounds ring here would wrap reach
     /// padding + caption instead of the artwork — the label owns its geometry, so it owns the
     /// ring).
-    func cardFocusButtonStyle() -> some View { modifier(CardFocusButtonStyle()) }
+    ///
+    /// BUG-93: `lift` defaults to `.card`, so the sites whose label IS a `PosterCard`/
+    /// `LandscapeCard` stay untouched. Pass `.plain` at the six sites whose label draws no
+    /// treatment of its own (see `CardButtonLift`).
+    func cardFocusButtonStyle(lift: CardButtonLift = .card) -> some View {
+        modifier(CardFocusButtonStyle(lift: lift))
+    }
 }
 
 /// FEAT-14 accent focus ring (final architecture — the third and last one, 2026-08-02): the ring
@@ -142,6 +263,15 @@ extension View {
 ///   (same shape, same clip, "scales with the card as one unit" on paper), except on hardware the
 ///   system lift doesn't actually pull the overlay into its lifted layer, so the artwork's scaled
 ///   copy covers the ring at the corners. This is the failure the manual-scale swap above fixes.
+///
+/// BUG-93 (beta.17) completes the swap this comment always described. Until then the *scale* had
+/// moved off the system lift but a system focus layer was still being drawn underneath it: ring
+/// mode's buttons kept the bare `.buttonStyle(.borderless)`, whose own default treatment paints at
+/// the button LABEL's bounds (artwork + caption) and compounds with the manual scale. Ring mode now
+/// uses `RingCardButtonStyle`, a custom style that can receive no system treatment at all, and the
+/// manual scale sits on the artwork container next to the ring (`CardArtworkFocusLift`). So the
+/// invariant this file has claimed since 2026-08-02 is finally literally true: in ring mode the ring
+/// and the artwork are one SwiftUI layer and **no system focus layer is involved**.
 // Internal, not private: FolderTile and CastCard draw their own no-zoom still rings with the
 // same width/colour so still-mode focus reads identically on every card class (Codex 2026-08-29).
 let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
@@ -169,25 +299,38 @@ private func ringInset(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CGFloat {
     (accentFocusRing || noZoomOnFocus) ? ringWidth : 0
 }
 
-/// The magnitude of the system `.hoverEffect(.highlight)` lift on a poster — **measured**, not
-/// estimated (test44, tvOS 26.5 sim, 2026-08-25: focused artwork top edge rises 20.0pt on a 330pt
-/// artwork → 1.1212, rounded here).
+/// How far a focused card's artwork TOP edge rises, in points, in either zoom-on mode.
 ///
-/// BUG-64 is what this constant was. It sat at **1.06** and was documented as "approximates" /
-/// "roughly matches" — a guess, never checked — while the hybrid contract's FEAT-14 carve-out
-/// promised ring mode swaps the system lift for *"an equivalent manual scale"*. It was not
-/// equivalent: it was barely half the lift. u/mrStevenx3 reported for two betas that turning the
-/// ring on changed how focus behaves, and the earlier video-based reading concluded the ring made
-/// posters zoom MORE. The measurement says the opposite — ring mode zoomed noticeably LESS — which
-/// is why "re-tune it" kept being dismissed as already-tried.
+/// BUG-64 measured this (test44, tvOS 26.5 sim, 2026-08-25: the focused artwork's top edge rises
+/// 20.0pt on a 330pt artwork) and then stored it as a SCALE - 1.12 - which quietly re-introduced
+/// the error it was fixing at every other poster size. The system `.hoverEffect(.highlight)` rise
+/// is a CONSTANT, not a proportion: `Theme.Size.heroPinnedRowFocusLiftAllowance` documents the same
+/// ~20pt measured at Medium AND at Large. Holding the scale fixed instead made ring mode rise
+/// 16.1pt at Small, 19.7 at Medium and 24.2 at Large - under- and over-shooting the mode it is
+/// supposed to be indistinguishable from, and at Large charging the pinned rows' clip budget ~27pt
+/// where `Theme.Size` had reserved 20 (BUG-93's "cut off" half).
+///
+/// So the constant is the RISE and the scale is derived from it per card. Single source of truth
+/// with the geometry side: this IS `Theme.Size.heroPinnedRowFocusLiftAllowance`, so
+/// `PinnedRowTitle.focusLiftAllowance` (BrowseComponents) and the card cannot drift apart - both
+/// zoom modes are 20pt, still mode is 0.
 ///
 /// Used in BOTH directions, which is why the correction reaches further than the ring:
-///  - `CardFocusTreatment.manualScale` — ring mode's stand-in for the system lift;
-///  - `CardCaptionFocusDrop` — how far the caption follows the SYSTEM lift's bottom edge, which
-///    was therefore dropping by half the distance it should have on every default-mode card.
+///  - `CardArtworkFocusLift.manualScale` - ring mode's stand-in for the system lift;
+///  - `CardCaptionFocusDrop` - how far the caption follows the lift's bottom edge, now the same
+///    20pt in both zoom modes because the artwork container is what scales in both.
 ///
 /// Sim-derived; a device pass should confirm it before it is treated as settled.
-private let cardSystemLiftScale: CGFloat = 1.12
+private let cardFocusLiftRise: CGFloat = Theme.Size.heroPinnedRowFocusLiftAllowance
+
+/// The uniform scale that raises an `artworkHeight`-tall artwork's top edge by exactly
+/// `cardFocusLiftRise` when applied about its centre (the bottom edge drops by the same amount,
+/// which is what `CardCaptionFocusDrop` pays out to the caption). Large 403.3pt → 1.0992,
+/// Medium 330 → 1.1212, Small 274.5 → 1.1457.
+private func cardLiftScale(artworkHeight: CGFloat) -> CGFloat {
+    guard artworkHeight > 0 else { return 1 }
+    return 1 + 2 * cardFocusLiftRise / artworkHeight
+}
 
 /// BUG-36: the ARTWORK's rounded rect, expressed in the WHOLE CARD's coordinate space.
 ///
@@ -274,13 +417,15 @@ enum CardFocusMode {
 /// What scales, per mode:
 /// - `.systemLift` — handled at the ARTWORK, not here (BUG-54): the system effect's standing
 ///   platter follows the attached view's bounds, so lockup attachment drew a platter around
-///   artwork + caption on every card. See `CardArtworkSystemLift` / `CardCaptionFocusDrop` for
+///   artwork + caption on every card. See `CardArtworkFocusLift` / `CardCaptionFocusDrop` for
 ///   how BUG-36's symptoms stay fixed under artwork attachment.
-/// - `.manualScale` — the whole lockup, via `.scaleEffect`. Same magnitude as before, one level
-///   up. Reduce Motion is honored explicitly here (the system lift respects it automatically, a
-///   manual `.scaleEffect` does not) by skipping the animation and snapping straight to the
-///   focused/unfocused scale — the ring still has to reach its scaled geometry to stay aligned
-///   with the artwork, so scale itself is kept, not skipped.
+/// - `.manualScale` - handled at the ARTWORK too (BUG-93), for the same reason `.systemLift` is:
+///   the scale belongs on the container the ring overlay lives in, so ring and picture are one
+///   layer, and the caption then follows via `CardCaptionFocusDrop` in both zoom modes instead of
+///   riding inside the scale in one of them. Reduce Motion is honored explicitly there (the system
+///   lift respects it automatically, a manual `.scaleEffect` does not) by skipping the animation
+///   and snapping straight to the focused/unfocused scale - the ring still has to reach its scaled
+///   geometry to stay aligned with the artwork, so scale itself is kept, not skipped.
 /// - `.still` — nothing scales, ever. Focus reads as a border plus a drop shadow on the artwork
 ///   shape: the accent ring when the user has it on, otherwise a neutral white border of the same
 ///   weight, so ring-on and ring-off still modes are the same geometry in two colors and a
@@ -306,24 +451,20 @@ struct CardFocusTreatment: ViewModifier {
             // custom `CardArtworkShape` passed to `.contentShape(.hoverEffect, …)` here did not
             // constrain it (device + sim, 2026-08-08) — so hanging the effect off the lockup put a
             // visible platter around artwork AND caption on every card, focused or not. The effect
-            // now lives on the artwork container (`CardArtworkSystemLift`), whose bounds are the
+            // now lives on the artwork container (`CardArtworkFocusLift`), whose bounds are the
             // artwork, and the caption follows the lift via `CardCaptionFocusDrop`.
             content
         case .manualScale:
+            // BUG-93: nothing happens at the lockup level in this mode either, for the same
+            // reason `.systemLift` does nothing here. The scale and its drop shadow moved DOWN to
+            // the artwork container (`CardArtworkFocusLift`), which is where the ring overlay
+            // already lives - so the two are one SwiftUI layer, exactly as FEAT-14's final
+            // architecture note above promises, and the caption is outside the scale in BOTH zoom
+            // modes rather than inside it in one and outside it in the other. That symmetry is
+            // what lets `CardCaptionFocusDrop` pay the identical 20pt in both, and what lets
+            // `PinnedRowTitle.focusLiftAllowance` charge one constant instead of a scale derived
+            // off the lockup's height.
             content
-                // BUG-64: the system lift is not just a scale — it carries a platter and a drop
-                // shadow, so a ring card that only scaled read as a flat mechanical zoom next to
-                // the native lift's sense of depth. Same fill+shadow still mode uses, so all three
-                // treatments share one depth cue.
-                .background {
-                    if isFocused {
-                        artworkShape
-                            .fill(Color.black)
-                            .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
-                    }
-                }
-                .scaleEffect(isFocused ? cardSystemLiftScale : 1)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
         case let .still(ringed):
             content
                 // Behind the (opaque) artwork, so only the spill reads. Same weight as the inline
@@ -456,43 +597,87 @@ extension View {
 /// - Caption hidden under the lifted artwork: the caption no longer stands still — see
 ///   `CardCaptionFocusDrop` below.
 ///
-/// Only `.systemLift` needs any of this; the other modes keep the whole-lockup treatment in
-/// `CardFocusTreatment` (they draw artwork-shaped visuals themselves and produce no platter).
-struct CardArtworkSystemLift: ViewModifier {
+/// BUG-93 (beta.17) gave this modifier the OTHER zoom-on mode as well, which is why it is no longer
+/// called `CardArtworkSystemLift`. Ring mode's manual scale used to live one level up, on the whole
+/// lockup (`CardFocusTreatment.manualScale`); it now sits here, on the same artwork container the
+/// system effect uses and directly outside the ring overlay, so:
+///  - the ring and the picture scale as ONE SwiftUI layer (FEAT-14's stated contract, see the
+///    graveyard at the top of this file - a scale applied above the ring's own overlay cannot
+///    leave it behind the way the system compositor's lifted layer did);
+///  - the artwork's top edge rises by the SAME `cardFocusLiftRise` in both zoom modes, so the
+///    caption's drop and `PinnedRowTitle.focusLiftAllowance`'s clip budget are one number;
+///  - the caption is outside the scaled box in both modes rather than inside it in one.
+/// Still mode keeps its whole-lockup treatment in `CardFocusTreatment` (it draws artwork-shaped
+/// visuals itself and produces no platter, and it scales nothing at all).
+struct CardArtworkFocusLift: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let mode: CardFocusMode
+    let isFocused: Bool
+    /// Height of the artwork this modifier is attached to - the scale is derived from it so the
+    /// rise is `cardFocusLiftRise` at every Poster Size. Pass the same value the container's own
+    /// `.frame(height:)` uses.
+    let artworkHeight: CGFloat
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
-        if case .systemLift = mode {
+        switch mode {
+        case .systemLift:
             content
                 .compositingGroup()
                 // BUG-31/BUG-25: pin the highlight's geometry to the card's own Corners radius so
                 // the lift can't fall back to a system rect that extends past the artwork.
                 .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: cornerRadius))
                 .hoverEffect(.highlight)
-        } else {
+        case .manualScale:
+            content
+                // BUG-64: the system lift is not just a scale — it carries a platter and a drop
+                // shadow, so a ring card that only scaled read as a flat mechanical zoom next to
+                // the native lift's sense of depth. Same fill+shadow still mode uses, so all three
+                // treatments share one depth cue. A plain `RoundedRectangle` rather than
+                // `CardArtworkShape`: down here the attached view's bounds ARE the artwork, so
+                // there is no caption slot to carve out of the shape.
+                .background {
+                    if isFocused {
+                        RoundedRectangle(cornerRadius: cornerRadius)
+                            .fill(Color.black)
+                            .shadow(color: .black.opacity(0.6), radius: 22, y: 10)
+                    }
+                }
+                .scaleEffect(isFocused ? cardLiftScale(artworkHeight: artworkHeight) : 1)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
+        case .still:
             content
         }
     }
 }
 
-/// BUG-54 companion: in `.systemLift` mode the caption sits OUTSIDE the hover-effect view again,
-/// so the system lift no longer moves it. Instead of standing still under the lifted artwork
-/// (BUG-36's second symptom), the focused caption slides down by the lift's bottom expansion —
-/// half of the scale delta over the artwork height, the same arithmetic `cardSystemLiftScale`
-/// approximates for ring mode — which keeps the artwork↔title gap visually constant and matches
-/// the native TV-app caption behavior. `.offset` is render-only, so row layout never reflows.
-/// Other modes return 0: manual scale carries the caption inside the scaled lockup, still mode
+/// BUG-54 companion: in both zoom-on modes the caption sits OUTSIDE the view that lifts, so the
+/// lift no longer moves it. Instead of standing still under the lifted artwork (BUG-36's second
+/// symptom), the focused caption slides down by the lift's bottom expansion, which keeps the
+/// artwork↔title gap visually constant and matches the native TV-app caption behavior. `.offset`
+/// is render-only, so row layout never reflows.
+///
+/// BUG-93: this is now `cardFocusLiftRise` flat rather than half a scale delta, and it applies to
+/// `.manualScale` too. The system lift's bottom edge drops by a constant, and ring mode's own
+/// scale is derived from that same constant (`cardLiftScale`) and now lives on the artwork
+/// container rather than the lockup - so both modes expand the artwork downward by exactly
+/// `cardFocusLiftRise` and the caption pays the same amount in each. Still mode returns 0: it
 /// never moves anything.
 struct CardCaptionFocusDrop: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let mode: CardFocusMode
     let isFocused: Bool
+    /// Kept in the signature although the drop no longer depends on it - the call sites all pass
+    /// the artwork height, and a future treatment that IS height-dependent should not have to
+    /// re-thread it through every card. Unused deliberately, not by accident.
     let artworkHeight: CGFloat
 
     private var drop: CGFloat {
-        guard case .systemLift = mode, isFocused else { return 0 }
-        return (cardSystemLiftScale - 1) / 2 * artworkHeight
+        guard isFocused else { return 0 }
+        switch mode {
+        case .systemLift, .manualScale: return cardFocusLiftRise
+        case .still: return 0
+        }
     }
 
     func body(content: Content) -> some View {
@@ -561,11 +746,35 @@ struct PosterCard: View {
                 .clipped()
                 // BUG-64: the inner corner nests inside the ring's outer corner (concentric radii).
                 .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))
-                .frame(width: resolvedWidth, height: resolvedHeight)
+                // BUG-91 gate (test50): the INSET artwork's own box, published to the harness so
+                // the depth rail's frame can be compared against the picture's rather than against
+                // a luma guess. DEBUG-only and identifier-only - no label, no traits, no hit
+                // testing change - so it cannot alter what the card reads as at 10 feet or in a
+                // Release build.
+                .modifier(DebugAXIdentifier("poster_artwork"))
                 // BUG-36: the card-depth overlay stays anchored to the ARTWORK's frame — its edge
                 // coverage mask measures 0…1 down *this* box (see `CardDepthStyle.coverageMask`),
                 // so hoisting it to the lockup would stretch "Top" across the caption slot too.
-                .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
+                // BUG-91 (u/mrStevenx3, beta.17: "an empty band between the picture and the card's
+                // frame on the top and left of every card"): it now hangs off the INSET artwork,
+                // i.e. before the outer re-frame below, with the same inset radius the clip uses.
+                // With No Zoom (or the ring) on, `ringInset` reserves a 4pt band and the artwork is
+                // drawn smaller than the card; attached after the re-frame the depth rail traced
+                // the OUTER rect, so the rail floated 4pt off the picture on every edge of every
+                // card, focused or not. Attached here it traces the picture. Concentric with the
+                // clip by construction (same `max(0, r - inset)`), and with `inset == 0` - ring off
+                // and zoom on, the default - the two attachment points are the same box, so the
+                // default render is byte-identical. The coverage mask's denominator becomes the
+                // inset artwork's height, which changes no fraction: the mask is relative.
+                // Do NOT collapse the band on focus (Wave 7 rationale in `ringInset` above).
+                .nuvioCardDepth(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)),
+                                surface: .posters)
+                .frame(width: resolvedWidth, height: resolvedHeight)
+                // BUG-91 gate (test50): the card's OUTER box, the thing the rail has to sit exactly
+                // `ringInset` inside of. Armed only under `-debug.cardGeometryProbe YES`; see
+                // `DebugAXIdentifier` for why the probe has to publish this rect as well as the
+                // rail's.
+                .modifier(DebugAXIdentifier("poster_card"))
                 // FEAT-14 (final): the ring is drawn on the artwork, inside its own clip bounds —
                 // same inside-strokeBorder treatment as the trailer surface's ring in
                 // `InlineTrailerCard`. See the file-level comment above for why this replaced the
@@ -579,8 +788,15 @@ struct PosterCard: View {
                 }
                 // BUG-54: in systemLift mode the hover effect hangs HERE, on the artwork container,
                 // so its standing platter (drawn at the attached view's bounds) stays hidden behind
-                // the opaque poster instead of wrapping the caption too. No-op in other modes.
-                .modifier(CardArtworkSystemLift(mode: focusMode, cornerRadius: style.cornerRadius))
+                // the opaque poster instead of wrapping the caption too. BUG-93: ring mode's manual
+                // scale hangs here too, outside the ring overlay above so the two move together.
+                // No-op in still mode.
+                .modifier(CardArtworkFocusLift(
+                    mode: focusMode,
+                    isFocused: isFocused,
+                    artworkHeight: resolvedHeight,
+                    cornerRadius: style.cornerRadius
+                ))
 
             if titleVisible {
                 Text(title)
@@ -666,9 +882,16 @@ struct LandscapeCard: View {
                     .clipped()
                     // BUG-64: inner corner nests inside the ring's outer corner.
                     .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))
-                    .frame(width: width, height: height)
                     // BUG-36: depth (and its coverage mask) stays anchored to the artwork frame.
-                    .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: depthSurface)
+                    // BUG-91: and to the INSET artwork's frame, before the outer re-frame below -
+                    // see `PosterCard`'s copy of this comment for the full rationale (same empty
+                    // band, same fix, same byte-identical default when `inset == 0`).
+                    .nuvioCardDepth(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)),
+                                    surface: depthSurface)
+                    .frame(width: width, height: height)
+                    // BUG-91 gate: same outer-box marker as PosterCard's, so an armed probe run
+                    // leaves the landscape cards' button frames unperturbed too.
+                    .modifier(DebugAXIdentifier("landscape_card"))
 
                 if overlayLeading != nil || overlayTrailing != nil {
                     // Upcoming/CW artwork badges: sit above the progress bar (when present) and
@@ -715,8 +938,14 @@ struct LandscapeCard: View {
                 }
             }
             // BUG-54: systemLift hover lives on the artwork/progress-bar group — bounds == artwork,
-            // platter hidden behind it. See `PosterCard`'s copy and `CardArtworkSystemLift`.
-            .modifier(CardArtworkSystemLift(mode: focusMode, cornerRadius: style.cornerRadius))
+            // platter hidden behind it. BUG-93: ring mode's manual scale lives here too. See
+            // `PosterCard`'s copy and `CardArtworkFocusLift`.
+            .modifier(CardArtworkFocusLift(
+                mode: focusMode,
+                isFocused: isFocused,
+                artworkHeight: height,
+                cornerRadius: style.cornerRadius
+            ))
 
             if titleVisible {
                 Text(title)
