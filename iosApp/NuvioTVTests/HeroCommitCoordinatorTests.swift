@@ -242,7 +242,7 @@ final class HeroCommitCoordinatorTests: XCTestCase {
     func testBootstrapRouteHoldsTheInitialPreInitializeState() {
         XCTAssertEqual(
             AddonBootstrapRoute.decide(isInitialized: false, readyIsEmpty: true,
-                                       manifestsPending: false, hasRefreshed: false),
+                                       manifestsPending: false, seedPending: false, hasRefreshed: false),
             .holdRows)
     }
 
@@ -252,7 +252,7 @@ final class HeroCommitCoordinatorTests: XCTestCase {
     func testBootstrapRouteOpensOnceBootstrapSettledWithNoSources() {
         XCTAssertEqual(
             AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
-                                       manifestsPending: false, hasRefreshed: false),
+                                       manifestsPending: false, seedPending: false, hasRefreshed: false),
             .openRowsNoSources)
     }
 
@@ -261,13 +261,13 @@ final class HeroCommitCoordinatorTests: XCTestCase {
     func testBootstrapRouteStaysOutOfTheWayWhenSomethingIsReady() {
         XCTAssertEqual(
             AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: false,
-                                       manifestsPending: false, hasRefreshed: false),
+                                       manifestsPending: false, seedPending: false, hasRefreshed: false),
             .none)
         // Ready wins even before bootstrap has flagged itself settled — a ready manifest IS a
         // settled add-on, and the refresh path must not be diverted into a rows-gate decision.
         XCTAssertEqual(
             AddonBootstrapRoute.decide(isInitialized: false, readyIsEmpty: false,
-                                       manifestsPending: true, hasRefreshed: false),
+                                       manifestsPending: true, seedPending: false, hasRefreshed: false),
             .none)
     }
 
@@ -276,7 +276,7 @@ final class HeroCommitCoordinatorTests: XCTestCase {
     func testBootstrapRouteHoldsWhileAManifestIsStillFetching() {
         XCTAssertEqual(
             AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
-                                       manifestsPending: true, hasRefreshed: false),
+                                       manifestsPending: true, seedPending: false, hasRefreshed: false),
             .holdRows)
     }
 
@@ -286,7 +286,33 @@ final class HeroCommitCoordinatorTests: XCTestCase {
     func testBootstrapRouteHoldsAfterARefreshHasAlreadyRun() {
         XCTAssertEqual(
             AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
-                                       manifestsPending: false, hasRefreshed: true),
+                                       manifestsPending: false, seedPending: false, hasRefreshed: true),
+            .holdRows)
+    }
+
+    /// Codex round 10 (P2): bootstrap settled on an EMPTY list, but the default seed has not had
+    /// its say (a signed-in account waits for the first server pull; a guest's `addAddon` is in
+    /// flight). Cinemeta may still land, so "no sources" is not a fact yet.
+    func testBootstrapRouteHoldsAnEmptyListWhileTheSeedIsPending() {
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
+                                       manifestsPending: false, seedPending: true, hasRefreshed: false),
+            .holdRows)
+    }
+
+    /// Codex round 10 (P2), THE REGRESSION: the seed failed (offline fresh install) and
+    /// `addAddon` adds nothing on failure, so no add-on emission ever follows. The settled empty
+    /// list is then this profile's final word, and the rows must open on it or a collections-only
+    /// Home stays blank for the session.
+    func testBootstrapRouteOpensAnEmptyListOnceTheSeedHasFailed() {
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
+                                       manifestsPending: false, seedPending: false, hasRefreshed: false),
+            .openRowsNoSources)
+        // Still not before bootstrap settles, whatever the seed did.
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: false, readyIsEmpty: true,
+                                       manifestsPending: false, seedPending: false, hasRefreshed: false),
             .holdRows)
     }
 

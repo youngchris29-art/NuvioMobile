@@ -117,8 +117,9 @@ enum AddonBootstrapRoute: Equatable {
     /// emission and the rows gate is not this watcher's business.
     case none
     /// Nothing ready, and "nothing ready" is not yet a fact — bootstrap has not settled, or a
-    /// manifest is still being fetched, or a catalog-bearing refresh has already run (in which
-    /// case the Kotlin gate's own `HERO_COMMIT_GATE_TIMEOUT_MS` is the backstop). Hold the rows.
+    /// manifest is still being fetched, or the default add-on seed has not yet had its say, or a
+    /// catalog-bearing refresh has already run (in which case the Kotlin gate's own
+    /// `HERO_COMMIT_GATE_TIMEOUT_MS` is the backstop). Hold the rows.
     case holdRows
     /// Bootstrap settled with no enabled add-on that can ever produce a catalog, and no refresh
     /// has run: nothing will release the Kotlin hero gate, so open the rows here rather than hold
@@ -130,12 +131,17 @@ enum AddonBootstrapRoute: Equatable {
     ///   - isInitialized: `AddonsUiState.isInitialized` — add-on bootstrap has run for this profile.
     ///   - readyIsEmpty: no enabled add-on has a loaded manifest.
     ///   - manifestsPending: an enabled add-on is still fetching its manifest.
+    ///   - seedPending: the default add-on seed may still land an add-on on this profile: it has
+    ///     not been attempted yet (a signed-in account waits for the first server pull), or it is
+    ///     in flight. False once it has failed (Codex round 10), which on an empty list is the
+    ///     only way that list ever becomes a fact.
     ///   - hasRefreshed: a catalog-bearing refresh has already run on this profile
     ///     (`lastManifestSignature` is non-empty).
     static func decide(isInitialized: Bool, readyIsEmpty: Bool,
-                       manifestsPending: Bool, hasRefreshed: Bool) -> AddonBootstrapRoute {
+                       manifestsPending: Bool, seedPending: Bool,
+                       hasRefreshed: Bool) -> AddonBootstrapRoute {
         guard readyIsEmpty else { return .none }
-        guard isInitialized, !manifestsPending, !hasRefreshed else { return .holdRows }
+        guard isInitialized, !manifestsPending, !seedPending, !hasRefreshed else { return .holdRows }
         return .openRowsNoSources
     }
 }
@@ -186,6 +192,14 @@ final class HomeViewModel: ObservableObject {
     private var collections: [NuvioCollection] = []
     private var settingsItems: [HomeCatalogSettingsItem] = []
     private var didSeed = false
+    /// Codex round 10 (P2): the default seed's `addAddon` failed and left the list empty (an
+    /// offline fresh install, say). `addAddon` adds nothing on failure, so no add-on emission ever
+    /// follows; this is the term that lets the empty, initialized list open the rows gate instead
+    /// of holding a collections-only Home blank for the session. Profile-scoped like `didSeed`.
+    private var seedFailed = false
+    /// Bumped with every seed attempt and every profile reset so a stale completion cannot mark
+    /// a newer profile's seed as failed.
+    private var seedAttempt = 0
     /// Guards against redundant `refresh` calls — only re-refresh when the ready-addon set changes.
     /// Combined signature: manifest URL AND display title per ready addon (`AddonChangeRoute`
     /// Codex round 8). A rename alone moves this even though `lastManifestSignature` does not, so
@@ -351,6 +365,8 @@ final class HomeViewModel: ObservableObject {
         lastRefreshSignature = ""
         lastManifestSignature = ""
         didSeed = false
+        seedFailed = false
+        seedAttempt += 1
         // Codex wave-4 r2 (P1): the published content and internal snapshots are profile-scoped
         // too. Left populated, the next profile's `HomeView` renders the PREVIOUS profile's hero,
         // rows, Continue Watching, and Upcoming until the freshly attached watchers replay —
@@ -984,7 +1000,21 @@ final class HomeViewModel: ObservableObject {
         guard !didSeed else { return }
         guard AddonRepository.shared.seedingAllowed() else { return }
         didSeed = true
-        AddonRepository.shared.addAddon(rawUrl: cinemetaManifestUrl) { _, _ in }
+        seedAttempt += 1
+        let attempt = seedAttempt
+        AddonRepository.shared.addAddon(rawUrl: cinemetaManifestUrl) { [weak self] result, error in
+            Task { @MainActor [weak self] in
+                guard let self, self.seedAttempt == attempt else { return }
+                guard error != nil || result is AddAddonResultError else { return }
+                // Codex round 10 (P2): nothing was added, so no emission follows. Re-run the
+                // bootstrap decision on the list as it stands: still empty and settled means a
+                // profile with no source, and the rows open the same way `NO_SOURCES` does.
+                self.seedFailed = true
+                if let state = AddonRepository.shared.uiState.value_ as? AddonsUiState {
+                    self.onAddonsChanged(state)
+                }
+            }
+        }
     }
 
     private func onAddonsChanged(_ state: AddonsUiState) {
@@ -997,6 +1027,18 @@ final class HomeViewModel: ObservableObject {
         if state.addons.isEmpty {
             addonManifestError = nil
             maybeSeedDefaultAddon()
+            // Codex round 10 (P2): the settled empty list used to return here without asking
+            // `AddonBootstrapRoute`, so a seed that could not land (offline fresh install) left the
+            // rows gate shut for the session. The pre-bootstrap emission still holds
+            // (`isInitialized` false), and so does one whose seed is pending or in flight.
+            let bootstrap = AddonBootstrapRoute.decide(isInitialized: state.isInitialized,
+                                                       readyIsEmpty: true,
+                                                       manifestsPending: false,
+                                                       seedPending: !seedFailed,
+                                                       hasRefreshed: !lastManifestSignature.isEmpty)
+            if bootstrap == .openRowsNoSources {
+                openRowsGateAndRebuild()
+            }
             return
         }
 
@@ -1009,6 +1051,9 @@ final class HomeViewModel: ObservableObject {
         let bootstrap = AddonBootstrapRoute.decide(isInitialized: state.isInitialized,
                                                    readyIsEmpty: ready.isEmpty,
                                                    manifestsPending: manifestsPending,
+                                                   // The list is not empty, so the seed never runs
+                                                   // and has nothing left to say here.
+                                                   seedPending: false,
                                                    hasRefreshed: !lastManifestSignature.isEmpty)
         if ready.isEmpty {
             addonManifestError = manifestsPending ? nil : AddonModelsKt.firstEnabledManifestError(state.addons)
