@@ -1,5 +1,145 @@
 import XCTest
 
+/// One `rows` probe line, parsed down to what the reorder rule needs. `index` is the line's
+/// position in the FULL probe-line array, which is how the rule places it against the `commit`
+/// line and against any disqualifying line between two `rows` lines.
+struct RowsProbeLine: Equatable {
+    let index: Int
+    /// The ordered row-id digests from `order=` (or the three real ids from `first=` on a build
+    /// older than that token).
+    let order: [String]
+    /// The Home Rows settings-order digest from `settingsSig=`, or nil on a build that predates it.
+    let settingsSig: String?
+    /// The whole line, so a failure message can quote it.
+    let raw: String
+}
+
+/// Whether a reorder between two consecutive `rows` probe lines is a violation.
+///
+/// A reorder is two row ids present in BOTH lines that swap relative position. Rows growing as
+/// catalog batches stream in is not a reorder and never was; this rule only ever looks at ids the
+/// two lines share.
+///
+/// The rule is NOT "rows never reorder". `RowsGate` (HomeHeroCommit.swift) is explicit that the
+/// gate exists to make the FIRST paint atomic - hero, sections and rows in one turn - and that
+/// afterwards "post-commit reorders are allowed by design". The thing BUG-86 is about is a rebuild
+/// that reshuffles the rows BEFORE the hero has committed (the tester's video: "Top 10 des films"
+/// on top, then a rebuild that puts "Nouveaux films" first, with skeletons under it).
+///
+/// So a reorder is accepted only when all three hold:
+///   1. it is OBSERVED after the first `commit` line (the later of the two `rows` lines is
+///      post-commit). The gated rebuild's own `rows` line is logged from inside the commit
+///      continuation, immediately BEFORE the `commit` line, so it is always the `earlier` half of
+///      the pair that matters and this stays a strict pre/post split;
+///   2. `settingsSig=` actually MOVED between the two lines, i.e. the Home Rows order the rebuild
+///      walks is a different order now. That is what makes the reorder attributable to a settings
+///      publish (a cloud pull landing the order the user set on another device - the launch sync
+///      burst's step 2, and the real event it simulates) rather than to rows reshuffling under a
+///      settings order that never moved, which is an unstable rebuild and stays a failure. A line
+///      with no `settingsSig=` (a log from a build before this token) can attribute nothing, so it
+///      is rejected exactly as it was before this rule existed;
+///   3. nothing disqualifying sits between them - a second `commit`, or a `publish … headChanged=1`.
+///      Either means the reorder rode a re-decision of the hero head, which is the double-commit
+///      the whole photo contract exists to catch, and no settings change excuses it.
+enum RowsOrderRule {
+    struct Violation: Equatable {
+        let earlier: RowsProbeLine
+        let later: RowsProbeLine
+        /// Why the reorder was not excused, for the failure message.
+        let reason: String
+    }
+
+    /// - Parameters:
+    ///   - rowsLines: every `rows` line, in emission order.
+    ///   - firstCommitIndex: index of the first `commit` line in the full probe-line array, or nil
+    ///     when the run never committed (a separate assertion already fails that case).
+    ///   - disqualifyingIndices: indices of `commit` lines after the first and of
+    ///     `publish … headChanged=1` lines, in the same array.
+    static func firstViolation(rowsLines: [RowsProbeLine],
+                               firstCommitIndex: Int?,
+                               disqualifyingIndices: Set<Int>) -> Violation? {
+        guard rowsLines.count > 1 else { return nil }
+        for i in 1..<rowsLines.count {
+            let earlier = rowsLines[i - 1]
+            let later = rowsLines[i]
+            let laterPosition = Dictionary(uniqueKeysWithValues: later.order.enumerated().map { ($1, $0) })
+            let sharedPositionsInEarlierOrder = earlier.order.compactMap { laterPosition[$0] }
+            if sharedPositionsInEarlierOrder == sharedPositionsInEarlierOrder.sorted() { continue }
+
+            guard let firstCommitIndex, later.index > firstCommitIndex else {
+                return Violation(earlier: earlier, later: later,
+                                 reason: "the reorder landed before the hero committed — rows must not reshuffle under an uncommitted hero")
+            }
+            guard let earlierSig = earlier.settingsSig, let laterSig = later.settingsSig else {
+                return Violation(earlier: earlier, later: later,
+                                 reason: "no settingsSig= on one or both lines, so the reorder cannot be attributed to a Home Rows settings change")
+            }
+            guard earlierSig != laterSig else {
+                return Violation(earlier: earlier, later: later,
+                                 reason: "the Home Rows settings order did not change (settingsSig=\(laterSig) on both lines) — rows reshuffled on their own")
+            }
+            if let blocker = disqualifyingIndices.filter({ $0 > earlier.index && $0 <= later.index }).min() {
+                return Violation(earlier: earlier, later: later,
+                                 reason: "a second commit or a headChanged=1 publish (probe line \(blocker)) landed between the two lines — the reorder rode a re-decision of the hero head")
+            }
+        }
+        return nil
+    }
+}
+
+/// Pure-rule coverage for `RowsOrderRule`: no app launch, no simulator interaction, so it runs in
+/// milliseconds alongside the UI gates it guards. The accepted case is the one the launch sync
+/// burst produces on a warm fixture (`test31HeroCommitsOnce` Leg B, 2026-09-05: commit at 5457 ms
+/// with `art=ready waited=9ms`, then the burst's `applyFromRemote` reversing all 34 rows at
+/// 6451 ms); every rejected case is a shape the old, position-only rule caught and this one must
+/// keep catching.
+final class RowsOrderRuleTests: XCTestCase {
+    private func line(_ index: Int, _ order: [String], _ sig: String?) -> RowsProbeLine {
+        RowsProbeLine(index: index, order: order, settingsSig: sig, raw: "rows #\(index)")
+    }
+
+    func testGrowingRowsAreNotAReorder() {
+        let lines = [line(0, ["a", "b", "c"], "s1"), line(2, ["a", "b", "c", "d", "e"], "s1")]
+        XCTAssertNil(RowsOrderRule.firstViolation(rowsLines: lines, firstCommitIndex: 1, disqualifyingIndices: []))
+    }
+
+    func testPostCommitReorderWithMovedSettingsSignatureIsAccepted() {
+        let lines = [line(0, ["a", "b", "c"], "s1"), line(5, ["c", "b", "a"], "s2")]
+        XCTAssertNil(RowsOrderRule.firstViolation(rowsLines: lines, firstCommitIndex: 1, disqualifyingIndices: []))
+    }
+
+    func testPreCommitReorderIsRejectedEvenWhenSettingsMoved() {
+        let lines = [line(0, ["a", "b", "c"], "s1"), line(1, ["c", "b", "a"], "s2")]
+        let violation = RowsOrderRule.firstViolation(rowsLines: lines, firstCommitIndex: 4, disqualifyingIndices: [])
+        XCTAssertNotNil(violation)
+        XCTAssertTrue(violation?.reason.contains("before the hero committed") == true, "got \(violation?.reason ?? "nil")")
+    }
+
+    func testPostCommitReorderWithUnmovedSettingsSignatureIsRejected() {
+        let lines = [line(0, ["a", "b", "c"], "s1"), line(5, ["c", "b", "a"], "s1")]
+        let violation = RowsOrderRule.firstViolation(rowsLines: lines, firstCommitIndex: 1, disqualifyingIndices: [])
+        XCTAssertNotNil(violation)
+        XCTAssertTrue(violation?.reason.contains("did not change") == true, "got \(violation?.reason ?? "nil")")
+    }
+
+    func testPostCommitReorderOnAProbeWithoutSettingsSignatureIsRejected() {
+        let lines = [line(0, ["a", "b", "c"], nil), line(5, ["c", "b", "a"], nil)]
+        XCTAssertNotNil(RowsOrderRule.firstViolation(rowsLines: lines, firstCommitIndex: 1, disqualifyingIndices: []))
+    }
+
+    func testReorderRidingASecondCommitIsRejected() {
+        let lines = [line(0, ["a", "b", "c"], "s1"), line(5, ["c", "b", "a"], "s2")]
+        let violation = RowsOrderRule.firstViolation(rowsLines: lines, firstCommitIndex: 1, disqualifyingIndices: [3])
+        XCTAssertNotNil(violation)
+        XCTAssertTrue(violation?.reason.contains("re-decision of the hero head") == true, "got \(violation?.reason ?? "nil")")
+    }
+
+    func testNoCommitAtAllRejectsAnyReorder() {
+        let lines = [line(0, ["a", "b"], "s1"), line(1, ["b", "a"], "s2")]
+        XCTAssertNotNil(RowsOrderRule.firstViolation(rowsLines: lines, firstCommitIndex: nil, disqualifyingIndices: []))
+    }
+}
+
 /// Headless verification harness for the beta.7 UX batch (UX-2/UX-3).
 ///
 /// This sandbox has no Simulator window, so `XCUIRemote` is the only way to drive tvOS focus
@@ -1720,9 +1860,10 @@ final class NuvioTVUITests: XCTestCase {
     /// first hero-source fetch and delays enrichment 2.5s, which HERO_COMMIT_GATE_TIMEOUT_MS's 4s
     /// budget is not guaranteed to outrun; the design doc treats a timeout release as diagnosable,
     /// not broken - see HeroCommitGate.kt's header) with `sync` settled or not-applicable; every
-    /// `rows` line's row-id order never reorders ids also present in an earlier `rows` line
-    /// (content may grow progressively as catalog batches stream in - see
-    /// collectionsWatcher/catalogSettingsWatcher in HomeViewModel.swift - but never reshuffle); and
+    /// `rows` line's row-id order reorders ids also present in an earlier `rows` line only where
+    /// `RowsOrderRule` excuses it (content may grow progressively as catalog batches stream in -
+    /// see collectionsWatcher/catalogSettingsWatcher in HomeViewModel.swift - and a settings order
+    /// arriving post-commit may reshuffle it, but nothing else may); and
     /// the existing fallbackCached(hadArt=1) → primary adjacency check (a stale poster briefly
     /// overwriting art already correct for this same title).
     private func assertHeroPhotoContract(_ lines: [String], legName: String, allowTimeoutRelease: Bool = false) {
@@ -1808,13 +1949,25 @@ final class NuvioTVUITests: XCTestCase {
             XCTFail("\(legName): no 'commit' line found in hero_probe_lines — the hero never committed. lines=\(lines)")
         }
 
-        // Rows may legitimately grow across several `rows` lines as catalog batches stream in  - 
+        // Rows may legitimately grow across several `rows` lines as catalog batches stream in  -
         // `collectionsWatcher`/`catalogSettingsWatcher` (HomeViewModel.swift) rebuild rows on
         // their own schedule, independent of the hero gate, and rows keep changing post-commit by
         // design ("rows may still change under it post-commit", the `sameHead` branch's own
-        // comment). What must never happen is a REORDER: two ids that both appear in an earlier
-        // and a later `rows` line swapping relative position - exactly the launch-sync-burst
-        // symptom (`HomeCatalogSettingsRepository.applyFromRemote` rewriting every `order`).
+        // comment). A REORDER - two ids present in both an earlier and a later `rows` line swapping
+        // relative position - is judged by `RowsOrderRule`; see its doc comment for why the answer
+        // is not a flat no.
+        //
+        // 2026-09-05: this check used to be that flat no, and it was measuring a race rather than
+        // an invariant. `HomeLaunchBurstSim` fires its reversal a fixed 1 s after the first
+        // NON-EMPTY hero publish, which is the gate-release publish (a held publish republishes the
+        // previous, empty hero), while the commit lands a hero-art prewarm later - anywhere from
+        // ~10 ms on a warm fixture to the full 1.5 s budget on a cold one. So whether the burst's
+        // reversal was absorbed into the one gated rebuild (prewarm slower than the burst) or
+        // landed as a post-commit reorder (prewarm faster) was decided by the artwork cache, not by
+        // the code under test. Observed both ways on this fixture within one evening: 2026-09-04
+        // 23:48 released:timeout at 6770 ms with `waited=1382ms` (absorbed, green), 2026-09-05
+        // 07:05 released:all at 5441 ms with `waited=9ms` (post-commit, red) - same contract held
+        // in both, one of them failed.
         let rowsLines = lines.filter { probeKind($0) == "rows" }
         if rowsLines.isEmpty {
             XCTFail("\(legName): no 'rows' line found in hero_probe_lines — lines=\(lines)")
@@ -1841,13 +1994,32 @@ final class NuvioTVUITests: XCTestCase {
                 }
                 return (probeField(line, "first") ?? "").split(separator: ",").map(String.init)
             }
-            for i in 1..<rowsLines.count {
-                let earlier = rowIds(rowsLines[i - 1])
-                let later = rowIds(rowsLines[i])
-                let laterPosition = Dictionary(uniqueKeysWithValues: later.enumerated().map { ($1, $0) })
-                let sharedPositionsInEarlierOrder = earlier.compactMap { laterPosition[$0] }
-                XCTAssertEqual(sharedPositionsInEarlierOrder, sharedPositionsInEarlierOrder.sorted(),
-                                "\(legName): rows reordered between consecutive 'rows' lines — \(rowsLines[i - 1]) then \(rowsLines[i])")
+            let parsedRowsLines = lines.enumerated().compactMap { index, line -> RowsProbeLine? in
+                guard probeKind(line) == "rows" else { return nil }
+                return RowsProbeLine(index: index,
+                                     order: rowIds(line),
+                                     settingsSig: probeField(line, "settingsSig"),
+                                     raw: line)
+            }
+            let firstCommitIndex = lines.firstIndex { probeKind($0) == "commit" }
+            // Everything that disqualifies a reorder however well the settings explain it: a
+            // SECOND commit (the first is the one the pre/post split is measured against) and any
+            // publish that moved the head. Both are already standalone failures above; carrying
+            // them here too keeps the reorder message honest about what it rode in on rather than
+            // reporting an excused reorder next to an unrelated red assertion.
+            var disqualifying = Set<Int>()
+            for (index, line) in lines.enumerated() {
+                if probeKind(line) == "commit", let firstCommitIndex, index > firstCommitIndex {
+                    disqualifying.insert(index)
+                }
+                if probeKind(line) == "publish", probeField(line, "headChanged") == "1" {
+                    disqualifying.insert(index)
+                }
+            }
+            if let violation = RowsOrderRule.firstViolation(rowsLines: parsedRowsLines,
+                                                            firstCommitIndex: firstCommitIndex,
+                                                            disqualifyingIndices: disqualifying) {
+                XCTFail("\(legName): rows reordered between consecutive 'rows' lines and the reorder is not excused (\(violation.reason)) — \(violation.earlier.raw) then \(violation.later.raw)")
             }
         }
 
@@ -2021,6 +2193,17 @@ final class NuvioTVUITests: XCTestCase {
         // before reading the probe a second time. Existence-driven and budget-bounded, same house
         // rule as `test42`'s row walk: this profile's Home may or may not have a collection row at
         // all, and skipping loudly beats asserting on nothing.
+        //
+        // KNOWN GAP, 2026-09-05: this leg has never actually run. Every recorded gate run on this
+        // fixture ends in the skip below, because Leg B's burst REVERSES the row order and the
+        // collection rows land at the END of a 35-row Home, out of reach of 15 Down presses. A
+        // deliberate probe at a 40-press budget (two runs, 07:17 and 07:24) DID focus a folder tile
+        // and then failed the first assertion under this guard: no `present item=nuvio.folder:…`
+        // line reaches `HomeHeroProbe` at all, so either the hero's folder path does not log
+        // through this probe (the assertion is measuring the wrong surface) or the folder hero
+        // never presents on focus. Deciding which needs the BUG-38 hero-follows-focused-folder
+        // path read properly, which is not this batch's subject, so the budget stays at 15 and the
+        // skip stays loud rather than turning a long-standing unknown into a red gate here.
         openTab(app, named: "Home")
         pause(1.0)
         var folderFound = false

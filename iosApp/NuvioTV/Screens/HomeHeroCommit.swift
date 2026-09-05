@@ -132,7 +132,11 @@ enum HeroPendingCommitRoute: Equatable {
 /// the commit (`.noHero`, and the commit continuation) open it and perform exactly ONE rebuild,
 /// from the latest sections + collections + settings the watchers have stored in the meantime.
 /// Afterwards it stays open and watchers rebuild normally: post-commit reorders are allowed by
-/// design, and the burst simulator asserts relative order is preserved, not that rows never move.
+/// design. A cloud pull landing a second after first paint carries the Home Rows order the user set
+/// on another device, and adopting it is the app doing its job; what the gate buys is that the
+/// FIRST paint is one atomic turn, not that rows are frozen for the session. `RowsOrderRule`
+/// (NuvioTVUITests.swift) is the oracle half of exactly that split - a post-commit reorder passes
+/// only when the settings order behind it actually moved.
 ///
 /// A value type with no `HomeViewModel` dependency, so `HeroCommitCoordinatorTests` can exercise
 /// the whole decision synchronously without a live pipeline.

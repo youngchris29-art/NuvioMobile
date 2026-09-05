@@ -853,6 +853,10 @@ final class HomeViewModel: ObservableObject {
                 //   `rowsHash=` - FNV-1a over the FULL joined list (`HeroCommitCoordinator`'s own
                 //     hash, already covered by known-vector tests), so a change PAST the cap is
                 //     still visible on the line even though `order=` cannot show it.
+                //   `settingsSig=` - see `settingsOrderSignature`. Says WHY a reorder happened,
+                //     which is what separates a legitimate post-commit reorder (a Home Rows order
+                //     the user changed on another device, landing from a cloud pull) from rows
+                //     reshuffling under a settings order that never moved.
                 let digests = rowIds.map { String(HeroCommitCoordinator.fnv1a64Hex($0).prefix(8)) }
                 var order = digests.prefix(Self.rowsOrderProbeMaxIds).joined(separator: ",")
                 if digests.count > Self.rowsOrderProbeMaxIds {
@@ -867,7 +871,7 @@ final class HomeViewModel: ObservableObject {
                 var line = String(format: "rows vm=%d n=%d first=%@ sinceLaunch=%dms rowsGate=%@",
                                   vmId, built.count, first3, HomeHeroProbe.sinceLaunchMs,
                                   rowsGate.isOpen ? "open" : "held")
-                line += " order=\(order) rowsHash=\(rowsHash)"
+                line += " order=\(order) rowsHash=\(rowsHash) settingsSig=\(settingsOrderSignature())"
                 if let held = pendingHeldRebuildsProbe {
                     pendingHeldRebuildsProbe = nil
                     line += String(format: " heldRebuilds=%d", held)
@@ -889,6 +893,27 @@ final class HomeViewModel: ObservableObject {
             lastTracedRowCount = built.count
         }
         #endif
+    }
+
+    /// An 8-hex digest of the Home Rows settings ORDER — the ordered identities of `settingsItems`,
+    /// which is the list `rebuildRows()` walks and therefore the only thing that can make two row
+    /// lists with the same members come out in a different sequence.
+    ///
+    /// It rides the `rows` probe line so the reorder oracle in `test31HeroCommitsOnce` can tell the
+    /// two post-commit reorders apart. A cloud pull landing the user's real Home Rows order a
+    /// second after first paint moves this digest, and reordering the rows to match it is the app
+    /// doing its job (`RowsGate`'s own contract: the gate makes the FIRST paint atomic, it does not
+    /// freeze rows for the session). Rows that reshuffle while this digest is unmoved are the
+    /// BUG-86 symptom instead — an unstable rebuild, not a settings change — and stay a failure.
+    ///
+    /// Identity, not display state: `enabled` is deliberately out, because disabling a row removes
+    /// it rather than moving it, and folding that in would make an unrelated toggle look like an
+    /// order change to the oracle.
+    private func settingsOrderSignature() -> String {
+        let identities = settingsItems.map { item -> String in
+            item.isCollection ? "c:\(item.collectionId ?? "")" : "s:\(item.key)"
+        }
+        return String(HeroCommitCoordinator.fnv1a64Hex(identities.joined(separator: "|")).prefix(8))
     }
 
     /// BUG-42 (beta.13): outside `#if DEBUG` — the first-hero milestone is also emitted on release
