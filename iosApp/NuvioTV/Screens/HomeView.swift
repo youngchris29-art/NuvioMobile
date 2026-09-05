@@ -561,7 +561,19 @@ struct HomeView: View {
                 // Append-only: existing fields keep their exact spelling (the harness asserts on
                 // substrings like `pin=1`, `src=c`, `fitem=`). `tloc` is the trailer LOCATION the
                 // rows are actually rendering under, `hph` the hero trailer model's live phase.
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase)")
+                //
+                // 2026-09-05: `pitem`/`pbd`/`plg` are the PRESENTED hero — what `HeroArtResolver`
+                // actually committed (`fitem` above is only the TARGET focus asked for). They exist
+                // because the `present`-line oracle they replace could not survive its own walk:
+                // `HomeHeroProbe`'s buffer keeps a 32-line rolling tail, and reaching a collection
+                // row on a 35-row Home costs ~40 Down presses plus `openTab`'s ~40-press climb back
+                // to the tab bar — ~150 probe lines between the folder's own `present` and the
+                // About-pane read, so the evidence was always evicted before test31 Leg C could
+                // read it (proved 2026-09-05: the console `[HomeHero]` stream carried a healthy
+                // `present item=nuvio.folder:… backdrop=fetched logo=fetched waited=98 same=0` for
+                // the very focus the leg then failed to find a line for). Read live off the
+                // resolver, this is the same fact with no buffer in between.
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase) pitem=\(heroResolver.presented?.identity ?? "-") pbd=\(heroResolver.presented?.backdrop != nil ? 1 : 0) plg=\(heroResolver.presented?.logo != nil ? 1 : 0)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")

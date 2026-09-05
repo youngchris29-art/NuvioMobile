@@ -2189,36 +2189,93 @@ final class NuvioTVUITests: XCTestCase {
         // Leg C: continuing THIS SAME launch, before touching the About pane again - walk focus
         // down into the first row that reports a folder tile (`debug_hero`'s `fitem=` prefixed
         // `nuvio-folder://`, the same identity `HomeView.isCollectionHero` checks; see
-        // `collectionHeroIdScheme`), then churn focus (3s dwell, back up, a Search round trip)
-        // before reading the probe a second time. Existence-driven and budget-bounded, same house
-        // rule as `test42`'s row walk: this profile's Home may or may not have a collection row at
-        // all, and skipping loudly beats asserting on nothing.
+        // `collectionHeroIdScheme`), dwell on it past the resolver's folder deadline, then churn
+        // focus (back up, a Search round trip) before reading the probe a second time.
+        // Existence-driven and budget-bounded, same house rule as `test42`'s row walk: this
+        // profile's Home may or may not have a collection row at all, and skipping loudly beats
+        // asserting on nothing.
         //
-        // KNOWN GAP, 2026-09-05: this leg has never actually run. Every recorded gate run on this
-        // fixture ends in the skip below, because Leg B's burst REVERSES the row order and the
-        // collection rows land at the END of a 35-row Home, out of reach of 15 Down presses. A
-        // deliberate probe at a 40-press budget (two runs, 07:17 and 07:24) DID focus a folder tile
-        // and then failed the first assertion under this guard: no `present item=nuvio.folder:…`
-        // line reaches `HomeHeroProbe` at all, so either the hero's folder path does not log
-        // through this probe (the assertion is measuring the wrong surface) or the folder hero
-        // never presents on focus. Deciding which needs the BUG-38 hero-follows-focused-folder
-        // path read properly, which is not this batch's subject, so the budget stays at 15 and the
-        // skip stays loud rather than turning a long-standing unknown into a red gate here.
+        // 2026-09-05, the leg's first real run and what it changed. Two things had kept this leg
+        // from ever executing. (1) The 15-press budget: Leg B's burst REVERSES the row order, so
+        // the collection row lands at the far end of a 35-row Home and 15 Downs never reached it -
+        // every recorded run ended in the skip below. The ceiling is 40 now, with an early bail
+        // when focus stops moving (the bottom of Home), so a profile with no collection row costs
+        // a handful of presses rather than the full budget. (2) The ORACLE, which failed at 40:
+        // there was no `present item=nuvio.folder:…` line in the About pane to find. The console
+        // `[HomeHero]` stream for that same run carried a perfectly healthy one -
+        // `backdrop=fetched logo=fetched waited=98 same=0`, with its matching `paint` - so the
+        // hero's folder path was never the problem. `HomeHeroProbe`'s buffer keeps a 32-line
+        // ROLLING TAIL, and the ~40 Down presses plus `openTab`'s ~40-press climb back to the tab
+        // bar emit ~150 lines after the folder's own: the evidence is always evicted before the
+        // pane can be read. So the presentation itself is now asserted LIVE off `debug_hero`'s
+        // `pitem=`/`pbd=` (the resolver's committed identity and whether it committed a real
+        // backdrop bitmap) - the same facts, with no ring buffer in between - and the buffer read
+        // below keeps only the present/paint PAIRING check, which is skipped, not failed, when the
+        // buffer says it elided lines.
         openTab(app, named: "Home")
         pause(1.0)
+        // Deliberately not `heroSrcProbe` per press: that adds an XCTAttachment per call, which at
+        // a 40-press ceiling costs more wall-clock than the presses do. Only the hit and the
+        // post-dwell read are attached.
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
         var folderFound = false
         var downPresses = 0
-        for _ in 1...15 {
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...40 {
             press(.down, times: 1)
             downPresses += 1
-            pause(0.8)
-            let probe = heroSrcProbe(app, "31c_after_down_\(downPresses)")
-            if probe.contains("fitem=nuvio-folder://") { folderFound = true; break }
+            pause(0.5)
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.hasPrefix("nuvio-folder://") { folderFound = true; break }
+            // Bottom of Home: Down stops changing what the rows report, so the remaining budget
+            // would buy nothing. Five in a row, not one - a between-cards hop can briefly report
+            // the same item twice.
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
         }
+        // The skip below covers two shapes at once and cannot tell them apart from here: a Home
+        // with no collection row, and one whose folders carry NEITHER a `heroBackdropUrl` nor a
+        // `titleLogoUrl` - `HomeView.folderHeroPreview` returns nil for those by design, so the
+        // hero deliberately stays where it is and `fitem` never becomes a folder id. Which one a
+        // given fixture is, is answered by the `[CollectionCover]` probe (`CollectionsUI.swift`,
+        // `-debug.collectionCoverProbe YES`), not by this leg - it does not set that argument,
+        // because adding one perturbs the burst/gate timing Leg B is measuring. On this fixture
+        // the probe was read directly on 2026-09-05: all four folders report
+        // `heroBackdrop=1 logo=1`, so the leg runs rather than skips here.
         guard folderFound else {
-            throw XCTSkip("Leg C: no folder/collection tile focused within \(downPresses) Down presses on this profile's Home — cannot verify the folder present()/paint() invariants without one")
+            throw XCTSkip("Leg C: no folder/collection tile focused within \(downPresses) Down presses on this profile's Home (focus settled on '\(lastFocusedItem)') — cannot verify the folder present()/paint() invariants without one")
         }
+        _ = heroSrcProbe(app, "31c_folder_focused")
+        // Longer than `HeroArtResolver.folderDeadline` (1.5s), so by the time this returns the
+        // resolve this focus started has either committed the folder's own artwork or given up -
+        // either way it is decided, and `pitem=`/`pbd=` below read a settled resolver.
         pause(3.0)
+        let dwellProbe = heroSrcProbe(app, "31c_folder_dwelled")
+        let dwellFocusedItem = probeField(dwellProbe, "fitem") ?? ""
+        let presentedIdentity = probeField(dwellProbe, "pitem") ?? ""
+        if dwellFocusedItem.hasPrefix("nuvio-folder://") {
+            // The hero the resolver actually committed IS the focused folder - `pitem` is
+            // `"\(type):\(id)"` and a folder preview's type is `collectionHeroType`.
+            XCTAssertEqual(presentedIdentity, "nuvio.folder:\(dwellFocusedItem)",
+                           "Leg C: the focused folder tile did not become the presented hero after a 3s dwell — \(dwellProbe)")
+            // The Wave H rule the folder path exists for: a folder hero presents with its OWN
+            // backdrop or not at all. `pbd=0` is the `backdrop=none` this leg used to look for in
+            // the probe line, and `pbd=1` on a folder can only be the configured `heroBackdropUrl`
+            // (`folderHeroPreview` passes `poster: nil`, so there is no stand-in to mistake it for).
+            XCTAssertEqual(probeField(dwellProbe, "pbd"), "1",
+                           "Leg C: the folder hero committed with no backdrop bitmap — \(dwellProbe)")
+        } else {
+            XCTFail("Leg C: the folder tile lost focus during the dwell (fitem=\(dwellFocusedItem)) — cannot judge the folder hero on a probe that is no longer reporting it — \(dwellProbe)")
+        }
         press(.up, times: 1)
         pause(1.0)
 
@@ -2264,8 +2321,14 @@ final class NuvioTVUITests: XCTestCase {
                 // (`> presents`) and a present that painted nothing at all (`< 1`).
                 XCTAssertGreaterThanOrEqual(matchingPaints.count, 1, "Leg C: the folder (\(folderIdentity)) has \(folderPresents.count) 'present' line(s) but no 'paint' line at all — a present that painted nothing")
                 XCTAssertLessThanOrEqual(matchingPaints.count, folderPresents.count, "Leg C: more 'paint' lines than 'present' lines for the folder (\(folderIdentity)) — present=\(folderPresents.count) paint=\(matchingPaints.count) — a double-paint the resolver never asked for")
+            } else if finalLines.contains(where: { $0.contains("lines elided") }) {
+                // Expected on any run whose walk was deep: the folder's own `present` rolled out of
+                // the buffer's 32-line tail before the pane could be read (see the leg header).
+                // Not a failure - the presentation itself was already asserted live off `pitem=`
+                // above; only the pairing check is unavailable for this run.
+                print("[HeroProbe] Leg C: the folder's 'present' line was evicted from the probe buffer's rolling tail before the About read (presented=\(presentedIdentity)) — present/paint pairing not checked this run.")
             } else {
-                XCTFail("Leg C: no 'present' line found for the focused folder tile (identity prefix 'nuvio.folder:') — lines=\(finalLines)")
+                XCTFail("Leg C: no 'present' line found for the focused folder tile (identity prefix 'nuvio.folder:') and the probe buffer elided nothing — the folder hero presented (pitem=\(presentedIdentity)) but never logged — lines=\(finalLines)")
             }
         }
         // `app.terminate()` and the fixture-restore relaunch run in the `defer` above, on every
