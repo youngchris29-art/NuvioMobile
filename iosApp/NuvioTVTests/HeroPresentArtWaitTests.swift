@@ -117,4 +117,150 @@ final class HeroPresentArtWaitTests: XCTestCase {
         wait.resolveLogo(makeImage())
         XCTAssertNil(wait.logo)
     }
+
+    // MARK: - Poster fallback (Codex branch review)
+    //
+    // `heroBackdropURL(for:)` synthesizes a metahub background URL for any IMDb-backed item with no
+    // `banner`, and that URL 404s for plenty of real titles. Before this, the resolver committed a
+    // nil backdrop for those items and the hero went out blank even though the poster was on the
+    // card below. The poster now stands in, but only for a primary that did NOT land, and only for
+    // TITLE heroes. A folder's cover as a fallback is a separate, filmed bug, and the resolver
+    // never hands one to this class.
+
+    @MainActor
+    func testPrimaryMissCommitsTheCachedPosterImmediately() async {
+        let cachedPoster = makeImage()
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false,
+                                      posterFallback: cachedPoster, needsPosterFallback: false)
+
+        // The 404. Nothing else is outstanding, so this settles the wait on the spot: no deadline
+        // task is ever consulted.
+        wait.resolveBackdrop(nil)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+
+        XCTAssertFalse(wait.hitDeadline, "a warm poster costs the commit no wait at all")
+        XCTAssertTrue(wait.backdrop === cachedPoster, "the poster stands in for the missing primary")
+        XCTAssertTrue(wait.usedPosterFallback, "the probe line must read backdrop=poster")
+    }
+
+    @MainActor
+    func testPrimaryMissWaitsForAPosterFetchInsideTheSameBudget() async {
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false,
+                                      posterFallback: nil, needsPosterFallback: true)
+        let fetchedPoster = makeImage()
+
+        // The primary misses first and the poster is still in flight, so the wait must stay open
+        // for it rather than settling on a nil backdrop.
+        wait.resolveBackdrop(nil)
+        XCTAssertNil(wait.backdrop, "still waiting on the poster, nothing to paint yet")
+
+        wait.resolvePosterFallback(fetchedPoster)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+
+        XCTAssertFalse(wait.hitDeadline, "the poster landed inside the budget")
+        XCTAssertTrue(wait.backdrop === fetchedPoster)
+        XCTAssertTrue(wait.usedPosterFallback)
+    }
+
+    @MainActor
+    func testPrimaryMissWithNoPosterAtAllStillCommits() async {
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false,
+                                      posterFallback: nil, needsPosterFallback: true)
+
+        // Both candidates 404: the hero commits with no backdrop, exactly as it did before the
+        // fallback existed. The point is that the poster's failure cannot hold the wait open.
+        wait.resolveBackdrop(nil)
+        wait.resolvePosterFallback(nil)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+
+        XCTAssertFalse(wait.hitDeadline)
+        XCTAssertNil(wait.backdrop)
+        XCTAssertFalse(wait.usedPosterFallback, "backdrop=none, not backdrop=poster")
+    }
+
+    @MainActor
+    func testLandedPrimaryIsNeverReplacedByThePoster() async {
+        let primary = makeImage()
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false,
+                                      posterFallback: nil, needsPosterFallback: true)
+
+        // The primary wins, so the concurrent poster fetch is irrelevant the moment it lands, and
+        // must not hold the wait open either.
+        wait.resolveBackdrop(primary)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+
+        XCTAssertTrue(wait.backdrop === primary)
+        XCTAssertFalse(wait.usedPosterFallback)
+
+        wait.resolvePosterFallback(makeImage())
+        XCTAssertTrue(wait.backdrop === primary, "a fallback never displaces a primary that landed")
+        XCTAssertFalse(wait.usedPosterFallback)
+    }
+
+    @MainActor
+    func testStalledPrimaryCommitsTheCachedPosterAtTheDeadlineAndDropsTheLatePrimary() async {
+        let cachedPoster = makeImage()
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false,
+                                      posterFallback: cachedPoster, needsPosterFallback: false)
+
+        // No `resolveBackdrop` at all: the primary is hung on a slow host. A warm poster does NOT
+        // shortcut the budget: the primary is still preferred right up to the deadline.
+        let deadline = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            wait.deadlineElapsed()
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+        deadline.cancel()
+
+        XCTAssertTrue(wait.hitDeadline, "the budget ended this wait, not a fetch")
+        XCTAssertTrue(wait.backdrop === cachedPoster, "the poster stands in rather than a blank hero")
+        XCTAssertTrue(wait.usedPosterFallback)
+
+        // Same rule as the late logo: the item has been presented, and swapping the primary in
+        // behind the reader's eyes is the repaint the commit protocol exists to remove.
+        wait.resolveBackdrop(makeImage())
+        XCTAssertTrue(wait.backdrop === cachedPoster, "a primary that lands after the deadline is dropped")
+    }
+
+    @MainActor
+    func testFolderTargetNeverConsultsAPoster() async {
+        // The resolver gates the poster on `!isFolder && !isCollectionHero(target)`, so a folder's
+        // wait is constructed with no fallback and no pending fetch. Painting a folder's square
+        // cover into the 16:9 hero and then replacing it is the "background pops in larger then
+        // shrinks" regression (Wave H hole H2); `folderHeroPreview` passes `poster: nil` for the
+        // same reason. This pins the state machine's half of that contract: with no fallback
+        // supplied there is no path, on either the miss or the deadline, that produces one.
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false)
+
+        wait.resolveBackdrop(nil)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            wait.attach(continuation)
+        }
+
+        XCTAssertNil(wait.backdrop, "a folder hero holds a blank primary rather than showing its cover")
+        XCTAssertFalse(wait.usedPosterFallback)
+
+        // And a late `resolvePosterFallback`, which the resolver never issues for a folder, cannot
+        // sneak one in after the fact either.
+        wait.resolvePosterFallback(makeImage())
+        XCTAssertNil(wait.backdrop)
+        XCTAssertFalse(wait.usedPosterFallback)
+    }
 }

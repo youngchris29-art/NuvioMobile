@@ -2047,8 +2047,9 @@ final class HeroArtResolver: ObservableObject {
     @Published private(set) var presented: HeroPresentation?
 
     /// How long a swap between two TITLES waits for cold artwork before committing with whatever
-    /// landed. Titles always have a poster on their card, so a miss here is a short wait on the
-    /// previous hero, not a blank screen.
+    /// landed. Titles always have a poster on their card, and the resolve now falls back to it
+    /// inside this same budget, so a miss here is a short wait on the previous hero and then the
+    /// poster, never a blank screen.
     static let laterSwapDeadline: UInt64 = 400_000_000
     /// Collection folders get longer: their artwork is the user's own configured backdrop/logo, it
     /// has no poster stand-in (`folderHeroPreview` passes `poster: nil` on purpose), and the row's
@@ -2139,6 +2140,29 @@ final class HeroArtResolver: ObservableObject {
         let needsBackdrop = backdropURL != nil && cachedBackdrop == nil
         let needsLogo = logoURL != nil && cachedLogo == nil
 
+        // Codex branch review: the poster stand-in for a primary that never lands.
+        //
+        // `heroBackdropURL(for:)` synthesizes `images.metahub.space/background/medium/tt…/img` for
+        // any IMDb-backed item that carries no `banner`, and that URL 404s for plenty of real
+        // titles. The image-driven `HeroCrossfadeImage` used to own the recovery (it took a
+        // `fallbackURL` and swapped to the poster when the primary failed); the Wave H resolver
+        // hands it a decoded bitmap instead, so with no fallback here those titles committed a
+        // BLANK hero even though their poster was on screen in the row below.
+        //
+        // Title heroes ONLY. A collection folder must never paint its cover: a square cover
+        // scaled-to-fill into the 16:9 hero and then replaced is the "background pops in larger
+        // then shrinks" the tester filmed (Wave H hole H2), which is why `folderHeroPreview` passes
+        // `poster: nil` in the first place. The `isFolder` flag and the type predicate both gate
+        // it, since either alone would be a single point of failure for that regression.
+        let posterFallbackURL: URL? = {
+            guard !isFolder, !isCollectionHero(target), needsBackdrop else { return nil }
+            guard let poster = target.poster, !poster.isEmpty,
+                  let url = URL(string: poster), url != backdropURL else { return nil }
+            return url
+        }()
+        let cachedPosterFallback = ArtworkStore.cached(posterFallbackURL)
+        let needsPosterFallback = posterFallbackURL != nil && cachedPosterFallback == nil
+
         guard needsBackdrop || needsLogo else {
             commit(item: target, backdrop: cachedBackdrop, logo: cachedLogo, identity: identity,
                    backdropSource: cachedBackdrop != nil ? "cached" : "none",
@@ -2150,7 +2174,9 @@ final class HeroArtResolver: ObservableObject {
         let started = Date()
         let deadline = isFolder ? Self.folderDeadline : Self.laterSwapDeadline
         let wait = HeroPresentArtWait(backdrop: cachedBackdrop, logo: cachedLogo,
-                                      needsBackdrop: needsBackdrop, needsLogo: needsLogo)
+                                      needsBackdrop: needsBackdrop, needsLogo: needsLogo,
+                                      posterFallback: cachedPosterFallback,
+                                      needsPosterFallback: needsPosterFallback)
 
         // Round 3: the two fetches are unstructured and are NEVER cancelled, exactly as
         // `HeroCommitCoordinator.prepare(_:)` issues the head's pair. The task-group form this
@@ -2180,6 +2206,17 @@ final class HeroArtResolver: ObservableObject {
                 wait.resolveLogo(image)
             }
         }
+        // Concurrent with the primary, deliberately, so the fallback costs the commit no extra
+        // time: the poster is either in hand by the moment the primary misses, or it is still in
+        // flight and the same `deadline` covers both. Starting it only after the miss would push
+        // a cold poster past the budget on exactly the titles that need it. `.head` for the same
+        // reason the other two are: the hero is what the whole screen is waiting on.
+        if needsPosterFallback, let posterFallbackURL {
+            Task { @MainActor in
+                let image = try? await ArtworkStore.fetch(posterFallbackURL, admission: .head)
+                wait.resolvePosterFallback(image)
+            }
+        }
 
         resolveTask = Task { [weak self] in
             let deadlineTask = Task { @MainActor in
@@ -2202,14 +2239,19 @@ final class HeroArtResolver: ObservableObject {
             self.resolveTask = nil
             let backdrop = wait.backdrop
             let logo = wait.logo
+            let backdropSource = wait.usedPosterFallback
+                ? "poster"
+                : Self.source(cached: cachedBackdrop, resolved: backdrop, empty: "none")
             self.commit(item: target, backdrop: backdrop, logo: logo, identity: identity,
-                        backdropSource: Self.source(cached: cachedBackdrop, resolved: backdrop, empty: "none"),
+                        backdropSource: backdropSource,
                         logoSource: Self.source(cached: cachedLogo, resolved: logo, empty: "text"),
                         waitedMs: Int(Date().timeIntervalSince(started) * 1000))
         }
     }
 
-    /// `cached` / `fetched` / the caller's empty token, for the probe line.
+    /// `cached` / `fetched` / the caller's empty token, for the probe line. The backdrop's fourth
+    /// token, `poster`, is decided by the wait rather than here: it is the one value a bitmap
+    /// alone cannot identify.
     private static func source(cached: UIImage?, resolved: UIImage?, empty: String) -> String {
         if cached != nil { return "cached" }
         return resolved != nil ? "fetched" : empty
@@ -2225,8 +2267,10 @@ final class HeroArtResolver: ObservableObject {
         withAnimation(.easeInOut(duration: 0.3)) { presented = next }
     }
 
-    /// `present item=<type:id> backdrop=<cached|fetched|none> logo=<cached|fetched|text>
-    /// waited=<ms> same=<0|1>` — `same=1` is a re-present of the item already on screen that
+    /// `present item=<type:id> backdrop=<cached|fetched|poster|none> logo=<cached|fetched|text>
+    /// waited=<ms> same=<0|1>`. `backdrop=poster` (append-only addition to the vocabulary) is a
+    /// TITLE hero whose primary backdrop missed or stalled and whose own poster stood in for it;
+    /// `same=1` is a re-present of the item already on screen that
     /// actually swaps its backdrop or logo bitmap, i.e. the repaint signature. A healthy
     /// cold-launch photo has none. A same-identity present that only refreshes TEXT (the allowed
     /// gap-fill) paints nothing and logs nothing, so it can never be misread as a repaint.
@@ -2291,23 +2335,44 @@ final class HeroPresentArtWait {
     private(set) var backdrop: UIImage?
     private(set) var logo: UIImage?
     /// True only when the budget expired first. Not consumed by the resolver today (the probe line
-    /// reports `cached`/`fetched`/`none` per piece, not a timeout token); kept because it is the
-    /// one fact the commit cannot otherwise reconstruct, and it is what the unit test asserts on.
+    /// reports `cached`/`fetched`/`none`/`poster` per piece, not a timeout token); kept because it
+    /// is the one fact the commit cannot otherwise reconstruct, and it is what the unit test
+    /// asserts on.
     private(set) var hitDeadline = false
+    /// True when `backdrop` is the item's POSTER standing in for a primary that never landed. Read
+    /// by the resolver for the probe line's `backdrop=poster` token; also the only way the commit
+    /// can tell a poster apart from a primary that happened to be cached.
+    private(set) var usedPosterFallback = false
 
     private var pendingBackdrop: Bool
     private var pendingLogo: Bool
+    /// The poster stand-in for a TITLE hero whose primary backdrop misses. Seeded from the cache
+    /// when the poster is already resident (the common case, since `heroBackdropPrefetchURLs`
+    /// warms it alongside the primary) and otherwise filled by a fetch running concurrently with
+    /// the primary's, inside the same deadline. `nil` for folder heroes, which must never fall
+    /// back to their cover, which is the "background pops in then shrinks" bug (Wave H, hole H2).
+    private var posterFallback: UIImage?
+    /// True while the poster fetch above is still in flight.
+    private var pendingPoster: Bool
+    /// Set when the primary fetch came back empty. Only then may the poster be painted.
+    private var primaryMissed = false
+    /// Set when the primary fetch produced an image. A poster landing afterwards is discarded: a
+    /// fallback never replaces a primary that made the budget.
+    private var primaryLanded = false
     private var continuation: CheckedContinuation<Void, Never>?
     /// Set by the first terminal event. Later arrivals are no-ops, which is exactly the
     /// "a late logo for an already-presented item is dropped" rule, and `attach` resumes at once so
     /// a wait that finished before the continuation existed cannot hang.
     private var finished = false
 
-    init(backdrop: UIImage?, logo: UIImage?, needsBackdrop: Bool, needsLogo: Bool) {
+    init(backdrop: UIImage?, logo: UIImage?, needsBackdrop: Bool, needsLogo: Bool,
+         posterFallback: UIImage? = nil, needsPosterFallback: Bool = false) {
         self.backdrop = backdrop
         self.logo = logo
         pendingBackdrop = needsBackdrop
         pendingLogo = needsLogo
+        self.posterFallback = posterFallback
+        pendingPoster = needsPosterFallback
     }
 
     func attach(_ continuation: CheckedContinuation<Void, Never>) {
@@ -2320,9 +2385,38 @@ final class HeroPresentArtWait {
 
     func resolveBackdrop(_ image: UIImage?) {
         guard !finished else { return }
-        if let image { backdrop = image }
         pendingBackdrop = false
+        if let image {
+            backdrop = image
+            primaryLanded = true
+            // The primary made it, so there is nothing left to wait for and nothing the poster
+            // could add. Whatever the poster fetch is doing still lands in `ArtworkStore` for the
+            // card that owns it.
+            pendingPoster = false
+        } else {
+            primaryMissed = true
+            applyPosterFallback()
+        }
         finishIfSettled()
+    }
+
+    /// The poster stand-in resolved (or failed). Only ever consulted once the primary has missed.
+    func resolvePosterFallback(_ image: UIImage?) {
+        guard !finished, !primaryLanded else { return }
+        pendingPoster = false
+        if let image { posterFallback = image }
+        applyPosterFallback()
+        finishIfSettled()
+    }
+
+    /// Paints the poster if the primary has already missed, one is available, and nothing is on the
+    /// backdrop slot yet. A no-op in every other combination, so it is safe to call from either
+    /// arrival order.
+    private func applyPosterFallback() {
+        guard primaryMissed, backdrop == nil, let posterFallback else { return }
+        backdrop = posterFallback
+        usedPosterFallback = true
+        pendingPoster = false
     }
 
     func resolveLogo(_ image: UIImage?) {
@@ -2337,6 +2431,13 @@ final class HeroPresentArtWait {
     func deadlineElapsed() {
         guard !finished else { return }
         hitDeadline = true
+        // A primary that is still in flight when the budget expires is "missing" for this commit
+        // exactly as a primary that 404'd is, so the poster stands in rather than the hero going
+        // out blank. A primary that lands afterwards is dropped, the same rule a late logo follows.
+        if backdrop == nil, let posterFallback {
+            backdrop = posterFallback
+            usedPosterFallback = true
+        }
         finish()
     }
 
@@ -2348,7 +2449,7 @@ final class HeroPresentArtWait {
     }
 
     private func finishIfSettled() {
-        guard !pendingBackdrop, !pendingLogo else { return }
+        guard !pendingBackdrop, !pendingLogo, !pendingPoster else { return }
         finish()
     }
 
@@ -2356,6 +2457,7 @@ final class HeroPresentArtWait {
         finished = true
         pendingBackdrop = false
         pendingLogo = false
+        pendingPoster = false
         let waiter = continuation
         continuation = nil
         waiter?.resume()
@@ -3510,8 +3612,10 @@ private func heroBackdropURL(banner: String?, id: String, poster: String?) -> St
 }
 
 /// Prefetch wants BOTH candidates the hero can render — the resolved primary AND the poster
-/// `HeroCrossfadeImage` falls back to when the primary (typically a synthesized metahub URL)
-/// 404s. Warming only the primary made exactly the fallback scenario the cold, flashing one.
+/// `HeroArtResolver` falls back to when the primary (typically a synthesized metahub URL) 404s or
+/// stalls. Warming only the primary made exactly the fallback scenario the cold, flashing one, and
+/// keeping the poster warm here is what makes the resolver's fallback usually free: it commits the
+/// cached poster the instant the primary misses instead of spending its budget fetching one.
 /// Cheap in practice: row posters are the card images already on screen, so `ArtworkStore`'s
 /// cache check absorbs the duplicates.
 /// Wave H: the LOGO is in here too. The hero now commits only once both its backdrop and its logo
