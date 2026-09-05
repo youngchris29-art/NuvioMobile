@@ -11,16 +11,18 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * BUG-86 (Wave H, K1b): the two repository-side rules that decide whether the hero commit gate is
- * RE-EVALUATED when one of its inputs becomes ready. Both were reasons a launch could only end at
- * `gate=released:timeout` even though every input had settled well inside the 4 s budget.
+ * BUG-86 (Wave H, K1b): the repository-side rules around the hero commit gate. Two of them decide
+ * whether the gate is RE-EVALUATED when one of its inputs becomes ready. Both were reasons a
+ * launch could only end at `gate=released:timeout` even though every input had settled well inside
+ * the 4 s budget. The last one (`retainHeroItemOrigins`) decides what keeps a committed hero item
+ * committed, and therefore when a hero may be frozen and pinned a second time.
  *
  * Scope note: [HomeRepository] itself is not driven here. It is a singleton whose load path fetches
  * real catalog pages over the network (`fetchCatalogPage`), runs its fan-out on
  * `Dispatchers.Default` with wall-clock timers, and reads three other singletons (AddonRepository,
  * TmdbSettingsRepository, AuthRepository) that have no injection seam, so a test that drove it would
  * be a network-dependent, timing-dependent flake rather than coverage. The decision table it
- * applies is covered by `HeroCommitGateTest`; the two rules below are the repository-side inputs to
+ * applies is covered by `HeroCommitGateTest`; the rules below are the repository-side inputs to
  * that table, extracted as pure functions precisely so they can be asserted here. The end-to-end
  * behaviour stays gated by test31 leg A on the simulator.
  */
@@ -157,6 +159,97 @@ class HomeRepositoryGateReleaseTest {
         // It can still resolve to a signed-in account; the gate's own timeout bounds a stalled
         // restore.
         assertTrue(AuthState.Loading.launchSyncExpected())
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // retainHeroItemOrigins: what keeps a committed hero item committed
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * `pruneCommittedPayloadsLocked`'s rule, which is a single expression: a frozen payload
+     * survives while its item still has an origin. Mirrored here so both steps can be asserted as
+     * one sequence: the retention rule above it is the half that carries the logic.
+     */
+    private fun prune(committed: Map<String, String>, origins: Map<String, String>) =
+        committed.filterKeys { itemKey -> itemKey in origins }
+
+    @Test
+    fun aCatalogItemKeepsItsOriginWhileItsDefinitionIsInstalled() {
+        val origins = mapOf("item-1" to "addon.top")
+        assertEquals(
+            origins,
+            retainHeroItemOrigins(
+                origins = origins,
+                knownDefinitionKeys = setOf("addon.top"),
+                collectionHeroKeys = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun aCatalogItemLosesItsOriginWhenItsDefinitionLeaves() {
+        // The user removed or disabled the add-on: the one event allowed to evict a committed item.
+        assertTrue(
+            retainHeroItemOrigins(
+                origins = mapOf("item-1" to "addon.top"),
+                knownDefinitionKeys = setOf("other.addon"),
+                collectionHeroKeys = emptySet(),
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun aCollectionHeroKeepsItsSentinelWhileItIsStillCached() {
+        val origins = mapOf("item-1" to COLLECTION_HERO_ORIGIN)
+        assertEquals(
+            origins,
+            retainHeroItemOrigins(
+                origins = origins,
+                // No catalog behind it, by definition: the sentinel is not a definition key.
+                knownDefinitionKeys = emptySet(),
+                collectionHeroKeys = setOf("item-1"),
+            ),
+        )
+    }
+
+    /**
+     * Codex branch review round 5. The sentinel origin used to be preserved unconditionally, so a
+     * collection-backed head stayed pinned and frozen after the collection behind it was gone. The
+     * commit map never emptied, `serveCommittedHeroItemsLocked` skipped its re-freeze, and the
+     * REPLACEMENT fallback was published unfrozen and unpinned, repaintable by the next
+     * enrichment or sync publish.
+     */
+    @Test
+    fun aSupersededCollectionHeroLosesItsSentinelAndItsCommit() {
+        val committedPayloads = mapOf("old-1" to "payload-old-1", "old-2" to "payload-old-2")
+        val committedOrigins = committedPayloads.keys.associateWith { COLLECTION_HERO_ORIGIN }
+
+        // The collection request key changed: ensureCollectionHeroFallback empties
+        // cachedCollectionHeroItems and publishes straight away, so this publish sees no cache.
+        val afterInvalidation = retainHeroItemOrigins(
+            origins = committedOrigins,
+            knownDefinitionKeys = emptySet(),
+            collectionHeroKeys = emptySet(),
+        )
+        assertTrue(afterInvalidation.isEmpty(), "the superseded fallback must stop being retainable")
+        assertTrue(
+            prune(committedPayloads, afterInvalidation).isEmpty(),
+            "with no origin left, the frozen payloads and the pinned head go too",
+        )
+
+        // The replacement fallback resolves and publishes. Its items are the only ones with an
+        // origin, and the commit map it re-freezes into is empty: a first commit, on the new head.
+        val replacement = setOf("new-1", "new-2")
+        val afterReplacement = retainHeroItemOrigins(
+            origins = afterInvalidation + replacement.associateWith { COLLECTION_HERO_ORIGIN },
+            knownDefinitionKeys = emptySet(),
+            collectionHeroKeys = replacement,
+        )
+        assertEquals(replacement, afterReplacement.keys)
+        assertTrue(
+            prune(committedPayloads, afterReplacement).isEmpty(),
+            "no payload from the previous collection may survive into the new commit",
+        )
     }
 
     @Test

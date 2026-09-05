@@ -208,6 +208,65 @@ class LaunchSyncSignalTest {
         gate.cancel()
     }
 
+    /**
+     * Codex branch review round 5: the adoption used to decline whenever the signal was not Idle,
+     * which is exactly wrong for the state it is most often left in. Profile A's launch pull
+     * settles; the user switches to profile B; B's launch pull is coalesced into a foreground full
+     * pull already in flight (that pull passes `updateLaunchSignal = false`, so it never speaks for
+     * B either). With the adoption declining, B's hero commit gate reads A's Settled as B's own
+     * sync input and releases in the middle of B's burst: the reordering publish the gate exists
+     * to sit in front of.
+     */
+    @Test
+    fun `a coalesced launch pull takes the signal over from another profile's settled burst`() =
+        runBlocking {
+            LaunchSyncSignal.markRunning(profileId = 1)
+            LaunchSyncSignal.markSettled(profileId = 1)
+
+            val gate = ProfileSyncRequestGate()
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            gate.launch(this, profileId = 2, kind = ProfileSyncRequestKind.Full) {
+                started.complete(Unit)
+                release.await()
+            }
+            started.await()
+            val coalesced = gate.launch(this, profileId = 2, kind = ProfileSyncRequestKind.Full) { }
+            assertEquals(ProfileSyncRequestResult.Coalesced, coalesced)
+
+            adoptCoalescedLaunchPull(profileId = 2, inFlight = gate.activeJobFor(2))
+            assertEquals(
+                LaunchSyncSignal.LaunchSyncState.Running,
+                LaunchSyncSignal.state.value,
+                "profile 2's burst is in flight, so the previous profile's settle is not its own",
+            )
+
+            release.complete(Unit)
+            yield()
+            assertEquals(
+                LaunchSyncSignal.LaunchSyncState.Settled,
+                LaunchSyncSignal.state.value,
+                "the adopted job's completion must settle for the profile that claimed it",
+            )
+            gate.cancel()
+        }
+
+    /** The same takeover with nothing left to adopt: the previous profile's Settled still must not
+     * stand as this profile's answer, but the verdict is "no burst to wait for", not Running. */
+    @Test
+    fun `a takeover with no job left reports not applicable for the new profile`() = runBlocking {
+        LaunchSyncSignal.markRunning(profileId = 1)
+        LaunchSyncSignal.markSettled(profileId = 1)
+
+        val gate = ProfileSyncRequestGate()
+        adoptCoalescedLaunchPull(profileId = 2, inFlight = gate.activeJobFor(2))
+        assertEquals(LaunchSyncSignal.LaunchSyncState.NotApplicable, LaunchSyncSignal.state.value)
+
+        // Tracking went with it, so the older profile cannot settle over the new verdict either.
+        LaunchSyncSignal.markSettled(profileId = 1)
+        assertEquals(LaunchSyncSignal.LaunchSyncState.NotApplicable, LaunchSyncSignal.state.value)
+    }
+
     @Test
     fun `an adopted settle for a superseded profile is ignored`() = runBlocking {
         val gate = ProfileSyncRequestGate()

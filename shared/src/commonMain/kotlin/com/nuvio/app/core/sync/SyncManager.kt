@@ -385,18 +385,25 @@ class ProfileSyncRequestGate {
  * ignored by `markSettled`. With no job left to adopt, the burst is already over, so the gate is
  * told not to wait at all.
  *
- * Only ever called when the signal is [LaunchSyncSignal.LaunchSyncState.Idle]: a signal that has
- * already been moved (Running for this launch, NotApplicable, or Settled) is authoritative and must
- * not be overwritten by a request that ran no work of its own.
+ * Whether the adoption may speak at all is [LaunchSyncSignal.claimCoalescedLaunch]'s decision, and
+ * it is per PROFILE, not per state. Only a Running or Settled state that [profileId] itself owns is
+ * authoritative here; a request that ran no work of its own must not restart or downgrade that. The
+ * rule used to be "claim only from Idle", which read as authoritative the one state that is most
+ * often stale: profile A's launch pull settles, the user switches to profile B, B's launch pull
+ * coalesces into a foreground full pull already in flight, the adoption declines because the signal
+ * is not Idle, and B's hero gate then reads A's Settled as B's own: releasing, and committing a
+ * hero, in the middle of B's burst.
  */
 internal fun adoptCoalescedLaunchPull(profileId: Int, inFlight: Job?) {
-    if (LaunchSyncSignal.state.value != LaunchSyncSignal.LaunchSyncState.Idle) return
-    if (inFlight == null || inFlight.isCompleted) {
-        LaunchSyncSignal.markNotApplicable()
+    val burst = inFlight?.takeIf { job -> !job.isCompleted }
+    if (!LaunchSyncSignal.claimCoalescedLaunch(profileId = profileId, burstInFlight = burst != null)) {
         return
     }
-    LaunchSyncSignal.markRunning(profileId)
-    inFlight.invokeOnCompletion { LaunchSyncSignal.markSettled(profileId) }
+    // Attached outside the signal's lock on purpose: a handler on an already completed job runs
+    // inline on the calling thread and would re-enter that lock. The claim above is the part that
+    // has to be atomic; a settle landing after another profile has taken the signal over is
+    // rejected by markSettled's own staleness guard.
+    burst?.invokeOnCompletion { LaunchSyncSignal.markSettled(profileId) }
 }
 
 object SyncManager {

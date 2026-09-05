@@ -1021,16 +1021,21 @@ object HomeRepository {
      * Rebuilds [heroItemOrigins] from the cached sections: item to the FIRST definition (in
      * definition order) that carries it. Entries whose origin catalog is no longer in
      * [currentDefinitions] are dropped, which is exactly the one event allowed to evict a committed
-     * hero item (the user removed or disabled that add-on).
+     * hero item (the user removed or disabled that add-on). The collection fallback's sentinel
+     * origin follows the same rule against [cachedCollectionHeroItems] instead: see
+     * [retainHeroItemOrigins].
      */
     private fun recordHeroItemOriginsLocked() {
-        val knownDefinitionKeys = currentDefinitions.mapTo(HashSet(), HomeCatalogDefinition::key)
         val origins = HashMap<String, String>(heroItemOrigins.size)
-        heroItemOrigins.forEach { (itemKey, definitionKey) ->
-            if (definitionKey == COLLECTION_HERO_ORIGIN || definitionKey in knownDefinitionKeys) {
-                origins[itemKey] = definitionKey
-            }
-        }
+        origins.putAll(
+            retainHeroItemOrigins(
+                origins = heroItemOrigins,
+                knownDefinitionKeys = currentDefinitions.mapTo(HashSet(), HomeCatalogDefinition::key),
+                collectionHeroKeys = cachedCollectionHeroItems.mapTo(HashSet()) { item ->
+                    item.stableKey()
+                },
+            )
+        )
         currentDefinitions.forEach { definition ->
             cachedSections[definition.key]?.items?.forEach { item ->
                 val itemKey = item.stableKey()
@@ -1050,8 +1055,10 @@ object HomeRepository {
     /**
      * The frozen payloads outlive the carousel slice on purpose (an item that scrolls out and comes
      * back must come back as the SAME instance), but not their own catalog: when the user removes
-     * or disables the add-on that supplied a committed item, that item stops being committed. This
-     * is also what bounds the map across a long session.
+     * or disables the add-on that supplied a committed item, that item stops being committed. A
+     * committed COLLECTION fallback item leaves the same way when its collection set changes (see
+     * [retainHeroItemOrigins]), which is what lets the replacement fallback commit as a first
+     * commit. This is also what bounds the map across a long session.
      */
     private fun pruneCommittedPayloadsLocked() {
         if (committedHeroPayloads.isEmpty()) return
@@ -1089,8 +1096,9 @@ object HomeRepository {
         heroItems: List<MetaPreview>,
         settings: TmdbSettings,
     ): List<MetaPreview> {
-        // After an explicit Hero Sources reset the frozen map is empty by design; re-freeze on the
-        // first settled publish so the new selection is as immutable as the first one was.
+        // After an explicit Hero Sources reset the frozen map is empty by design; the same is true
+        // once a superseded collection fallback has been pruned out of it. Re-freeze on the first
+        // settled publish so the new selection is as immutable as the first one was.
         if (committedHeroPayloads.isEmpty() && heroItems.isNotEmpty() && heroGateState == HeroGateState.Released) {
             val recommitted = heroItems.map { item -> item.withTmdbEnrichment(settings) }
             committedHeroPayloads = recommitted.associateBy { item -> item.stableKey() }
@@ -1592,7 +1600,7 @@ object HomeRepository {
 private const val HOME_HERO_ITEM_LIMIT = 8
 
 /** Sentinel origin for hero items that came from the collection fallback, not from a catalog. */
-private const val COLLECTION_HERO_ORIGIN = " collectionHero"
+internal const val COLLECTION_HERO_ORIGIN = " collectionHero"
 /**
  * BUG-42: see `HomeRepository.awaitingFirstRefresh`.
  *
@@ -1636,6 +1644,35 @@ private const val HOME_CATALOG_PUBLISH_INTERVAL = 2
  */
 internal fun shouldPublishAfterBatch(batchIndex: Int, gateArmed: Boolean): Boolean =
     gateArmed || batchIndex == 0 || (batchIndex + 1) % HOME_CATALOG_PUBLISH_INTERVAL == 0
+
+/**
+ * BUG-86 (Wave H): which entries of `HomeRepository.heroItemOrigins` survive a publish.
+ *
+ * An origin is what makes a committed hero item retainable and freezable, so it must stay alive
+ * exactly as long as the thing that supplied the item. For a catalog item that is its definition
+ * still being in the definition set. For the collection fallback it is the item still being in
+ * `cachedCollectionHeroItems`: `ensureCollectionHeroFallback` empties that cache the moment its
+ * request key changes (a different collection set, or different settings behind it), and the
+ * superseded fallback hero has to stop being retainable at that moment.
+ *
+ * The sentinel used to be preserved unconditionally, which pinned the OLD fallback head and kept
+ * its payload frozen after the collection behind it was gone. `pruneCommittedPayloadsLocked` could
+ * not drop either, so when the replacement fallback arrived `serveCommittedHeroItemsLocked` still
+ * saw a non-empty commit map, skipped its re-freeze, and served the new hero unfrozen and unpinned
+ * free to be repainted by the next enrichment or sync publish, which is the doubled hero this
+ * whole gate exists to prevent.
+ */
+internal fun retainHeroItemOrigins(
+    origins: Map<String, String>,
+    knownDefinitionKeys: Set<String>,
+    collectionHeroKeys: Set<String>,
+): Map<String, String> = origins.filter { (itemKey, definitionKey) ->
+    if (definitionKey == COLLECTION_HERO_ORIGIN) {
+        itemKey in collectionHeroKeys
+    } else {
+        definitionKey in knownDefinitionKeys
+    }
+}
 
 /**
  * BUG-86 (Wave H, K1b): can an enabled addon still turn a persisted hero-source key into a catalog

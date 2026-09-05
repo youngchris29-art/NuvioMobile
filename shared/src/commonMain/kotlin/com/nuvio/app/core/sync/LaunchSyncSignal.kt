@@ -72,6 +72,42 @@ object LaunchSyncSignal {
         _state.value = LaunchSyncState.Running
     }
 
+    /**
+     * Check-and-claim for a launch pull that was COALESCED into a pull this signal did not start
+     * (see `adoptCoalescedLaunchPull`).
+     *
+     * The claim is refused in exactly one case: [profileId] ALREADY owns a [LaunchSyncState.Running]
+     * or [LaunchSyncState.Settled] state. That state was published by this profile's own launch
+     * pull and is authoritative, so a request that ran no work of its own must not restart or
+     * downgrade it. Every other owner is stale for [profileId], above all the PREVIOUS profile's
+     * leftover [LaunchSyncState.Settled], which the old "claim only from [LaunchSyncState.Idle]"
+     * rule left standing while this profile's burst was still in flight, so the new profile's hero
+     * gate read another profile's settle as its own release input and committed a hero under a
+     * running burst.
+     *
+     * The check and the write are one decision under [lock]: whichever request wins the lock takes
+     * the claim, and the other sees it.
+     *
+     * @param burstInFlight whether there is a job left to adopt. `true` publishes
+     *   [LaunchSyncState.Running] and the caller attaches the settle to that job; `false` publishes
+     *   [LaunchSyncState.NotApplicable], because the pull that absorbed the request is already over
+     *   and the gate has nothing left to wait for.
+     * @return whether the claim was taken. `false` means the caller must not touch this signal.
+     */
+    fun claimCoalescedLaunch(profileId: Int, burstInFlight: Boolean): Boolean = synchronized(lock) {
+        val ownedByThisProfile = trackedProfileId == profileId &&
+            (_state.value == LaunchSyncState.Running || _state.value == LaunchSyncState.Settled)
+        if (ownedByThisProfile) return@synchronized false
+        if (burstInFlight) {
+            trackedProfileId = profileId
+            _state.value = LaunchSyncState.Running
+        } else {
+            trackedProfileId = null
+            _state.value = LaunchSyncState.NotApplicable
+        }
+        true
+    }
+
     /** The ordered full profile sync for [profileId] has finished — regardless of whether any of
      * its steps failed. A stale settle for a profile this signal is no longer tracking is ignored. */
     fun markSettled(profileId: Int) = synchronized(lock) {
