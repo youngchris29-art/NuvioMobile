@@ -56,16 +56,16 @@ object AddonRepository {
     private val _uiState = MutableStateFlow(AddonsUiState())
     val uiState: StateFlow<AddonsUiState> = _uiState.asStateFlow()
 
-    private var initialized = false
+    private val bootstrap = AddonBootstrapState()
     private var pulledFromServer = false
     private var currentProfileId: Int = 1
     private val activeRefreshJobs = mutableMapOf<String, Job>()
     private val pushJobsByProfile = mutableMapOf<Int, Job>()
 
-    // Observable mirror of `initialized` so consumers that can outrun bootstrap (the player's
+    // Observable mirror of the bootstrap guard so consumers that can outrun bootstrap (the player's
     // subtitle fetch) can wait for the local addon list instead of snapshotting an empty state.
-    private val _initializedState = MutableStateFlow(false)
-    val initializedState: StateFlow<Boolean> = _initializedState.asStateFlow()
+    // Both live in [AddonBootstrapState] so no completion path can set one without the other.
+    val initializedState: StateFlow<Boolean> = bootstrap.initializedState
 
     // Flips true when a server pull has SETTLED (applied, found-nothing, or failed with a real
     // error — not cancelled). The default-addon seed and the push guard below both key off the
@@ -77,8 +77,8 @@ object AddonRepository {
 
     fun initialize() {
         val effectiveProfileId = resolveEffectiveProfileId(AddonProfileProvider.context.activeProfileId)
-        if (initialized) return
-        initialized = true
+        if (bootstrap.initialized) return
+        bootstrap.begin()
         currentProfileId = effectiveProfileId
         log.d { "initialize() — loading local addons for profile $currentProfileId" }
 
@@ -89,7 +89,7 @@ object AddonRepository {
             // Nothing stored locally, but bootstrap HAS run: publish that fact so watchers can tell
             // this settled empty state from the initial one they saw before initialize().
             _uiState.update { it.copy(isInitialized = true) }
-            _initializedState.value = true
+            bootstrap.complete()
             return
         }
 
@@ -111,16 +111,15 @@ object AddonRepository {
                 refreshAddon(manifestUrl)
             }
         }
-        _initializedState.value = true
+        bootstrap.complete()
     }
 
     fun onProfileChanged(profileId: Int) {
         val effectiveProfileId = resolveEffectiveProfileId(profileId)
-        if (effectiveProfileId == currentProfileId && initialized) return
+        if (effectiveProfileId == currentProfileId && bootstrap.initialized) return
         cancelActiveRefreshes()
         currentProfileId = effectiveProfileId
-        initialized = false
-        _initializedState.value = false
+        bootstrap.reset()
         pulledFromServer = false
         _serverPullSettled.value = false
         _uiState.value = AddonsUiState()
@@ -131,10 +130,9 @@ object AddonRepository {
         pushJobsByProfile.values.forEach(Job::cancel)
         pushJobsByProfile.clear()
         currentProfileId = 1
-        initialized = false
+        bootstrap.reset()
         pulledFromServer = false
         _serverPullSettled.value = false
-        _initializedState.value = false
         _uiState.value = AddonsUiState()
     }
 
@@ -142,7 +140,7 @@ object AddonRepository {
         var settled = true
         try {
             currentProfileId = resolveEffectiveProfileId(profileId)
-            log.i { "pullFromServer() — profileId=$profileId, initialized=$initialized, pulledFromServer=$pulledFromServer" }
+            log.i { "pullFromServer() — profileId=$profileId, initialized=${bootstrap.initialized}, pulledFromServer=$pulledFromServer" }
             runCatching {
                 val rows = SupabaseProvider.client.postgrest
                     .from("addons")
@@ -208,7 +206,7 @@ object AddonRepository {
                                     enabled = enabledByUrl[url],
                                 )
                             },
-                            // This path sets `initialized = true` below, so the published state
+                            // This path completes bootstrap below, so the published state
                             // says so too — a pull that wins the race with initialize() must not
                             // leave watchers thinking bootstrap never happened.
                             isInitialized = true,
@@ -222,7 +220,7 @@ object AddonRepository {
                             }
                         }
                         pulledFromServer = true
-                        initialized = true
+                        bootstrap.complete()
                         return
                     }
                 }
@@ -249,7 +247,7 @@ object AddonRepository {
                     }
                 }
                 pulledFromServer = true
-                initialized = true
+                bootstrap.complete()
                 log.i { "pullFromServer() — applied ${urls.size} addons to state" }
             }.onFailure { e ->
                 // runCatching captures cancellation too; without this rethrow the outer handler
