@@ -447,6 +447,10 @@ struct FullScreenTrailerPlayer: View {
     var zoomKey: String? = nil
     /// BUG-81: see `TrailerHeroPlayer.videoId`.
     var videoId: String? = nil
+    /// FEAT-32: called when the presenting cover STARTS dismissing (see
+    /// `TrailerBridgeCoverObserver`). The surface is blanked first so the cover, whose background
+    /// the host clears, reveals the description underneath at once.
+    var onWillDismiss: () -> Void = {}
 
     /// Stable across body re-evals (@State keeps the instance); bridges the play/pause command
     /// to the representable's player without making the surface observable.
@@ -458,6 +462,10 @@ struct FullScreenTrailerPlayer: View {
         // surface still renders exactly as before for a bar-free 16:9 source.
         FullScreenTrailerSurface(urlString: urlString, zoomKey: zoomKey, videoId: videoId, control: control, onPlaybackEnded: onPlaybackEnded)
             .ignoresSafeArea()
+            .background(TrailerBridgeCoverObserver {
+                control.hideSurface()
+                onWillDismiss()
+            })
             .onPlayPauseCommand { control.togglePause() }
     }
 }
@@ -465,6 +473,13 @@ struct FullScreenTrailerPlayer: View {
 /// Holds a weak handle to the full-screen player so the SwiftUI layer can toggle pause.
 final class FullScreenTrailerControl {
     weak var player: AVPlayer?
+    /// FEAT-32: the surface view, so the bridge can blank it the instant the cover starts
+    /// dismissing (the cover keeps rendering its content until the dismissal ends).
+    weak var surface: UIView?
+
+    func hideSurface() {
+        surface?.isHidden = true
+    }
 
     func togglePause() {
         guard let player else { return }
@@ -497,6 +512,7 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
             player.isMuted = false
             view.playerLayer.player = player
             control.player = player
+            control.surface = view
             context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
             context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId)
             // Phase 0 (BUG-46): full-screen plays share `TrailerPipelineCounters` with the

@@ -230,7 +230,21 @@ struct DetailView: View {
     /// timer (not the explicit "Watch Trailer" button or a "Trailers & Extras" row item) — gates the
     /// "Press Back to exit" hint so it only shows for the surprise entry, not a deliberate tap.
     @State private var trailerPlaybackIsAutoPlay = false
-    @State private var trailerHintVisible = false
+    /// FEAT-32: the bridge between this page and the full-screen trailer (see `TrailerBridge.swift`).
+    /// `model.trailerPlayback` is the REQUEST (set by Watch Trailer, auto-play and the extras row,
+    /// and what the rest of this view gates on); `presentedTrailer` is what the cover shows, and it
+    /// is set only once the leaving choreography has run. Tearing the two apart is the whole change:
+    /// nothing else about the request path moved.
+    @State private var bridgePhase: TrailerBridgePhase = .idle
+    @State private var presentedTrailer: TrailerPlaybackItem?
+    @State private var bridgeTask: Task<Void, Never>?
+    /// True from the moment the cover is handed an item until its `onDismiss`. Decides who settles
+    /// the return: `onDismiss` when a cover was up (so the enlarged still is what its dismissal
+    /// reveals), the request's own withdrawal otherwise.
+    @State private var bridgeCoverPresented = false
+    /// `debug_bridge` probe: every phase the bridge passed through this visit, e.g.
+    /// `idle>leaving>playing>returning>idle`. test51 reads it after the settle.
+    @State private var bridgeTrace = TrailerBridgePhase.idle.label
     /// Which cast card holds focus — feeds `cardFocusButtonStyle(stillFocused:)`'s generic
     /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
     /// 2026-08-29 rounds 3-4).
@@ -261,6 +275,9 @@ struct DetailView: View {
         let _ = Self.logBodyEval()
         ZStack(alignment: .topLeading) {
             backdropImage
+                // FEAT-32: the still lands enlarged when the trailer cover goes and settles to 1.
+                .scaleEffect(TrailerBridgeChoreography.backdropScale(bridgePhase))
+                .animation(TrailerBridgeChoreography.backdropAnimation(to: bridgePhase), value: bridgePhase)
             if showPosterBackdrop {
                 posterBackdropLayer
                     .transition(.opacity)
@@ -288,6 +305,14 @@ struct DetailView: View {
             // UX-6/BUG-41: the dim overlay + its debug Text live in `ScrollDimOverlay`, the sole
             // observer of `dimModel` — see that type's doc comment for why.
             ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat)
+            // FEAT-32: the hero dims to black under the fading chrome before the cover presents, so
+            // the trailer cuts in from black. Cleared with no animation on return (hard cut to the
+            // still, as in Nuvio), the settle above does the rest.
+            Color.black
+                .opacity(TrailerBridgeChoreography.blackout(bridgePhase))
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .animation(TrailerBridgeChoreography.blackoutAnimation(to: bridgePhase), value: bridgePhase)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     topBlock
@@ -317,6 +342,13 @@ struct DetailView: View {
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // FEAT-32: the chrome fades out ahead of the dim on the way in, and waits for the
+            // backdrop settle on the way back.
+            .opacity(TrailerBridgeChoreography.chromeOpacity(bridgePhase))
+            .animation(TrailerBridgeChoreography.chromeAnimation(to: bridgePhase), value: bridgePhase)
+            // Off the accessibility tree while invisible, so test51's "chrome is back" check reads
+            // visibility, not mere existence (the tvOS 27 runtime never reports focus).
+            .accessibilityHidden(bridgePhase != .idle)
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
             .onScrollGeometryChange(for: Double.self, of: { geo in
@@ -366,6 +398,25 @@ struct DetailView: View {
                     if trailerDimmedOut { trailerDimmedOut = false }
                 }
             }
+            // FEAT-32: the title drops into a bottom-left caption with the Back hint while the page
+            // leaves; the player draws its own copy for the first seconds of playback.
+            TrailerBridgeCaption(title: model.trailerPlayback?.title ?? title)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .opacity(TrailerBridgeChoreography.captionOpacity(bridgePhase))
+                .scaleEffect(TrailerBridgeChoreography.captionScale(bridgePhase), anchor: .bottomLeading)
+                .animation(TrailerBridgeChoreography.captionAnimation(to: bridgePhase), value: bridgePhase)
+                .accessibilityHidden(TrailerBridgeChoreography.captionOpacity(bridgePhase) == 0)
+            #if DEBUG
+            // FEAT-32 diagnostic (invisible, harness-readable): the phases this visit's bridge went
+            // through, so test51 can prove the choreography ran rather than that the cover came
+            // and went. Same shape as `debug_trailers`.
+            Text("debug_bridge trace=\(bridgeTrace)")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_bridge")
+            #endif
         }
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
@@ -433,7 +484,23 @@ struct DetailView: View {
                 meta: playbackMeta
             )
         }
-        .fullScreenCover(item: $model.trailerPlayback, onDismiss: {
+        // FEAT-32: presented from `presentedTrailer`, which `beginTrailerBridge` sets after the
+        // leaving choreography. Dismissal (Back) writes nil back to the request so every
+        // `trailerPlayback == nil` gate in this view reads as before.
+        .fullScreenCover(item: Binding(
+            get: { presentedTrailer },
+            set: { newValue in
+                if newValue == nil {
+                    TrailerZoomProbe.log("bridge cover-binding nil")
+                    // Back on the cover. Move to the return values in THIS update so the cover's
+                    // dismissal animation reveals the enlarged still, then withdraw the request;
+                    // `onDismiss` settles once the cover is gone.
+                    endTrailerBridge()
+                }
+                presentedTrailer = newValue
+                if newValue == nil { model.trailerPlayback = nil }
+            }
+        ), onDismiss: {
             // FEAT-11: returning from ANY full-screen trailer (the hero "Watch Trailer" button
             // above, or a "Trailers & Extras" row item) to the muted background loop — restore the
             // shared audio preference back to the user's configured default (it seeds `isMuted`
@@ -442,6 +509,10 @@ struct DetailView: View {
             // unconditionally carry over into the background player once it reappears.
             HeroTrailerAudioState.shared.setMuted(value: !trailerAudioDefaultOn)
             trailerPlaybackIsAutoPlay = false
+            // FEAT-32: the cover is gone, the still is showing enlarged: settle it.
+            TrailerZoomProbe.log("bridge onDismiss")
+            bridgeCoverPresented = false
+            settleTrailerBridge()
         }) { item in
             // UX-9: the player scales itself past fill (parityZoom) to crop baked-in letterbox
             // bars; end-of-playback dismisses back to Detail rather than resting on a black
@@ -451,19 +522,89 @@ struct DetailView: View {
             // own per-trailer-id key (see `TrailerPlaybackItem.zoomKey`).
             FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                 model.trailerPlayback = nil
-            }, zoomKey: item.zoomKey, videoId: item.videoId)
+            }, zoomKey: item.zoomKey, videoId: item.videoId, onWillDismiss: {
+                // FEAT-32: the system dismissal has begun (Back). SwiftUI only reports it once it
+                // has ENDED (cover binding nil, `onDismiss` and the player teardown all land in
+                // the same millisecond), so this is the one moment to drop the black and land the
+                // enlarged still before the cover, now transparent, reveals it.
+                TrailerZoomProbe.log("bridge cover-will-disappear")
+                NotificationCenter.default.post(name: .trailerBridgeCoverWillDismiss, object: nil)
+                endTrailerBridge()
+            })
                 .ignoresSafeArea()
-                .overlay(alignment: .bottom) {
-                    if trailerPlaybackIsAutoPlay {
-                        autoPlayHintOverlay
-                    }
+                // FEAT-32: nothing of the cover's own behind the player, so a blanked surface
+                // shows the description through.
+                .presentationBackground(.clear)
+                // FEAT-32: title + Back hint, bottom-left, for a beat after playback starts. The
+                // auto-play entry keeps its longer dwell (BUG-18: a 4 s hint was reported as
+                // "doesn't stay on the screen" on TVs that blank at playback start).
+                .overlay(alignment: .bottomLeading) {
+                    TrailerBridgeCaption(title: item.title,
+                                         dwell: trailerPlaybackIsAutoPlay ? 6 : TrailerBridgeChoreography.captionDwell)
                 }
+        }
+        .onChange(of: model.trailerPlayback?.id) { _, newId in
+            if newId != nil, let item = model.trailerPlayback {
+                beginTrailerBridge(item)
+            } else {
+                endTrailerBridge()
+            }
         }
         // Detail is an "immersive" screen: the floating tab bar hides for as long as one is on
         // screen, at any nesting depth (Detail → More Like This → Detail pushes are common, hence
         // a depth counter on the shared TabBarVisibility rather than a plain flag here).
         .onAppear { tabBarVisibility.pushImmersive() }
-        .onDisappear { tabBarVisibility.popImmersive() }
+        .onDisappear {
+            tabBarVisibility.popImmersive()
+            bridgeTask?.cancel()
+            bridgeTask = nil
+        }
+    }
+
+    // MARK: - FEAT-32: trailer bridge
+
+    /// The request just landed: run the leaving choreography, then present the cover if the request
+    /// still stands. A second request mid-flight (a different trailer id) restarts the timer.
+    private func beginTrailerBridge(_ item: TrailerPlaybackItem) {
+        bridgeTask?.cancel()
+        setBridgePhase(TrailerBridgeChoreography.next(bridgePhase, .trailerRequested))
+        bridgeTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(TrailerBridgeChoreography.leaveDuration))
+            guard !Task.isCancelled, model.trailerPlayback?.id == item.id else { return }
+            setBridgePhase(TrailerBridgeChoreography.next(bridgePhase, .leaveFinished))
+            bridgeCoverPresented = true
+            presentedTrailer = item
+        }
+    }
+
+    private func setBridgePhase(_ phase: TrailerBridgePhase) {
+        guard phase != bridgePhase else { return }
+        bridgePhase = phase
+        bridgeTrace += ">" + phase.label
+        TrailerZoomProbe.log("bridge phase=\(phase.label)")
+    }
+
+    /// The request was withdrawn: playback ended, Back was pressed on the cover, or the trailer
+    /// went away before the cover presented. The return values apply with NO animation so the
+    /// cover's dismissal reveals the enlarged still; `settleTrailerBridge` then animates it home.
+    /// Idempotent: the Back path calls it from the cover binding first and again from the
+    /// request's `onChange`.
+    private func endTrailerBridge() {
+        bridgeTask?.cancel()
+        bridgeTask = nil
+        guard bridgePhase != .idle else { return }
+        setBridgePhase(TrailerBridgeChoreography.next(bridgePhase, .trailerEnded))
+        if bridgeCoverPresented {
+            // `onDismiss` settles once the cover is actually gone.
+            presentedTrailer = nil
+        } else {
+            settleTrailerBridge()
+        }
+    }
+
+    private func settleTrailerBridge() {
+        guard bridgePhase == .returning else { return }
+        setBridgePhase(TrailerBridgeChoreography.next(bridgePhase, .settle))
     }
 
     // MARK: - Derived values (prefer enriched meta, fall back to the preview card)
@@ -525,7 +666,12 @@ struct DetailView: View {
     /// backdrop doesn't already — skip when they're the same URL (`backgroundUrl` already falls
     /// back to poster art itself) — and only while the hero trailer isn't occupying that same area.
     private var showPosterBackdrop: Bool {
+        // FEAT-32: `!isTrailerActive` is also true for the whole full-screen trailer bridge (the
+        // request pauses the background loop), which used to mount this layer unseen under the
+        // opaque cover. The cover is transparent on its way out now, so the layer would show
+        // through the reveal as a second artwork fading over the settling still. Idle only.
         posterBackdropEnabled && posterUrl != nil && posterUrl != backgroundUrl && !isTrailerActive
+            && bridgePhase == .idle
     }
 
     // MARK: - Sections
@@ -1354,27 +1500,6 @@ struct DetailView: View {
 
     /// "Press Back to exit the trailer" — shown only for the auto-play entry (not the explicit
     /// "Watch Trailer" button or a "Trailers & Extras" item), fading out on its own after ~4s.
-    private var autoPlayHintOverlay: some View {
-        Text("Press Back to exit the trailer")
-            .font(Theme.Font.meta)
-            .foregroundStyle(Theme.Palette.textPrimary)
-            .padding(.horizontal, Theme.Spacing.lg)
-            .padding(.vertical, Theme.Spacing.sm)
-            .glassEffect(.regular, in: .capsule)
-            .padding(.bottom, Theme.Spacing.xl)
-            .opacity(trailerHintVisible ? 1 : 0)
-            .animation(.easeOut(duration: 0.6), value: trailerHintVisible)
-            .onAppear {
-                trailerHintVisible = true
-                // 6s (was 4): reported as "doesn't stay on the screen" when the display-mode
-                // switch ate the start of the window (BUG-18). The switch is gone now, but the
-                // longer dwell keeps the hint readable even on TVs that blank briefly at
-                // playback start for other reasons.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
-                    trailerHintVisible = false
-                }
-            }
-    }
 
 }
 

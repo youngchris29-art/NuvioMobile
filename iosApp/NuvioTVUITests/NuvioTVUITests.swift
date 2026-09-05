@@ -5568,4 +5568,67 @@ final class NuvioTVUITests: XCTestCase {
             "the belt hid the last row's own title (beltFaded=\(lastBeltFaded)) at a rest that should be showing it. Full settle line: \(lastRowLine)"
         )
     }
+
+    // MARK: - FEAT-32: description → full-screen trailer bridge
+
+    /// Opens a detail page with trailer auto-play forced on and lets its 4 s timer fire the same
+    /// request the Watch Trailer button makes. The `debug_bridge` probe (DEBUG, invisible) records
+    /// every phase the bridge passes through; after Back and the settle it must read the full
+    /// `idle>leaving>playing>returning>idle` path. Existence of the caption or the chrome is NOT an
+    /// oracle here: hidden SwiftUI elements still exist to XCUITest (`accessibilityHidden` did not
+    /// change that on the tvOS 27 runtime), so the trace is the only honest signal. The screenshots
+    /// give the human pass the look of each phase. Soft-skips when the fixture title resolves no
+    /// trailer.
+    func test51TrailerBridgeAutoPlay() throws {
+        let app = launchToHome(
+            extraArguments: ["-detail_trailer_autoplay", "YES", "-detail_trailer_background", "YES",
+                             "-debug.trailerDiagnostics", "YES", "-debug.trailerProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        // Detail-page entry via the hero CTA ("Go to Movie"/"Go to Show"): test22's focus
+        // normalization. The four-downs walk test21 uses lands on a collection folder page on the
+        // current fixture Home, not a detail page.
+        press(.up, times: 6, gap: 0.5)
+        press(.down, times: 1)
+        pause(1.5)
+        let cta = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Go to'")).firstMatch
+        XCTAssertTrue(cta.waitForExistence(timeout: 8), "hero CTA not on screen; cannot reach a detail page")
+        remote.press(.select)
+        pause(2.5)
+        shot(app, "51a_detail")
+
+        // Watch Trailer only renders once the hero trailer resolved, which is auto-play's
+        // precondition too.
+        let watch = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Trailer'")).firstMatch
+        guard watch.waitForExistence(timeout: 12) else {
+            throw XCTSkip("no trailer resolved for the fixture's first title; the bridge has nothing to play")
+        }
+        let probe = app.staticTexts["debug_bridge"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 5), "debug_bridge probe missing (DEBUG build?)")
+        XCTAssertEqual(probe.label, "debug_bridge trace=idle", "the bridge must be idle before auto-play fires")
+
+        // Auto-play fires 4 s after the page settles with no input; the leave runs 0.6 s more.
+        pause(5.5)
+        shot(app, "51b_leaving_or_playing")
+        pause(3)
+        shot(app, "51c_playing")
+
+        remote.press(.menu)
+        pause(0.4)
+        shot(app, "51d_returning")
+        // Poll the probe for the settle: the chrome animates back 0.5 s after it.
+        let settled = NSPredicate(format: "label ENDSWITH 'returning>idle'")
+        let settledExp = expectation(for: settled, evaluatedWith: probe)
+        wait(for: [settledExp], timeout: 8)
+        pause(1.5)
+        shot(app, "51e_settled")
+        let trace = probe.label
+        print("[FEAT32] \(trace)")
+        XCTAssertEqual(
+            trace, "debug_bridge trace=idle>leaving>playing>returning>idle",
+            "the bridge did not run its full choreography: \(trace)"
+        )
+        XCTAssertTrue(watch.exists, "Watch Trailer is gone after the return")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
 }
