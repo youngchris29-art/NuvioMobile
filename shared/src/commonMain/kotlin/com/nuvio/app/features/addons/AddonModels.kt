@@ -65,6 +65,21 @@ data class ManagedAddon(
 
 data class AddonsUiState(
     val addons: List<ManagedAddon> = emptyList(),
+    /**
+     * Codex branch review round 9: false on the repository's INITIAL state, i.e. before
+     * `AddonRepository.initialize()` has read the profile's local add-on list (or a server pull has
+     * applied one). Consumers that watch `uiState` attach before bootstrap runs and therefore see
+     * that initial state first; without this flag an empty, nothing-pending emission is
+     * indistinguishable from the settled "this profile genuinely has no enabled add-on" state, and
+     * tvOS's Home read it as terminal and opened its rows gate on every cold launch.
+     *
+     * Carried ON the state rather than read from `AddonRepository.initializedState` on the side so
+     * the decision is made from ONE consistent snapshot: the repository sets its mirror flow after
+     * the emission, so a snapshot read can observe a settled list with the flag still false.
+     *
+     * Defaulted so every other construction site (composeApp included) is unaffected.
+     */
+    val isInitialized: Boolean = false,
 )
 
 data class AddonOverview(

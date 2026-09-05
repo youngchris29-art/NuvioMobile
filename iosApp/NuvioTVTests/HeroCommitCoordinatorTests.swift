@@ -231,6 +231,65 @@ final class HeroCommitCoordinatorTests: XCTestCase {
             .none)
     }
 
+    // MARK: - AddonBootstrapRoute (Codex round 9: the rows gate stays shut until add-ons settle)
+
+    /// THE REGRESSION. `HomeViewModel` attaches its add-on watcher before calling
+    /// `AddonRepository.initialize()`, so the first emission of every cold launch is the
+    /// repository's initial state: nothing ready, nothing pending, no refresh signature. That is
+    /// byte-for-byte the shape of a settled add-on-less profile, and the old escape opened the rows
+    /// gate on it, letting the collections/settings watchers paint and reorder rows before the hero
+    /// committed. `isInitialized` is the only term that separates the two.
+    func testBootstrapRouteHoldsTheInitialPreInitializeState() {
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: false, readyIsEmpty: true,
+                                       manifestsPending: false, hasRefreshed: false),
+            .holdRows)
+    }
+
+    /// Bootstrap settled and this profile genuinely has no add-on that can ever produce a catalog:
+    /// nothing will release the Kotlin hero gate, so the rows must open here or a collections-only
+    /// Home stays blank for the session.
+    func testBootstrapRouteOpensOnceBootstrapSettledWithNoSources() {
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
+                                       manifestsPending: false, hasRefreshed: false),
+            .openRowsNoSources)
+    }
+
+    /// An enabled add-on has a loaded manifest: the refresh path owns this emission and the rows
+    /// gate is left to the hero commit.
+    func testBootstrapRouteStaysOutOfTheWayWhenSomethingIsReady() {
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: false,
+                                       manifestsPending: false, hasRefreshed: false),
+            .none)
+        // Ready wins even before bootstrap has flagged itself settled — a ready manifest IS a
+        // settled add-on, and the refresh path must not be diverted into a rows-gate decision.
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: false, readyIsEmpty: false,
+                                       manifestsPending: true, hasRefreshed: false),
+            .none)
+    }
+
+    /// A manifest fetch is still in flight, so "no sources" is not a fact yet: keep the
+    /// "Setting up your catalogs…" placeholder and the rows held.
+    func testBootstrapRouteHoldsWhileAManifestIsStillFetching() {
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
+                                       manifestsPending: true, hasRefreshed: false),
+            .holdRows)
+    }
+
+    /// Internal review r1 (P2), preserved: once a catalog-bearing refresh HAS run, disabling the
+    /// last add-on mid-launch must not open the rows on held sections — the Kotlin gate's own
+    /// timeout is the backstop from then on.
+    func testBootstrapRouteHoldsAfterARefreshHasAlreadyRun() {
+        XCTAssertEqual(
+            AddonBootstrapRoute.decide(isInitialized: true, readyIsEmpty: true,
+                                       manifestsPending: false, hasRefreshed: true),
+            .holdRows)
+    }
+
     // MARK: - HeroPendingCommitRoute (Codex r1 P2: the in-flight head is preserved, not restarted)
 
     func testPendingRouteAbsorbsAPublishForTheHeadAlreadyPreparing() {

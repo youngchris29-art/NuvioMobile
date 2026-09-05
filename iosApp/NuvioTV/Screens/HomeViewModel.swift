@@ -97,6 +97,49 @@ enum AddonChangeRoute: Equatable {
     }
 }
 
+/// Codex branch review round 9: whether an add-on emission with NO ready add-on may open the rows
+/// gate, i.e. whether "this profile has no catalog-bearing add-on" is a settled fact yet.
+///
+/// `HomeViewModel` attaches its `AddonRepository.uiState` watcher before it calls
+/// `AddonRepository.initialize()`, so the FIRST thing every cold launch delivers is the
+/// repository's initial state: no add-ons, no manifest fetch in flight, and no refresh signature
+/// stored yet. The escape used to read that as terminal — the same shape a genuinely
+/// add-on-less profile produces — and opened the rows gate before the hero had committed, after
+/// which the collections and catalog-settings watchers painted and reordered rows underneath it.
+/// That is exactly the launch double-build `RowsGate` exists to prevent.
+///
+/// The fix is a positive signal rather than an absence of one: `AddonsUiState.isInitialized`,
+/// which the repository sets once it has loaded the profile's local add-on list (or a server pull
+/// has applied one). It rides the state itself, so this decision is made from one consistent
+/// snapshot instead of racing a side-channel flow.
+enum AddonBootstrapRoute: Equatable {
+    /// At least one enabled add-on has a loaded manifest: the normal refresh path owns this
+    /// emission and the rows gate is not this watcher's business.
+    case none
+    /// Nothing ready, and "nothing ready" is not yet a fact — bootstrap has not settled, or a
+    /// manifest is still being fetched, or a catalog-bearing refresh has already run (in which
+    /// case the Kotlin gate's own `HERO_COMMIT_GATE_TIMEOUT_MS` is the backstop). Hold the rows.
+    case holdRows
+    /// Bootstrap settled with no enabled add-on that can ever produce a catalog, and no refresh
+    /// has run: nothing will release the Kotlin hero gate, so open the rows here rather than hold
+    /// a collections-only Home blank forever. The same conclusion `HeroGateReason.NO_SOURCES`
+    /// reaches on the Kotlin side.
+    case openRowsNoSources
+
+    /// - Parameters:
+    ///   - isInitialized: `AddonsUiState.isInitialized` — add-on bootstrap has run for this profile.
+    ///   - readyIsEmpty: no enabled add-on has a loaded manifest.
+    ///   - manifestsPending: an enabled add-on is still fetching its manifest.
+    ///   - hasRefreshed: a catalog-bearing refresh has already run on this profile
+    ///     (`lastManifestSignature` is non-empty).
+    static func decide(isInitialized: Bool, readyIsEmpty: Bool,
+                       manifestsPending: Bool, hasRefreshed: Bool) -> AddonBootstrapRoute {
+        guard readyIsEmpty else { return .none }
+        guard isInitialized, !manifestsPending, !hasRefreshed else { return .holdRows }
+        return .openRowsNoSources
+    }
+}
+
 @MainActor
 final class HomeViewModel: ObservableObject {
     @Published private(set) var heroItems: [MetaPreview] = []
@@ -945,7 +988,12 @@ final class HomeViewModel: ObservableObject {
     }
 
     private func onAddonsChanged(_ state: AddonsUiState) {
-        // First run with an empty store → seed Cinemeta, then wait for the next emission.
+        // First run with an empty store → seed Cinemeta, then wait for the next emission. This also
+        // catches the repository's pre-bootstrap INITIAL state, which every cold launch delivers
+        // here before `AddonRepository.initialize()` runs (the watcher is attached first): it never
+        // reaches the rows-gate escape below, and would not open it if it did — see
+        // `AddonBootstrapRoute`, which is the term that makes that true for every shape, not just
+        // the empty one.
         if state.addons.isEmpty {
             addonManifestError = nil
             maybeSeedDefaultAddon()
@@ -957,8 +1005,12 @@ final class HomeViewModel: ObservableObject {
         // Terminal manifest failure with nothing ready and nothing still fetching → surface it.
         // Pending keeps the existing "Setting up your catalogs…" placeholder (already not a false
         // empty state); Retry re-marks the addons refreshing, which clears this again.
+        let manifestsPending = AddonModelsKt.hasPendingEnabledManifests(state.addons)
+        let bootstrap = AddonBootstrapRoute.decide(isInitialized: state.isInitialized,
+                                                   readyIsEmpty: ready.isEmpty,
+                                                   manifestsPending: manifestsPending,
+                                                   hasRefreshed: !lastManifestSignature.isEmpty)
         if ready.isEmpty {
-            let manifestsPending = AddonModelsKt.hasPendingEnabledManifests(state.addons)
             addonManifestError = manifestsPending ? nil : AddonModelsKt.firstEnabledManifestError(state.addons)
             // Codex r2 (P1) safety: no enabled add-on has a loaded manifest and none is still
             // fetching one, so nothing will ever call `HomeRepository.refresh` on this profile and
@@ -968,14 +1020,20 @@ final class HomeViewModel: ObservableObject {
             // is the same conclusion `HeroGateReason.NO_SOURCES` reaches on the Kotlin side, and
             // there are no catalogs left to reorder underneath.
             //
-            // Internal review r1 (P2): `lastRefreshSignature.isEmpty` is the "no catalog-bearing
-            // refresh has happened yet on this profile" term this escape was missing. Without it,
-            // a user disabling the last add-on mid-launch - after a ready set had already armed
-            // the Kotlin gate - opened the rows on held sections and rebuilt underneath a hero
-            // that had not committed, which is the very reorder the gate exists to prevent. Once a
-            // refresh HAS run, the gate's own 4s HERO_COMMIT_GATE_TIMEOUT_MS is the backstop and
-            // no escape is needed here.
-            if !manifestsPending && lastRefreshSignature.isEmpty {
+            // Internal review r1 (P2): the "no catalog-bearing refresh has happened yet on this
+            // profile" term this escape was missing. Without it, a user disabling the last add-on
+            // mid-launch - after a ready set had already armed the Kotlin gate - opened the rows on
+            // held sections and rebuilt underneath a hero that had not committed, which is the very
+            // reorder the gate exists to prevent. Once a refresh HAS run, the gate's own 4s
+            // HERO_COMMIT_GATE_TIMEOUT_MS is the backstop and no escape is needed here.
+            // (`lastManifestSignature` and `lastRefreshSignature` are written and cleared together,
+            // so either reads the same fact; the manifest one names it.)
+            //
+            // Codex branch review round 9: and the `isInitialized` term, which is what keeps the
+            // repository's pre-bootstrap initial state - empty, nothing pending, no signature yet,
+            // delivered to this watcher before `AddonRepository.initialize()` even runs - from
+            // looking exactly like a settled add-on-less profile. See `AddonBootstrapRoute`.
+            if bootstrap == .openRowsNoSources {
                 openRowsGateAndRebuild()
             }
             return
@@ -1011,7 +1069,12 @@ final class HomeViewModel: ObservableObject {
         if HomeHeroProbe.enabled {
             let catalogs = ready.reduce(0) { $0 + ($1.manifest?.catalogs.count ?? 0) }
             let routeLabel = route == .metadataOnly ? "metadataOnly" : "refresh"
-            HomeHeroProbe.log(String(format: "addonsChanged vm=%d ready=%d catalogs=%d sinceLaunch=%dms addonRoute=%@", vmId, ready.count, catalogs, HomeHeroProbe.sinceLaunchMs, routeLabel))
+            // `bootstrap=` (append-only, Codex round 9): `pre` means this emission arrived before
+            // add-on bootstrap settled, `settled` after. Every healthy launch reaches the refresh
+            // path with `settled`; a `pre` here would say the ready set came from somewhere other
+            // than initialize()/a server pull.
+            let bootstrapLabel = state.isInitialized ? "settled" : "pre"
+            HomeHeroProbe.log(String(format: "addonsChanged vm=%d ready=%d catalogs=%d sinceLaunch=%dms addonRoute=%@ bootstrap=%@", vmId, ready.count, catalogs, HomeHeroProbe.sinceLaunchMs, routeLabel, bootstrapLabel))
         }
         // A manifest-set change needs the fetch (`force: true`); a rename-only change asks
         // `HomeRepository.refresh` for its non-forced, metadata-only republish path instead — see

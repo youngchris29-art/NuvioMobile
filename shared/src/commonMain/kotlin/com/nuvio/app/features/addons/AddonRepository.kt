@@ -86,6 +86,9 @@ object AddonRepository {
         val enabledByUrl = loadLocalEnabledStates()
         log.d { "initialize() — local addon count: ${storedUrls.size}" }
         if (storedUrls.isEmpty()) {
+            // Nothing stored locally, but bootstrap HAS run: publish that fact so watchers can tell
+            // this settled empty state from the initial one they saw before initialize().
+            _uiState.update { it.copy(isInitialized = true) }
             _initializedState.value = true
             return
         }
@@ -98,6 +101,7 @@ object AddonRepository {
                     enabled = enabledByUrl[manifestUrl],
                 )
             },
+            isInitialized = true,
         )
 
         storedUrls.forEach { manifestUrl ->
@@ -204,6 +208,10 @@ object AddonRepository {
                                     enabled = enabledByUrl[url],
                                 )
                             },
+                            // This path sets `initialized = true` below, so the published state
+                            // says so too — a pull that wins the race with initialize() must not
+                            // leave watchers thinking bootstrap never happened.
+                            isInitialized = true,
                         )
                         persist()
                         localUrls.forEach { url ->
@@ -229,6 +237,8 @@ object AddonRepository {
                             enabled = row?.enabled,
                         )
                     },
+                    // As above: the server's list IS a settled bootstrap for this profile.
+                    isInitialized = true,
                 )
                 persist()
                 urls.forEach { url ->
