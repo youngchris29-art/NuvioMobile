@@ -63,3 +63,36 @@ internal fun <T> stableHeroSelection(
     // Reserved prefix, then newcomers, then whatever previous items the cap displaced.
     return kept.take(keptCap) + newcomers + kept.drop(keptCap)
 }
+
+/**
+ * BUG-86 (Wave H): once the hero has COMMITTED, its head is pinned for the session.
+ *
+ * [stableHeroSelection] keeps a previous item in the ranking but not necessarily at index 0: the
+ * launch sync burst re-normalizes the hero-source slots (`normalizePreferences`), which re-picks
+ * which catalogs feed the pool and therefore reshuffles the positions around the reserved prefix.
+ * The committed head must survive that, and it must survive its own catalog being re-fetched (the
+ * item is momentarily absent from [ranking] while the section reloads).
+ *
+ * Rules, in order:
+ * 1. no committed head, or it is already at index 0: return [ranking] untouched (no allocation
+ *    churn, so an unchanged publish stays equal for StateFlow).
+ * 2. the head is somewhere in [ranking]: move that instance to index 0.
+ * 3. the head is only in [keepFrom]: re-insert that instance at index 0.
+ * 4. the head is in neither: it is genuinely gone (its origin catalog left the definition set, or
+ *    the release filter removed it because it is truly unreleased) and the ranking is returned as
+ *    is. Callers apply the release filter to [keepFrom] before calling, so "unreleased" and "origin
+ *    catalog gone" both arrive here as absence.
+ */
+internal fun <T> pinCommittedHead(
+    ranking: List<T>,
+    committedKey: String?,
+    keepFrom: List<T>,
+    key: (T) -> String,
+): List<T> {
+    if (committedKey == null) return ranking
+    if (ranking.isNotEmpty() && key(ranking.first()) == committedKey) return ranking
+    val head = ranking.firstOrNull { item -> key(item) == committedKey }
+        ?: keepFrom.firstOrNull { item -> key(item) == committedKey }
+        ?: return ranking
+    return listOf(head) + ranking.filterNot { item -> key(item) == committedKey }
+}

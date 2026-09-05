@@ -258,11 +258,21 @@ class ProfileSyncRequestGate {
     private var activeJob: Job? = null
     private var pendingRequest: PendingRequest? = null
 
+    /**
+     * @param onWillLaunch run exactly once, on the CALLING thread, for a request that will really
+     * run ([ProfileSyncRequestResult.Started] or [ProfileSyncRequestResult.Replaced]) and BEFORE
+     * the job it replaces is cancelled, never for a coalesced one. It receives the not-yet-started
+     * job so a caller can attach a terminal handler that survives the job being cancelled before
+     * its block ever runs. The single caller is `startFullProfilePull`, claiming
+     * [LaunchSyncSignal] for the replacement profile ahead of the cancellation it is about to
+     * cause; see the ordering note there.
+     */
     fun launch(
         scope: CoroutineScope,
         profileId: Int,
         queueIfCoalesced: Boolean = false,
         kind: ProfileSyncRequestKind = ProfileSyncRequestKind.Full,
+        onWillLaunch: ((Job) -> Unit)? = null,
         block: suspend () -> Unit,
     ): ProfileSyncRequestResult {
         lateinit var newJob: Job
@@ -320,9 +330,26 @@ class ProfileSyncRequestGate {
             requestResult
         }
 
+        // Before the cancellation, not after: the job being cancelled here runs its own teardown
+        // as soon as it is cancelled, and anything that teardown reports must already be readable
+        // as stale by the time it fires.
+        onWillLaunch?.invoke(newJob)
         previousJob?.cancel()
         newJob.start()
         return result
+    }
+
+    /**
+     * The request currently in flight for [profileId], or null when nothing is running for it (the
+     * job finished between a [launch] returning [ProfileSyncRequestResult.Coalesced] and this call,
+     * or a different profile owns the gate).
+     *
+     * Exists for one caller: a coalesced LAUNCH pull has no block of its own to run, so it can only
+     * report the burst's progress by adopting the job it was absorbed into
+     * (see [adoptCoalescedLaunchPull]).
+     */
+    fun activeJobFor(profileId: Int): Job? = synchronized(lock) {
+        activeJob?.takeIf { job -> activeProfileId == profileId && !job.isCompleted }
     }
 
     fun cancel() {
@@ -336,6 +363,40 @@ class ProfileSyncRequestGate {
         }
         job?.cancel()
     }
+}
+
+/**
+ * Moves [LaunchSyncSignal] for a launch pull that was COALESCED into a full pull already in flight.
+ *
+ * The gap this closes: `startFullProfilePull` drives the signal from the request it hands to
+ * [ProfileSyncRequestGate], and a coalesced request neither launches (so `onWillLaunch`, which
+ * marks Running, is skipped) nor runs its block (so no `markSettled` fires either). When the
+ * absorbing pull is the foreground escalation
+ * (`requestForegroundPull` passes `updateLaunchSignal = false`, so it touches the signal at no
+ * point either), the signal stays [LaunchSyncSignal.LaunchSyncState.Idle] for a signed-in account.
+ * `HomeRepository.launchSyncExpected()` then reads Idle as "the burst has not started yet", and the
+ * hero commit gate holds until its 4 s budget runs out: `gate=released:timeout gateWait=sync` in the
+ * device probe, on a launch where nothing was actually wrong.
+ *
+ * The in-flight job cannot settle a signal it did not start, so the adoption attaches the settle
+ * itself: mark Running for [profileId], then settle when [inFlight] completes. Both directions are
+ * safe against the signal's own staleness guard: a settle for a profile the signal has since
+ * stopped tracking (profile switch, sign-out, or the absorbing pull declaring NotApplicable) is
+ * ignored by `markSettled`. With no job left to adopt, the burst is already over, so the gate is
+ * told not to wait at all.
+ *
+ * Only ever called when the signal is [LaunchSyncSignal.LaunchSyncState.Idle]: a signal that has
+ * already been moved (Running for this launch, NotApplicable, or Settled) is authoritative and must
+ * not be overwritten by a request that ran no work of its own.
+ */
+internal fun adoptCoalescedLaunchPull(profileId: Int, inFlight: Job?) {
+    if (LaunchSyncSignal.state.value != LaunchSyncSignal.LaunchSyncState.Idle) return
+    if (inFlight == null || inFlight.isCompleted) {
+        LaunchSyncSignal.markNotApplicable()
+        return
+    }
+    LaunchSyncSignal.markRunning(profileId)
+    inFlight.invokeOnCompletion { LaunchSyncSignal.markSettled(profileId) }
 }
 
 object SyncManager {
@@ -412,6 +473,9 @@ object SyncManager {
             throw error
         } catch (error: Throwable) {
             log.e(error) { "Full profile pull request failed for profile $profileId" }
+            // The synchronous scheduling itself blew up before any pull could run — nothing is
+            // going to mark this profile Running, so the hero gate must not wait on it forever.
+            LaunchSyncSignal.markNotApplicable()
         }
     }
 
@@ -435,6 +499,7 @@ object SyncManager {
         }
         foregroundJob?.cancel()
         stopPeriodicNuvioSyncPull()
+        LaunchSyncSignal.reset()
     }
 
     private fun accountScopeSnapshot(): CoroutineScope = synchronized(accountScopeLock) {
@@ -473,7 +538,11 @@ object SyncManager {
                     // retry library/watch activity until the profile is reselected (Codex
                     // 2026-08-24). startFullProfilePull's own 10s gate bounds the worst case.
                     if (force || !hasCompletedFullPull(profileId)) {
-                        startFullProfilePull(profileId = profileId, reason = "foreground")
+                        // Foreground-triggered escalation, not the launch burst — LaunchSyncSignal
+                        // tracks only the profile-select pull (K2 contract: "foreground pulls must
+                        // not touch it"), so a reconnect/force full pull minutes into a session must
+                        // never resurrect Running on a hero that already committed.
+                        startFullProfilePull(profileId = profileId, reason = "foreground", updateLaunchSignal = false)
                     } else {
                         startActivityProfilePull(profileId = profileId, reason = "foreground")
                     }
@@ -571,21 +640,63 @@ object SyncManager {
         profileId: Int,
         reason: String,
         queueIfCoalesced: Boolean = false,
+        // K2 contract: only the profile-select launch pull drives LaunchSyncSignal. Callers of a
+        // full pull triggered for any other reason (today: requestForegroundPull's reconnect/force
+        // escalation) pass false so a mid-session pull never resurrects Running on an already-
+        // committed hero.
+        updateLaunchSignal: Boolean = true,
     ) {
         val authState = AuthRepository.state.value
-        if (authState !is AuthState.Authenticated || authState.isAnonymous) return
-        if (ProfileRepository.activeProfileId != profileId) return
-        if (hasRecentFullPull(profileId)) return
+        if (authState !is AuthState.Authenticated || authState.isAnonymous) {
+            if (updateLaunchSignal) LaunchSyncSignal.markNotApplicable()
+            return
+        }
+        if (ProfileRepository.activeProfileId != profileId) {
+            if (updateLaunchSignal) LaunchSyncSignal.markNotApplicable()
+            return
+        }
+        if (hasRecentFullPull(profileId)) {
+            if (updateLaunchSignal) LaunchSyncSignal.markNotApplicable()
+            return
+        }
 
         val result = syncRequestGate.launch(
             scope = accountScopeSnapshot(),
             profileId = profileId,
             queueIfCoalesced = queueIfCoalesced,
             kind = ProfileSyncRequestKind.Full,
+            // Codex round 1 P1: claim the signal for the REPLACEMENT profile synchronously, at
+            // request time. `ProfileSyncRequestGate` cancels the pull it replaces the moment this
+            // returns, and that pull's `finally` settles for the profile the signal is tracking.
+            // Marking Running from inside the block below instead left a window on every profile
+            // switch where the OLD pull's settle landed while the old profile was still tracked:
+            // the new profile's hero gate saw Settled, released, and committed an intermediate
+            // hero, before the replacement had reported itself Running at all.
+            //
+            // The terminal handler is attached here too, not only in the block's `finally`: a job
+            // cancelled before its body ever ran executes no `finally`, and a Running that nothing
+            // settles holds the hero gate for its whole 4 s budget.
+            onWillLaunch = if (!updateLaunchSignal) {
+                null
+            } else {
+                { job ->
+                    LaunchSyncSignal.markRunning(profileId)
+                    job.invokeOnCompletion { LaunchSyncSignal.markSettled(profileId) }
+                }
+            },
         ) {
             val currentAuthState = AuthRepository.state.value
-            if (currentAuthState !is AuthState.Authenticated || currentAuthState.isAnonymous) return@launch
-            if (ProfileRepository.activeProfileId != profileId) return@launch
+            if (currentAuthState !is AuthState.Authenticated || currentAuthState.isAnonymous) {
+                // markNotApplicableFor, not markNotApplicable: a superseded block still runs up to
+                // its first suspension point after the gate cancels it, and must not release the
+                // gate the replacement profile is waiting on.
+                if (updateLaunchSignal) LaunchSyncSignal.markNotApplicableFor(profileId)
+                return@launch
+            }
+            if (ProfileRepository.activeProfileId != profileId) {
+                if (updateLaunchSignal) LaunchSyncSignal.markNotApplicableFor(profileId)
+                return@launch
+            }
 
             log.i { "Full profile sync started profile=$profileId reason=$reason" }
             WatchProgressSourceCoordinator.pauseAutomaticTransitions()
@@ -600,6 +711,10 @@ object SyncManager {
                 )
             } finally {
                 WatchProgressSourceCoordinator.resumeAutomaticTransitions()
+                // Settled regardless of failedSteps — the gate only needs to know the burst is
+                // OVER, not that it succeeded; a stalled hero is worse than one that commits raw
+                // after a failed sync step.
+                if (updateLaunchSignal) LaunchSyncSignal.markSettled(profileId)
             }
             synchronized(pullStateLock) {
                 activityPullFreshness = activityPullFreshness.recordIfSuccessful(
@@ -626,6 +741,18 @@ object SyncManager {
             ProfileSyncRequestResult.Started -> Unit
             ProfileSyncRequestResult.Coalesced -> {
                 log.d { "Full profile sync coalesced profile=$profileId reason=$reason" }
+                // The block above never runs for a coalesced request, so the launch signal has to
+                // be moved from out here or the hero commit gate waits out its whole budget on a
+                // burst that is already in flight (see adoptCoalescedLaunchPull). A QUEUED request
+                // is the exception: its block still runs once the active job finishes, and it
+                // reports Running/Settled itself, so adopting would only add a Settled blip that
+                // could release the gate a moment before the queued burst starts.
+                if (updateLaunchSignal && !queueIfCoalesced) {
+                    adoptCoalescedLaunchPull(
+                        profileId = profileId,
+                        inFlight = syncRequestGate.activeJobFor(profileId),
+                    )
+                }
             }
             ProfileSyncRequestResult.Replaced -> {
                 log.d { "Full profile sync replaced stale profile request with profile=$profileId reason=$reason" }

@@ -26,9 +26,9 @@ final class HomeHeroProbeBufferTests: XCTestCase {
         // through it (see the process-global caveat above) — not asserted on, just recorded so the
         // "how many new lines did we contribute" math is self-contained.
         let totalLines = 200
-        let head = HomeHeroProbe.headMaxLines   // 16
+        let head = HomeHeroProbe.headMaxLines   // 24 (Wave H raised this 16 -> 24)
         let tail = HomeHeroProbe.tailMaxLines   // 32
-        XCTAssertEqual(head, 16, "test assumes the documented head size; update the math above if this constant changes")
+        XCTAssertEqual(head, 24, "test assumes the documented head size; update the math above if this constant changes")
         XCTAssertEqual(tail, 32, "test assumes the documented tail size; update the math above if this constant changes")
 
         for i in 1...totalLines {
@@ -41,7 +41,7 @@ final class HomeHeroProbeBufferTests: XCTestCase {
         }
 
         // head + 1 marker + tail, once eviction has begun (it has: 200 lines fed against a
-        // 16+32 = 48-line displayed capacity).
+        // 24+32 = 56-line displayed capacity).
         XCTAssertEqual(display.count, head + 1 + tail, "unexpected displayed line count: \(display.count)")
 
         // First `head` entries are the FIRST `head` lines ever logged (frozen, never evicted) —
@@ -56,7 +56,7 @@ final class HomeHeroProbeBufferTests: XCTestCase {
         }
 
         // Elision marker sits between head and tail. Its count reflects everything logged past
-        // head+tail capacity: 200 - 16 - 32 = 152 (assuming this test owns the whole process's
+        // head+tail capacity: 200 - 24 - 32 = 144 (assuming this test owns the whole process's
         // worth of HomeHeroProbe.log calls — see the caveat above).
         let expectedElided = totalLines - head - tail
         let markerIndex = head

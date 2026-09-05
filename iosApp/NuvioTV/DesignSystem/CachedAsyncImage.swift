@@ -9,7 +9,7 @@ import UIKit
 /// grid causes constant flicker and network churn. `CachedAsyncImage` adds an in-memory `NSCache`
 /// plus a dedicated on-disk `URLCache`, shows a shimmer while loading, a film-icon on failure, and
 /// fades the image in. Swap it in anywhere the app currently uses `AsyncImage` for content art.
-struct CachedAsyncImage: View {
+struct CachedAsyncImage<Failure: View>: View {
     private let url: URL?
     private let contentMode: ContentMode
     /// BUG-59 (reveal-gate wave): when true, the loaded image is scanned once for letterbox/
@@ -19,19 +19,28 @@ struct CachedAsyncImage: View {
     /// must clip, exactly as it must for the video zoom underneath (`InlineTrailerCard`'s
     /// `.clipShape`).
     private let cropsBakedLetterboxBars: Bool
+    /// BUG-41: what to show once `loader.failed` is true. Defaults to `DefaultFailureImage` (the
+    /// grey surface + film glyph every call site rendered before this parameter existed) via the
+    /// `Failure == DefaultFailureImage` initializers below, so every pre-existing call site keeps
+    /// compiling — and rendering — unchanged. Callers with a more meaningful fallback (a title, a
+    /// person glyph, a company name) pass their own `failure:` builder instead.
+    private let failureContent: () -> Failure
 
     @StateObject private var loader = CachedImageLoader()
     /// 1.0 until (and unless) `ArtworkLetterbox` measures real bars in the loaded image.
     @State private var barCropZoom: CGFloat = 1
 
-    init(url: URL?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
+    init(url: URL?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false,
+         @ViewBuilder failure: @escaping () -> Failure) {
         self.url = url
         self.contentMode = contentMode
         self.cropsBakedLetterboxBars = cropsBakedLetterboxBars
+        self.failureContent = failure
     }
 
     /// Convenience for the many Kotlin-bridged `String` URL fields; empty/nil → no image.
-    init(string: String?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
+    init(string: String?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false,
+         @ViewBuilder failure: @escaping () -> Failure) {
         if let string, !string.isEmpty {
             self.url = URL(string: string)
         } else {
@@ -39,6 +48,7 @@ struct CachedAsyncImage: View {
         }
         self.contentMode = contentMode
         self.cropsBakedLetterboxBars = cropsBakedLetterboxBars
+        self.failureContent = failure
     }
 
     var body: some View {
@@ -50,12 +60,7 @@ struct CachedAsyncImage: View {
                     // `scaleEffect(1)` is the identity for every call site that doesn't opt in.
                     .scaleEffect(barCropZoom)
             } else if loader.failed {
-                ZStack {
-                    Theme.Palette.surface
-                    Image(systemName: "film")
-                        .font(Theme.Font.screenTitle)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                }
+                failureContent()
             } else if url == nil {
                 // Nothing to load — flat surface rather than an endless shimmer.
                 Theme.Palette.surface
@@ -83,6 +88,34 @@ struct CachedAsyncImage: View {
             }.value
             guard !Task.isCancelled, loader.image === image else { return }
             withAnimation(.easeOut(duration: 0.25)) { barCropZoom = measured }
+        }
+    }
+}
+
+extension CachedAsyncImage where Failure == DefaultFailureImage {
+    /// Every call site that predates BUG-41's `failure:` parameter — unchanged signature, unchanged
+    /// grey-surface-plus-film-glyph rendering on a failed load.
+    init(url: URL?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
+        self.init(url: url, contentMode: contentMode, cropsBakedLetterboxBars: cropsBakedLetterboxBars,
+                   failure: { DefaultFailureImage() })
+    }
+
+    init(string: String?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
+        self.init(string: string, contentMode: contentMode, cropsBakedLetterboxBars: cropsBakedLetterboxBars,
+                   failure: { DefaultFailureImage() })
+    }
+}
+
+/// The pre-BUG-41 failure surface (grey `Theme.Palette.surface` + a film glyph) — content art has
+/// no more specific fallback to offer, so this stays the default for every caller that doesn't pass
+/// its own `failure:` builder.
+struct DefaultFailureImage: View {
+    var body: some View {
+        ZStack {
+            Theme.Palette.surface
+            Image(systemName: "film")
+                .font(Theme.Font.screenTitle)
+                .foregroundStyle(Theme.Palette.textSecondary)
         }
     }
 }
@@ -141,13 +174,31 @@ enum ArtworkStore {
     @MainActor private static var activeFetches = 0
     @MainActor private static var fetchWaiters: [CheckedContinuation<Void, Never>] = []
 
+    /// Where a fetch goes when all six slots are busy (Codex r3, P2 on the hero commit).
+    ///
+    /// `.normal` queues behind everything already waiting, which is what every row poster, card
+    /// and prefetch wants. `.head` goes to the FRONT: the Home hero's own backdrop and logo are
+    /// the two images `HeroCommitCoordinator.prepare(_:)` blocks the whole first paint on, hero
+    /// and rows alike, so a cold Home that queues dozens of poster prefetches must not be able to
+    /// push them behind that crowd. Slot accounting is unchanged, so the BUG-11 concurrency bound
+    /// and the "slots are held only by the shared work tasks" no-deadlock property both hold.
+    enum FetchAdmission {
+        case normal
+        case head
+    }
+
     @MainActor
-    private static func acquireFetchSlot() async {
+    private static func acquireFetchSlot(_ admission: FetchAdmission) async {
         if activeFetches < maxConcurrentFetches {
             activeFetches += 1
             return
         }
-        await withCheckedContinuation { fetchWaiters.append($0) }
+        await withCheckedContinuation { continuation in
+            switch admission {
+            case .normal: fetchWaiters.append(continuation)
+            case .head: fetchWaiters.insert(continuation, at: 0)
+            }
+        }
     }
 
     @MainActor
@@ -170,8 +221,12 @@ enum ArtworkStore {
     /// Fetch + validate + decode + cache one URL. Concurrent calls for the same URL share one
     /// download. Cancelling an awaiting caller does NOT cancel the shared work — the image still
     /// lands in the cache for whoever wants it next.
+    ///
+    /// `admission` only matters when the six-slot gate is saturated (see `FetchAdmission`); a call
+    /// that coalesces onto an already-running download inherits that download's admission, since
+    /// there is nothing left to queue.
     @MainActor
-    static func fetch(_ url: URL) async throws -> UIImage {
+    static func fetch(_ url: URL, admission: FetchAdmission = .normal) async throws -> UIImage {
         if let hit = cached(url) {
             #if DEBUG
             LaunchTrace.artwork(.memory)  // BUG-26 attribution
@@ -181,7 +236,7 @@ enum ArtworkStore {
         if let existing = inflight[url] { return try await existing.value }
 
         let work = Task<UIImage, Error> {
-            await acquireFetchSlot()
+            await acquireFetchSlot(admission)
             defer { releaseFetchSlot() }
             #if DEBUG
             // BUG-26: classify where this load's bytes come from — a healthy relaunch should be

@@ -70,10 +70,14 @@ private fun buildHomeCatalogDescriptorSignature(
     catalog: AddonCatalog,
 ): String {
     val signature = CatalogDescriptorSignature()
-    signature.add(addon.displayTitle)
-    signature.add(addon.enabled)
-    signature.add(addon.isRefreshing)
-    signature.add(addon.errorMessage)
+    // Hole E (BUG-86, Wave H): VOLATILE addon state is deliberately NOT part of this signature.
+    // `displayTitle` moves whenever the cloud pull lands a server-supplied user set name,
+    // `enabled` flips on every settings sync, and `isRefreshing`/`errorMessage` flip twice per
+    // manifest fetch. Each flip changed the cache key of every one of that addon's sections, which
+    // pruned them all out of HomeRepository's cache and forced a full network re-fetch: the grey
+    // skeleton rebuild 1.1 s after first paint in the tester's cold-launch video, independent of
+    // any ordering change. The signature now describes only what the catalog IS (its transport and
+    // its shape), so a cosmetic rename or a refresh flag no longer invalidates fetched content.
     signature.add(addon.manifestUrl)
     signature.add(manifest.id)
     signature.add(manifest.name)

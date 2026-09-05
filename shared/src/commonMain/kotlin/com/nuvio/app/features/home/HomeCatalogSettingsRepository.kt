@@ -3,6 +3,7 @@ package com.nuvio.app.features.home
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.collection.Collection
 import com.nuvio.app.features.collection.CollectionRepository
+import com.nuvio.app.features.collection.catalogRouteKey
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import co.touchlab.kermit.Logger
@@ -124,6 +125,18 @@ object HomeCatalogSettingsRepository {
     private var hasLoaded = false
     private var definitions: List<HomeCatalogDefinition> = emptyList()
     private var collectionDefinitions: List<CollectionCatalogDefinition> = emptyList()
+
+    /**
+     * Digest of the collection CONTENTS behind [collectionDefinitions]; see
+     * [collectionsHeroContentSignature]. [HomeCatalogSettingsUiState.signature] deliberately covers
+     * only what Home Rows shows (keys, order, enabled, hero flags, custom titles), so a collection
+     * that keeps its id and its preferences while its folders change is invisible to it. That is
+     * exactly the input `HomeRepository.ensureCollectionHeroFallback` keys its request on, so
+     * [syncCollections] compares this alongside the ui signature. Internal, not private, so the
+     * drift test can prove a content-only change moves it while the ui signature does not.
+     */
+    internal var collectionContentSignature: String = ""
+        private set
     // Serializes every read-modify-write of the preferences map (CollectionRepository's
     // mutationLock precedent): the atomic reference makes reads safe, but two concurrent
     // whole-map reassignments (a sync pull vs a user reorder) would otherwise drop one side's
@@ -151,6 +164,7 @@ object HomeCatalogSettingsRepository {
         hideDiscover = false
         definitions = emptyList()
         collectionDefinitions = emptyList()
+        collectionContentSignature = ""
         _uiState.value = HomeCatalogSettingsUiState()
     }
 
@@ -158,6 +172,7 @@ object HomeCatalogSettingsRepository {
         hasLoaded = false
         definitions = emptyList()
         collectionDefinitions = emptyList()
+        collectionContentSignature = ""
         synchronized(preferencesMutationLock) { preferences = emptyMap() }
         heroEnabled = true
         showCatalogType = true
@@ -196,12 +211,34 @@ object HomeCatalogSettingsRepository {
 
     fun syncCollections(collections: List<Collection>) {
         ensureLoaded()
+        // Same H3 no-op suppression as applyFromRemote(): a re-emission of the same collection set
+        // (a sync pull that changes nothing, a redundant CollectionRepository fan-out) must not
+        // re-trigger applyCurrentSettings()'s Home rebuild.
+        //
+        // Codex round 1 P2: the ui signature alone is too coarse a no-op test HERE. It carries the
+        // collection's key, order, enabled and custom title, none of which move when a collection
+        // keeps its id and its preferences while its FOLDERS change: renamed, reordered, a source
+        // repointed, a hero backdrop or title logo swapped. Those are precisely the fields
+        // `HomeRepository.ensureCollectionHeroFallback` builds its request key from, so suppressing
+        // the fan-out on a content-only change left the previous collection-derived hero cached
+        // until some unrelated refresh happened to re-key it. The contents digest is compared
+        // alongside, and deliberately kept OUT of HomeCatalogSettingsUiState.signature: that
+        // signature is row identity for the Home Rows settings screen and for
+        // `HomeRepository.applyCurrentSettings`'s own idempotency key, and folder internals are not
+        // part of either.
+        val signatureBefore = _uiState.value.signature
+        val contentSignatureBefore = collectionContentSignature
         collectionDefinitions = buildCollectionDefinitions(collections)
+        collectionContentSignature = collectionsHeroContentSignature(collections)
         normalizePreferences()
         enforcePinnedCollectionsAtTop()
         publish()
         persist()
-        HomeRepository.applyCurrentSettings()
+        if (_uiState.value.signature != signatureBefore ||
+            collectionContentSignature != contentSignatureBefore
+        ) {
+            HomeRepository.applyCurrentSettings()
+        }
     }
 
     fun snapshot(): HomeCatalogSettingsSnapshot {
@@ -222,6 +259,60 @@ object HomeCatalogSettingsRepository {
             },
         )
     }
+
+    /**
+     * The set of catalog keys currently selected as hero sources, from PERSISTED state alone.
+     * Deliberately safe to call BEFORE [syncCatalogs] has run this session — it only reads
+     * [preferences] (loaded via [ensureLoaded], which touches storage but never `definitions`) — so
+     * a caller like K1's hero-commit gate can ask "which catalogs is the hero waiting on" before
+     * the addon fan-in that populates [definitions] has completed.
+     *
+     * Primary: every stored preference with `heroSourceEnabled == true`, excluding `collection_`
+     * keys (collections are never hero sources). This deliberately INCLUDES a key whose owning
+     * addon's manifest is still loading — the caller needs "this key is selected but not yet
+     * resolvable", not "this key doesn't exist".
+     *
+     * Fallback (NO catalog preference is stored at all: a fresh profile, or one that has never had
+     * a hero selection): the first [HERO_SOURCE_SELECTION_LIMIT] catalog [definitions] known so far,
+     * in display order, mirroring the default [normalizePreferences] would assign once it runs.
+     * Returns empty when [definitions] are not known yet either; the caller is then expected to
+     * wait for a subsequent [syncCatalogs] before deciding sources are "ready".
+     *
+     * An ALL-OFF selection (catalog preferences are stored and every one of them says
+     * `heroSourceEnabled = false`) is NOT the fallback case and returns the empty set: the user
+     * turned every hero source off, so answering with the first two definitions would tell K1's
+     * gate to wait on catalogs that the hero pool excludes by construction. Callers that need to
+     * tell an all-off selection apart from a not-yet-known one ask
+     * [heroSourceSelectionIsAllOff].
+     */
+    fun heroSourceKeys(): Set<String> {
+        ensureLoaded()
+        val catalogPreferences = catalogPreferenceValues()
+        val persisted = catalogPreferences
+            .asSequence()
+            .filter { it.heroSourceEnabled }
+            .mapTo(linkedSetOf()) { it.key }
+        if (persisted.isNotEmpty()) return persisted
+        if (catalogPreferences.isNotEmpty()) return emptySet()
+        return definitions.take(HERO_SOURCE_SELECTION_LIMIT).mapTo(linkedSetOf()) { it.key }
+    }
+
+    /**
+     * True when this profile has stored catalog preferences and NONE of them is a hero source: the
+     * deliberate all-off selection [normalizePreferences]'s drift-refill is careful never to
+     * overwrite. K1's hero-commit gate needs it because an empty [heroSourceKeys] is otherwise
+     * ambiguous: it also means "no selection is known yet", and those two want opposite answers
+     * (release now vs. keep waiting).
+     */
+    fun heroSourceSelectionIsAllOff(): Boolean {
+        ensureLoaded()
+        val catalogPreferences = catalogPreferenceValues()
+        return catalogPreferences.isNotEmpty() && catalogPreferences.none { it.heroSourceEnabled }
+    }
+
+    /** Stored preferences for CATALOGS only: collections are never hero sources (see `publish`). */
+    private fun catalogPreferenceValues(): List<StoredHomeCatalogPreference> =
+        preferences.values.filter { !it.key.startsWith("collection_") }
 
     fun setHeroEnabled(enabled: Boolean) {
         ensureLoaded()
@@ -407,18 +498,32 @@ object HomeCatalogSettingsRepository {
         val normalized = current
             .filterKeys { it !in knownKeys }
             .toMutableMap()
-        var enabledHeroSourceCount = 0
+
+        // Two-pass cap (Hole D fix, 2026-09-04): a single positional walk let a REORDERED payload
+        // (e.g. applyFromRemote rewriting every `order`) place a new/defaulted-true entry ahead of
+        // an explicitly-selected one, so the cap consumed its slot before the walk ever reached the
+        // real selection — evicting it in favour of a key nobody chose. Pass 1 claims cap slots for
+        // entries the STORED preference explicitly marks heroSourceEnabled=true, in their relative
+        // order; only once those are seated does pass 2 fill any remaining slots from entries with
+        // no stored preference at all (which default to true), also in relative order. An entry
+        // with an explicit stored `false` is never selected by either pass — unchanged from before.
+        val selectedKeys = linkedSetOf<String>()
+        orderedEntries.asSequence()
+            .filterNot { it.isCollection }
+            .filter { current[it.key]?.heroSourceEnabled == true }
+            .forEach { entry ->
+                if (selectedKeys.size < HERO_SOURCE_SELECTION_LIMIT) selectedKeys += entry.key
+            }
+        orderedEntries.asSequence()
+            .filterNot { it.isCollection }
+            .filter { current[it.key] == null }
+            .forEach { entry ->
+                if (selectedKeys.size < HERO_SOURCE_SELECTION_LIMIT) selectedKeys += entry.key
+            }
+
         orderedEntries.forEach { entry ->
             val stored = current[entry.key]
-            val heroSourceEnabled = if (entry.isCollection) {
-                false
-            } else {
-                (stored?.heroSourceEnabled ?: true) &&
-                    enabledHeroSourceCount < HERO_SOURCE_SELECTION_LIMIT
-            }
-            if (heroSourceEnabled) {
-                enabledHeroSourceCount += 1
-            }
+            val heroSourceEnabled = !entry.isCollection && entry.key in selectedKeys
             normalized[entry.key] = StoredHomeCatalogPreference(
                 key = entry.key,
                 customTitle = stored?.customTitle.orEmpty(),
@@ -466,7 +571,7 @@ object HomeCatalogSettingsRepository {
         }
         if (vanishedSelectionKeys.isNotEmpty()) {
             var refilled = 0
-            if (enabledHeroSourceCount == 0 && orderedEntries.any { !it.isCollection }) {
+            if (selectedKeys.isEmpty() && orderedEntries.any { !it.isCollection }) {
                 orderedEntries.forEach { entry ->
                     if (refilled >= HERO_SOURCE_SELECTION_LIMIT) return@forEach
                     if (entry.isCollection) return@forEach
@@ -663,6 +768,12 @@ object HomeCatalogSettingsRepository {
 
     fun applyFromRemote(payload: SyncHomeCatalogPayload) {
         ensureLoaded()
+        // H3 no-op suppression: a cloud pull that resolves to an IDENTICAL published state must
+        // still persist (the remote copy stays the source of truth for reconciliation) but must
+        // NOT re-run applyCurrentSettings() — that fan-out is what rebuilds Home's rows/hero on
+        // tvOS, and an unconditional call on every pull (even a byte-identical one) is the doubled
+        // hero's H3 delivery vehicle (see the plan's "hero commit protocol").
+        val signatureBefore = _uiState.value.signature
         showCatalogType = payload.showCatalogType
         hideUnreleasedContent = payload.hideUnreleasedContent
         hideCatalogUnderline = payload.hideCatalogUnderline
@@ -670,13 +781,53 @@ object HomeCatalogSettingsRepository {
         if (payload.items.isNotEmpty()) {
             synchronized(preferencesMutationLock) {
             val existingHeroState = preferences.mapValues { it.value.heroSourceEnabled }
-            val remotePreferences = payload.items.associate { item ->
-                val key = item.preferenceKey()
-                key to StoredHomeCatalogPreference(
+            // Hole D: an unknown-locally remote key (not in existingHeroState) defaults to
+            // heroSourceEnabled=true only while the local selection still has room. Once it
+            // already holds HERO_SOURCE_SELECTION_LIMIT explicit-true entries, defaulting one more
+            // key to true here would hand the reorder-cap walk in normalizePreferences() an extra
+            // "stored true" contender it must then evict something to make room for — silently
+            // displacing a real selection on every remote payload that introduces an unfamiliar key.
+            //
+            // The room is a BUDGET, spent as it is handed out (Codex round 2): comparing every
+            // unknown key against the same starting count admitted all of them whenever a single
+            // slot was free, so a payload carrying three unfamiliar keys ordered ahead of the one
+            // real selection wrote four stored-true entries for a cap of two, and the two-pass walk
+            // below (which cannot tell a remote-defaulted true from a user's own) then seated the
+            // two unknowns that sorted first and dropped the selection the user actually made.
+            // With the running counter the total never exceeds the cap, so pass 1 seats every
+            // stored-true entry there is and has nothing to choose between.
+            //
+            // The budget is measured against the CURRENT locals, some of which this same call is
+            // about to drop: a local key the payload also carries is overwritten by the remote
+            // entry below, and one it does not carry survives only if `preservedPreferences` keeps
+            // it. Either way its stored `true` was already counted here, so the budget can be
+            // smaller than the room the post-merge map actually has. That bias is deliberate and it
+            // is the safe direction: undercounting only means FEWER unfamiliar remote keys are
+            // defaulted to true, which costs an unknown catalog a hero slot it was never promised.
+            // Overcounting would do the thing this whole block exists to prevent, handing
+            // normalizePreferences() more stored-true contenders than the cap and evicting a
+            // selection the user actually made. Recomputing against the survivors would mean
+            // building the merged map twice (the survivor set depends on `remoteKeys`, which
+            // depends on this very mapValues), for a payload shape that has no user-visible upside.
+            var remainingHeroSlots =
+                (HERO_SOURCE_SELECTION_LIMIT - existingHeroState.values.count { it }).coerceAtLeast(0)
+            // associateBy first, so a payload that repeats a key spends at most one slot on it
+            // (last item wins, as `associate` did before).
+            val remotePreferences = payload.items.associateBy { it.preferenceKey() }.mapValues { (key, item) ->
+                val localHeroState = existingHeroState[key]
+                val heroSourceEnabled = when {
+                    localHeroState != null -> localHeroState
+                    remainingHeroSlots > 0 -> {
+                        remainingHeroSlots -= 1
+                        true
+                    }
+                    else -> false
+                }
+                StoredHomeCatalogPreference(
                     key = key,
                     customTitle = item.customTitle,
                     enabled = item.enabled,
-                    heroSourceEnabled = existingHeroState[key] ?: true,
+                    heroSourceEnabled = heroSourceEnabled,
                     order = item.order,
                     // Owner stamp: PRESERVE the local one, never adopt the remote's (Codex
                     // 2026-08-30 round 5 P2). The remote `addon_id` can come from the exporter's
@@ -701,7 +852,9 @@ object HomeCatalogSettingsRepository {
         hasLoaded = true
         publish()
         persist()
-        HomeRepository.applyCurrentSettings()
+        if (_uiState.value.signature != signatureBefore) {
+            HomeRepository.applyCurrentSettings()
+        }
     }
 
     private fun allOrderedKeys(): List<String> {
@@ -807,6 +960,33 @@ internal fun buildCollectionDefinitions(collections: List<Collection>): List<Col
             subtitle = resourceString("${collection.folders.size} folder(s)", StringKey.collections_folder_count, collection.folders.size),
             isPinnedToTop = collection.pinToTop,
         )
+    }
+
+/**
+ * Stable digest of everything about a collection set that Home reads but
+ * [HomeCatalogSettingsUiState.signature] does not carry: the folders themselves, in order, with the
+ * hero-relevant art and the resolved sources behind each one.
+ *
+ * Scoped to the collections that actually reach Home ([visibleCollectionsWithUniqueIds]) so a
+ * hidden or duplicate collection cannot make an inert edit look like a change. Field choice is
+ * driven by `HomeRepository.collectionHeroRequestKey` (collection id and order, folder ids, each
+ * folder's `resolvedSources` route keys) plus the art the folder hero paints from
+ * (`heroBackdropUrl`, `titleLogoUrl`, `coverImageUrl`, `heroVideoUrl`) and the titles Home renders.
+ * Preference-side fields (order, enabled, custom title) are left out on purpose: those already move
+ * the ui signature, and duplicating them here would only add churn.
+ */
+internal fun collectionsHeroContentSignature(collections: List<Collection>): String =
+    visibleCollectionsWithUniqueIds(collections).joinToString(separator = ";") { collection ->
+        val folders = collection.folders.joinToString(separator = ",") { folder ->
+            val sources = folder.resolvedSources.joinToString(separator = "+") { source ->
+                source.catalogRouteKey()
+            }
+            "${folder.id}~${folder.title}~${folder.coverImageUrl.orEmpty()}" +
+                "~${folder.heroBackdropUrl.orEmpty()}~${folder.titleLogoUrl.orEmpty()}" +
+                "~${folder.heroVideoUrl.orEmpty()}~${folder.tileShape}~[$sources]"
+        }
+        "${collection.id}~${collection.title}~${collection.backdropImageUrl.orEmpty()}" +
+            "~${collection.pinToTop}~{$folders}"
     }
 
 /// Whether an incoming syncCatalogs() definition set may replace the current one. A transient

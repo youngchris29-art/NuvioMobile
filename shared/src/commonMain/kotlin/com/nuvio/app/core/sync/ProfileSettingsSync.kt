@@ -580,87 +580,173 @@ object ProfileSettingsSync {
             // carried separately and written back explicitly.
             val localPlayerSettings = PlayerSettingsStorage.exportToSyncPayload()
             val localIntroDbApiKey = PlayerSettingsStorage.loadIntroDbApiKey()
-            PlayerSettingsStorage.replaceFromSyncPayload(
-                preservingLocalProfileCredentials(
-                    PROFILE_PLAYER_SETTINGS_FEATURE,
-                    blob.features.playerSettings,
-                    localPlayerSettings,
-                ),
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "player_settings",
+                current = withoutProfileCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, localPlayerSettings),
+                incoming = withoutProfileCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, blob.features.playerSettings),
+                forceApply = blobCarriesFeatureCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, blob.features.playerSettings),
+                apply = {
+                    PlayerSettingsStorage.replaceFromSyncPayload(
+                        preservingLocalProfileCredentials(
+                            PROFILE_PLAYER_SETTINGS_FEATURE,
+                            blob.features.playerSettings,
+                            localPlayerSettings,
+                        ),
+                    )
+                    // Blank local = "no credential" (same rule as preservingLocalProfileCredentials):
+                    // re-saving a blank here would clobber an IntroDB key the replace just imported
+                    // from a legacy remote blob — the one place that key can come back from on an
+                    // upgraded fresh install (Codex round 6).
+                    localIntroDbApiKey?.takeUnless(String::isBlank)?.let(PlayerSettingsStorage::saveIntroDbApiKey)
+                },
+                notifyChanged = { PlayerSettingsRepository.onProfileChanged() },
             )
-            // Blank local = "no credential" (same rule as preservingLocalProfileCredentials):
-            // re-saving a blank here would clobber an IntroDB key the replace just imported from
-            // a legacy remote blob — the one place that key can come back from on an upgraded
-            // fresh install (Codex round 6).
-            localIntroDbApiKey?.takeUnless(String::isBlank)?.let(PlayerSettingsStorage::saveIntroDbApiKey)
-            PlayerSettingsRepository.onProfileChanged()
         }
 
         if (has("stream_badge_settings")) {
-            StreamBadgeSettingsStorage.replaceFromSyncPayload(blob.features.streamBadgeSettings)
-            StreamBadgeSettingsRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "stream_badge_settings",
+                current = StreamBadgeSettingsStorage.exportToSyncPayload(),
+                incoming = blob.features.streamBadgeSettings,
+                apply = { StreamBadgeSettingsStorage.replaceFromSyncPayload(blob.features.streamBadgeSettings) },
+                notifyChanged = { StreamBadgeSettingsRepository.onProfileChanged() },
+            )
         }
 
         if (has("debrid_settings")) {
-            DebridSettingsStorage.replaceFromSyncPayload(
-                preservingLocalProfileCredentials(
-                    PROFILE_DEBRID_SETTINGS_FEATURE,
-                    blob.features.debridSettings,
-                    DebridSettingsStorage.exportToSyncPayload(),
-                ),
+            val localDebridSettings = DebridSettingsStorage.exportToSyncPayload()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "debrid_settings",
+                current = withoutProfileCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, localDebridSettings),
+                incoming = withoutProfileCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, blob.features.debridSettings),
+                forceApply = blobCarriesFeatureCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, blob.features.debridSettings),
+                apply = {
+                    DebridSettingsStorage.replaceFromSyncPayload(
+                        preservingLocalProfileCredentials(
+                            PROFILE_DEBRID_SETTINGS_FEATURE,
+                            blob.features.debridSettings,
+                            localDebridSettings,
+                        ),
+                    )
+                },
+                notifyChanged = { DebridSettingsRepository.onProfileChanged() },
             )
-            DebridSettingsRepository.onProfileChanged()
         }
 
         if (has("tmdb_settings")) {
-            TmdbSettingsStorage.replaceFromSyncPayload(
-                preservingLocalProfileCredentials(
-                    PROFILE_TMDB_SETTINGS_FEATURE,
-                    blob.features.tmdbSettings,
-                    TmdbSettingsStorage.exportToSyncPayload(),
-                ),
+            val localTmdbSettings = TmdbSettingsStorage.exportToSyncPayload()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "tmdb_settings",
+                current = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, localTmdbSettings),
+                incoming = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob.features.tmdbSettings),
+                forceApply = blobCarriesFeatureCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob.features.tmdbSettings),
+                apply = {
+                    TmdbSettingsStorage.replaceFromSyncPayload(
+                        preservingLocalProfileCredentials(
+                            PROFILE_TMDB_SETTINGS_FEATURE,
+                            blob.features.tmdbSettings,
+                            localTmdbSettings,
+                        ),
+                    )
+                },
+                notifyChanged = { TmdbSettingsRepository.onProfileChanged() },
             )
-            TmdbSettingsRepository.onProfileChanged()
         }
 
         if (has("mdblist_settings")) {
-            MdbListSettingsStorage.replaceFromSyncPayload(
-                preservingLocalProfileCredentials(
-                    PROFILE_MDBLIST_SETTINGS_FEATURE,
-                    blob.features.mdbListSettings,
-                    MdbListSettingsStorage.exportToSyncPayload(),
-                ),
+            val localMdbListSettings = MdbListSettingsStorage.exportToSyncPayload()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "mdblist_settings",
+                current = withoutProfileCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, localMdbListSettings),
+                incoming = withoutProfileCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, blob.features.mdbListSettings),
+                forceApply = blobCarriesFeatureCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, blob.features.mdbListSettings),
+                apply = {
+                    MdbListSettingsStorage.replaceFromSyncPayload(
+                        preservingLocalProfileCredentials(
+                            PROFILE_MDBLIST_SETTINGS_FEATURE,
+                            blob.features.mdbListSettings,
+                            localMdbListSettings,
+                        ),
+                    )
+                    MdbListMetadataService.clearCache()
+                },
+                notifyChanged = { MdbListSettingsRepository.onProfileChanged() },
             )
-            MdbListMetadataService.clearCache()
-            MdbListSettingsRepository.onProfileChanged()
         }
 
         if (has("meta_screen_settings_payload")) {
-            MetaScreenSettingsStorage.savePayload(blob.features.metaScreenSettingsPayload)
-            MetaScreenSettingsRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "meta_screen_settings_payload",
+                current = MetaScreenSettingsStorage.loadPayload().orEmpty().trim(),
+                incoming = blob.features.metaScreenSettingsPayload.trim(),
+                apply = { MetaScreenSettingsStorage.savePayload(blob.features.metaScreenSettingsPayload) },
+                notifyChanged = { MetaScreenSettingsRepository.onProfileChanged() },
+            )
         }
 
         if (has("collection_mobile_settings_payload")) {
-            CollectionMobileSettingsStorage.savePayload(blob.features.collectionMobileSettingsPayload)
-            CollectionMobileSettingsRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "collection_mobile_settings_payload",
+                current = CollectionMobileSettingsStorage.loadPayload().orEmpty().trim(),
+                incoming = blob.features.collectionMobileSettingsPayload.trim(),
+                apply = { CollectionMobileSettingsStorage.savePayload(blob.features.collectionMobileSettingsPayload) },
+                notifyChanged = { CollectionMobileSettingsRepository.onProfileChanged() },
+            )
         }
 
         if (has("continue_watching_settings_payload")) {
-            ContinueWatchingPreferencesStorage.savePayload(blob.features.continueWatchingSettingsPayload)
-            ContinueWatchingPreferencesRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "continue_watching_settings_payload",
+                current = ContinueWatchingPreferencesStorage.loadPayload().orEmpty().trim(),
+                incoming = blob.features.continueWatchingSettingsPayload.trim(),
+                apply = { ContinueWatchingPreferencesStorage.savePayload(blob.features.continueWatchingSettingsPayload) },
+                notifyChanged = { ContinueWatchingPreferencesRepository.onProfileChanged() },
+            )
         }
 
         if (has("trakt_settings_payload")) {
-            TraktSettingsStorage.savePayload(blob.features.traktSettingsPayload)
-            TraktSettingsRepository.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "trakt_settings_payload",
+                current = TraktSettingsStorage.loadPayload().orEmpty().trim(),
+                incoming = blob.features.traktSettingsPayload.trim(),
+                apply = { TraktSettingsStorage.savePayload(blob.features.traktSettingsPayload) },
+                notifyChanged = { TraktSettingsRepository.onProfileChanged() },
+            )
         }
 
         if (has("trakt_comments_settings")) {
-            TraktCommentsStorage.replaceFromSyncPayload(blob.features.traktCommentsSettings)
-            TraktCommentsSettings.onProfileChanged()
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "trakt_comments_settings",
+                current = TraktCommentsStorage.exportToSyncPayload(),
+                incoming = blob.features.traktCommentsSettings,
+                apply = { TraktCommentsStorage.replaceFromSyncPayload(blob.features.traktCommentsSettings) },
+                notifyChanged = { TraktCommentsSettings.onProfileChanged() },
+            )
         }
 
         if (has("notifications_settings")) {
-            EpisodeReleaseNotificationsRepository.applyFromSyncEnabled(blob.features.notificationsSettings.episodeReleaseAlertsEnabled)
+            applyFeatureUnlessUnchanged(
+                log = log,
+                featureName = "notifications_settings",
+                current = EpisodeReleaseNotificationsRepository.uiState.value.isEnabled,
+                incoming = blob.features.notificationsSettings.episodeReleaseAlertsEnabled,
+                apply = {
+                    EpisodeReleaseNotificationsRepository.applyFromSyncEnabled(
+                        blob.features.notificationsSettings.episodeReleaseAlertsEnabled,
+                    )
+                },
+                notifyChanged = {},
+            )
         }
 
         return true
@@ -699,10 +785,17 @@ object ProfileSettingsSync {
         )
 
     private fun blobCarriesCredentials(blob: MobileProfileSettingsBlob): Boolean =
-        blob.features.playerSettings != withoutProfileCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, blob.features.playerSettings) ||
-            blob.features.debridSettings != withoutProfileCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, blob.features.debridSettings) ||
-            blob.features.tmdbSettings != withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob.features.tmdbSettings) ||
-            blob.features.mdbListSettings != withoutProfileCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, blob.features.mdbListSettings)
+        blobCarriesFeatureCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, blob.features.playerSettings) ||
+            blobCarriesFeatureCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, blob.features.debridSettings) ||
+            blobCarriesFeatureCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob.features.tmdbSettings) ||
+            blobCarriesFeatureCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, blob.features.mdbListSettings)
+
+    /// Whether [payload] — one credential-bearing feature's raw JsonObject — still carries its
+    /// credential key(s). Used both by [blobCarriesCredentials] (whole-blob) and by
+    /// `applyRemoteBlob()`'s per-feature `forceApply` (a stripped-payload comparison can never
+    /// detect "this incoming payload still needs its one-time credential migration applied").
+    private fun blobCarriesFeatureCredentials(feature: String, payload: JsonObject): Boolean =
+        payload != withoutProfileCredentials(feature, payload)
 
     private fun currentObservedStateSignature(): String = listOf(
         "theme=${ThemeSettingsRepository.selectedTheme.value.name}",
@@ -742,16 +835,24 @@ object ProfileSettingsSync {
  * writing client on a different schema (e.g. one that doesn't model a given key) still serializes
  * to a payload that differs at this raw level, so it correctly reads as "changed" and applies
  * exactly as before; only a truly byte-identical payload is suppressed.
+ *
+ * [forceApply] bypasses the comparison and always applies + notifies — for the four
+ * credential-bearing features, [current]/[incoming] are the CREDENTIAL-STRIPPED payloads (an
+ * unstripped compare would never suppress, since the two sides' credentials are usually already
+ * equal or already absent from [current], making the comparison meaningless either way); a remote
+ * payload that still carries credentials must still apply once (the migration-import path — see
+ * `preservingLocalProfileCredentials`) even when the stripped settings themselves are unchanged.
  */
 internal inline fun <T> applyFeatureUnlessUnchanged(
     log: Logger,
     featureName: String,
     current: T,
     incoming: T,
+    forceApply: Boolean = false,
     apply: () -> Unit,
     notifyChanged: () -> Unit,
 ) {
-    if (current == incoming) {
+    if (!forceApply && current == incoming) {
         log.d { "applyRemoteBlob() — '$featureName' payload unchanged; skipping replace + onProfileChanged() (no-op suppression)" }
         return
     }

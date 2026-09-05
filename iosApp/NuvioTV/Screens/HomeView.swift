@@ -185,6 +185,18 @@ struct HomeView: View {
     /// UX-7: always-on focus-follows-backdrop. Owns the row-focused item (if any) that should
     /// take over the hero from the carousel.
     @StateObject private var focusModel = HomeHeroFocusModel()
+    /// Wave H: turns the hero TARGET (`displayHero`) into the hero that is actually PAINTED, once
+    /// its backdrop and logo are both resolved. Every hero renderer below reads
+    /// `heroResolver.presented`, never `displayHero` — see `HeroArtResolver`.
+    @StateObject private var heroResolver = HeroArtResolver()
+    /// Wave H: the hero artwork layer's own opacity, driven imperatively from `.onChange` so ONLY
+    /// opacity animates. It used to be a `.animation(_:value:)` on the whole backdrop Group, which
+    /// also animated GEOMETRY — a folder hero swapping a square cover for a 16:9 backdrop had its
+    /// `scaledToFill` frame interpolated, which is the "mosaic pops in larger then shrinks into
+    /// place" the tester filmed (BUG-86b). The image itself now changes with no implicit animation
+    /// attached; `HeroCrossfadeImage` still cross-fades the bitmaps in place, which is a pure
+    /// opacity effect at fixed geometry.
+    @State private var heroArtOpacity: Double = 1
     /// BUG-38 round three: the folder page each hero-driving folder preview opens, keyed by the
     /// preview's synthetic id (`folderHeroPreview`). A `MetaPreview` can't carry a `FolderRoute`,
     /// and the hero CTA must open the FOLDER, never a Detail page for an id no addon knows.
@@ -314,6 +326,56 @@ struct HomeView: View {
         return nil
     }
 
+    /// Wave H: hand the current target to the resolver. Called from `.onAppear`, from the target's
+    /// identity changing, and from its PAYLOAD changing — the latter so a late synopsis can still
+    /// gap-fill (the resolver keeps the committed artwork and never repaints for it).
+    private func presentHero() {
+        let target = displayHero
+        heroResolver.present(target, isFolder: target.map(isCollectionHero) ?? false)
+    }
+
+    /// Wave H: changes to the target's own fields, at the same identity. Cheap to recompute (a
+    /// join over eight components) and only ever consumed by an `.onChange`.
+    ///
+    /// Codex r1 (P2): every field the hero actually RENDERS has to be in here, or a same-id update
+    /// leaves stale text on screen forever, because nothing else calls `presentHero()` at a stable
+    /// identity. The previous version carried only the description, the genre COUNT and the two
+    /// artwork URLs, so a folder renamed on mobile, or genres replaced by a same-length list, was
+    /// invisible. What `HomeHeroForeground` draws, and therefore what is listed below:
+    /// `name` (`HeroLogo`'s text stand-in and the CTA's accessibility label), `description_`
+    /// (the synopsis), `releaseInfo` + `genres` (the meta line), `logo` and `banner` (the resolved
+    /// artwork), `poster` (`heroBackdropURL`'s last fallback, so it can BE the backdrop), and
+    /// `type` (picks "Go to Movie" vs "Go to Show", and is not covered by the id-only `.onChange`).
+    /// `imdbRating` is deliberately absent: `metaLine` does not render it, so including it would
+    /// only buy needless `present` calls.
+    private var heroPayloadSignature: String {
+        guard let hero = displayHero else { return "-" }
+        let description: String? = hero.description_
+        let banner: String? = hero.banner
+        let logo: String? = hero.logo
+        let poster: String? = hero.poster
+        let releaseInfo: String? = hero.releaseInfo
+        return [
+            hero.name,
+            description ?? "",
+            hero.genres.joined(separator: ","),
+            releaseInfo ?? "",
+            banner ?? "",
+            logo ?? "",
+            poster ?? "",
+            hero.type,
+        ].joined(separator: "|")
+    }
+
+    /// Whether the hero ARTWORK layer should be visible. `heroPosterFocusOnly` fades it while the
+    /// carousel idles unengaged; every other configuration shows it always (UX-7/FEAT-15 precedence
+    /// — see the toggle's own doc). Driven through `heroArtOpacity` rather than an `.animation`
+    /// modifier so the fade cannot animate the artwork's geometry with it.
+    private var heroArtVisible: Bool {
+        guard heroPosterFocusOnly && heroCarouselActive else { return true }
+        return heroFocused || focusModel.focusedItem != nil
+    }
+
     /// FEAT-25: whether the hero backdrop may run a trailer right now. Three gates on top of the
     /// user's own toggle:
     /// * tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews, exactly as `CatalogRowView`
@@ -427,7 +489,12 @@ struct HomeView: View {
         // BUG-38 round three: a focused collection folder drives the hero with its own artwork;
         // it has no trailer to resolve (its synthetic id is not a title), so neither claimant may
         // arm an attempt while a folder is on the backdrop.
-        if let hero = displayHero, isCollectionHero(hero) { return false }
+        // Wave H: "on the backdrop" is the PRESENTED item now, not the target. `HomeHeroBackdrop`
+        // keys its trailer off what it is actually drawing, so testing the target instead would,
+        // for the length of one resolve, let a title's claim arm an attempt against the folder
+        // still on screen (a synthetic id no extractor can resolve) — and conversely stop a
+        // playing trailer a second before its own artwork leaves.
+        if let hero = heroResolver.presented?.item, isCollectionHero(hero) { return false }
         return heroFocusTrailerActive || heroTrailerAutoplayActive
     }
 
@@ -522,13 +589,16 @@ struct HomeView: View {
                 // fixed top half of a VStack split), so backdrop and info panel stay together as
                 // one persistent hero region no matter how far down the rows are scrolled — this
                 // layer is unchanged either way, it was already outside the scroll.
-                if let hero = displayHero {
+                // Wave H: the PRESENTED hero, not the target — this layer paints only once the
+                // resolver has both bitmaps (or gave up on one), so the backdrop can no longer lag
+                // the text it belongs to (BUG-86 phenomenon C).
+                if let presentation = heroResolver.presented {
                     Group {
                         // Nuvio-style: right-anchored artwork whose left edge fades to the
                         // flat background — the info panel never sits over the art.
                         // FEAT-15: the focus panel always uses that treatment (see heroNuvioStyle).
                         HomeHeroBackdrop(
-                            item: hero,
+                            presentation: presentation,
                             nuvioStyle: heroNuvioStyle || focusHeroActive,
                             autoplaysTrailer: heroTrailerActive,
                             trailerModel: heroTrailerModel
@@ -540,9 +610,10 @@ struct HomeView: View {
                     // FEAT-15: and only the CAROUSEL's. In focus-panel mode the toggle is inert —
                     // hiding the artwork "while browsing" there would hide it always, since
                     // browsing is the only thing that mode ever shows (see heroPosterFocusOnly).
-                    .opacity(heroPosterFocusOnly && heroCarouselActive
-                             ? ((heroFocused || focusModel.focusedItem != nil) ? 1 : 0) : 1)
-                    .animation(.easeInOut(duration: 0.4), value: heroFocused || focusModel.focusedItem != nil)
+                    // Wave H: the value is `heroArtOpacity`, animated from `.onChange` below —
+                    // see that state's doc for why an `.animation(_:value:)` modifier here was the
+                    // resizing-mosaic bug.
+                    .opacity(heroArtOpacity)
                     // Purely decorative background art — the same title/synopsis is exposed by
                     // the focusable HomeHeroForeground button in front of it, so VoiceOver
                     // shouldn't stop on this layer too.
@@ -703,6 +774,12 @@ struct HomeView: View {
                 // attempt path is bounded (meta 5s, extraction 15s, failure → `.idle`), and
                 // playback is single-pass (`loops: false`), so the page always resumes.
                 guard !heroTrailerHolding else { return }
+                // Wave H: a hero commit is pending — the resolver is fetching this page's artwork
+                // right now. Paging underneath it discards that resolve (the next `present`
+                // cancels it) and starts the following page cold, so the carousel would advance
+                // through pages it never actually painted. Bounded by the resolver's own deadline
+                // (400ms, 1.5s for folders), so the page always resumes on a later tick.
+                guard heroResolver.isIdle else { return }
                 // Plain animated selection write, including the wrap back to page 0 — programmatic
                 // non-animated selection rebasing desyncs tvOS's paged TabView (the visible page
                 // freezes while the binding keeps moving), so never get clever here.
@@ -735,6 +812,25 @@ struct HomeView: View {
                 if phase == .active {
                     systemVideoAutoplayEnabled = UIAccessibility.isVideoAutoplayEnabled
                 }
+            }
+            // Wave H: the hero TARGET changed identity — hand it to the resolver, which decides
+            // when (and as one transaction, with what artwork) it may actually be painted. Keyed on
+            // the id alone, exactly like the renderers used to be: a payload change at the same
+            // identity is a separate, non-repainting path (see `heroPayloadSignature` below).
+            .onChange(of: displayHero?.id) { _, _ in
+                presentHero()
+            }
+            // Wave H: the target's own fields changed without its identity changing — a TMDB
+            // gap-fill landing on a focused row poster (`HomeHeroFocusModel.enrichIfNeeded`), or a
+            // shared-publish payload edit. The resolver adopts the text and keeps the committed
+            // artwork; without this trigger a late synopsis would never reach the panel at all.
+            .onChange(of: heroPayloadSignature) { _, _ in
+                presentHero()
+            }
+            // Wave H: the artwork layer's fade (see `heroArtOpacity`). Opacity only — never the
+            // implicit animation on the Group that used to interpolate the artwork's frame too.
+            .onChange(of: heroArtVisible) { _, visible in
+                withAnimation(.easeInOut(duration: 0.4)) { heroArtOpacity = visible ? 1 : 0 }
             }
             .onChange(of: heroItems.map(\.id)) { _, _ in
                 prefetchHeroArt()
@@ -789,6 +885,14 @@ struct HomeView: View {
             if upcomingRowEnabled { model.startUpcoming() }
             heroSettings.start()
             prefetchHeroArt()
+            // Wave H: the repository cache can already have published hero items before this view
+            // appeared, in which case no `.onChange` will ever fire for them — seed the resolver
+            // from the current target here, exactly as the `heroSurfaceSeen` latch below seeds
+            // itself for the same reason. Also sets the artwork layer's opacity without animating
+            // it (a fade-in from 0 on the very first frame is not the same thing as the toggle's
+            // browse-time fade).
+            presentHero()
+            heroArtOpacity = heroArtVisible ? 1 : 0
             // UX-7: when a row-focused poster reverts (grace period elapsed, or the CTA
             // reclaimed the hero), re-stamp the carousel's "last change" clock — otherwise the
             // auto-advance timer's next tick would immediately yank the page the instant focus
@@ -943,15 +1047,30 @@ struct HomeView: View {
                                     // Backdrops AND logos (Codex r3): a folder with its own cover never
                                     // warms its logo on the tile (FolderTile suppresses it there), so the
                                     // hero's HeroLogo would otherwise start cold and flash the text name.
-                                    collection.folders.prefix(8).flatMap { folder -> [String] in
-                                        [folder.heroBackdropUrl, folder.titleLogoUrl]
-                                            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                                            .filter { !$0.isEmpty }
-                                    }
+                                    // Wave H: no `prefix(8)` any more — a folder hero has NO poster
+                                    // fallback (see `folderHeroPreview`), so an unwarmed folder past the
+                                    // eighth holds the previous hero for the full 1.5s folder deadline.
+                                    // Rows are small (a Fusion collection is a handful of folders) and
+                                    // `ArtworkStore.prefetch` skips anything already resident.
+                                    collectionHeroPrefetchURLs(collection)
                                 })
                             })
+                            // Wave H: warm every folder's hero artwork when the ROW appears, not
+                            // when a tile is first focused — the focus report and the artwork it
+                            // needs used to fire on the same event, so the first focused folder
+                            // always waited on a cold fetch (BUG-86 phenomenon D). Shares
+                            // `prefetchedBackdropRows` with `reportRowFocus`, so whichever runs
+                            // first pays for the row and the other is a no-op.
+                            .onAppear { prefetchCollectionHeroArt(collection) }
                         }
                     }
+                    // BUG-89: tells the settle tracker (BrowseComponents `PinnedRowSettleTracking`)
+                    // this row is the one `PinnedRowSettle` exempts from the canonical rest (no row
+                    // below to reveal into) — see `PinnedRowEnvironment.swift`. The bottom inset
+                    // below (`rowsInsets`) is the actual fix; this flag is what lets the tracker's
+                    // `debug_pinned` line say `last=1` instead of reading an unreachable rest as a
+                    // fresh failure.
+                    .environment(\.pinnedRowIsLast, row.id == model.rows.last?.id)
                 }
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
@@ -1058,11 +1177,14 @@ struct HomeView: View {
                 // UX-7: a row-focused poster (displayHero) takes over the info panel too, so
                 // the title/synopsis on screen always matches the backdrop behind it. The CTA's
                 // NavigationLink is bound to `item`, so it follows along automatically.
-                if let hero = displayHero {
-                    HomeHeroForeground(item: hero, heroFocused: $heroFocused, compact: compact,
+                // Wave H: the PRESENTED hero, so the text on screen and the artwork behind it are
+                // always the same item's — they are two halves of one committed value now.
+                if let presentation = heroResolver.presented {
+                    HomeHeroForeground(presentation: presentation, heroFocused: $heroFocused, compact: compact,
                                        showsCTA: heroCarouselActive,
                                        forceNuvioLayout: focusHeroActive,
-                                       folderRoute: isCollectionHero(hero) ? heroFolderRoutes[hero.id] : nil,
+                                       folderRoute: isCollectionHero(presentation.item)
+                                           ? heroFolderRoutes[presentation.item.id] : nil,
                                        compression: compact ? pinnedHeroCompression : 0)
                 }
             }
@@ -1115,14 +1237,30 @@ struct HomeView: View {
                 withAnimation(.easeInOut(duration: 0.4)) { heroIndex = next }
             })
 
-            if heroItems.count > 1 {
-                // Both layouts keep the info panel on the left, so the dots stay leading. Never
-                // conditionally removed while a row poster owns the hero (UX-7) — faded out via
-                // opacity instead, so the carousel's layout never reflows around them.
-                HeroPageDots(count: heroItems.count, index: min(heroIndex, heroItems.count - 1))
+            // Both layouts keep the info panel on the left, so the dots stay leading. Never
+            // conditionally removed while a row poster owns the hero (UX-7) — faded out via
+            // opacity instead, so the carousel's layout never reflows around them.
+            //
+            // Wave H: and never conditionally removed at the COUNT boundary either. `if heroItems
+            // .count > 1` meant a hero that published one item and then more — the ordinary
+            // cold-launch fan-in — grew its region by the dots' slot at that moment and pushed
+            // every row below it down, one of the vertical steps the pinned-title corrector then
+            // chases (BUG-87). The dots now mount with the CAROUSEL and carry their visibility in
+            // opacity, the same rule the focus takeover above already followed; `count` is floored
+            // at 1 so a single-item hero reserves the same slot height as a multi-item one.
+            //
+            // The mount is gated on `heroCarouselActive`, not on nothing at all: FEAT-15's focus
+            // panel (Show Hero off) has never rendered dots, and mounting an invisible slot there
+            // would take ~30pt off the pinned rows viewport that Wave 10's budget was tuned
+            // against. Panel mode stays byte-identical; the carousel's own load boundary is the
+            // one this fixes. Deliberately still OUTSIDE the fixed 352pt frame either way.
+            if heroCarouselActive {
+                let dotsVisible = heroItems.count > 1 && focusModel.focusedItem == nil
+                HeroPageDots(count: max(heroItems.count, 1),
+                             index: min(heroIndex, max(heroItems.count - 1, 0)))
                     .padding(.leading, Theme.Spacing.lg)
-                    .opacity(focusModel.focusedItem == nil ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.25), value: focusModel.focusedItem == nil)
+                    .opacity(dotsVisible ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.25), value: dotsVisible)
             }
         }
     }
@@ -1175,11 +1313,101 @@ struct HomeView: View {
     private func rowsInsets(pinned: Bool, heroInScroll: Bool) -> EdgeInsets {
         if pinned {
             return EdgeInsets(top: Theme.Size.heroPinnedRowsHeadroom, leading: Theme.Spacing.screen,
-                              bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
+                              bottom: pinnedRowsBottomInset, trailing: Theme.Spacing.screen)
         }
         return EdgeInsets(top: heroInScroll ? 0 : Theme.Spacing.screen,
                           leading: Theme.Spacing.screen,
                           bottom: Theme.Spacing.screen, trailing: Theme.Spacing.screen)
+    }
+
+    /// BUG-89 (Steven's beta.17 report — a hidden-title square-tile Fusion folder shelf left
+    /// visible for seconds under "Genres" once it became the last row focused): the last pinned
+    /// row is the one row `PinnedRowSettle`'s canonical-rest corrector (BrowseComponents) EXEMPTS
+    /// by design — there is no row below it to reveal into, so `settlePlan` returns `targetY: nil`
+    /// for it (`endOfContent` / upward-no-room) and nothing else pulls the scroll content far
+    /// enough to clear a short last row above the pinned clip edge.
+    ///
+    /// The fix is a bottom content inset sized so the scroll range ALONE can reveal the last row
+    /// fully, with no corrector involved: `vh` (the pinned rows viewport, STATIC — never the live
+    /// viewport, the same Wave 10 rule `pinnedHeroCompression` follows) minus the last row's own
+    /// height, plus the same title-inset/dead-zone slack a settled correction would leave
+    /// (`heroPinnedRowTitleInset` 48, `heroPinnedRowSettleDeadZone` 4), plus 8pt of breathing
+    /// room. `Theme.Spacing.screen` floors it — every OTHER row is already tall enough that the
+    /// formula goes negative and the uniform inset every other edge carries is exactly right.
+    ///
+    /// At Large (poster 403.3, `vh` 523.3): a catalog last row (626.8pt) keeps the floor (60,
+    /// unchanged); a hidden-title square-tile collection last row (436.9pt) gets 146; a captioned
+    /// one (471.9pt) gets 111.
+    private var pinnedRowsBottomInset: CGFloat {
+        guard let lastRowHeight = pinnedLastRowHeight else { return Theme.Spacing.screen }
+        let vh = Theme.Size.heroPinnedRowsViewportBudget + pinnedHeroCompression
+        let inset = max(Theme.Spacing.screen,
+                         vh - lastRowHeight + Theme.Size.heroPinnedRowTitleInset
+                            + Theme.Size.heroPinnedRowSettleDeadZone + 8)
+        #if DEBUG
+        if homeScrollProbeEnabled, inset != Theme.Spacing.screen {
+            NSLog("[HomeScrollProbe] trailingInset=%.1f lastRow=%@ lastRowH=%.1f",
+                  inset, pinnedLastRowId ?? "none", lastRowHeight)
+        }
+        #endif
+        return inset
+    }
+
+    /// The bottom-most row `pinnedRowsBottomInset` must clear. Mirrors `rowsScroll`'s actual
+    /// render order: `model.rows.last` in the common case (a catalog or collection row); Continue
+    /// Watching / Upcoming only stand in when `model.rows` is empty, because they always render
+    /// ABOVE the `ForEach` (see `rowsScroll`) and so are never actually last while any row exists.
+    /// `nil` when Home has nothing to lay out yet (placeholder only) — the caller floors to the
+    /// uniform inset in that case.
+    private var pinnedLastRowHeight: CGFloat? {
+        if let last = model.rows.last {
+            switch last {
+            case .catalog:
+                let artworkHeight = posterStyle.landscapeCatalogRows
+                    ? Theme.Size.landscapeHeight : posterStyle.height
+                let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
+                return artworkHeight + caption + pinnedUniformShelfChrome
+            case .collection(let collection):
+                return CollectionRowView.pinnedRowHeight(collection: collection, style: posterStyle)
+            }
+        }
+        // Codex r3 (P2): the caption term is gated exactly like the catalog branch above.
+        // `LandscapeCard`'s caption is drawn under `titleVisible` (`showTitle ?? style.showTitle`,
+        // `PosterCard.swift`), and neither the Upcoming nor the Continue Watching call site passes
+        // `showTitle:`, so with Hide Labels on both rows are 43.5pt shorter than this used to
+        // claim. Overstating the last row's height understates `pinnedRowsBottomInset` by the same
+        // amount, which is the one thing that inset exists to get right.
+        let fallbackCaption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        if upcomingRowEnabled, !model.upcoming.isEmpty {
+            return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome
+        }
+        if !model.continueWatching.isEmpty {
+            return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome
+        }
+        return nil
+    }
+
+    /// Identifies `pinnedLastRowHeight`'s row for the probe line — `HomeRow.id` in the common
+    /// case, the fixed row keys `rowsScroll` uses for CW/Upcoming otherwise.
+    private var pinnedLastRowId: String? {
+        if let id = model.rows.last?.id { return id }
+        if upcomingRowEnabled, !model.upcoming.isEmpty { return "upcoming" }
+        if !model.continueWatching.isEmpty { return "continue-watching" }
+        return nil
+    }
+
+    /// The fixed vertical chrome every UNIFORM-card pinned shelf (catalog, Continue Watching,
+    /// Upcoming — every row whose cards go through `CatalogRowView`'s or `UpcomingRow`'s/
+    /// `ContinueWatchingRow`'s identical shelf padding) carries around its artwork, verified
+    /// against the shelf's own vertical padding (`BrowseComponents.swift:2795`
+    /// `.padding(.vertical, Theme.Spacing.lg)`, top AND bottom) and the pinned row reach constants
+    /// (`Theme.Size.heroPinnedRowTopPad` 88, `heroPinnedRowBottomReach` 44):
+    ///     Spacing.lg (24) + heroPinnedRowTopPad (88) + heroPinnedRowBottomReach (44) + Spacing.lg (24) = 180
+    /// `CollectionRowView` does NOT use this — its shelf padding is asymmetric top/bottom, so it
+    /// states its own arithmetic in `CollectionRowView.pinnedRowHeight`.
+    private var pinnedUniformShelfChrome: CGFloat {
+        Theme.Spacing.lg + Theme.Size.heroPinnedRowTopPad + Theme.Size.heroPinnedRowBottomReach
+            + Theme.Spacing.lg
     }
 
     /// Wave 10: how far the pinned hero yields to the rows below it, so the focused row fits below
@@ -1220,17 +1448,34 @@ struct HomeView: View {
     /// report (`reportRowFocus`), which is unchanged and now runs in both hero modes.
     private func prefetchHeroArt() {
         var urls: [URL] = []
-        // Both render candidates (primary + poster fallback), same chain the backdrop
-        // actually uses — see heroBackdropPrefetchURLs.
+        // Every render candidate — primary backdrop, poster fallback AND logo — in the same chain
+        // the hero actually resolves; see heroBackdropPrefetchURLs, which carries the logo itself
+        // as of Wave H (the resolver waits on it, so a cold logo is a cold hero).
         for item in heroItems {
             urls.append(contentsOf: heroBackdropPrefetchURLs(for: item).compactMap(URL.init(string:)))
-            if let url = heroLogoURL(for: item) { urls.append(url) }
         }
         if let resting = heroRestingItem {
             urls.append(contentsOf: heroBackdropPrefetchURLs(for: resting).compactMap(URL.init(string:)))
-            if let url = heroLogoURL(for: resting) { urls.append(url) }
         }
         ArtworkStore.prefetch(urls)
+    }
+
+    /// Wave H: every folder's hero backdrop AND title logo in one collection row. A folder hero has
+    /// no poster fallback, so these two URLs are the whole of what its hero can ever paint.
+    private func collectionHeroPrefetchURLs(_ collection: NuvioCollection) -> [String] {
+        collection.folders.flatMap { folder -> [String] in
+            [folder.heroBackdropUrl, folder.titleLogoUrl]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+    }
+
+    /// Wave H: warm a collection row's folder artwork when the ROW appears. Shares the per-row
+    /// dedup set with `reportRowFocus`, so a row pays for its warm-up exactly once per Home
+    /// lifetime whichever of the two events happens first.
+    private func prefetchCollectionHeroArt(_ collection: NuvioCollection) {
+        guard prefetchedBackdropRows.insert(collection.id).inserted else { return }
+        ArtworkStore.prefetch(collectionHeroPrefetchURLs(collection).compactMap(URL.init(string:)))
     }
 
     /// UX-7: single funnel for every row's focus report. The gating history here is worth keeping
@@ -1284,12 +1529,18 @@ struct HomeView: View {
         let backdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         let logo = folder.titleLogoUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !(backdrop?.isEmpty ?? true) || !(logo?.isEmpty ?? true) else { return nil }
-        let cover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         return MetaPreview(
             id: "\(collectionHeroIdScheme)\(collection.id)/\(folder.id)",
             type: collectionHeroType,
             name: folder.title.trimmingCharacters(in: .whitespacesAndNewlines),
-            poster: (cover?.isEmpty ?? true) ? nil : cover,
+            // Wave H (BUG-86b): the cover is NOT a hero fallback. It is the tile's own square
+            // artwork, so it is always already cached — which meant the hero painted it instantly,
+            // scaled-to-fill into a 16:9 frame, and then swapped it for the real backdrop: the
+            // "flat colour block, then the mosaic pops in larger and shrinks into place" the tester
+            // filmed. With no fallback the previous hero simply stays up until the folder's own
+            // backdrop resolves (`HeroArtResolver.folderDeadline`), and the row's `.onAppear`
+            // prefetch means it usually already has.
+            poster: nil,
             banner: (backdrop?.isEmpty ?? true) ? nil : backdrop,
             logo: (logo?.isEmpty ?? true) ? nil : logo,
             posterShape: .poster,
@@ -1740,6 +1991,377 @@ final class HomeHeroFocusModel: ObservableObject {
     }
 }
 
+/// Wave H (BUG-86 phenomena B/C/D, BUG-90): everything the hero paints for ONE item, committed as a
+/// single value. Before this type the hero was three independent paint pipelines racing each other —
+/// text driven straight off `displayHero`, the backdrop cross-fading inside `HeroCrossfadeImage`
+/// 0.3–0.5s behind it, and `HeroLogo` running its own `.task` that swapped Text→Image under its own
+/// `withAnimation`. The tester filmed all three: the old backdrop under the new title (C), the title
+/// text and the title logo drawn superimposed on every hero change (B), and a folder cover painting
+/// before the folder backdrop (D). One value, committed once, removes the races by construction:
+/// there is no state in which the hero shows one item's text over another item's artwork.
+///
+/// `backdrop`/`logo` are the DECODED bitmaps, not URLs — resolution happens in `HeroArtResolver`
+/// before the commit, so a renderer can never be mid-fetch. `logo == nil` after the resolver's
+/// deadline means "this item has no logo (or it did not arrive in time)": `HeroLogo` draws the text
+/// wordmark, and a logo that lands later is DROPPED rather than swapped in behind the reader's eyes.
+struct HeroPresentation: Equatable {
+    let item: MetaPreview
+    let backdrop: UIImage?
+    let logo: UIImage?
+    /// `"\(type):\(id)"` — the same stable identity `HeroCrossfadeImage` keys its paint bookkeeping
+    /// on, so the two agree about what "the same item" means.
+    let identity: String
+
+    /// `MetaPreview` is a Kotlin export and does not conform to Swift's `Equatable`, so the
+    /// synthesized conformance is unavailable; images compare by REFERENCE (`ArtworkStore` hands out
+    /// one decoded instance per URL, so identity is the honest test and pixel comparison would be
+    /// absurd here).
+    static func == (lhs: HeroPresentation, rhs: HeroPresentation) -> Bool {
+        lhs.identity == rhs.identity
+            && lhs.backdrop === rhs.backdrop
+            && lhs.logo === rhs.logo
+            && lhs.item.isEqual(rhs.item)
+    }
+}
+
+/// Wave H rule (3): a hero item is painted only when its backdrop AND its logo are resolved, or a
+/// deadline passed — and text, logo and backdrop then change in ONE transaction.
+///
+/// `HomeView.displayHero` remains the TARGET (what focus/the carousel/the settings say the hero
+/// SHOULD be showing); `presented` is what is actually on screen. They differ only for the length of
+/// one resolve, which is bounded by `laterSwapDeadline` (`folderDeadline` for collection folders).
+///
+/// Cache-warm path (the overwhelmingly common one, since every row focus prefetches its backdrops
+/// and logos): both bitmaps are already resident, `present` commits synchronously inside one
+/// `withAnimation`, and nothing ever renders half a hero. Cold path: the PREVIOUS presentation stays
+/// on screen — never a blank, never a poster stand-in — while both fetches race a deadline, and
+/// whatever has landed when the deadline (or the second fetch) fires is committed, once.
+///
+/// Late arrivals are dropped on purpose. A logo that resolves after its item was committed with the
+/// text wordmark would be exactly the Text→Image swap this class exists to remove (BUG-90); the item
+/// picks it up from cache the next time it is presented.
+@MainActor
+final class HeroArtResolver: ObservableObject {
+    /// The hero that is actually painted. `nil` = no hero region at all (the same state
+    /// `displayHero == nil` produced before this type existed).
+    @Published private(set) var presented: HeroPresentation?
+
+    /// How long a swap between two TITLES waits for cold artwork before committing with whatever
+    /// landed. Titles always have a poster on their card, so a miss here is a short wait on the
+    /// previous hero, not a blank screen.
+    static let laterSwapDeadline: UInt64 = 400_000_000
+    /// Collection folders get longer: their artwork is the user's own configured backdrop/logo, it
+    /// has no poster stand-in (`folderHeroPreview` passes `poster: nil` on purpose), and the row's
+    /// `.onAppear` prefetch usually makes this moot anyway.
+    static let folderDeadline: UInt64 = 1_500_000_000
+
+    /// The in-flight resolve, if any. Also the whole of `isIdle` — the carousel's auto-advance tick
+    /// must not page while a commit is pending, or the resolve it started is thrown away and the
+    /// next page starts cold (the same reason the tick already holds for a trailer attempt).
+    private var resolveTask: Task<Void, Never>?
+    /// The identity the newest `present` call asked for. A resolve that finishes after a newer call
+    /// has superseded it fails this check and commits nothing.
+    private var targetIdentity: String?
+    /// The item the newest `present` call asked for, kept whole so a repeat call with a
+    /// byte-identical target can be recognised as the no-op it is — see the guard in `present`.
+    private var lastTarget: MetaPreview?
+
+    var isIdle: Bool { resolveTask == nil }
+
+    /// Point the hero at `target`. Cancels any resolve in flight; the previous presentation stays on
+    /// screen until this one can be committed whole.
+    func present(_ target: MetaPreview?, isFolder: Bool) {
+        // Idempotent by contract. `HomeView` drives this from TWO `.onChange`s — the target's
+        // identity and the target's payload — and a genuinely new hero changes both, so the second
+        // one arrives with nothing left to do. Without this guard that repeat would cancel and
+        // restart a resolve that had just started, resetting its deadline clock, and re-run the
+        // same-identity branch below for a payload that had not moved at all.
+        if let target, let last = lastTarget,
+           "\(target.type):\(target.id)" == targetIdentity, last.isEqual(target) { return }
+        if target == nil, targetIdentity == nil, lastTarget == nil { return }
+        lastTarget = target
+        resolveTask?.cancel()
+        resolveTask = nil
+
+        guard let target else {
+            targetIdentity = nil
+            guard presented != nil else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { presented = nil }
+            return
+        }
+
+        let identity = "\(target.type):\(target.id)"
+        targetIdentity = identity
+
+        // Same item, new payload: the ONE change allowed after a commit (Wave H invariant 2) is a
+        // silent gap-fill of text the item did not carry when it was committed — a synopsis landing
+        // from TMDB, say. The artwork is kept exactly as it is: re-resolving it here is the
+        // raw-then-enriched repaint the tester filmed, and `same=1` on the probe line is precisely
+        // the signature a healthy launch must not contain.
+        if identity == presented?.identity, let current = presented {
+            let refreshed = HeroPresentation(item: target, backdrop: current.backdrop,
+                                             logo: current.logo, identity: identity)
+            guard refreshed != current else { return }
+            // `same=1` means REPAINT: the probe line the photo contract forbids on a healthy
+            // launch.
+            //
+            // Internal review r1 (P2), the contract it now encodes. The old test compared the two
+            // BITMAPS, which could never differ - `refreshed` is built from `current.backdrop` and
+            // `current.logo` by construction, so `!==` was structurally false and `same=1` was
+            // unreachable. That made test31's `same=1` filter vacuous and, worse, hid the one
+            // same-identity path that DOES repaint text the viewer is reading: `enrichIfNeeded`
+            // (and a Kotlin re-publish) moving `name` / `genres` / `releaseInfo` / `description` at
+            // a stable identity - the English-replaced-by-French flip the tester filmed.
+            //
+            // So the test is now what actually changes ON SCREEN (see `isVisibleRepaint`), and a
+            // text repaint after the commit IS a violation. The ONE exception, the allowed silent
+            // gap-fill, is a field that was empty or nil being FILLED - a synopsis or a genre list
+            // landing from TMDB for an item committed without one. That adds text, replaces
+            // nothing, and stays silent.
+            //
+            // A refresh that changes nothing visible still logs nothing at all, deliberately,
+            // rather than a `same=0` line: Leg C counts one `paint` per `present` for the focused
+            // folder and a present-with-no-paint would break that count.
+            if HeroArtResolver.isVisibleRepaint(current: current.item, target: target) {
+                logPresent(identity: identity,
+                           backdrop: refreshed.backdrop != nil ? "cached" : "none",
+                           logo: refreshed.logo != nil ? "cached" : "text",
+                           waitedMs: 0, same: true)
+            }
+            presented = refreshed   // deliberately unanimated: a gap-fill must not move anything
+            return
+        }
+
+        let backdropURL = heroBackdropURL(for: target).flatMap { URL(string: $0) }
+        let logoURL = heroLogoURL(for: target)
+        let cachedBackdrop = ArtworkStore.cached(backdropURL)
+        let cachedLogo = ArtworkStore.cached(logoURL)
+        let needsBackdrop = backdropURL != nil && cachedBackdrop == nil
+        let needsLogo = logoURL != nil && cachedLogo == nil
+
+        guard needsBackdrop || needsLogo else {
+            commit(item: target, backdrop: cachedBackdrop, logo: cachedLogo, identity: identity,
+                   backdropSource: cachedBackdrop != nil ? "cached" : "none",
+                   logoSource: cachedLogo != nil ? "cached" : "text",
+                   waitedMs: 0)
+            return
+        }
+
+        let started = Date()
+        let deadline = isFolder ? Self.folderDeadline : Self.laterSwapDeadline
+        let wait = HeroPresentArtWait(backdrop: cachedBackdrop, logo: cachedLogo,
+                                      needsBackdrop: needsBackdrop, needsLogo: needsLogo)
+
+        // Round 3: the two fetches are unstructured and are NEVER cancelled, exactly as
+        // `HeroCommitCoordinator.prepare(_:)` issues the head's pair. The task-group form this
+        // replaced could not honour its own deadline: a group awaits every child on the way out
+        // even after `cancelAll()`, and `ArtworkStore.fetch` parks on shared unstructured work that
+        // ignores waiter cancellation by design (a cancelled awaiter still lets the image land in
+        // the cache for the next viewer). So one stalled backdrop deferred the whole PRESENTATION
+        // by the URLSession timeout instead of by 400 ms, holding the previous hero on screen for
+        // tens of seconds. `deadline` is now a real ceiling: `present` commits at most ~deadline
+        // after the target changed, whatever the network is doing.
+        //
+        // Nothing is wasted by letting the fetches run on. `ArtworkStore` caches what lands, so a
+        // backdrop that misses this deadline is already warm the next time the item is presented.
+        //
+        // `.head` admission (`ArtworkStore.FetchAdmission`): this IS the hero being shown, so it
+        // goes to the front of the six-slot gate rather than queueing behind a screenful of row
+        // poster prefetches.
+        if needsBackdrop, let backdropURL {
+            Task { @MainActor in
+                let image = try? await ArtworkStore.fetch(backdropURL, admission: .head)
+                wait.resolveBackdrop(image)
+            }
+        }
+        if needsLogo, let logoURL {
+            Task { @MainActor in
+                let image = try? await ArtworkStore.fetch(logoURL, admission: .head)
+                wait.resolveLogo(image)
+            }
+        }
+
+        resolveTask = Task { [weak self] in
+            let deadlineTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: deadline)
+                guard !Task.isCancelled else { return }
+                wait.deadlineElapsed()
+            }
+            // Resumed by the last needed fetch, by `deadlineTask`, or by cancellation, whichever
+            // is first. A superseded `present` cancels this task; the handler stops the wait and
+            // the identity guard below then commits nothing.
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    wait.attach(continuation)
+                }
+            } onCancel: {
+                Task { @MainActor in wait.cancelWait() }
+            }
+            deadlineTask.cancel()
+            guard !Task.isCancelled, let self, self.targetIdentity == identity else { return }
+            self.resolveTask = nil
+            let backdrop = wait.backdrop
+            let logo = wait.logo
+            self.commit(item: target, backdrop: backdrop, logo: logo, identity: identity,
+                        backdropSource: Self.source(cached: cachedBackdrop, resolved: backdrop, empty: "none"),
+                        logoSource: Self.source(cached: cachedLogo, resolved: logo, empty: "text"),
+                        waitedMs: Int(Date().timeIntervalSince(started) * 1000))
+        }
+    }
+
+    /// `cached` / `fetched` / the caller's empty token, for the probe line.
+    private static func source(cached: UIImage?, resolved: UIImage?, empty: String) -> String {
+        if cached != nil { return "cached" }
+        return resolved != nil ? "fetched" : empty
+    }
+
+    /// THE commit. One assignment, one animation, every field of the hero at once.
+    private func commit(item: MetaPreview, backdrop: UIImage?, logo: UIImage?, identity: String,
+                        backdropSource: String, logoSource: String, waitedMs: Int) {
+        logPresent(identity: identity, backdrop: backdropSource, logo: logoSource,
+                   waitedMs: waitedMs, same: false)
+        let next = HeroPresentation(item: item, backdrop: backdrop, logo: logo, identity: identity)
+        guard next != presented else { return }
+        withAnimation(.easeInOut(duration: 0.3)) { presented = next }
+    }
+
+    /// `present item=<type:id> backdrop=<cached|fetched|none> logo=<cached|fetched|text>
+    /// waited=<ms> same=<0|1>` — `same=1` is a re-present of the item already on screen that
+    /// actually swaps its backdrop or logo bitmap, i.e. the repaint signature. A healthy
+    /// cold-launch photo has none. A same-identity present that only refreshes TEXT (the allowed
+    /// gap-fill) paints nothing and logs nothing, so it can never be misread as a repaint.
+    /// Internal review r1 (P2): does a same-identity `present` change anything the viewer can
+    /// READ? This is the whole `same=1` contract, factored out so it can be unit-tested without a
+    /// live view (`HeroArtResolverVisibleRepaintTests`).
+    ///
+    /// The hero's text is exactly three things: the wordmark slot (`HeroLogo`, which renders
+    /// `item.name` whenever no logo bitmap resolved), the meta line (`releaseInfo` then up to three
+    /// `genres`), and the synopsis (`description_`). Each counts as a repaint only when the value
+    /// ALREADY on screen was non-empty and has been replaced - a nil-or-empty value being filled in
+    /// is the allowed silent gap-fill.
+    ///
+    /// Artwork is deliberately NOT a term. The same-identity branch never re-resolves it (a late
+    /// wordmark for an already-committed item is dropped by design, BUG-90), so no bitmap can move
+    /// here; and when the logo bitmap is nil the visible wordmark is `item.name`, which the name
+    /// term already covers. Testing the item's logo URL instead would log `same=1` for a change
+    /// that paints nothing - the same vacuousness the bitmap test had, pointed the other way.
+    static func isVisibleRepaint(current: MetaPreview, target: MetaPreview) -> Bool {
+        func replaced(_ before: String?, _ after: String?) -> Bool {
+            guard let before, !before.isEmpty else { return false }
+            return before != (after ?? "")
+        }
+        if replaced(current.name, target.name) { return true }
+        if replaced(current.releaseInfo, target.releaseInfo) { return true }
+        if replaced(current.description_, target.description_) { return true }
+        // Genres are a LIST, and only the first three ever reach the meta line - a fourth genre
+        // arriving changes nothing on screen and must not read as a repaint.
+        let currentGenres = Array(current.genres.prefix(3))
+        if !currentGenres.isEmpty && currentGenres != Array(target.genres.prefix(3)) { return true }
+        return false
+    }
+
+    private func logPresent(identity: String, backdrop: String, logo: String,
+                            waitedMs: Int, same: Bool) {
+        guard HomeHeroProbe.enabled else { return }
+        HomeHeroProbe.log(String(format: "present item=%@ backdrop=%@ logo=%@ waited=%d same=%d",
+                                 identity, backdrop, logo, waitedMs, same ? 1 : 0))
+    }
+}
+
+/// Round 3: the wait state of ONE `HeroArtResolver.present(_:isFolder:)` resolve. Sibling of
+/// `HeadArtPrewarm` (`HomeHeroCommit.swift`) with the same contract and the same reason to exist:
+/// the art budget is enforced by a continuation that the FIRST terminal event resumes, instead of
+/// by a task group whose implicit "await every child" defeats the deadline. See the block comment
+/// in `present(_:isFolder:)` for why the group form could not honour 400 ms.
+///
+/// It is a sibling rather than a reuse because `HeadArtPrewarm` only records WHETHER each piece
+/// landed. The commit here needs the decoded bitmaps themselves, and it starts from the cached
+/// values so a fetch that comes back empty leaves the cached image in place.
+///
+/// `@MainActor`, like the resolver that owns it, so the fetch tasks, the deadline task and the
+/// cancellation handler all mutate it on one actor with no locking; global-actor isolation also
+/// makes it implicitly `Sendable` for the capture in `withTaskCancellationHandler`.
+///
+/// Not `private`: `HeroPresentArtWaitTests` drives this state machine directly, which is the only
+/// part of the resolve that can be exercised without a live view and a network.
+@MainActor
+final class HeroPresentArtWait {
+    /// What the commit will paint. Seeded with whatever was already cached, and only ever
+    /// overwritten by a fetch that actually produced an image.
+    private(set) var backdrop: UIImage?
+    private(set) var logo: UIImage?
+    /// True only when the budget expired first. Not consumed by the resolver today (the probe line
+    /// reports `cached`/`fetched`/`none` per piece, not a timeout token); kept because it is the
+    /// one fact the commit cannot otherwise reconstruct, and it is what the unit test asserts on.
+    private(set) var hitDeadline = false
+
+    private var pendingBackdrop: Bool
+    private var pendingLogo: Bool
+    private var continuation: CheckedContinuation<Void, Never>?
+    /// Set by the first terminal event. Later arrivals are no-ops, which is exactly the
+    /// "a late logo for an already-presented item is dropped" rule, and `attach` resumes at once so
+    /// a wait that finished before the continuation existed cannot hang.
+    private var finished = false
+
+    init(backdrop: UIImage?, logo: UIImage?, needsBackdrop: Bool, needsLogo: Bool) {
+        self.backdrop = backdrop
+        self.logo = logo
+        pendingBackdrop = needsBackdrop
+        pendingLogo = needsLogo
+    }
+
+    func attach(_ continuation: CheckedContinuation<Void, Never>) {
+        if finished {
+            continuation.resume()
+        } else {
+            self.continuation = continuation
+        }
+    }
+
+    func resolveBackdrop(_ image: UIImage?) {
+        guard !finished else { return }
+        if let image { backdrop = image }
+        pendingBackdrop = false
+        finishIfSettled()
+    }
+
+    func resolveLogo(_ image: UIImage?) {
+        guard !finished else { return }
+        if let image { logo = image }
+        pendingLogo = false
+        finishIfSettled()
+    }
+
+    /// The budget expired. Whatever has not landed is not part of this commit; it stays in flight
+    /// inside `ArtworkStore` so it lands in the cache for this item's next presentation.
+    func deadlineElapsed() {
+        guard !finished else { return }
+        hitDeadline = true
+        finish()
+    }
+
+    /// A newer `present` superseded this resolve. Stop waiting; the resolver's identity guard is
+    /// what actually blocks the commit, this just stops holding the task open.
+    func cancelWait() {
+        guard !finished else { return }
+        finish()
+    }
+
+    private func finishIfSettled() {
+        guard !pendingBackdrop, !pendingLogo else { return }
+        finish()
+    }
+
+    private func finish() {
+        finished = true
+        pendingBackdrop = false
+        pendingLogo = false
+        let waiter = continuation
+        continuation = nil
+        waiter?.resume()
+    }
+}
+
 /// Horizontal "Continue Watching" row of in-progress titles with a progress bar. Tapping a card opens
 /// the stream picker for that exact video (the in-progress episode for series), and playback resumes
 /// from the saved position.
@@ -1880,7 +2502,13 @@ struct ResumeTarget: Identifiable {
 /// hangs on device once churn stopped being rare (occasional carousel auto-advance) and became
 /// frequent (any row focus hop).
 struct HomeHeroBackdrop: View {
-    let item: MetaPreview
+    /// Wave H: the committed hero — item AND its already-resolved backdrop bitmap. This view no
+    /// longer resolves anything itself; `HeroArtResolver` did that before the commit, so the
+    /// artwork and the text in front of it can never belong to different items.
+    let presentation: HeroPresentation
+    /// The item the presentation carries. Everything below reads this rather than the presentation
+    /// so the trailer lifecycle is untouched by Wave H.
+    private var item: MetaPreview { presentation.item }
     /// Nuvio-style hero: the artwork becomes a right-anchored panel whose LEFT edge fades
     /// out through a gradient mask, so the info panel sits on pure flat background — none of
     /// the artwork ever renders behind the title/description (Christian's spec, 2026-07-30).
@@ -1980,15 +2608,12 @@ struct HomeHeroBackdrop: View {
     /// the gap before one resolves is the still backdrop too. Never a spinner.
     private var heroSurface: some View {
         ZStack {
-            HeroCrossfadeImage(
-                url: heroBackdropURL(for: item),
-                fallbackURL: item.poster,
-                // H-1C: `type:id` uniquely identifies the displayed item, including a collection
-                // folder's hero (`isCollectionHero`/`collectionHeroType` above) — a folder's type
-                // is the namespaced "nuvio.folder" and its id is a synthetic `nuvio-folder://…`
-                // per-folder, so this pair is just as unique for folder heroes as for real titles.
-                identity: "\(item.type):\(item.id)"
-            )
+            // Wave H: image-driven, not URL-driven. The whole fetch-and-fallback ladder that used
+            // to run here now runs in `HeroArtResolver` BEFORE the hero commits, so this view has
+            // one job left — cross-fading one committed bitmap into the next in place, at fixed
+            // geometry. The identity is the presentation's own (`"\(type):\(id)"`, unique for a
+            // collection folder's synthetic id just as it is for a real title).
+            HeroCrossfadeImage(image: presentation.backdrop, identity: presentation.identity)
 
             if let url = trailerModel.playingURL {
                 TrailerHeroPlayer(
@@ -2032,8 +2657,14 @@ enum HomeHeroProbe {
     /// the first `headMaxLines` lines are captured once and never evicted; only the TAIL rolls,
     /// keeping the most recent `tailMaxLines`. A single elision marker line separates the two once
     /// eviction has actually started (never shown on a launch short enough that nothing was
-    /// dropped). Max displayed lines: `headMaxLines` + 1 marker + `tailMaxLines` = 49.
-    nonisolated static let headMaxLines = 16
+    /// dropped). Max displayed lines: `headMaxLines` + 1 marker + `tailMaxLines` = 57.
+    ///
+    /// Wave H raised the head 16 → 24: the launch head now carries a `present` line per hero commit
+    /// alongside the `publish`/`paint`/`commit` lines, and the photo contract the device pass reads
+    /// (one publish before the first commit, `gate=`, zero `headChanged`/`same=1`) has to fit
+    /// inside the frozen head or the evidence rolls out of the pane before the tester photographs
+    /// it — the exact failure H-1A introduced the head-preserving buffer for.
+    nonisolated static let headMaxLines = 24
     nonisolated static let tailMaxLines = 32
     nonisolated(unsafe) private static var headLines: [String] = []
     nonisolated(unsafe) private static var tailLines: [String] = []
@@ -2102,6 +2733,14 @@ struct HeroCrossfadeImage: View {
     /// this title's banner) from a genuine title change (see `paintedIdentity`/
     /// `isSameTitleUpgrade` further down).
     let identity: String
+    /// Wave H: the already-decoded bitmap to display, for the image-driven call site
+    /// (`HomeHeroBackdrop`). nil in URL-driven mode, and nil here in image-driven mode means "this
+    /// hero has no artwork" — the same terminal state `fadeToEmpty()` has always produced.
+    private let directImage: UIImage?
+    /// Which of the two modes this instance is in. A per-call-site CONSTANT (each call site uses
+    /// exactly one initializer), so it can safely pick between the two task bodies without ever
+    /// re-identifying the view mid-session.
+    private let imageDriven: Bool
     @State private var current: UIImage?
     @State private var previous: UIImage?
     /// Drives the outgoing image's fade — animated 1 → 0 on every swap (see `crossfade(to:)`).
@@ -2115,6 +2754,8 @@ struct HeroCrossfadeImage: View {
         self.url = url
         self.fallbackURL = fallbackURL
         self.identity = identity
+        self.directImage = nil
+        self.imageDriven = false
         let resolved: URL? = {
             guard let url, !url.isEmpty else { return nil }
             return URL(string: url)
@@ -2127,6 +2768,21 @@ struct HeroCrossfadeImage: View {
         // change and repaint the fallback poster. Seed the painted state here alongside the image.
         _paintedIdentity = State(initialValue: seeded != nil ? identity : nil)
         _paintedFallbackURL = State(initialValue: seeded != nil ? fallbackURL : nil)
+    }
+
+    /// Wave H: image-driven mode. The caller has already resolved the artwork (see
+    /// `HeroArtResolver`), so there is no ladder, no deadline and no fallback here — one bitmap in,
+    /// one cross-fade out. The whole point is that a hero's text, logo and backdrop change in the
+    /// same transaction; a view that fetched its own image could never guarantee that.
+    init(image: UIImage?, identity: String) {
+        self.url = nil
+        self.fallbackURL = nil
+        self.identity = identity
+        self.directImage = image
+        self.imageDriven = true
+        _current = State(initialValue: image)
+        _paintedIdentity = State(initialValue: image != nil ? identity : nil)
+        _paintedFallbackURL = State(initialValue: nil)
     }
 
     /// BUG-42 probe: an init-seeded first frame IS the first paint (no `crossfade` runs for it).
@@ -2174,7 +2830,12 @@ struct HeroCrossfadeImage: View {
         // the SAME url/fallback pair (shared artwork) must still rerun the task, or
         // `paintedIdentity` stays owned by the previous item and a later enrichment of the new
         // item bypasses the same-title fallback suppression.
-        .task(id: "\(identity)|\(url ?? "")|\(fallbackURL ?? "")") {
+        .task(id: taskKey) {
+            // Wave H: image-driven mode has no ladder to run — commit what the resolver handed us.
+            if imageDriven {
+                applyDirectImage()
+                return
+            }
             // BUG-42: is this the hero's very first paint (nothing on screen yet)? Later swaps keep
             // the "show the cached poster now, upgrade later" rule below — it exists so a stalled
             // metahub fetch can't pin the PREVIOUS title's art. On first paint there is no previous
@@ -2197,7 +2858,9 @@ struct HeroCrossfadeImage: View {
             let suppressFallback = isSameTitleUpgrade && fallbackURL == paintedFallbackURL
             if !firstPaint, paintCount == 0, !didLogSeededPaint, HomeHeroProbe.enabled {
                 didLogSeededPaint = true
-                HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0 item=%@", HomeHeroProbe.sinceLaunchMs, identity))
+                // Wave H: `url=`/`same=` for parity with `crossfade`'s line; `same=0` because a
+                // seeded first paint has nothing behind it (see the image-driven twin).
+                HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0 url=%@ same=0 item=%@", HomeHeroProbe.sinceLaunchMs, paintURLKind("cachedPrimary"), identity))
             }
             guard let url, !url.isEmpty, let resolvedURL = URL(string: url) else {
                 // This title genuinely has no artwork: fade down to the flat background rather
@@ -2351,6 +3014,45 @@ struct HeroCrossfadeImage: View {
         }
     }
 
+    /// The `.task(id:)` key. URL-driven keeps its exact historical spelling (identity + both URLs
+    /// — see the comment at the call site). Image-driven keys on the bitmap's own object identity,
+    /// which is what actually changes there; `ArtworkStore` vends one decoded instance per URL, so
+    /// this is stable across re-renders and changes exactly when the artwork does.
+    private var taskKey: String {
+        guard imageDriven else { return "\(identity)|\(url ?? "")|\(fallbackURL ?? "")" }
+        let stamp = directImage.map { String(UInt(bitPattern: ObjectIdentifier($0).hashValue)) } ?? "nil"
+        return "image|\(identity)|\(stamp)"
+    }
+
+    /// Wave H: commit the caller-resolved bitmap. Same bookkeeping as the URL ladder's terminal
+    /// paints — `crossfade` owns the probe line, the `paintedIdentity` state and the fade — so the
+    /// two modes report identically.
+    private func applyDirectImage() {
+        let firstPaint = current == nil && previous == nil
+        if !firstPaint, paintCount == 0, !didLogSeededPaint, HomeHeroProbe.enabled {
+            didLogSeededPaint = true
+            // `same=0` on purpose: this line is the FIRST paint of this view instance (init seeded
+            // it from the presentation), so there is nothing it could be repainting over, even
+            // though `paintedIdentity` was seeded alongside it.
+            HomeHeroProbe.log(String(format: "paint kind=seededPrimary first=1 sinceLaunch=%dms hadArt=0 url=image same=0 item=%@", HomeHeroProbe.sinceLaunchMs, identity))
+        }
+        guard let directImage else {
+            fadeToEmpty()
+            return
+        }
+        crossfade(to: directImage, kind: "image", first: firstPaint)
+    }
+
+    /// Which source the painted bitmap came from, for the probe's `url=` field: `banner` (the
+    /// item's own backdrop), `metahub` (the synthesized CDN backdrop), `poster` (the fallback
+    /// ladder), `image` (Wave H's resolver-supplied bitmap), `none` (no primary URL at all).
+    private func paintURLKind(_ kind: String) -> String {
+        if imageDriven { return "image" }
+        if kind.hasPrefix("fallback") { return "poster" }
+        guard let url, !url.isEmpty else { return "none" }
+        return url.contains("images.metahub.space") ? "metahub" : "banner"
+    }
+
     /// The no-artwork terminal state: fade the last image out to the flat background (scrim and
     /// background color remain — the same look a titles-without-art hero always had).
     private func fadeToEmpty() {
@@ -2391,7 +3093,15 @@ struct HeroCrossfadeImage: View {
         }
         paintCount += 1
         if HomeHeroProbe.enabled {
-            HomeHeroProbe.log(String(format: "paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d item=%@", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1, identity))
+            // Wave H adds `url=` and `same=`. Both sit BEFORE `item=`, which stays last: the
+            // harness parses the item id as "everything after `item=`" (NuvioTVUITests test31), so
+            // appending past it would silently make that oracle unparseable. No existing field is
+            // renamed or reordered relative to the others.
+            // `same=1` means this paint replaced art that was already this same item's — a repaint,
+            // which after Wave H should only ever be a genuine re-resolve, never a raw-then-
+            // enriched swap.
+            let same = identity == paintedIdentity ? 1 : 0
+            HomeHeroProbe.log(String(format: "paint kind=%@ first=%d sinceLaunch=%dms hadArt=%d url=%@ same=%d item=%@", kind, first ? 1 : 0, HomeHeroProbe.sinceLaunchMs, current == nil ? 0 : 1, paintURLKind(kind), same, identity))
         }
         previous = current
         current = image
@@ -2460,7 +3170,13 @@ struct HomeHeroScrim: View {
 /// which is exactly what the mode removes on purpose; a non-competing route (e.g. folding the
 /// synopsis into the focused card's accessibility value) would belong in the row components.
 struct HomeHeroForeground: View {
-    let item: MetaPreview
+    /// Wave H: the committed hero — the item AND its resolved logo bitmap. Taking the logo as a
+    /// value instead of letting `HeroLogo` fetch its own is what removes BUG-86 phenomenon B /
+    /// BUG-90: the wordmark and the title text can no longer be drawn superimposed, because there
+    /// is no longer a moment where one has arrived and the other has not.
+    let presentation: HeroPresentation
+    /// The item the presentation carries; every layout below reads this, unchanged.
+    private var item: MetaPreview { presentation.item }
     /// Bound to the CTA button — the hero page's ONLY focusable element. The info block above
     /// it is static content (Christian's spec 2026-07-30: the title is no longer selectable;
     /// a "Go to Movie"/"Go to Show" button below the description carries focus instead).
@@ -2491,36 +3207,72 @@ struct HomeHeroForeground: View {
     var compression: CGFloat = 0
     @AppStorage("hero_nuvio_style") private var heroNuvioStyle = false
 
-    /// The compression split across the two elastic slots, each bounded by its own floor. The logo
-    /// gives first (`heroLogoSlotPinnedGive`, 110 → 78 = 32pt) and the synopsis takes the remainder
-    /// (`heroSynopsisSlotPinnedGive`, 72 → 36 = 36pt): together 68pt, which covers Large's 68.3pt
-    /// requirement against the frame's own 2pt of slack (352pt frame over 350pt of content).
+    /// The compression split across the two elastic slots, each bounded by its own floor.
     ///
-    /// Both read the SAME constants `Theme.Size.heroPinnedCompressionCap` is summed from, so the
-    /// ceiling can never ask for more than these two can spend (Codex Wave 10 r4). When it could —
-    /// the cap was a hand-picked 110 against ~70pt of real give — a large enough demand shrank the
-    /// frame ~40pt further than the content and the hero overflowed into the page dots.
-    private var logoSlotGive: CGFloat {
-        guard compression > 0 else { return 0 }
-        return min(compression, Theme.Size.heroLogoSlotPinnedGive)
-    }
+    /// FEAT-29 (Steven's beta.17 report): SYNOPSIS gives first now, logo takes the remainder — the
+    /// reverse of Wave 10's original order. A collection FOLDER hero has no synopsis text to
+    /// protect (`HomeView.folderHeroPreview` always sends `description: nil`), so its give ceiling
+    /// is the WHOLE synopsis slot (`heroSynopsisSlotHeightPinned`, 72 — a genuine 0 floor) rather
+    /// than the floor-bounded `heroSynopsisSlotPinnedGive` (36) title heroes use; at Large,
+    /// `min(68.3, 72) == 68.3` covers the whole compression and the folder's logo slot gives up
+    /// nothing (matches the FEAT-29 design note: "0 at Large since 68.3 ≤ 72"). A TITLE hero keeps
+    /// its floor-bounded synopsis ceiling (36) and its own logo-give ceiling
+    /// (`heroLogoSlotPinnedGive`, 32) — at Large the two sum to the same 68pt Wave 10 always gave
+    /// (36 + 32), so nothing changes there; the swapped order only changes which slot gives first
+    /// at INTERMEDIATE compressions (a synced custom Poster Size between Medium and Large), where
+    /// the logo now stays at its full 110pt until the synopsis alone has given all 36 of its own
+    /// pt — the same regression class this fix closes for folder heroes, closed here too.
     private var synopsisSlotGive: CGFloat {
         guard compression > 0 else { return 0 }
-        return min(compression - logoSlotGive, Theme.Size.heroSynopsisSlotPinnedGive)
+        let ceiling = isCollectionHero(item)
+            ? Theme.Size.heroSynopsisSlotHeightPinned
+            : Theme.Size.heroSynopsisSlotPinnedGive
+        return min(compression, ceiling)
+    }
+    private var logoSlotGive: CGFloat {
+        guard compression > 0 else { return 0 }
+        let remainder = compression - synopsisSlotGive
+        guard remainder > 0 else { return 0 }
+        return isCollectionHero(item) ? remainder : min(remainder, Theme.Size.heroLogoSlotPinnedGive)
+    }
+
+    /// The compact (pinned) logo slot's height after `logoSlotGive`, or the classic fixed slot
+    /// outside pinned mode. Shared by the title-hero column (`nuvioLayout`'s non-folder branch)
+    /// and the folder-hero merged box's total-height arithmetic (both need the SAME number the
+    /// three-slot layout would have used, so the panel's total height never changes — see that
+    /// layout's comment).
+    private var logoSlotHeight: CGFloat {
+        compact ? Theme.Size.heroLogoSlotHeightPinned - logoSlotGive : Theme.Size.heroLogoSlotHeight
     }
 
     private var usesNuvioLayout: Bool { forceNuvioLayout || heroNuvioStyle }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Group {
-                if usesNuvioLayout {
-                    nuvioLayout
-                } else {
-                    classicLayout
+            // Wave H: the info block is ONE unit that cross-fades as a whole when the hero changes
+            // identity — logo, meta line and synopsis together, in the same transaction as the
+            // backdrop behind them (`HeroArtResolver` commits inside a 0.3s `withAnimation`).
+            //
+            // Two deliberate details. The `.id` is on this block and NOT on the CTA below it: the
+            // CTA is the hero's only focusable element, and re-identifying a focused view hands
+            // the tvOS focus engine a removal it did not ask for. And the block is wrapped in a
+            // ZStack rather than sitting directly in the VStack: mid-transition BOTH copies are
+            // alive, and as two VStack children they would stack VERTICALLY for the length of the
+            // fade — the hero would grow by its own height and shove every row down, which is the
+            // moving-block input BUG-87's corrector then chases. Overlaid in a ZStack they occupy
+            // the same fixed-height slot and nothing reflows.
+            ZStack(alignment: .topLeading) {
+                Group {
+                    if usesNuvioLayout {
+                        nuvioLayout
+                    } else {
+                        classicLayout
+                    }
                 }
+                .accessibilityElement(children: .combine)
+                .id(presentation.identity)
+                .transition(.opacity)
             }
-            .accessibilityElement(children: .combine)
 
             // The CTA sits below the description and above the page dots (which render
             // outside the TabView). D-pad left/right still pages the carousel while this
@@ -2587,50 +3339,95 @@ struct HomeHeroForeground: View {
 
     /// Nuvio-style: fixed-width text column on the left (logo, meta, 3-line synopsis) — the
     /// artwork owns the rest of the frame to the right.
+    ///
+    /// FEAT-29: a collection FOLDER hero (`isCollectionHero(item)`) renders a single MERGED box
+    /// instead — `folderHeroPreview` always sends `description: nil, genres: []`, so the
+    /// three-slot column used to draw an empty meta line and an empty synopsis under a wordmark
+    /// that Wave 10's (pre-fix) give order shrank first. One generously-sized, vertically centred
+    /// `HeroLogo` reads as the reference footage instead (`zoom-nuvio-collection-t96.png`). The
+    /// box's total height is `logoSlotHeight + md + heroMetaSlotHeight + md + synopsisSlotHeight`
+    /// — the EXACT sum the three-slot VStack below would have consumed (two `Spacing.md` gaps
+    /// between three children, `.frame(height:)` on each) — so the outer `heroCarouselHeightPinned
+    /// - compression` frame this whole view sits inside never changes and rows below cannot
+    /// reflow; only what is drawn inside the box differs.
     private var nuvioLayout: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HeroLogo(item: item)
-                .frame(height: compact ? Theme.Size.heroLogoSlotHeightPinned - logoSlotGive
-                                       : Theme.Size.heroLogoSlotHeight,
-                       alignment: .bottomLeading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if isCollectionHero(item) {
+                HeroLogo(item: item, image: presentation.logo,
+                         maxHeight: Theme.Size.heroFolderLogoHeightOverride
+                            ?? Theme.Size.heroFolderLogoSlotHeight)
+                    .frame(height: logoSlotHeight + Theme.Spacing.md + Theme.Size.heroMetaSlotHeight
+                                   + Theme.Spacing.md + synopsisSlotHeight,
+                           alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    HeroLogo(item: item, image: presentation.logo)
+                        .frame(height: logoSlotHeight, alignment: .bottomLeading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(metaLine)
-                .font(Theme.Font.meta)
-                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
-                .lineLimit(1)
-                .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
+                    Text(metaLine)
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                        .lineLimit(1)
+                        .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
 
-            Text(synopsis)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                .lineLimit(synopsisLineLimit)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: synopsisSlotHeight, alignment: .topLeading)
+                    Text(synopsis)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
+                        .lineLimit(synopsisLineLimit)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: synopsisSlotHeight, alignment: .topLeading)
+                        // Wave H: a description that arrives after its hero was committed (the
+                        // one gap-fill the commit protocol still allows) lands with NO motion. The
+                        // slot's height is fixed either way, so there is nothing to animate but
+                        // the text itself, and animating that is the "empty synopsis, then it
+                        // pops in" the tester filmed.
+                        .animation(nil, value: synopsis)
+                }
+            }
         }
         .frame(width: Theme.Size.heroInfoPanelWidth, alignment: .leading)
     }
 
-    /// The original bottom-left layout, unchanged.
+    /// The original bottom-left layout. FEAT-29: gets the same folder-hero merged-box treatment as
+    /// `nuvioLayout` — it already has its own logo slot to merge into, and `compression` is always
+    /// 0 in classic (the in-scroll hero, `heroCarousel`'s `compact: false` call site), so the box
+    /// total is the fixed sum below rather than `logoSlotHeight`/`synopsisSlotHeight`'s compact
+    /// arithmetic.
     private var classicLayout: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HeroLogo(item: item)
-                .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if isCollectionHero(item) {
+                HeroLogo(item: item, image: presentation.logo,
+                         maxHeight: Theme.Size.heroFolderLogoHeightOverride
+                            ?? Theme.Size.heroFolderLogoSlotHeight)
+                    .frame(height: Theme.Size.heroLogoSlotHeight + Theme.Spacing.md
+                                   + Theme.Size.heroMetaSlotHeight + Theme.Spacing.md
+                                   + Theme.Size.heroSynopsisSlotHeight,
+                           alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    HeroLogo(item: item, image: presentation.logo)
+                        .frame(height: Theme.Size.heroLogoSlotHeight, alignment: .bottomLeading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(metaLine)
-                .font(Theme.Font.meta)
-                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
-                .lineLimit(1)
-                .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
+                    Text(metaLine)
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
+                        .lineLimit(1)
+                        .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
 
-            Text(synopsis)
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
-                .lineLimit(2)
-                .frame(maxWidth: 1000, alignment: .leading)
-                .frame(height: Theme.Size.heroSynopsisSlotHeight, alignment: .topLeading)
+                    Text(synopsis)
+                        .font(Theme.Font.body)
+                        .foregroundStyle(Theme.Palette.textPrimary.opacity(0.85))
+                        .lineLimit(2)
+                        .frame(maxWidth: 1000, alignment: .leading)
+                        .frame(height: Theme.Size.heroSynopsisSlotHeight, alignment: .topLeading)
+                        // Wave H: see the same line in `nuvioLayout` — a late description must
+                        // not animate.
+                        .animation(nil, value: synopsis)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2670,9 +3467,19 @@ func isCollectionHero(_ item: MetaPreview) -> Bool {
 /// the same CDN Cinemeta's own full meta points at. A miss there just 404s and `HeroLogo`
 /// shows its text wordmark, so the synthesized URL is strictly additive (BUG-17).
 func heroLogoURL(for item: MetaPreview) -> URL? {
-    let logo: String? = item.logo
+    heroLogoURL(logo: item.logo, id: item.id)
+}
+
+/// Same chain for a Continue Watching entry, so the CW row's prefetch warms the logo the hero will
+/// actually wait on (`background`/`parentMetaId` play the banner/id roles, exactly as they do for
+/// `heroBackdropURL(for:)`).
+func heroLogoURL(for entry: WatchProgressEntry) -> URL? {
+    heroLogoURL(logo: nil, id: entry.parentMetaId)
+}
+
+private func heroLogoURL(logo: String?, id: String) -> URL? {
     if let logo, !logo.isEmpty { return URL(string: logo) }
-    let imdbId = item.id.split(separator: ":").first.map(String.init) ?? item.id
+    let imdbId = id.split(separator: ":").first.map(String.init) ?? id
     guard imdbId.hasPrefix("tt") else { return nil }
     return URL(string: "https://images.metahub.space/logo/medium/\(imdbId)/img")
 }
@@ -2707,10 +3514,14 @@ private func heroBackdropURL(banner: String?, id: String, poster: String?) -> St
 /// 404s. Warming only the primary made exactly the fallback scenario the cold, flashing one.
 /// Cheap in practice: row posters are the card images already on screen, so `ArtworkStore`'s
 /// cache check absorbs the duplicates.
+/// Wave H: the LOGO is in here too. The hero now commits only once both its backdrop and its logo
+/// have resolved (or a deadline passed), so a cold logo is a delayed hero — and every row-focus
+/// prefetch warms both for the whole row rather than leaving the logo to be fetched at paint time.
 func heroBackdropPrefetchURLs(for item: MetaPreview) -> [String] {
     var urls: [String] = []
     if let primary = heroBackdropURL(for: item) { urls.append(primary) }
     if let poster = item.poster, !poster.isEmpty, !urls.contains(poster) { urls.append(poster) }
+    if let logo = heroLogoURL(for: item)?.absoluteString, !urls.contains(logo) { urls.append(logo) }
     return urls
 }
 
@@ -2719,22 +3530,35 @@ func heroBackdropPrefetchURLs(for entry: WatchProgressEntry) -> [String] {
     var urls: [String] = []
     if let primary = heroBackdropURL(for: entry) { urls.append(primary) }
     if let poster = entry.poster, !poster.isEmpty, !urls.contains(poster) { urls.append(poster) }
+    if let logo = heroLogoURL(for: entry)?.absoluteString, !urls.contains(logo) { urls.append(logo) }
     return urls
 }
 
-/// The hero page's logo artwork, with the title text as its stand-in (no logo URL, load failure,
-/// or not fetched yet). Seeds from the shared artwork memory cache synchronously, so a cached
-/// logo is on screen from the page's very first frame — no placeholder flash as pages cycle.
+/// The hero page's logo artwork, with the title text as its stand-in when the item has no logo (or
+/// its logo did not resolve before the hero's commit deadline).
+///
+/// Wave H: STATELESS. It used to own a `.task` that fetched the logo and swapped Text→Image under
+/// its own `withAnimation(.easeIn(0.25))` — with SwiftUI's default cross-dissolve that draws the
+/// title text and the wordmark superimposed for the length of the fade, which is exactly what the
+/// tester filmed on every hero change (BUG-86 phenomenon B, and BUG-90). There is nothing to fetch
+/// here now: `HeroArtResolver` resolves the logo BEFORE the hero commits and hands it down as a
+/// value, so text and image are two branches of one atomic state, never two overlapping paints.
+///
+/// `.id(item.id)` + `.transition(.identity)` make the branch swap a hard cut rather than a fade —
+/// the cross-fade belongs to the whole info block one level up (`HomeHeroForeground`), which fades
+/// the OLD hero out and the NEW hero in as units, never one item's text against its own logo.
 struct HeroLogo: View {
     let item: MetaPreview
-    private let url: URL?
-    @State private var image: UIImage?
-
-    init(item: MetaPreview) {
-        self.item = item
-        self.url = heroLogoURL(for: item)
-        _image = State(initialValue: ArtworkStore.cached(url))
-    }
+    /// The resolved wordmark, or nil for the text stand-in. Supplied by the caller — see the type
+    /// doc for why this view may not fetch it itself.
+    let image: UIImage?
+    /// FEAT-29: caps how tall the wordmark (or its text stand-in's own font metrics — unaffected,
+    /// this only bounds the `Image` branch) may render. Defaults to the classic title-hero cap
+    /// (`heroLogoSlotHeight`), unchanged for every existing call site. The folder-hero merged box
+    /// (`HomeHeroForeground.nuvioLayout`/`.classicLayout`) passes `heroFolderLogoSlotHeight`
+    /// instead, so a collection wordmark reads at the reference size regardless of what the
+    /// shared title-hero logo slot is doing under Wave 10 compression.
+    var maxHeight: CGFloat = Theme.Size.heroLogoSlotHeight
 
     var body: some View {
         Group {
@@ -2744,7 +3568,7 @@ struct HeroLogo: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(
                         maxWidth: Theme.Size.heroLogoMaxWidth,
-                        maxHeight: Theme.Size.heroLogoSlotHeight,
+                        maxHeight: maxHeight,
                         alignment: .bottomLeading
                     )
             } else {
@@ -2755,20 +3579,8 @@ struct HeroLogo: View {
                     .minimumScaleFactor(0.6)
             }
         }
-        .task(id: url) {
-            guard let url else {
-                image = nil
-                return
-            }
-            if let hit = ArtworkStore.cached(url) {
-                image = hit
-                return
-            }
-            image = nil
-            if let fetched = try? await ArtworkStore.fetch(url) {
-                withAnimation(.easeIn(duration: 0.25)) { image = fetched }
-            }
-        }
+        .id(item.id)
+        .transition(.identity)
     }
 }
 

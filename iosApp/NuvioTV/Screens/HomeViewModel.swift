@@ -27,6 +27,36 @@ enum HomeRow: Identifiable {
     }
 }
 
+/// Wave H (BUG-86): what `HomeViewModel.homeWatcher` does with ONE `HomeUiState` publish, decided
+/// purely from the gate fields so the routing itself is unit-testable (`HeroCommitCoordinatorTests`)
+/// without a live pipeline.
+enum HeroPublishRoute: Equatable {
+    /// The gate is still Armed: keep heroItems/sections/rows exactly as painted.
+    case hold
+    /// Released with no hero to paint — Show Hero is off, or this release genuinely has no
+    /// candidate. Rows publish immediately; the commit coordinator is reset so a hero arriving
+    /// later is treated as a new head.
+    case noHero
+    /// Released with a hero: hand the head to `HeroCommitCoordinator.evaluateHeadChange`.
+    case evaluateHead
+
+    /// The whole table. `heroOff` is only a LABEL on one of the two no-hero cases: the deciding
+    /// question is whether a released publish carries a head at all.
+    ///
+    /// The distinction matters because `decideHeroGate` (`HeroCommitGate.kt`) checks `heroOff`,
+    /// `reset` and `timeout` BEFORE the candidate-empty term, so a released publish with an empty
+    /// hero is a perfectly reachable state on a profile whose hero-source catalogs yield nothing —
+    /// a dead add-on in both hero slots, or `hideUnreleasedContent` emptying an upcoming-style
+    /// catalog. Routing that to `hold` (an earlier revision did, for every reason except
+    /// `heroOff`) froze Home on the empty state with `isLoading = false` for the rest of the
+    /// session, because nothing downstream ever assigned `sections` again.
+    static func decide(gateReleased: Bool, gateReason: String?, heroIsEmpty: Bool) -> HeroPublishRoute {
+        guard gateReleased else { return .hold }
+        if gateReason == "heroOff" || heroIsEmpty { return .noHero }
+        return .evaluateHead
+    }
+}
+
 @MainActor
 final class HomeViewModel: ObservableObject {
     @Published private(set) var heroItems: [MetaPreview] = []
@@ -75,6 +105,49 @@ final class HomeViewModel: ObservableObject {
     private var didSeed = false
     /// Guards against redundant `refresh` calls — only re-refresh when the ready-addon set changes.
     private var lastRefreshSignature = ""
+    /// Wave H (BUG-86): the Swift half of the hero commit protocol — see `HomeHeroCommit.swift`.
+    /// Owns the committed head identity/hash and prewarms its artwork before `homeWatcher` assigns
+    /// `heroItems`/`sections`. Reset in `stop()` (profile-scoped, like the model itself).
+    private let heroCommitCoordinator = HeroCommitCoordinator()
+    /// The in-flight `prepare()` for the current candidate head, if any. Cancelled whenever a newer
+    /// publish supersedes it before it lands — see `heroCommitGeneration`.
+    private var pendingHeroCommitTask: Task<Void, Never>?
+    /// Bumped every time a new head starts a `prepare()`, AND every time a route cancels the
+    /// pending one without starting a replacement (`.noHero`, `stop()`); a completion whose
+    /// generation no longer matches is stale and must not paint (same idiom as
+    /// `pipelineGeneration`). Cancellation alone is not enough to invalidate a completion:
+    /// `prepare()` returns normally after observing cancellation, so the continuation would run
+    /// against an unchanged generation and repaint the captured hero over the empty state.
+    private var heroCommitGeneration = 0
+    /// Codex r1 (P2): the head `prepare()` is currently prewarming, if any. Post-gate publishes
+    /// keep arriving (catalog batches, enrichment, settings sync) and, until `commit` runs, the
+    /// coordinator has no committed key, so every one of them classifies as `.newHead` and would
+    /// cancel and restart the 1.5 s art wait, deferring the first hero and rows indefinitely. A
+    /// publish carrying THIS key+hash is instead absorbed into `latestPendingState`.
+    private var pendingHeadKey: String?
+    private var pendingHeadHash: String?
+    /// The newest state seen for `pendingHeadKey` while its `prepare()` was in flight. The commit
+    /// continuation publishes this rather than the state it captured, so absorbing a publish never
+    /// costs the rows/hero list it carried.
+    private var latestPendingState: HomeUiState?
+    /// `first=` on the `commit` probe line — true for the session's first genuine hero commit only.
+    private var didLogFirstHeroCommit = false
+    /// Diagnostic companion to `lastNonEmptyHeroHead` (`hash=`/`hashChanged=` on the `publish` probe
+    /// line) — NOT the coordinator's own `committedHash` (that tracks the last COMMITTED payload;
+    /// this tracks the last PUBLISHED one, so the diagnostic fires on every publish, held or not).
+    private var lastNonEmptyHeroHash: String?
+    /// `rows` probe line dedup key (deliverable 3): the ordered row id list last logged, so the
+    /// line only fires when it actually changes.
+    private var lastProbedRowIds: [String] = []
+    /// Codex r2 (P1): the ROWS half of the commit gate (see `RowsGate` in `HomeHeroCommit.swift`).
+    /// Closed until the first `.noHero`/commit publish, so the collections and catalog-settings
+    /// watchers cannot repaint or reorder the rows out from under a hero that has not committed
+    /// yet. Profile-scoped, reset in `stop()` alongside the coordinator.
+    private var rowsGate = RowsGate()
+    /// The held-rebuild count carried from `RowsGate.open()` to the FIRST `rows` probe line logged
+    /// afterwards (`heldRebuilds=`). Cleared the moment that line is emitted, so the field appears
+    /// exactly once per open.
+    private var pendingHeldRebuildsProbe: Int?
     /// True exactly while the watcher pipeline below is live (0→1 acquired … 1→0 released).
     private var started = false
     /// H-1B-ii (beta.15): how many views currently hold this model. See `acquire()`.
@@ -201,6 +274,49 @@ final class HomeViewModel: ObservableObject {
         collections = []
         settingsItems = []
         lastNonEmptyHeroHead = nil
+        // Wave H: profile-scoped hero commit state joins the same wipe cascade.
+        lastNonEmptyHeroHash = nil
+        lastProbedRowIds = []
+        pendingHeldRebuildsProbe = nil
+        didLogFirstHeroCommit = false
+        // Internal review r1 (P2): the pending-commit + rows-gate half of this cascade moved into
+        // `resetHeroCommitState()`, which the `teardownPipeline()` above already ran. It is called
+        // again here on purpose: `teardownPipeline()` no-ops when the pipeline was never started
+        // (`guard started`), and a hard stop must never carry a previous profile's commit
+        // bookkeeping into the next one. Idempotent - the generation bump is monotonic and every
+        // other field is set to nil.
+        resetHeroCommitState()
+    }
+
+    /// Internal review r1 (P2): the hero-commit half of a pipeline teardown, shared by
+    /// `teardownPipeline()` (every 1 -> 0 `release()`) and the hard `stop()`.
+    ///
+    /// `release()` used to run `teardownPipeline()` alone, which only bumps `pipelineGeneration`.
+    /// A `prepare()` still in flight then fails the `pipelineGeneration == gen` guard in its
+    /// continuation and returns WITHOUT clearing `pendingHeroCommitTask` / `pendingHeadKey` /
+    /// `pendingHeadHash` / `latestPendingState`. The next `acquire()`'s first released publish for
+    /// that same head therefore looked like "this head is already preparing" to
+    /// `HeroPendingCommitRoute.decide` (non-nil task, matching key AND hash), routed `.absorb`, and
+    /// returned - forever, because nothing was actually in flight to commit and clear the
+    /// bookkeeping. The rows gate was left exactly as the torn-down pipeline had it (open, if the
+    /// old run had committed) rather than re-gating the new run's first paint. Resetting both here
+    /// means a teardown always leaves the model in the shape a freshly constructed one starts in.
+    private func resetHeroCommitState() {
+        pendingHeroCommitTask?.cancel()
+        pendingHeroCommitTask = nil
+        pendingHeadKey = nil
+        pendingHeadHash = nil
+        latestPendingState = nil
+        // Bumped, not merely nil'd, for the same reason the `.noHero` route bumps it: `prepare()`
+        // returns NORMALLY after observing cancellation, so only a generation mismatch can stop a
+        // continuation already queued behind the `cancel()` above.
+        heroCommitGeneration += 1
+        heroCommitCoordinator.reset()
+        rowsGate.reset()
+        // Internal review r1 (P3): per pipeline RUN, not per process. Left true, a restarted
+        // pipeline never marks the `first_hero` milestone again and the launch trace silently
+        // loses the measurement for the run that is actually on screen.
+        didTraceFirstHero = false
     }
 
     private func startPipeline() {
@@ -212,50 +328,207 @@ final class HomeViewModel: ObservableObject {
             HomeHeroProbe.log(String(format: "vm start id=%d sinceLaunch=%dms", vmId, HomeHeroProbe.sinceLaunchMs))
         }
 
-        // Home output → SwiftUI.
+        // Home output → SwiftUI. Wave H (BUG-86, the hero commit protocol): HomeRepository holds
+        // heroItems/sections behind `heroGateReleased` until every input that could still move the
+        // head has settled (see HeroCommitGate.kt), then commits once and freezes the payload. This
+        // watcher mirrors that on the Swift side via `heroCommitCoordinator` — heroItems/sections
+        // are assigned, and rows rebuilt, only in the cases the coordinator decides are safe, so
+        // the hero and the rows under it always paint together, exactly once, per head.
         homeWatcher = FlowWatcherKt.watch(HomeRepository.shared.uiState) { [weak self] emitted in
             guard let self, self.pipelineGeneration == gen, let state = emitted as? HomeUiState else { return }
             self.isLoading = state.isLoading
+            self.errorMessage = state.errorMessage
+
+            // Codex r1 (P2): the carousel TAIL moved while the painted head survived. Kotlin
+            // added or removed a non-head hero entry (an addon's hero-source catalog finishing,
+            // `hideUnreleasedContent` pruning one) and republished the revised list with the
+            // survivors' payloads frozen. The same-head branch below never assigned `heroItems`,
+            // so the carousel and the page-dot count kept removed items and missed newcomers for
+            // the rest of the session. Computed here so the `publish` line can carry it too.
+            let heroTailChanged = HeroCommitCoordinator.heroTailChanged(
+                painted: self.heroItems.map { HeroCommitCoordinator.headKey($0) },
+                incoming: state.heroItems.map { HeroCommitCoordinator.headKey($0) }
+            )
+
             // BUG-42 (beta.13): release-safe hero commit probe — one line per hero-bearing publish,
             // naming the head so a device log shows whether it ever moved after first paint.
             if HomeHeroProbe.enabled, state.heroItems.isEmpty, !self.heroItems.isEmpty {
                 // An A → empty → B sequence must not hide the A→B change from the probe.
-                HomeHeroProbe.log(String(format: "publish vm=%d n=0 (hero emptied) %@ sinceLaunch=%dms", self.vmId, HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs))
+                HomeHeroProbe.log(String(format: "publish vm=%d n=0 (hero emptied) %@ sinceLaunch=%dms", self.vmId, state.heroRankingDebugSnapshot ?? HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs))
             }
-            if HomeHeroProbe.enabled, !state.heroItems.isEmpty {
-                let head = state.heroItems.first.map { "\($0.type):\($0.id)" } ?? "-"
+            if !state.heroItems.isEmpty {
+                let headItem = state.heroItems.first
+                let head = headItem.map { HeroCommitCoordinator.headKey($0) } ?? "-"
+                let headHash = headItem.map { HeroCommitCoordinator.headHashHex($0) }
                 let previousHead = self.lastNonEmptyHeroHead
                 let headChanged = previousHead != nil && previousHead != head
+                // Wave H (design-doc instrumentation gap 1/2): a SAME-head publish whose payload
+                // hash moved is exactly the raw-then-enriched repaint this whole protocol exists to
+                // prevent — the committed payload is frozen, so this should read 0 on any healthy
+                // launch. `gate=` itself already rides `heroRankingDebug` below (read from the
+                // state's publish-time snapshot so the line cannot describe a later repository state)
+                // (idle|held|released:<reason>); this adds the fields that line lacked.
+                let hashChanged = !headChanged && self.lastNonEmptyHeroHash != nil && self.lastNonEmptyHeroHash != headHash
                 self.lastNonEmptyHeroHead = head
+                self.lastNonEmptyHeroHash = headHash
                 // `inRows` = the head is one of the published catalog items (catalog hero) vs not
                 // (collection-fallback hero) — tells the two hero sources apart in a log pull.
-                let headItem = state.heroItems.first
                 let inRows = state.sections.contains { section in
                     section.items.contains { $0.type == headItem?.type && $0.id == headItem?.id }
                 }
                 let ids = state.heroItems.map { "\($0.type):\($0.id)" }.joined(separator: ",")
-                HomeHeroProbe.log(String(format: "publish vm=%d n=%d head=%@ headChanged=%d inRows=%d sections=%d loading=%d %@ sinceLaunch=%dms ids=%@",
-                      self.vmId, state.heroItems.count, head, headChanged ? 1 : 0, inRows ? 1 : 0, state.sections.count,
-                      state.isLoading ? 1 : 0, HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs, ids))
+                if HomeHeroProbe.enabled {
+                    HomeHeroProbe.log(String(format: "publish vm=%d n=%d head=%@ headChanged=%d hash=%@ hashChanged=%d inRows=%d sections=%d loading=%d %@ sinceLaunch=%dms ids=%@ tail=%d",
+                          self.vmId, state.heroItems.count, head, headChanged ? 1 : 0, String((headHash ?? "").suffix(8)), hashChanged ? 1 : 0, inRows ? 1 : 0, state.sections.count,
+                          state.isLoading ? 1 : 0, state.heroRankingDebugSnapshot ?? HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs, ids, heroTailChanged ? 1 : 0))
+                }
             }
-            self.heroItems = state.heroItems
-            self.sections = state.sections
-            self.errorMessage = state.errorMessage
-            // BUG-42 moved the hero's metadata commit BEHIND TMDB enrichment (held in
-            // HomeRepository, capped at HERO_ENRICHMENT_HOLD_TIMEOUT_MS), so hero first paint is no
-            // longer implied by `first_rows` — it needs its own milestone to stay measurable
-            // against the BUG-26 baseline. Rows are unaffected: they publish on the same pass.
-            // beta.13: also emitted on release builds behind `debug.homeHeroProbe`, so the check
-            // this row prescribed three times can finally run on the reporter's build class.
-            if !self.didTraceFirstHero, !state.heroItems.isEmpty {
-                self.didTraceFirstHero = true
-                #if DEBUG
-                LaunchTrace.mark("first_hero n=\(state.heroItems.count)")
-                #else
-                if HomeHeroProbe.enabled { HomeHeroProbe.log(String(format: "first_hero n=%d sinceLaunch=%dms", state.heroItems.count, HomeHeroProbe.sinceLaunchMs)) }
-                #endif
+
+            // Wave H hold: while the gate is still Armed, hold heroItems/sections/rows exactly as
+            // painted, so whatever is already on screen (or the "Loading catalogs…" placeholder)
+            // stays put rather than flashing an intermediate, not-yet-final layout. The release is
+            // the only thing that unblocks this watcher — see `HeroPublishRoute.decide` for why an
+            // empty hero on a RELEASED publish must never route back into the hold.
+            switch HeroPublishRoute.decide(gateReleased: state.heroGateReleased,
+                                           gateReason: state.heroGateReason,
+                                           heroIsEmpty: state.heroItems.isEmpty) {
+            case .hold:
+                return
+
+            case .noHero:
+                // No hero to commit: either it is structurally off for this profile, or this
+                // release genuinely has no candidate. Either way there is no art to wait on, so
+                // the rows publish immediately with no coordinator involvement. The coordinator is
+                // reset so that if a hero DOES arrive later (a re-enabled add-on, a Hero Sources
+                // change) it is evaluated as a new head and goes through the normal prepare +
+                // commit path rather than being mistaken for the already-committed one.
+                //
+                // Codex r1 (P1): the generation bump is what actually INVALIDATES the cancelled
+                // prepare. `prepare()` observes cancellation and returns normally, so without the
+                // bump its continuation still sees a matching generation and repaints the captured
+                // hero straight back over the empty state this route just published. That is the
+                // exact shape of disabling Show Hero, or losing the hero's source, mid-prewarm.
+                self.heroCommitGeneration += 1
+                self.pendingHeroCommitTask?.cancel()
+                self.pendingHeroCommitTask = nil
+                self.pendingHeadKey = nil
+                self.pendingHeadHash = nil
+                self.latestPendingState = nil
+                self.heroCommitCoordinator.reset()
+                self.heroItems = state.heroItems
+                self.sections = state.sections
+                // Codex r2 (P1): this publish IS the commit for a heroless profile, so it is also
+                // what opens the rows gate. Both `.noHero` shapes open it: hero structurally off
+                // (`heroGateReason == "heroOff"`, which opened the rows on its first publish
+                // before this gate existed and must keep doing so), and a release that simply has
+                // no candidate.
+                self.openRowsGateAndRebuild()
+                return
+
+            case .evaluateHead:
+                break
             }
-            self.rebuildRows()
+
+            guard let head = state.heroItems.first else { return }
+            let headKey = HeroCommitCoordinator.headKey(head)
+            let headHash = HeroCommitCoordinator.headHashHex(head)
+
+            switch self.heroCommitCoordinator.evaluateHeadChange(headKey: headKey, headHash: headHash) {
+            case .sameHeadSameHash, .sameHeadHashChanged:
+                // Same head (the hash diagnostic, including `hashChanged=1`, already logged above):
+                // never re-assign heroItems wholesale — the anti-repaint invariant — but rows may
+                // still change under it post-commit.
+                //
+                // Codex r1 (P2): the carousel TAIL is exempt. A publish that adds or removes a
+                // non-head hero entry left the painted list frozen forever, so the pages and the
+                // dot count drifted from what the repository actually holds. The committed head
+                // OBJECT is carried across verbatim rather than taken from `state`: on a
+                // `.sameHeadHashChanged` publish the incoming head carries a drifted payload, and
+                // adopting it here would be precisely the repaint this protocol forbids. Keeping
+                // it also means `HomeView.displayHero` and `heroPayloadSignature` are unmoved at
+                // index 0, so `HeroArtResolver.present` is never re-entered for the head. Seen
+                // live on the fixture: test31 Leg B logs one `publish ... tail=1` at 9.9 s, same
+                // head and same hash, whose revised list the old branch dropped on the floor.
+                if heroTailChanged {
+                    self.heroItems = [self.heroItems[0]] + state.heroItems.dropFirst()
+                }
+                self.sections = state.sections
+                self.requestRowsRebuild()
+
+            case .newHead:
+                // Codex r1 (P2): until `commit` runs the coordinator has no committed key, so
+                // EVERY released publish still classifies as `.newHead`, including the post-gate
+                // churn (catalog batches, enrichment landing, a settings sync) that arrives while
+                // the head's own art is prewarming. Restarting `prepare()` for each of those reset
+                // the 1.5 s art budget and could defer the first hero and rows indefinitely. A
+                // publish for the head already in flight is absorbed instead: the running prepare
+                // keeps its clock, and its continuation commits the LATEST state rather than the
+                // one it captured, so nothing that arrived in the meantime is lost.
+                if HeroPendingCommitRoute.decide(pendingHeadKey: self.pendingHeadKey,
+                                                 pendingHeadHash: self.pendingHeadHash,
+                                                 hasPendingTask: self.pendingHeroCommitTask != nil,
+                                                 headKey: headKey, headHash: headHash) == .absorb {
+                    self.latestPendingState = state
+                    return
+                }
+
+                // A genuinely new head (including the session's first-ever commit). Prewarm its
+                // art, then commit heroItems + sections + rebuild rows in one main-actor turn.
+                self.heroCommitGeneration += 1
+                let commitGen = self.heroCommitGeneration
+                self.pendingHeroCommitTask?.cancel()
+                let capturedState = state
+                let firstCommit = !self.didLogFirstHeroCommit
+                self.pendingHeadKey = headKey
+                self.pendingHeadHash = headHash
+                self.latestPendingState = nil
+                self.pendingHeroCommitTask = Task { [weak self] in
+                    guard let self else { return }
+                    let outcome = await self.heroCommitCoordinator.prepare(capturedState)
+                    // Superseded by a newer head, cancelled outright (`.noHero`, `stop()`), or the
+                    // pipeline tore down while prepare() was in flight: never paint stale content
+                    // on top of whatever landed since. `prepare()` returns NORMALLY after observing
+                    // cancellation, so the cancellation check has to be made here as well as by
+                    // generation.
+                    guard !Task.isCancelled,
+                          self.pipelineGeneration == gen,
+                          self.heroCommitGeneration == commitGen else { return }
+                    // Whatever the newest publish for this same head carried, if one was absorbed.
+                    let commitState = self.latestPendingState ?? capturedState
+                    self.heroCommitCoordinator.commit(headKey: headKey, headHash: headHash)
+                    self.didLogFirstHeroCommit = true
+                    self.heroItems = commitState.heroItems
+                    self.sections = commitState.sections
+                    // The single gated rebuild: hero, sections and rows land in one main-actor
+                    // turn, from the LATEST state, with whatever the watchers held folded in.
+                    self.openRowsGateAndRebuild()
+                    self.pendingHeroCommitTask = nil
+                    self.pendingHeadKey = nil
+                    self.pendingHeadHash = nil
+                    self.latestPendingState = nil
+                    if HomeHeroProbe.enabled {
+                        HomeHeroProbe.log(String(format: "commit vm=%d head=%@ art=%@ waited=%dms first=%d sinceLaunch=%dms",
+                              self.vmId, headKey, outcome.status, outcome.waitedMs, firstCommit ? 1 : 0, HomeHeroProbe.sinceLaunchMs))
+                    }
+                    // BUG-42 moved the hero's metadata commit BEHIND TMDB enrichment, so hero first
+                    // paint is not implied by `first_rows` and needs its own milestone to stay
+                    // measurable against the BUG-26 baseline. Codex r1 (P2): it is marked HERE, at
+                    // the commit, rather than on the first non-empty publish. The old placement
+                    // ran before the art prewarm and before `heroItems` was ever assigned, so it
+                    // under-reported the latency by up to the full 1.5 s budget and could fire for
+                    // a candidate that a `.noHero` release then made sure never painted at all.
+                    // beta.13: also emitted on release builds behind `debug.homeHeroProbe`, so the
+                    // check this row prescribed three times can run on the reporter's build class.
+                    if !self.didTraceFirstHero {
+                        self.didTraceFirstHero = true
+                        #if DEBUG
+                        LaunchTrace.mark("first_hero n=\(commitState.heroItems.count)")
+                        #else
+                        if HomeHeroProbe.enabled { HomeHeroProbe.log(String(format: "first_hero n=%d sinceLaunch=%dms", commitState.heroItems.count, HomeHeroProbe.sinceLaunchMs)) }
+                        #endif
+                    }
+                }
+            }
         }
 
         // Collections (synced from the cloud / curated on mobile) → folder-tile rows. Registering
@@ -265,12 +538,12 @@ final class HomeViewModel: ObservableObject {
             guard let self, self.pipelineGeneration == gen, let collections = emitted as? [NuvioCollection] else { return }
             self.collections = collections.filter { !$0.folders.isEmpty }
             HomeCatalogSettingsRepository.shared.syncCollections(collections: collections)
-            self.rebuildRows()
+            self.requestRowsRebuild()
         }
         catalogSettingsWatcher = FlowWatcherKt.watch(HomeCatalogSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, self.pipelineGeneration == gen, let state = emitted as? HomeCatalogSettingsUiState else { return }
             self.settingsItems = state.items
-            self.rebuildRows()
+            self.requestRowsRebuild()
         }
 
         // Installed addons → drive Home refresh.
@@ -319,6 +592,11 @@ final class HomeViewModel: ObservableObject {
         }
 
         AddonRepository.shared.initialize()
+        // Wave H (BUG-86): deterministic, offline replay of the launch sync burst — see
+        // `HomeLaunchBurstSimArgs`/`HomeLaunchBurstSim.kt`. Inert unless both launch args are set.
+        if HomeLaunchBurstSimArgs.enabled {
+            HomeLaunchBurstSim.shared.arm(burstAfterFirstPublishMs: 1000, failFirstHeroSources: true, enrichmentDelayMs: 2500)
+        }
         WatchProgressRepository.shared.ensureLoaded()
         CollectionRepository.shared.initialize()
         #if DEBUG
@@ -404,6 +682,10 @@ final class HomeViewModel: ObservableObject {
         collectionsWatcher = nil
         catalogSettingsWatcher = nil
         stopUpcoming()
+        // Internal review r1 (P2): the hero-commit protocol is pipeline-scoped, not merely
+        // profile-scoped - see `resetHeroCommitState()` for the `.absorb`-forever route a teardown
+        // used to leave behind.
+        resetHeroCommitState()
         started = false
     }
 
@@ -434,6 +716,27 @@ final class HomeViewModel: ObservableObject {
         upcomingWatcher = nil
         UpcomingEpisodesRepository.shared.stop()
         upcoming = []
+    }
+
+    /// Codex r2 (P1): the ONLY way any watcher asks for a row rebuild.
+    ///
+    /// While the rows gate is closed (before the hero commits) the request is dropped and counted,
+    /// not queued: `rebuildRows()` always reads the CURRENT `sections`/`collections`/`settingsItems`
+    /// snapshots, which the watchers keep updating regardless, so the single rebuild performed by
+    /// `openRowsGateAndRebuild()` already carries everything the held requests would have.
+    private func requestRowsRebuild() {
+        guard rowsGate.request() == .rebuild else { return }
+        rebuildRows()
+    }
+
+    /// Opens the rows gate and performs the one commit-time rebuild. Called from the two routes
+    /// that publish a commit: `.noHero` (including `heroGateReason == "heroOff"`, which opened the
+    /// rows on its first publish before this gate existed) and the commit continuation.
+    private func openRowsGateAndRebuild() {
+        if let held = rowsGate.open() {
+            pendingHeldRebuildsProbe = held
+        }
+        rebuildRows()
     }
 
     /// Interleaves catalog sections and collection rows per the Home Rows settings order (enabled
@@ -473,6 +776,56 @@ final class HomeViewModel: ObservableObject {
 
         rows = built
 
+        // Wave H (BUG-86 diagnostics, deliverable 3): the ordered row IDENTITY list, not merely a
+        // count — a reorder with the same count (the launch sync burst's signature move) is exactly
+        // what a healthy commit must never do after the hero's first paint, and a plain `n=`
+        // wouldn't show it. Release-safe, like every other Wave H probe line.
+        if HomeHeroProbe.enabled {
+            let rowIds = built.map(\.id)
+            if rowIds != lastProbedRowIds {
+                lastProbedRowIds = rowIds
+                let first3 = rowIds.prefix(3).joined(separator: ",")
+                // Internal review r1 (P3): `first=` shows only three ids, so the reorder oracle in
+                // test31 could not see a swap that happened at position 4 or later - the launch
+                // sync burst rewrites EVERY `order`, so the shared-id order check has to run over
+                // the whole list. Two append-only tokens, `first=` deliberately unchanged so the
+                // device photo pass and every older log keep parsing:
+                //   `order=` - the ordered list the oracle actually compares, as one 8-hex DIGEST
+                //     per row id rather than the ids themselves. The oracle only ever compares the
+                //     relative position of ids present in two lines, so a stable per-id token is
+                //     all it needs, and the real ids are 60-90 characters each here (addon
+                //     namespace + type + catalog id): spelling out 35 of them put ~2.4 KB on one
+                //     line, which is fine in the console but swamps the 57-line About pane this
+                //     probe exists to be PHOTOGRAPHED from. Digests keep the whole list inside a
+                //     publish line's own order of magnitude. `first=` still carries three real ids
+                //     for the human reading the pane. Capped at `rowsOrderProbeMaxIds` on a whole-
+                //     token boundary, with `+N` naming what was cut.
+                //   `rowsHash=` - FNV-1a over the FULL joined list (`HeroCommitCoordinator`'s own
+                //     hash, already covered by known-vector tests), so a change PAST the cap is
+                //     still visible on the line even though `order=` cannot show it.
+                let digests = rowIds.map { String(HeroCommitCoordinator.fnv1a64Hex($0).prefix(8)) }
+                var order = digests.prefix(Self.rowsOrderProbeMaxIds).joined(separator: ",")
+                if digests.count > Self.rowsOrderProbeMaxIds {
+                    order += "+\(digests.count - Self.rowsOrderProbeMaxIds)"
+                }
+                let rowsHash = HeroCommitCoordinator.fnv1a64Hex(rowIds.joined(separator: "|"))
+                // Codex r2, append-only: `rowsGate=` must read `open` on every line a healthy
+                // launch produces (the funnel above is the only caller, and it only rebuilds when
+                // the gate is open), so a `held` here is a standing assertion that some caller
+                // bypassed `requestRowsRebuild()`. `heldRebuilds=` rides the first line after the
+                // gate opens and says how many watcher rebuilds the hold absorbed.
+                var line = String(format: "rows vm=%d n=%d first=%@ sinceLaunch=%dms rowsGate=%@",
+                                  vmId, built.count, first3, HomeHeroProbe.sinceLaunchMs,
+                                  rowsGate.isOpen ? "open" : "held")
+                line += " order=\(order) rowsHash=\(rowsHash)"
+                if let held = pendingHeldRebuildsProbe {
+                    pendingHeldRebuildsProbe = nil
+                    line += String(format: " heldRebuilds=%d", held)
+                }
+                HomeHeroProbe.log(line)
+            }
+        }
+
         #if DEBUG
         // BUG-26: time-to-content milestones. First non-empty rows = the KMP fetch layer has
         // delivered; subsequent count growth shows the fan-out filling in.
@@ -490,6 +843,11 @@ final class HomeViewModel: ObservableObject {
 
     /// BUG-42 (beta.13): outside `#if DEBUG` — the first-hero milestone is also emitted on release
     /// builds behind `debug.homeHeroProbe`.
+    /// Internal review r1 (P3): how many row-id digests the `rows` probe line's `order=` token
+    /// carries. Bounded so one line stays photographable and survives the About pane's AX read;
+    /// `rowsHash=` on the same line covers whatever the cap elides. 40 clears every row count this
+    /// fixture profile produces (35 at its fullest) at ~360 characters.
+    private static let rowsOrderProbeMaxIds = 40
     private var didTraceFirstHero = false
     /// BUG-42 probe: last non-empty head, so a change through an empty intermediate still logs.
     private var lastNonEmptyHeroHead: String?
@@ -524,12 +882,35 @@ final class HomeViewModel: ObservableObject {
         // Terminal manifest failure with nothing ready and nothing still fetching → surface it.
         // Pending keeps the existing "Setting up your catalogs…" placeholder (already not a false
         // empty state); Retry re-marks the addons refreshing, which clears this again.
-        addonManifestError = ready.isEmpty && !AddonModelsKt.hasPendingEnabledManifests(state.addons)
-            ? AddonModelsKt.firstEnabledManifestError(state.addons)
-            : nil
-        guard !ready.isEmpty else { return }
+        if ready.isEmpty {
+            let manifestsPending = AddonModelsKt.hasPendingEnabledManifests(state.addons)
+            addonManifestError = manifestsPending ? nil : AddonModelsKt.firstEnabledManifestError(state.addons)
+            // Codex r2 (P1) safety: no enabled add-on has a loaded manifest and none is still
+            // fetching one, so nothing will ever call `HomeRepository.refresh` on this profile and
+            // `heroGateReleased` can stay false forever. Holding the rows on that would swallow
+            // the collection rows for good on an all-add-ons-disabled or total-manifest-failure
+            // profile, which is a blank Home rather than a late one. Open the rows gate here: it
+            // is the same conclusion `HeroGateReason.NO_SOURCES` reaches on the Kotlin side, and
+            // there are no catalogs left to reorder underneath.
+            //
+            // Internal review r1 (P2): `lastRefreshSignature.isEmpty` is the "no catalog-bearing
+            // refresh has happened yet on this profile" term this escape was missing. Without it,
+            // a user disabling the last add-on mid-launch - after a ready set had already armed
+            // the Kotlin gate - opened the rows on held sections and rebuilt underneath a hero
+            // that had not committed, which is the very reorder the gate exists to prevent. Once a
+            // refresh HAS run, the gate's own 4s HERO_COMMIT_GATE_TIMEOUT_MS is the backstop and
+            // no escape is needed here.
+            if !manifestsPending && lastRefreshSignature.isEmpty {
+                openRowsGateAndRebuild()
+            }
+            return
+        }
+        addonManifestError = nil
 
-        let signature = ready.map { $0.manifestUrl }.joined(separator: "|")
+        // Wave H (Hole E follow-on): SET semantics, not list order — a server-driven re-sort of the
+        // same addons must not read as "the ready set changed" and force a redundant full refresh
+        // (the same principle `HomeCatalogDefinitions.kt`'s cacheKey fix applies on the Kotlin side).
+        let signature = ready.map { $0.manifestUrl }.sorted().joined(separator: "|")
         guard signature != lastRefreshSignature else { return }
         lastRefreshSignature = signature
 

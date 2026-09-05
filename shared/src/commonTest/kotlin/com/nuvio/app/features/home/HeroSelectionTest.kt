@@ -108,4 +108,72 @@ class HeroSelectionTest {
         assertEquals(3, select(emptyList(), (1..10).map { Item("i$it") }, limit = 3).size)
         assertEquals(emptyList(), select(emptyList(), listOf(Item("a")), limit = 0))
     }
+
+    // ---------------------------------------------------------------------------------------
+    // BUG-86 (Wave H): the committed head is pinned for the session.
+    // ---------------------------------------------------------------------------------------
+
+    private fun pin(ranking: List<Item>, committedKey: String?, keepFrom: List<Item>) =
+        pinCommittedHead(ranking, committedKey, keepFrom) { it.id }
+
+    @Test
+    fun noCommittedHeadLeavesTheRankingUntouched() {
+        val ranking = listOf(Item("a"), Item("b"))
+        assertEquals(ranking, pin(ranking, committedKey = null, keepFrom = ranking))
+    }
+
+    @Test
+    fun aCommittedHeadAlreadyAtTheFrontIsNotReallocated() {
+        val ranking = listOf(Item("a"), Item("b"))
+        assertTrue(pin(ranking, committedKey = "a", keepFrom = ranking) === ranking)
+    }
+
+    @Test
+    fun theCommittedHeadIsMovedBackToTheFrontWhenTheRankingReorders() {
+        // Hole D: the burst re-normalizes the hero sources and the head slides down the ranking.
+        val ranking = listOf(Item("x"), Item("y"), Item("a", rev = 2))
+        val pinned = pin(ranking, committedKey = "a", keepFrom = ranking)
+        assertEquals(listOf("a", "x", "y"), pinned.map { it.id })
+        assertEquals(2, pinned.first().rev)
+    }
+
+    @Test
+    fun theCommittedHeadSurvivesAnEmptyRankingWhenItIsStillInKeepFrom() {
+        // Its own section is being re-fetched, so the pool is momentarily empty.
+        val pinned = pin(emptyList(), committedKey = "a", keepFrom = listOf(Item("a", rev = 3)))
+        assertEquals(listOf("a"), pinned.map { it.id })
+        assertEquals(3, pinned.first().rev)
+    }
+
+    @Test
+    fun theCommittedHeadSurvivesAPoolThatNoLongerContainsIt() {
+        val ranking = listOf(Item("x"), Item("y"))
+        val keepFrom = listOf(Item("x"), Item("y"), Item("a"))
+        assertEquals(listOf("a", "x", "y"), pin(ranking, "a", keepFrom).map { it.id })
+    }
+
+    @Test
+    fun theCommittedHeadIsDroppedWhenItIsInNeitherRankingNorKeepFrom() {
+        // Its origin catalog left the definition set: the one non-user reason a head may move.
+        val ranking = listOf(Item("x"), Item("y"))
+        assertEquals(ranking, pin(ranking, committedKey = "a", keepFrom = ranking))
+    }
+
+    @Test
+    fun theCommittedHeadIsDroppedByTheReleaseFilterOnlyWhenTrulyUnreleased() {
+        val released = MetaPreview(id = "tt1", type = "movie", name = "Out", releaseInfo = "2019")
+        // 2099, not 2999: ReleaseInfoUtils' year regex only recognises 19xx/20xx.
+        val unreleased = MetaPreview(id = "tt2", type = "movie", name = "Later", releaseInfo = "2099")
+        val today = "2026-09-04"
+
+        // Callers release-filter keepFrom before pinning, exactly as publishCurrentStateLocked does.
+        val filtered = listOf(released, unreleased).filterReleasedItems(today)
+        assertEquals(listOf("movie:tt1"), filtered.map { it.stableKey() })
+
+        val kept = pinCommittedHead(emptyList(), released.stableKey(), filtered, MetaPreview::stableKey)
+        assertEquals(listOf("movie:tt1"), kept.map { it.stableKey() })
+
+        val dropped = pinCommittedHead(emptyList(), unreleased.stableKey(), filtered, MetaPreview::stableKey)
+        assertEquals(emptyList(), dropped)
+    }
 }

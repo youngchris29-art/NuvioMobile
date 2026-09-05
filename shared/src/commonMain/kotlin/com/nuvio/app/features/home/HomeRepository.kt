@@ -1,6 +1,11 @@
 package com.nuvio.app.features.home
 
+import co.touchlab.kermit.Logger
+import com.nuvio.app.core.auth.AuthRepository
+import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
+import com.nuvio.app.core.sync.LaunchSyncSignal
+import com.nuvio.app.core.sync.LaunchSyncSignal.LaunchSyncState
 import com.nuvio.app.features.addons.ManagedAddon
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.enabledAddons
@@ -31,13 +36,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import kotlin.random.Random
+import kotlin.time.TimeSource
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 
 object HomeRepository {
+    private val log = Logger.withTag("HomeRepository")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + uncaughtCoroutineLogger("HomeRepository"))
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
@@ -76,8 +85,41 @@ object HomeRepository {
     /** Generation for [firstRefreshGraceJob]: bumped by [clear] so a grace that already passed its
      *  cancellation check can't lift the NEXT profile's gate (Codex gate 8). */
     private var firstRefreshGraceGeneration = 0
+    /**
+     * The live probe string. Prefer [HomeUiState.heroRankingDebugSnapshot] when describing a
+     * PUBLISHED state: this getter answers for the repository as it is right now, which on the
+     * frontend is one main-thread hop later than the state being logged.
+     */
     val heroRankingDebug: String
-        get() = synchronized(heroSelectionLock) { "resets=$heroRankingResets rank=${lastCatalogHeroSelection.size} resetReq=$heroResetRequested awaitingFirst=$awaitingFirstRefresh" }
+        get() = synchronized(heroSelectionLock) { heroRankingDebugLocked() }
+
+    /** [heroRankingDebug] without taking the lock, for callers that already hold it. */
+    private fun heroRankingDebugLocked(): String {
+        val gate = when (heroGateState) {
+            HeroGateState.Idle -> "idle"
+            HeroGateState.Armed -> "held"
+            HeroGateState.Released -> "released:${heroGateReleaseReason ?: "?"}"
+        }
+        val hold = when {
+            heroEnrichmentHoldExpired -> "expired"
+            heroEnrichmentHoldJob?.isActive == true -> "held"
+            else -> "clear"
+        }
+        val sync = when (LaunchSyncSignal.state.value) {
+            LaunchSyncState.Idle -> "idle"
+            LaunchSyncState.NotApplicable -> "na"
+            LaunchSyncState.Running -> "running"
+            LaunchSyncState.Settled -> "settled"
+        }
+        return "resets=$heroRankingResets rank=${lastCatalogHeroSelection.size} " +
+            "resetReq=$heroResetRequested awaitingFirst=$awaitingFirstRefresh " +
+            "gate=$gate hold=$hold sync=$sync " +
+            "sources=$heroGateSourcesSettled/$heroGateSourcesTracked " +
+            "gateWait=$heroGateWaiting " +
+            "head=${committedHeadKey ?: "-"} prune=$lastPruneCount " +
+            "rearm=$heroGateRearms"
+    }
+
     private var collectionHeroJob: Job? = null
     private var collectionHeroRequestKey: String? = null
     private var lastPublishedCatalogHeroEmpty: Boolean = true
@@ -109,37 +151,157 @@ object HomeRepository {
      */
     private var heroEnrichmentHoldExpired: Boolean = false
 
+    // ---------------------------------------------------------------------------------------
+    // BUG-86 (Wave H): the hero commit gate. See HeroCommitGate.kt for the decision table and
+    // publishCurrentStateLocked for how a held publish differs from a committed one.
+    // ---------------------------------------------------------------------------------------
+
+    /** Idle until the first catalog-bearing [refresh], Armed until the gate releases, then Released
+     *  for the rest of the session (only [clear] returns it to Idle). Guarded by [heroSelectionLock]. */
+    private var heroGateState: HeroGateState = HeroGateState.Idle
+
+    /**
+     * When the gate armed. A MONOTONIC mark rather than a wall-clock stamp: the gate's whole job is
+     * to bound a launch window, and a clock correction landing mid-launch (NTP on a TV that just
+     * woke up) would otherwise either expire the gate instantly or hang it past its timeout.
+     */
+    private var heroGateArmedAt: TimeSource.Monotonic.ValueTimeMark? = null
+
+    /**
+     * When the FIRST publish of this [HeroGateState.Idle] era was evaluated, i.e. the start of the
+     * pre-first-refresh hold. Monotonic for the same reason as [heroGateArmedAt], and it is what
+     * [decideIdleHeroGate] measures its budget from: a profile whose enabled add-ons declare no
+     * catalogs never reaches [armHeroCommitGateLocked], so it has no [heroGateArmedAt] to bound the
+     * hold with. Stamped lazily on first use rather than at construction so it tracks the launch
+     * the user is actually watching; cleared by [clear], which is the only way back to Idle.
+     */
+    private var heroGateIdleSince: TimeSource.Monotonic.ValueTimeMark? = null
+
+    /** [HeroGateReason] value the gate released with, surfaced in [heroRankingDebug]. */
+    private var heroGateReleaseReason: String? = null
+
+    /** Per definition key, whether this load's fetch of it Loaded or Failed. Both settle the key. */
+    private var catalogOutcomes: Map<String, CatalogOutcome> = emptyMap()
+
+    /** The committed head's [MetaPreview.stableKey]. Pinned to index 0 by [pinCommittedHead]. */
+    private var committedHeadKey: String? = null
+
+    /**
+     * The frozen hero payloads, keyed by [MetaPreview.stableKey]. After the gate releases, every
+     * committed item is served from HERE, as the SAME instance, so a later enrichment or re-fetch
+     * cannot repaint the hero's name/logo/banner. The only mutation allowed is the one-time silent
+     * gap-fill of an EMPTY description or genres (see [withCommittedGapFill]).
+     */
+    private var committedHeroPayloads: Map<String, MetaPreview> = emptyMap()
+
+    /**
+     * Item [MetaPreview.stableKey] to the definition key of the catalog it came from. Hole A: a
+     * previously selected hero item is retained while its ORIGIN catalog is still in
+     * [currentDefinitions], instead of only while a load happens to be in flight.
+     */
+    private var heroItemOrigins: Map<String, String> = emptyMap()
+
+    /** Collector on the two gate inputs that live outside this repository (launch sync state and
+     *  pending addon manifests). Cancelled when the gate releases and by [clear]. */
+    private var gateInputsJob: Job? = null
+
+    /** One-shot [HERO_COMMIT_GATE_TIMEOUT_MS] timer, generation guarded like the enrichment hold. */
+    private var heroGateTimeoutJob: Job? = null
+    private var heroGateGeneration: Long = 0
+
+    /** Set only by [resetHeroSelection]/[resetHeroSelectionAround]. Deliberately NOT the shared
+     *  [heroResetRequested] flag, which the collection-hero invalidation also sets: a collection
+     *  re-key during the launch burst must not release the gate. */
+    private var heroGateResetRequested: Boolean = false
+
+    /** Probe counters for [heroRankingDebug] (`sources=settled/tracked`). */
+    private var heroGateSourcesSettled: Int = 0
+    private var heroGateSourcesTracked: Int = 0
+
+    /**
+     * The [HeroGateWait] value from the LAST gate evaluation, surfaced as `gateWait=` in
+     * [heroRankingDebug]. Deliberately not cleared on release: on a `released:timeout` line it is
+     * the whole diagnosis, naming the input that was still outstanding when the budget ran out.
+     * `sources=n/n gateWait=sources` in particular is the shape the settled-count probe alone
+     * cannot show: every TRACKED key settled while an unresolved persisted key kept the gate
+     * waiting on a manifest.
+     */
+    private var heroGateWaiting: String = HeroGateWait.NONE
+
+    /** How many cached sections the last [refresh] pruned (`prune=` in [heroRankingDebug]). */
+    private var lastPruneCount: Int = 0
+
+    /**
+     * How many times the gate re-armed after a [HeroGateReason.NO_SOURCES] release
+     * (`rearm=` in [heroRankingDebug]). Normally 0; 1 on a slow-addon profile whose manifests
+     * landed after the first-refresh grace lifted. Anything above 1 in a photo means catalogs are
+     * appearing and disappearing under Home, which is a different bug from this one.
+     */
+    private var heroGateRearms: Int = 0
+
+    /** Idempotency key for [applyCurrentSettings]: settings + tmdb + gate state + cached keys. */
+    private var lastAppliedSettingsSignature: String? = null
+
     fun refresh(addons: List<ManagedAddon>, force: Boolean = false) {
         val activeAddons = addons.enabledAddons()
         val requests = buildHomeCatalogDefinitions(activeAddons)
-        currentDefinitions = requests
-        val requestCacheKeys = requests.mapTo(mutableSetOf(), HomeCatalogDefinition::cacheKey)
-        cachedSections = cachedSections.filterKeys(requestCacheKeys::contains)
+        // Hole E: the cache is keyed by the STABLE definition key now. `requestKey` keeps the
+        // cacheKey join, so a real manifest change is still a new request identity (new hero seed,
+        // fresh fetch) while a cosmetic addon-state flip no longer prunes fetched content.
         val requestKey = requests.joinToString(separator = "|", transform = HomeCatalogDefinition::cacheKey)
-        currentRequestKey = requestKey
 
-        if (!force && activeRequestKey == requestKey && _uiState.value.isLoading) return
-        activeRequestKey = requestKey
-        // A new load is a new hero, so it gets a fresh hold budget: a timeout burnt on the previous
-        // request must not force this one's first hero commit to publish raw metadata.
-        releaseHeroEnrichmentHold()
+        // Hole B: the prune, the launch gate, the gate arm and the isLoading flip are ONE atomic
+        // step under the publish lock. They used to run unsynchronized ahead of `isLoading = true`,
+        // so a publish from the load scope could evaluate against a pruned cache with isLoading
+        // still false and drop the hero head, then reseed `heroRandom` from the new requestKey.
+        val proceed = synchronized(heroSelectionLock) {
+            currentDefinitions = requests
+            val requestKeys = requests.mapTo(mutableSetOf(), HomeCatalogDefinition::key)
+            val cachedBefore = cachedSections.size
+            cachedSections = cachedSections.filterKeys(requestKeys::contains)
+            lastPruneCount = cachedBefore - cachedSections.size
+            catalogOutcomes = catalogOutcomes.filterKeys(requestKeys::contains)
+            currentRequestKey = requestKey
 
-        // BUG-42: the launch gate lifts only on a CATALOG-BEARING refresh — a manifest-less or
-        // catalog-less add-on becoming ready first must not let the collection fallback in ahead
-        // of the catalog hero (Codex gate 8). Collection-only profiles are covered by the grace.
-        if (requests.isNotEmpty()) {
-            awaitingFirstRefresh = false
-            firstRefreshGraceJob?.cancel()
-            firstRefreshGraceJob = null
-        } else {
-            armFirstRefreshGrace()
+            if (!force && activeRequestKey == requestKey && _uiState.value.isLoading) {
+                false
+            } else {
+                activeRequestKey = requestKey
+                // A new load is a new hero, so it gets a fresh hold budget: a timeout burnt on the
+                // previous request must not force this one's first hero commit to publish raw
+                // metadata.
+                releaseHeroEnrichmentHold()
+
+                // BUG-42: the launch gate lifts only on a CATALOG-BEARING refresh. A manifest-less
+                // or catalog-less add-on becoming ready first must not let the collection fallback
+                // in ahead of the catalog hero (Codex gate 8). Collection-only profiles are covered
+                // by the grace.
+                if (requests.isNotEmpty()) {
+                    awaitingFirstRefresh = false
+                    firstRefreshGraceJob?.cancel()
+                    firstRefreshGraceJob = null
+                    armHeroCommitGateLocked()
+                    // copy() drops the body-property probe snapshot (see
+                    // [HomeUiState.heroRankingDebugSnapshot]); re-stamp it so this isLoading flip
+                    // does not publish a state whose probe line reads as absent.
+                    _uiState.update { previous ->
+                        previous.copy(isLoading = true, errorMessage = null).also { next ->
+                            next.heroRankingDebugSnapshot = heroRankingDebugLocked()
+                        }
+                    }
+                }
+                true
+            }
         }
+        if (!proceed) return
 
         if (requests.isEmpty()) {
+            armFirstRefreshGrace()
             activeJob?.cancel()
             activeJob = null
             activeRequestKey = null
             cachedSections = emptyMap()
+            catalogOutcomes = emptyMap()
             lastErrorMessage = null
             publishCurrentState(
                 isLoading = false,
@@ -155,7 +317,6 @@ object HomeRepository {
         }
 
         activeJob?.cancel()
-        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         activeJob = scope.launch {
             val prioritizedRequests = prioritizeDefinitions(
                 definitions = requests,
@@ -180,9 +341,18 @@ object HomeRepository {
                 if (activeRequestKey != requestKey) return@launch
 
                 results.mapNotNull { (request, result) ->
-                    result.getOrNull()?.let { section -> request.cacheKey to section }
-                }.forEach { (cacheKey, section) ->
-                    loadedSections[cacheKey] = section
+                    result.getOrNull()?.let { section -> request.key to section }
+                }.forEach { (definitionKey, section) ->
+                    loadedSections[definitionKey] = section
+                }
+                // Gate input: every hero-source catalog must reach a TERMINAL outcome before the
+                // hero may commit. A failed fetch settles the key just like a loaded one, otherwise
+                // one dead add-on would pin every launch on the gate timeout.
+                val gateArmed = synchronized(heroSelectionLock) {
+                    catalogOutcomes = catalogOutcomes + results.associate { (request, result) ->
+                        request.key to if (result.isSuccess) CatalogOutcome.Loaded else CatalogOutcome.Failed
+                    }
+                    heroGateState == HeroGateState.Armed
                 }
                 if (firstErrorMessage == null) {
                     firstErrorMessage = results.firstNotNullOfOrNull { (_, result) ->
@@ -191,7 +361,7 @@ object HomeRepository {
                 }
                 cachedSections = loadedSections.toMap()
                 lastErrorMessage = firstErrorMessage
-                if (batchIndex == 0 || (batchIndex + 1) % HOME_CATALOG_PUBLISH_INTERVAL == 0) {
+                if (shouldPublishAfterBatch(batchIndex = batchIndex, gateArmed = gateArmed)) {
                     publishCurrentState(
                         isLoading = true,
                         requestKey = requestKey,
@@ -228,6 +398,7 @@ object HomeRepository {
             lastCatalogHeroSelection = emptyList()
             heroResetRequested = true
             heroRankingResets++
+            clearHeroCommitLocked()
         }
     }
 
@@ -241,9 +412,222 @@ object HomeRepository {
             lastCatalogHeroSelection = emptyList()
             heroResetRequested = true
             heroRankingResets++
+            clearHeroCommitLocked()
             block()
         }
     }
+
+    /**
+     * BUG-86 (Wave H): an explicit Hero Sources change is one of the four things allowed to move a
+     * committed head (the others: hero switched off, the head's origin catalog leaving the
+     * definition set, and [clear]). The pin and the frozen payloads go with it, and the gate is
+     * told so that a reset arriving mid-launch releases it immediately instead of making the user
+     * watch a spinner after their own tap.
+     */
+    private fun clearHeroCommitLocked() {
+        committedHeadKey = null
+        committedHeroPayloads = emptyMap()
+        heroGateResetRequested = true
+    }
+
+    /**
+     * Idle to Armed on the FIRST catalog-bearing refresh, plus the ONE re-arm below. A later
+     * refresh (addon fan-in, Settings, back-online) never re-arms otherwise: post-commit the head
+     * is immutable, so re-arming could only hold the rows again for no benefit.
+     *
+     * The exception is a [HeroGateReason.NO_SOURCES] release. That release is a claim about the
+     * profile ("no catalog can ever supply a hero here"), not a hero commit, and a catalog-bearing
+     * refresh arriving afterwards is proof the claim was wrong. It is the shape of a slow-addon
+     * profile: the Idle budget runs out (or [FIRST_REFRESH_GRACE_MS] lifts) while every add-on
+     * manifest is still in flight, the gate releases `noSources`, and the manifests land a second
+     * later. Without the re-arm the catalog hero that arrives afterwards is never committed at
+     * all: the gate stayed Released, and if a collection hero happened to be cached at the release
+     * instant then
+     * [committedHeroPayloads] is non-empty, so the re-freeze in [serveCommittedHeroItemsLocked]
+     * does not fire either. The head is left unpinned and free to move on every later publish,
+     * which is exactly the doubled hero this gate exists to prevent.
+     *
+     * Re-arming DISCARDS the provisional commit (the frozen collection payloads and the pin) so
+     * the catalog hero can commit and pin as if it were the first: keeping a pin that was chosen
+     * under "there are no catalogs" would pin the wrong item forever. The rows hold applies again
+     * with it, which costs nothing here: a `noSources` release means there were no definitions, so
+     * there were no rows on screen to flash away, and holding keeps the partially fetched catalog
+     * order from publishing ahead of the commit.
+     */
+    private fun armHeroCommitGateLocked() {
+        val rearmingAfterNoSources = heroGateShouldRearm(heroGateState, heroGateReleaseReason)
+        if (heroGateState != HeroGateState.Idle && !rearmingAfterNoSources) return
+        if (rearmingAfterNoSources) {
+            heroGateRearms += 1
+            committedHeadKey = null
+            committedHeroPayloads = emptyMap()
+            log.i { "heroGateRearmed reason=${HeroGateReason.NO_SOURCES} rearm=$heroGateRearms" }
+        }
+        heroGateState = HeroGateState.Armed
+        heroGateArmedAt = TimeSource.Monotonic.markNow()
+        heroGateReleaseReason = null
+        heroGateWaiting = HeroGateWait.SOURCES
+        catalogOutcomes = emptyMap()
+        heroGateGeneration += 1
+        val generation = heroGateGeneration
+        heroGateTimeoutJob?.cancel()
+        heroGateTimeoutJob = scope.launch {
+            delay(HERO_COMMIT_GATE_TIMEOUT_MS)
+            // Generation token, same pattern as armHeroEnrichmentHold: a timer whose cancellation
+            // raced its own completion must not expire a LATER gate era.
+            if (generation != heroGateGeneration) return@launch
+            publishCurrentState(
+                isLoading = _uiState.value.isLoading,
+                requestKey = currentRequestKey,
+            )
+        }
+        startGateInputsObserverLocked()
+    }
+
+    /**
+     * The two gate inputs that live outside this repository: the launch sync burst's state and
+     * whether an enabled addon manifest can still produce a catalog definition. Neither of them
+     * publishes anything by itself, so without this collector a gate waiting on them would only be
+     * re-evaluated by an unrelated publish, or at the timeout.
+     *
+     * Both collectors deliberately take the CURRENT value too (no `drop(1)`). The dropped-first
+     * design assumed the value at collection start had already been folded into an arming publish,
+     * and it had not: [armHeroCommitGateLocked] only flips `isLoading`, and these collectors are
+     * launched onto a `Dispatchers.Default` that the catalog fan-out and the enrichment fetches are
+     * saturating at exactly that moment. Under load (a busy simulator host, a cold TV) the
+     * collector can first run SECONDS after it was launched, by which time the transition it exists
+     * to observe has already happened, and `drop(1)` then discarded the launch-sync settle, or the
+     * manifest flip, that was the gate's last outstanding input, and the launch could only end at
+     * the timeout. Taking the current value costs one extra held publish (an equal [HomeUiState],
+     * which the StateFlow suppresses) and makes the race impossible.
+     */
+    private fun startGateInputsObserverLocked() {
+        if (gateInputsJob?.isActive == true) return
+        gateInputsJob = scope.launch {
+            launch {
+                // A StateFlow already suppresses equal consecutive values.
+                LaunchSyncSignal.state.collect { republishForGate() }
+            }
+            launch {
+                AddonRepository.uiState
+                    .map { state -> state.addons.hasUnresolvedEnabledManifests() }
+                    .distinctUntilChanged()
+                    .collect { republishForGate() }
+            }
+            launch {
+                // The THIRD outside input, and the one the original pair missed: the sync term of
+                // the readiness conjunction is not `syncState` alone, it is
+                // `syncState x launchSyncExpected()` (see [launchSyncExpected]), and the second
+                // factor is auth. On a signed-out cold launch whose session restore resolves after
+                // the catalog fan-out has already finished, the sync state never moves (it stays
+                // Idle: no burst is coming) and no manifest flips, so neither collector above
+                // fires; AuthState.Loading -> Unauthenticated is the ONLY event that makes Idle
+                // readable as "settled", and without a collector on it nothing re-evaluated the
+                // gate and the launch could only end at the timeout.
+                //
+                // Mapped to the boolean rather than collected raw: an Authenticated state carries
+                // tokens and a user object that can be rewritten by a refresh without changing
+                // whether a burst is expected, and each of those would otherwise cost a publish.
+                AuthRepository.state
+                    .map { state -> state.launchSyncExpected() }
+                    .distinctUntilChanged()
+                    .collect { republishForGate() }
+            }
+        }
+    }
+
+    private fun republishForGate() {
+        if (synchronized(heroSelectionLock) { heroGateState != HeroGateState.Armed }) return
+        publishCurrentState(
+            isLoading = _uiState.value.isLoading,
+            requestKey = currentRequestKey,
+        )
+    }
+
+    private fun cancelGateWatchersLocked() {
+        heroGateGeneration += 1
+        heroGateTimeoutJob?.cancel()
+        heroGateTimeoutJob = null
+        gateInputsJob?.cancel()
+        gateInputsJob = null
+    }
+
+    /** Gathers the live inputs and asks [decideHeroGate]. Must run under [heroSelectionLock]. */
+    private fun evaluateHeroGateLocked(
+        snapshot: HomeCatalogSettingsSnapshot,
+        candidateEmpty: Boolean,
+        enrichmentPending: Int,
+    ): HeroGateDecision {
+        // Before the first catalog-bearing refresh there is nothing to decide: the collection
+        // fallback is still held by awaitingFirstRefresh, and releasing "noSources" here would
+        // commit an empty hero on every launch, before the add-on manifests have even arrived.
+        // BOUNDED by the gate's own budget, measured from the first publish of this Idle era (see
+        // [decideIdleHeroGate]): a profile whose enabled add-ons declare no catalogs never arms the
+        // gate's timer, so without this the hold could only end at the first-refresh grace.
+        if (heroGateState == HeroGateState.Idle) {
+            val idleSince = heroGateIdleSince ?: TimeSource.Monotonic.markNow().also {
+                heroGateIdleSince = it
+            }
+            val idleHold = decideIdleHeroGate(
+                awaitingFirstRefresh = awaitingFirstRefresh,
+                idleElapsedMs = idleSince.elapsedNow().inWholeMilliseconds,
+                timeoutMs = HERO_COMMIT_GATE_TIMEOUT_MS,
+            )
+            if (idleHold != null) {
+                heroGateWaiting = idleHold.waiting
+                return idleHold
+            }
+        }
+        // Still Idle past the Idle hold above means no catalog-bearing refresh ever happened, which
+        // is precisely the decision the first-refresh grace (and now the Idle budget escape) exists
+        // to make. Report it to the gate as "no definitions, no manifests coming" so it releases
+        // `noSources` instead of holding a collection-only Home behind a timer it has no way to
+        // start (the gate's timeout is armed by the first catalog-bearing refresh, which by
+        // definition never came).
+        val idleAfterGrace = heroGateState == HeroGateState.Idle
+        val knownDefinitionKeys = if (idleAfterGrace) {
+            emptySet()
+        } else {
+            currentDefinitions.mapTo(LinkedHashSet(), HomeCatalogDefinition::key)
+        }
+        val heroSourceKeys = HomeCatalogSettingsRepository.heroSourceKeys()
+        val trackedKeys = heroSourceKeys.intersect(knownDefinitionKeys)
+        heroGateSourcesTracked = trackedKeys.size
+        heroGateSourcesSettled = trackedKeys.count { key -> key in catalogOutcomes }
+        val elapsedMs = if (heroGateState == HeroGateState.Armed) {
+            heroGateArmedAt?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        } else {
+            0L
+        }
+        val decision = decideHeroGate(
+            HeroGateInputs(
+                heroEnabled = snapshot.heroEnabled,
+                heroSourceKeys = heroSourceKeys,
+                knownDefinitionKeys = knownDefinitionKeys,
+                outcomes = catalogOutcomes,
+                manifestsPending = !idleAfterGrace &&
+                    AddonRepository.uiState.value.addons.hasUnresolvedEnabledManifests(),
+                syncState = LaunchSyncSignal.state.value,
+                launchSyncExpected = launchSyncExpected(),
+                enrichmentPending = enrichmentPending,
+                candidateEmpty = candidateEmpty,
+                heroSourcesAllOff = HomeCatalogSettingsRepository.heroSourceSelectionIsAllOff(),
+                resetRequested = heroGateResetRequested,
+                elapsedMs = elapsedMs,
+                timeoutMs = HERO_COMMIT_GATE_TIMEOUT_MS,
+            )
+        )
+        heroGateWaiting = decision.waiting
+        return decision
+    }
+
+    /**
+     * Whether a launch sync burst can still land for this account, i.e. whether
+     * [LaunchSyncState.Idle] means "not started yet" (wait) or "will never start" (do not wait).
+     * A session still restoring counts as expected: it can still resolve to a signed-in account,
+     * and the gate's own timeout bounds the wait if the restore stalls.
+     */
+    private fun launchSyncExpected(): Boolean = AuthRepository.state.value.launchSyncExpected()
 
     private fun armFirstRefreshGrace() {
         if (!awaitingFirstRefresh || firstRefreshGraceJob?.isActive == true) return
@@ -271,18 +655,58 @@ object HomeRepository {
 
 
 
+    /**
+     * BUG-86 (H3's tail): every cloud pull used to end here, and every call used to republish. K2
+     * suppressed the identical-payload calls upstream of this; this is the second belt. Once the
+     * hero has COMMITTED, a call whose whole input signature (settings, TMDB, gate state, the set
+     * of cached section keys) matches the previous one cannot change a single published field, so
+     * it does not publish. The collection fallback still runs: it is keyed on its own request key
+     * and is the path that fills a collection-only Home.
+     */
     fun applyCurrentSettings() {
         armFirstRefreshGrace()
-        publishCurrentState(
-            isLoading = _uiState.value.isLoading,
-            requestKey = currentRequestKey,
-        )
+        val skipPublish = synchronized(heroSelectionLock) {
+            val signature = currentSettingsSignatureLocked()
+            val unchanged = lastAppliedSettingsSignature == signature
+            lastAppliedSettingsSignature = signature
+            unchanged && heroGateState == HeroGateState.Released
+        }
+        if (!skipPublish) {
+            publishCurrentState(
+                isLoading = _uiState.value.isLoading,
+                requestKey = currentRequestKey,
+            )
+        }
         ensureCollectionHeroFallback(
             addons = AddonRepository.uiState.value.addons.enabledAddons(),
             forceRefresh = false,
             refreshSources = false,
             requestKey = currentRequestKey,
         )
+    }
+
+    /** Everything an [applyCurrentSettings] publish can depend on, in one comparable string. */
+    private fun currentSettingsSignatureLocked(): String {
+        val tmdb = TmdbSettingsRepository.snapshot()
+        // snapshot() first so a not-yet-loaded settings store cannot report an empty signature.
+        HomeCatalogSettingsRepository.snapshot()
+        return buildString {
+            append(HomeCatalogSettingsRepository.uiState.value.signature)
+            append("|tmdb=")
+            append(tmdb.enabled)
+            append(':')
+            append(tmdb.hasApiKey)
+            append(':')
+            append(tmdb.language)
+            append(':')
+            append(tmdb.useBasicInfo)
+            append(':')
+            append(tmdb.useArtwork)
+            append("|gate=")
+            append(heroGateState)
+            append("|keys=")
+            append(cachedSections.keys.sorted().joinToString(separator = ","))
+        }
     }
 
     /**
@@ -315,6 +739,25 @@ object HomeRepository {
         resetHeroEnrichment()
         lastPublishedCatalogHeroEmpty = true
         lastErrorMessage = null
+        // BUG-86 (Wave H): a new account/profile gets a new commit cycle, so the gate goes all the
+        // way back to Idle and both watchers are cancelled. Leaving it Released would let the next
+        // profile's first, partial catalog publish through unheld.
+        heroGateState = HeroGateState.Idle
+        heroGateArmedAt = null
+        heroGateIdleSince = null
+        heroGateReleaseReason = null
+        heroGateResetRequested = false
+        heroGateWaiting = HeroGateWait.NONE
+        heroGateSourcesSettled = 0
+        heroGateSourcesTracked = 0
+        catalogOutcomes = emptyMap()
+        committedHeadKey = null
+        committedHeroPayloads = emptyMap()
+        heroItemOrigins = emptyMap()
+        lastPruneCount = 0
+        heroGateRearms = 0
+        lastAppliedSettingsSignature = null
+        cancelGateWatchersLocked()
         _uiState.value = HomeUiState()
     }
 
@@ -347,7 +790,7 @@ object HomeRepository {
                 val preference = preferences[definition.key]
                 if (preference?.enabled == false) return@mapNotNull null
 
-                val section = cachedSections[definition.cacheKey]?.withReleaseFilter() ?: return@mapNotNull null
+                val section = cachedSections[definition.key]?.withReleaseFilter() ?: return@mapNotNull null
                 if (section.items.isEmpty()) return@mapNotNull null
                 val customTitle = preference?.customTitle.orEmpty()
                 section.copy(
@@ -355,21 +798,22 @@ object HomeRepository {
                 )
             }
 
+        // BUG-86 (Hole A): remember which catalog each item came from, and forget the items whose
+        // origin catalog has left the definition set. This is what lets a previously selected hero
+        // item be retained on a condition that MEANS something ("its catalog is still installed")
+        // instead of the old proxy ("a load happens to be in flight").
+        recordHeroItemOriginsLocked()
+        pruneCommittedPayloadsLocked()
+
         val catalogHeroItems = if (snapshot.heroEnabled) {
             val heroRandom = Random((requestKey?.hashCode() ?: 0).absoluteValue + 1)
             val pool = currentDefinitions
                 .filter { definition -> preferences[definition.key]?.heroSourceEnabled != false }
-                .mapNotNull { definition -> cachedSections[definition.cacheKey] }
+                .mapNotNull { definition -> cachedSections[definition.key] }
                 .map { section -> section.withReleaseFilter() }
                 .flatMap { section -> section.items }
                 .distinctBy { item -> item.stableKey() }
             // BUG-42: keep what is already on screen at the head; only newcomers are shuffled in.
-            // `keepFrom`: WHILE THE LOAD IS IN FLIGHT the previous selection keeps itself — the
-            // launch window is exactly when addon-set growth, profile-settings sync (row enables,
-            // hero-source slots, unreleased filter) and re-fetches all land, and every one of them
-            // used to be a chance for the head to change under the user. Once loading completes,
-            // one reconcile against everything cached (hero-source or not, unfiltered) drops items
-            // whose catalog is truly gone. See stableHeroSelection.
             // Release-filtered like the rows: an unreleased title the user just asked to hide must
             // not linger on the hero either (Codex gate 8).
             val everythingCached = cachedSections.values
@@ -381,38 +825,64 @@ object HomeRepository {
             } else {
                 previousSelection.filterReleasedItems(todayIsoDate)
             }
+            logDroppedHeadLocked(previousSelection, previousStillReleased)
+            // BUG-86 (Hole A): NOT conditional on isLoading any more. The old condition opened the
+            // moment a load finished, and the launch sync burst lands right after that: the head's
+            // own section was pruned and re-fetched, the head was not in `everythingCached` for a
+            // beat, and it was dropped. An item stays eligible while its ORIGIN catalog is still
+            // installed; the release filter above is the only thing that can evict it.
+            val retainedPrevious = previousStillReleased.filter { item ->
+                item.stableKey() in heroItemOrigins
+            }
             // Fresh cached instances FIRST so a kept item carries current metadata; the previous
-            // instances only vouch for identity while the load is in flight.
-            val keepFrom = if (isLoading || awaitingFirstRefresh) everythingCached + previousStillReleased else everythingCached
-            stableHeroSelection(
-                previous = previousSelection,
-                pool = pool,
-                limit = HOME_HERO_ITEM_LIMIT,
-                random = heroRandom,
+            // instances only vouch for identity.
+            val keepFrom = everythingCached + retainedPrevious
+            val ranking = pinCommittedHead(
+                ranking = stableHeroSelection(
+                    previous = previousSelection,
+                    pool = pool,
+                    limit = HOME_HERO_ITEM_LIMIT,
+                    random = heroRandom,
+                    keepFrom = keepFrom,
+                    key = MetaPreview::stableKey,
+                ),
+                committedKey = committedHeadKey,
                 keepFrom = keepFrom,
                 key = MetaPreview::stableKey,
-            ).also { ranking -> lastCatalogHeroSelection = ranking }
-                .take(HOME_HERO_ITEM_LIMIT)
+            )
+            lastCatalogHeroSelection = ranking
+            ranking.take(HOME_HERO_ITEM_LIMIT)
         } else {
             emptyList()
         }
         lastPublishedCatalogHeroEmpty = snapshot.heroEnabled && catalogHeroItems.isEmpty()
         val resetRequested = heroResetRequested
-        val heroItems = when {
-            !snapshot.heroEnabled -> emptyList()
-            catalogHeroItems.isNotEmpty() -> catalogHeroItems.also { heroResetRequested = false }
-            // BUG-42: the collection fallback is for Homes whose CATALOGS yield no hero — not for
-            // the first few hundred ms of a load before the hero-source catalogs have landed. Filling
-            // it in mid-load and then replacing all eight items when the catalog hero arrived was the
-            // "one cover, then another" the sim probe caught (`inRows=0` first head). While a load is
-            // in flight, keep whatever is on screen (usually nothing on a cold launch) — unless the
-            // user just reset the selection explicitly, in which case the stale hero must go now.
-            (isLoading || awaitingFirstRefresh) && !resetRequested -> _uiState.value.heroItems
-            // Release-filtered like everything else on Home (an unreleased title the user just hid
-            // must not survive on the collection hero either).
-            else -> (if (todayIsoDate == null) cachedCollectionHeroItems else cachedCollectionHeroItems.filterReleasedItems(todayIsoDate))
-                .also { if (!isLoading && !awaitingFirstRefresh) heroResetRequested = false }
+        // Release-filtered like everything else on Home (an unreleased title the user just hid must
+        // not survive on the collection hero either).
+        val collectionHeroItems = if (todayIsoDate == null) {
+            cachedCollectionHeroItems
+        } else {
+            cachedCollectionHeroItems.filterReleasedItems(todayIsoDate)
         }
+        fun heroItemsFrom(source: HeroPublishSource): List<MetaPreview> = when (source) {
+            HeroPublishSource.Off -> emptyList()
+            HeroPublishSource.Catalog -> catalogHeroItems
+            HeroPublishSource.Held -> _uiState.value.heroItems
+            HeroPublishSource.CollectionFallback -> collectionHeroItems
+        }
+        // BUG-86 (Codex round 2): the CANDIDATE (what this publish would carry if nothing were
+        // holding it) is computed before the gate is asked, so the gate reasons about the hero it
+        // is actually going to commit. A Home whose hero-source catalogs came back empty but whose
+        // collection fallback resolved has a non-empty candidate: it commits the fallback instead
+        // of holding on `empty` until the timeout and then freezing nothing.
+        val heroCandidate = heroItemsFrom(
+            heroPublishSource(
+                heroEnabled = snapshot.heroEnabled,
+                catalogHeroEmpty = catalogHeroItems.isEmpty(),
+                holding = false,
+                resetRequested = resetRequested,
+            )
+        )
 
         val tmdbSettings = TmdbSettingsRepository.snapshot()
 
@@ -420,30 +890,243 @@ object HomeRepository {
         // metadata and then re-publishing the TMDB-localized payload rendered the same title twice
         // (English under French, caught frame-by-frame in a tester video), so a hero whose items
         // still have enrichment outstanding HOLDS — it keeps whatever was last published — until
-        // the fetch lands or [HERO_ENRICHMENT_HOLD_TIMEOUT_MS] expires. Rows are NOT held: they are
-        // published on this same pass regardless, so catalog loading never serializes behind TMDB.
-        val awaitingEnrichment = heroItemsAwaitingEnrichment(heroItems, tmdbSettings)
-        val holdHeroPublish = awaitingEnrichment.isNotEmpty() && !heroEnrichmentHoldExpired
+        // the fetch lands or [HERO_ENRICHMENT_HOLD_TIMEOUT_MS] expires. After the gate has
+        // released, that legacy hold covers only NEWCOMERS: everything committed is served from
+        // the frozen map and can never wait on, or be repainted by, a later fetch.
+        val committedBefore = heroGateState == HeroGateState.Released
+        val enrichmentCandidates = if (committedBefore) {
+            heroCandidate.filter { item -> item.stableKey() !in committedHeroPayloads }
+        } else {
+            heroCandidate
+        }
+        val awaitingEnrichment = heroItemsAwaitingEnrichment(enrichmentCandidates, tmdbSettings)
 
-        _uiState.value = HomeUiState(
-            isLoading = isLoading,
-            heroItems = if (holdHeroPublish) {
-                _uiState.value.heroItems
-            } else {
-                heroItems.map { it.withTmdbEnrichment(tmdbSettings) }
-            },
-            sections = sections.map { section -> section.withTmdbEnrichment(tmdbSettings) },
-            errorMessage = if (sections.isEmpty()) lastErrorMessage else null,
+        val wasArmed = heroGateState == HeroGateState.Armed
+        val decision = if (committedBefore) {
+            null
+        } else {
+            evaluateHeroGateLocked(
+                snapshot = snapshot,
+                candidateEmpty = heroCandidate.isEmpty(),
+                enrichmentPending = awaitingEnrichment.size,
+            )
+        }
+
+        // The gate has answered, so the published list can now be derived from that answer: a
+        // release with an empty catalog hero falls through to the collection fallback HERE, in the
+        // same publish, instead of committing the previous (empty) hero and leaving nothing behind
+        // to republish (BUG-86, Codex round 2).
+        val publishSource = heroPublishSource(
+            heroEnabled = snapshot.heroEnabled,
+            catalogHeroEmpty = catalogHeroItems.isEmpty(),
+            // While the gate is unreleased it IS the hold. Post-commit it is the legacy BUG-42
+            // mid-load hold: the collection fallback is for a Home whose CATALOGS yield no hero,
+            // not for the first few hundred ms of a load before the hero-source catalogs land, and
+            // filling it in mid-load and then replacing all eight items when the catalog hero
+            // arrived was the "one cover, then another" the sim probe caught (`inRows=0` head).
+            holding = if (decision != null) !decision.released else isLoading || awaitingFirstRefresh,
+            resetRequested = resetRequested,
         )
+        val heroItems = heroItemsFrom(publishSource)
+        when (publishSource) {
+            HeroPublishSource.Catalog -> heroResetRequested = false
+            HeroPublishSource.CollectionFallback ->
+                if (!isLoading && !awaitingFirstRefresh) heroResetRequested = false
+            HeroPublishSource.Off, HeroPublishSource.Held -> Unit
+        }
+
+        val publishedHeroItems: List<MetaPreview>
+        val rowsHeld: Boolean
+        var legacyHold = false
+        when {
+            // 1. The gate is committing right now: freeze the payload, pin the head, publish once.
+            decision != null && decision.released -> {
+                val committed = heroItems.map { item -> item.withTmdbEnrichment(tmdbSettings) }
+                committedHeroPayloads = committed.associateBy { item -> item.stableKey() }
+                committedHeadKey = committed.firstOrNull()?.stableKey()
+                heroGateState = HeroGateState.Released
+                heroGateReleaseReason = decision.reason
+                heroGateResetRequested = false
+                cancelGateWatchersLocked()
+                log.i {
+                    "heroGateReleased reason=${decision.reason} n=${committed.size} " +
+                        "head=${committedHeadKey ?: "-"} rows=${sections.size}"
+                }
+                publishedHeroItems = committed
+                rowsHeld = false
+            }
+            // 2. Still holding. The PREVIOUS hero and the PREVIOUS rows are republished unchanged:
+            //    rows move under the hero (their order comes from the same settings the burst
+            //    rewrites), so committing the hero once while the rows rebuild twice would just
+            //    move the double one layer down.
+            decision != null -> {
+                publishedHeroItems = _uiState.value.heroItems
+                rowsHeld = wasArmed
+            }
+            // 3. Committed. Serve the frozen instances (identity-equal, so an unchanged publish is
+            //    suppressed by StateFlow equality) and let newcomers use the legacy hold.
+            else -> {
+                legacyHold = awaitingEnrichment.isNotEmpty() && !heroEnrichmentHoldExpired
+                publishedHeroItems = if (legacyHold) {
+                    _uiState.value.heroItems
+                } else {
+                    serveCommittedHeroItemsLocked(heroItems, tmdbSettings)
+                }
+                rowsHeld = false
+            }
+        }
+
+        val publishedSections = if (rowsHeld) {
+            _uiState.value.sections
+        } else {
+            sections.map { section -> section.withTmdbEnrichment(tmdbSettings) }
+        }
+        val released = heroGateState == HeroGateState.Released
+        val nextState = HomeUiState(
+            // A held publish is still "assembling", even after the catalog fan-out finished: the
+            // rows it is holding are empty on a cold launch, and reporting isLoading = false with
+            // no sections would paint the empty state (or, with a partial failure, the error state
+            // and its Retry button) for the second or two before the gate releases.
+            isLoading = isLoading || rowsHeld,
+            heroItems = publishedHeroItems,
+            sections = publishedSections,
+            errorMessage = when {
+                rowsHeld -> _uiState.value.errorMessage
+                publishedSections.isEmpty() -> lastErrorMessage
+                else -> null
+            },
+            heroGateReleased = released,
+            heroGateReason = if (released) heroGateReleaseReason else null,
+        )
+        // Stamped AFTER the gate decision has been applied above (heroGateState and
+        // heroGateReleaseReason are written inside the `when`), so the probe fields describe the
+        // state being published rather than the repository one main-thread hop later. See
+        // [HomeUiState.heroRankingDebugSnapshot]. The instance escapes only on the next line, so
+        // this write can never be seen half-done by a collector.
+        nextState.heroRankingDebugSnapshot = heroRankingDebugLocked()
+        _uiState.value = nextState
 
         if (awaitingEnrichment.isEmpty()) {
             releaseHeroEnrichmentHold()
             return
         }
         // Scheduled on every publish, loading included — a hold with no fetch behind it can only end
-        // at the timeout, which would put hero first paint behind the whole catalog fan-out.
+        // at the timeout, which would put hero first paint behind the whole catalog fan-out. While
+        // the gate is armed this is also what CLEARS the gate's enrichment input.
         scheduleHeroEnrichment(awaitingEnrichment, tmdbSettings)
-        if (holdHeroPublish) armHeroEnrichmentHold()
+        if (legacyHold) armHeroEnrichmentHold()
+    }
+
+    /**
+     * Rebuilds [heroItemOrigins] from the cached sections: item to the FIRST definition (in
+     * definition order) that carries it. Entries whose origin catalog is no longer in
+     * [currentDefinitions] are dropped, which is exactly the one event allowed to evict a committed
+     * hero item (the user removed or disabled that add-on).
+     */
+    private fun recordHeroItemOriginsLocked() {
+        val knownDefinitionKeys = currentDefinitions.mapTo(HashSet(), HomeCatalogDefinition::key)
+        val origins = HashMap<String, String>(heroItemOrigins.size)
+        heroItemOrigins.forEach { (itemKey, definitionKey) ->
+            if (definitionKey == COLLECTION_HERO_ORIGIN || definitionKey in knownDefinitionKeys) {
+                origins[itemKey] = definitionKey
+            }
+        }
+        currentDefinitions.forEach { definition ->
+            cachedSections[definition.key]?.items?.forEach { item ->
+                val itemKey = item.stableKey()
+                if (itemKey !in origins) origins[itemKey] = definition.key
+            }
+        }
+        // The collection fallback hero has no catalog behind it. It gets a sentinel origin so it is
+        // retainable and freezable like any other hero item; ensureCollectionHeroFallback owns its
+        // invalidation (it drops the cache itself when the collection set changes).
+        cachedCollectionHeroItems.forEach { item ->
+            val itemKey = item.stableKey()
+            if (itemKey !in origins) origins[itemKey] = COLLECTION_HERO_ORIGIN
+        }
+        heroItemOrigins = origins
+    }
+
+    /**
+     * The frozen payloads outlive the carousel slice on purpose (an item that scrolls out and comes
+     * back must come back as the SAME instance), but not their own catalog: when the user removes
+     * or disables the add-on that supplied a committed item, that item stops being committed. This
+     * is also what bounds the map across a long session.
+     */
+    private fun pruneCommittedPayloadsLocked() {
+        if (committedHeroPayloads.isEmpty()) return
+        val surviving = committedHeroPayloads.filterKeys { itemKey -> itemKey in heroItemOrigins }
+        if (surviving.size == committedHeroPayloads.size) return
+        committedHeroPayloads = surviving
+        val headKey = committedHeadKey
+        if (headKey != null && headKey !in surviving) {
+            log.i { "heroHeadDropped reason=originGone key=$headKey" }
+            committedHeadKey = null
+        }
+    }
+
+    /** BUG-86 probe: the one legitimate way a committed head leaves is the release filter. */
+    private fun logDroppedHeadLocked(
+        previousSelection: List<MetaPreview>,
+        previousStillReleased: List<MetaPreview>,
+    ) {
+        val headKey = committedHeadKey ?: previousSelection.firstOrNull()?.stableKey() ?: return
+        if (previousSelection.none { item -> item.stableKey() == headKey }) return
+        if (previousStillReleased.any { item -> item.stableKey() == headKey }) return
+        log.i { "heroHeadDropped reason=unreleased key=$headKey" }
+    }
+
+    /**
+     * Post-commit hero payloads: the SAME instances that were frozen at release, so a publish that
+     * changes nothing else is suppressed by StateFlow equality instead of re-running the whole
+     * paint. The only mutation is the one-time gap-fill (see [withCommittedGapFill]); it is written
+     * back so the item stays identity-stable from then on.
+     *
+     * An item that was NOT committed (a newcomer that entered the carousel after the commit) takes
+     * the ordinary enrichment path.
+     */
+    private fun serveCommittedHeroItemsLocked(
+        heroItems: List<MetaPreview>,
+        settings: TmdbSettings,
+    ): List<MetaPreview> {
+        // After an explicit Hero Sources reset the frozen map is empty by design; re-freeze on the
+        // first settled publish so the new selection is as immutable as the first one was.
+        if (committedHeroPayloads.isEmpty() && heroItems.isNotEmpty() && heroGateState == HeroGateState.Released) {
+            val recommitted = heroItems.map { item -> item.withTmdbEnrichment(settings) }
+            committedHeroPayloads = recommitted.associateBy { item -> item.stableKey() }
+            committedHeadKey = recommitted.firstOrNull()?.stableKey()
+            return recommitted
+        }
+        var payloads = committedHeroPayloads
+        val served = heroItems.map { item ->
+            val itemKey = item.stableKey()
+            val frozen = payloads[itemKey] ?: return@map item.withTmdbEnrichment(settings)
+            val filled = frozen.withCommittedGapFill(settings)
+            if (filled !== frozen) payloads = payloads + (itemKey to filled)
+            filled
+        }
+        committedHeroPayloads = payloads
+        return served
+    }
+
+    /**
+     * The single exception to a frozen payload: an EMPTY description or genres may be filled in
+     * once, silently, from enrichment that landed after the commit. Nothing that repaints is
+     * touched (never name, logo or banner), and a field that already has content is never replaced,
+     * so text cannot swap under the user the way BUG-86 described.
+     */
+    private fun MetaPreview.withCommittedGapFill(settings: TmdbSettings): MetaPreview {
+        if (!settings.enabled || !settings.hasApiKey || !settings.useBasicInfo) return this
+        if (!description.isNullOrBlank() && genres.isNotEmpty()) return this
+        val enrichment = heroEnrichmentOverlay[heroEnrichmentKey(settings)] ?: return this
+        var updated = this
+        if (description.isNullOrBlank() && !enrichment.description.isNullOrBlank()) {
+            updated = updated.copy(description = enrichment.description)
+        }
+        if (genres.isEmpty() && enrichment.genres.isNotEmpty()) {
+            updated = updated.copy(genres = enrichment.genres)
+        }
+        return updated
     }
 
     /**
@@ -519,6 +1202,10 @@ object HomeRepository {
      * [HERO_ENRICHMENT_HOLD_TIMEOUT_MS] window from the first held publish.
      */
     private fun armHeroEnrichmentHold() {
+        // BUG-86: while the commit gate is armed IT owns the wait (and its own longer timeout), so
+        // a second, shorter timer underneath would expire first and publish the raw hero the gate
+        // is holding back. The gate feeds `enrichmentPending` from the same set this hold watched.
+        if (heroGateState == HeroGateState.Armed) return
         if (heroEnrichmentHoldJob?.isActive == true) return
         // Codex review: cancellation racing the delay's completion can let a stale timer resume
         // AFTER releaseHeroEnrichmentHold() started a new hold era — the generation token makes
@@ -534,6 +1221,10 @@ object HomeRepository {
             )
         }
     }
+
+    /** Read from the enrichment completion path, which runs outside [heroSelectionLock]. */
+    private val heroGateIsArmed: Boolean
+        get() = heroGateState == HeroGateState.Armed
 
     /** Clears the hold without touching the overlay — the next unresolved hero may hold again. */
     private fun releaseHeroEnrichmentHold() {
@@ -605,6 +1296,8 @@ object HomeRepository {
                 claimable
             }
             if (missing.isEmpty()) return@launch
+            // Inert unless the burst simulator is armed (see HomeLaunchBurstSim).
+            HomeLaunchBurstSim.enrichmentDelayMs.takeIf { it > 0 }?.let { delay(it) }
             val results = missing.map { item ->
                 async {
                     item.heroEnrichmentKey(settings) to runCatching {
@@ -637,7 +1330,11 @@ object HomeRepository {
                 // the earlier batch's state overwriting the later, fully-localized one, and
                 // re-arming the hold. Safe against self-deadlock: publishCurrentState only
                 // ever *launches* the claim coroutine, it never takes this mutex inline.
-                if (!heroEnrichmentHoldExpired) {
+                // BUG-86: while the gate is ARMED the full publish always runs, expired hold or
+                // not. The gate is waiting on exactly this completion to clear `enrichmentPending`,
+                // and nothing is on screen to double-commit yet. The sections-only CAS below stays
+                // for the post-commit expired case it was written for.
+                if (!heroEnrichmentHoldExpired || heroGateIsArmed) {
                     publishCurrentState(
                         isLoading = _uiState.value.isLoading,
                         requestKey = currentRequestKey,
@@ -663,7 +1360,14 @@ object HomeRepository {
         }
     }
 
+    /** Launches [block] on the repository's own scope. Burst simulator only (see [HomeLaunchBurstSim]). */
+    internal fun launchBurstSimTask(block: suspend CoroutineScope.() -> Unit): Job =
+        scope.launch(block = block)
+
     private suspend fun HomeCatalogDefinition.toSection(forceRefresh: Boolean): HomeCatalogSection {
+        // Inert unless the burst simulator is armed: it makes one nominated hero-source catalog
+        // fail its FIRST fetch, so the gate has to survive a Failed outcome plus the retry.
+        HomeLaunchBurstSim.consumeFirstFetchFailure(key)?.let { failure -> throw failure }
         val page = fetchCatalogPage(
             manifestUrl = manifestUrl,
             type = type,
@@ -886,8 +1590,23 @@ object HomeRepository {
 }
 
 private const val HOME_HERO_ITEM_LIMIT = 8
-/** BUG-42: see `HomeRepository.awaitingFirstRefresh`. */
-private const val FIRST_REFRESH_GRACE_MS = 5_000L
+
+/** Sentinel origin for hero items that came from the collection fallback, not from a catalog. */
+private const val COLLECTION_HERO_ORIGIN = " collectionHero"
+/**
+ * BUG-42: see `HomeRepository.awaitingFirstRefresh`.
+ *
+ * Pinned to [HERO_COMMIT_GATE_TIMEOUT_MS] rather than kept at its original 5 s. It used to hold
+ * only the hero, so overshooting the gate's budget cost nothing visible; since Wave H holds the
+ * ROWS too, this is the entire on-screen budget for a profile whose enabled add-ons declare no
+ * catalogs (a subtitle or stream-only add-on plus collections), and such a profile has strictly
+ * LESS to wait for than the catalog-bearing one the 4 s budget was sized for. Beyond that the grace
+ * can no longer decide anything either: `decideIdleHeroGate` releases `noSources` at the budget, so
+ * a longer grace would only leave `awaitingFirstRefresh` set for a second after the gate had
+ * already answered, re-holding a collection hero that resolved in that window (`heroPublishSource`
+ * reads the flag once the gate is Released). One budget, one answer.
+ */
+private const val FIRST_REFRESH_GRACE_MS = HERO_COMMIT_GATE_TIMEOUT_MS
 
 /**
  * BUG-35 (beta.12): how many leading items of a row [HomeRepository.requestRowEnrichment]
@@ -901,6 +1620,75 @@ private const val HOME_COLLECTION_HERO_SOURCE_ITEM_LIMIT = 8
 private const val HOME_CATALOG_FETCH_BATCH_SIZE = 4
 private const val HOME_CATALOG_PREVIEW_FETCH_LIMIT = 18
 private const val HOME_CATALOG_PUBLISH_INTERVAL = 2
+
+/**
+ * BUG-86 (Wave H, K1b): whether the catalog fan-out publishes after the batch at [batchIndex].
+ *
+ * The interval exists to bound UI churn during a long fan-out, and it is right for a settled Home:
+ * every publish re-runs the hero ranking and re-applies enrichment across every section. It is
+ * WRONG while the commit gate is armed. A batch's fetch outcomes are a gate input, and a held
+ * publish emits a [HomeUiState] equal to the previous one (previous hero, held rows, still
+ * loading), so the StateFlow suppresses it: the "churn" the interval saves is zero, while the
+ * evaluation it skips can be the one that would have released the gate. With the default interval
+ * of 2 the skipped batches are 2, 4, 6, ...; a hero-source catalog settling in one of those used to
+ * wait for the NEXT batch's whole network round trip, and on a slow launch for the rest of the
+ * fan-out, which is time taken straight out of the gate's 4 s budget.
+ */
+internal fun shouldPublishAfterBatch(batchIndex: Int, gateArmed: Boolean): Boolean =
+    gateArmed || batchIndex == 0 || (batchIndex + 1) % HOME_CATALOG_PUBLISH_INTERVAL == 0
+
+/**
+ * BUG-86 (Wave H, K1b): can an enabled addon still turn a persisted hero-source key into a catalog
+ * definition?
+ *
+ * Narrower than `hasPendingEnabledManifests()` (`enabled && isRefreshing`), which the gate used to
+ * read, on purpose. `refreshAddon` sets `isRefreshing` on an addon that ALREADY has a manifest, so
+ * a plain re-fetch (Settings, the Search/Home retry buttons, a forced refresh) reported "a manifest
+ * is pending" even though that addon's catalogs were already in `currentDefinitions` and its answer
+ * to the gate could not change. Combined with an unresolved persisted hero-source key (which every
+ * long-lived profile accumulates, because `normalizePreferences` KEEPS preferences whose catalog
+ * key has gone away), that pinned the gate on `sourcesReady = false` for the length of the slowest
+ * re-fetch, and on a loaded machine that outlives the 4 s budget. Only an addon with NO manifest
+ * that is still fetching one can produce a new definition, so only that counts as pending.
+ */
+internal fun List<ManagedAddon>.hasUnresolvedEnabledManifests(): Boolean =
+    any { addon -> addon.enabled && addon.manifest == null && addon.isRefreshing }
+
+/**
+ * BUG-86 (Wave H): whether a launch sync burst can still land for this account, i.e. whether
+ * `LaunchSyncState.Idle` means "not started yet" (the gate waits) or "will never start" (it does
+ * not). It is the second factor of the gate's sync term, and therefore a gate INPUT in its own
+ * right: `HomeRepository.startGateInputsObserverLocked` collects this boolean off
+ * `AuthRepository.state`, because on a signed-out cold launch whose session restore resolves after
+ * the catalog fan-out finished, the auth transition is the only event that makes Idle readable as
+ * settled. Nothing else republishes then, and the gate could only end at the timeout.
+ *
+ * A session still restoring counts as expected: it can still resolve to a signed-in account, and
+ * the gate's own timeout bounds the wait if the restore stalls. An anonymous account never gets a
+ * profile-select pull, so it is not expected either.
+ */
+internal fun AuthState.launchSyncExpected(): Boolean = when (this) {
+    is AuthState.Authenticated -> !isAnonymous
+    AuthState.Loading -> true
+    AuthState.Unauthenticated -> false
+}
+
+/**
+ * BUG-86 (Wave H): the one transition that takes the hero commit gate BACKWARDS, out of
+ * [HeroGateState.Released] and into [HeroGateState.Armed], when a catalog-bearing refresh arrives.
+ *
+ * A [HeroGateReason.NO_SOURCES] release is not a hero commit, it is a claim about the profile: no
+ * catalog can ever supply a hero here, so holding would pin Home behind a timer that was never
+ * armed. Catalogs arriving afterwards falsify the claim, and a gate that stayed Released would
+ * leave that hero unpinned and unfrozen for the rest of the session.
+ *
+ * Every other release IS a commit and is final: `all`, `timeout`, `heroOff` and `reset` all mean a
+ * head was chosen and pinned, and re-arming on one of those would let the head move again, which is
+ * the whole bug. Only `HomeRepository.clear()` (profile switch, sign-out) and an explicit Hero
+ * Sources change may disturb those.
+ */
+internal fun heroGateShouldRearm(state: HeroGateState, releaseReason: String?): Boolean =
+    state == HeroGateState.Released && releaseReason == HeroGateReason.NO_SOURCES
 
 /**
  * Hard cap on how long the hero's METADATA commit waits for TMDB enrichment before publishing raw

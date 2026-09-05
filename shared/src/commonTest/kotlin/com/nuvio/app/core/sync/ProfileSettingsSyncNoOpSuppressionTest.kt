@@ -127,6 +127,132 @@ class ProfileSettingsSyncNoOpSuppressionTest {
     }
 
     @Test
+    fun `identical Boolean payloads skip apply and notify`() {
+        var applied = false
+        var notified = false
+
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = "notifications_settings",
+            current = true,
+            incoming = true,
+            apply = { applied = true },
+            notifyChanged = { notified = true },
+        )
+
+        assertFalse(applied)
+        assertFalse(notified)
+    }
+
+    @Test
+    fun `different Boolean payloads still apply and notify`() {
+        var applied = false
+        var notified = false
+
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = "notifications_settings",
+            current = false,
+            incoming = true,
+            apply = { applied = true },
+            notifyChanged = { notified = true },
+        )
+
+        assertTrue(applied)
+        assertTrue(notified)
+    }
+
+    @Test
+    fun `forceApply bypasses the comparison and always applies even for identical payloads`() {
+        var applied = false
+        var notified = false
+
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = "player_settings",
+            current = "same",
+            incoming = "same",
+            forceApply = true,
+            apply = { applied = true },
+            notifyChanged = { notified = true },
+        )
+
+        assertTrue(applied, "forceApply=true must apply even when current == incoming")
+        assertTrue(notified, "forceApply=true must notify even when current == incoming")
+    }
+
+    /**
+     * The shape the four credential-bearing feature blocks in `applyRemoteBlob()` actually use:
+     * [current]/[incoming] are the CREDENTIAL-STRIPPED payloads (a raw compare would rarely
+     * suppress, since one side usually already lacks the credential the other carries), and
+     * `forceApply` is driven by whether the RAW incoming payload still carries a credential — the
+     * one-time legacy-blob migration import (`preservingLocalProfileCredentials`) must still run
+     * even when the stripped settings themselves are unchanged.
+     */
+    @Test
+    fun `credential-bearing feature force-applies when the incoming payload still carries a credential even if the stripped settings match`() {
+        val current = buildJsonObject { put("mode", JsonPrimitive("auto")) }
+        val incomingWithCredential = buildJsonObject {
+            put("mode", JsonPrimitive("auto"))
+            put("tmdb_api_key", JsonPrimitive("secret-key"))
+        }
+        var applied = false
+        var notified = false
+
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = "tmdb_settings",
+            current = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, current),
+            incoming = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, incomingWithCredential),
+            forceApply = incomingWithCredential != withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, incomingWithCredential),
+            apply = { applied = true },
+            notifyChanged = { notified = true },
+        )
+
+        assertTrue(applied, "a payload that still carries a credential must apply even when the stripped settings match")
+        assertTrue(notified)
+    }
+
+    @Test
+    fun `credential-bearing feature skips when stripped settings match and neither side carries a credential`() {
+        val current = buildJsonObject { put("mode", JsonPrimitive("auto")) }
+        val incoming = buildJsonObject { put("mode", JsonPrimitive("auto")) }
+        var applied = false
+        var notified = false
+
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = "tmdb_settings",
+            current = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, current),
+            incoming = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, incoming),
+            forceApply = incoming != withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, incoming),
+            apply = { applied = true },
+            notifyChanged = { notified = true },
+        )
+
+        assertFalse(applied, "unchanged stripped settings with no credential in the incoming payload must skip")
+        assertFalse(notified)
+    }
+
+    @Test
+    fun `trimmed string payloads that differ only in whitespace skip apply and notify`() {
+        var applied = false
+        var notified = false
+
+        applyFeatureUnlessUnchanged(
+            log = log,
+            featureName = "meta_screen_settings_payload",
+            current = "v1:default".trim(),
+            incoming = "  v1:default  ".trim(),
+            apply = { applied = true },
+            notifyChanged = { notified = true },
+        )
+
+        assertFalse(applied, "the four string-payload blocks compare TRIMMED — pure whitespace must never read as changed")
+        assertFalse(notified)
+    }
+
+    @Test
     fun `apply and notify each run exactly once for a changed payload`() {
         var applyCount = 0
         var notifyCount = 0
