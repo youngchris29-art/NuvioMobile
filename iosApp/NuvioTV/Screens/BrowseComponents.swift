@@ -310,76 +310,66 @@ enum PinnedRowTitle {
         }
     }
 
-    /// How far the ACTIVE focus treatment raises a focused card's artwork (Codex r7 P1).
+    /// How far the ACTIVE focus treatment raises a focused card's artwork.
     ///
-    /// This used to be the flat `heroPinnedRowFocusLiftAllowance` for everyone, which is only
-    /// right in one of the three modes — and wrong in the worst direction for the mode the
-    /// reporting tester actually runs. `CardFocusMode.resolve` (PosterCard.swift ~L237) branches on
-    /// the same two Appearance settings, so this mirrors that resolution exactly:
+    /// Two values, not three (BUG-93, Wave F agent A). `CardFocusMode.resolve` still has three
+    /// branches, but only one of them lifts by a different amount, and it is the zero one:
     ///
     ///  - **still** (`no_zoom_on_focus` on, either ring state) — Wave 7 made this genuinely zero
     ///    lift: a custom `ButtonStyle` that never receives the system hover effect, and a treatment
     ///    that draws a border and a shadow and scales nothing. Charging 20pt here fabricated 20pt
     ///    of intrusion out of nothing: every rest was over-corrected by 20pt and titles that were
     ///    perfectly clear could be faded out by the belt.
-    ///  - **manualScale** (ring on, zoom on) — a `.scaleEffect(cardSystemLiftScale)` on the WHOLE
-    ///    LOCKUP, centred, so the top edge rises by half the scale delta over the lockup's height
-    ///    (`CardFocusTreatment.manualScale`). Lockup = artwork + the chrome below it, hence
-    ///    `cardLockupCaptionChrome`.
     ///  - **systemLift** (both off) — the native hover effect on the artwork container, measured at
     ///    `heroPinnedRowFocusLiftAllowance` (test44, 2026-08-25).
+    ///  - **manualScale** (ring on, zoom on) — the SAME rise, by construction as of BUG-93.
     ///
-    /// Read at MEASUREMENT time from the two plain `UserDefaults` keys the treatments use as
-    /// `@AppStorage`, not latched at launch: both are live Appearance toggles. A settings change
-    /// therefore takes effect on the row's next reading pass rather than instantly — which is the
-    /// same frame the cards themselves re-render in, so nothing can be seen mid-flip. Two
-    /// `UserDefaults.standard.bool` reads per measured title per layout pass is a dictionary
-    /// lookup in an in-process cache; at the handful of pinned titles on screen it does not
-    /// register against the frame budget.
+    /// The manual branch used to derive its rise from a fixed lockup SCALE (1.12), which made ring
+    /// mode charge ~16pt at Small, ~20 at Medium and ~27 at Large against a clip budget that had
+    /// reserved 20 everywhere — the "posters cut off at the top" half of BUG-93. PosterCard now
+    /// holds the RISE as the constant (`cardFocusLiftRise`, which IS
+    /// `Theme.Size.heroPinnedRowFocusLiftAllowance`) and derives the per-card scale from it
+    /// (`cardLiftScale(artworkHeight:)`), so both zoom modes raise the artwork's top edge by
+    /// exactly 20pt at every Poster Size and this function has nothing left to branch on. The two
+    /// sides cannot drift: they are literally the same constant, and test49 measures the ring-mode
+    /// rise against it on the sim.
     ///
-    /// `artworkHeight` nil (a call site that cannot size itself) falls back to the systemLift
-    /// constant in ring mode — the same documented opt-out `maxSlide` already uses.
+    /// `mode` is read at MEASUREMENT time from the plain `UserDefaults` key the treatments use as
+    /// `@AppStorage`, not latched at launch: "No Zoom on Focus" is a live Appearance toggle. A
+    /// settings change therefore takes effect on the row's next reading pass rather than instantly
+    /// — the same frame the cards themselves re-render in, so nothing can be seen mid-flip.
+    ///
+    /// `artworkHeight`, `captionVisible` and `treatment` no longer participate. They are kept in
+    /// the signature deliberately rather than removed: every caller already threads them (they are
+    /// the same values `maxSlide` and `clearances` need), the ring's rise was height-dependent as
+    /// recently as beta.17, and a future treatment that is height-dependent again should not have
+    /// to be re-threaded through four call sites to say so.
     nonisolated static func focusLiftAllowance(artworkHeight: CGFloat?,
                                                captionVisible: Bool,
                                                treatment: RowCardTreatment,
                                                mode: FocusModeFlags = .current) -> CGFloat {
-        // Zero lift under "No Zoom on Focus" for BOTH treatments, and checked first exactly as
-        // `CardFocusMode.resolve` does — no-zoom wins over the ring everywhere. Card treatments get
-        // `.still` (nothing scales); folder tiles get `cardFocusButtonStyle`'s `StillCardButtonStyle`
-        // + `focusEffectDisabled`, which likewise cannot lift.
-        if mode.noZoom { return 0 }
-        // A bare `.borderless` card wears the native system lift and has no ring-mode branch at
-        // all, so the accent-ring setting is irrelevant to it — see `RowCardTreatment`.
-        guard treatment == .cardTreatment else {
-            return Theme.Size.heroPinnedRowFocusLiftAllowance
-        }
-        guard mode.accentRing else {
-            return Theme.Size.heroPinnedRowFocusLiftAllowance      // .systemLift
-        }
-        // .manualScale
-        guard let artworkHeight, artworkHeight > 0 else {
-            return Theme.Size.heroPinnedRowFocusLiftAllowance
-        }
-        let lockupHeight = artworkHeight + (captionVisible ? cardLockupCaptionChrome : 0)
-        return (cardManualLiftScale - 1) / 2 * lockupHeight
+        // No-zoom wins over the ring everywhere, checked first exactly as `CardFocusMode.resolve`
+        // does. Card treatments get `.still` (nothing scales); folder tiles get
+        // `cardFocusButtonStyle`'s `StillCardButtonStyle` + `focusEffectDisabled`, which likewise
+        // cannot lift. Every other combination — system lift, ring, and the bare `.borderless`
+        // folder tile — rises by the one measured constant.
+        mode.noZoom ? 0 : Theme.Size.heroPinnedRowFocusLiftAllowance
     }
 
-    /// Mirror of `cardSystemLiftScale` (PosterCard.swift ~L190), which is a file-private `let`
-    /// there and cannot be referenced from here. **Keep the two in step** — if that measurement
-    /// moves, move this. Drift is not silent: test44 measures the real constant against the system
-    /// lift, so a change shows up there first.
-    nonisolated static let cardManualLiftScale: CGFloat = 1.12
-
-    /// Vertical chrome a poster lockup carries BELOW its artwork, which `manualScale` scales along
-    /// with it: `Theme.Spacing.md` (16, `PosterCard`'s artwork↔caption gap) plus one
-    /// `Theme.Font.cardTitle` caption line (≈27.5 as rendered). ≈43.5pt, which is exactly the
-    /// residue in the 2026-08-30 measurement of the focusable link frame — `artworkHeight + 175.5`
-    /// = topReach (88) + lockup + bottomReach (44) ⇒ lockup = artworkHeight + 43.5.
+    /// Vertical chrome a poster lockup carries BELOW its artwork: `Theme.Spacing.md` (16,
+    /// `PosterCard`'s artwork↔caption gap) plus one `Theme.Font.cardTitle` caption line (≈27.5 as
+    /// rendered). ≈43.5pt, which is exactly the residue in the 2026-08-30 measurement of the
+    /// focusable link frame — `artworkHeight + 175.5` = topReach (88) + lockup + bottomReach (44)
+    /// ⇒ lockup = artworkHeight + 43.5.
     ///
-    /// A constant rather than a live type metric because it only feeds a lift ALLOWANCE, never
-    /// layout: at `cardManualLiftScale` it is worth 2.6pt of lift, below the belt's own 4pt arm
-    /// threshold. Mixed-shape collection rows (whose tiles use `Spacing.sm` and a per-folder
-    /// `hideTitle`) are approximated by the same number for the same reason.
+    /// No longer feeds any lift arithmetic (BUG-93 moved the focus scale onto the artwork
+    /// container, so nothing scales the lockup any more). It survives as the LOCKUP EXTENT every
+    /// pinned-row height calculation needs — `HomeView.pinnedLastRowHeight` (BUG-89's trailing
+    /// inset) sizes the last row with it, and the settle corrector's band reads the same extent off
+    /// the measured row frame. A constant rather than a live type metric for the same reason as
+    /// before: it is used to size a BAND, never to lay out the caption itself, and mixed-shape
+    /// collection rows (whose tiles use `Spacing.sm` and a per-folder `hideTitle`) are approximated
+    /// by the same number.
     nonisolated static let cardLockupCaptionChrome: CGFloat = 43.5
 
     nonisolated static func clearances(titleHeight: CGFloat,
@@ -739,8 +729,8 @@ private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
     func body(content: Content) -> some View {
         content
             // `captionVisible` comes from the same `PosterStyle` already keyed above, so it can
-            // never change without a remount — it feeds the manual-scale lift's lockup height
-            // (`PinnedRowTitle.cardLockupCaptionChrome`).
+            // never change without a remount — it feeds `maxSlide`'s proportional cap, and is
+            // still threaded to `focusLiftAllowance` although BUG-93 made that lift flat.
             .modifier(PinnedRowTitleTracking(rowKey: rowKey,
                                              artworkHeight: artworkHeight,
                                              captionVisible: style.showTitle,
@@ -1319,67 +1309,121 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// that trade the other way). The row is simply in the wrong place, so the row is what moves.
 /// `954d62a9` deferred exactly this ("settle re-reveal"); this is that deferred work.
 ///
-/// The mechanism, and why it cannot oscillate:
+/// **Wave G (BUG-87, beta.18) replaced the target and added two brakes.** The tester's beta.17
+/// report — "the row titles are constantly trying to move back" — is this corrector, unbounded.
+/// What was wrong, precisely:
 ///
-///  1. **It only ever runs from a settled rest.** `noteScroll` arms a single debounce; a real
-///     scroll (motion beyond `driftTolerance`) re-arms it, so nothing fires while the page moves.
-///  2. **It is a CONTRACTION onto a single canonical rest (Wave 10).** Every settled focused rest
-///     is normalized to `margin == canonicalMarginTarget` (0) — the row's top exactly at the clip
-///     edge — which is what makes rows land in the same place every time. That means corrections
-///     are now BIDIRECTIONAL: a rest parked too low is pulled up as readily as one parked too high
-///     is pushed down. The monotone-in-one-direction argument earlier waves relied on no longer
-///     applies, so here is the replacement, and it is stronger:
+///  - Wave 10 aimed at a POINT (`margin == 0`, the "canonical rest"). That held on the simulator
+///    because the sim's focus engine TOP-anchors an over-tall link frame and rests at +22, so one
+///    contraction finished the job. Hardware BOTTOM-anchors the same frame on an up-walk: the
+///    recorded device rest is `margin=-99` at `vh=455`, which is `vh − H + 24` to within a point.
+///    The two anchorings sit ~55pt apart and NO point target with a ±4 dead zone can hold both.
+///  - The 2-nudge budget counted CONSECUTIVE FAILURES and `deficit == 0` refunded it. A landed
+///    correction produces exactly `deficit == 0`, so the budget handed itself back every time it
+///    was successfully spent. The loop then needed nothing exotic: correct → land → refund → the
+///    engine re-reveals the frame to its own anchoring → motion → arm → correct, forever. The
+///    session self-disarm could never accumulate against it either, because a focus change nils
+///    `pendingVerification` and any reflow VOIDs it.
+///  - The belt could not mask it: at the corrected rest the title is fine, so it shows again. The
+///    user therefore sees the title MOVE rather than disappear, which is the report verbatim.
+///  - Independently, `protectedBottom` ignored the shelf's own 24pt bottom padding, so every
+///    downward correction at Large stopped ~11.5pt short and stood down on `bound` — the
+///    "almost, give up, the engine moves it, almost…" cadence.
+///  - And a MOTIONLESS geometry pass still armed a settle whenever nothing was armed, so lazy row
+///    realization on a row-heavy Home fired corrections with no scroll behind them at all.
 ///
-///     - The target is a POINT, not a region, and every correction is computed from the LIVE
-///       sample at fire time — never from the stale measurement that armed the settle.
-///     - `magnitude = min(deficit, headroom, cap)`. The bounds can only ever SHORTEN a correction;
-///       none of them can invert its sign or extend it past the target. A single correction
-///       therefore lands on the target or short of it, and can never cross to the far side.
-///       `headroom` is direction-specific and both directions are bounded by REAL limits, not just
-///       the absolute cap: downward by `protectedBottom` (the focused card's lockup must stay in
-///       the viewport) and upward by the remaining scroll range (Codex Wave 10 r2). An unbounded
-///       upward correction on the last row would ask to scroll past the end, `scrollTo` would clamp
-///       it silently, and the verification would score a MISS — twice over, that sets the
-///       SESSION-WIDE disarm and kills corrections for every row. A bound that the scroll view
-///       would have enforced anyway has to be enforced HERE, where the promise is made.
-///     - The dead zone (`heroPinnedRowSettleDeadZone`, 4pt) decides WHETHER to correct, and
-///       nothing else. It deliberately does NOT shorten the correction: subtracting it from the
-///       magnitude made every correction stop at the boundary, so a rest approached from above
-///       parked at −4 and one approached from below at +4 — two rows that had both "converged"
-///       sitting 8pt apart, wider than the consistency gate's own tolerance and visible as exactly
-///       the inconsistent landing this design exists to remove. Corrections carry the full
-///       distance and land ON the target.
-///     - That introduces no oscillation, because a LANDED rest has `error ≈ 0`, which is inside
-///       the dead zone and therefore never re-triggers. The zone's only job is to stop churn on
-///       rests that are already good, and it exceeds the probe's own 2pt quantization and any
-///       sub-point layout noise, so noise alone can never push a settled rest back outside it.
+/// The mechanism now, and why it terminates:
 ///
-///     Ping-pong would need a correction that overshoots the target; by the second bullet none
-///     exists. Combined with one correction per settle and the hop budget below, the mechanism
-///     converges in at most `maxConsecutiveNudges` steps or stands down.
+///  1. **It only ever runs from a settled rest, and only after real motion.** `noteScroll` arms a
+///     single debounce and now REQUIRES motion to arm at all; a real scroll (motion beyond
+///     `driftTolerance`, or a path length beyond `motionWindowDisplacement`) re-arms it, so
+///     nothing fires while the page moves and nothing fires when the page has not moved. The three
+///     backstops that legitimately arm without motion (`invalidateEpoch`, `noteClearances`,
+///     `noteBeltFaded`) call `rearm(source:)` directly and are unaffected; `armSrc=` on the settle
+///     line names which one did.
+///  2. **The target is a legibility BAND, not a point.** Both edges come from the row's own
+///     geometry:
 ///
-///     Two earlier targets are recorded because both were wrong in instructive ways: gating on raw
-///     `margin` was Codex r1 P1 (it fired on already-clean `margin=-25 net=0` rests), and gating on
-///     PRE-LIFT intrusion was Codex r4 P1 (its fixpoint still left the focused card's artwork ~20pt
-///     under the title). The canonical rest subsumes both — at `margin == 0` the title sits in its
-///     designed band with the full static clearance beneath it, and with the Wave 10 hero
-///     compression the focused lift still clears the artwork.
-///  3. **Bounded by the row's own geometry.** `bottomRoom` keeps the focused card inside the
-///     viewport (only the transparent downward reach band is allowed to leave it), and
-///     `heroPinnedRowSettleMaxNudge` caps everything absolutely.
-///  4. **At most one correction in flight** (`nudgeDeadline`), and at most
-///     `maxConsecutiveNudges` in a row without an intervening healthy rest — so even if something
-///     external fights back, the loop stops after two attempts and the visibility belt
-///     (`PinnedRowTitleTracking.updateFade`) takes over.
-///  5. **Focus changes abandon it.** A new focused row replaces the measurement and resets the
-///     counter; focus leaving the rows clears it outright, so a correction planned for one row can
-///     never land on another. That includes TOKENS already scheduled: `invalidateEpoch` bumps
-///     `generation`, so a debounce armed for the old row cannot fire against the new row's
-///     not-yet-settled measurement, and re-arms a fresh settle so the new row gets its own full
-///     `settleDelay` (Codex r3 P2-2). The tracked focus covers a catalog row's trailing See All
-///     tile too, which is part of the row and needs the same correction (Codex r3 P2-1).
+///         bandLow  = −clearance.focused
+///         bandHigh = min(heroPinnedRowTitleInset,
+///                        heroPinnedRowTitleInset + vh − lockupExtent − settledCushion)
+///
+///     `bandLow` is BUG-84's edge — the title's bottom exactly on the FOCUSED card's artwork top,
+///     with the focus lift already subtracted into `clearance.focused`. `bandHigh` is the title's
+///     own inset (past it the previous row starts showing under the fold, BUG-89's contrast) met
+///     with "the focused card's lockup still finishes inside the viewport with the cushion under
+///     it". `inBand` carries ±2 of slack, the probe's own quantization. Outside the band the
+///     correction aims one dead zone INSIDE the nearer edge, never past the midpoint, so a landed
+///     rest cannot sit on a boundary and re-trigger on noise; inside it, `err` and `deficit` are 0
+///     and nothing happens. An EMPTY band (`bandHigh < bandLow`) is unsatisfiable geometry:
+///     `standDown(reason: "unsatisfiable")`, `unsat=1`, and the belt owns it.
+///
+///     Verified numbers, uniform poster rows, No Zoom (`clearance.focused = 26`,
+///     `lockupExtent = lg 24 + topReach 88 + artwork + captionChrome 43.5`):
+///
+///         Size     artwork   lockupExtent   vh       band           engine rest      corrections
+///         Small    275.0     430.5          455      [−26, 48  ]    +24 … +28.5      0
+///         Medium   330.0     485.5          455      [−26,  9.5]    −26.5            0
+///         Large    403.3     558.8          523.3    [−26,  4.5]    sim +24          1 × 23.5
+///         Large    403.3     558.8          523.3    [−26,  4.5]    device −31.5     1 × 9.5
+///
+///     Large's corrected rests are Wave 10's to the point (+24 → 0.5; BUG-84 still holds because
+///     the whole band is at or above `bandLow`), while Medium and Small stop being dragged to 0.
+///     That is the one intended visual change: their titles now sit fully visible with a taller
+///     dark band above them. A device parked 75pt deeper than the sim (−53) takes one 31pt nudge
+///     to −22 and is then in band.
+///  3. **A single correction is still a contraction onto its target.** Computed from the LIVE
+///     sample at fire time, never from the stale measurement that armed the settle;
+///     `magnitude = min(deficit, headroom, cap)`, where every bound can only SHORTEN it, never
+///     invert its sign or extend it past the target. `headroom` is direction-specific and bounded
+///     by REAL limits: downward by `protectedBottom` (the focused card's lockup must stay in the
+///     viewport — which as of Wave G subtracts the shelf's `Spacing.lg` bottom padding as well as
+///     the transparent reach band, making it exact rather than 24pt pessimistic), upward by the
+///     remaining scroll range (Codex Wave 10 r2 — an unbounded upward correction on the last row
+///     would ask to scroll past the end, `scrollTo` would clamp it silently, and two such MISSes
+///     would set the session-wide disarm).
+///  4. **A WALL-CLOCK budget that success cannot refund.** At most `maxCorrectionsPerWindow` (2)
+///     corrections per row per `correctionWindow` (8s), counted from when each FIRED. This is the
+///     brake the consecutive-failure counter could not be: the loop's corrections all succeed.
+///     `standDown(reason: "budget")`, `budget=1`. `consecutiveNudges` survives only as the `n=`
+///     field and nothing branches on it.
+///  5. **A PULL-BACK detector.** Each correction records the margin it was fired FROM. If the next
+///     settle for the same row lands within `pullBackTolerance` of that margin inside two seconds,
+///     the correction achieved nothing and repeating it would achieve nothing either: log
+///     `PULLBACK`, `standDown(reason: "pullback")` so the belt hides the title within ~0.25s, and
+///     report `pullback=1` (the running total is the line's own `pull=` field). Two pull-backs in
+///     a session set `pullBackDisarmed` with a loud `DISARMED-PULLBACK` line and the corrector is
+///     off for good, belt only. The ACTION sits after the in-band branch, so a rest that landed
+///     inside the band is never scored as a fight.
+///
+///     Worst case on a device that fights: one 0.5s nudge-and-return per row for two rows, then
+///     static. Before Wave G: unbounded.
+///  6. **At most one correction in flight** (`nudgeDeadline`), and **focus changes abandon it**. A
+///     new focused row replaces the measurement, ends the epoch and clears `lastCorrection`; focus
+///     leaving the rows clears it outright, so a correction planned for one row can never land on
+///     another. That includes TOKENS already scheduled: `invalidateEpoch` bumps `generation`, so a
+///     debounce armed for the old row cannot fire against the new row's not-yet-settled
+///     measurement, and it re-arms a fresh settle so the new row gets its own full `settleDelay`
+///     (Codex r3 P2-2). The tracked focus covers a catalog row's trailing See All tile too, which
+///     is part of the row and needs the same correction (Codex r3 P2-1). The per-row WINDOW BUDGET
+///     deliberately does NOT reset on a focus change: it is keyed by row and its whole purpose is
+///     to outlive the epoch churn that refunded the old counter.
+///  7. **It self-disarms if it is ever wrong.** Each correction records where it asked the scroll
+///     view to land; the next settle checks. Two misses and the whole mechanism switches off for
+///     the session with a loud log line, leaving beta.15 behavior plus the belt. Only a correction
+///     whose own epoch is still current can testify: a focus change voids the outstanding
+///     verification (`invalidateEpoch`), and a content reflow between fire and check voids it too
+///     — otherwise a D-pad move or a lazy row realization would be counted as evidence against the
+///     scroll API and two of them would disarm the session (Codex r1 P2, both seen in a sim run).
+///
+/// Two earlier targets are recorded because both were wrong in instructive ways: gating on raw
+/// `margin` was Codex r1 P1 (it fired on already-clean `margin=-25 net=0` rests), and gating on
+/// PRE-LIFT intrusion was Codex r4 P1 (its fixpoint still left the focused card's artwork ~20pt
+/// under the title). The band subsumes both — every margin in it clears the FOCUSED card's
+/// artwork by construction.
+///
 /// **The handoff, and why it cannot livelock (Wave 9(a), device pass on the Living Room ATV).**
-/// Some rests are simply UNSATISFIABLE: hardware parks rows ~75pt deeper than the simulator does
+/// Some rests are simply UNSATISFIABLE: hardware parks rows deeper than the simulator does
 /// (tab-bar occlusion, the BUG-66 family — device `margin=-99 rowB=480` against sim `-25 / 404` at
 /// the same `vh=455`), and a Large focusable frame taller than the effective viewport cannot be
 /// made to show its title band AND its card at once. No amount of correcting fixes that; the
@@ -1396,7 +1440,7 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// as the tester watched. The disarm that should have noticed corrections weren't landing was
 /// itself neutralized — the same content growth VOIDed every verification, so no MISS was counted.
 ///
-/// Three changes close it, and each is sufficient on its own for a different reason:
+/// Three changes closed it, and each is sufficient on its own for a different reason:
 ///   - `MeasurementReport.unmeasured` HOLDS instead of clearing, so the stand-down sticks. This is
 ///     the root cause; the rest are belt and braces.
 ///   - `standDown` records the handoff in the log, so the trace shows the corrector yielding — and,
@@ -1414,13 +1458,8 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///     `fadeRecheckFloor` is real and deliberate — the ceiling gates a scheduled CHECK rather than
 ///     firing a timer of its own, so the bound is the ceiling plus one wake-up interval.
 ///
-///  6. **It self-disarms if it is ever wrong.** Each correction records where it asked the scroll
-///     view to land; the next settle checks. Two misses and the whole mechanism switches off for
-///     the session with a loud log line, leaving beta.15 behavior plus the belt. Only a correction
-///     whose own epoch is still current can testify: a focus change voids the outstanding
-///     verification (`invalidateEpoch`), and a content reflow between fire and check voids it too
-///     — otherwise a D-pad move or a lazy row realization would be counted as evidence against the
-///     scroll API and two of them would disarm the session (Codex r1 P2, both seen in a sim run).
+/// Wave G adds the fourth: the budget and the pull-back detector both stand down, so a device that
+/// fights corrections reaches the belt in two attempts instead of never.
 ///
 /// The creep this also disposes of. The same sim trace shows `margin` drifting ~2pt per probe
 /// tick at "rest" (−86 → −100 over ~600ms with no input), i.e. the rest never actually settles.
@@ -1434,13 +1473,28 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// a fixed `heroCarouselHeightPinned` frame). Whichever it is, the drift is made HARMLESS here
 /// rather than chased: `noteScroll` treats a sub-`driftTolerance` STEP as stillness, so a crawl
 /// still produces exactly one settle instead of re-arming the debounce forever, and the correction
-/// is computed from the LIVE measurement at fire time, not from the stale one that armed it. That
-/// tolerance is load-bearing — a naive "no geometry change for 250ms" settle detector would never
-/// fire at all against a creeping rest, and this fix would silently never run. A creep that
-/// outlives the correction is then bounded twice over: the corrected rest is `margin ≈ 0`, so it
-/// has the full 72pt slide plus ~26pt of static clearance to drift through before the title
-/// touches artwork again, and if it ever does, the next settle corrects it again (that is not
-/// oscillation — each correction is a response to fresh external motion, not to its own output).
+/// is computed from the LIVE measurement at fire time, not from the stale one that armed it. A
+/// creep that outlives the correction is bounded three ways now: the band is 30pt wide at Large
+/// and 74 at Small, so ordinary drift never leaves it; the wall-clock budget caps what a drifting
+/// rest can cost; and a motionless pass no longer arms anything at all.
+///
+/// **The settle line** (`[HomeScrollProbe] settle …`, mirrored into the DEBUG `debug_pinned` AX
+/// probe the UI tests read). Append-only by contract — test47/test48 parse it — and every field is
+/// `key=value`, order not significant:
+///
+///     row= margin= net= vh= rowB= protB= y= inset= beltFaded= beltFadeReason=
+///     rowH= last= prevHidden= corrN= pull= pbDisarm= seq= armSrc=
+///     clearance= clearanceLift= lift= intr= intrLifted= err= deficit= bandLo= bandHi= inBand=
+///     [ nudge= bound= n= | nudge=0 <outcome> ]
+///
+/// where `<outcome>` is one of `clearance=?`, `budget=1`, `unsat=1`, `pull=N`, `disarmed=1`,
+/// `knobDisarm=1`, `inflight=1`, `pullback=1`, `endOfContent=1 room=`, `bound=`, `room=`, or
+/// nothing at all for a rest that is in band. `seq` is a monotonic settle counter (an idle sample whose `seq` climbs
+/// with nobody touching the remote is BUG-87 reproducing); `armSrc ∈ scroll|epoch|clearance|belt|
+/// retry` names what armed it; `corrN` is this row's corrections inside the window. The
+/// clearance-dependent trio (`bandLo`/`bandHi`/`inBand`) is absent on a `clearance=?` line for the
+/// same reason `deficit=` is — the band cannot be computed before the row's title has measured
+/// itself.
 ///
 /// Storage is plain static rather than `@State` for the same reason `HomeScrollProbeRest`'s is:
 /// every writer is a SwiftUI geometry callback on the main thread, and a state write here would
@@ -1472,6 +1526,16 @@ enum PinnedRowSettle {
         /// fold, which is why this is the focused tile's own extent and not the row's shortest.
         var focusedLockupExtent: CGFloat?
 
+        /// Whether this row is the LAST one in Home's pinned rows list (BUG-89). Published through
+        /// `EnvironmentValues.pinnedRowIsLast`, which `HomeView` sets on the `ForEach(model.rows)`
+        /// content; false for every non-Home host. Diagnostic here rather than behavioural — the
+        /// `endOfContent` branch stays the honest fallback, because "the scroll range is spent" is
+        /// a property of the SCROLL VIEW and remains true (or not) whatever the row's ordinal says.
+        /// What this buys is the ability to read a `nudge=0 endOfContent=1` line and know whether
+        /// it came from the exempt row or from a mid-list row whose range had unexpectedly run out,
+        /// which the corrector alone could never tell apart. See `PinnedRowEnvironment.swift`.
+        var isLastRow: Bool = false
+
         /// The title's top vs the viewport's top edge — the probe's `margin`, reproduced from the
         /// ROW's frame. The pinned title is an overlay at the shelf's top-leading corner inset by
         /// `heroPinnedRowTitleInset` (see `CatalogRowView`'s overlay and its three twins), and the
@@ -1483,10 +1547,36 @@ enum PinnedRowSettle {
         /// focused card's lockup bottom. Everything below it in the row's frame is transparent —
         /// the downward reach band, and (for the row's own bottom padding) shelf chrome — and may
         /// leave the viewport without hiding any artwork.
+        /// BUG-87, second defect: this used to subtract the downward reach band ALONE, and every
+        /// uniform-card pinned shelf carries `.padding(.vertical, Theme.Spacing.lg)` OUTSIDE that
+        /// band as well — `CatalogRowView`'s shelf (BrowseComponents, the `LazyHStack` under the
+        /// pinned title), Home's Continue Watching shelf (`HomeView`), and `UpcomingRow`. So the
+        /// row's frame overstated the focused card's lockup bottom by a full 24pt, every downward
+        /// correction at Large stopped ~11.5pt short of what the geometry actually allowed, and the
+        /// settle logged `bound=` and stood down on a rest it could have finished — the "almost,
+        /// give up, the engine moves it, almost…" cadence in the tester's video.
+        ///
+        /// The corrected arithmetic is exact rather than approximate. At Large:
+        /// `rowHeight = lg(24) + topReach(88) + artwork(403.3) + captionChrome(43.5) +
+        /// bottomReach(44) + lg(24) = 626.8`, and `rowBottom − 44 − 24 − rowTop = 558.8`, which is
+        /// `24 + 88 + 403.3 + 43.5` — the lockup's bottom to the point.
+        ///
+        /// The mixed-shape collection row still overrides with `focusedLockupExtent`, which it
+        /// measures directly and which already accounts for its own (asymmetric, `.top`-only)
+        /// padding — see `focusedLockupExtent` and `CollectionsUI.swift`.
+        ///
+        /// MUST ship with the band target and the correction budget below. On its own it hands the
+        /// old point-target corrector ~24pt MORE room to chase an unreachable margin 0 with, which
+        /// makes the loop worse rather than better.
         var protectedBottom: CGFloat {
             if let focusedLockupExtent { return rowTop + focusedLockupExtent }
-            return rowBottom - Theme.Size.heroPinnedRowBottomReach
+            return rowBottom - Theme.Size.heroPinnedRowBottomReach - Theme.Spacing.lg
         }
+
+        /// The focused card's lockup bottom measured from the ROW's top edge — the row-intrinsic
+        /// height the band target is sized against, independent of where the row is currently
+        /// parked. `protectedBottom` is the same quantity in viewport coordinates.
+        var lockupExtent: CGFloat { protectedBottom - rowTop }
     }
 
     /// What one pinned row's settle tracker saw this geometry pass (Wave 9(a)).
@@ -1564,11 +1654,32 @@ enum PinnedRowSettle {
     /// (≈60pt/s) between the measured creep and a slow swipe's deceleration tail.
     nonisolated static let motionWindowSeconds: TimeInterval = 0.3
     nonisolated static let motionWindowDisplacement: CGFloat = 18
-    nonisolated static let maxConsecutiveNudges = 2
-    /// The canonical rest every settled focused pinned row is normalized to (Wave 10): `margin`
-    /// zero, i.e. the row's top exactly at the pinned clip edge. Named rather than written as a
-    /// literal 0 so the contraction argument in the header has something to point at.
-    nonisolated static let canonicalMarginTarget: CGFloat = 0
+    /// WALL-CLOCK correction budget, per row (BUG-87). At most `maxCorrectionsPerWindow`
+    /// corrections may be fired for one row inside `correctionWindow`, counted from when each was
+    /// fired and never refunded by a good rest in between.
+    ///
+    /// This replaces `maxConsecutiveNudges`, which counted CONSECUTIVE failures and was refunded
+    /// on every `deficit == 0` — and a landed correction produces exactly that, so the budget
+    /// handed itself straight back on every successful nudge. The device loop needed nothing more
+    /// exotic than that: correct → land → refund → the focus engine re-reveals the frame back to
+    /// its own rest → motion → arm → correct, forever. A wall-clock window cannot be refunded by
+    /// its own success, so the loop is bounded whatever the engine does.
+    ///
+    /// 8 seconds and 2 corrections is deliberately generous for legitimate use (a user walking
+    /// rows gets a fresh row key, and a row re-entered after 8s of reading is a new situation) and
+    /// tight enough that the worst case the tester can see is two nudges and then a static row
+    /// that the belt owns.
+    nonisolated static let correctionWindow: TimeInterval = 8
+    nonisolated static let maxCorrectionsPerWindow = 2
+    /// How close a landed rest must be to the margin a correction was fired FROM before that
+    /// counts as the focus engine pulling the row back where it was — the other half of the loop.
+    /// Reuses the dead zone: inside it, the row is indistinguishable from where it started, so the
+    /// correction achieved nothing and repeating it would achieve nothing either.
+    nonisolated static let pullBackTolerance: CGFloat = Theme.Size.heroPinnedRowSettleDeadZone
+    /// Two pull-backs in one session and the corrector switches off entirely. A device that fights
+    /// corrections fights all of them; carrying on would spend the rest of the session animating
+    /// rows back and forth for nothing.
+    nonisolated static let maxPullBacksPerSession = 2
     /// `defaults write com.nuvio.media.NuvioTV debug.pinnedSettleDisarm -bool YES`, or as a launch
     /// argument on device/CI. Turns the corrector off so a deep park stays uncorrected — the only
     /// way to reach unsatisfiable geometry now that the hero compression removes it at Large. Read
@@ -1595,6 +1706,35 @@ enum PinnedRowSettle {
     nonisolated(unsafe) private static var pendingVerification: Verification?
     nonisolated(unsafe) private static var verifyFailures = 0
     nonisolated(unsafe) private static var disarmed = false
+    /// When each row last FIRED a correction, pruned to `correctionWindow` on every read. Bounded
+    /// by (pinned rows ever focused) x `maxCorrectionsPerWindow` — a handful of `Date`s.
+    nonisolated(unsafe) private static var correctionsFired: [String: [Date]] = [:]
+    /// The most recent correction, and the margin it was fired FROM. The next settle compares its
+    /// own margin against this to detect the focus engine pulling the row straight back — see the
+    /// pull-back paragraph in the header. Cleared by `invalidateEpoch` (a different row's rest can
+    /// never be evidence about this one) but NOT by a good rest, which is the whole point.
+    nonisolated(unsafe) private static var lastCorrection: (rowKey: String, fromMargin: CGFloat, at: Date)?
+    /// Session totals, deliberately not host- or epoch-scoped: a device that pulls corrections
+    /// back does it everywhere, and the `disarmed` flag next to them has always been session-wide
+    /// for the same reason.
+    /// The margin the pull-back currently being reported was measured against — carried between
+    /// the detection (which runs with the verification, so the settle line can report accurate
+    /// counters) and the action below the in-band branch. Scratch storage, valid only within one
+    /// `settlePlan` call.
+    nonisolated(unsafe) private static var pullBackFrom: CGFloat = 0
+    nonisolated(unsafe) private static var pullBacks = 0
+    nonisolated(unsafe) private static var pullBackDisarmed = false
+    /// Monotonic settle counter, reported as `seq=` so a harness sampling `debug_pinned` over an
+    /// idle window can tell "the same settle line, still the last word" from "the corrector keeps
+    /// resolving settles" without inferring it from timing. Never reset.
+    nonisolated(unsafe) private static var settleSeq = 0
+    /// What armed the settle currently being resolved — `scroll|epoch|clearance|belt|retry`,
+    /// reported as `armSrc=`. A row that keeps producing settle lines with nothing touching the
+    /// remote is the BUG-87 signature, and this names which backstop is doing it.
+    nonisolated(unsafe) private static var armSource = "scroll"
+    /// One-shot latch for the "a motionless sample no longer arms" probe line, so a stationary
+    /// page that keeps emitting geometry callbacks writes one line and not one per frame.
+    nonisolated(unsafe) private static var stillIgnoredLogged = false
     /// Set by `invalidateEpoch`, consumed by the first superseded `settlePlan` call: "a fresh
     /// settle is armed for a new row and nothing is scheduled to resolve it — please re-check".
     nonisolated(unsafe) private static var epochRearmPending = false
@@ -1681,7 +1821,7 @@ enum PinnedRowSettle {
         let changed = faded ? beltFadedRows.insert(rowKey).inserted : (beltFadedRows.remove(rowKey) != nil)
         if faded { beltFadeReasons[rowKey] = reason } else { beltFadeReasons.removeValue(forKey: rowKey) }
         guard changed, !armed, let scheduler else { return }
-        let token = rearm()
+        let token = rearm(source: "belt")
         MainActor.assumeIsolated { scheduler(token) }
     }
 
@@ -1742,7 +1882,7 @@ enum PinnedRowSettle {
             }
             return
         }
-        let token = rearm()
+        let token = rearm(source: "clearance")
         if HomeGeometryProbe.enabled {
             NSLog("[HomeScrollProbe] settle %@",
                   "\(wasLate ? "clearance-late" : "clearance-changed") rearm row=\(rowKey)")
@@ -1774,6 +1914,13 @@ enum PinnedRowSettle {
         // Same for the stand-down dedup: a focus change is a fresh judgment, and re-entering a row
         // later must be able to re-notify its belt (Wave 9b).
         standDownRow = nil
+        // The pull-back detector's evidence belongs to the row that was focused. A different row's
+        // rest can never testify about whether THIS one was pulled back, and leaving it standing
+        // would let an ordinary D-pad move to a row that happens to rest near the old row's
+        // pre-correction margin read as the engine fighting us. The per-row WINDOW BUDGET
+        // (`correctionsFired`) deliberately survives: it is keyed by row and its whole purpose is
+        // to outlive the epoch churn that refunded the old consecutive-nudge counter.
+        lastCorrection = nil
         // Codex r3 P2-2: stale every token scheduled for the OLD row. Resetting the correction
         // state alone left `generation` untouched, so a token armed before the focus change could
         // fire inside the NEW row's debounce window and compute a correction from a measurement
@@ -1781,7 +1928,7 @@ enum PinnedRowSettle {
         // the tail of the old row's. `rearm()` both stales the old tokens and arms that fresh
         // settle.
         let hadPendingBlock = armed
-        let token = rearm()
+        let token = rearm(source: "epoch")
         guard !hadPendingBlock else {
             // A deferred block is still out there. It will find its token stale and pick the fresh
             // epoch up itself (`settlePlan`'s superseded branch) — routing this through the
@@ -1854,8 +2001,28 @@ enum PinnedRowSettle {
         // keeps first refusal at every rest (Codex r2 P2-1; see `secondsSinceMotion`).
         if isMove { lastMotionAt = now }
         if armed, !isMove { return nil }
+        // BUG-87, the amplifier. A MOTIONLESS sample used to arm a settle whenever nothing was
+        // already armed — so on a row-heavy Home every lazy row realization (`contentSize` grows,
+        // `contentOffset` does not) armed a correction with no scroll and no focus change behind
+        // it, and each correction it fired stamped motion, which produced more geometry callbacks.
+        // Corrections must be a response to the page MOVING; the three backstops that legitimately
+        // arm without motion (`invalidateEpoch`, `noteClearances`, `noteBeltFaded`) call `rearm`
+        // directly and are untouched by this.
+        //
+        // The first sample of a host's life still arms: `isMove` is `true` when there is no
+        // previous offset to difference against, which is what gives a page that has never
+        // scrolled its one initial settle.
+        guard isMove else {
+            if HomeGeometryProbe.enabled, !stillIgnoredLogged {
+                stillIgnoredLogged = true
+                NSLog("[HomeScrollProbe] settle %@",
+                      "still-ignored — a motionless geometry pass no longer arms a correction (further occurrences not logged)")
+            }
+            return nil
+        }
         generation &+= 1
         armed = true
+        armSource = "scroll"
         return generation
     }
 
@@ -1907,6 +2074,11 @@ enum PinnedRowSettle {
         lastMotionAt = nil
         motionWindow.removeAll()
         standDownRow = nil
+        lastCorrection = nil
+        // Host-scoped, unlike the epoch case: every row key belonged to the outgoing host's rows
+        // and each of them is being torn down. The session-wide `pullBacks`/`pullBackDisarmed`
+        // stay, for the same reason `disarmed` does — they describe the DEVICE, not the host.
+        correctionsFired.removeAll()
         beltFadeReasons.removeAll()
         // Belt state is host-scoped diagnostic state like everything else here: it describes titles
         // that belonged to the OUTGOING host's rows, and every one of them is being torn down with
@@ -1949,9 +2121,10 @@ enum PinnedRowSettle {
     /// every token already scheduled. Callers: the in-flight retry (Codex r2 P2-2), the epoch
     /// re-check (Codex r3 P2-2), and `invalidateEpoch` itself. All three exist because the page is
     /// already stationary at those moments, so no further geometry event will ever arm another.
-    nonisolated static func rearm() -> Int {
+    nonisolated static func rearm(source: String) -> Int {
         generation &+= 1
         armed = true
+        armSource = source
         return generation
     }
 
@@ -1990,6 +2163,7 @@ enum PinnedRowSettle {
             return Plan(report: "", targetY: nil, retryAfter: settleDelay)
         }
         armed = false
+        settleSeq &+= 1
 
         // Verify the PREVIOUS correction before planning another one.
         if let verification = pendingVerification {
@@ -2020,7 +2194,39 @@ enum PinnedRowSettle {
         }
 
         guard let m = latest else {
-            return Plan(report: "row=- state=nofocus y=\(Int(sample.offsetY.rounded()))", targetY: nil)
+            return Plan(report: "row=- state=nofocus y=\(Int(sample.offsetY.rounded()))"
+                            + " seq=\(settleSeq) armSrc=\(armSource)",
+                        targetY: nil)
+        }
+
+        // ── The pull-back detector (BUG-87, second brake) ────────────────────────────────────
+        // Detected HERE, immediately after the verification block, because it is evidence about
+        // the same thing: what happened to the LAST correction. The corrector's contraction
+        // argument only ever bounded what IT does; it said nothing about what the focus engine does
+        // next. On hardware the engine re-reveals the focused link frame after a correction moves
+        // it and lands the row back where it started — and the old budget, refunded on every landed
+        // correction, had nothing to notice that with. So: a rest within `pullBackTolerance` of the
+        // margin the last correction was fired FROM, inside two seconds, means that correction
+        // achieved nothing and repeating it would achieve nothing either.
+        //
+        // The counters move here so the settle line carries ONE authoritative `pull=`/`pbDisarm=`
+        // (a second copy appended on the branch below would be a duplicate key for the harness
+        // oracle); the ACTION — log, stand down, decline — happens after the in-band branch, so a
+        // rest that landed inside the band is never treated as a fight. Mutating on a rest that
+        // then turns out to be in band is harmless and nearly unreachable: a correction only ever
+        // fires from an OUT-of-band margin, so a landing within 4pt of it can only be in band
+        // through the ±2 membership slack, and `standDownFastPath` re-checks the title's own
+        // acceptability before hiding anything.
+        var pulledBack = false
+        if let last = lastCorrection,
+           last.rowKey == m.rowKey,
+           abs(m.margin - last.fromMargin) <= pullBackTolerance,
+           Date().timeIntervalSince(last.at) < 2 {
+            pulledBack = true
+            pullBackFrom = last.fromMargin
+            lastCorrection = nil
+            pullBacks += 1
+            if pullBacks >= maxPullBacksPerSession { pullBackDisarmed = true }
         }
 
         let cap = maxSlideCapForReport
@@ -2037,34 +2243,59 @@ enum PinnedRowSettle {
             // contract working — the corrector gave the rest up and the belt took it.
             + " beltFaded=\(beltFadedRows.contains(m.rowKey) ? 1 : 0)"
             + " beltFadeReason=\(beltFadeReasons[m.rowKey] ?? "-")"
+            // BUG-87 diagnostic set. `rowH`/`last`/`prevHidden` describe the row; `corrN`/`pull`/
+            // `pbDisarm` describe the two new brakes; `seq`/`armSrc` describe THIS settle — which
+            // is what makes an idle sample of `debug_pinned` readable at all: an unchanging `seq`
+            // means the corrector is quiet, and a climbing one with nobody touching the remote is
+            // the loop reproducing. `prevHidden` is the BUG-89 question ("does the row above this
+            // one still show under the fold?") answered from the only geometry the corrector has:
+            // a row parked at the clip edge hides everything above it.
+            + " rowH=\(Int(m.rowHeight.rounded()))"
+            + " last=\(m.isLastRow ? 1 : 0)"
+            + " prevHidden=\(m.rowTop <= 2 ? 1 : 0)"
+            + " corrN=\(correctionsInWindow(m.rowKey))"
+            + " pull=\(pullBacks)"
+            + " pbDisarm=\(pullBackDisarmed ? 1 : 0)"
+            + " seq=\(settleSeq) armSrc=\(armSource)"
 
-        // The correction targets ARTWORK INTRUSION, not raw margin (Codex r1 P1) — and it measures
-        // that intrusion against the FOCUSED card, not the row's resting geometry (Codex r4 P1).
-        // The title rides over whichever card has focus, and the system focus lift has raised that
-        // card's artwork by `heroPinnedRowFocusLiftAllowance` (~20pt measured, size-independent),
-        // so the budget is the LIFTED clearance:
+        // The correction target is a legibility BAND, not a point (Wave G, BUG-87). Both edges are
+        // real constraints that the row's own geometry supplies, and every margin between them is
+        // an acceptable rest that the corrector must leave alone:
         //
-        //     clearances.focused = clearances.atRest − liftAllowance      ≈ 26 − 20 = 6pt
-        //     liftedIntrusion    = slide − clearances.focused             // what the viewer sees
-        //     deficit            = −margin − clearances.focused           // how far the row must
-        //                                                                 //   come DOWN to end it
+        //     bandLow  = −clearance.focused
+        //     bandHigh = min(heroPinnedRowTitleInset, 48 + vh − lockupExtent − settledCushion)
         //
-        // Gating on `margin < 0` instead fired on rests that were already clean (the sim run logged
-        // `margin=-25 net=0 nudge=25`); a `net`-based gate has the opposite failure and misses a
-        // rest that really does paint on the poster; and the PRE-LIFT intrusion — the metric every
-        // earlier round used — was systematically 20pt optimistic, so its fixpoint still left the
-        // focused card's artwork under the title. That was the blind spot the rc1 device log had:
-        // `intr=46` was really 66 on the card being looked at.
+        // `bandLow` is the BUG-84 edge: at that margin the title's bottom sits exactly on the
+        // FOCUSED card's artwork top (the lift is already subtracted into `clearance.focused`), so
+        // one point lower and the title is painting on the picture. `bandHigh` is two constraints
+        // met at once — the title may not fall further than its own inset below the clip edge
+        // (past that the previous row's cards start showing under the fold, BUG-89's contrast), and
+        // the focused card's lockup must still finish inside the viewport with the settled cushion
+        // under it, which is what `vh − lockupExtent` measures.
         //
-        // A corrected rest lands at `margin = −clearances.focused`, hence `slide =
-        // clearances.focused` (6 ≪ the 72 cap, so the clamp is inactive) and therefore:
+        // Why this replaces Wave 10's canonical `margin == 0`. That point target held on the sim
+        // by luck: the sim's focus engine TOP-anchors an over-tall link frame and rests at +22, so
+        // one contraction to 0 finished the job. Hardware BOTTOM-anchors the same frame on an
+        // up-walk (the recorded device `margin=-99` at `vh=455` is `vh − H + 24` to within a point),
+        // so its rest is ~55pt on the other side of the target — and no point target with a ±4 dead
+        // zone can hold both anchorings. The corrector chased 0 from below, the engine re-revealed
+        // the frame back to its own anchoring, and the `deficit == 0` refund handed the budget back
+        // on every landed correction. A band whose edges come from the geometry is satisfiable
+        // under BOTH anchorings, which is what makes the loop stop existing rather than be braked.
         //
-        //     liftedIntrusion = 6 − 6 = 0     → nothing on the focused card's artwork
-        //     net = margin + slide = −6 + 6 = 0 ≥ 0   → the title is still FULLY visible
+        // Verified numbers (uniform poster rows, No Zoom, `clearance.focused = 26`,
+        // `lockupExtent = lg + topReach + artwork + captionChrome`):
         //
-        // The two goals do not fight: the correction consumes exactly the clearance and no more.
-        // (The ideal top rest, slide 0, sits at `liftedIntrusion = −6` — 6pt of daylight under the
-        // title even with the card lifted, which is why that rest never drew a complaint.)
+        //     Size     vh      lockupExtent   band            engine rest        result
+        //     Large    523.3   558.8          [-26,   4.5]    sim +24 / dev -31.5   one nudge 23.5 / 9.5
+        //     Medium   455     485.5          [-26,   9.5]    -26.5 (inside slack)  0 nudges
+        //     Small    455     430.5          [-26,  48  ]    +24 … +28.5           0 nudges
+        //
+        // — i.e. Wave 10's Large rests are preserved to the point (a rest pulled from +24 lands at
+        // bandHigh − deadZone = 0.5, and BUG-84's "title never on the artwork" still holds because
+        // the whole band is above `bandLow`), while Medium and Small stop being dragged to 0 at all.
+        // That is the one intended visual change: their titles now sit fully visible with a taller
+        // dark band above them instead of being pulled up to the clip edge.
         //
         // No published clearances means this row's title has never measured itself (it isn't
         // mounted, or pinned mode isn't on) — fail safe and correct nothing.
@@ -2088,30 +2319,34 @@ enum PinnedRowSettle {
         }
         clearanceLatePending = nil
         let liftedIntrusion = slide - clearance.focused
-        // Wave 10: the target is the CANONICAL REST — `margin == 0`, the row's top exactly at the
-        // pinned clip edge, which puts the title in its designed band with the full static
-        // clearance beneath it and (with the hero compression in place) the whole poster below
-        // that. Every settled focused rest is normalized to it, so rows land in the same place
-        // every time; that is the tester's actual request, and it subsumes the old
-        // fix-the-intrusion behaviour rather than sitting next to it.
-        //
-        // `error` is signed and the correction is now BIDIRECTIONAL: a rest parked too LOW (the
-        // row's top below the clip edge, wasting band) is pulled up just as one parked too high is
-        // pushed down. `deficit` is the magnitude outside the dead zone, kept under that name
-        // because the probe field and every device log written so far use it.
-        let error = m.margin - canonicalMarginTarget
-        // The dead zone decides WHETHER to correct. It must not also SHORTEN the correction, which
-        // is what `max(|error| − deadZone, 0)` did: a rest approached from above stopped at −4 and
-        // one approached from below stopped at +4, so two rows that both "converged" sat 8pt apart
-        // — wider than test47's own 5pt consistency assertion, and visible as exactly the
-        // inconsistent landing the canonical rest exists to remove. Corrections now carry the FULL
-        // distance to the target (still bounded by `headroom` and the absolute cap below).
-        let offTarget = abs(error)
-        let deficit = offTarget > Theme.Size.heroPinnedRowSettleDeadZone ? offTarget : 0
+        // ── The band ─────────────────────────────────────────────────────────────────────────
+        // See the block comment above for what each edge means and why a band replaced Wave 10's
+        // point target. `deadZone` is a GATE here in exactly the sense it always was: it never
+        // shortens a correction, it decides how far INSIDE the band a correction aims so a landed
+        // rest cannot sit on the boundary and re-trigger on sub-point noise.
+        let bandLow = -clearance.focused
+        let bandHigh = min(Theme.Size.heroPinnedRowTitleInset,
+                           Theme.Size.heroPinnedRowTitleInset + m.viewportHeight - m.lockupExtent
+                               - Theme.Size.heroPinnedRowsSettledCushion)
+        // ±2 of slack on the membership test, not on the target: it is the probe's own 2pt
+        // quantization, so a rest reported as sitting exactly on an edge is treated as inside it.
+        let inBand = m.margin >= bandLow - 2 && m.margin <= bandHigh + 2
+        let bandMid = (bandLow + bandHigh) / 2
+        // Aim one dead zone inside the nearer edge, but never past the middle — on a band narrower
+        // than two dead zones the inset from one edge would overshoot the other, and the midpoint
+        // is the only point that is inside both.
+        let bandTarget = m.margin < bandLow
+            ? min(bandLow + Theme.Size.heroPinnedRowSettleDeadZone, bandMid)
+            : max(bandHigh - Theme.Size.heroPinnedRowSettleDeadZone, bandMid)
+        // `err` keeps its spelling and its sign convention (signed distance to what we are aiming
+        // at), and reads 0 inside the band because there is nothing to aim at. `deficit` likewise
+        // keeps its name — every device log written so far greps for it.
+        let error = inBand ? 0 : m.margin - bandTarget
+        let deficit = inBand ? 0 : abs(m.margin - bandTarget)
         // `lift=` is reported separately from the two clearances because `focused` clamps at 0:
-        // once the active treatment's lift exceeds the static clearance (ring mode at Large does,
-        // ~27 vs 26), the difference between the two clearances stops telling you the magnitude.
-        // In still mode this reads `lift=0 clearanceLift=26` — the whole point of Codex r7 P1.
+        // once the active treatment's lift exceeds the static clearance, the difference between
+        // the two clearances stops telling you the magnitude. In still mode this reads
+        // `lift=0 clearanceLift=26` — the whole point of Codex r7 P1.
         line += " clearance=\(Int(clearance.atRest.rounded()))"
             + " clearanceLift=\(Int(clearance.focused.rounded()))"
             + " lift=\(Int(clearance.lift.rounded()))"
@@ -2119,10 +2354,14 @@ enum PinnedRowSettle {
             + " intrLifted=\(Int(liftedIntrusion.rounded()))"
             + " err=\(Int(error.rounded()))"
             + " deficit=\(Int(deficit.rounded()))"
+            + " bandLo=\(Int(bandLow.rounded()))"
+            + " bandHi=\(Int(bandHigh.rounded()))"
+            + " inBand=\(inBand ? 1 : 0)"
 
-        // A rest inside the dead zone IS the canonical rest — nothing to do, and the epoch closes:
-        // the guard counts consecutive FAILURES, so a row that settles correctly gets its full
-        // budget back next time it needs one.
+        // A rest inside the band needs nothing. The epoch closes for the `n=` counter's sake, but
+        // note what does NOT happen here any more: the per-row WINDOW BUDGET is not refunded. That
+        // refund was the loop — a landed correction produces exactly this branch, so the budget
+        // handed itself back every time it was spent successfully.
         guard deficit > 0 else {
             consecutiveNudges = 0
             // This rest is fine, so the row is no longer given up on. Releasing the dedup here is
@@ -2132,7 +2371,24 @@ enum PinnedRowSettle {
             if standDownRow == m.rowKey { standDownRow = nil }
             return Plan(report: line + " nudge=0", targetY: nil)
         }
+        // The pull-back detected above (the counters already moved, so `pull=`/`pbDisarm=` on this
+        // line are current). Hand the rest to the belt at once — the title is what is at stake, and
+        // hiding it is the terminal fallback the belt exists for — and after
+        // `maxPullBacksPerSession` stop correcting altogether.
+        if pulledBack {
+            NSLog("[HomeScrollProbe] settle %@",
+                  "PULLBACK row=\(m.rowKey) from=\(Int(pullBackFrom.rounded()))"
+                    + " landed=\(Int(m.margin.rounded())) count=\(pullBacks)")
+            standDown(rowKey: m.rowKey, reason: "pullback")
+            if pullBackDisarmed {
+                NSLog("[HomeScrollProbe] settle DISARMED-PULLBACK — the focus engine returns rows to its own rest after every correction; corrections are off for this session, belt only")
+            }
+            return Plan(report: line + " nudge=0 pullback=1", targetY: nil)
+        }
         guard !disarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
+        // Same terminal outcome as `disarmed`, different cause — `pbDisarm=1` on the line is what
+        // tells the two apart, so the existing `disarmed=1` spelling is kept for both.
+        guard !pullBackDisarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
         // Wave 10 gate knob: with the hero compression in place an unsatisfiable rest is no longer
         // reachable at Large by walking, so test48's premise needs a way to put one back. Disarming
         // the corrector leaves a deep park uncorrected, which is exactly the geometry the belt's
@@ -2162,9 +2418,28 @@ enum PinnedRowSettle {
                         targetY: nil,
                         retryAfter: max(deadline.timeIntervalSinceNow, 0) + 0.05)
         }
-        guard consecutiveNudges < maxConsecutiveNudges else {
-            standDown(rowKey: m.rowKey, reason: "exhausted")
-            return Plan(report: line + " nudge=0 exhausted=1", targetY: nil)
+        // An EMPTY band: `bandHigh < bandLow`, i.e. the focused card's lockup is so much taller
+        // than the viewport that there is no margin at which the title clears the artwork AND the
+        // card finishes inside the fold. That is the unsatisfiable geometry the visibility belt
+        // exists for, and no correction can improve it — hand it over rather than spend the budget
+        // discovering that twice.
+        //
+        // Placed AFTER the `debug.pinnedSettleDisarm` guard on purpose: that knob's whole job is to
+        // simulate a corrector that never engages, so test48 leg A's premise needs it to keep
+        // returning `knobDisarm=1` on exactly the deep parks this branch would otherwise claim.
+        guard bandHigh >= bandLow else {
+            standDown(rowKey: m.rowKey, reason: "unsatisfiable")
+            return Plan(report: line + " nudge=0 unsat=1", targetY: nil)
+        }
+        // ── The wall-clock budget (BUG-87, first brake) ───────────────────────────────────────
+        // Replaces `consecutiveNudges < maxConsecutiveNudges`. See `correctionWindow` for why a
+        // consecutive-failure counter could never brake this loop: the loop's corrections all
+        // SUCCEED, and success refunded the counter. `consecutiveNudges` survives only as the `n=`
+        // field, which reads as "how many attempts in this epoch" and nothing branches on.
+        let fired = correctionsInWindow(m.rowKey)
+        guard fired < maxCorrectionsPerWindow else {
+            standDown(rowKey: m.rowKey, reason: "budget")
+            return Plan(report: line + " nudge=0 budget=1", targetY: nil)
         }
 
         // How far the content may move DOWN before the FOCUSED card's own lockup starts leaving
@@ -2185,11 +2460,18 @@ enum PinnedRowSettle {
         // larger, so under-allowing is the safe side of the estimate.
         let maxOffsetY = max(sample.contentHeight - sample.viewportHeight, 0)
         let scrollRoomUp = max(maxOffsetY - sample.offsetY, 0)
-        // A row at the bottom of the content legitimately CANNOT reach the canonical target — there
-        // is no scroll left to give. That is the best rest the geometry allows, not a failure, so
-        // it closes the epoch like any other healthy rest rather than standing down: the title is
-        // fully visible (positive margin means no clipping and no intrusion), so there is nothing
-        // for the belt to own either.
+        // A row at the bottom of the content legitimately CANNOT reach the band — there is no
+        // scroll left to give. That is the best rest the geometry allows, not a failure, so it
+        // closes the epoch like any other healthy rest rather than standing down: the title is
+        // fully visible (a margin above the band is neither clipping nor intrusion), so there is
+        // nothing for the belt to own either.
+        //
+        // BUG-89 note: this is the LAST ROW's normal outcome, and it stays the honest fallback
+        // rather than being keyed off `m.isLastRow`. "The scroll range is spent" is a property of
+        // the scroll view, and it can be true for a mid-list row (a short content height, a pending
+        // lazy realization) and false for the last one (`HomeView.rowsInsets` now sizes a trailing
+        // inset from the last row's own height, so the range usually IS there). `last=` and
+        // `prevHidden=` on the line say which case a device log is looking at.
         if error > 0, scrollRoomUp <= Theme.Size.heroPinnedRowSettleDeadZone {
             consecutiveNudges = 0
             if standDownRow == m.rowKey { standDownRow = nil }
@@ -2235,11 +2517,32 @@ enum PinnedRowSettle {
         consecutiveNudges += 1
         nudgeDeadline = Date().addingTimeInterval(nudgeDuration + 0.2)
         pendingVerification = Verification(expectedY: target, contentHeight: sample.contentHeight)
+        // Spend the wall-clock budget, and record the margin this correction is leaving so the
+        // next settle can tell "it landed and stayed" from "the engine put it straight back".
+        let firedAt = Date()
+        correctionsFired[m.rowKey, default: []].append(firedAt)
+        lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt)
         // `nudge` stays signed in the log: positive moved the row DOWN toward the clip edge,
         // negative pulled it UP. A device trace can read the direction straight off the line.
         line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded())) n=\(consecutiveNudges)"
         if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
         return Plan(report: line, targetY: target)
+    }
+
+    /// How many corrections this row has fired inside `correctionWindow`, pruning the record as it
+    /// reads it. The pruning is the only maintenance `correctionsFired` gets, which is enough: a
+    /// row that stops being corrected stops being asked about, and its stale `Date`s are bounded by
+    /// `maxCorrectionsPerWindow` per row.
+    nonisolated private static func correctionsInWindow(_ rowKey: String) -> Int {
+        guard var fired = correctionsFired[rowKey] else { return 0 }
+        let cutoff = Date().addingTimeInterval(-correctionWindow)
+        fired.removeAll { $0 < cutoff }
+        if fired.isEmpty {
+            correctionsFired.removeValue(forKey: rowKey)
+        } else {
+            correctionsFired[rowKey] = fired
+        }
+        return fired.count
     }
 
     /// Declares that the corrector has given this rest up and the visibility belt now owns it.
@@ -2338,6 +2641,11 @@ private struct PinnedRowSettleTracking: ViewModifier {
     let focusedLockupExtent: CGFloat?
     /// Pinned mode is the only mode with an overlaid title to protect; 0 = classic, inert.
     @Environment(\.rowCardTopReach) private var cardTopReach
+    /// BUG-89: whether this is Home's LAST pinned row — see `PinnedRowEnvironment.swift`. Read
+    /// here rather than threaded through `pinnedRowSettleTracking(rowKey:isFocused:)` so the four
+    /// row types that attach that modifier need no signature change and every non-Home host keeps
+    /// the `false` default for free.
+    @Environment(\.pinnedRowIsLast) private var isLastRow
 
     func body(content: Content) -> some View {
         // Captured by value so the geometry closure holds a plain String and a Bool rather than
@@ -2345,6 +2653,7 @@ private struct PinnedRowSettleTracking: ViewModifier {
         let key = rowKey
         let active = isFocused && cardTopReach > 0
         let lockupExtent = focusedLockupExtent
+        let isLast = isLastRow
         // Wave 9(a): THREE states, not two. Collapsing "this row is not focused" and "the enclosing
         // scroll view didn't resolve this pass" into one `nil` is what livelocked the corrector
         // against the belt on hardware — see `PinnedRowSettle.clear` and the device trace in the
@@ -2360,7 +2669,8 @@ private struct PinnedRowSettleTracking: ViewModifier {
                                                          rowTop: -visible.minY,
                                                          rowHeight: proxy.size.height,
                                                          viewportHeight: visible.height,
-                                                         focusedLockupExtent: lockupExtent))
+                                                         focusedLockupExtent: lockupExtent,
+                                                         isLastRow: isLast))
         }, action: { newValue in
             switch newValue {
             case .measured(let measurement):
@@ -2507,7 +2817,7 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 return
             }
             if hops > 0, let retry = plan.retryAfter {
-                scheduleSettle(token: PinnedRowSettle.rearm(), after: retry, hops: hops - 1)
+                scheduleSettle(token: PinnedRowSettle.rearm(source: "retry"), after: retry, hops: hops - 1)
             }
         }
         settleWork.item = work
@@ -2771,7 +3081,8 @@ struct CatalogRowView: View {
                                     .padding(.top, cardTopReach)
                                     .padding(.bottom, cardBottomReach)
                             }
-                            .cardFocusButtonStyle()
+                            // BUG-93: SeeAllCard uses tileFocusLift, not CardFocusTreatment - keep the native lift in ring mode.
+                            .cardFocusButtonStyle(lift: .plain)
                             .posterButtonShape()
                             // Codex r3 P2-1: the See All tile is part of THIS row, so the settle
                             // re-reveal has to count it as the row holding focus — otherwise

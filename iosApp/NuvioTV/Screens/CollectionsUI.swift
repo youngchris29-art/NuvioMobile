@@ -148,6 +148,30 @@ struct CollectionRowView: View {
         UIFont.preferredFont(forTextStyle: .caption2).lineHeight.rounded(.up)
     }
 
+    /// BUG-89: `shelfMinHeight`'s arithmetic, reachable statically so `HomeView.rowsInsets` can
+    /// size its bottom inset against the LAST Home row's height before any `CollectionRowView`
+    /// instance for it has ever been laid out (the row it needs to measure may not even be
+    /// visible yet — it is the one below the fold). `cardTopReach`/`cardBottomReach` are read from
+    /// an environment on the live instance; here they are the fixed pinned-mode values `HomeView`
+    /// always sets (`Theme.Size.heroPinnedRowTopPad` / `heroPinnedRowBottomReach`) — this helper
+    /// has no other caller, so that is never an approximation.
+    ///
+    /// Adds this row's own vertical chrome around the shelf: in pinned mode the section-title
+    /// `Text` above the shelf is NOT rendered (`:205`, overlaid instead), so the row's total
+    /// height is exactly the shelf plus its own top/bottom padding — `Theme.Spacing.lg` (24) top
+    /// (`:249`, pinned branch) and `Theme.Spacing.sm` (12) bottom (`:250`), with no extra `VStack`
+    /// spacing term (a single child has none).
+    static func pinnedRowHeight(collection: NuvioCollection, style: PosterStyle) -> CGFloat {
+        let cardTopReach = Theme.Size.heroPinnedRowTopPad
+        let cardBottomReach = Theme.Size.heroPinnedRowBottomReach
+        let captionChrome = Theme.Spacing.sm + Self.folderCaptionHeight
+        let maxTileHeight = collection.folders
+            .map { FolderTile.artworkHeight(for: $0, style: style) + ($0.hideTitle ? 0 : captionChrome) }
+            .max() ?? style.height
+        let shelfMinHeight = maxTileHeight + cardTopReach + cardBottomReach
+        return shelfMinHeight + Theme.Spacing.lg + Theme.Spacing.sm
+    }
+
     /// Distance from this row's TOP edge to the FOCUSED folder tile's lockup BOTTOM — the bound the
     /// settle re-reveal's correction must respect (Codex r11 P2-2).
     ///
@@ -229,7 +253,8 @@ struct CollectionRowView: View {
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
                         }
-                        .cardFocusButtonStyle()
+                        // BUG-93: FolderTile draws its own still ring and has no manual-scale branch - keep the native lift in ring mode.
+                        .cardFocusButtonStyle(lift: .plain)
                         .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
                         .focused($focusedFolderId, equals: folder.id)
                     }

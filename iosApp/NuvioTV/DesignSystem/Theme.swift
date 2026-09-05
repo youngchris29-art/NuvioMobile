@@ -392,18 +392,19 @@ enum Theme {
         /// slid title cuts into the art the viewer is actually looking at.
         ///
         /// Pixel-measured on the FA87 sim fixture (2026-08-30) and — the part that matters —
-        /// measured as the SAME ~20pt at Medium AND at Large. It is deliberately NOT derived from
-        /// `cardSystemLiftScale`: the SYSTEM hover effect's rise does not grow with the card, which
-        /// is precisely why the rc1 report ("titles continue to overlap the posters … only at
-        /// Large") is not a lift problem and why nothing here is allowed to become a reason to
-        /// touch that constant.
+        /// measured as the SAME ~20pt at Medium AND at Large. The SYSTEM hover effect's rise does
+        /// not grow with the card, which is precisely why the rc1 report ("titles continue to
+        /// overlap the posters … only at Large") is not a lift problem.
         ///
-        /// This is ONE of three cases. `PinnedRowTitle.focusLiftAllowance` (BrowseComponents)
-        /// resolves the active focus mode the same way `CardFocusMode.resolve` does and returns 0
-        /// for "No Zoom on Focus" (Wave 7 made that genuinely zero-lift) or a scale-derived rise
-        /// for ring mode; this constant is the default mode's value. Nothing lays out against it —
-        /// it feeds the settle re-reveal's correction budget, the visibility belt's threshold, and
-        /// the `intrLifted=` probe field.
+        /// As of BUG-93 (beta.18) this is the ONE rise for both zoom-on modes, and the single
+        /// source of truth for all three consumers. `PosterCard.cardFocusLiftRise` is defined as
+        /// this constant and derives ring mode's per-card scale from it
+        /// (`cardLiftScale(artworkHeight:)`), so the ring no longer charges a size-dependent
+        /// 16/20/27pt against a budget that reserved 20. `PinnedRowTitle.focusLiftAllowance`
+        /// (BrowseComponents) returns this in both zoom modes and 0 under "No Zoom on Focus"
+        /// (Wave 7 made that genuinely zero-lift). Nothing lays out against it — it feeds the
+        /// settle re-reveal's correction band, the visibility belt's threshold, and the
+        /// `intrLifted=` probe field.
         static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
         /// Hard ceiling on ONE settle re-reveal correction (`PinnedRowSettle`, BrowseComponents).
         ///
@@ -470,6 +471,39 @@ enum Theme {
         static let heroLogoSlotHeightPinnedFloor: CGFloat = 78
         static let heroSynopsisSlotHeightPinnedFloor: CGFloat = 36
 
+        /// FEAT-29 (Steven's beta.17 report, re-raised as a regression): a focused collection
+        /// folder's hero wordmark used to render inside the shared TITLE-hero pinned logo slot,
+        /// which Wave 10's compression drains first (`heroLogoSlotHeightPinned` 110 → 78 at
+        /// Large, 110 at Medium — "the Walt Disney logo is tiny, and it's a little bigger at
+        /// Medium" is exactly that give). Folder heroes have no meta line or synopsis to protect
+        /// (`HomeView.folderHeroPreview` always sends `description: nil, genres: []`), so they now
+        /// render through their OWN merged box (`HomeHeroForeground.nuvioLayout`/`.classicLayout`)
+        /// sized against the reference footage instead of borrowing the title-hero slot: official
+        /// Nuvio's collection wordmark reads roughly 0.2-0.35x the poster height, comfortably wide
+        /// enough that a 2:1 wordmark spans 300+pt at Large. 160 is a FIXED point value (not
+        /// poster-scaled) so the wordmark reads the same size at every Poster Size rather than
+        /// shrinking with the grid — 0.40x Small (275), 0.48x Medium (330), 0.58x Large (403.3)
+        /// poster height; a 2:1 wordmark renders 320pt wide. The inside-collection folder page
+        /// title (`FolderRoute`) is untouched — this only sizes the HOME hero's wordmark.
+        static let heroFolderLogoSlotHeight: CGFloat = 160
+
+        /// Release-inert device-bisect knob for `heroFolderLogoSlotHeight` — the device pass needs
+        /// to judge the wordmark size on Christian's TV against Steven's reference frames before
+        /// the number ships. Same override pattern as `PinnedRowTitle.maxSlideOverride`
+        /// (BrowseComponents.swift): read once at launch, `UserDefaults.standard` consults the
+        /// launch-argument domain before every other domain, so a `devicectl device process
+        /// launch` invocation can set it on physical hardware with no rebuild:
+        ///
+        ///     xcrun simctl spawn <udid> defaults write com.nuvio.media.NuvioTV debug.heroFolderLogoHeight -float 200
+        ///     xcrun devicectl device process launch --terminate-existing --device <udid> \
+        ///         com.nuvio.media.NuvioTV -debug.heroFolderLogoHeight 200
+        ///
+        /// Unset/0 = the shipped constant.
+        static let heroFolderLogoHeightOverride: CGFloat? = {
+            let v = UserDefaults.standard.double(forKey: "debug.heroFolderLogoHeight")
+            return v > 0 ? CGFloat(v) : nil
+        }()
+
         /// The three components of the pinned hero's SHRINK BUDGET — how much its internals can
         /// actually give up. `HomeHeroForeground` spends the first two in this order, and
         /// `heroPinnedCompressionCap` is their sum, so the budget and the ceiling can never drift
@@ -484,18 +518,29 @@ enum Theme {
         /// the frame can lose it without the content losing anything.
         static let heroPinnedFrameSlack: CGFloat = 2
 
-        // MARK: Wave 10 — canonical rests
+        // MARK: Wave 10 / Wave G — settled rests
 
-        /// How far a settled pinned rest may sit from the canonical target (`margin == 0`) before
-        /// the corrector normalizes it. Comfortably above the probe's own 2pt quantization and any
-        /// sub-point layout noise, which is what stops noise alone from re-triggering a rest that
-        /// has already landed — see `PinnedRowSettle`'s anti-oscillation contract.
+        /// The corrector's tolerance, in points. Comfortably above the probe's own 2pt quantization
+        /// and any sub-point layout noise, which is what stops noise alone from re-triggering a
+        /// rest that has already landed — see `PinnedRowSettle`'s termination contract.
         ///
-        /// A GATE, not a subtrahend: it decides WHETHER to correct and never shortens the
-        /// correction itself. Deducting it from the magnitude made corrections stop at the
-        /// boundary, so rests approached from opposite directions settled 4pt either side of the
-        /// target — an 8pt spread between rows that had both "converged", which is the inconsistent
-        /// landing the canonical rest exists to eliminate.
+        /// Wave G (BUG-87) turned the correction target from a point into a legibility BAND, and
+        /// this constant now does two jobs, both of them still GATE-shaped and neither of them a
+        /// subtrahend:
+        ///
+        ///  - **The inset inside the band.** A correction aims one dead zone in from the nearer
+        ///    band edge (never past the midpoint), so a landed rest sits strictly inside the band
+        ///    rather than on its boundary, where sub-point noise could push it back out. It does
+        ///    NOT shorten the correction: deducting it from the magnitude made corrections stop AT
+        ///    the boundary, so rests approached from opposite directions settled 4pt either side —
+        ///    an 8pt spread between rows that had both "converged".
+        ///  - **The idle-drift tolerance.** It is `PinnedRowSettle.pullBackTolerance`: a rest that
+        ///    lands within this of the margin a correction was fired FROM counts as the focus
+        ///    engine putting the row back, not as a correction that worked. It is also the slack
+        ///    the end-of-content branch judges a spent scroll range by.
+        ///
+        /// Band MEMBERSHIP has its own, tighter ±2 slack (the probe's quantization) so that a rest
+        /// reported exactly on an edge reads as inside it.
         static let heroPinnedRowSettleDeadZone: CGFloat = 4
     }
 }
