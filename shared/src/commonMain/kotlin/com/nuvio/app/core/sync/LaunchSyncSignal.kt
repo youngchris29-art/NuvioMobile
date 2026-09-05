@@ -76,14 +76,26 @@ object LaunchSyncSignal {
      * Check-and-claim for a launch pull that was COALESCED into a pull this signal did not start
      * (see `adoptCoalescedLaunchPull`).
      *
-     * The claim is refused in exactly one case: [profileId] ALREADY owns a [LaunchSyncState.Running]
-     * or [LaunchSyncState.Settled] state. That state was published by this profile's own launch
-     * pull and is authoritative, so a request that ran no work of its own must not restart or
-     * downgrade it. Every other owner is stale for [profileId], above all the PREVIOUS profile's
-     * leftover [LaunchSyncState.Settled], which the old "claim only from [LaunchSyncState.Idle]"
-     * rule left standing while this profile's burst was still in flight, so the new profile's hero
-     * gate read another profile's settle as its own release input and committed a hero under a
-     * running burst.
+     * The claim is refused in two cases, and both are "someone else's answer is the live one":
+     *
+     * 1. [profileId] ALREADY owns a [LaunchSyncState.Running] or [LaunchSyncState.Settled] state.
+     *    That state was published by this profile's own launch pull and is authoritative, so a
+     *    request that ran no work of its own must not restart or downgrade it.
+     * 2. Another profile owns [LaunchSyncState.Running] (Codex branch review round 7). A Running
+     *    state is only ever published while a burst is genuinely in flight, and it is claimed at
+     *    REQUEST time, under `ProfileSyncRequestGate`'s lock, so a Running for a different profile
+     *    belongs to a request that was made after this one, and this one is by definition the stale
+     *    side of a profile switch. It used to be allowed to publish over it, and with
+     *    `burstInFlight = false` (its own absorbing pull having ended, or never having been found)
+     *    that meant a definite [LaunchSyncState.NotApplicable] landing on top of the NEW profile's
+     *    Running: the newer profile's hero gate then read "no burst is coming" in the middle of its
+     *    burst and released.
+     *
+     * Everything else is stale for [profileId] and may be taken over, above all the PREVIOUS
+     * profile's leftover [LaunchSyncState.Settled], which the old "claim only from
+     * [LaunchSyncState.Idle]" rule left standing while this profile's burst was still in flight, so
+     * the new profile's hero gate read another profile's settle as its own release input and
+     * committed a hero under a running burst.
      *
      * The check and the write are one decision under [lock]: whichever request wins the lock takes
      * the claim, and the other sees it.
@@ -98,6 +110,10 @@ object LaunchSyncSignal {
         val ownedByThisProfile = trackedProfileId == profileId &&
             (_state.value == LaunchSyncState.Running || _state.value == LaunchSyncState.Settled)
         if (ownedByThisProfile) return@synchronized false
+        val newerProfileIsRunning = trackedProfileId != null &&
+            trackedProfileId != profileId &&
+            _state.value == LaunchSyncState.Running
+        if (newerProfileIsRunning) return@synchronized false
         if (burstInFlight) {
             trackedProfileId = profileId
             _state.value = LaunchSyncState.Running

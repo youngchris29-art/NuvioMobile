@@ -266,6 +266,23 @@ class ProfileSyncRequestGate {
      * its block ever runs. The single caller is `startFullProfilePull`, claiming
      * [LaunchSyncSignal] for the replacement profile ahead of the cancellation it is about to
      * cause; see the ordering note there.
+     *
+     * It runs while this request is still serialized, i.e. under [lock] (Codex branch review round
+     * 7). Running it after the lock was released left the claim outside the ordering the gate
+     * exists to impose: two requests racing a profile switch could install in the order A, B and
+     * then claim in the order B, A, so the OLDER request published itself as the signal's owner,
+     * its own cancelled job settled for it, and the replacement's completion was rejected as
+     * stale: the exact inversion `onWillLaunch` was added to prevent, one level up. Everything the
+     * callback may do is therefore bounded: take [LaunchSyncSignal]'s lock (always in that order,
+     * gate then signal, so the pair cannot deadlock) and register a terminal handler on a job that
+     * has not started, which cannot run inline.
+     *
+     * @param onCoalesced the mirror for an absorbed request, run under the same [lock] with the
+     * job this request was absorbed INTO. A coalesced launch pull has no block to report progress
+     * from, so it adopts that job (see [adoptCoalescedLaunchPull]); looking the job up afterwards
+     * through [activeJobFor] raced the same profile switch, found nothing once a newer profile had
+     * replaced the active request, and reported a definite "no burst is coming" over the newer
+     * profile's Running state.
      */
     fun launch(
         scope: CoroutineScope,
@@ -273,6 +290,7 @@ class ProfileSyncRequestGate {
         queueIfCoalesced: Boolean = false,
         kind: ProfileSyncRequestKind = ProfileSyncRequestKind.Full,
         onWillLaunch: ((Job) -> Unit)? = null,
+        onCoalesced: ((Job) -> Unit)? = null,
         block: suspend () -> Unit,
     ): ProfileSyncRequestResult {
         lateinit var newJob: Job
@@ -288,6 +306,10 @@ class ProfileSyncRequestGate {
                     if (queueIfCoalesced) {
                         pendingRequest = PendingRequest(scope = scope, profileId = profileId, kind = kind, block = block)
                     }
+                    // The job is handed over HERE, in the same critical section that decided this
+                    // request was absorbed by it, so the pair cannot come apart under a profile
+                    // switch: whatever replaces the active request has to wait for this lock.
+                    onCoalesced?.invoke(active)
                     return ProfileSyncRequestResult.Coalesced
                 }
             }
@@ -327,13 +349,14 @@ class ProfileSyncRequestGate {
                     )
                 }
             }
+            // Under the lock, and before the cancellation below: the job being replaced runs its
+            // own teardown as soon as it is cancelled, and anything that teardown reports must
+            // already be readable as stale by the time it fires, which it is: the claim for THIS
+            // request has landed by the time the lock is released, in install order.
+            onWillLaunch?.invoke(newJob)
             requestResult
         }
 
-        // Before the cancellation, not after: the job being cancelled here runs its own teardown
-        // as soon as it is cancelled, and anything that teardown reports must already be readable
-        // as stale by the time it fires.
-        onWillLaunch?.invoke(newJob)
         previousJob?.cancel()
         newJob.start()
         return result
@@ -344,9 +367,10 @@ class ProfileSyncRequestGate {
      * job finished between a [launch] returning [ProfileSyncRequestResult.Coalesced] and this call,
      * or a different profile owns the gate).
      *
-     * Exists for one caller: a coalesced LAUNCH pull has no block of its own to run, so it can only
-     * report the burst's progress by adopting the job it was absorbed into
-     * (see [adoptCoalescedLaunchPull]).
+     * The production adoption path does NOT use this: a lookup after the fact answers for whatever
+     * request owns the gate by then, not for the one that was absorbed, so `launch`'s `onCoalesced`
+     * hands the job over under the lock instead (Codex round 7 P2). Kept for tests, which drive the
+     * gate a step at a time and need to see what it is holding.
      */
     fun activeJobFor(profileId: Int): Job? = synchronized(lock) {
         activeJob?.takeIf { job -> activeProfileId == profileId && !job.isCompleted }
@@ -393,6 +417,11 @@ class ProfileSyncRequestGate {
  * coalesces into a foreground full pull already in flight, the adoption declines because the signal
  * is not Idle, and B's hero gate then reads A's Settled as B's own: releasing, and committing a
  * hero, in the middle of B's burst.
+ *
+ * Called from `launch`'s `onCoalesced`, i.e. under `ProfileSyncRequestGate`'s lock, so [inFlight]
+ * is the job that actually absorbed the request rather than whatever owns the gate a moment later
+ * (Codex round 7 P2). The lock order is gate then signal, everywhere, and the signal never calls
+ * back into the gate, so the two cannot deadlock.
  */
 internal fun adoptCoalescedLaunchPull(profileId: Int, inFlight: Job?) {
     val burst = inFlight?.takeIf { job -> !job.isCompleted }
@@ -691,6 +720,17 @@ object SyncManager {
                     job.invokeOnCompletion { LaunchSyncSignal.markSettled(profileId) }
                 }
             },
+            // Codex round 7 P2: the adoption of an absorbing burst is decided in the same critical
+            // section that absorbed this request. It used to run after `launch` returned, from a
+            // second `activeJobFor` lookup, and a profile switch landing in between made that
+            // lookup answer for the WRONG request: null, i.e. "no burst is coming", published over
+            // the new profile's Running state and released its hero gate mid-sync. A QUEUED
+            // request is the exception, as below: its block still runs and reports for itself.
+            onCoalesced = if (!updateLaunchSignal || queueIfCoalesced) {
+                null
+            } else {
+                { inFlight -> adoptCoalescedLaunchPull(profileId = profileId, inFlight = inFlight) }
+            },
         ) {
             val currentAuthState = AuthRepository.state.value
             if (currentAuthState !is AuthState.Authenticated || currentAuthState.isAnonymous) {
@@ -747,19 +787,11 @@ object SyncManager {
         when (result) {
             ProfileSyncRequestResult.Started -> Unit
             ProfileSyncRequestResult.Coalesced -> {
-                log.d { "Full profile sync coalesced profile=$profileId reason=$reason" }
                 // The block above never runs for a coalesced request, so the launch signal has to
-                // be moved from out here or the hero commit gate waits out its whole budget on a
-                // burst that is already in flight (see adoptCoalescedLaunchPull). A QUEUED request
-                // is the exception: its block still runs once the active job finishes, and it
-                // reports Running/Settled itself, so adopting would only add a Settled blip that
-                // could release the gate a moment before the queued burst starts.
-                if (updateLaunchSignal && !queueIfCoalesced) {
-                    adoptCoalescedLaunchPull(
-                        profileId = profileId,
-                        inFlight = syncRequestGate.activeJobFor(profileId),
-                    )
-                }
+                // be moved from outside it or the hero commit gate waits out its whole budget on a
+                // burst that is already in flight (see adoptCoalescedLaunchPull). That now happens
+                // in `onCoalesced`, under the gate's lock; nothing is left to do here but log.
+                log.d { "Full profile sync coalesced profile=$profileId reason=$reason" }
             }
             ProfileSyncRequestResult.Replaced -> {
                 log.d { "Full profile sync replaced stale profile request with profile=$profileId reason=$reason" }

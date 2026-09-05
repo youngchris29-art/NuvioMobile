@@ -56,6 +56,55 @@ class HomeRepositoryGateReleaseTest {
     }
 
     // -----------------------------------------------------------------------------------------
+    // publishedIsLoading: what a publish reports while the gate holds, and what it reports after
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    fun aHeldPublishReportsLoadingWhateverTheFanOutIsDoing() {
+        // The rows a held publish republishes are the previous, empty ones on a cold launch.
+        assertTrue(publishedIsLoading(catalogLoadInProgress = true, rowsHeld = true))
+        assertTrue(
+            publishedIsLoading(catalogLoadInProgress = false, rowsHeld = true),
+            "the fan-out finishing under an armed gate must not paint the empty or error state",
+        )
+    }
+
+    @Test
+    fun aReleaseReportsTheRealLoadState() {
+        assertFalse(publishedIsLoading(catalogLoadInProgress = false, rowsHeld = false))
+        assertTrue(publishedIsLoading(catalogLoadInProgress = true, rowsHeld = false))
+    }
+
+    /**
+     * Codex branch review round 7, the bug in one sequence. A profile whose hero-source catalogs
+     * fail (or come back empty) reaches the gate's release with the fan-out already over: the held
+     * publish before it forced `isLoading = true`, and every publish that is not the fan-out's own
+     * used to take its load state from the PUBLISHED value. Feeding that back in made `true`
+     * absorbing: the release carried it, and so did every publish after, so the error state and its
+     * Retry button were unreachable for the rest of the session and Home sat on the loading
+     * placeholder. The real load state is an input now, not an echo.
+     */
+    @Test
+    fun aReleaseAfterAFailedFanOutLeavesTheLoadingPlaceholder() {
+        val catalogLoadInProgress = false // the fan-out ended, with an error and no sections
+
+        val held = publishedIsLoading(catalogLoadInProgress = catalogLoadInProgress, rowsHeld = true)
+        assertTrue(held, "the last held publish still reports loading")
+
+        // The old shape: the next publish re-derived its load state from the published one.
+        assertTrue(
+            publishedIsLoading(catalogLoadInProgress = held, rowsHeld = false),
+            "re-deriving from the published value is what pinned the placeholder on",
+        )
+
+        // The fixed shape: the release asks the load path, which says the fan-out is over.
+        assertFalse(
+            publishedIsLoading(catalogLoadInProgress = catalogLoadInProgress, rowsHeld = false),
+            "the releasing publish must hand the error state through",
+        )
+    }
+
+    // -----------------------------------------------------------------------------------------
     // hasUnresolvedEnabledManifests: can a persisted hero-source key still become a definition?
     // -----------------------------------------------------------------------------------------
 

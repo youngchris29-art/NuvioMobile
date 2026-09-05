@@ -1,6 +1,7 @@
 package com.nuvio.app.core.sync
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import kotlin.test.AfterTest
@@ -389,6 +390,156 @@ class LaunchSyncSignalTest {
             LaunchSyncSignal.LaunchSyncState.Settled,
             LaunchSyncSignal.state.value,
             "a cancelled-before-start pull must not strand the gate on Running",
+        )
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Codex branch review round 7: the claim runs while the request is still serialized
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * The end state of a rapid profile switch, driven through the gate exactly as
+     * `startFullProfilePull` drives it. Profile A's pull is replaced by profile B's, so A's job is
+     * cancelled and reports Settled for A from two places (the terminal handler attached at request
+     * time and its own finally); neither may be readable as B's answer, and B's own completion must
+     * still be.
+     *
+     * What makes that hold is WHERE the claim runs. `onWillLaunch` now fires inside
+     * `ProfileSyncRequestGate.lock`, in the same critical section that installs the request, so
+     * claims land in install order: a second request cannot get between A installing and A
+     * claiming, publish itself, and then be overwritten by the older request's claim. The signal
+     * itself cannot tell an inverted pair apart (a genuine switch and an inverted claim look
+     * identical to `markRunning`), which is exactly why the ordering has to come from the lock.
+     */
+    @Test
+    fun `a rapid profile switch leaves the signal on the replacement profile`() = runBlocking {
+        val gate = ProfileSyncRequestGate()
+        val firstStarted = CompletableDeferred<Unit>()
+        val firstCancelled = CompletableDeferred<Unit>()
+        val releaseSecond = CompletableDeferred<Unit>()
+
+        gate.launch(
+            scope = this,
+            profileId = 1,
+            kind = ProfileSyncRequestKind.Full,
+            onWillLaunch = { job ->
+                LaunchSyncSignal.markRunning(1)
+                job.invokeOnCompletion { LaunchSyncSignal.markSettled(1) }
+            },
+        ) {
+            firstStarted.complete(Unit)
+            try {
+                CompletableDeferred<Unit>().await()
+            } finally {
+                LaunchSyncSignal.markSettled(1)
+                firstCancelled.complete(Unit)
+            }
+        }
+        firstStarted.await()
+
+        gate.launch(
+            scope = this,
+            profileId = 2,
+            kind = ProfileSyncRequestKind.Full,
+            onWillLaunch = { job ->
+                LaunchSyncSignal.markRunning(2)
+                job.invokeOnCompletion { LaunchSyncSignal.markSettled(2) }
+            },
+        ) {
+            releaseSecond.await()
+        }
+        assertEquals(
+            LaunchSyncSignal.LaunchSyncState.Running,
+            LaunchSyncSignal.state.value,
+            "the replacement profile owns the signal by the time its request returns",
+        )
+
+        firstCancelled.await()
+        yield()
+        assertEquals(
+            LaunchSyncSignal.LaunchSyncState.Running,
+            LaunchSyncSignal.state.value,
+            "the cancelled profile's settles must not stand as the replacement's answer",
+        )
+
+        releaseSecond.complete(Unit)
+        yield()
+        assertEquals(
+            LaunchSyncSignal.LaunchSyncState.Settled,
+            LaunchSyncSignal.state.value,
+            "the replacement's own completion is the settle the hero gate waits for",
+        )
+        gate.cancel()
+    }
+
+    /**
+     * The adoption is handed the job it was absorbed INTO, from inside the critical section that
+     * absorbed it. Looking the job up afterwards, through `activeJobFor`, answered for whatever
+     * request owned the gate by then, which on a profile switch is a different one entirely.
+     */
+    @Test
+    fun `a coalesced request is handed the burst that absorbed it`() = runBlocking {
+        val gate = ProfileSyncRequestGate()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val adopted = mutableListOf<Job>()
+
+        gate.launch(this, profileId = 4, kind = ProfileSyncRequestKind.Full) {
+            started.complete(Unit)
+            release.await()
+        }
+        started.await()
+        val inFlight = gate.activeJobFor(4)
+
+        val coalesced = gate.launch(
+            scope = this,
+            profileId = 4,
+            kind = ProfileSyncRequestKind.Full,
+            onCoalesced = { job ->
+                adopted += job
+                adoptCoalescedLaunchPull(profileId = 4, inFlight = job)
+            },
+        ) { }
+        assertEquals(ProfileSyncRequestResult.Coalesced, coalesced)
+        assertEquals(listOf(inFlight), adopted, "the absorbing job is the one handed over")
+        assertEquals(
+            LaunchSyncSignal.LaunchSyncState.Running,
+            LaunchSyncSignal.state.value,
+            "the claim is complete before the coalesced request returns",
+        )
+
+        release.complete(Unit)
+        yield()
+        assertEquals(LaunchSyncSignal.LaunchSyncState.Settled, LaunchSyncSignal.state.value)
+        gate.cancel()
+    }
+
+    /**
+     * The second half of the same fix, in the signal. A coalesced request whose absorbing pull is
+     * already gone reports a definite "no burst is coming", and that verdict used to be published
+     * over whatever it found, including a NEWER profile's Running, claimed at request time by the
+     * switch that superseded this request. The new profile's hero gate then read NotApplicable in
+     * the middle of its own burst and released: a hero committed under a reordering sync, which is
+     * the failure the whole gate exists to prevent.
+     */
+    @Test
+    fun `a stale coalesced adoption cannot clear a newer profile's running burst`() {
+        // Profile 2's launch pull claimed the signal when its request was made.
+        LaunchSyncSignal.markRunning(profileId = 2)
+
+        // Profile 1's coalesced request, superseded by that switch, finds nothing to adopt.
+        adoptCoalescedLaunchPull(profileId = 1, inFlight = null)
+
+        assertEquals(
+            LaunchSyncSignal.LaunchSyncState.Running,
+            LaunchSyncSignal.state.value,
+            "a stale request must not publish a release state over a running burst",
+        )
+        LaunchSyncSignal.markSettled(profileId = 2)
+        assertEquals(
+            LaunchSyncSignal.LaunchSyncState.Settled,
+            LaunchSyncSignal.state.value,
+            "and the running burst must still be able to settle for its own profile",
         )
     }
 

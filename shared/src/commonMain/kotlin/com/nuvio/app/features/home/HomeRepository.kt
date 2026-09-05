@@ -54,6 +54,27 @@ object HomeRepository {
     private var activeJob: Job? = null
     private var activeRequestKey: String? = null
     private var currentRequestKey: String? = null
+
+    /**
+     * BUG-86 (Codex branch review round 7): whether a catalog fan-out is actually running, i.e.
+     * the REAL load state, as opposed to the [HomeUiState.isLoading] that gets published.
+     *
+     * The two are not the same while the hero commit gate holds. A held publish reports
+     * `isLoading = true` whatever the load is doing (see [publishedIsLoading]), because the rows it
+     * republishes are the previous, empty ones and reporting "done, nothing here" would paint the
+     * empty state (or, after a partial failure, the error state and its Retry) for the second or
+     * two before the gate releases. Every publish that is not the fan-out's own used to re-derive
+     * its load state from `_uiState.value.isLoading`, so it read that forced value back: once the
+     * fan-out finished under an armed gate, `true` was the only value any later publish could
+     * carry, the release included. A profile whose catalogs failed or came back empty then sat on
+     * the loading placeholder for the rest of the session, because nothing republishes with a
+     * literal `false` after the fan-out that set it.
+     *
+     * Written only by [refresh] (true when it starts a fan-out, false when that fan-out ends or
+     * there is nothing to fetch) and [clear]; read under [heroSelectionLock] by every publish, and
+     * written under it too so the value a publish reads is the one the load path last wrote.
+     */
+    private var catalogLoadInProgress: Boolean = false
     private var currentDefinitions: List<HomeCatalogDefinition> = emptyList()
     private var cachedSections: Map<String, HomeCatalogSection> = emptyMap()
     private var cachedCollectionHeroItems: List<MetaPreview> = emptyList()
@@ -264,7 +285,9 @@ object HomeRepository {
             catalogOutcomes = catalogOutcomes.filterKeys(requestKeys::contains)
             currentRequestKey = requestKey
 
-            if (!force && activeRequestKey == requestKey && _uiState.value.isLoading) {
+            // The REAL load state, not the published one: a duplicate refresh is only a no-op
+            // while this request's fan-out is genuinely still running.
+            if (!force && activeRequestKey == requestKey && catalogLoadInProgress) {
                 false
             } else if (!force && isMetadataOnlyDefinitionChange(previousDefinitions, requests)) {
                 // Hole E follow-on (Codex branch review round 6): an add-on RENAME reaches this
@@ -275,10 +298,7 @@ object HomeRepository {
                 // Nothing here prunes, so no row is rebuilt; `requestKey` is unchanged, so the hero
                 // seed, the ranking and the pinned head come out of the publish identical.
                 log.i { "refresh() metadata-only definition change; republishing ${requests.size} catalogs without a re-fetch" }
-                publishCurrentStateLocked(
-                    isLoading = _uiState.value.isLoading,
-                    requestKey = requestKey,
-                )
+                publishCurrentStateLocked(requestKey = requestKey)
                 false
             } else {
                 activeRequestKey = requestKey
@@ -295,6 +315,7 @@ object HomeRepository {
                     awaitingFirstRefresh = false
                     firstRefreshGraceJob?.cancel()
                     firstRefreshGraceJob = null
+                    catalogLoadInProgress = true
                     armHeroCommitGateLocked()
                     // copy() drops the body-property probe snapshot (see
                     // [HomeUiState.heroRankingDebugSnapshot]); re-stamp it so this isLoading flip
@@ -318,10 +339,12 @@ object HomeRepository {
             cachedSections = emptyMap()
             catalogOutcomes = emptyMap()
             lastErrorMessage = null
-            publishCurrentState(
-                isLoading = false,
-                requestKey = requestKey,
-            )
+            // The flag and the publish that reads it go under one lock acquisition: a publish from
+            // the load scope must never see the pair half-updated.
+            synchronized(heroSelectionLock) {
+                catalogLoadInProgress = false
+                publishCurrentStateLocked(requestKey = requestKey)
+            }
             ensureCollectionHeroFallback(
                 addons = activeAddons,
                 forceRefresh = force,
@@ -377,10 +400,7 @@ object HomeRepository {
                 cachedSections = loadedSections.toMap()
                 lastErrorMessage = firstErrorMessage
                 if (shouldPublishAfterBatch(batchIndex = batchIndex, gateArmed = gateArmed)) {
-                    publishCurrentState(
-                        isLoading = true,
-                        requestKey = requestKey,
-                    )
+                    publishCurrentState(requestKey = requestKey)
                 }
                 batchIndex++
             }
@@ -390,10 +410,13 @@ object HomeRepository {
             cachedSections = loadedSections.toMap()
             lastErrorMessage = firstErrorMessage
             activeRequestKey = null
-            publishCurrentState(
-                isLoading = false,
-                requestKey = requestKey,
-            )
+            // The fan-out is over even when the gate still holds: the flag records THAT, and
+            // [publishedIsLoading] decides what the held publish reports. Under one lock
+            // acquisition with the publish for the same reason as the empty-request path above.
+            synchronized(heroSelectionLock) {
+                catalogLoadInProgress = false
+                publishCurrentStateLocked(requestKey = requestKey)
+            }
             ensureCollectionHeroFallback(
                 addons = activeAddons,
                 forceRefresh = force,
@@ -491,10 +514,7 @@ object HomeRepository {
             // Generation token, same pattern as armHeroEnrichmentHold: a timer whose cancellation
             // raced its own completion must not expire a LATER gate era.
             if (generation != heroGateGeneration) return@launch
-            publishCurrentState(
-                isLoading = _uiState.value.isLoading,
-                requestKey = currentRequestKey,
-            )
+            publishCurrentState(requestKey = currentRequestKey)
         }
         startGateInputsObserverLocked()
     }
@@ -553,10 +573,7 @@ object HomeRepository {
 
     private fun republishForGate() {
         if (synchronized(heroSelectionLock) { heroGateState != HeroGateState.Armed }) return
-        publishCurrentState(
-            isLoading = _uiState.value.isLoading,
-            requestKey = currentRequestKey,
-        )
+        publishCurrentState(requestKey = currentRequestKey)
     }
 
     private fun cancelGateWatchersLocked() {
@@ -656,10 +673,7 @@ object HomeRepository {
                 true
             }
             if (!lifted) return@launch
-            publishCurrentState(
-                isLoading = _uiState.value.isLoading,
-                requestKey = currentRequestKey,
-            )
+            publishCurrentState(requestKey = currentRequestKey)
         }
     }
 
@@ -687,10 +701,7 @@ object HomeRepository {
             unchanged && heroGateState == HeroGateState.Released
         }
         if (!skipPublish) {
-            publishCurrentState(
-                isLoading = _uiState.value.isLoading,
-                requestKey = currentRequestKey,
-            )
+            publishCurrentState(requestKey = currentRequestKey)
         }
         ensureCollectionHeroFallback(
             addons = AddonRepository.uiState.value.addons.enabledAddons(),
@@ -754,6 +765,7 @@ object HomeRepository {
         resetHeroEnrichment()
         lastPublishedCatalogHeroEmpty = true
         lastErrorMessage = null
+        catalogLoadInProgress = false
         // BUG-86 (Wave H): a new account/profile gets a new commit cycle, so the gate goes all the
         // way back to Idle and both watchers are cancelled. Leaving it Released would let the next
         // profile's first, partial catalog publish through unheld.
@@ -781,18 +793,23 @@ object HomeRepository {
      * Default scope while [resetHeroSelection]/[clear] arrive from the main thread, and a
      * straggling publish must not write an older selection (or an older-generation UI state) after
      * either of them. Synchronous body, no suspension, nothing inside takes the lock again.
+     *
+     * The load state is NOT a parameter (Codex branch review round 7). Every caller but the
+     * fan-out itself used to pass `_uiState.value.isLoading`, which is the value a held publish
+     * forced to true rather than the value the load path last reported, so the forced flag fed
+     * itself back in and outlived the hold. [catalogLoadInProgress] is the one writer of that
+     * answer now, and [publishedIsLoading] is the only place the hold is allowed to override it.
      */
     private fun publishCurrentState(
-        isLoading: Boolean,
         requestKey: String?,
     ) = synchronized(heroSelectionLock) {
-        publishCurrentStateLocked(isLoading = isLoading, requestKey = requestKey)
+        publishCurrentStateLocked(requestKey = requestKey)
     }
 
     private fun publishCurrentStateLocked(
-        isLoading: Boolean,
         requestKey: String?,
     ) {
+        val loadInProgress = catalogLoadInProgress
         val snapshot = HomeCatalogSettingsRepository.snapshot()
         val preferences = snapshot.preferences
         val todayIsoDate = if (snapshot.hideUnreleasedContent) CurrentDateProvider.todayIsoDate() else null
@@ -944,14 +961,14 @@ object HomeRepository {
             // not for the first few hundred ms of a load before the hero-source catalogs land, and
             // filling it in mid-load and then replacing all eight items when the catalog hero
             // arrived was the "one cover, then another" the sim probe caught (`inRows=0` head).
-            holding = if (decision != null) !decision.released else isLoading || awaitingFirstRefresh,
+            holding = if (decision != null) !decision.released else loadInProgress || awaitingFirstRefresh,
             resetRequested = resetRequested,
         )
         val heroItems = heroItemsFrom(publishSource)
         when (publishSource) {
             HeroPublishSource.Catalog -> heroResetRequested = false
             HeroPublishSource.CollectionFallback ->
-                if (!isLoading && !awaitingFirstRefresh) heroResetRequested = false
+                if (!loadInProgress && !awaitingFirstRefresh) heroResetRequested = false
             HeroPublishSource.Off, HeroPublishSource.Held -> Unit
         }
 
@@ -1003,11 +1020,7 @@ object HomeRepository {
         }
         val released = heroGateState == HeroGateState.Released
         val nextState = HomeUiState(
-            // A held publish is still "assembling", even after the catalog fan-out finished: the
-            // rows it is holding are empty on a cold launch, and reporting isLoading = false with
-            // no sections would paint the empty state (or, with a partial failure, the error state
-            // and its Retry button) for the second or two before the gate releases.
-            isLoading = isLoading || rowsHeld,
+            isLoading = publishedIsLoading(catalogLoadInProgress = loadInProgress, rowsHeld = rowsHeld),
             heroItems = publishedHeroItems,
             sections = publishedSections,
             errorMessage = when {
@@ -1243,10 +1256,7 @@ object HomeRepository {
             delay(HERO_ENRICHMENT_HOLD_TIMEOUT_MS)
             if (generation != heroEnrichmentHoldGeneration) return@launch
             heroEnrichmentHoldExpired = true
-            publishCurrentState(
-                isLoading = _uiState.value.isLoading,
-                requestKey = currentRequestKey,
-            )
+            publishCurrentState(requestKey = currentRequestKey)
         }
     }
 
@@ -1363,10 +1373,7 @@ object HomeRepository {
                 // and nothing is on screen to double-commit yet. The sections-only CAS below stays
                 // for the post-commit expired case it was written for.
                 if (!heroEnrichmentHoldExpired || heroGateIsArmed) {
-                    publishCurrentState(
-                        isLoading = _uiState.value.isLoading,
-                        requestKey = currentRequestKey,
-                    )
+                    publishCurrentState(requestKey = currentRequestKey)
                 } else {
                     // BUG-35 (beta.12, Codex gate 4-5): once the hero hold has expired, the full
                     // republish above stays suppressed so the raw hero on screen never swaps its
@@ -1482,10 +1489,7 @@ object HomeRepository {
             // the mid-load hold (an explicit collection/settings change is an invalidation, not
             // incremental loading).
             synchronized(heroSelectionLock) { heroResetRequested = true }
-            publishCurrentState(
-                isLoading = _uiState.value.isLoading,
-                requestKey = requestKey,
-            )
+            publishCurrentState(requestKey = requestKey)
         }
 
         collectionHeroJob = scope.launch {
@@ -1505,10 +1509,7 @@ object HomeRepository {
                 .distinctBy { item -> item.stableKey() }
                 .shuffled(random)
                 .take(HOME_HERO_ITEM_LIMIT)
-            publishCurrentState(
-                isLoading = _uiState.value.isLoading,
-                requestKey = requestKey,
-            )
+            publishCurrentState(requestKey = requestKey)
         }
     }
 
@@ -1664,6 +1665,26 @@ private const val HOME_CATALOG_PUBLISH_INTERVAL = 2
  */
 internal fun shouldPublishAfterBatch(batchIndex: Int, gateArmed: Boolean): Boolean =
     gateArmed || batchIndex == 0 || (batchIndex + 1) % HOME_CATALOG_PUBLISH_INTERVAL == 0
+
+/**
+ * BUG-86 (Codex branch review round 7): what a publish reports as [HomeUiState.isLoading].
+ *
+ * A HELD publish (`rowsHeld`) is still "assembling" however the catalog fan-out is doing: the rows
+ * it republishes are the previous, empty ones on a cold launch, and reporting `false` with no
+ * sections would paint the empty state (or, after a partial failure, the error state and its
+ * Retry button) for the second or two before the gate releases. Every other publish reports the real
+ * thing, and that is the whole rule: the override belongs to the hold, and it ends with the hold.
+ *
+ * The bug it replaces was the feedback loop, not the formula. `catalogLoadInProgress` used to be a
+ * parameter every caller but the fan-out filled in from `_uiState.value.isLoading`, so a publish
+ * during the hold read back the value the hold had forced. Once the fan-out finished under an armed
+ * gate, `true` was the only value the state could carry from then on, the releasing publish
+ * included, and a profile whose hero-source catalogs failed or came back empty was left on the
+ * loading placeholder for the rest of the session: nothing republishes with a literal `false` after
+ * the fan-out that set it, so the error and empty states below it were unreachable.
+ */
+internal fun publishedIsLoading(catalogLoadInProgress: Boolean, rowsHeld: Boolean): Boolean =
+    catalogLoadInProgress || rowsHeld
 
 /**
  * BUG-86 (Wave H): which entries of `HomeRepository.heroItemOrigins` survive a publish.
