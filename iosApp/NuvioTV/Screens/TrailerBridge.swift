@@ -182,6 +182,10 @@ struct TrailerBridgeCaption: View {
         .animation(.easeOut(duration: 0.5), value: visible)
         .animation(nil, value: coverDismissing)
         .onReceive(NotificationCenter.default.publisher(for: .trailerBridgeCoverWillDismiss)) { _ in
+            // Codex round 1 (P2): only the player's copy, which is a fresh instance per cover.
+            // The description's copy lives for the whole visit, and latching it here suppressed
+            // the caption on every later trailer request.
+            guard dwell != nil else { return }
             coverDismissing = true
         }
         .accessibilityElement(children: .combine)

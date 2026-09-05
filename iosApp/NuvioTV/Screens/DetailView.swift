@@ -457,10 +457,16 @@ struct DetailView: View {
             }
         }
         .onChange(of: showStreams) { _, isShowing in
-            if isShowing { cancelAutoPlayTrailer() }
+            if isShowing {
+                cancelAutoPlayTrailer()
+                withdrawTrailerBridgeIfLeaving()
+            }
         }
         .onChange(of: seriesPlay?.id) { _, routeId in
-            if routeId != nil { cancelAutoPlayTrailer() }
+            if routeId != nil {
+                cancelAutoPlayTrailer()
+                withdrawTrailerBridgeIfLeaving()
+            }
         }
         .onChange(of: userInteracted) { _, interacted in
             if interacted { cancelAutoPlayTrailer() }
@@ -571,6 +577,14 @@ struct DetailView: View {
         bridgeTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(TrailerBridgeChoreography.leaveDuration))
             guard !Task.isCancelled, model.trailerPlayback?.id == item.id else { return }
+            // Codex round 1 (P2): the chrome is only invisible during the leave, not disabled
+            // (disabling the focused button can strand tvOS focus, BUG-47's class), so Select can
+            // still open the stream picker underneath. Never stack the trailer cover on top of
+            // it: withdraw the request instead, which returns the page under the picker.
+            guard !showStreams, seriesPlay == nil else {
+                model.trailerPlayback = nil
+                return
+            }
             setBridgePhase(TrailerBridgeChoreography.next(bridgePhase, .leaveFinished))
             bridgeCoverPresented = true
             presentedTrailer = item
@@ -600,6 +614,14 @@ struct DetailView: View {
         } else {
             settleTrailerBridge()
         }
+    }
+
+    /// Codex round 1 (P2): a stream-picker cover opened while the bridge was leaving (the buttons
+    /// stay focusable under the fading chrome). Withdraw the trailer request so the two covers
+    /// never stack; the request's `onChange` returns the page.
+    private func withdrawTrailerBridgeIfLeaving() {
+        guard bridgePhase == .leaving else { return }
+        model.trailerPlayback = nil
     }
 
     private func settleTrailerBridge() {
