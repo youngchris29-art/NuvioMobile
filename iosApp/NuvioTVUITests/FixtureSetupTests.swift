@@ -182,8 +182,16 @@ final class FixtureSetupTests: XCTestCase {
     /// confirmed by actually opening the real Small/Medium/Large popover from exactly that landing
     /// spot (`app.debugDescription` dump showed the three options mounted with "Medium" — the
     /// fixture's value at the time — carrying the `Selected` trait).
+    ///
+    /// UPDATED 2026-09-05 (FEAT-30/31): two more `SettingsPickerRow`s — "Navigation" and
+    /// "Typeface" — landed in the Theme section between "Settings Style" and "Size", so the walk
+    /// is now SIX Downs, not four: swatches -> Accent Focus Ring (1) -> No Zoom on Focus (2) ->
+    /// Settings Style (3) -> Navigation (4) -> Typeface (5) -> Size (6). Not re-verified against a
+    /// live popover the way the original four-count was (this pass owns the UI test files only,
+    /// not a device/sim run) — counted directly off `AppearanceSettingsPane.body`'s literal order,
+    /// which is the same method the original comment above used to derive "four".
     private func walkFromSwatchesToSizeRow(_ app: XCUIApplication) {
-        press(.down, times: 4, gap: 0.6)
+        press(.down, times: 6, gap: 0.6)
         pause(0.8)
     }
 
