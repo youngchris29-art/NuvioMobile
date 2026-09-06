@@ -478,8 +478,10 @@ struct DetailView: View {
                             .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         moreLikeThisRow
                             .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        // Codex BUG-96 r1/r2 (P2): NOT anchored — a vertical list of expandable cards
+                        // whose focus moves never change `focusedRow`, so a pending correction
+                        // could scroll back to the section top under a later comment.
                         commentsSection
-                            .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                     }
                 }
                 .padding(Theme.Spacing.screen)
@@ -495,6 +497,8 @@ struct DetailView: View {
             // low as the content allows.
             .onChange(of: focusedRow) { _, row in
                 guard let row else {
+                    detailAnchorTask?.cancel()
+                    detailAnchorTask = nil
                     if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
                     return
                 }
@@ -919,7 +923,9 @@ struct DetailView: View {
     /// the pass was skipped for good.
     @discardableResult
     private func anchorPass(_ row: DetailRowID, note: String, onlyIfDrifted: Bool = false) -> Bool {
-        guard focusedRow == row, bridgePhase == .idle, let rowTop = detailRowOffsets[row] else { return false }
+        // Codex BUG-96 r2 (P2): the sleeps swallow cancellation (`try?`), so the pass itself must
+        // refuse to run once cancelled (disappear, bridge leaving idle, a newer focus change).
+        guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle, let rowTop = detailRowOffsets[row] else { return false }
         let inset = dimModel.contentInsetTop
         let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset)
         let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
