@@ -69,6 +69,10 @@ final class SidebarChromeModel: ObservableObject {
     /// does not subscribe), so a focus change inside the sidebar never invalidates a tab root.
     @Published var isFocusedChrome: Bool = false
 
+    /// `nonisolated`: only literal defaults are assigned, and the environment key's fallback
+    /// instance is a lazily initialised static (see `SidebarChromeKey`).
+    nonisolated init() {}
+
     /// Write-on-change only. `@Published` does not dedupe, and the scroll callback that feeds this
     /// fires on crossings — a same-value write would still broadcast.
     func setScrolledDown(tab: Int, _ value: Bool) {
@@ -91,10 +95,10 @@ final class SidebarChromeModel: ObservableObject {
 /// (a Top Shelf deep link's standalone `NavigationStack`) falls back to a harmless unconnected
 /// instance instead of crashing for a missing environment object.
 private struct SidebarChromeKey: EnvironmentKey {
-    // `SidebarChromeModel` is `@MainActor`; the key's requirement is nonisolated, so construct
-    // the fallback instance under an explicit main-actor assumption (environment defaults are
-    // resolved on the main thread) rather than rely on Swift 5 mode's leniency.
-    static let defaultValue: SidebarChromeModel = MainActor.assumeIsolated { SidebarChromeModel() }
+    // `SidebarChromeModel` is `@MainActor` but its `init` is `nonisolated` (it only assigns
+    // literal defaults), so the lazy static can be built on whichever thread first touches it
+    // without an isolation assumption that would trap (r3b P3-2).
+    static let defaultValue = SidebarChromeModel()
 }
 
 extension EnvironmentValues {
@@ -249,6 +253,11 @@ struct SidebarOverlay: View {
     /// takes focus programmatically; focus leaving the panel, or a row press, disarms it again.
     /// Entry is therefore always explicit and always the same two gestures.
     @State private var armed = false
+    /// Monotonic token for the deferred hand-off / reveal checks (internal review r3b P2-1): a
+    /// check scheduled by an earlier hand-off or reveal must not act on the state of a later one
+    /// (two quick tab switches, or two Menu presses 0.2 s apart, otherwise let a stale timer
+    /// re-arm or disarm the panel the user is currently using).
+    @State private var focusGeneration = 0
     @FocusState private var focusedItem: Int?
 
     private var isExpanded: Bool { focusedItem != nil }
@@ -420,6 +429,8 @@ struct SidebarOverlay: View {
         armed = false
         focusedItem = nil
         revealed = false
+        focusGeneration &+= 1
+        let generation = focusGeneration
         // With the rows gone, re-run default focus placement for the whole shell scope so the
         // engine lands in the newly selected tab's content (`prefersDefaultFocus` only applies
         // when nothing holds focus — `resetFocus` is the documented way to re-run it). Next
@@ -428,11 +439,16 @@ struct SidebarOverlay: View {
         // issued before anything focusable exists leaves the system with no focused item — the
         // BUG-47 dead end, with the panel disarmed so it cannot catch the fallback either. Two
         // checks re-issue the reset; if focus is still nowhere after the last, re-arm the panel
-        // and take focus back so the user is never left without a focused element.
+        // and take focus back so the user is never left without a focused element. The re-arm
+        // goes through `takeFocusAfterReveal` (r3b P1-1): the rows do not exist on the turn that
+        // arms them, so a synchronous focus write here would be the dropped write that function
+        // exists to avoid — and it carries the fail-closed disarm this branch would otherwise lack.
         DispatchQueue.main.async {
+            guard generation == focusGeneration else { return }
             resetFocus(in: shellFocusScope)
             for (index, delay) in [0.35, 1.0].enumerated() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    guard generation == focusGeneration else { return }
                     guard focusedItem == nil, !armed else { return }   // a reveal took over meanwhile
                     guard HiddenTabBarFocusBlocker.focusedItemIsNil() else { return }
                     if index == 0 {
@@ -441,7 +457,7 @@ struct SidebarOverlay: View {
                         NSLog("[SidebarChrome] hand-off landed nowhere twice; re-arming the panel")
                         armed = true
                         revealed = true
-                        focusedItem = selectedTab
+                        takeFocusAfterReveal()
                     }
                 }
             }
@@ -475,17 +491,25 @@ struct SidebarOverlay: View {
     /// disarms. `selectedTab` is read live in every closure (the collapsed panel only renders the
     /// CURRENT tab's row, so a captured value could target a row that no longer exists).
     private func takeFocusAfterReveal() {
+        focusGeneration &+= 1
+        let generation = focusGeneration
         DispatchQueue.main.async {
-            guard revealed, focusedItem == nil else { return }
+            guard generation == focusGeneration, revealed, focusedItem == nil else { return }
             focusedItem = selectedTab
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                guard revealed, focusedItem == nil else { return }
+                guard generation == focusGeneration, revealed, focusedItem == nil else { return }
                 focusedItem = selectedTab
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    guard revealed, focusedItem == nil else { return }
+                    guard generation == focusGeneration, revealed, focusedItem == nil else { return }
                     NSLog("[SidebarChrome] reveal could not take focus; disarming")
                     revealed = false
                     armed = false
+                    // r3b P2-2: this branch may be the last actor standing (a hand-off deferred to
+                    // this reveal and retired). If nothing holds focus, put default placement back
+                    // in content rather than leave the BUG-47 dead end behind.
+                    if HiddenTabBarFocusBlocker.focusedItemIsNil() {
+                        resetFocus(in: shellFocusScope)
+                    }
                 }
             }
         }
@@ -566,6 +590,12 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
         }
 
         func apply() {
+            // r3b P2-3: this runs on every focus update, so it must not re-walk the controller
+            // tree when the cached bar is still in the window and still blocked.
+            if let bar = blockedBar, bar.window != nil, !bar.isUserInteractionEnabled {
+                HiddenTabBarFocusBlocker.isBlocking = true
+                return
+            }
             guard let root = window?.rootViewController else { return }
             guard let tabController = Self.findTabBarController(from: root) else {
                 if !loggedFailure {
@@ -592,7 +622,12 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
             if let bar = blockedBar, !bar.isUserInteractionEnabled {
                 bar.isUserInteractionEnabled = true
             }
-            HiddenTabBarFocusBlocker.isBlocking = false
+            // r3b P3-1: only the registered instance may clear the process-global flags — a
+            // replaced blocker's dismantle can run AFTER its successor's attach on a remount.
+            if HiddenTabBarFocusBlocker.current === self {
+                HiddenTabBarFocusBlocker.current = nil
+                HiddenTabBarFocusBlocker.isBlocking = false
+            }
             if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
             focusObserver = nil
         }

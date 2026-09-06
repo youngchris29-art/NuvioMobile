@@ -141,9 +141,13 @@ final class CollectionFocusFrameSampler: NSObject {
     @objc private func tick(_ link: CADisplayLink) {
         defer { lastTimestamp = link.timestamp }
         guard let last = lastTimestamp else { return }
-        // Clamped: the seed at `arm()` is `CACurrentMediaTime()` while `link.timestamp` is the
-        // LAST displayed frame's time, so the first no-stall tick can read slightly negative.
-        let gapMs = max(0, (link.timestamp - last) * 1000)
+        // The seed at `arm()` is `CACurrentMediaTime()` while `link.timestamp` is the LAST
+        // displayed frame's time, so the first no-stall tick can read slightly negative. Discard
+        // that seed artifact rather than record a 0 ms sample (which would inflate `frames=` and
+        // bias p95); the `defer` above still re-bases the clock, and a genuine positive first gap
+        // (a stall between `arm()` and the first tick) is still counted.
+        let gapMs = (link.timestamp - last) * 1000
+        guard gapMs >= 0 else { return }
         frameGapsMs.append(gapMs)
         if gapMs > maxGapMs { maxGapMs = gapMs }
         let expectedFrameMs = link.duration > 0
