@@ -62,12 +62,18 @@ private final class ScrollDimModel: ObservableObject {
         // wake and retires itself only once the page has genuinely gone idle.
         guard clearTask == nil else { return }
         clearTask = Task { [weak self] in
+            var sleepFor = idle
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(idle * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(max(sleepFor, 0.005) * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 let done: Bool = await MainActor.run {
                     guard let self else { return true }
-                    if ScrollingLatch.isScrolling(now: CACurrentMediaTime(), lastChange: self.lastChangeTime, idle: idle) {
+                    let now = CACurrentMediaTime()
+                    if ScrollingLatch.isScrolling(now: now, lastChange: self.lastChangeTime, idle: idle) {
+                        // Codex beta.18 r3 (P2): sleep only for what is LEFT of the window measured
+                        // from the newest change, so the flag clears ~150 ms after the last frame
+                        // moved rather than up to a full extra interval later.
+                        sleepFor = idle - (now - self.lastChangeTime)
                         return false
                     }
                     self.isScrolling = false

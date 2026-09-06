@@ -125,6 +125,12 @@ object HeroGateRowsWait {
 
     /** The rows are not independently gated at this evaluation: they follow the hero decision. */
     const val NONE = "n/a"
+    /**
+     * Codex beta.18 r3 (P2): the user flipped Show Hero OFF while the launch gate was still armed
+     * (or before the first evaluation). That is an explicit action, not a hero-off LAUNCH, so the
+     * rows release at once instead of inheriting the launch-sync hold.
+     */
+    const val TOGGLE = "toggle"
 }
 
 /** [decideRowsGate]'s answer: whether the rows may publish, and which term decided it. */

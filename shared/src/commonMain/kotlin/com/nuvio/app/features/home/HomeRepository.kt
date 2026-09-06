@@ -302,6 +302,13 @@ object HomeRepository {
      * rather than making the user watch out the rest of the burst budget after their own tap.
      */
     private var rowsHeldUnderHeroEnabled: Boolean = true
+    /**
+     * Codex beta.18 r3 (P2): `heroEnabled` as it read when the gate was armed (or first evaluated).
+     * A `heroOff` decision whose baseline was `true` is a RUNTIME toggle by the user, not a hero-off
+     * launch, and must not inherit the launch-sync rows hold — `applyRowsGateDecisionLocked`
+     * releases it with [HeroGateRowsWait.TOGGLE].
+     */
+    private var rowsHoldBaselineHeroEnabled: Boolean? = null
 
     /** The rows' own [HERO_COMMIT_GATE_TIMEOUT_MS] backstop, generation-guarded like the hero's. */
     private var rowsGateTimeoutJob: Job? = null
@@ -549,6 +556,7 @@ object HomeRepository {
         }
         heroGateState = HeroGateState.Armed
         heroGateArmedAt = TimeSource.Monotonic.markNow()
+        rowsHoldBaselineHeroEnabled = HomeCatalogSettingsRepository.snapshot().heroEnabled
         heroGateReleaseReason = null
         heroGateWaiting = HeroGateWait.SOURCES
         // BUG-86 hero-off rows (beta.18), the `noSources` re-arm: this era's rows answer goes with
@@ -559,6 +567,7 @@ object HomeRepository {
         rowsGateReason = null
         rowsGateElapsedMs = 0
         rowsHeldUnderHeroEnabled = true
+        rowsHoldBaselineHeroEnabled = null
         catalogOutcomes = emptyMap()
         heroGateGeneration += 1
         val generation = heroGateGeneration
@@ -697,6 +706,7 @@ object HomeRepository {
         }
         val rowsElapsedMs = (heroGateArmedAt ?: idleSince).elapsedNow().inWholeMilliseconds
         rowsGateElapsedMs = rowsElapsedMs
+        if (rowsHoldBaselineHeroEnabled == null) rowsHoldBaselineHeroEnabled = snapshot.heroEnabled
 
         if (heroGateState == HeroGateState.Idle) {
             val idleHold = decideIdleHeroGate(
@@ -794,6 +804,15 @@ object HomeRepository {
      * Must run under [heroSelectionLock].
      */
     private fun applyRowsGateDecisionLocked(decision: HeroGateDecision, heroEnabled: Boolean) {
+        if (!decision.rowsReleased && !heroEnabled && rowsHoldBaselineHeroEnabled == true) {
+            // Codex beta.18 r3 (P2): Show Hero was ON when this gate armed and is OFF now — the user
+            // toggled it mid-launch. Apply immediately; the launch-sync hold is for launches.
+            log.i { "rowsGateReleased reason=${HeroGateRowsWait.TOGGLE} (Show Hero toggled off while armed)" }
+            rowsGateReleased = true
+            rowsGateReason = HeroGateRowsWait.TOGGLE
+            cancelGateWatchersLocked()
+            return
+        }
         rowsGateReleased = decision.rowsReleased
         rowsGateReason = decision.rowsWaiting
         if (decision.rowsReleased) {
@@ -946,6 +965,7 @@ object HomeRepository {
         rowsGateReason = null
         rowsGateElapsedMs = 0
         rowsHeldUnderHeroEnabled = true
+        rowsHoldBaselineHeroEnabled = null
         lastAppliedSettingsSignature = null
         cancelGateWatchersLocked()
         _uiState.value = HomeUiState()
