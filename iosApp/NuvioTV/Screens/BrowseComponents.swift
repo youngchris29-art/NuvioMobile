@@ -1372,6 +1372,20 @@ private struct PinnedRowTitleTracking: ViewModifier {
                                              Self.fadeRecheckFloor))
                 return
             }
+            // BUG-89 (rc2): the ORDINARY fire is the one belt event that does not go through
+            // `beltLog` (it has no `Reading` to hand it — the timer fires off the clock, not off a
+            // measurement), and it is the event the tester's Large case turns on: "the title
+            // disappears on the first horizontal move and never returns". Mirrored here on the same
+            // terms as `beltLog`'s — independent knob, NSLog and its tokens untouched. The
+            // `defer` line above is deliberately NOT mirrored: one deferral chain can wake several
+            // times per episode, which is exactly the per-frame volume this buffer must not carry.
+            if PinnedRowSettleProbe.enabled {
+                let margin = tracking.geometry.map { "\(Int((-$0.visibleMinY).rounded()))" } ?? "?"
+                PinnedRowSettleProbe.log(
+                    "belt fire row=\(rowKey) margin=\(margin)"
+                        + " reason=\(armedFor >= Self.fadeMaxDefer ? "ceiling" : "rest")"
+                        + " armedFor=\(Int(armedFor * 1000))ms")
+            }
             if HomeGeometryProbe.enabled {
                 NSLog("[HomeScrollProbe] belt %@",
                       "fire row=\(rowKey) sinceMotion=\(Int(sinceMotion * 1000))ms armedFor=\(Int(armedFor * 1000))ms"
@@ -1432,6 +1446,26 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// NOTHING, which is why the device pass could see the title painted on the artwork and not
     /// tell whether the belt had never armed, was deferring forever, or had fired and been undone.
     private func beltLog(_ event: String, _ reading: PinnedRowTitle.Reading) {
+        // BUG-89 (rc2): the belt's state changes are the other half of the tester's report — at
+        // Large his row title is visible on landing, disappears on the first horizontal move and
+        // never comes back, which is a belt `arm` → `fire` with no `recover`, and nothing in the
+        // settle lines says so. Mirrored into the photographable buffer INDEPENDENTLY of
+        // `HomeGeometryProbe.enabled`, so the two knobs stay separable; the NSLog below and every
+        // one of its tokens are untouched.
+        //
+        // `margin=` is derived here rather than carried on `Reading` (which deliberately holds
+        // BOOLs plus `slide`/`intrusion`, so the observer does not fire per frame — see its doc):
+        // `margin == -visibleMinY`, read from the same cached `TitleGeometry` the belt's own
+        // recompute paths (`remeasure`, `standDownFastPath`) use. `margin=?` when nothing has been
+        // cached yet, which is the honest reading and never a fabricated 0.
+        if PinnedRowSettleProbe.enabled {
+            let margin = tracking.geometry.map { "\(Int((-$0.visibleMinY).rounded()))" } ?? "?"
+            PinnedRowSettleProbe.log(
+                "belt \(event) row=\(rowKey) margin=\(margin)"
+                    + " slide=\(Int(reading.slide.rounded()))"
+                    + " intr=\(Int(reading.intrusion.rounded()))"
+                    + " clearanceLift=\(Int(reading.clearances.focused.rounded()))")
+        }
         guard HomeGeometryProbe.enabled else { return }
         NSLog("[HomeScrollProbe] belt %@",
               "\(event) row=\(rowKey) slide=\(Int(reading.slide.rounded()))"
@@ -2192,6 +2226,14 @@ enum PinnedRowSettle {
         let previous = regimeKey
         regimeKey = key
         regimeFits = fits
+        // BUG-89 (rc2): mirrored into the photographable buffer BEFORE the first-call guard below,
+        // so the LAUNCH regime — the one `.onChange(initial: true)` registers and the one every
+        // later settle line is measured under — is in the frozen head of a tester's capture. The
+        // `[HomeScrollProbe] REGIME-CHANGE` NSLog further down is unchanged and still only fires on
+        // an actual change. Diagnostics only; no behaviour depends on this branch.
+        if PinnedRowSettleProbe.enabled {
+            PinnedRowSettleProbe.log("regime \(key) fits=\(fits ? 1 : 0) from=\(previous ?? "-")")
+        }
         // First call of the session: record and stop. Nothing has accumulated yet.
         guard let previous, previous != key else { return }
         // The brakes, released — every one of them is evidence gathered under `previous`.
@@ -3175,6 +3217,22 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
             guard let plan = PinnedRowSettle.settlePlan(token: token) else { return }
             // Control-flow plans carry no measurement and must not reach the harness oracle.
             if !plan.report.isEmpty { onSettle?(plan.report) }
+            // BUG-89 (rc2): the ONE place every settle DECISION passes through — exactly one line
+            // per resolved settle epoch step, whatever branch produced it, carrying the same
+            // `row= margin= … nudge=…` text `settlePlan` builds and (on the correction branch)
+            // NSLogs verbatim. Mirroring here rather than at the dozen `return Plan(…)` sites is
+            // what keeps the volume to one line per decision instead of one per measurement, and
+            // what guarantees the pane shows the `nudge=0 endOfContent=1 room=…` last-row lines
+            // that never reach the console at all (only the correction branch NSLogs).
+            //
+            // `margin=` is the filter, for both reasons that matter: it drops the control-flow
+            // reports (already dropped above) and the `state=nofocus` one, and it is the token a
+            // reader of the photo starts from. `.truncationMode(.middle)` in the About pane keeps
+            // the head (`row= margin= net= vh=`) and the tail (`nudge=… endOfContent=… room=…`),
+            // which is the whole diagnosis.
+            if PinnedRowSettleProbe.enabled, plan.report.contains("margin=") {
+                PinnedRowSettleProbe.log("settle " + plan.report)
+            }
             if let target = plan.targetY {
                 if reduceMotion {
                     position.scrollTo(y: target)

@@ -220,6 +220,31 @@ private enum SidebarMetrics {
     static let expandDuration: Double = 0.2
     /// Unfocused glyph disc.
     static let iconDiscOpacity: Double = 0.18
+
+    /// Where the pill's top-left corner sits, measured from the SCREEN edges — not from the safe
+    /// area. rc2 feedback (u/mrStevenx3, 2026-09-06): "put it higher and more to the left". The
+    /// panel used to be padded `Theme.Spacing.screen` / `Theme.Spacing.lg` INSIDE the tvOS safe
+    /// area, which on a 1080p canvas landed it around (150, 84) — level with the hero title's left
+    /// margin, visibly parked in the picture rather than in the corner. The Omni reference the
+    /// feature is modelled on tucks its pill into the top-left corner, so the overlay now ignores
+    /// the safe area on those two edges and offsets by these numbers instead.
+    ///
+    /// Deliberately NOT `Theme.Spacing.*`: these are absolute screen-edge insets for one floating
+    /// chrome, not the shared overscan-safe content margin, and moving the content margin must not
+    /// move the pill. `Theme.Size.sidebarTopCompensation` (the pinned-hero viewport budget) is a
+    /// different number for a different job and is untouched by this.
+    static let cornerLeading: CGFloat = 60
+    static let cornerTop: CGFloat = 40
+
+    /// SHOW-edge settle for the resting (scroll-position) rule. rc2 feedback: the pill "flickers
+    /// for a second when pressing Up while scrolling a catalog, then settles". `TabBarScrollAutoHide`
+    /// reports hysteresis CROSSINGS, and while a page runs back to its top the settle correctors
+    /// (Home's `PinnedRowSettle`) nudge the offset across the show arm more than once — each
+    /// re-cross flipped the pill off and on. Requiring the mirror to read "not scrolled down"
+    /// continuously for this long before the pill may return absorbs that burst. The HIDE edge
+    /// stays immediate (getting out of the way must never lag), and focus / Menu reveals still win
+    /// instantly, so this delay is only ever felt as "the pill comes back a beat after you stop".
+    static let restingShowSettle: TimeInterval = 0.35
 }
 
 // MARK: - The overlay
@@ -231,7 +256,9 @@ private enum SidebarMetrics {
 /// Pure overlay: nothing behind it reflows. The tab roots keep the exact geometry they have in
 /// tabs mode; the only geometry FEAT-30 may change is the top safe area, and that is handled
 /// separately and explicitly by `sidebarTopCompensation()` below rather than by this view's
-/// footprint.
+/// footprint. That still holds now that the panel places itself against the screen corner
+/// (`SidebarMetrics.cornerLeading`/`cornerTop`): an overlay child that ignores the safe area
+/// changes only where IT draws — it does not hand insets back to the content underneath.
 struct SidebarOverlay: View {
     @Binding var selectedTab: Int
     var items: [SidebarItem] = SidebarItem.tabShell
@@ -242,15 +269,23 @@ struct SidebarOverlay: View {
     /// re-run default focus placement for the whole shell (see `handOffFocusToContent`).
     let shellFocusScope: Namespace.ID
     @ObservedObject var chrome: SidebarChromeModel
+    /// The shell's `TabBarVisibility`, passed in EXPLICITLY — exactly as `chrome` is, and as a
+    /// plain `let`, never `@ObservedObject`: handing the instance over does not subscribe anyone,
+    /// so `MainTabView` keeps the T3/BUG-66 property that it never re-evaluates its `Tab` closures
+    /// on a visibility publish. The narrow `onReceive($immersiveHidden)` below stays the only
+    /// subscription, and it lives here, on the overlay.
+    ///
+    /// rc2 bug (2026-09-06): this used to be `@Environment(\.tabBarVisibility)` and it NEVER
+    /// resolved to the shell's instance. `MainTabView` applies `.environment(\.tabBarVisibility,)`
+    /// to the `TabView` and then attaches this view with `.overlay { }` — the overlay's content is
+    /// laid out by the overlay modifier, which sits OUTSIDE (above) the environment modifier in the
+    /// chain, so the child read `TabBarVisibilityKey.defaultValue`: a real object, published to by
+    /// nobody. `immersiveHidden` therefore stayed `false` forever and the pill kept painting on top
+    /// of a pushed `DetailView` (visible in the tester's video on a Detail opened from Search; a
+    /// Detail opened from a scrolled-down Home only looked correct because the resting scroll rule
+    /// was hiding the pill already).
+    let tabBarVisibility: TabBarVisibility
     @Environment(\.resetFocus) private var resetFocus
-
-    /// The immersive-push signal (a pushed `DetailView`) comes through the SAME narrow channel
-    /// `TabBarImmersiveHideModifier` uses — `@Environment` for the object plus `onReceive` on the
-    /// one publisher — rather than as an initializer parameter. A parameter would force
-    /// `MainTabView` to READ `tabBarVisibility.immersiveHidden` in its own body, which re-couples
-    /// the shell to that object's `objectWillChange` and restores precisely the T3/BUG-66
-    /// invalidation storm `@State`-on-a-reference-type removed.
-    @Environment(\.tabBarVisibility) private var tabBarVisibility
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var immersiveHidden = false
     /// Latched by a Menu-press reveal; cleared when focus leaves the sidebar again. This is what
@@ -271,6 +306,14 @@ struct SidebarOverlay: View {
     /// (two quick tab switches, or two Menu presses 0.2 s apart, otherwise let a stale timer
     /// re-arm or disarm the panel the user is currently using).
     @State private var focusGeneration = 0
+    /// Settled mirror of the resting (scroll-position) rule — see `SidebarMetrics.restingShowSettle`
+    /// and `updateRestingVisibility`. Never read `chrome.scrolledDownByTab` directly in
+    /// `shouldShow`: that is the raw crossing signal, and reacting to it edge-for-edge is the
+    /// flicker the tester reported.
+    @State private var restingShown = false
+    /// Monotonic token for the pending show-edge settle, same discipline as `focusGeneration`: a
+    /// later crossing (or a tab switch) must retire an earlier settle rather than let it fire.
+    @State private var restingGeneration = 0
     @FocusState private var focusedItem: Int?
 
     private var isExpanded: Bool { focusedItem != nil }
@@ -286,7 +329,37 @@ struct SidebarOverlay: View {
         if focusedItem != nil { return true }
         if immersiveHidden || rootCoverActive { return false }
         if revealed { return true }
-        return !(chrome.scrolledDownByTab[selectedTab] ?? false)
+        return restingShown
+    }
+
+    /// Drives `restingShown` from the per-tab scroll mirror with an asymmetric settle: hiding is
+    /// immediate, showing waits `SidebarMetrics.restingShowSettle` of continuously-not-scrolled.
+    ///
+    /// `seeded` is the first read on a fresh mount (or a tab the panel has not seen scroll yet):
+    /// there is no burst to absorb there, and delaying the pill's first paint by a third of a
+    /// second at cold launch would be a new complaint, so that one case resolves immediately.
+    private func updateRestingVisibility(seeded: Bool = false) {
+        let scrolledDown = chrome.scrolledDownByTab[selectedTab] ?? false
+        // Retire any settle in flight: whatever it was going to conclude is about to be restated.
+        restingGeneration &+= 1
+        guard !scrolledDown else {
+            restingShown = false                     // HIDE edge: immediate, always.
+            return
+        }
+        guard !restingShown else { return }          // already shown — a re-cross must not blink it
+        guard !seeded else {
+            restingShown = true
+            return
+        }
+        let generation = restingGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + SidebarMetrics.restingShowSettle) {
+            guard generation == restingGeneration else { return }
+            // Re-read live rather than trusting the value that scheduled this: `selectedTab` and
+            // the mirror may both have moved, and only "still not scrolled down, right now" earns
+            // the show.
+            guard !(chrome.scrolledDownByTab[selectedTab] ?? false) else { return }
+            restingShown = true
+        }
     }
 
     private var visibleItems: [SidebarItem] {
@@ -305,6 +378,15 @@ struct SidebarOverlay: View {
         .background(alignment: .topLeading) {
             HiddenTabBarFocusBlocker().frame(width: 0, height: 0).allowsHitTesting(false)
         }
+        // Corner placement (rc2 feedback — see `SidebarMetrics.cornerLeading/cornerTop`). The
+        // offsets live HERE rather than at the mount site so the panel's origin and its own layout
+        // numbers stay in one file, and so `SidebarMetrics` can remain private. Order is
+        // load-bearing: the paddings are applied first and the whole padded view then ignores the
+        // top/leading safe area, which makes the two numbers read from the SCREEN edges. The
+        // expanded panel still grows downward from the same origin — nothing here sizes it.
+        .padding(.leading, SidebarMetrics.cornerLeading)
+        .padding(.top, SidebarMetrics.cornerTop)
+        .ignoresSafeArea(.all, edges: [.top, .leading])
         .animation(reduceMotion ? nil : .easeOut(duration: SidebarMetrics.expandDuration),
                    value: isExpanded)
         .animation(reduceMotion ? nil : .easeOut(duration: SidebarMetrics.expandDuration),
@@ -318,6 +400,16 @@ struct SidebarOverlay: View {
         }
         .onChange(of: rootCoverActive) { _, active in
             if active { releaseFocusForCover() }
+        }
+        // Resting rule, settled on the show edge only — see `updateRestingVisibility`. The value
+        // expression is the CURRENT tab's mirror, so a crossing on a background tab (a kept-alive
+        // subtree can still report one) cannot move the pill.
+        .onAppear { updateRestingVisibility(seeded: true) }
+        .onChange(of: chrome.scrolledDownByTab[selectedTab]) { _, _ in
+            updateRestingVisibility()
+        }
+        .onChange(of: selectedTab) { _, _ in
+            updateRestingVisibility()
         }
         .onChange(of: chrome.revealRequest) { _, _ in
             armed = true
@@ -352,7 +444,12 @@ struct SidebarOverlay: View {
     @ViewBuilder
     private var stateProbe: some View {
         #if DEBUG
-        Text("sidebar_state expanded=\(isExpanded ? 1 : 0) focused=\(focusedItem ?? -1) revealed=\(revealed ? 1 : 0) armed=\(armed ? 1 : 0) blocker=\(HiddenTabBarFocusBlocker.isBlocking ? 1 : 0) shown=1")
+        // Append-only: existing tokens keep their names, values and order (the harness matches on
+        // substrings). `immersive` and `resting` were added for the rc2 fixes — the first says
+        // whether the immersive-push signal is actually reaching this view (it was not; see
+        // `tabBarVisibility`), the second reads the settled resting rule rather than the raw
+        // scroll mirror.
+        Text("sidebar_state expanded=\(isExpanded ? 1 : 0) focused=\(focusedItem ?? -1) revealed=\(revealed ? 1 : 0) armed=\(armed ? 1 : 0) blocker=\(HiddenTabBarFocusBlocker.isBlocking ? 1 : 0) shown=1 immersive=\(immersiveHidden ? 1 : 0) resting=\(restingShown ? 1 : 0)")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("sidebar_state")

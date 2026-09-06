@@ -623,14 +623,13 @@ struct DetailView: View {
                     if trailerDimmedOut { trailerDimmedOut = false }
                 }
             }
-            // FEAT-32: the title drops into a bottom-left caption with the Back hint while the page
-            // leaves; the player draws its own copy for the first seconds of playback.
-            TrailerBridgeCaption(title: model.trailerPlayback?.title ?? title)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            // FEAT-32: the title fades in bottom-left with the Back hint while the page leaves; the
+            // player draws its own copy for the first seconds of playback. rc2 (u/mrStevenx3): the
+            // logo, not plain text, and no scale — and `placedBottomLeading()` is the shared
+            // placement that keeps this copy and the player's in the same rect at the hand-over.
+            TrailerBridgeCaption(title: model.trailerPlayback?.title ?? title, logoURL: logoUrl)
+                .placedBottomLeading()
                 .opacity(TrailerBridgeChoreography.captionOpacity(bridgePhase))
-                .scaleEffect(TrailerBridgeChoreography.captionScale(bridgePhase), anchor: .bottomLeading)
                 .animation(TrailerBridgeChoreography.captionAnimation(to: bridgePhase), value: bridgePhase)
                 .accessibilityHidden(TrailerBridgeChoreography.captionOpacity(bridgePhase) == 0)
             #if DEBUG
@@ -782,12 +781,18 @@ struct DetailView: View {
                 })
             }
                 .ignoresSafeArea()
-                // FEAT-32: title + Back hint, bottom-left, for a beat after playback starts. The
-                // auto-play entry keeps its longer dwell (BUG-18: a 4 s hint was reported as
-                // "doesn't stay on the screen" on TVs that blank at playback start).
-                .overlay(alignment: .bottomLeading) {
+                // FEAT-32: title (logo) + Back hint, bottom-left, for a beat after playback starts.
+                // The auto-play entry keeps its longer dwell (BUG-18: a 4 s hint was reported as
+                // "doesn't stay on the screen" on TVs that blank at playback start). rc2
+                // (u/mrStevenx3): placed through `placedBottomLeading()`, the same helper the
+                // description's copy uses, so the two coincide exactly during the hand-over instead
+                // of showing ~30 px apart for a couple of frames. The alignment lives in the helper,
+                // hence the plain `.overlay`.
+                .overlay {
                     TrailerBridgeCaption(title: item.title,
+                                         logoURL: logoUrl,
                                          dwell: trailerPlaybackIsAutoPlay ? 6 : TrailerBridgeChoreography.captionDwell)
+                        .placedBottomLeading()
                 }
         }
         .onChange(of: model.trailerPlayback?.id) { _, newId in
@@ -1500,7 +1505,14 @@ struct DetailView: View {
                                     title: item.name,
                                     imageURL: item.poster,
                                     width: Theme.Size.miniPosterWidth,
-                                    height: Theme.Size.miniPosterHeight
+                                    height: Theme.Size.miniPosterHeight,
+                                    // rc2 (u/mrStevenx3, 2026-09-06): "saga/franchise titles
+                                    // missing in the description — only images". He runs Hide
+                                    // Labels ON, which `showTitle: nil` follows, and a row of bare
+                                    // sequel posters says nothing about which film is which. On the
+                                    // description page this row is informational — like the Cast
+                                    // row, whose names always show — so it opts out of the setting.
+                                    showTitle: true
                                 )
                             }
                             .cardFocusButtonStyle()

@@ -84,13 +84,15 @@ final class TrailerBridgeTests: XCTestCase {
         XCTAssertNil(TrailerBridgeChoreography.chromeAnimation(to: .returning))
     }
 
+    /// rc2 (u/mrStevenx3, 2026-09-06): "the title resizes with the still (odd)". The caption used to
+    /// arrive by shrinking from `captionScale(.idle) == 1.25` into place; it now only fades, so
+    /// opacity is the ONLY per-phase term the caption has and there is no scale function to pin.
     func testCaptionShowsWhileLeavingAndIsGoneOnReturn() {
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.leaving), 1)
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.playing), 1)
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.returning), 0)
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.idle), 0)
-        XCTAssertEqual(TrailerBridgeChoreography.captionScale(.leaving), 1)
-        XCTAssertGreaterThan(TrailerBridgeChoreography.captionScale(.idle), 1)
+        XCTAssertNotNil(TrailerBridgeChoreography.captionAnimation(to: .leaving))
     }
 
     /// The whole entry should read as Nuvio's ~0.6 s, and the caption should outlast the cover's

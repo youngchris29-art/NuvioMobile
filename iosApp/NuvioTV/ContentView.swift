@@ -360,22 +360,36 @@ struct MainTabView: View {
         // modifier then applies nothing at all, in either mode) until the device spike measures
         // the delta — see that constant's doc comment.
         .sidebarTopCompensation()
-        // FEAT-30: the sidebar is mounted HERE — on the TabView, after the environment modifiers
-        // (so it inherits `\.tabBarVisibility` for the immersive-push signal) and deliberately
-        // OUTSIDE every `Tab` closure. Inside one it would live in that tab's kept-alive subtree:
-        // pruned or deferred with it, re-created per tab, and re-evaluated on every `Tab` closure
-        // rebuild — the T3 class again. As an overlay it is a pure floating layer, so nothing
-        // behind it reflows and tabs mode gets no view at all.
+        // FEAT-30: the sidebar is mounted HERE — on the TabView and deliberately OUTSIDE every
+        // `Tab` closure. Inside one it would live in that tab's kept-alive subtree: pruned or
+        // deferred with it, re-created per tab, and re-evaluated on every `Tab` closure rebuild —
+        // the T3 class again. As an overlay it is a pure floating layer, so nothing behind it
+        // reflows and tabs mode gets no view at all.
+        //
+        // BOTH shared objects are handed over as explicit parameters, and `tabBarVisibility` has
+        // to be (rc2 fix, 2026-09-06). The `.environment(\.tabBarVisibility,)` above does NOT
+        // reach this closure: overlay content is laid out by the `.overlay` modifier, which sits
+        // outside the environment modifiers in this chain, so the child's
+        // `@Environment(\.tabBarVisibility)` resolved to the key's unconnected default instance
+        // and the immersive-push signal never arrived — the pill stayed painted over a pushed
+        // DetailView. Passing the instance costs the shell nothing: a plain `let` hands the object
+        // over without subscribing anyone, so the T3/BUG-66 property (this body never re-evaluates
+        // on a visibility publish) is unchanged, and the overlay keeps the one narrow
+        // `onReceive($immersiveHidden)`.
+        //
+        // The overlay places itself in the top-left SCREEN corner (`SidebarMetrics.cornerLeading`
+        // / `cornerTop`, safe area ignored on those two edges) rather than being padded here —
+        // rc2 feedback asked for higher and further left, and the numbers belong next to the
+        // panel's own layout constants.
         .overlay(alignment: .topLeading) {
             if SidebarChrome.isEnabled() {
                 SidebarOverlay(
                     selectedTab: $selectedTab,
                     rootCoverActive: rootCoverActive,
                     shellFocusScope: shellFocusScope,
-                    chrome: sidebarChrome
+                    chrome: sidebarChrome,
+                    tabBarVisibility: tabBarVisibility
                 )
-                .padding(.leading, Theme.Spacing.screen)
-                .padding(.top, Theme.Spacing.lg)
             }
         }
         // FEAT-25: keep the "is Home frontmost" signal current from OUTSIDE the kept-alive tab

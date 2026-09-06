@@ -266,7 +266,11 @@ struct SettingsView: View {
                 } label: {
                     if settingsStyle == "minimal" {
                         Text(category.title)
+                            .font(Theme.Font.body)
                     } else {
+                        // FEAT-31 (rc2 tester report, 2026-09-06): the category labels carried no font
+                        // token, so a `List` row's system default rendered them while every other
+                        // Settings label took the Open Sans face. Both branches now read `Theme.Font.body`.
                         // HStack, not `Label`: the system label's icon-to-title spacing is too tight in a tvOS
                         // List row (device pass 2026-08-28, and the tester's "icons overlap the text" report) —
                         // this matches the detail rows' `SettingsRowLabel` spacing instead.
@@ -282,6 +286,7 @@ struct SettingsView: View {
                                 // announce the symbol's generated name before the title.
                                 .accessibilityHidden(true)
                             Text(category.title)
+                                .font(Theme.Font.body)
                         }
                     }
                 }

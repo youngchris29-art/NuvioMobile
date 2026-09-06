@@ -681,6 +681,26 @@ enum Theme {
         /// A larger cushion would push Medium over the line and change a layout nobody complained
         /// about; a smaller one buys Large nothing it needs. 8 is the value that satisfies both.
         static let heroPinnedRowsSettledCushion: CGFloat = heroPinnedRowsHeadroom
+        /// BUG-89 (beta.18-rc2, Steven's video): the device-observed extra DEPTH of the focus
+        /// engine's own rest compared with the simulator's — measured off that video, where the
+        /// LAST row parks roughly 90pt deeper than a middle row does, at Large AND at Medium, with
+        /// the previous row's tiles still showing clipped above it. BUG-66 family: the same
+        /// hardware-only anchoring spread the Wave G band header records (~55pt there), and nothing
+        /// in the simulator reproduces it.
+        ///
+        /// Used by ONE thing: the floor under `HomeView.pinnedRowsBottomInset`. It only ever ADDS
+        /// SCROLL RANGE at the bottom of the rows list — it is a content inset, so it can never
+        /// move a row's rest, change a band edge, or alter a correction. What it changes is whether
+        /// `PinnedRowSettle.settlePlan` has any range left to spend when the engine parks the last
+        /// row deep: without it `scrollRoomUp` is exhausted at that park and the `endOfContent`
+        /// branch closes the epoch with `nudge=0`, which is the honest answer to "there is no
+        /// scroll left" and the wrong outcome for "the engine parked 90pt deeper than we sized for".
+        ///
+        /// 96 rather than 90: the measurement is read off a photograph of a TV, so it is rounded up
+        /// to the next multiple of the dead zone's own granularity with a little margin. Over-
+        /// providing costs nothing (unused range is simply never scrolled into); under-providing
+        /// puts the last row straight back into `endOfContent`.
+        static let heroPinnedRowsDeviceParkSlack: CGFloat = 96
         /// Floors the compression may drive the pinned hero's two elastic slots down to. Compressing
         /// these — rather than shrinking the hero's frame around fixed content — is what keeps the
         /// hero from hard-clipping: the logo keeps a legible slot and the synopsis drops from two

@@ -18399,6 +18399,40 @@
         }
       }
     },
+    "Relaunch, walk down every row on Home and back up, then photograph this pane": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relancez, parcourez toutes les rangées de l'accueil vers le bas puis vers le haut, puis photographiez ce panneau"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neu starten, auf dem Startbildschirm alle Zeilen nach unten und wieder nach oben durchgehen, dann diesen Bereich fotografieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reinicia, recorre todas las filas de Inicio hacia abajo y de vuelta arriba, y luego fotografía este panel"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riavvia, scorri tutte le righe della Home verso il basso e poi verso l'alto, quindi fotografa questo pannello"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khởi động lại, đi xuống hết các hàng trên Trang chủ rồi quay lên, sau đó chụp ảnh bảng này"
+          }
+        }
+      }
+    },
     "Release date": {
       "localizations": {
         "de": {
@@ -19313,6 +19347,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bo tròn"
+          }
+        }
+      }
+    },
+    "Row Settle Diagnostics": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic de position des rangées"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnose der Zeilenposition"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnóstico de posición de filas"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostica posizione righe"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chẩn đoán vị trí hàng"
           }
         }
       }
@@ -25694,6 +25762,40 @@
     },
     "Turn on before walking Home down and back up, or running Detail push/pop cycles": {},
     "Turn on if asked to capture a hero artwork report, then relaunch the app": {},
+    "Turn on if asked to capture a row position report, then relaunch the app": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activez si l'on vous demande un rapport de position des rangées, puis relancez l'app"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einschalten, wenn ein Bericht zur Zeilenposition angefordert wird, dann die App neu starten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actívalo si te piden un informe de posición de filas y luego reinicia la app"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva se ti viene chiesto un rapporto sulla posizione delle righe, poi riavvia l'app"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật nếu được yêu cầu gửi báo cáo vị trí hàng, sau đó khởi động lại ứng dụng"
+          }
+        }
+      }
+    },
     "Turn on if asked to capture why a title finds no streams": {},
     "Turn on if asked to capture why a trailer looks zoomed or letterboxed": {
       "localizations": {

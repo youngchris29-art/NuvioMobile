@@ -12,6 +12,14 @@ struct AboutSettingsPane: View {
     @AppStorage("debug.homeHeroProbe") private var heroDiagnostics = false
     @State private var heroProbeLines: [String] = []
 
+    /// BUG-89/BUG-66 (beta.18-rc2): the exact same shape as the hero probe above, for the pinned
+    /// ROW SETTLE machinery — `PinnedRowSettleProbe`, whose buffer records the regime, one line per
+    /// resolved settle decision, and the visibility belt's state changes. Launch-latched for the
+    /// same reason (`PinnedRowSettleProbe.enabled` is a `static let`), hence the relaunch note in
+    /// the subtitle, and its own key so the two captures never crowd each other out of one buffer.
+    @AppStorage("debug.pinnedRowSettleProbe") private var rowSettleDiagnostics = false
+    @State private var rowSettleProbeLines: [String] = []
+
     /// BUG-30/66/62 (beta.14): same release-safe pattern as the hero probe above, but the readout
     /// is a live in-memory snapshot (`TabBarProbe`) rather than a persisted log — see that type's
     /// doc comment for why.
@@ -394,10 +402,57 @@ struct AboutSettingsPane: View {
                         }
                     }
                 )
+
+                // BUG-89/BUG-66 (rc2). Nested in its own `Group` rather than added as two more
+                // siblings: the outer `SettingsSection` is already AT the 10-child @ViewBuilder
+                // ceiling (six value rows + the hero toggle + its lines block + these two Groups),
+                // and so is this Group once the toggle and its readout are counted separately.
+                // One nested Group is one child, which is the only room left — same constraint the
+                // two enclosing Groups were introduced for (see this file's header comment).
+                Group {
+                    SettingsToggleRow(
+                        title: String(localized: "Row Settle Diagnostics"),
+                        subtitle: rowSettleDiagnostics
+                            ? String(localized: "Relaunch, walk down every row on Home and back up, then photograph this pane")
+                            : String(localized: "Turn on if asked to capture a row position report, then relaunch the app"),
+                        isOn: $rowSettleDiagnostics
+                    )
+
+                    if rowSettleDiagnostics, !rowSettleProbeLines.isEmpty {
+                        // Identical in shape to the hero probe's block above, for identical
+                        // reasons — including `.truncationMode(.middle)`, which is load-bearing
+                        // here rather than cosmetic: a settle report is long, and the two ends are
+                        // exactly what a reader needs (the head carries `row= margin= net= vh=`,
+                        // the tail carries `nudge=… endOfContent=… room=…`). The buffer is
+                        // head-preserving, so the launch regime survives however long the walk
+                        // runs, with one "… N lines elided …" marker once the tail starts rolling.
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(rowSettleProbeLines.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.system(size: 20, design: .monospaced))
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("settle_probe_lines")
+                        // Same hidden single-Text blob as `hero_probe_blob`: the List row clips to
+                        // visible height, so per-line children beyond the fold never enter the
+                        // accessibility tree and a harness walk would read one or two lines.
+                        .overlay(alignment: .topLeading) {
+                            Text(rowSettleProbeLines.joined(separator: "\n"))
+                                .font(.system(size: 4))
+                                .opacity(0.011)
+                                .accessibilityIdentifier("settle_probe_blob")
+                        }
+                    }
+                }
             }
         }
         .onAppear {
             heroProbeLines = UserDefaults.standard.stringArray(forKey: "debug.homeHeroProbe.lines") ?? []
+            rowSettleProbeLines = UserDefaults.standard.stringArray(forKey: PinnedRowSettleProbe.linesKey) ?? []
         }
         // The shared-side sink is installed/removed here rather than at the toggle, so it also
         // recovers if the switch was flipped in a previous session (startup does the same call).

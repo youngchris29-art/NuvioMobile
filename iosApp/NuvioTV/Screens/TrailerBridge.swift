@@ -9,10 +9,15 @@ extension Notification.Name {
 
 /// FEAT-32: the bridge between the description page and the full-screen trailer, modelled on the
 /// official Nuvio app's sequence (frame-read from u/mrStevenx3's 2026-09-05 video, see the tracker
-/// row): on the way in, the chrome fades, the title drops into a bottom-left caption next to the
-/// "Press Back" hint, the hero dims to black, and the trailer cuts in from black under that caption;
-/// on the way out, the still backdrop lands slightly enlarged and settles before the chrome fades
-/// back in. Before this the `fullScreenCover` simply appeared over the description.
+/// row): on the way in, the chrome fades, the title fades in bottom-left — as the title's logo art
+/// where there is one, else its text — above the "Press Back" hint, the hero dims to black, and the
+/// trailer cuts in from black under that caption; on the way out, the still backdrop lands slightly
+/// enlarged and settles before the chrome fades back in. Before this the `fullScreenCover` simply
+/// appeared over the description.
+///
+/// rc2 feedback (u/mrStevenx3, 2026-09-06) reshaped the caption: it used to arrive by shrinking from
+/// 1.25 into place ("the title resizes with the still (odd)") — it now only fades — and it used to
+/// be plain text where the header above it had just shown the logo ("the logo is missing").
 ///
 /// `DetailView` owns the phase and drives every visual through the pure functions below, so the
 /// choreography is testable without a view: `TrailerBridgeTests` pins the state machine and the
@@ -108,13 +113,9 @@ enum TrailerBridgeChoreography {
         }
     }
 
-    /// The caption arrives by shrinking into place, standing in for Nuvio's title-to-caption move.
-    static func captionScale(_ phase: TrailerBridgePhase) -> CGFloat {
-        switch phase {
-        case .leaving, .playing: return 1
-        case .idle, .returning: return 1.25
-        }
-    }
+    // The caption used to arrive by shrinking from 1.25 into place (`captionScale`), standing in
+    // for Nuvio's title-to-caption move. rc2 (u/mrStevenx3): "the title resizes with the still
+    // (odd)" — the caption now only fades, so there is no scale term at all.
 
     // MARK: Animations, keyed on the phase being ENTERED. `nil` = jump.
 
@@ -151,9 +152,15 @@ enum TrailerBridgeChoreography {
 }
 
 /// Title plus the "Press Back" hint, bottom-left. Drawn twice: on the description while the bridge
-/// leaves, and on the full-screen player for `dwell` seconds after playback starts.
+/// leaves, and on the full-screen player for `dwell` seconds after playback starts. Both copies are
+/// placed with `placedBottomLeading()` so they occupy the same rect — see that helper.
 struct TrailerBridgeCaption: View {
     let title: String
+    /// The title's logo art (`MetaDetails.logo`, the same URL the description header draws). When
+    /// present the caption shows the logo rather than the title text — rc2 (u/mrStevenx3): "the
+    /// logo is missing (text only)", the header directly above having just shown it. Falls back to
+    /// the text on an empty URL or a failed load, exactly as the header does.
+    var logoURL: String? = nil
     /// Seconds before the caption fades on its own; `nil` keeps it (the description side, whose
     /// visibility the bridge phase drives instead).
     var dwell: TimeInterval? = nil
@@ -166,10 +173,7 @@ struct TrailerBridgeCaption: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            Text(title)
-                .font(Theme.Font.screenTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
-                .lineLimit(1)
+            titleContent
             Text("Press Back to exit the trailer")
                 .font(Theme.Font.meta)
                 .foregroundStyle(Theme.Palette.textSecondary)
@@ -194,6 +198,48 @@ struct TrailerBridgeCaption: View {
             try? await Task.sleep(for: .seconds(dwell))
             visible = false
         }
+    }
+
+    /// The logo where there is one, the title text otherwise — and the title text again if the logo
+    /// fails to load, which is the same two-step the description header does with the same URL (so
+    /// on the way in the artwork is already in `CachedAsyncImage`'s cache).
+    @ViewBuilder
+    private var titleContent: some View {
+        if let logoURL, !logoURL.isEmpty {
+            CachedAsyncImage(string: logoURL, contentMode: .fit, failure: { titleText })
+                // Roughly the header's 600x180 lockup at caption scale; `.fit` keeps wide and tall
+                // logos inside the same box, and `.leading` keeps a narrow one on the left margin
+                // shared with the hint below it.
+                .frame(maxWidth: 360, maxHeight: 72, alignment: .leading)
+                // The VStack combines its children into one element: without this the title would
+                // disappear from the caption's accessibility label the moment a logo exists.
+                .accessibilityLabel(Text(title))
+        } else {
+            titleText
+        }
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(Theme.Font.screenTitle)
+            .foregroundStyle(Theme.Palette.textPrimary)
+            .lineLimit(1)
+    }
+}
+
+extension TrailerBridgeCaption {
+    /// The one placement both copies use. rc2 (u/mrStevenx3, 09-06 video ~110.9 s): at the hand-over
+    /// to the cover, the description's copy and the player's copy were both on screen for two frames
+    /// about 30 px apart vertically, because each site placed the caption its own way (a
+    /// `.frame(maxWidth:maxHeight:alignment:)` + `.ignoresSafeArea()` on the description, an
+    /// `.overlay(alignment: .bottomLeading)` on the player). Placing both through this helper makes
+    /// the two rects identical by construction; each site keeps its own visibility modifiers
+    /// (opacity/animation on the description, `dwell` on the player).
+    func placedBottomLeading() -> some View {
+        self
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
     }
 }
 

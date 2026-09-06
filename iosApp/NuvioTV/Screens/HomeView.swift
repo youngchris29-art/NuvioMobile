@@ -735,6 +735,41 @@ struct HomeView: View {
                             // and never resets the brakes — the exact first-switch regression this fixes.
                             .onChange(of: pinnedPlan.regimeKey, initial: true) { _, key in
                                 PinnedRowSettle.noteRegimeChange(key: key, fits: pinnedPlan.fits)
+                                // BUG-89 (rc2): the ONE settle-probe line that has to be emitted
+                                // from here rather than from `noteRegimeChange` — the corrector is
+                                // told only `key` and `fits`, and the numbers a photographed pane
+                                // needs to read a deep last-row park (the viewport the plan
+                                // produced, the link frame it has to fit, the rest range that
+                                // bounds a correction, and the bottom inset this file sizes from
+                                // them) all live on the plan, which only `HomeView` holds.
+                                // Diagnostics only — reads computed properties, mutates nothing.
+                                if PinnedRowSettleProbe.enabled {
+                                    PinnedRowSettleProbe.log(
+                                        "plan \(key) vh=\(Int(pinnedPlan.viewport.rounded()))"
+                                            + " link=\(Int(pinnedPlan.linkFrame.rounded()))"
+                                            + " rest=\(Int(pinnedPlan.restRange.rounded()))"
+                                            + " comp=\(Int(pinnedPlan.compression.rounded()))"
+                                            + " topR=\(Int(pinnedPlan.topReach.rounded()))"
+                                            + " botR=\(Int(pinnedPlan.bottomReach.rounded()))"
+                                            + " fits=\(pinnedPlan.fits ? 1 : 0)"
+                                            + " botInset=\(Int(pinnedRowsBottomInset.rounded()))"
+                                            + " lastRowH=\(Int((pinnedLastRowHeight ?? 0).rounded()))")
+                                }
+                            }
+                            // Codex rc5 r1 (P2): the `plan` line above fires on a REGIME change, but the
+                            // last row and the inset sized from it arrive with the rows, later — on a
+                            // hero-off cold launch the photographed line would read `botInset=60
+                            // lastRowH=0` forever. This companion line follows the last row's own
+                            // height (nil → measured, and a replaced last row), deduplicated by
+                            // `onChange`'s equality. Diagnostics only.
+                            .onChange(of: pinnedLastRowHeight) { _, height in
+                                if PinnedRowSettleProbe.enabled {
+                                    PinnedRowSettleProbe.log(
+                                        "lastRow \(pinnedLastRowId ?? "none")"
+                                            + " lastRowH=\(Int((height ?? 0).rounded()))"
+                                            + " botInset=\(Int(pinnedRowsBottomInset.rounded()))"
+                                            + " rest=\(Int(pinnedPlan.restRange.rounded()))")
+                                }
                             }
                         } else {
                             rowsScroll(pinned: false, settleReveal: false)
@@ -1456,39 +1491,72 @@ struct HomeView: View {
     }
 
     /// BUG-89 (Steven's beta.17 report — a hidden-title square-tile Fusion folder shelf left
-    /// visible for seconds under "Genres" once it became the last row focused): the last pinned
-    /// row is the one row `PinnedRowSettle`'s canonical-rest corrector (BrowseComponents) EXEMPTS
-    /// by design — there is no row below it to reveal into, so `settlePlan` returns `targetY: nil`
-    /// for it (`endOfContent` / upward-no-room) and nothing else pulls the scroll content far
-    /// enough to clear a short last row above the pinned clip edge.
+    /// visible for seconds under "Genres" once it became the last row focused): the last pinned row
+    /// is the row `PinnedRowSettle`'s canonical-rest corrector (BrowseComponents) most often cannot
+    /// help. Not by exemption — `settlePlan` has no `isLastRow` branch, and `last=` on its line is
+    /// reporting only — but by arithmetic: there is no row below it to reveal into, so an upward
+    /// correction runs out of scroll range and the honest `endOfContent` / upward-no-room branches
+    /// return `targetY: nil`. Nothing else then pulls the scroll content far enough to clear a
+    /// short last row above the pinned clip edge.
     ///
     /// The fix is a bottom content inset sized so the scroll range ALONE can reveal the last row
     /// fully, with no corrector involved: `vh` (the pinned rows viewport, STATIC — never the live
     /// viewport, the same rule `pinnedPlan` follows) minus the last row's own height, plus the same
     /// title-inset/dead-zone slack a settled correction would leave (`heroPinnedRowTitleInset` 48,
-    /// `heroPinnedRowSettleDeadZone` 4), plus 8pt of breathing room. `Theme.Spacing.screen` floors
-    /// it — every OTHER row is already tall enough that the formula goes negative and the uniform
-    /// inset every other edge carries is exactly right.
+    /// `heroPinnedRowSettleDeadZone` 4), plus 8pt of breathing room.
     ///
-    /// At Large (poster 403.3, `vh` 523.3): a catalog last row (626.8pt) keeps the floor (60,
-    /// unchanged); a hidden-title square-tile collection last row (436.9pt) gets 146; a captioned
-    /// one (471.9pt) gets 111.
-    ///
-    /// BUG-87 (beta.18): both terms now move with `pinnedPlan` — `vh` is the plan's viewport (which
+    /// BUG-87 (beta.18): both terms move with `pinnedPlan` — `vh` is the plan's viewport (which
     /// grows with the compression) and `pinnedLastRowHeight` is measured with the plan's REACHES
     /// (which shrink the row when the hero's give runs out). Reading one from the plan and the
     /// other from the Theme constants would mis-size this inset by exactly the reach spend, which
     /// is the BUG-89 half of the report.
+    ///
+    /// ── The floor (BUG-89 round two, beta.18-rc2) ────────────────────────────────────────────
+    /// The floor used to be the bare uniform `Theme.Spacing.screen` (60), on the reasoning that a
+    /// TALL last row (a catalog shelf) needs no help — the formula goes negative for it, so the
+    /// uniform inset every other edge carries is exactly right. Steven's rc2 video says otherwise,
+    /// at BOTH Large and Medium: his LAST row rests about 90pt DEEPER than a middle row does, with
+    /// the previous row's tiles showing clipped above it. That is the hardware-only park depth the
+    /// simulator has never reproduced (BUG-66 family; `Theme.Size.heroPinnedRowsDeviceParkSlack`).
+    ///
+    /// The corrector could fix that rest — `settlePlan` has NO `isLastRow` exemption, `last=` on
+    /// its line is reporting only — except that at a bottom-anchored park it has nothing to spend:
+    /// `scrollRoomUp` is `restRange` (≤32) plus the device's extra depth short of what it needs, so
+    /// the `endOfContent` branch fires (`nudge=0 endOfContent=1 room=…`), which is the honest
+    /// answer to "the scroll range is spent" and the wrong outcome for "the engine parked deeper
+    /// than we sized for". So the floor now carries that room explicitly:
+    ///
+    ///     floor = Spacing.screen (60) + plan.restRange (0…32) + deviceParkSlack (96)
+    ///
+    /// `restRange` is the plan's own width for the set of legal rests (`viewport − linkFrame`), so
+    /// a regime with several legal rests is given room to reach any of them; `deviceParkSlack` is
+    /// the measured device-vs-sim park depth. A content inset can only ADD scroll range at the
+    /// bottom — it moves no rest, no band edge and no correction — so over-providing costs nothing
+    /// but a little unused range past the last row, while under-providing is the bug.
+    ///
+    /// At Large (poster 403.3, `vh` 523.3, `restRange` 0): a catalog last row (626.8pt) now gets
+    /// the floor 156 instead of 60; a hidden-title square-tile collection last row (436.9pt) keeps
+    /// its 146-from-the-formula only if that still exceeds the floor, otherwise the floor wins; a
+    /// captioned one (471.9pt) takes the floor. The `max` keeps whichever term is larger, so the
+    /// short-last-row case the original fix was written for is untouched wherever it still binds.
     private var pinnedRowsBottomInset: CGFloat {
         guard let lastRowHeight = pinnedLastRowHeight else { return Theme.Spacing.screen }
         let vh = pinnedPlan.viewport
-        let inset = max(Theme.Spacing.screen,
+        // See the floor block above: uniform inset + this regime's rest range + the measured
+        // device park depth. Never smaller than the old bare `Theme.Spacing.screen`.
+        let floor = Theme.Spacing.screen
+            + pinnedPlan.restRange
+            + Theme.Size.heroPinnedRowsDeviceParkSlack
+        let inset = max(floor,
                          vh - lastRowHeight + Theme.Size.heroPinnedRowTitleInset
                             + Theme.Size.heroPinnedRowSettleDeadZone + 8)
         #if DEBUG
-        if homeScrollProbeEnabled, inset != Theme.Spacing.screen {
-            NSLog("[HomeScrollProbe] trailingInset=%.1f lastRow=%@ lastRowH=%.1f",
-                  inset, pinnedLastRowId ?? "none", lastRowHeight)
+        if homeScrollProbeEnabled {
+            // `slack=` is the only token added to this line: with a non-constant floor a device
+            // log otherwise cannot tell which of the two `max` terms won, which is the whole
+            // question when a last row still parks deep.
+            NSLog("[HomeScrollProbe] trailingInset=%.1f lastRow=%@ lastRowH=%.1f slack=%.1f",
+                  inset, pinnedLastRowId ?? "none", lastRowHeight, floor)
         }
         #endif
         return inset
