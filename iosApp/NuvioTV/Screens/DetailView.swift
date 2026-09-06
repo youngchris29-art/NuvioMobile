@@ -3,11 +3,89 @@ import QuartzCore
 import SwiftUI
 import SharedCore
 
+/// BUG-41 (beta.18): pure timing math behind `ScrollDimModel.isScrolling` — deliberately split out
+/// of the model so the debounce/hysteresis arithmetic can be exercised in
+/// `DetailScrollProbeTests` with fabricated timestamps instead of a real `Task.sleep`/clock.
+/// `now`/`lastChange` are any monotonic seconds source; `ScrollDimModel` below feeds it
+/// `CACurrentMediaTime()`, matching `HitchCounter`'s `CADisplayLink` timestamps elsewhere in this
+/// file.
+enum ScrollingLatch {
+    /// The ask: "cleared after ~150ms of no further scroll-geometry change."
+    nonisolated static let defaultIdle: TimeInterval = 0.15
+
+    /// True while `now` is still inside `idle` seconds of the last recorded change — i.e. a clear
+    /// timer armed at `lastChange + idle` has not fired yet. A brand-new change (`now ==
+    /// lastChange`) is always scrolling; a change exactly (or more than) `idle` seconds old is
+    /// idle — closed lower bound, open upper bound, so a change that lands exactly on the boundary
+    /// counts as idle rather than re-arming forever.
+    ///
+    /// `nonisolated` (matching `DetailScrollProbe.enabled`/`DetailScrollAB.leg` elsewhere in this
+    /// file): a pure function of its arguments with no actor-isolated state to protect, so it can
+    /// be called from any isolation domain — including `DetailScrollProbeTests`, synchronously,
+    /// with no `await`/`@MainActor` ceremony.
+    nonisolated static func isScrolling(now: TimeInterval, lastChange: TimeInterval, idle: TimeInterval = defaultIdle) -> Bool {
+        now - lastChange < idle
+    }
+}
+
 /// BUG-41: isolates UX-6's scroll-driven dim value from `DetailView`'s own `@State` so writing it
 /// every scroll-geometry frame doesn't invalidate (and re-evaluate) the entire detail page body —
 /// see `DetailView.dimModel` and `ScrollDimOverlay` below, its sole observer.
 private final class ScrollDimModel: ObservableObject {
     @Published var value: Double = 0
+
+    /// BUG-41 (beta.18): debounced "the user is actively scrolling right now" flag — true the
+    /// instant a scroll-geometry change is observed, false again ~150ms after the last one
+    /// (`ScrollingLatch.defaultIdle`). Lives here, not a plain `@State` on `DetailView`, for the
+    /// same reason `value` does: writing it every scroll frame must invalidate only the small
+    /// views that actually read it (the chip glass/flat swap — see `DetailView.chipGlassFlat`),
+    /// not the whole `DetailView.body`.
+    @Published var isScrolling: Bool = false
+
+    /// `CACurrentMediaTime()` at the last `noteScrollChange` call — what `ScrollingLatch` measures
+    /// the debounce window against.
+    private var lastChangeTime: TimeInterval = 0
+    /// The pending "flip back to false" timer. Cancelled and replaced on every new change so a
+    /// change inside the 150ms window extends the latch instead of racing a stale clear.
+    private var clearTask: Task<Void, Never>?
+
+    /// Called from `DetailView`'s scroll-geometry tracking on every offset change (item 1/3 of the
+    /// BUG-41 beta.18 fix). Marks scrolling active immediately and (re)arms a clear after `idle`
+    /// seconds.
+    func noteScrollChange(idle: TimeInterval = ScrollingLatch.defaultIdle) {
+        let now = CACurrentMediaTime()
+        lastChangeTime = now
+        if !isScrolling { isScrolling = true }
+        // One clear task per scroll, not one per frame: `onScrollGeometryChange` fires on every
+        // frame the page moves, and cancelling + recreating a Task 60 times a second is exactly the
+        // per-frame allocation this fix exists to remove. The task re-checks the latch on every
+        // wake and retires itself only once the page has genuinely gone idle.
+        guard clearTask == nil else { return }
+        clearTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(idle * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                let done: Bool = await MainActor.run {
+                    guard let self else { return true }
+                    if ScrollingLatch.isScrolling(now: CACurrentMediaTime(), lastChange: self.lastChangeTime, idle: idle) {
+                        return false
+                    }
+                    self.isScrolling = false
+                    self.clearTask = nil
+                    return true
+                }
+                if done { return }
+            }
+        }
+    }
+
+    /// `DetailView.onDisappear` — cancels any pending clear so the `Task` doesn't outlive the view
+    /// (harmless either way, since nothing reads `isScrolling` once the view is gone, but tidy and
+    /// stops the closure retaining `self` past the visit for no reason).
+    func cancelScrollLatch() {
+        clearTask?.cancel()
+        clearTask = nil
+    }
 }
 
 /// The UX-6 dim overlay + its DEBUG diagnostic Text, as `ScrollDimModel`'s only observer (BUG-41).
@@ -46,8 +124,9 @@ private struct ScrollDimOverlay: View {
             #if DEBUG
             // UX-6/BUG-41 diagnostic (invisible, harness-readable): the live darkening value plus
             // the three A/B signals a UITest needs to attribute choppiness — append-only, `dark=`
-            // stays first so pre-existing reads of this token keep working.
-            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg)")
+            // stays first so pre-existing reads of this token keep working. `scrolling=` (beta.18,
+            // BUG-41 item 3) is the newest token, appended last for the same reason.
+            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_ux6")
@@ -386,6 +465,17 @@ struct DetailView: View {
                 guard DetailScrollProbe.enabled else { return }
                 NSLog("[UX6] %@", v)
             })
+            // BUG-41 (beta.18, item 1): feeds `dimModel.isScrolling`. Deliberately its OWN tracker
+            // over raw `contentOffset.y` rather than piggybacking on the dim-ramp closure above —
+            // that closure quantizes to 0.05 steps and can go a full second without its `action:`
+            // firing once the ramp saturates at 0.85 deep in a long description, and it collapses
+            // to a constant 0 outright under `DetailScrollAB` legs 1/3. Raw offset changes on
+            // (essentially) every scroll frame regardless of ramp state or A/B leg, so "is the user
+            // actively scrolling" tracks real scroll motion instead of the dim value's own
+            // throttling.
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in
+                dimModel.noteScrollChange()
+            })
             // BUG-41: hysteresis latch driving `trailerLayerVisible` — see `trailerDimmedOut`'s doc
             // comment. Wired on the outer ZStack (not inside `ScrollDimOverlay`) since it needs to
             // reach the trailer-mount `if` above, not just the overlay's own opacity.
@@ -449,6 +539,9 @@ struct DetailView: View {
             // BUG-41 item 6: logs the visit's `[BUG41] hitches=… frames=… maxGap=…` summary; no-op
             // if `start()` never armed the display link.
             hitchCounter.stopAndLog()
+            // BUG-41 (beta.18, item 1): cancels any pending "flip isScrolling back to false" timer
+            // so it doesn't fire against a model nobody's reading once this visit's over.
+            dimModel.cancelScrollLatch()
         }
         .onChange(of: model.trailerVideoURL) { _, newValue in
             if newValue != nil {
@@ -695,11 +788,29 @@ struct DetailView: View {
     /// reasoning).
     private var trailerLayerVisible: Bool { isTrailerActive && !trailerDimmedOut }
 
-    /// BUG-41 leg 2/3/4 + "flatten while a trailer plays" (item 4): whether the top-block chips
-    /// (`metaChip`, parental-guide) should render flat translucent material instead of
-    /// `.glassEffect`. Mirrors `detailChipBackground`'s own condition; also folded into the
+    /// BUG-41 leg 2/3/4 + "flatten while a trailer plays" (item 4) + "flatten while scrolling"
+    /// (beta.18, item 2): whether the top-block chips (`metaChip`, parental-guide) should render
+    /// flat translucent material instead of `.glassEffect`. Mirrors `detailChipBackground`'s own
+    /// condition (the only other reader — see `Self.chipGlassFlat` below); also folded into the
     /// `debug_ux6` diagnostic's `glass=` token.
-    private var chipGlassFlat: Bool { isTrailerActive || DetailScrollAB.glassDisabled }
+    ///
+    /// Deliberately NOT unified with `actionRow`'s `GlassEffectContainer`/button-style swap
+    /// (`DetailScrollAB.buttonGlassDisabled`, leg 4 only): that enum's own doc comment records it
+    /// as an intentionally SEPARATE knob so legs 2/3 can isolate "chips only" from leg 4's "chips +
+    /// buttons" for the A/B attribution question BUG-41 is still mid-answering on-device. Folding
+    /// `dimModel.isScrolling` in here would silently make ordinary (leg 0) scrolling flatten the
+    /// action row too, widening that experiment's scope as a side effect of this fix.
+    private var chipGlassFlat: Bool {
+        Self.chipGlassFlat(trailerActive: isTrailerActive, scrolling: dimModel.isScrolling, glassDisabled: DetailScrollAB.glassDisabled)
+    }
+
+    /// Pure truth table backing `chipGlassFlat` above, extracted so `DetailScrollProbeTests` can
+    /// exhaustively cover all 8 combinations without standing up a `DetailView`/`DetailViewModel`.
+    /// `nonisolated` for the same reason as `ScrollingLatch.isScrolling`: no instance/actor state
+    /// involved, so tests can call it directly with no `@MainActor` hop.
+    nonisolated static func chipGlassFlat(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
+        trailerActive || scrolling || glassDisabled
+    }
 
     /// The poster-backdrop layer only earns its keep when it would show something the plain
     /// backdrop doesn't already — skip when they're the same URL (`backgroundUrl` already falls
@@ -871,13 +982,25 @@ struct DetailView: View {
     /// (`chipGlassFlat`). The single swap point shared by `metaChip` and the parental-guide chips
     /// below so the two don't duplicate the conditional. `actionRow`'s buttons/container are a
     /// separate swap (leg 4 / `DetailScrollAB.buttonGlassDisabled`) and are untouched by this one.
+    ///
+    /// BUG-41 (beta.18): glass returns the instant `chipGlassFlat` flips back to false — most
+    /// commonly `dimModel.isScrolling` clearing ~150ms after the user stops scrolling — and the
+    /// hybrid HIG contract (`docs/design/hig-hybrid-contract.md`) treats glass as this page's
+    /// RESTING-state material, so that return should read as "it was there all along," not a
+    /// visible pop/morph back in. `.transaction { $0.animation = nil }` forces a nil transaction on
+    /// this specific swap regardless of any ambient animation up the tree (e.g. `.animation`
+    /// modifiers elsewhere in `body` keyed to unrelated values) — belt-and-suspenders alongside the
+    /// fact that nothing here calls `withAnimation` in the first place.
     @ViewBuilder
     private func detailChipBackground(@ViewBuilder _ content: () -> some View) -> some View {
-        if chipGlassFlat {
-            content().background(Color.white.opacity(0.12), in: .capsule)
-        } else {
-            content().glassEffect(.regular, in: .capsule)
+        Group {
+            if chipGlassFlat {
+                content().background(Color.white.opacity(0.12), in: .capsule)
+            } else {
+                content().glassEffect(.regular, in: .capsule)
+            }
         }
+        .transaction { $0.animation = nil }
     }
 
     /// A small Liquid Glass capsule around one metadata item (year / runtime / rating).
