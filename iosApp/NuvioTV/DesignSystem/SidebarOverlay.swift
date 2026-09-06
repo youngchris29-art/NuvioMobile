@@ -91,7 +91,10 @@ final class SidebarChromeModel: ObservableObject {
 /// (a Top Shelf deep link's standalone `NavigationStack`) falls back to a harmless unconnected
 /// instance instead of crashing for a missing environment object.
 private struct SidebarChromeKey: EnvironmentKey {
-    static let defaultValue = SidebarChromeModel()
+    // `SidebarChromeModel` is `@MainActor`; the key's requirement is nonisolated, so construct
+    // the fallback instance under an explicit main-actor assumption (environment defaults are
+    // resolved on the main thread) rather than rely on Swift 5 mode's leniency.
+    static let defaultValue: SidebarChromeModel = MainActor.assumeIsolated { SidebarChromeModel() }
 }
 
 extension EnvironmentValues {
@@ -287,7 +290,13 @@ struct SidebarOverlay: View {
         // Same narrow subscription (and the same payload-not-property rule) as
         // `TabBarImmersiveHideModifier`: `@Published` emits on willSet, and it replays its current
         // value to a new subscriber, so no `onAppear` seed is needed.
-        .onReceive(tabBarVisibility.$immersiveHidden) { immersiveHidden = $0 }
+        .onReceive(tabBarVisibility.$immersiveHidden) { hidden in
+            immersiveHidden = hidden
+            if hidden { releaseFocusForCover() }
+        }
+        .onChange(of: rootCoverActive) { _, active in
+            if active { releaseFocusForCover() }
+        }
         .onChange(of: chrome.revealRequest) { _, _ in
             armed = true
             revealed = true
@@ -321,7 +330,7 @@ struct SidebarOverlay: View {
     @ViewBuilder
     private var stateProbe: some View {
         #if DEBUG
-        Text("sidebar_state expanded=\(isExpanded ? 1 : 0) focused=\(focusedItem ?? -1) revealed=\(revealed ? 1 : 0) armed=\(armed ? 1 : 0) shown=1")
+        Text("sidebar_state expanded=\(isExpanded ? 1 : 0) focused=\(focusedItem ?? -1) revealed=\(revealed ? 1 : 0) armed=\(armed ? 1 : 0) blocker=\(HiddenTabBarFocusBlocker.isBlocking ? 1 : 0) shown=1")
             .font(.system(size: 8))
             .opacity(0.011)
             .accessibilityIdentifier("sidebar_state")
@@ -400,16 +409,56 @@ struct SidebarOverlay: View {
     /// Post-select hand-off: drop the rows' focusability for a moment so the focus engine must
     /// leave the panel (see the row `Button`'s comment), then restore it.
     private func handOffFocusToContent() {
+        // Internal review r3 (P1-2b): the hand-off is only safe while the hidden system bar is
+        // known to be unfocusable — otherwise default placement's first traversal candidate IS
+        // that invisible bar (Phase 0 spike symptom). If the blocker never found the controller,
+        // keep focus in the panel instead; the user can still leave it with Down/Right.
+        guard HiddenTabBarFocusBlocker.isBlocking else {
+            NSLog("[SidebarChrome] hand-off skipped: hidden bar not blocked; focus stays in the panel")
+            return
+        }
         armed = false
         focusedItem = nil
         revealed = false
         // With the rows gone, re-run default focus placement for the whole shell scope so the
         // engine lands in the newly selected tab's content (`prefersDefaultFocus` only applies
         // when nothing holds focus — `resetFocus` is the documented way to re-run it). Next
-        // runloop turn, so SwiftUI has removed the row buttons first.
+        // runloop turn, so SwiftUI has removed the row buttons first. Then VERIFY (internal
+        // review r3 P1-1): the destination tab may still be building on this turn, and a reset
+        // issued before anything focusable exists leaves the system with no focused item — the
+        // BUG-47 dead end, with the panel disarmed so it cannot catch the fallback either. Two
+        // checks re-issue the reset; if focus is still nowhere after the last, re-arm the panel
+        // and take focus back so the user is never left without a focused element.
         DispatchQueue.main.async {
             resetFocus(in: shellFocusScope)
+            for (index, delay) in [0.35, 1.0].enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    guard focusedItem == nil, !armed else { return }   // a reveal took over meanwhile
+                    guard HiddenTabBarFocusBlocker.focusedItemIsNil() else { return }
+                    if index == 0 {
+                        resetFocus(in: shellFocusScope)
+                    } else {
+                        NSLog("[SidebarChrome] hand-off landed nowhere twice; re-arming the panel")
+                        armed = true
+                        revealed = true
+                        focusedItem = selectedTab
+                    }
+                }
+            }
         }
+    }
+
+    /// A presented cover (deep link, trailer) or an immersive Detail push took the screen while
+    /// the panel held focus. `shouldShow` lets focus win over those hide terms on purpose (never
+    /// unmount a focused view), but the panel is now BEHIND a presented controller — invisible,
+    /// yet still reporting itself focused, which would disable every reveal handler for the rest
+    /// of the session via `isFocusedChrome` (internal review r3 P2-6). Release instead.
+    private func releaseFocusForCover() {
+        guard focusedItem != nil || armed || revealed else { return }
+        focusedItem = nil
+        armed = false
+        revealed = false
+        chrome.setFocusedChrome(false)
     }
 
     /// Programmatic `@FocusState` write after a Menu-press reveal.
@@ -419,19 +468,29 @@ struct SidebarOverlay: View {
     /// insert them first. The single retry mirrors HomeView's Menu-to-top handoff (BUG-27), which
     /// learned on device that a one-shot focus grab issued a hair too early is silently dropped —
     /// here that would leave the panel visible but unfocusable, i.e. collapsed and inert.
+    ///
+    /// Fail closed (internal review r3 P2-3): if BOTH writes are dropped, `focusedItem` never
+    /// turns non-nil, so the `onChange` that clears `armed`/`revealed` never fires and the panel
+    /// would stay armed at rest — the exact focus-steal `armed` exists to prevent. A last check
+    /// disarms. `selectedTab` is read live in every closure (the collapsed panel only renders the
+    /// CURRENT tab's row, so a captured value could target a row that no longer exists).
     private func takeFocusAfterReveal() {
-        let target = selectedTab
         DispatchQueue.main.async {
             guard revealed, focusedItem == nil else { return }
-            focusedItem = target
+            focusedItem = selectedTab
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 guard revealed, focusedItem == nil else { return }
-                focusedItem = target
+                focusedItem = selectedTab
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    guard revealed, focusedItem == nil else { return }
+                    NSLog("[SidebarChrome] reveal could not take focus; disarming")
+                    revealed = false
+                    armed = false
+                }
             }
         }
     }
 }
-
 
 // MARK: - Hidden tab bar focus blocker
 
@@ -453,48 +512,100 @@ struct SidebarOverlay: View {
 /// so a build where the backing controller is not a `UITabBarController` says so instead of
 /// silently doing nothing. Tabs mode never mounts it.
 struct HiddenTabBarFocusBlocker: UIViewRepresentable {
+    /// True once a backing `UITabBar` has had interaction disabled. Read by the sidebar's
+    /// hand-off: default focus placement is only safe when the invisible bar cannot be its first
+    /// candidate (internal review r3 P1-2b).
+    nonisolated(unsafe) private(set) static var isBlocking = false
+    /// The live blocker view, for `focusedItemIsNil()` (it has a window, hence a focus system).
+    nonisolated(unsafe) private static weak var current: BlockerView?
+
+    /// Whether the window's focus system currently has NO focused item (the BUG-47 dead end).
+    /// `false` when unknown (no window yet) so callers do not react to a missing probe.
+    static func focusedItemIsNil() -> Bool {
+        guard let view = current, let window = view.window,
+              let system = UIFocusSystem.focusSystem(for: window) else { return false }
+        return system.focusedItem == nil
+    }
+
     func makeUIView(context: Context) -> BlockerView { BlockerView() }
     func updateUIView(_ uiView: BlockerView, context: Context) { uiView.apply() }
+    /// Restore the bar if the overlay is ever torn down without the whole shell being remounted
+    /// (internal review r3 P2-4): a tabs-mode shell with a visible, permanently unfocusable bar
+    /// and no sidebar would have no reachable chrome at all.
+    static func dismantleUIView(_ uiView: BlockerView, coordinator: ()) {
+        uiView.restore()
+    }
 
     final class BlockerView: UIView {
-        private var logged = false
+        private var loggedFailure = false
+        private var loggedSuccess = false
+        private weak var blockedBar: UITabBar?
+        private var focusObserver: NSObjectProtocol?
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
             guard window != nil else { return }
+            HiddenTabBarFocusBlocker.current = self
             apply()
             for delay in [0.3, 1.0, 2.5] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.apply() }
             }
+            // Re-apply on every focus move (cheap, one notification per move): if UIKit ever
+            // re-enables the bar — tab switch, trait change, a `.toolbarVisibility` re-resolution
+            // (the BUG-66 class) — it is blocked again before the NEXT move command, instead of
+            // whenever SwiftUI happens to re-evaluate this view (internal review r3 P2-4).
+            if focusObserver == nil {
+                focusObserver = NotificationCenter.default.addObserver(
+                    forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
+                ) { [weak self] _ in self?.apply() }
+            }
+        }
+
+        deinit {
+            if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         }
 
         func apply() {
             guard let root = window?.rootViewController else { return }
             guard let tabController = Self.findTabBarController(from: root) else {
-                if !logged {
-                    logged = true
+                if !loggedFailure {
+                    loggedFailure = true
                     NSLog("[SidebarChrome] no UITabBarController found under %@ — hidden bar stays focusable", String(describing: type(of: root)))
                 }
                 return
             }
             let bar = tabController.tabBar
+            blockedBar = bar
             if bar.isUserInteractionEnabled {
                 bar.isUserInteractionEnabled = false
                 tabController.setNeedsFocusUpdate()
             }
-            if !logged {
-                logged = true
+            HiddenTabBarFocusBlocker.isBlocking = true
+            if !loggedSuccess {
+                loggedSuccess = true
                 NSLog("[SidebarChrome] hidden tab bar made unfocusable (hidden=%d alpha=%.2f frame=%@)",
                       bar.isHidden ? 1 : 0, bar.alpha, NSCoder.string(for: bar.frame))
             }
         }
 
+        func restore() {
+            if let bar = blockedBar, !bar.isUserInteractionEnabled {
+                bar.isUserInteractionEnabled = true
+            }
+            HiddenTabBarFocusBlocker.isBlocking = false
+            if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+            focusObserver = nil
+        }
+
+        /// Children first, presented controllers last (internal review r3 P3-11): a presented
+        /// controller that contained its own tab bar controller must never win over the shell's.
         private static func findTabBarController(from controller: UIViewController) -> UITabBarController? {
             if let tab = controller as? UITabBarController { return tab }
-            if let presented = controller.presentedViewController,
-               let hit = findTabBarController(from: presented) { return hit }
             for child in controller.children {
                 if let hit = findTabBarController(from: child) { return hit }
+            }
+            if let presented = controller.presentedViewController {
+                return findTabBarController(from: presented)
             }
             return nil
         }
@@ -557,6 +668,22 @@ private struct SidebarTopCompensationModifier: ViewModifier {
     func body(content: Content) -> some View {
         if SidebarChrome.isEnabled(), SidebarChrome.topCompensation > 0 {
             content.safeAreaPadding(.top, SidebarChrome.topCompensation)
+        } else {
+            content
+        }
+    }
+}
+
+/// Structural (`if`/`else`) form of `.onMoveCommand` for Home's root, which composes its own
+/// Menu grammar by hand and so cannot use `SidebarMenuRevealModifier` wholesale. Tabs mode gets
+/// no modifier at all (internal review r3 P2-7 — `.onMoveCommand(perform: nil)` was the one
+/// non-structural FEAT-30 site).
+struct SidebarUpRevealModifier: ViewModifier {
+    let perform: ((MoveCommandDirection) -> Void)?
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let perform {
+            content.onMoveCommand(perform: perform)
         } else {
             content
         }

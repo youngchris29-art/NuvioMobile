@@ -141,7 +141,9 @@ final class CollectionFocusFrameSampler: NSObject {
     @objc private func tick(_ link: CADisplayLink) {
         defer { lastTimestamp = link.timestamp }
         guard let last = lastTimestamp else { return }
-        let gapMs = (link.timestamp - last) * 1000
+        // Clamped: the seed at `arm()` is `CACurrentMediaTime()` while `link.timestamp` is the
+        // LAST displayed frame's time, so the first no-stall tick can read slightly negative.
+        let gapMs = max(0, (link.timestamp - last) * 1000)
         frameGapsMs.append(gapMs)
         if gapMs > maxGapMs { maxGapMs = gapMs }
         let expectedFrameMs = link.duration > 0

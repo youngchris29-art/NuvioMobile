@@ -109,14 +109,15 @@ struct SettingsView: View {
                     }
                 }
             }
+            // FEAT-30 (Codex r2, internal review r3 P2-8): in sidebar mode the system tab bar is
+            // gone from THIS root too, so Menu / an unplaceable Up at the split root need the same
+            // route to the replacement chrome the four scrolling roots have. Attached INSIDE the
+            // NavigationStack, on the split itself (like Search/Library/Add-ons attach to their
+            // ScrollView): a page pushed by a `SettingsLinkRow` is a descendant of the stack, not
+            // of this VStack, so its own Menu (pop) and Up grammar stay untouched.
+            .sidebarMenuReveal()
             .background(Theme.Palette.background.ignoresSafeArea())
         }
-        // FEAT-30 (Codex r2): in sidebar mode the system tab bar is gone from THIS root too, so a
-        // Menu press at the split root needs the same route to the replacement chrome the four
-        // scrolling roots have. Attached to the NavigationStack, not inside it: a pushed pane
-        // page and an open `Menu { Picker }` popover are not descendants of this view's focus
-        // chain, so their own Menu grammar (pop / dismiss) is untouched.
-        .sidebarMenuReveal()
         .onAppear {
             model.start()
             trakt.start()

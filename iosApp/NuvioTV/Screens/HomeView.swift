@@ -776,7 +776,7 @@ struct HomeView: View {
                     } : sidebarMenuRevealHandler)
                     // FEAT-30: same summon on an Up press the focus engine could not place (see
                     // `SidebarMenuRevealModifier` in SidebarOverlay.swift); nil in tabs mode.
-                    .onMoveCommand(perform: sidebarUpRevealHandler)
+                    .modifier(SidebarUpRevealModifier(perform: sidebarUpRevealHandler))
                     // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
                     // Rounds 5–6 tried completing the scroll to the true top when focus
                     // re-entered the hero; both caused worse regressions on device (wedged Down
