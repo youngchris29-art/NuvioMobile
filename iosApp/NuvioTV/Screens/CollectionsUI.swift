@@ -312,13 +312,13 @@ struct CollectionRowView: View {
                                  isFocused: focusedFolderId != nil,
                                  focusedLockupExtent: focusedTileLockupExtent)
         .onChange(of: focusedFolderId) { _, id in
-            onFolderFocusChange?(id.flatMap { fid in collection.folders.first { $0.id == fid } })
-            // FEAT-33 (Wave 1, agent C): armed AFTER the callback above so the 600ms measurement
-            // window covers the hero-commit work that callback triggers upstream, not just this
-            // tile's own focus animation. `rowKey` is the collection title (readable off a
-            // tester's photo of the About pane) rather than `collection.id` — the id is opaque
-            // and this probe's whole point is a human reading the summary line, not code
-            // matching on it.
+            // FEAT-33 (Wave 1, agent C; Codex r1): armed BEFORE the callback below. The callback
+            // is synchronous, so with the default leg its `reportRowFocus` hero work — and any
+            // main-thread stall it causes — would already be over before the display link took
+            // its first sample; the 600 ms window is long enough to cover everything that follows.
+            // `rowKey` is the collection title (readable off a tester's photo of the About pane)
+            // rather than `collection.id` — the id is opaque and this probe's whole point is a
+            // human reading the summary line, not code matching on it.
             if CollectionFocusFrameProbe.enabled, let id {
                 let focusedFolder = collection.folders.first { $0.id == id }
                 // Parenthesized so `.nonBlankTrimmed` (the `Optional<String>` extension below)
@@ -327,6 +327,7 @@ struct CollectionRowView: View {
                 let gif = focusedFolder?.focusGifEnabled == true && (focusedFolder?.focusGifUrl).nonBlankTrimmed != nil
                 CollectionFocusFrameSampler.shared.arm(rowKey: collection.title, gif: gif)
             }
+            onFolderFocusChange?(id.flatMap { fid in collection.folders.first { $0.id == fid } })
         }
     }
 }
