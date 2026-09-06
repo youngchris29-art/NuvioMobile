@@ -34,6 +34,15 @@ struct AppearanceSettingsPane: View {
     /// FEAT-7: mirrors SettingsView's own `settings_style` key (same UserDefaults key, read
     /// independently here) so this pane's chip row and the sidebar it controls stay in sync.
     @AppStorage("settings_style") private var settingsStyle = "default"
+    /// FEAT-30: device-local key, not synced. Owning reader is `TabBarImmersiveHideModifier`/
+    /// `SidebarOverlay` (Opus wave, concurrent with this file) — `"tabs"` (default) keeps the top
+    /// tab bar, `"sidebar"` swaps to the floating sidebar panel. Also folded into ContentView's
+    /// `.id` remount key alongside `theme`/`ui_font`, so writing this key remounts the tree.
+    @AppStorage("sidebar_style") private var sidebarStyle = "tabs"
+    /// FEAT-31: device-local key, not synced. Owning reader is `Theme.Font` (DesignSystem/Theme.swift)
+    /// — `"system"` (default) or `"openSans"`. Also folded into ContentView's `.id` remount key, so
+    /// writing this key remounts the tree the same way a theme change does.
+    @AppStorage(Theme.AppFontFamily.defaultsKey) private var uiFont = Theme.AppFontFamily.system.rawValue
     /// FEAT-14: opt-in accent-colored focus ring on artwork cards (PosterCard/LandscapeCard).
     /// Default OFF — off must render byte-identical to the pre-FEAT-14 tree, so PosterCard reads
     /// this same key independently rather than through a passed-down flag.
@@ -54,6 +63,30 @@ struct AppearanceSettingsPane: View {
         (90, String(localized: "90s")),
         (0, String(localized: "Always")),
     ]
+    /// FEAT-30 row options. Values are the raw `sidebar_style` UserDefaults strings.
+    private static let navigationOptions: [(value: String, label: String)] = [
+        ("tabs", String(localized: "Top Tabs")),
+        ("sidebar", String(localized: "Sidebar")),
+    ]
+    /// FEAT-31 row options. Values are `Theme.AppFontFamily.rawValue`, so the picker never drifts
+    /// from the type the storage key actually feeds.
+    private static let typefaceOptions: [(value: String, label: String)] = Theme.AppFontFamily.allCases.map {
+        ($0.rawValue, $0.displayName)
+    }
+
+    /// Wraps `uiFont` so selecting a typeface applies it to `Theme.Font` first, then writes the
+    /// `@AppStorage` value. Mutation precedes the state write deliberately: ContentView's `.id`
+    /// remount key includes `ui_font`, so the remount that follows this write must see the tokens
+    /// already resolved to the new family, not the stale cache from before `apply(_:)` ran.
+    private var uiFontBinding: Binding<String> {
+        Binding(
+            get: { uiFont },
+            set: { newValue in
+                Theme.Font.apply(Theme.AppFontFamily(rawValue: newValue) ?? .system)
+                uiFont = newValue
+            }
+        )
+    }
 
     var body: some View {
         SettingsSection(String(localized: "Theme")) {
@@ -103,6 +136,30 @@ struct AppearanceSettingsPane: View {
                 options: Self.settingsStyleOptions.map(\.value),
                 label: { value in Self.settingsStyleOptions.first { $0.value == value }?.label ?? value }
             )
+
+            // FEAT-30: opt-in floating sidebar in place of the top tab bar. Default "tabs" is
+            // byte-identical to today; the Opus wave building SidebarOverlay/TabBarImmersiveHideModifier
+            // reads this same key independently.
+            SettingsPickerRow(
+                title: String(localized: "Navigation"),
+                subtitle: String(localized: "Sidebar hides the top tab bar behind a floating panel"),
+                selection: $sidebarStyle,
+                options: Self.navigationOptions.map(\.value),
+                label: { value in Self.navigationOptions.first { $0.value == value }?.label ?? value }
+            )
+            .accessibilityIdentifier("appearance_row_navigation")
+
+            // FEAT-31: opt-in Open Sans typeface. The binding's setter applies the font family
+            // BEFORE writing `uiFont` — ContentView's `.id` remount key reads `ui_font` from
+            // UserDefaults, so the resolved-font cache (Theme.Font.apply) must already reflect the
+            // new family by the time that remount observes the write, not after.
+            SettingsPickerRow(
+                title: String(localized: "Typeface"),
+                selection: uiFontBinding,
+                options: Self.typefaceOptions.map(\.value),
+                label: { value in Self.typefaceOptions.first { $0.value == value }?.label ?? value }
+            )
+            .accessibilityIdentifier("appearance_row_typeface")
         }
 
         SettingsSection(String(localized: "Poster Style")) {
