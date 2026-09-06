@@ -59,6 +59,24 @@ data class HomeUiState(
      * `noSources`). Null while still holding. Rides the device probe line as `gate=released:<x>`.
      */
     val heroGateReason: String? = null,
+    /**
+     * BUG-86 hero-off rows (beta.18): false while the ROWS are still held even though the hero
+     * decision has already released. Only the two hero reasons that answer without consulting an
+     * input can produce that — `heroOff` and `noSources` (see `decideHeroGate`'s KDoc) — and on a
+     * "Show Hero" OFF profile it is the difference between the FEAT-15 focus panel painting its
+     * resting title once and painting a different one a second later when the launch sync burst
+     * reorders the rows underneath it.
+     *
+     * Appended, never inserted: the About-pane probe line and `test31` are both parsed positionally
+     * by humans, and Kotlin/Native does not carry default arguments into the ObjC initializer, so
+     * every existing construction site has to keep its shape.
+     */
+    val rowsGateReleased: Boolean = true,
+    /**
+     * Which rows term decided it, one of `HeroGateRowsWait` (`settled`, `sync`, `timeout`, `n/a`).
+     * Rides the device probe line as `rowsWait=`.
+     */
+    val rowsGateReason: String? = null,
 ) {
     /**
      * `HomeRepository.heroRankingDebug` as it read at the instant THIS state was published.

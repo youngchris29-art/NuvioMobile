@@ -31,6 +31,7 @@ class HeroCommitGateTest {
         heroSourcesAllOff: Boolean = false,
         resetRequested: Boolean = false,
         elapsedMs: Long = 500,
+        rowsElapsedMs: Long = 500,
     ) = HeroGateInputs(
         heroEnabled = heroEnabled,
         heroSourceKeys = heroSourceKeys,
@@ -44,6 +45,7 @@ class HeroCommitGateTest {
         heroSourcesAllOff = heroSourcesAllOff,
         resetRequested = resetRequested,
         elapsedMs = elapsedMs,
+        rowsElapsedMs = rowsElapsedMs,
     )
 
     @Test
@@ -725,5 +727,245 @@ class HeroCommitGateTest {
                 idleElapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS,
             )
         )
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // BUG-86 hero-off rows (beta.18): the ROWS half. `heroOff` and `noSources` answer the hero
+    // question without consulting an input, so they used to open the rows before the launch sync
+    // burst had rewritten the very settings the rows come from. On a "Show Hero" OFF profile that
+    // repaints the FEAT-15 focus panel with a different title a second after first paint.
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    fun heroOffHoldsRowsUntilSyncSettles() {
+        // The tester's build-117 launch: hero off, the burst still running at the first evaluation.
+        val duringBurst = decideHeroGate(
+            readyInputs(heroEnabled = false, syncState = LaunchSyncState.Running, rowsElapsedMs = 200)
+        )
+        assertEquals(HeroGateReason.HERO_OFF, duringBurst.reason)
+        assertTrue(duringBurst.released, "the HERO still commits immediately: there is nothing to commit")
+        assertFalse(duringBurst.rowsReleased, "the rows come from the settings the burst is rewriting")
+        assertEquals(HeroGateRowsWait.SYNC, duringBurst.rowsWaiting)
+
+        // Same launch a second later, burst landed. Same hero answer, rows now final.
+        val afterBurst = decideHeroGate(
+            readyInputs(heroEnabled = false, syncState = LaunchSyncState.Settled, rowsElapsedMs = 1_400)
+        )
+        assertEquals(HeroGateReason.HERO_OFF, afterBurst.reason)
+        assertTrue(afterBurst.rowsReleased)
+        assertEquals(HeroGateRowsWait.SETTLED, afterBurst.rowsWaiting)
+    }
+
+    @Test
+    fun heroOffOpensRowsAtTheTimeout() {
+        // The bound. A burst that never lands must not hold Home's rows for the session, and the
+        // reason it opened has to be visible in the tester's photo rather than silent.
+        val decision = decideHeroGate(
+            readyInputs(
+                heroEnabled = false,
+                syncState = LaunchSyncState.Running,
+                rowsElapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS,
+            )
+        )
+        assertEquals(HeroGateReason.HERO_OFF, decision.reason)
+        assertTrue(decision.rowsReleased)
+        assertEquals(HeroGateRowsWait.TIMEOUT, decision.rowsWaiting)
+
+        // One millisecond inside the budget it is still holding.
+        assertFalse(
+            decideHeroGate(
+                readyInputs(
+                    heroEnabled = false,
+                    syncState = LaunchSyncState.Running,
+                    rowsElapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS - 1,
+                )
+            ).rowsReleased
+        )
+    }
+
+    @Test
+    fun heroOffOpensRowsImmediatelyWhenNoBurstIsExpected() {
+        // Signed out or anonymous: LaunchSyncState.Idle MEANS settled here, so waiting could only
+        // end at the timeout with the identical row order — four seconds of "Setting up your
+        // catalogs…" bought with nothing.
+        val decision = decideHeroGate(
+            readyInputs(
+                heroEnabled = false,
+                syncState = LaunchSyncState.Idle,
+                launchSyncExpected = false,
+                rowsElapsedMs = 0,
+            )
+        )
+        assertEquals(HeroGateReason.HERO_OFF, decision.reason)
+        assertTrue(decision.rowsReleased)
+        assertEquals(HeroGateRowsWait.SETTLED, decision.rowsWaiting)
+
+        // And the same state WITH a burst expected is the hold: Idle then means "not started yet".
+        assertFalse(
+            decideHeroGate(
+                readyInputs(
+                    heroEnabled = false,
+                    syncState = LaunchSyncState.Idle,
+                    launchSyncExpected = true,
+                    rowsElapsedMs = 0,
+                )
+            ).rowsReleased
+        )
+    }
+
+    @Test
+    fun noSourcesHoldsRowsTheSameWay() {
+        // The collection-only profile. Its rows are the collection folders, whose ORDER the burst's
+        // collections pull rewrites, so it has exactly the same exposure as the hero-off one.
+        val duringBurst = decideHeroGate(
+            readyInputs(
+                heroSourceKeys = emptySet(),
+                knownDefinitionKeys = emptySet(),
+                outcomes = emptyMap(),
+                manifestsPending = false,
+                syncState = LaunchSyncState.Running,
+                candidateEmpty = true,
+                rowsElapsedMs = 300,
+            )
+        )
+        assertEquals(HeroGateReason.NO_SOURCES, duringBurst.reason)
+        assertFalse(duringBurst.rowsReleased)
+        assertEquals(HeroGateRowsWait.SYNC, duringBurst.rowsWaiting)
+
+        val afterBurst = decideHeroGate(
+            readyInputs(
+                heroSourceKeys = emptySet(),
+                knownDefinitionKeys = emptySet(),
+                outcomes = emptyMap(),
+                manifestsPending = false,
+                syncState = LaunchSyncState.Settled,
+                candidateEmpty = true,
+                rowsElapsedMs = 900,
+            )
+        )
+        assertEquals(HeroGateReason.NO_SOURCES, afterBurst.reason)
+        assertTrue(afterBurst.rowsReleased)
+        assertEquals(HeroGateRowsWait.SETTLED, afterBurst.rowsWaiting)
+    }
+
+    @Test
+    fun everyOtherReasonReleasesRowsWithTheHero() {
+        // `all`, `reset` and `timeout` are hero COMMITS: each one either waited the burst out
+        // (`all` cannot be reached with the sync term unmet) or is an answer the user asked for
+        // (`reset`) or the budget forced (`timeout`). Gating their rows a second time on the same
+        // burst would hold Home behind a wait it has already served.
+        val all = decideHeroGate(readyInputs())
+        assertEquals(HeroGateReason.ALL, all.reason)
+        assertTrue(all.rowsReleased)
+        assertEquals(HeroGateRowsWait.NONE, all.rowsWaiting)
+
+        val reset = decideHeroGate(
+            readyInputs(resetRequested = true, syncState = LaunchSyncState.Running, rowsElapsedMs = 0)
+        )
+        assertEquals(HeroGateReason.RESET, reset.reason)
+        assertTrue(reset.rowsReleased)
+        assertEquals(HeroGateRowsWait.NONE, reset.rowsWaiting)
+
+        val timeout = decideHeroGate(
+            readyInputs(
+                syncState = LaunchSyncState.Running,
+                elapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS,
+                rowsElapsedMs = 0,
+            )
+        )
+        assertEquals(HeroGateReason.TIMEOUT, timeout.reason)
+        assertTrue(timeout.rowsReleased)
+        assertEquals(HeroGateRowsWait.NONE, timeout.rowsWaiting)
+    }
+
+    @Test
+    fun anArmedGateHoldsItsRowsWithItsHero() {
+        // While the gate is Armed the rows are held by the HERO hold; the rows gate is not what is
+        // holding them, so it has nothing to report.
+        val armed = decideHeroGate(readyInputs(syncState = LaunchSyncState.Running))
+        assertFalse(armed.released)
+        assertFalse(armed.rowsReleased)
+
+        val idle = assertNotNull(decideIdleHeroGate(awaitingFirstRefresh = true, idleElapsedMs = 0))
+        assertFalse(idle.rowsReleased)
+    }
+
+    @Test
+    fun heroOffStillOutranksEveryOtherReasonWithItsRowsHeld() {
+        // The HERO payload contract is untouched: `heroOff` is still checked before reset and
+        // before the timeout, and the rows hold rides ALONGSIDE that answer rather than changing it.
+        val decision = decideHeroGate(
+            readyInputs(
+                heroEnabled = false,
+                resetRequested = true,
+                syncState = LaunchSyncState.Running,
+                elapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS + 1,
+                rowsElapsedMs = 0,
+            )
+        )
+        assertEquals(HeroGateReason.HERO_OFF, decision.reason)
+        assertEquals(HeroGateWait.NONE, decision.waiting)
+        assertFalse(decision.rowsReleased)
+        assertEquals(HeroGateRowsWait.SYNC, decision.rowsWaiting)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // decideRowsGate / syncSettled: the two shared terms, on their own. `HomeRepository` applies
+    // them a second time on every publish after the hero decision (the decision is taken once),
+    // so they are asserted here rather than only through `decideHeroGate`.
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    fun theRowsGateReportsSettledAheadOfTimeoutWhenBothAreTrue() {
+        // Both terms satisfied at the same evaluation: the honest answer in a photo is that the
+        // burst landed, not that the budget expired.
+        assertEquals(
+            RowsGateDecision(released = true, waiting = HeroGateRowsWait.SETTLED),
+            decideRowsGate(syncSettled = true, rowsElapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS * 2),
+        )
+    }
+
+    @Test
+    fun theRowsGateHoldsOnlyWhileBothTermsAreUnmet() {
+        assertEquals(
+            RowsGateDecision(released = false, waiting = HeroGateRowsWait.SYNC),
+            decideRowsGate(syncSettled = false, rowsElapsedMs = 0),
+        )
+        assertEquals(
+            RowsGateDecision(released = true, waiting = HeroGateRowsWait.TIMEOUT),
+            decideRowsGate(syncSettled = false, rowsElapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS),
+        )
+        assertEquals(
+            RowsGateDecision(released = true, waiting = HeroGateRowsWait.SETTLED),
+            decideRowsGate(syncSettled = true, rowsElapsedMs = 0),
+        )
+    }
+
+    @Test
+    fun syncSettledIsTheSameTermTheHeroConjunctionUses() {
+        assertTrue(syncSettled(LaunchSyncState.Settled, launchSyncExpected = true))
+        assertTrue(syncSettled(LaunchSyncState.NotApplicable, launchSyncExpected = true))
+        assertFalse(syncSettled(LaunchSyncState.Running, launchSyncExpected = false))
+        assertFalse(syncSettled(LaunchSyncState.Idle, launchSyncExpected = true))
+        assertTrue(syncSettled(LaunchSyncState.Idle, launchSyncExpected = false))
+
+        // And the overload the gate itself uses agrees with it on every input shape above: a
+        // `gateWait=sync` hero hold and a `rowsWait=sync` rows hold must never disagree about
+        // whether the burst has landed.
+        listOf(
+            LaunchSyncState.Settled,
+            LaunchSyncState.NotApplicable,
+            LaunchSyncState.Running,
+            LaunchSyncState.Idle,
+        ).forEach { state ->
+            listOf(true, false).forEach { expected ->
+                val inputs = readyInputs(syncState = state, launchSyncExpected = expected)
+                assertEquals(
+                    syncSettled(state, expected),
+                    syncSettled(inputs),
+                    "syncSettled disagreed for $state / launchSyncExpected=$expected",
+                )
+            }
+        }
     }
 }

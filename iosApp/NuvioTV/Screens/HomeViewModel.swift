@@ -50,8 +50,23 @@ enum HeroPublishRoute: Equatable {
     /// catalog. Routing that to `hold` (an earlier revision did, for every reason except
     /// `heroOff`) froze Home on the empty state with `isLoading = false` for the rest of the
     /// session, because nothing downstream ever assigned `sections` again.
-    static func decide(gateReleased: Bool, gateReason: String?, heroIsEmpty: Bool) -> HeroPublishRoute {
+    ///
+    /// BUG-86 hero-off rows (beta.18) — `rowsReleased`. A released publish is not automatically a
+    /// publish whose ROWS are final. Two of Kotlin's five release reasons answer the hero question
+    /// without consulting a single input (`heroOff`, `noSources`), so on a "Show Hero" OFF profile
+    /// the gate releases on its very first evaluation and every publish the launch sync burst then
+    /// drives is a released one. Adopting `sections` from those was the tester's build-117 photo:
+    /// rows open at 1.7 s with a collection first, the burst reorders at 2.5 s with a catalog
+    /// first, and the FEAT-15 focus panel — whose resting title is the first item of the first
+    /// catalog row — repaints with a different title. `HomeUiState.rowsGateReleased` is false on
+    /// exactly those publishes, and holding on it keeps the rows and the panel painting once.
+    ///
+    /// Defaulted to `true` so the flag reads as an addition to the table rather than a rewrite of
+    /// it: every reason that commits a hero already carries rows the burst is folded into.
+    static func decide(gateReleased: Bool, gateReason: String?, heroIsEmpty: Bool,
+                       rowsReleased: Bool = true) -> HeroPublishRoute {
         guard gateReleased else { return .hold }
+        guard rowsReleased else { return .hold }
         if gateReason == "heroOff" || heroIsEmpty { return .noHero }
         return .evaluateHead
     }
@@ -242,6 +257,10 @@ final class HomeViewModel: ObservableObject {
     /// line) — NOT the coordinator's own `committedHash` (that tracks the last COMMITTED payload;
     /// this tracks the last PUBLISHED one, so the diagnostic fires on every publish, held or not).
     private var lastNonEmptyHeroHash: String?
+    /// BUG-86 hero-off rows (beta.18): the last `heroRankingDebug` string logged by the hero-EMPTY
+    /// probe branch, so a "Show Hero" OFF launch contributes one line per distinct gate state
+    /// rather than one per publish. See that branch for the hero-off photo contract.
+    private var lastHeroOffProbeDebug: String?
     /// `rows` probe line dedup key (deliverable 3): the ordered row id list last logged, so the
     /// line only fires when it actually changes.
     private var lastProbedRowIds: [String] = []
@@ -385,6 +404,9 @@ final class HomeViewModel: ObservableObject {
         lastNonEmptyHeroHead = nil
         // Wave H: profile-scoped hero commit state joins the same wipe cascade.
         lastNonEmptyHeroHash = nil
+        // BUG-86 hero-off rows (beta.18): so does the hero-off probe's dedup key — the next
+        // profile's first gate state must log even when its debug string matches this one's.
+        lastHeroOffProbeDebug = nil
         lastProbedRowIds = []
         pendingHeldRebuildsProbe = nil
         didLogFirstHeroCommit = false
@@ -491,6 +513,36 @@ final class HomeViewModel: ObservableObject {
                           self.vmId, state.heroItems.count, head, headChanged ? 1 : 0, String((headHash ?? "").suffix(8)), hashChanged ? 1 : 0, inRows ? 1 : 0, state.sections.count,
                           state.isLoading ? 1 : 0, state.heroRankingDebugSnapshot ?? HomeRepository.shared.heroRankingDebug, HomeHeroProbe.sinceLaunchMs, ids, heroTailChanged ? 1 : 0))
                 }
+            } else if HomeHeroProbe.enabled {
+                // BUG-86 hero-off rows (beta.18): the branch above logs one line per HERO-BEARING
+                // publish, so a "Show Hero" OFF profile produced no `publish` line at all and the
+                // `gate=`/`rowsWait=` fields — the entire diagnosis for this launch shape — never
+                // reached the About pane. The tester's build-117 photo is exactly that hole: rows,
+                // present and paint lines, and nothing saying what the gate had decided.
+                //
+                // THE HERO-OFF PHOTO CONTRACT (what a good About-pane photo shows, in order):
+                //   1. `publish vm=1 n=0 heroOff=1 … gate=released:heroOff rowsWait=settled
+                //      rowsWaitMs=<≤4000>` — the hero answered immediately, the rows waited for
+                //      the launch sync burst and got it. `rowsWait=timeout` is the same contract
+                //      with a slow or absent burst: diagnosable, never silent.
+                //   2. exactly ONE `rows … rowsGate=open` line, carrying `heldRebuilds=<n>`.
+                //   3. one `present … same=0` followed by one `paint … first=1` — the focus panel
+                //      painting its resting title once.
+                // BAD, and the shape this wave fixes: a SECOND `rows` line whose `settingsSig=`
+                // has changed, followed by a `present` line with a different `item=`. That is the
+                // burst reordering the rows under a panel that had already painted.
+                //
+                // Deduped on the debug string rather than logged per publish: while the rows are
+                // held every publish emits an equal `HomeUiState` (the StateFlow suppresses most
+                // of them, but not the ones whose unrelated fields moved), and 57 lines is the
+                // whole About pane.
+                let debug = state.heroRankingDebugSnapshot ?? HomeRepository.shared.heroRankingDebug
+                if debug != self.lastHeroOffProbeDebug {
+                    self.lastHeroOffProbeDebug = debug
+                    HomeHeroProbe.log(String(format: "publish vm=%d n=0 heroOff=%d %@ sinceLaunch=%dms",
+                                             self.vmId, state.heroGateReason == "heroOff" ? 1 : 0,
+                                             debug, HomeHeroProbe.sinceLaunchMs))
+                }
             }
 
             // Wave H hold: while the gate is still Armed, hold heroItems/sections/rows exactly as
@@ -500,7 +552,8 @@ final class HomeViewModel: ObservableObject {
             // empty hero on a RELEASED publish must never route back into the hold.
             switch HeroPublishRoute.decide(gateReleased: state.heroGateReleased,
                                            gateReason: state.heroGateReason,
-                                           heroIsEmpty: state.heroItems.isEmpty) {
+                                           heroIsEmpty: state.heroItems.isEmpty,
+                                           rowsReleased: state.rowsGateReleased) {
             case .hold:
                 return
 
@@ -700,6 +753,15 @@ final class HomeViewModel: ObservableObject {
             self.refreshContinueWatching()
         }
 
+        // BUG-86 hero-off rows (beta.18): applied BEFORE `AddonRepository.initialize()`, not
+        // alongside the burst sim below, because initialize()'s first add-on emission can drive
+        // `onAddonsChanged` → `HomeRepository.refresh` synchronously, and refresh is what arms the
+        // hero gate and takes its first `snapshot().heroEnabled`. Setting it afterwards would leave
+        // the launch this knob exists to reproduce reading as hero-ON. Inert unless both launch
+        // args are set — see `HomeHeroOffArgs`.
+        if HomeHeroOffArgs.enabled {
+            HomeCatalogSettingsRepository.shared.debugForceHeroOff = true
+        }
         AddonRepository.shared.initialize()
         // Wave H (BUG-86): deterministic, offline replay of the launch sync burst — see
         // `HomeLaunchBurstSimArgs`/`HomeLaunchBurstSim.kt`. Inert unless both launch args are set.

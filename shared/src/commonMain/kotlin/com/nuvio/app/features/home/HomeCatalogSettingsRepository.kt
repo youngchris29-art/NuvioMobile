@@ -149,6 +149,30 @@ object HomeCatalogSettingsRepository {
             preferencesRef.value = value
         }
     private var heroEnabled = true
+
+    /**
+     * BUG-86 hero-off rows (beta.18): sim/device-diagnostics knob that makes THIS PROCESS read as a
+     * "Show Hero" OFF profile without touching a byte of persisted or synced state.
+     *
+     * Set from tvOS's `-debug.homeHeroOff YES` launch argument (see `HomeHeroOffArgs`,
+     * `HomeHeroCommit.swift`, honored only alongside `-debug.homeHeroProbe`). Deliberately NOT
+     * [setHeroEnabled] `false`: that persists into the profile payload and pushes on the next sync,
+     * so a diagnostic run would turn the hero off on the tester's real account and on every other
+     * device it syncs to.
+     *
+     * Read by [snapshot] (the gate's own input) and by [publish] (the local UI state tvOS's
+     * `HeroSettingsModel` watches, which is what actually activates the FEAT-15 focus panel), and
+     * by NEITHER [persist] nor the sync payload — that asymmetry is the whole point.
+     *
+     * Plain `var`, no lock: written once from the main thread before the pipeline starts and never
+     * again, and false in every build that has not been launched with the argument.
+     */
+    var debugForceHeroOff: Boolean = false
+
+    /** [heroEnabled] as every LOCAL reader must see it. See [debugForceHeroOff]. */
+    private val effectiveHeroEnabled: Boolean
+        get() = heroEnabled && !debugForceHeroOff
+
     private var showCatalogType = true
     private var hideUnreleasedContent = false
     private var hideCatalogUnderline = false
@@ -244,7 +268,7 @@ object HomeCatalogSettingsRepository {
     fun snapshot(): HomeCatalogSettingsSnapshot {
         ensureLoaded()
         return HomeCatalogSettingsSnapshot(
-            heroEnabled = heroEnabled,
+            heroEnabled = effectiveHeroEnabled,
             showCatalogType = showCatalogType,
             hideUnreleasedContent = hideUnreleasedContent,
             hideCatalogUnderline = hideCatalogUnderline,
@@ -642,7 +666,12 @@ object HomeCatalogSettingsRepository {
             .sortedBy { it.order }
 
         _uiState.value = HomeCatalogSettingsUiState(
-            heroEnabled = heroEnabled,
+            // Local UI state only — never persisted, never pushed — so the diagnostics knob applies
+            // here too. Without it tvOS's `HeroSettingsModel` (HomeView.swift), which reads
+            // `snapshot()` once and then follows THIS flow, would flip the hero back on at the
+            // first publish and the FEAT-15 focus panel the knob exists to exercise would never
+            // appear. See [debugForceHeroOff].
+            heroEnabled = effectiveHeroEnabled,
             showCatalogType = showCatalogType,
             hideUnreleasedContent = hideUnreleasedContent,
             hideCatalogUnderline = hideCatalogUnderline,

@@ -1,6 +1,7 @@
 package com.nuvio.app.features.home
 
 import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.sync.LaunchSyncSignal
 import com.nuvio.app.features.addons.AddonCatalog
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonResource
@@ -102,6 +103,192 @@ class HomeRepositoryGateReleaseTest {
             publishedIsLoading(catalogLoadInProgress = catalogLoadInProgress, rowsHeld = false),
             "the releasing publish must hand the error state through",
         )
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // rowsHeldForPublish: which publishes republish the previous rows (BUG-86 hero-off rows,
+    // beta.18). The third branch is the one this wave changed — see the function's KDoc.
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    fun anArmedPublishHoldsTheRowsItAlreadyPainted() {
+        assertTrue(
+            rowsHeldForPublish(
+                decisionReleased = false,
+                decisionRowsReleased = false,
+                wasArmed = true,
+                rowsGateReleased = true,
+            )
+        )
+        // The first publish of an Idle era has nothing painted to hold, and holding it would
+        // republish the pre-gate initial state instead of the rows this publish just built.
+        assertFalse(
+            rowsHeldForPublish(
+                decisionReleased = false,
+                decisionRowsReleased = false,
+                wasArmed = false,
+                rowsGateReleased = true,
+            )
+        )
+    }
+
+    @Test
+    fun aReleasingPublishTakesItsRowsAnswerFromTheDecision() {
+        assertFalse(
+            rowsHeldForPublish(
+                decisionReleased = true,
+                decisionRowsReleased = true,
+                wasArmed = true,
+                rowsGateReleased = true,
+            ),
+            "an `all`/`reset`/`timeout` commit publishes its rows with its hero",
+        )
+        assertTrue(
+            rowsHeldForPublish(
+                decisionReleased = true,
+                decisionRowsReleased = false,
+                wasArmed = true,
+                rowsGateReleased = false,
+            ),
+            "a `heroOff`/`noSources` release that still owes the burst keeps the rows",
+        )
+    }
+
+    /**
+     * The hero-off launch, as the sequence of publish shapes the tester's TV produces.
+     *
+     * Everything after step 2 is a branch-3 publish — the hero committed on the FIRST evaluation,
+     * so there is no second decision to read a rows answer off — and branch 3 used to be
+     * unconditionally free to publish rows. That is how the launch sync burst's reorder reached the
+     * screen at 2.5 s, underneath a FEAT-15 focus panel that had already painted at 1.83 s.
+     */
+    @Test
+    fun aHeroOffLaunchHoldsItsRowsAcrossEveryBurstDrivenPublishAndOpensThemOnce() {
+        // 1. Pre-refresh publishes: the gate is Idle, the rows are held by the HERO hold.
+        assertTrue(
+            rowsHeldForPublish(
+                decisionReleased = false,
+                decisionRowsReleased = false,
+                wasArmed = true,
+                rowsGateReleased = true,
+            )
+        )
+
+        // 2. The catalog-bearing refresh arms the gate and the first evaluation releases `heroOff`
+        //    with the burst still running: hero committed (nothing to commit), rows held.
+        val release = decideHeroGate(
+            HeroGateInputs(
+                heroEnabled = false,
+                heroSourceKeys = setOf("a"),
+                knownDefinitionKeys = setOf("a"),
+                outcomes = emptyMap(),
+                manifestsPending = true,
+                syncState = LaunchSyncSignal.LaunchSyncState.Running,
+                launchSyncExpected = true,
+                enrichmentPending = 0,
+                candidateEmpty = true,
+                resetRequested = false,
+                elapsedMs = 30,
+                rowsElapsedMs = 30,
+            )
+        )
+        assertEquals(HeroGateReason.HERO_OFF, release.reason)
+        assertTrue(
+            rowsHeldForPublish(
+                decisionReleased = release.released,
+                decisionRowsReleased = release.rowsReleased,
+                wasArmed = true,
+                rowsGateReleased = release.rowsReleased,
+            )
+        )
+
+        // 3. Every publish the fan-out and the burst drive in between. No decision is taken (the
+        //    hero already committed), so the rows gate's own state is the only thing holding them.
+        val stillRunning = decideRowsGate(syncSettled = false, rowsElapsedMs = 1_200)
+        assertFalse(stillRunning.released)
+        assertTrue(
+            rowsHeldForPublish(
+                decisionReleased = null,
+                decisionRowsReleased = true, // ignored on this branch
+                wasArmed = false,
+                rowsGateReleased = stillRunning.released,
+            ),
+            "a branch-3 publish must not adopt rows the burst is still rewriting",
+        )
+
+        // 4. The burst settles. One publish opens the rows, with the final order, and that is the
+        //    single rows build the frontend's RowsGate performs.
+        val settled = decideRowsGate(syncSettled = true, rowsElapsedMs = 2_500)
+        assertTrue(settled.released)
+        assertEquals(HeroGateRowsWait.SETTLED, settled.waiting)
+        assertFalse(
+            rowsHeldForPublish(
+                decisionReleased = null,
+                decisionRowsReleased = true,
+                wasArmed = false,
+                rowsGateReleased = settled.released,
+            )
+        )
+    }
+
+    @Test
+    fun aHeroOffLaunchWhoseBurstNeverLandsOpensItsRowsAtTheBudget() {
+        // The bound that makes the hold safe to ship: no input can hang Home's rows past the same
+        // 4 s every other launch shape gets, and the reason reads `timeout` in the tester's photo.
+        val timedOut = decideRowsGate(syncSettled = false, rowsElapsedMs = HERO_COMMIT_GATE_TIMEOUT_MS)
+        assertTrue(timedOut.released)
+        assertEquals(HeroGateRowsWait.TIMEOUT, timedOut.waiting)
+        assertFalse(
+            rowsHeldForPublish(
+                decisionReleased = null,
+                decisionRowsReleased = true,
+                wasArmed = false,
+                rowsGateReleased = timedOut.released,
+            )
+        )
+    }
+
+    @Test
+    fun aSignedOutHeroOffLaunchNeverHoldsItsRowsAtAll() {
+        // No burst is coming, so `LaunchSyncState.Idle` already means settled and the very first
+        // publish carries the final rows.
+        val decision = decideHeroGate(
+            HeroGateInputs(
+                heroEnabled = false,
+                heroSourceKeys = setOf("a"),
+                knownDefinitionKeys = setOf("a"),
+                outcomes = emptyMap(),
+                manifestsPending = true,
+                syncState = LaunchSyncSignal.LaunchSyncState.Idle,
+                launchSyncExpected = AuthState.Unauthenticated.launchSyncExpected(),
+                enrichmentPending = 0,
+                candidateEmpty = true,
+                resetRequested = false,
+                elapsedMs = 0,
+                rowsElapsedMs = 0,
+            )
+        )
+        assertEquals(HeroGateReason.HERO_OFF, decision.reason)
+        assertTrue(decision.rowsReleased)
+        assertEquals(HeroGateRowsWait.SETTLED, decision.rowsWaiting)
+        assertFalse(
+            rowsHeldForPublish(
+                decisionReleased = decision.released,
+                decisionRowsReleased = decision.rowsReleased,
+                wasArmed = true,
+                rowsGateReleased = decision.rowsReleased,
+            )
+        )
+    }
+
+    /**
+     * `publishedIsLoading` is what keeps the rows hold from painting the empty (or error) state
+     * while it runs: a hero-off launch whose catalog fan-out finishes BEFORE the burst settles has
+     * `catalogLoadInProgress = false` with no sections published yet.
+     */
+    @Test
+    fun aRowsHeldPublishStillReportsLoading() {
+        assertTrue(publishedIsLoading(catalogLoadInProgress = false, rowsHeld = true))
     }
 
     // -----------------------------------------------------------------------------------------

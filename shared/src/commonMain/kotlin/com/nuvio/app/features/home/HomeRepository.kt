@@ -138,7 +138,13 @@ object HomeRepository {
             "sources=$heroGateSourcesSettled/$heroGateSourcesTracked " +
             "gateWait=$heroGateWaiting " +
             "head=${committedHeadKey ?: "-"} prune=$lastPruneCount " +
-            "rearm=$heroGateRearms"
+            "rearm=$heroGateRearms " +
+            // BUG-86 hero-off rows (beta.18), append-only: on a "Show Hero" OFF launch the whole
+            // `gate=` field reads `released:heroOff` from the first evaluation onwards, so it can
+            // no longer say anything about what Home is actually still waiting for. These two do:
+            // `rowsWait=sync` is the hold working, `settled`/`timeout` are the two ways it ends,
+            // and `n/a` means the rows were never independently gated on this launch.
+            "rowsWait=${rowsGateReason ?: HeroGateRowsWait.NONE} rowsWaitMs=$rowsGateElapsedMs"
     }
 
     private var collectionHeroJob: Job? = null
@@ -259,6 +265,37 @@ object HomeRepository {
      * appearing and disappearing under Home, which is a different bug from this one.
      */
     private var heroGateRearms: Int = 0
+
+    // ---------------------------------------------------------------------------------------
+    // BUG-86 hero-off rows (beta.18): the ROWS half of the gate, for the two hero reasons that
+    // release without consulting an input. See HeroCommitGate.kt's `decideHeroGate` KDoc for why
+    // `heroOff`/`noSources` must not open the rows with the hero, and `publishCurrentStateLocked`
+    // for how a rows-held publish differs from a fully released one.
+    // ---------------------------------------------------------------------------------------
+
+    /** False while the rows are held AFTER the hero decision released. Guarded by [heroSelectionLock]. */
+    private var rowsGateReleased: Boolean = true
+
+    /** [HeroGateRowsWait] value from the last rows evaluation, surfaced as `rowsWait=`. */
+    private var rowsGateReason: String? = null
+
+    /**
+     * Milliseconds since the first evaluation of this gate era, as of the last evaluation
+     * (`rowsWaitMs=`). Also what [armRowsGateTimeoutLocked] subtracts from the budget, so the rows
+     * hold is bounded by [HERO_COMMIT_GATE_TIMEOUT_MS] from the FIRST evaluation rather than from
+     * whichever publish happened to release the hero.
+     */
+    private var rowsGateElapsedMs: Long = 0
+
+    /**
+     * The `heroEnabled` value in force when the rows were last held. A runtime "Show Hero" toggle
+     * moves it, and that is a user action taken while looking at Home: the rows open immediately
+     * rather than making the user watch out the rest of the burst budget after their own tap.
+     */
+    private var rowsHeldUnderHeroEnabled: Boolean = true
+
+    /** The rows' own [HERO_COMMIT_GATE_TIMEOUT_MS] backstop, generation-guarded like the hero's. */
+    private var rowsGateTimeoutJob: Job? = null
 
     /** Idempotency key for [applyCurrentSettings]: settings + tmdb + gate state + cached keys. */
     private var lastAppliedSettingsSignature: String? = null
@@ -505,9 +542,19 @@ object HomeRepository {
         heroGateArmedAt = TimeSource.Monotonic.markNow()
         heroGateReleaseReason = null
         heroGateWaiting = HeroGateWait.SOURCES
+        // BUG-86 hero-off rows (beta.18), the `noSources` re-arm: this era's rows answer goes with
+        // the release it was taken under. While Armed the rows are held by the HERO hold anyway
+        // (branch 2 of publishCurrentStateLocked), and the release that ends this era decides them
+        // afresh — against a budget that now runs from the re-arm, not from the discarded claim.
+        rowsGateReleased = true
+        rowsGateReason = null
+        rowsGateElapsedMs = 0
+        rowsHeldUnderHeroEnabled = true
         catalogOutcomes = emptyMap()
         heroGateGeneration += 1
         val generation = heroGateGeneration
+        rowsGateTimeoutJob?.cancel()
+        rowsGateTimeoutJob = null
         heroGateTimeoutJob?.cancel()
         heroGateTimeoutJob = scope.launch {
             delay(HERO_COMMIT_GATE_TIMEOUT_MS)
@@ -571,15 +618,48 @@ object HomeRepository {
         }
     }
 
+    /**
+     * BUG-86 hero-off rows (beta.18): widened past `state == Armed`. On a "Show Hero" OFF launch
+     * the hero decision releases on the FIRST evaluation, so the gate is never Armed and the old
+     * guard turned every one of these callbacks into a no-op — including the launch-sync collector
+     * that is the only thing which can tell the rows the burst has landed. The rows hold would then
+     * have had exactly one exit, its own timeout, which is a 4 s "Setting up your catalogs…" on
+     * every hero-off launch instead of the ~1 s the burst actually takes.
+     */
     private fun republishForGate() {
-        if (synchronized(heroSelectionLock) { heroGateState != HeroGateState.Armed }) return
+        val shouldPublish = synchronized(heroSelectionLock) {
+            heroGateState == HeroGateState.Armed || !rowsGateReleased
+        }
+        if (!shouldPublish) return
         publishCurrentState(requestKey = currentRequestKey)
+    }
+
+    /**
+     * BUG-86 hero-off rows (beta.18): the rows' own [HERO_COMMIT_GATE_TIMEOUT_MS] backstop, armed
+     * on the publish that releases the hero with the rows still held.
+     *
+     * [delayMs] is the budget MINUS what the era has already spent ([rowsGateElapsedMs]), so the
+     * bound is 4 s from the first evaluation and not 4 s from whichever publish happened to take
+     * the hero decision. Generation-token guarded on [heroGateGeneration], the same era token the
+     * hero timeout uses, so a re-arm or a [clear] whose cancellation raced this job's own
+     * completion can never expire a later era's rows.
+     */
+    private fun armRowsGateTimeoutLocked(delayMs: Long) {
+        val generation = heroGateGeneration
+        rowsGateTimeoutJob?.cancel()
+        rowsGateTimeoutJob = scope.launch {
+            if (delayMs > 0) delay(delayMs)
+            if (generation != heroGateGeneration) return@launch
+            republishForGate()
+        }
     }
 
     private fun cancelGateWatchersLocked() {
         heroGateGeneration += 1
         heroGateTimeoutJob?.cancel()
         heroGateTimeoutJob = null
+        rowsGateTimeoutJob?.cancel()
+        rowsGateTimeoutJob = null
         gateInputsJob?.cancel()
         gateInputsJob = null
     }
@@ -596,10 +676,20 @@ object HomeRepository {
         // BOUNDED by the gate's own budget, measured from the first publish of this Idle era (see
         // [decideIdleHeroGate]): a profile whose enabled add-ons declare no catalogs never arms the
         // gate's timer, so without this the hold could only end at the first-refresh grace.
+        // BUG-86 hero-off rows (beta.18): the rows clock. Stamped on the FIRST evaluation of this
+        // era whatever the gate state is, not only while Idle, because the rows hold has to be
+        // bounded on a "Show Hero" OFF profile that arms the gate normally AND on a collection-only
+        // one that never arms it at all. `heroGateArmedAt` wins when it exists (it restarts the
+        // budget on the `noSources` re-arm, which is the whole point of that re-arm); `idleSince`
+        // is the fallback for the era that never gets one. Both monotonic, same reason as the hero
+        // clock: a mid-launch NTP correction must not expire or hang the hold.
+        val idleSince = heroGateIdleSince ?: TimeSource.Monotonic.markNow().also {
+            heroGateIdleSince = it
+        }
+        val rowsElapsedMs = (heroGateArmedAt ?: idleSince).elapsedNow().inWholeMilliseconds
+        rowsGateElapsedMs = rowsElapsedMs
+
         if (heroGateState == HeroGateState.Idle) {
-            val idleSince = heroGateIdleSince ?: TimeSource.Monotonic.markNow().also {
-                heroGateIdleSince = it
-            }
             val idleHold = decideIdleHeroGate(
                 awaitingFirstRefresh = awaitingFirstRefresh,
                 idleElapsedMs = idleSince.elapsedNow().inWholeMilliseconds,
@@ -646,11 +736,69 @@ object HomeRepository {
                 heroSourcesAllOff = HomeCatalogSettingsRepository.heroSourceSelectionIsAllOff(),
                 resetRequested = heroGateResetRequested,
                 elapsedMs = elapsedMs,
+                rowsElapsedMs = rowsElapsedMs,
                 timeoutMs = HERO_COMMIT_GATE_TIMEOUT_MS,
             )
         )
         heroGateWaiting = decision.waiting
         return decision
+    }
+
+    /**
+     * BUG-86 hero-off rows (beta.18): the rows gate on every publish AFTER the hero decision.
+     *
+     * The hero decision is taken exactly once, so there is no second [HeroGateDecision] to read the
+     * rows answer off; the same two terms are applied here instead (via the shared [decideRowsGate],
+     * so the two call sites cannot drift). Must run under [heroSelectionLock].
+     */
+    private fun refreshRowsGateLocked(snapshot: HomeCatalogSettingsSnapshot) {
+        if (rowsGateReleased) return
+        val elapsedMs = (heroGateArmedAt ?: heroGateIdleSince)?.elapsedNow()?.inWholeMilliseconds ?: 0L
+        rowsGateElapsedMs = elapsedMs
+
+        // A user action outranks the wait, exactly as HeroGateReason.RESET does for the hero: an
+        // explicit Hero Sources change, or the "Show Hero" toggle moving under a hold that was
+        // taken while it was off. In both cases the user is looking at Home right now and must not
+        // be made to watch out the rest of the burst budget after their own tap.
+        if (heroGateResetRequested || snapshot.heroEnabled != rowsHeldUnderHeroEnabled) {
+            rowsGateReleased = true
+            rowsGateReason = HeroGateRowsWait.NONE
+            cancelGateWatchersLocked()
+            return
+        }
+
+        val rows = decideRowsGate(
+            syncSettled = syncSettled(LaunchSyncSignal.state.value, launchSyncExpected()),
+            rowsElapsedMs = elapsedMs,
+            timeoutMs = HERO_COMMIT_GATE_TIMEOUT_MS,
+        )
+        rowsGateReleased = rows.released
+        rowsGateReason = rows.waiting
+        if (rows.released) {
+            log.i { "rowsGateReleased reason=${rows.waiting} elapsedMs=$elapsedMs" }
+            cancelGateWatchersLocked()
+        }
+    }
+
+    /**
+     * BUG-86 hero-off rows (beta.18): applies the rows half of the publish that RELEASES the hero.
+     * Must run under [heroSelectionLock].
+     */
+    private fun applyRowsGateDecisionLocked(decision: HeroGateDecision, heroEnabled: Boolean) {
+        rowsGateReleased = decision.rowsReleased
+        rowsGateReason = decision.rowsWaiting
+        if (decision.rowsReleased) {
+            cancelGateWatchersLocked()
+        } else {
+            rowsHeldUnderHeroEnabled = heroEnabled
+            // The watchers stay ALIVE: the launch-sync collector started by
+            // [startGateInputsObserverLocked] is what ends this hold early, and cancelling it here
+            // (as an unconditional release used to) would leave the timeout as the only exit. It is
+            // started rather than merely kept, because the collection-only Idle escape reaches a
+            // rows hold without ever having armed the gate; the call is idempotent.
+            startGateInputsObserverLocked()
+            armRowsGateTimeoutLocked(HERO_COMMIT_GATE_TIMEOUT_MS - rowsGateElapsedMs)
+        }
     }
 
     /**
@@ -783,6 +931,12 @@ object HomeRepository {
         heroItemOrigins = emptyMap()
         lastPruneCount = 0
         heroGateRearms = 0
+        // BUG-86 hero-off rows (beta.18): the next profile's rows are gated afresh, and its rows
+        // clock restarts at its own first evaluation (heroGateIdleSince above).
+        rowsGateReleased = true
+        rowsGateReason = null
+        rowsGateElapsedMs = 0
+        rowsHeldUnderHeroEnabled = true
         lastAppliedSettingsSignature = null
         cancelGateWatchersLocked()
         _uiState.value = HomeUiState()
@@ -973,7 +1127,6 @@ object HomeRepository {
         }
 
         val publishedHeroItems: List<MetaPreview>
-        val rowsHeld: Boolean
         var legacyHold = false
         when {
             // 1. The gate is committing right now: freeze the payload, pin the head, publish once.
@@ -984,13 +1137,17 @@ object HomeRepository {
                 heroGateState = HeroGateState.Released
                 heroGateReleaseReason = decision.reason
                 heroGateResetRequested = false
-                cancelGateWatchersLocked()
+                // BUG-86 hero-off rows (beta.18): the watchers are cancelled by THIS call only when
+                // the rows go with the hero. A `heroOff`/`noSources` release that still owes the
+                // launch sync burst keeps them, plus its own timeout job, and re-decides on every
+                // later publish (branch 3's `refreshRowsGateLocked`).
+                applyRowsGateDecisionLocked(decision, heroEnabled = snapshot.heroEnabled)
                 log.i {
                     "heroGateReleased reason=${decision.reason} n=${committed.size} " +
-                        "head=${committedHeadKey ?: "-"} rows=${sections.size}"
+                        "head=${committedHeadKey ?: "-"} rows=${sections.size} " +
+                        "rowsReleased=${decision.rowsReleased} rowsWait=${decision.rowsWaiting}"
                 }
                 publishedHeroItems = committed
-                rowsHeld = false
             }
             // 2. Still holding. The PREVIOUS hero and the PREVIOUS rows are republished unchanged:
             //    rows move under the hero (their order comes from the same settings the burst
@@ -998,20 +1155,29 @@ object HomeRepository {
             //    move the double one layer down.
             decision != null -> {
                 publishedHeroItems = _uiState.value.heroItems
-                rowsHeld = wasArmed
             }
             // 3. Committed. Serve the frozen instances (identity-equal, so an unchanged publish is
             //    suppressed by StateFlow equality) and let newcomers use the legacy hold.
             else -> {
+                // BUG-86 hero-off rows (beta.18): the rows can still be held here, by a `heroOff`
+                // or `noSources` release that owed the burst. Re-decided before the rows shape of
+                // this publish is computed below.
+                refreshRowsGateLocked(snapshot)
                 legacyHold = awaitingEnrichment.isNotEmpty() && !heroEnrichmentHoldExpired
                 publishedHeroItems = if (legacyHold) {
                     _uiState.value.heroItems
                 } else {
                     serveCommittedHeroItemsLocked(heroItems, tmdbSettings)
                 }
-                rowsHeld = false
             }
         }
+
+        val rowsHeld = rowsHeldForPublish(
+            decisionReleased = decision?.released,
+            decisionRowsReleased = decision?.rowsReleased ?: true,
+            wasArmed = wasArmed,
+            rowsGateReleased = rowsGateReleased,
+        )
 
         val publishedSections = if (rowsHeld) {
             _uiState.value.sections
@@ -1030,6 +1196,13 @@ object HomeRepository {
             },
             heroGateReleased = released,
             heroGateReason = if (released) heroGateReleaseReason else null,
+            // BUG-86 hero-off rows (beta.18): what THIS publish actually did with the rows, not
+            // the repository's rows-gate field. The two differ while the gate is Armed — the field
+            // is still `true` there because the rows are held by the HERO hold, not by the rows
+            // gate — and the frontend needs the publish shape: `HeroPublishRoute` must never adopt
+            // `sections` that this publish carried over from the previous one.
+            rowsGateReleased = !rowsHeld,
+            rowsGateReason = rowsGateReason,
         )
         // Stamped AFTER the gate decision has been applied above (heroGateState and
         // heroGateReleaseReason are written inside the `when`), so the probe fields describe the
@@ -1685,6 +1858,35 @@ internal fun shouldPublishAfterBatch(batchIndex: Int, gateArmed: Boolean): Boole
  */
 internal fun publishedIsLoading(catalogLoadInProgress: Boolean, rowsHeld: Boolean): Boolean =
     catalogLoadInProgress || rowsHeld
+
+/**
+ * BUG-86 hero-off rows (beta.18): whether ONE publish republishes the previous rows instead of the
+ * ones it just built. The three cases are `publishCurrentStateLocked`'s three branches, in order.
+ *
+ * The third one is what changed. A publish taken after the hero has committed used to be
+ * unconditionally free to publish rows, which is right for every reason except the two that release
+ * the hero without consulting an input: a `heroOff` launch releases on its FIRST evaluation, so
+ * every publish the launch sync burst then drives is a branch-3 publish, and the rows it reordered
+ * went straight to screen underneath the FEAT-15 focus panel. The rows gate's own state carries the
+ * hold across those publishes now (see `HeroCommitGate.decideRowsGate`).
+ *
+ * @param decisionReleased the gate's answer for this publish, or null when the hero already
+ *   committed and no decision was taken.
+ * @param decisionRowsReleased the ROWS half of that same decision; ignored when there is none.
+ * @param wasArmed whether the gate was Armed on entry, i.e. whether a hold here is a hold of
+ *   something already painted rather than of the pre-gate initial state.
+ * @param rowsGateReleased the repository's rows-gate state, as of this publish's own re-evaluation.
+ */
+internal fun rowsHeldForPublish(
+    decisionReleased: Boolean?,
+    decisionRowsReleased: Boolean,
+    wasArmed: Boolean,
+    rowsGateReleased: Boolean,
+): Boolean = when {
+    decisionReleased == null -> !rowsGateReleased
+    decisionReleased -> !decisionRowsReleased
+    else -> wasArmed
+}
 
 /**
  * BUG-86 (Wave H): which entries of `HomeRepository.heroItemOrigins` survive a publish.

@@ -62,6 +62,12 @@ enum class CatalogOutcome { Loaded, Failed }
  * @param resetRequested an EXPLICIT Hero Sources change from Settings: the user is looking at the
  *   result, so the gate must not make them wait for the burst.
  * @param elapsedMs milliseconds since the gate armed (0 while [HeroGateState.Idle]).
+ * @param rowsElapsedMs milliseconds since the repository FIRST evaluated this gate era, armed or
+ *   not (BUG-86 hero-off rows, beta.18). Deliberately not [elapsedMs]: the two releases that hold
+ *   the rows on their own ([HeroGateReason.HERO_OFF] and [HeroGateReason.NO_SOURCES]) are exactly
+ *   the shapes that can answer before, or entirely without, a catalog-bearing refresh, so the only
+ *   clock the rows hold can be bounded by is the one that starts at the first evaluation. See
+ *   [HeroGateDecision.rowsReleased].
  * @param timeoutMs the hard cap, normally [HERO_COMMIT_GATE_TIMEOUT_MS].
  */
 data class HeroGateInputs(
@@ -77,6 +83,7 @@ data class HeroGateInputs(
     val heroSourcesAllOff: Boolean = false,
     val resetRequested: Boolean,
     val elapsedMs: Long,
+    val rowsElapsedMs: Long = 0,
     val timeoutMs: Long = HERO_COMMIT_GATE_TIMEOUT_MS,
 )
 
@@ -86,13 +93,64 @@ data class HeroGateInputs(
  * device probe line (`gate=released:<reason>`) so a held launch is diagnosable from a photo.
  * [waiting] names the FIRST unmet input at this evaluation (see [HeroGateWait]); it rides the probe
  * as `gateWait=` so a `released:timeout` line says which input was late.
+ *
+ * [rowsReleased] is the ROWS half, and it is not always the same answer as [released] — see
+ * [decideHeroGate]'s KDoc for the two reasons where they diverge and why. [rowsWaiting] says which
+ * of the rows terms decided it (see [HeroGateRowsWait]); it rides the probe as `rowsWait=`.
  */
 data class HeroGateDecision(
     val state: HeroGateState,
     val reason: String?,
     val waiting: String = HeroGateWait.NONE,
+    val rowsReleased: Boolean = state == HeroGateState.Released,
+    val rowsWaiting: String = HeroGateRowsWait.NONE,
 ) {
     val released: Boolean get() = state == HeroGateState.Released
+}
+
+/**
+ * BUG-86 hero-off rows (beta.18): why the ROWS are, or are no longer, held. Values are part of the
+ * probe contract (`rowsWait=` in `HomeRepository.heroRankingDebug`), which is what a tester's About
+ * pane photo has to show for a "Show Hero off" launch.
+ */
+object HeroGateRowsWait {
+    /** The launch sync burst settled (or was never coming), so the rows order is final. */
+    const val SETTLED = "settled"
+
+    /** The burst is still running, or has not started yet and is still expected: rows hold. */
+    const val SYNC = "sync"
+
+    /** The rows budget ran out with the burst still outstanding. Diagnosable, never silent. */
+    const val TIMEOUT = "timeout"
+
+    /** The rows are not independently gated at this evaluation: they follow the hero decision. */
+    const val NONE = "n/a"
+}
+
+/** [decideRowsGate]'s answer: whether the rows may publish, and which term decided it. */
+data class RowsGateDecision(val released: Boolean, val waiting: String)
+
+/**
+ * BUG-86 hero-off rows (beta.18): the rows half of the gate, as its own two-term table.
+ *
+ * Extracted from [decideHeroGate] because `HomeRepository` has to apply the SAME rule twice: once
+ * inside the publish that releases the hero, and again on every publish after it while the rows are
+ * still held (the hero decision is taken exactly once, so there is no second [HeroGateDecision] to
+ * read the answer off).
+ *
+ * @param syncSettled see [syncSettled] — the launch burst has landed, or none is coming.
+ * @param rowsElapsedMs see [HeroGateInputs.rowsElapsedMs].
+ */
+internal fun decideRowsGate(
+    syncSettled: Boolean,
+    rowsElapsedMs: Long,
+    timeoutMs: Long = HERO_COMMIT_GATE_TIMEOUT_MS,
+): RowsGateDecision = when {
+    // Checked ahead of the timeout on purpose: when both are true at the same evaluation the
+    // honest reason in a tester's photo is that the burst landed, not that the budget expired.
+    syncSettled -> RowsGateDecision(released = true, waiting = HeroGateRowsWait.SETTLED)
+    rowsElapsedMs >= timeoutMs -> RowsGateDecision(released = true, waiting = HeroGateRowsWait.TIMEOUT)
+    else -> RowsGateDecision(released = false, waiting = HeroGateRowsWait.SYNC)
 }
 
 /**
@@ -190,6 +248,29 @@ fun decideIdleHeroGate(
 /**
  * The gate's whole decision table. Order matters and is part of the contract:
  * hero off, then explicit reset, then timeout, then the readiness conjunction.
+ *
+ * BUG-86 hero-off rows (beta.18) — why the ROWS can outlive the hero decision.
+ *
+ * Two of the five reasons answer the hero question WITHOUT consulting a single input:
+ * [HeroGateReason.HERO_OFF] (there is no hero to commit) and [HeroGateReason.NO_SOURCES] (no
+ * catalog can ever supply one). Both are correct about the hero and both used to open the rows with
+ * it, because the rows rode the same boolean. They are not correct about the rows.
+ *
+ * The rows come out of the very settings the launch sync burst rewrites — `HomeCatalogSettings`'
+ * per-catalog `enabled`/`order` and the collection set — so a rows publish taken before the burst
+ * lands is a publish of an order that is about to change. On a "Show Hero" OFF profile that is not
+ * a cosmetic reshuffle: the top of Home is the FEAT-15 focus panel, whose resting title is the
+ * FIRST item of the FIRST catalog row, so reordering the rows underneath repaints the panel with a
+ * different title. That is the tester's build-117 photo exactly — rows open at 1.7 s with a
+ * collection first, the burst reorders at 2.5 s with a catalog first, and the panel's cover changes
+ * with it. The doubled hero this gate was built for, one layer down.
+ *
+ * So for those two reasons alone the rows keep waiting on [syncSettled], bounded by the same
+ * [HeroGateInputs.timeoutMs] budget everything else gets (measured from
+ * [HeroGateInputs.rowsElapsedMs], which unlike [HeroGateInputs.elapsedMs] also ticks for a profile
+ * that never arms the gate). Every other reason IS a hero commit taken with the burst already
+ * folded in, so its rows release with it and [HeroGateDecision.rowsWaiting] reads
+ * [HeroGateRowsWait.NONE].
  */
 fun decideHeroGate(inputs: HeroGateInputs): HeroGateDecision {
     // Computed before the early returns so a TIMEOUT release can still report what it was waiting
@@ -198,7 +279,7 @@ fun decideHeroGate(inputs: HeroGateInputs): HeroGateDecision {
     // and something failed to re-evaluate the gate.
     val waiting = firstUnmetInput(inputs)
 
-    if (!inputs.heroEnabled) return released(HeroGateReason.HERO_OFF)
+    if (!inputs.heroEnabled) return releasedHeroRowsGated(HeroGateReason.HERO_OFF, inputs)
     if (inputs.resetRequested) return released(HeroGateReason.RESET)
     if (inputs.elapsedMs >= inputs.timeoutMs) return released(HeroGateReason.TIMEOUT, waiting)
 
@@ -207,7 +288,7 @@ fun decideHeroGate(inputs: HeroGateInputs): HeroGateDecision {
     // Nothing to wait for and nothing that can still arrive: a collection-only profile, or one
     // whose add-ons are all gone. Holding would pin Home on the timeout for no reason.
     if (trackedKeys.isEmpty() && inputs.knownDefinitionKeys.isEmpty() && !inputs.manifestsPending) {
-        return released(HeroGateReason.NO_SOURCES)
+        return releasedHeroRowsGated(HeroGateReason.NO_SOURCES, inputs)
     }
 
     return if (waiting == HeroGateWait.NONE) {
@@ -234,12 +315,7 @@ private fun firstUnmetInput(inputs: HeroGateInputs): String {
         (unknownKeys.isEmpty() || !inputs.manifestsPending)
     if (!sourcesReady) return HeroGateWait.SOURCES
 
-    val syncReady = when (inputs.syncState) {
-        LaunchSyncState.NotApplicable, LaunchSyncState.Settled -> true
-        LaunchSyncState.Idle -> !inputs.launchSyncExpected
-        LaunchSyncState.Running -> false
-    }
-    if (!syncReady) return HeroGateWait.SYNC
+    if (!syncSettled(inputs)) return HeroGateWait.SYNC
 
     if (inputs.enrichmentPending != 0) return HeroGateWait.ENRICH
     // An empty candidate is worth waiting on only while a hero SOURCE could still fill it. Once the
@@ -254,8 +330,53 @@ private fun firstUnmetInput(inputs: HeroGateInputs): String {
     return HeroGateWait.NONE
 }
 
+/**
+ * The sync term of the readiness conjunction, as one function so [firstUnmetInput] and the rows
+ * half ([decideHeroGate], [decideRowsGate]) can never drift apart on what "the burst has landed"
+ * means. [HeroGateInputs.launchSyncExpected] is the half that makes [LaunchSyncState.Idle] readable
+ * as "will never start" rather than "has not started yet".
+ */
+internal fun syncSettled(syncState: LaunchSyncState, launchSyncExpected: Boolean): Boolean =
+    when (syncState) {
+        LaunchSyncState.NotApplicable, LaunchSyncState.Settled -> true
+        LaunchSyncState.Idle -> !launchSyncExpected
+        LaunchSyncState.Running -> false
+    }
+
+internal fun syncSettled(inputs: HeroGateInputs): Boolean =
+    syncSettled(inputs.syncState, inputs.launchSyncExpected)
+
+/** A release whose ROWS go with it: the hero committed with the burst already folded in. */
 private fun released(reason: String, waiting: String = HeroGateWait.NONE) =
-    HeroGateDecision(state = HeroGateState.Released, reason = reason, waiting = waiting)
+    HeroGateDecision(
+        state = HeroGateState.Released,
+        reason = reason,
+        waiting = waiting,
+        rowsReleased = true,
+        rowsWaiting = HeroGateRowsWait.NONE,
+    )
+
+/**
+ * A release that answers the HERO question without consulting an input ([HeroGateReason.HERO_OFF],
+ * [HeroGateReason.NO_SOURCES]) and therefore has to decide the rows separately — see
+ * [decideHeroGate]'s KDoc.
+ */
+private fun releasedHeroRowsGated(reason: String, inputs: HeroGateInputs): HeroGateDecision {
+    val rows = decideRowsGate(
+        syncSettled = syncSettled(inputs),
+        rowsElapsedMs = inputs.rowsElapsedMs,
+        timeoutMs = inputs.timeoutMs,
+    )
+    return HeroGateDecision(
+        state = HeroGateState.Released,
+        reason = reason,
+        // The HERO waited on nothing here, and `gateWait=` describes the hero. The rows' own
+        // outstanding term rides `rowsWait=` instead, so the two stay separately readable.
+        waiting = HeroGateWait.NONE,
+        rowsReleased = rows.released,
+        rowsWaiting = rows.waiting,
+    )
+}
 
 /** Which list a publish's hero items come from. See [heroPublishSource]. */
 enum class HeroPublishSource {

@@ -519,3 +519,25 @@ enum HomeLaunchBurstSimArgs {
         return honored
     }()
 }
+
+/// `-debug.homeHeroOff YES` makes this process read as a "Show Hero" OFF profile, so the FEAT-15
+/// focus panel is the top of Home and the BUG-86 hero-off rows hold (beta.18) is exercisable on a
+/// fixture whose real profile has the hero on.
+///
+/// Applied through `HomeCatalogSettingsRepository.debugForceHeroOff`, which is consulted by
+/// `snapshot()` and by the local UI state and by NEITHER the persisted payload nor the sync push —
+/// deliberately not `setHeroEnabled(false)`, which would turn the hero off on the tester's real
+/// account and on every device it syncs to.
+///
+/// Same pairing rule as `HomeLaunchBurstSimArgs` above and `TrailerProbe.forceNoTrailer`: read
+/// once, logged once, honored only when `HomeHeroProbe.enabled` is ALSO true, so a stray persisted
+/// launch arg can never silently blank the hero on a release sideload.
+enum HomeHeroOffArgs {
+    nonisolated static let enabled: Bool = {
+        let raw = UserDefaults.standard.bool(forKey: "debug.homeHeroOff")
+        guard raw else { return false }
+        let honored = HomeHeroProbe.enabled
+        NSLog("[HomeHero] heroOff present=YES honored=%@", honored ? "YES" : "NO (debug.homeHeroProbe off)")
+        return honored
+    }()
+}

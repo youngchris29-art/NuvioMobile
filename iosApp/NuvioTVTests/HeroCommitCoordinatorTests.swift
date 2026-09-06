@@ -25,15 +25,22 @@ final class HeroCommitCoordinatorTests: XCTestCase {
         )
     }
 
+    /// BUG-86 hero-off rows (beta.18): `rowsGateReleased`/`rowsGateReason` are appended here
+    /// because Kotlin/Native does not carry default arguments into the exported ObjC initializer —
+    /// every Swift construction site has to spell out the whole shape. Defaulted to the released
+    /// pair so existing callers keep meaning what they meant.
     private func makeState(heroItems: [MetaPreview], sections: [HomeCatalogSection] = [],
-                           heroGateReleased: Bool = true, heroGateReason: String? = "all") -> HomeUiState {
+                           heroGateReleased: Bool = true, heroGateReason: String? = "all",
+                           rowsGateReleased: Bool = true, rowsGateReason: String? = nil) -> HomeUiState {
         HomeUiState(
             isLoading: false,
             heroItems: heroItems,
             sections: sections,
             errorMessage: nil,
             heroGateReleased: heroGateReleased,
-            heroGateReason: heroGateReason
+            heroGateReason: heroGateReason,
+            rowsGateReleased: rowsGateReleased,
+            rowsGateReason: rowsGateReason
         )
     }
 
@@ -180,6 +187,72 @@ final class HeroCommitCoordinatorTests: XCTestCase {
         }
         // Also true when the repository releases without naming a reason at all.
         XCTAssertEqual(HeroPublishRoute.decide(gateReleased: true, gateReason: nil, heroIsEmpty: true), .noHero)
+    }
+
+    // MARK: - HeroPublishRoute × rowsReleased (BUG-86 hero-off rows, beta.18)
+
+    /// The tester's build-117 shape. `heroOff` releases on the gate's FIRST evaluation, so every
+    /// publish the launch sync burst drives afterwards is a released one; adopting their `sections`
+    /// reordered the rows under a FEAT-15 focus panel that had already painted, and the panel
+    /// repainted with a different title. `HomeUiState.rowsGateReleased` is false on exactly those.
+    func testRouteHoldsAReleasedPublishWhoseRowsAreStillHeld() {
+        XCTAssertEqual(
+            HeroPublishRoute.decide(gateReleased: true, gateReason: "heroOff", heroIsEmpty: true,
+                                    rowsReleased: false),
+            .hold,
+            "a heroOff release that still owes the launch sync burst must not publish rows"
+        )
+        XCTAssertEqual(
+            HeroPublishRoute.decide(gateReleased: true, gateReason: "noSources", heroIsEmpty: true,
+                                    rowsReleased: false),
+            .hold,
+            "the collection-only profile has the same exposure: its folder order is what the burst rewrites"
+        )
+    }
+
+    /// Once the burst has landed (or the rows budget expired) the same publish shape routes exactly
+    /// as it did before this flag existed — one `.noHero`, one rows build, one paint.
+    func testRouteOpensRowsOnceTheRowsGateReleases() {
+        XCTAssertEqual(
+            HeroPublishRoute.decide(gateReleased: true, gateReason: "heroOff", heroIsEmpty: true,
+                                    rowsReleased: true),
+            .noHero
+        )
+        XCTAssertEqual(
+            HeroPublishRoute.decide(gateReleased: true, gateReason: "noSources", heroIsEmpty: true,
+                                    rowsReleased: true),
+            .noHero
+        )
+    }
+
+    /// The flag never rescues a publish the hero gate is already holding, and it never gates a
+    /// reason that commits a hero: `all`, `reset` and `timeout` carry rows the burst is folded into
+    /// (Kotlin sets `rowsReleased = released` for all three — see `decideHeroGate`).
+    func testRowsFlagDoesNotChangeTheRestOfTheTable() {
+        XCTAssertEqual(
+            HeroPublishRoute.decide(gateReleased: false, gateReason: nil, heroIsEmpty: true,
+                                    rowsReleased: true),
+            .hold,
+            "an armed gate holds whatever the rows flag says"
+        )
+        for reason in ["all", "timeout", "reset"] {
+            XCTAssertEqual(
+                HeroPublishRoute.decide(gateReleased: true, gateReason: reason, heroIsEmpty: false,
+                                        rowsReleased: true),
+                .evaluateHead,
+                "a hero commit (reason=\(reason)) still routes to the coordinator"
+            )
+        }
+    }
+
+    /// The default is the compatibility contract: every existing call site and every publish that
+    /// commits a hero reads as "rows follow the hero", which is what the table meant before.
+    func testRowsFlagDefaultsToReleased() {
+        XCTAssertEqual(
+            HeroPublishRoute.decide(gateReleased: true, gateReason: "heroOff", heroIsEmpty: true),
+            HeroPublishRoute.decide(gateReleased: true, gateReason: "heroOff", heroIsEmpty: true,
+                                    rowsReleased: true)
+        )
     }
 
     // MARK: - AddonChangeRoute (Codex branch review round 8: renames must reach the metadata path)
@@ -545,7 +618,12 @@ final class HeroCommitCoordinatorTests: XCTestCase {
         // And the abandoned fetches were left running rather than cancelled, so a late response
         // still lands in the cache (with the real fetcher, in `ArtworkStore`) for the resolver.
         stub.releaseStalled()
-        await Task.yield()
+        // beta.18 gate run: a single `Task.yield()` is not enough for both released continuations to
+        // land on a loaded machine (seen 1 of 2 runs during the Phase 1 gate), and the assertion is
+        // about WHETHER they land, not how fast. Poll briefly instead of racing the scheduler.
+        for _ in 0..<50 where Set(stub.completedURLs) != [backdrop, logo] {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(Set(stub.completedURLs), [backdrop, logo])
     }
 
