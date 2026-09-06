@@ -5772,8 +5772,19 @@ final class NuvioTVUITests: XCTestCase {
         // Selecting a row releases focus to the new tab's content (`SidebarOverlay.basePanel`:
         // our pages start below the panel, so the reference's keep-focus behaviour left no way
         // out but Down past the last row), so the panel must now be collapsed with no further
-        // press.
-        pause(0.5)
+        // press — AND something in content must actually hold focus (internal review r3 P2-9:
+        // `expanded=0` alone also describes the BUG-47 dead end where focus landed nowhere).
+        pause(1.5)
+        // `focusedButton` unions cells/buttons/toggles/switches; Search's first focusable is its
+        // TextField, so include text fields (and any focused static container) in the landing read.
+        let landed = focusedButton(app)
+            ?? app.textFields.allElementsBoundByIndex.first(where: { $0.hasFocus })
+            ?? app.otherElements.allElementsBoundByIndex.first(where: { $0.hasFocus })
+        print("[test52] landed=\(landed.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)" } ?? "nil") \(stateProbe.exists ? stateProbe.label : "(no sidebar_state)")")
+        XCTAssertNotNil(landed, "after selecting Search nothing holds focus — the hand-off landed nowhere (BUG-47 class)")
+        if let landed {
+            XCTAssertFalse(landed.identifier.hasPrefix("sidebar_item_"), "focus stayed in the panel after the row press: \(landed.identifier)|\(landed.label)")
+        }
         if stateProbe.exists {
             XCTAssertTrue(stateProbe.label.contains("expanded=0"), "panel should report collapsed once focus left it: \(stateProbe.label)")
         } else {
