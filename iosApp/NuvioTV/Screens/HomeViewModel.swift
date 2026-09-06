@@ -177,6 +177,14 @@ final class HomeViewModel: ObservableObject {
     /// never fire here — HomeRepository is only refreshed once a manifest is ready — so without
     /// this Home sat on "Setting up your catalogs…" forever with no error and no retry.
     @Published private(set) var addonManifestError: String?
+    /// BUG-86 hero-off rows (beta.18, first fixture run of test31 leg D): the FEAT-15 focus panel
+    /// seeds from `rows` first, then Continue Watching, then a folder — and Continue Watching is NOT
+    /// behind the rows gate, so on a hero-off profile the panel painted the CW title at 5.66 s while
+    /// the rows were still held (`rowsWait=sync`) and repainted the first catalog row's title 850 ms
+    /// later when they opened: the double paint by another door. `HomeView.heroPanelSeed` now
+    /// returns nil until this reads true, so the panel's first paint is the rows' first paint.
+    /// Mirrors `rowsGate.isOpen`; flips in `openRowsGateAndRebuild()` and on `reset()`.
+    @Published private(set) var rowsGateOpen = false
 
     /// H-1A (beta.15): a per-instance id from the shared hero probe counter, stamped into every
     /// probe line this view model logs (`vm=<n>`). A profile-scoped sync pull flipping the theme
@@ -444,6 +452,7 @@ final class HomeViewModel: ObservableObject {
         heroCommitGeneration += 1
         heroCommitCoordinator.reset()
         rowsGate.reset()
+        rowsGateOpen = rowsGate.isOpen
         // Internal review r1 (P3): per pipeline RUN, not per process. Left true, a restarted
         // pipeline never marks the `first_hero` milestone again and the launch trace silently
         // loses the measurement for the run that is actually on screen.
@@ -907,6 +916,7 @@ final class HomeViewModel: ObservableObject {
         if let held = rowsGate.open() {
             pendingHeldRebuildsProbe = held
         }
+        rowsGateOpen = true
         rebuildRows()
     }
 

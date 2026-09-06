@@ -302,8 +302,12 @@ final class HeroOffLaunchTests: XCTestCase {
         //    (the panel has nothing to seed from until the rows publish).
         let presentsBefore = early[0..<openIdx].filter { probeKind($0) == "present" }
         let paintsBefore = early[0..<openIdx].filter(isRealPaintLine)
-        XCTAssertLessThanOrEqual(presentsBefore.count, 1,
-                                 "31d: more than one 'present' line before the rows opened — the focus panel painted a title the burst was still able to change — \(presentsBefore)")
+        // Gate-run refinement (beta.18): the first fixture run painted the CONTINUE WATCHING seed at
+        // 5659 ms while the rows were still held (rowsWait=sync), then repainted the first catalog
+        // row's title 850 ms later when the rows opened — the same double paint by another door.
+        // `heroPanelSeed` now waits for the rows gate, so NO present may precede the rows open.
+        XCTAssertEqual(presentsBefore.count, 0,
+                       "31d: a 'present' line before the rows opened — the focus panel seeded (CW/folder) while the rows were still held — \(presentsBefore)")
         XCTAssertLessThanOrEqual(paintsBefore.count, 1,
                                  "31d: more than one 'paint' line before the rows opened — \(paintsBefore)")
 
@@ -319,14 +323,30 @@ final class HeroOffLaunchTests: XCTestCase {
         //        window on a hero-off profile at all: `HomeLaunchBurstSim.runBurst` waits for a
         //        non-empty hero publish that never comes here, so it bursts one second after its
         //        own 6s timeout.
+        // Gate-run refinement (beta.18, first leg D run on the fixture): a title move IS legitimate
+        // once a `rows` line with a CHANGED `settingsSig=` has landed — that is a remote Home Rows
+        // reorder (the burst sim's step 2, or a real second device), and the photo contract says the
+        // same: "later sync-driven publish lines only if the settings signature changed". What this
+        // wave forbids is a move with the settings order UNCHANGED, which is the launch-sync reorder
+        // arriving after the rows gate opened — the tester's 2477 ms `rows` line.
+        let openSig = probeField(early[openIdx], "settingsSig")
         let repaintWindowEndMs = (probeStampMs(early[openIdx]) ?? 0) + 2_500
-        let presents = lines
-            .filter { (probeStampMs($0) ?? Int.max) <= repaintWindowEndMs }
-            .filter { probeKind($0) == "present" }
-        if let firstItem = presents.first.flatMap({ probeField($0, "item") }) {
-            let changed = presents.dropFirst().filter { probeField($0, "item") != firstItem }
-            XCTAssertTrue(changed.isEmpty,
-                          "31d: a later 'present' line carried a different item than the first (\(firstItem)) — the focus panel's resting title moved after first paint — \(changed)")
+        var sigChanged = false
+        var violations: [String] = []
+        var firstItem: String?
+        for line in lines where (probeStampMs(line) ?? Int.max) <= repaintWindowEndMs {
+            switch probeKind(line) {
+            case "rows":
+                if let sig = probeField(line, "settingsSig"), let openSig, sig != openSig { sigChanged = true }
+            case "present":
+                guard let item = probeField(line, "item") else { continue }
+                if firstItem == nil { firstItem = item; continue }
+                if item != firstItem, !sigChanged { violations.append(line) }
+            default:
+                continue
+            }
         }
+        XCTAssertTrue(violations.isEmpty,
+                      "31d: a later 'present' line carried a different item than the first (\(firstItem ?? "-")) with the settings order UNCHANGED — the focus panel's resting title moved after first paint — \(violations)")
     }
 }
