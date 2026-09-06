@@ -64,7 +64,7 @@ struct NativePlayerScreen: View {
                 VStack(spacing: 20) {
                     ProgressView().scaleEffect(1.6)
                     Text(coordinator.preparingLabel)
-                        .font(.callout)
+                        .font(Theme.Font.body)
                         .foregroundStyle(.white.opacity(0.7))
                 }
             case .playing:

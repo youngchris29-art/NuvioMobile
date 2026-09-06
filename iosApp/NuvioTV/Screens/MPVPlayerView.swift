@@ -1609,25 +1609,25 @@ private struct PlayerControlsOverlay: View {
         // full-width black gradient.
         VStack(alignment: .leading, spacing: 16) {
             Text(state.title)
-                .font(.title3).bold()
+                .font(Theme.Font.screenTitle)
                 .lineLimit(1)
 
             HStack(spacing: 20) {
                 Image(systemName: state.isPaused ? "pause.fill" : "play.fill")
-                    .font(.title3)
+                    .font(Theme.Font.screenTitle.weight(.regular))
 
                 Text(timeString(state.positionSec))
-                    .font(.callout).monospacedDigit()
+                    .font(Theme.Font.body).monospacedDigit()
 
                 ProgressBar(fraction: state.fraction)
                     .frame(height: 10)
 
                 Text("-\(timeString(max(state.durationSec - state.positionSec, 0)))")
-                    .font(.callout).monospacedDigit()
+                    .font(Theme.Font.body).monospacedDigit()
             }
 
             Label("Swipe down for info", systemImage: "chevron.down")
-                .font(.caption).foregroundStyle(.white.opacity(0.7))
+                .font(Theme.Font.caption).foregroundStyle(.white.opacity(0.7))
         }
         .foregroundStyle(.white)
         .padding(28)
@@ -1680,10 +1680,10 @@ private struct PostPlayView: View {
                 }
                 VStack(alignment: .leading, spacing: 24) {
                     Text("That's the end of")
-                        .font(.title3)
+                        .font(Theme.Font.screenTitle.weight(.regular))
                         .foregroundStyle(.white.opacity(0.7))
                     Text(title)
-                        .font(.title).bold()
+                        .font(Theme.Font.hero)
                         .foregroundStyle(.white)
                         .lineLimit(3)
                         .frame(maxWidth: 800, alignment: .leading)
@@ -1730,24 +1730,24 @@ private struct PauseInfoCard: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text("Paused")
-                    .font(.caption).bold()
+                    .font(Theme.Font.meta)
                     .foregroundStyle(.white.opacity(0.7))
                 Text(context.title)
-                    .font(.title2).bold()
+                    .font(Theme.Font.screenTitle)
                     .lineLimit(2)
                 if let season = context.season, let episode = context.episode {
                     Text("Season \(season) \u{00B7} Episode \(episode)")
-                        .font(.callout)
+                        .font(Theme.Font.body)
                         .foregroundStyle(.white.opacity(0.85))
                 }
                 if state.durationSec > 0 {
                     Text("\(remainingString) remaining")
-                        .font(.callout).monospacedDigit()
+                        .font(Theme.Font.body).monospacedDigit()
                         .foregroundStyle(.white.opacity(0.85))
                 }
                 if let provider = context.providerName, !provider.isEmpty {
                     Text(provider)
-                        .font(.caption)
+                        .font(Theme.Font.caption)
                         .foregroundStyle(.white.opacity(0.6))
                         .lineLimit(1)
                 }
@@ -1774,7 +1774,7 @@ private struct StreamInfoOverlayView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Stream Info")
-                .font(.caption).bold()
+                .font(Theme.Font.meta)
                 .foregroundStyle(.white.opacity(0.7))
             ForEach(info.rows, id: \.0) { row in
                 HStack(alignment: .top, spacing: 12) {
@@ -1785,7 +1785,7 @@ private struct StreamInfoOverlayView: View {
                         .foregroundStyle(.white)
                         .lineLimit(2)
                 }
-                .font(.caption.monospacedDigit())
+                .font(Theme.Font.caption.monospacedDigit())
             }
         }
         .padding(24)
