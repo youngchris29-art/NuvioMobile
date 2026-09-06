@@ -29,6 +29,12 @@ struct HomeView: View {
     /// (`PosterCard`, `CatalogRowView`, `FolderTile`, `SearchView`), so any test override still
     /// flows through the environment the same way it always did.
     @Environment(\.posterStyle) private var posterStyle
+    /// FEAT-30: the floating sidebar's shared state. Held, never OBSERVED — `@Environment` on a
+    /// custom key hands over the object without subscribing to `objectWillChange`, which is the
+    /// whole point here: Home must not re-render because the sidebar took focus or another tab
+    /// crossed its scroll hysteresis. Home's only use is the Menu-press reveal below, and it reads
+    /// the model inside that closure, at press time.
+    @Environment(\.sidebarChrome) private var sidebarChrome
 
     #if DEBUG
     /// BUG-25 audit hook (kept): exposes the depth environment Home actually renders with, as an
@@ -204,6 +210,12 @@ struct HomeView: View {
     /// UX-7: rows whose backdrops have already been prefetch-warmed (keyed by report source),
     /// so each row pays the warm-up exactly once per Home lifetime.
     @State private var prefetchedBackdropRows = Set<String>()
+    /// FEAT-33 leg 1/3 only: generation counter for the deferred folder→hero commit below. Each
+    /// focus change on a collection row bumps it and captures the new value; the deferred block
+    /// drops itself if the number has moved on, so walking quickly across a row commits ONE hero
+    /// (the last one focused) instead of queueing a commit per tile. Never read when the A/B leg
+    /// is off — the commit is immediate there, exactly as it ships today.
+    @State private var folderFocusGeneration = 0
 
     private var heroItems: [MetaPreview] { Array(model.heroItems.prefix(8)) }
     private var currentHero: MetaPreview? {
@@ -599,6 +611,15 @@ struct HomeView: View {
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_pinned")
+                // FEAT-30 (invisible, harness-readable): which navigation chrome this build is
+                // rendering under, and the top compensation it applied. `comp` is what a device
+                // bisect of `debug.sidebarTopCompensation` reads back to confirm the launch
+                // argument actually landed — the sidebar's own state lives in the overlay's
+                // separate `sidebar_state` probe, which only exists while the panel is shown.
+                Text("debug_sidebar mode=\(SidebarChrome.isEnabled() ? 1 : 0) comp=\(Int(SidebarChrome.topCompensation))")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_sidebar")
                 #endif
 
                 // Full-bleed hero backdrop runs to every edge (and under the floating glass tab
@@ -733,6 +754,16 @@ struct HomeView: View {
                     // below records that scrolling to the top WITHOUT taking focus first is the
                     // documented failure mode. Giving hero-off users Menu-to-top needs a
                     // device-verified anchor plan, not a flag change here.
+                    //
+                    // FEAT-30 adds the OTHER branch and touches nothing in this one: the
+                    // scrolled-down BUG-27 handler above is byte-identical in both chrome modes,
+                    // and the `else` — which is `nil` today, i.e. "Menu keeps its default root
+                    // behaviour" — becomes the sidebar reveal in sidebar mode only. Ordering is
+                    // deliberate: from down the page Menu still means "back to the top", the way
+                    // it does now and the way every tvOS app does it; the sidebar is what Menu
+                    // means once you are already at the top, where the handler used to detach.
+                    // In tabs mode `sidebarMenuRevealHandler` is `nil`, so this site resolves
+                    // exactly as it always has.
                     .onExitCommand(perform: (isScrolledDown && !heroItems.isEmpty) ? {
                         if heroNuvioStyle {
                             // Pinned hero: the CTA lives above the ScrollView in the VStack, so
@@ -782,7 +813,10 @@ struct HomeView: View {
                                 }
                             }
                         }
-                    } : nil)
+                    } : sidebarMenuRevealHandler)
+                    // FEAT-30: same summon on an Up press the focus engine could not place (see
+                    // `SidebarMenuRevealModifier` in SidebarOverlay.swift); nil in tabs mode.
+                    .modifier(SidebarUpRevealModifier(perform: sidebarUpRevealHandler))
                     // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
                     // Rounds 5–6 tried completing the scroll to the true top when focus
                     // re-entered the hero; both caused worse regressions on device (wedged Down
@@ -1087,6 +1121,13 @@ struct HomeView: View {
                             .onAppear { model.rowAppeared(sectionKey: section.key) }
                         case .collection(let collection):
                             CollectionRowView(collection: collection, onFolderFocusChange: { folder in
+                                // FEAT-33 leg 1/3 (Codex r1+r2): EVERY focus event — including the
+                                // `nil` that fires when focus leaves the row — supersedes any
+                                // deferred commit still in flight, so a hero queued for a folder
+                                // the user has already left never lands. Gated on the leg: with it
+                                // off (the default) this `@State` is never written, so the folder
+                                // focus path schedules no extra Home update.
+                                if CollectionFocusAB.deferHeroCommit { folderFocusGeneration &+= 1 }
                                 // BUG-38 round three: a focused folder tile hands its configured
                                 // backdrop + title logo to the hero, the Fusion behaviour the
                                 // reporter asked for on the HOME page. Folders with neither asset
@@ -1095,17 +1136,42 @@ struct HomeView: View {
                                 if let folder, let preview {
                                     heroFolderRoutes[preview.id] = FolderRoute(collectionId: collection.id, folder: folder)
                                 }
-                                reportRowFocus(preview, source: collection.id, prefetch: {
-                                    // Backdrops AND logos (Codex r3): a folder with its own cover never
-                                    // warms its logo on the tile (FolderTile suppresses it there), so the
-                                    // hero's HeroLogo would otherwise start cold and flash the text name.
-                                    // Wave H: no `prefix(8)` any more — a folder hero has NO poster
-                                    // fallback (see `folderHeroPreview`), so an unwarmed folder past the
-                                    // eighth holds the previous hero for the full 1.5s folder deadline.
-                                    // Rows are small (a Fusion collection is a handful of folders) and
-                                    // `ArtworkStore.prefetch` skips anything already resident.
-                                    collectionHeroPrefetchURLs(collection)
-                                })
+                                // The route registration above stays immediate on purpose — it is
+                                // pure bookkeeping the CTA reads later, and deferring it would let
+                                // a fast press land before the map knew the folder.
+                                let commit = {
+                                    reportRowFocus(preview, source: collection.id, prefetch: {
+                                        // Backdrops AND logos (Codex r3): a folder with its own cover never
+                                        // warms its logo on the tile (FolderTile suppresses it there), so the
+                                        // hero's HeroLogo would otherwise start cold and flash the text name.
+                                        // Wave H: no `prefix(8)` any more — a folder hero has NO poster
+                                        // fallback (see `folderHeroPreview`), so an unwarmed folder past the
+                                        // eighth holds the previous hero for the full 1.5s folder deadline.
+                                        // Rows are small (a Fusion collection is a handful of folders) and
+                                        // `ArtworkStore.prefetch` skips anything already resident.
+                                        collectionHeroPrefetchURLs(collection)
+                                    })
+                                }
+                                // FEAT-33 leg 1/3 (`debug.collectionFocusAB` 1 or 3): hold the
+                                // hero commit for `heroCommitDeferral` so the row's own focus-step
+                                // animation runs on a main thread that is not simultaneously
+                                // starting a hero resolve — the hypothesis behind the tester's
+                                // "our folder row animates at 30fps, official Nuvio's at 60".
+                                // Superseded commits are DROPPED, not queued: walking three tiles
+                                // in 200ms must still commit one hero, not three in sequence.
+                                // Nothing downstream changes — `HeroCommitGate`/`Coordinator`/
+                                // `ArtResolver` see the identical call, just later. With the leg
+                                // off (the default, `leg == 0`) this is the same immediate call
+                                // the row has always made.
+                                if CollectionFocusAB.deferHeroCommit {
+                                    let generation = folderFocusGeneration
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + CollectionFocusAB.heroCommitDeferral) {
+                                        guard folderFocusGeneration == generation else { return }
+                                        commit()
+                                    }
+                                } else {
+                                    commit()
+                                }
                             })
                             // Wave H: warm every folder's hero artwork when the ROW appears, not
                             // when a tile is first focused — the focus report and the artwork it
@@ -1284,6 +1350,16 @@ struct HomeView: View {
                     : 0
             ))
             .modifier(HeroCarouselInteractionModifier(enabled: heroCarouselActive) { direction in
+                // FEAT-30: this handler sits closer to the focused CTA than Home's root one, so
+                // an Up with no focus target (the hidden bar's band is a dead zone — device spike
+                // + test52, 2026-09-05) arrives HERE first. Route it to the sidebar in sidebar
+                // mode; tabs mode falls through to the existing paging logic (a no-op for Up).
+                if direction == .up, SidebarChrome.isEnabled() {
+                    if !sidebarChrome.isFocusedChrome, SidebarChrome.upIsDeliberate() {
+                        sidebarChrome.requestReveal()
+                    }
+                    return
+                }
                 guard heroItems.count > 1 else { return }
                 let count = heroItems.count
                 let clamped = min(heroIndex, count - 1)
@@ -1608,6 +1684,41 @@ struct HomeView: View {
             ArtworkStore.prefetch(prefetch().compactMap(URL.init(string:)))
         }
         focusModel.reportFocus(item, from: source)
+    }
+
+    /// FEAT-30: Home's half of the sidebar Menu grammar — the `else` of the BUG-27 ternary in the
+    /// body above.
+    ///
+    /// `nil` unless sidebar mode is on AND the page is at the top, which keeps two invariants:
+    /// tabs mode resolves that site to `nil` exactly as it does today (byte-identical), and while
+    /// the page is scrolled down the BUG-27 Menu-to-top branch owns the press — the sidebar never
+    /// competes with "the long way down, the short way back".
+    ///
+    /// Search/Library/Add-ons get the same behaviour from `.sidebarMenuReveal()`; Home cannot use
+    /// that modifier because its exit handler has to compose with the branch above.
+    /// FEAT-30: Up with no focus target → reveal + focus the sidebar. Only arrives when the
+    /// engine found nothing above (an ordinary Up between rows never reaches it). Nil in tabs mode
+    /// so that mode installs no handler at all.
+    private var sidebarUpRevealHandler: ((MoveCommandDirection) -> Void)? {
+        guard SidebarChrome.isEnabled() else { return nil }
+        return { direction in
+            guard direction == .up, !sidebarChrome.isFocusedChrome else { return }
+            guard SidebarChrome.upIsDeliberate() else { return }   // swipe overshoot, not a press
+            sidebarChrome.requestReveal()
+        }
+    }
+
+    private var sidebarMenuRevealHandler: (() -> Void)? {
+        guard SidebarChrome.isEnabled(), !isScrolledDown else { return nil }
+        return {
+            // Read at press time, not as a body dependency — `@Environment` on the custom key
+            // gives Home the object without subscribing it to `objectWillChange` (see the
+            // property's doc comment). The guard is belt-and-braces: with focus in the sidebar
+            // this handler is not in the responder chain at all, since the panel is a sibling of
+            // the whole TabView rather than a descendant of Home.
+            guard !sidebarChrome.isFocusedChrome else { return }
+            sidebarChrome.requestReveal()
+        }
     }
 
     /// BUG-38 round three: adapts a collection folder to the hero's `MetaPreview` shape so a

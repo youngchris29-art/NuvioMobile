@@ -214,6 +214,21 @@ final class NuvioTVUITests: XCTestCase {
                 pause(10)
                 return app
             }
+            // FEAT-30: in sidebar mode there is no system tab bar to recover through at all —
+            // `app.buttons["Home"]` never exists, so the Menu-press recovery below (which only
+            // stops pressing Menu once that button is visible) would burn its whole budget
+            // pressing Menu blind. That is actively dangerous here, not just wasted motion: Menu
+            // while a sidebar row already has focus is the system's suspend-the-app default
+            // (`SidebarOverlay` installs no exit handler of its own — see its doc comment), and a
+            // prior test could easily have left focus sitting on one. Detect the mode by the
+            // sidebar's own rows/container existing (the same signal `openTab` uses, not a
+            // `UserDefaults` read this process has no access to) and recover through THAT helper's
+            // own sidebar branch, which reaches Home with no Menu press anywhere in its path.
+            if app.otherElements["sidebar_overlay"].exists || app.buttons["sidebar_item_Home"].exists {
+                openTab(app, named: "Home")
+                pause(1)
+                return app
+            }
             // Already past the profile gate, somewhere inside the app (a prior test's end state —
             // e.g. test01 deliberately ends on a pushed DetailView). Pop pushed screens with Menu
             // ONLY while the root tab bar is off screen (see the header comment), then reselect
@@ -297,11 +312,47 @@ final class NuvioTVUITests: XCTestCase {
     }
 
     /// From Home content, walk up to the tab bar, right to the wanted tab, and enter it.
+    ///
+    /// FEAT-30: on a device with the sidebar overlay on (`sidebar_style` = `"sidebar"`), the
+    /// system tab bar this function has always driven does not exist at all — `SidebarOverlay`
+    /// (`DesignSystem/SidebarOverlay.swift`) replaces it. Detected by the sidebar's own rows
+    /// EXISTING, not by reading the `UserDefaults` key directly (the harness has no access to the
+    /// sim's defaults from inside the test process, and existence is exactly what the app itself
+    /// renders off of), so tabs-mode callers see byte-identical behaviour below — the sidebar
+    /// branch is a new `if`, not a change to the existing walk.
     private func openTab(_ app: XCUIApplication, named title: String) {
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        if app.descendants(matching: .any)["sidebar_item_Home"].exists || app.otherElements["sidebar_overlay"].exists {
+            // The panel is visible even collapsed (showing only the CURRENT tab's own row), and it
+            // only expands to show every row once focus actually lands ON one of them
+            // (`SidebarOverlay.isExpanded` = `focusedItem != nil`). So climb Up until ANY
+            // `sidebar_item_*` row holds focus — deliberately not a Menu press: Menu while the
+            // sidebar already has focus is the system's suspend-the-app default (see
+            // `launchToHome`'s header comment on the springboard-escape class), so this walk must
+            // never rely on it.
+            func anySidebarRowFocused() -> Bool {
+                tabNames.contains { app.buttons["sidebar_item_\($0)"].exists && app.buttons["sidebar_item_\($0)"].hasFocus }
+            }
+            for _ in 0..<40 {
+                if anySidebarRowFocused() { break }
+                remote.press(.up)
+                pause(0.35)
+            }
+            let target = app.buttons["sidebar_item_\(title)"]
+            if !moveFocus(.down, until: target, max: 6) {
+                _ = moveFocus(.up, until: target, max: 8)
+            }
+            remote.press(.select)
+            // Selecting a row releases focus into the new tab's content (see
+            // `SidebarOverlay.basePanel`), so unlike the tab-bar branch below no post-select
+            // press is needed to leave the chrome.
+            pause(2)
+            return
+        }
+
         // Climb until a tab-bar button reports focus (tabs DO report focus, test13) — a fixed
         // Up×8 could not leave a long Settings pane (beta.13 wave 2 finding: test27/29 ended in
         // the sidebar), while Up past the tab bar is a no-op, so overshooting is harmless.
-        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
         for _ in 0..<40 {
             if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
             remote.press(.up)
@@ -1337,6 +1388,23 @@ final class NuvioTVUITests: XCTestCase {
     /// Empty array (not a failure) when the container isn't on screen at all, or the runtime
     /// truncated its subtree away — callers are expected to fail loudly on that themselves rather
     /// than have this silently swallow the "pane never rendered" case.
+    /// FEAT-33: generic form of the `hero_probe_blob` read below — one `snapshot()` walk for a
+    /// hidden single-`Text` blob by identifier, regardless of its resolved AX type. `app.staticTexts`
+    /// subscripting missed `collection_frame_blob` on the first test54 run (the blob rides an
+    /// `.overlay` inside a `TimelineView` inside a List row), exactly the class the hero blob's
+    /// snapshot walk exists for. `nil` when the blob is not in the tree (caller decides to skip).
+    private func probeBlobLabel(_ app: XCUIApplication, identifier: String) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        func find(_ node: XCUIElementSnapshot) -> String? {
+            if node.identifier == identifier { return node.label }
+            for child in node.children {
+                if let hit = find(child) { return hit }
+            }
+            return nil
+        }
+        return find(root)
+    }
+
     private func heroProbeLines(_ app: XCUIApplication) -> [String] {
         guard let root = try? app.snapshot() else { return [] }
         var container: XCUIElementSnapshot?
@@ -5633,5 +5701,240 @@ final class NuvioTVUITests: XCTestCase {
         )
         XCTAssertTrue(watch.exists, "Watch Trailer is gone after the return")
         XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - FEAT-30: floating sidebar overlay
+
+    /// FEAT-30's device-local opt-in (`-sidebar_style sidebar`) swaps the system tab bar for
+    /// `SidebarOverlay`'s floating panel (`DesignSystem/SidebarOverlay.swift`): collapsed at rest
+    /// to just the current tab's own row, expands to all six the instant focus lands on it, and
+    /// stepping focus back out (Right, toward content) collapses it again. This is the harness's
+    /// only coverage of that mode — every other test in this file runs in tabs mode, which is why
+    /// the fixture restore at the end matters as much as the assertions above it.
+    ///
+    /// Deliberately never presses Menu while a sidebar row could hold focus: `SidebarOverlay`
+    /// installs no exit handler of its own, so Menu there falls through to the system's
+    /// suspend-the-app default (see its doc comment, and `openTab`'s sidebar branch above, which
+    /// this test's navigation mirrors).
+    func test52SidebarOverlay() throws {
+        let app = launchToHome(extraArguments: ["-sidebar_style", "sidebar"], forceFreshLaunch: true)
+        pause(1.5)
+
+        let debugSidebar = app.staticTexts["debug_sidebar"]
+        XCTAssertTrue(debugSidebar.waitForExistence(timeout: 6), "debug_sidebar probe missing (DEBUG build?)")
+        XCTAssertTrue(debugSidebar.label.contains("mode=1"), "sidebar mode did not turn on: \(debugSidebar.label)")
+
+        // Collapsed at rest: only the current tab's (Home's) own row exists — and at rest the pill
+        // is deliberately NOT a button (`SidebarOverlay.armed`: it is a plain label until a Menu or
+        // Up-with-no-target reveal arms it), so match any element type here.
+        XCTAssertTrue(app.descendants(matching: .any)["sidebar_item_Home"].exists, "sidebar_item_Home must exist at rest on the Home tab")
+        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "sidebar_item_Search must NOT exist while the panel is collapsed")
+
+        // The system tab bar must be gone outright. `app.buttons["Home"]` cannot say so — XCUI
+        // matches identifier OR label, and the sidebar's own Home row is labelled "Home" — but
+        // while the panel is collapsed NOTHING labelled "Search" may exist: the tab bar's Search
+        // button is hidden with the bar, and the sidebar's Search row only exists once expanded.
+        XCTAssertFalse(app.buttons["Search"].exists, "a 'Search' button exists while collapsed — the system tab bar is still present in sidebar mode")
+        shot(app, "52a_collapsed")
+
+        // Climb up from the hero until the collapsed row itself takes focus — that focus is
+        // exactly what expands the panel to all six rows (`SidebarOverlay.isExpanded`).
+        let homeRow = app.buttons["sidebar_item_Home"]
+        var expanded = false
+        for step in 0..<6 {
+            if homeRow.exists && homeRow.hasFocus { expanded = true; break }
+            // Diagnostic (2026-09-05): where does each Up actually land? Prints the focused
+            // element's identifier/label/frame and the sidebar's own state line so a failed
+            // climb is attributable (hidden tab bar still focusable? move command swallowed?).
+            let f = focusedButton(app)
+            let state = app.staticTexts["sidebar_state"].exists ? app.staticTexts["sidebar_state"].label : "(no sidebar_state)"
+            print("[test52] up#\(step) focused=\(f.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") \(state)")
+            remote.press(.up)
+            pause(0.6)
+        }
+        print("[test52] after climb focused=\(focusedButton(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil")")
+        XCTAssertTrue(expanded, "could not focus sidebar_item_Home by climbing up from the hero")
+        pause(0.5)
+        let stateProbe = app.staticTexts["sidebar_state"]
+        XCTAssertTrue(stateProbe.waitForExistence(timeout: 4), "sidebar_state probe missing while the panel is shown")
+        XCTAssertTrue(stateProbe.label.contains("expanded=1"), "panel did not report expanded once focus landed on a row: \(stateProbe.label)")
+        XCTAssertTrue(app.buttons["sidebar_item_Search"].exists, "sidebar_item_Search must exist once the panel is expanded")
+        shot(app, "52b_expanded")
+
+        // Down to Search, Select to enter it. NOT Menu — see the header comment.
+        let searchRow = app.buttons["sidebar_item_Search"]
+        XCTAssertTrue(moveFocus(.down, until: searchRow, max: 4), "could not focus sidebar_item_Search from sidebar_item_Home")
+        remote.press(.select)
+        pause(2.5)
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
+        shot(app, "52c_search")
+
+        // Selecting a row releases focus to the new tab's content (`SidebarOverlay.basePanel`:
+        // our pages start below the panel, so the reference's keep-focus behaviour left no way
+        // out but Down past the last row), so the panel must now be collapsed with no further
+        // press — AND something in content must actually hold focus (internal review r3 P2-9:
+        // `expanded=0` alone also describes the BUG-47 dead end where focus landed nowhere).
+        pause(1.5)
+        // `focusedButton` unions cells/buttons/toggles/switches; Search's first focusable is its
+        // TextField, so include text fields (and any focused static container) in the landing read.
+        let landed = focusedButton(app)
+            ?? app.textFields.allElementsBoundByIndex.first(where: { $0.hasFocus })
+            ?? app.otherElements.allElementsBoundByIndex.first(where: { $0.hasFocus })
+        print("[test52] landed=\(landed.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)" } ?? "nil") \(stateProbe.exists ? stateProbe.label : "(no sidebar_state)")")
+        XCTAssertNotNil(landed, "after selecting Search nothing holds focus — the hand-off landed nowhere (BUG-47 class)")
+        if let landed {
+            XCTAssertFalse(landed.identifier.hasPrefix("sidebar_item_"), "focus stayed in the panel after the row press: \(landed.identifier)|\(landed.label)")
+        }
+        if stateProbe.exists {
+            XCTAssertTrue(stateProbe.label.contains("expanded=0"), "panel should report collapsed once focus left it: \(stateProbe.label)")
+        } else {
+            // Also acceptable: the whole panel (and its probe) can disappear once collapsed AND
+            // scrolled — `SidebarOverlay.shouldShow` folds the reveal/scroll resting rule together.
+            // Either shape means "no longer expanded showing every row".
+            XCTAssertFalse(
+                app.buttons["sidebar_item_Home"].exists && app.buttons["sidebar_item_Search"].exists,
+                "both sidebar_item_Home and sidebar_item_Search still exist — the panel never collapsed"
+            )
+        }
+
+        // Restore: fresh tabs-mode launch, exactly like test43's fixture restore.
+        let restored = launchToHome(forceFreshLaunch: true)
+        let restoredProbe = restored.staticTexts["debug_sidebar"]
+        XCTAssertTrue(restoredProbe.waitForExistence(timeout: 6), "debug_sidebar probe missing after restore")
+        XCTAssertTrue(restoredProbe.label.contains("mode=0"), "fixture did not restore to tabs mode: \(restoredProbe.label)")
+        XCTAssertTrue(restored.state == .runningForeground)
+    }
+
+    // MARK: - FEAT-31: Open Sans typeface
+
+    /// FEAT-31's device-local opt-in (`-ui_font openSans`) resolves every `Theme.Font` token to
+    /// Open Sans (`Theme.AppFontFamily`, `DesignSystem/Theme.swift`). AX has no way to see which
+    /// font actually rendered, so the two screenshots are this test's real evidence; the
+    /// assertions below only confirm the Appearance pane's new "Typeface" row exists and reads
+    /// "Open Sans" as its current value.
+    ///
+    /// Reaches the row with a FIXED down-count from the Theme swatches, the same technique
+    /// `FixtureSetupTests.walkFromSwatchesToSizeRow` uses and for the same reason (its doc
+    /// comment): `SettingsPickerRow` composes no matchable label on its wrapping Cell/Button, so a
+    /// label-based walk (`walkToRowByTreeIndex`) cannot find it, and a lazy List will not have
+    /// materialised a row this far down without focus actually having stepped through it. Counted
+    /// directly off `AppearanceSettingsPane.body`'s literal order: swatches -> Accent Focus Ring
+    /// (1) -> No Zoom on Focus (2) -> Settings Style (3) -> Navigation (4) -> Typeface (5).
+    func test53TypefaceOpenSans() throws {
+        let app = launchToHome(extraArguments: ["-ui_font", "openSans"], forceFreshLaunch: true)
+        pause(1.5)
+        shot(app, "53a_home_open_sans")
+
+        openTab(app, named: "Settings")
+        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1) // lands on the swatch row, test43's proven anchor
+        pause(1)
+        press(.down, times: 5, gap: 0.6)
+        pause(0.8)
+
+        let typefaceRowExists = app.buttons["appearance_row_typeface"].waitForExistence(timeout: 4)
+            || app.cells["appearance_row_typeface"].waitForExistence(timeout: 2)
+            || app.otherElements["appearance_row_typeface"].waitForExistence(timeout: 2)
+        XCTAssertTrue(typefaceRowExists, "appearance_row_typeface row not found on the Appearance pane")
+        XCTAssertTrue(app.staticTexts["Open Sans"].waitForExistence(timeout: 4), "Typeface row does not read 'Open Sans' as its current value")
+        shot(app, "53b_appearance_typeface")
+
+        // Restore: fresh tabs/system-font launch. `ui_font` was only ever a launch argument here
+        // (never written through the UI), so a plain relaunch with no arguments is already back to
+        // system — nothing else to undo.
+        let restored = launchToHome(forceFreshLaunch: true)
+        XCTAssertTrue(restored.state == .runningForeground)
+    }
+
+    // MARK: - FEAT-33: collection focus-frame probe (driver only — numbers are a device harvest)
+
+    /// FEAT-33's on-device frame-timing probe (`CollectionFocusFrameProbe`,
+    /// `debug.collectionFrameProbe`) answers a tester's "our collection row animates at 30fps, not
+    /// official Nuvio's 60fps" report with real per-vsync data instead of a screen recording's own
+    /// sample rate. This test is a DRIVER, not a gate: it focuses onto a collection/folder row —
+    /// the same `fitem=` `nuvio-folder://` oracle `test31HeroCommitsOnce`'s Leg C uses off the
+    /// `debug_hero` probe, since this fixture's Home may or may not have a collection row at all —
+    /// so `CollectionRowView`'s `onChange(of: focusedFolderId)` has something to arm the sampler
+    /// with, then reads `collection_frame_blob` back from the About pane. The `frames=`/`dropped=`/
+    /// `p95=` numbers themselves are a device harvest for a human to read off the attachment/shot,
+    /// not something this test judges pass/fail on.
+    func test54CollectionFrameProbeDriver() throws {
+        let app = launchToHome(extraArguments: ["-debug.collectionFrameProbe", "YES"], forceFreshLaunch: true)
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+        var folderFound = false
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...28 {
+            press(.down, times: 1)
+            pause(0.5)
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.hasPrefix("nuvio-folder://") { folderFound = true; break }
+            // Bottom of Home, or no collection row at all: Down stops changing what is focused.
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
+        }
+        guard folderFound else {
+            throw XCTSkip("no folder/collection tile focused within 28 Down presses on this profile's Home — cannot drive the collection frame probe without one")
+        }
+        shot(app, "54a_folder_focused")
+        // A second focus step inside the same row gives the sampler a second measured window, on
+        // top of the one that already fired the instant focus first landed on the row (arm() keys
+        // off `onChange(of: focusedFolderId)`, which fired going from nil to this tile).
+        press(.right, times: 1, gap: 0.5)
+        pause(0.8)
+
+        openTab(app, named: "Settings")
+        _ = moveToSidebarRow(app, .down, named: "About", max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1) // lands on "Hero Paint Diagnostics", the pane's first focusable row
+        pause(1)
+
+        // Walk down until the readout itself is on screen, rather than a fixed count: the toggle
+        // that gates it (`Collection Frame Probe`) sits several focusable rows into the "About"
+        // section, behind a few non-focusable `SettingsValueRow`s that don't consume a D-pad stop
+        // — see `AppearanceSettingsPane`'s Down-count comment above for why a fixed count is used
+        // there but not here (here, the STOP CONDITION is the target itself existing, so an
+        // over-shoot is simply a few harmless extra presses at the bottom of the pane, not a wrong
+        // landing spot the way a blind fixed count risks).
+        // Snapshot walk, not `app.staticTexts[…]` — see `probeBlobLabel`.
+        var blobText: String? = nil
+        for _ in 0..<20 {
+            if let hit = probeBlobLabel(app, identifier: "collection_frame_blob") { blobText = hit; break }
+            remote.press(.down)
+            pause(0.5)
+        }
+        if blobText == nil {
+            pause(2)
+            blobText = probeBlobLabel(app, identifier: "collection_frame_blob")
+        }
+        guard let text = blobText else {
+            shot(app, "54x_about_no_blob")
+            let f = focusedButton(app)
+            print("[test54] no blob; focused=\(f.map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") toggles=\(app.switches.count + app.descendants(matching: .toggle).count) cells=\(app.cells.count)")
+            throw XCTSkip("collection_frame_blob never appeared on the About pane — cannot read the frame-timing harvest")
+        }
+        let attachment = XCTAttachment(string: text)
+        attachment.name = "54a_frame_probe_text"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("[FEAT33] \(text)")
+        shot(app, "54b_frame_probe")
+        XCTAssertTrue(text.contains("focus n="), "collection_frame_blob has no 'focus n=' line — the sampler never measured a focus step: \(text)")
+
+        let restored = launchToHome(forceFreshLaunch: true)
+        XCTAssertTrue(restored.state == .runningForeground)
     }
 }

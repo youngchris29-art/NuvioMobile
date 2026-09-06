@@ -82,7 +82,7 @@ struct EpisodesSection: View {
             // hierarchy. It now labels the shelf it belongs to, directly under the selector. Was
             // also a raw `Text("Episodes")` — the one unlocalized string on this screen (his
             // French locale showed "Episodes", not "Épisodes").
-            Text(String(localized: "Episodes")).font(.title2).bold()
+            Text(String(localized: "Episodes")).font(Theme.Font.screenTitle)
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -370,7 +370,7 @@ private struct EpisodeThumbCard: View {
             Image(systemName: "star.fill")
             Text(String(format: "%.1f", value))
         }
-        .font(.caption.bold())
+        .font(Theme.Font.meta)
         .foregroundStyle(.black.opacity(0.85))
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
@@ -404,7 +404,7 @@ private struct EpisodeThumbCard: View {
 struct WatchedCheckBadge: View {
     var body: some View {
         Image(systemName: "checkmark")
-            .font(.caption.bold())
+            .font(Theme.Font.meta)
             .foregroundStyle(.white)
             .padding(7)
             .background(Color(red: 0.22, green: 0.78, blue: 0.36).opacity(0.95), in: Circle())

@@ -642,6 +642,14 @@ enum PinnedRowTitle {
     nonisolated static func verifyViewportBudget(liveViewport: CGFloat, compression: CGFloat) {
         guard HomeGeometryProbe.enabled else { return }
         let expected = Theme.Size.heroPinnedRowsViewportBudget + compression
+        // Positive confirmation for device passes (FEAT-30 spike onward): one line per distinct
+        // live viewport, so a log with no MISMATCH line is "matched", not "never measured".
+        let liveKey = liveViewport.rounded()
+        if viewportLiveLogged != liveKey {
+            viewportLiveLogged = liveKey
+            NSLog("[HomeScrollProbe] hero %@",
+                  "viewport live=\(Int(liveKey)) expected=\(Int(expected.rounded()))")
+        }
         guard abs(liveViewport - expected) > 4 else { return }
         let key = (liveViewport / 2).rounded()
         guard viewportBudgetMismatchLogged != key else { return }
@@ -652,6 +660,7 @@ enum PinnedRowTitle {
     }
 
     nonisolated(unsafe) private static var viewportBudgetMismatchLogged: CGFloat?
+    nonisolated(unsafe) private static var viewportLiveLogged: CGFloat?
 
     /// Arm threshold for the visibility belt's intrusion half — how far a title may ride onto its
     /// row's artwork (as that row's own cards are actually sitting: lifted if it holds focus, at

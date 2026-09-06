@@ -6,8 +6,50 @@
 //
 
 import AVFAudio
+import CoreText
 import SwiftUI
 import SharedCore
+import UIKit
+
+/// FEAT-31: registers the bundled Open Sans faces with CoreText (idempotent — skips work if the
+/// face is already available, e.g. a second `NuvioTVApp` init in a test host) and applies the
+/// persisted `ui_font` choice to `Theme.Font`. The Settings row that writes that key is a separate
+/// wave's work; this is just the launch-time wiring.
+enum AppFontRegistrar {
+    private static let filenames = ["OpenSans-Regular.ttf", "OpenSans-SemiBold.ttf", "OpenSans-Bold.ttf"]
+
+    /// Call once, before any view is built.
+    static func registerIfNeeded() {
+        if UIFont(name: "OpenSans-Regular", size: 12) == nil {
+            for filename in filenames {
+                guard let url = fontURL(for: filename) else {
+                    NSLog("[AppFontRegistrar] missing bundled font resource: \(filename)")
+                    continue
+                }
+                var error: Unmanaged<CFError>?
+                if !CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error) {
+                    NSLog("[AppFontRegistrar] failed to register \(filename): \(String(describing: error))")
+                }
+            }
+        }
+        Theme.Font.apply(Theme.AppFontFamily.fromDefaults())
+    }
+
+    /// The project's fully file-system-synchronized target can flatten a synced subfolder into the
+    /// bundle root depending on how Xcode stages it, so try no subdirectory first, then the two
+    /// folder names `Resources/Fonts/` might keep in the built bundle.
+    private static func fontURL(for filename: String) -> URL? {
+        let name = (filename as NSString).deletingPathExtension
+        let ext = (filename as NSString).pathExtension
+        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
+            return url
+        }
+        if let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "Fonts") {
+            return url
+        }
+        return Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "Resources/Fonts")
+    }
+}
 
 @main
 struct NuvioTVApp: App {
@@ -16,6 +58,11 @@ struct NuvioTVApp: App {
         LaunchTrace.mark("app_init")  // BUG-26: cold-start attribution zero point
         #endif
         _ = HomeHeroProbe.t0  // BUG-42: anchor the release-safe hero probe's clock at process init
+
+        // FEAT-31: register the bundled Open Sans faces + apply the persisted font choice before
+        // any view (and therefore any `Theme.Font.*` read) is built.
+        AppFontRegistrar.registerIfNeeded()
+
         // Wire the shared provider seams for tvOS (profiles, sync platform "tv", account-data
         // cleaner, sync-backend load). The phone app does this in composeApp's App() (which tvOS
         // never runs). Runs once, before any repository is accessed.

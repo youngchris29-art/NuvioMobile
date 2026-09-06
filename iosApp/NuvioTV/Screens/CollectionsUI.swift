@@ -145,7 +145,7 @@ struct CollectionRowView: View {
     /// Larger Text. `FolderTile`'s caption uses this style with `lineLimit(1)` and no extra
     /// vertical padding.
     private static var folderCaptionHeight: CGFloat {
-        UIFont.preferredFont(forTextStyle: .caption2).lineHeight.rounded(.up)
+        Theme.Font.uiFont(for: .caption2).lineHeight.rounded(.up)
     }
 
     /// BUG-89: `shelfMinHeight`'s arithmetic, reachable statically so `HomeView.rowsInsets` can
@@ -312,6 +312,21 @@ struct CollectionRowView: View {
                                  isFocused: focusedFolderId != nil,
                                  focusedLockupExtent: focusedTileLockupExtent)
         .onChange(of: focusedFolderId) { _, id in
+            // FEAT-33 (Wave 1, agent C; Codex r1): armed BEFORE the callback below. The callback
+            // is synchronous, so with the default leg its `reportRowFocus` hero work — and any
+            // main-thread stall it causes — would already be over before the display link took
+            // its first sample; the 600 ms window is long enough to cover everything that follows.
+            // `rowKey` is the collection title (readable off a tester's photo of the About pane)
+            // rather than `collection.id` — the id is opaque and this probe's whole point is a
+            // human reading the summary line, not code matching on it.
+            if CollectionFocusFrameProbe.enabled, let id {
+                let focusedFolder = collection.folders.first { $0.id == id }
+                // Parenthesized so `.nonBlankTrimmed` (the `Optional<String>` extension below)
+                // resolves against the flattened `String?` the chain produces, rather than the
+                // compiler trying to continue unwrapping through it.
+                let gif = focusedFolder?.focusGifEnabled == true && (focusedFolder?.focusGifUrl).nonBlankTrimmed != nil
+                CollectionFocusFrameSampler.shared.arm(rowKey: collection.title, gif: gif)
+            }
             onFolderFocusChange?(id.flatMap { fid in collection.folders.first { $0.id == fid } })
         }
     }
@@ -655,7 +670,10 @@ struct FolderTile: View {
                     .frame(width: tileWidth, alignment: .leading)
             }
         }
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+        // FEAT-33 (Wave 1, agent C): leg 2/3 of `debug.collectionFocusAB` drops this animation
+        // entirely to test whether it's the source of the reported 30fps-looking focus step.
+        // Identical to shipping behavior with the knob off (the default).
+        .animation(CollectionFocusAB.dropTileAnimation ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 }
 

@@ -78,6 +78,10 @@ struct SettingsView: View {
     /// Theme name whose swatch should reclaim focus after a theme-change remount (see
     /// `ContentView.pendingThemeSwatchFocus`); the Appearance pane consumes and clears it.
     @Binding var pendingThemeSwatchFocus: String?
+    /// FEAT-30/31: which Appearance row ("navigation" / "typeface") should reclaim focus after a
+    /// remount (see `ContentView.pendingAppearanceRowFocus`); the Appearance pane consumes and
+    /// clears it, same contract as `pendingThemeSwatchFocus`.
+    @Binding var pendingAppearanceRowFocus: String?
     @FocusState private var focusedCategory: SettingsCategory?
     /// Scope that owns the sidebar's default focus — see the focus graph above.
     @Namespace private var sidebarFocus
@@ -105,6 +109,13 @@ struct SettingsView: View {
                     }
                 }
             }
+            // FEAT-30 (Codex r2, internal review r3 P2-8): in sidebar mode the system tab bar is
+            // gone from THIS root too, so Menu / an unplaceable Up at the split root need the same
+            // route to the replacement chrome the four scrolling roots have. Attached INSIDE the
+            // NavigationStack, on the split itself (like Search/Library/Add-ons attach to their
+            // ScrollView): a page pushed by a `SettingsLinkRow` is a descendant of the stack, not
+            // of this VStack, so its own Menu (pop) and Up grammar stay untouched.
+            .sidebarMenuReveal()
             .background(Theme.Palette.background.ignoresSafeArea())
         }
         .onAppear {
@@ -226,7 +237,8 @@ struct SettingsView: View {
             AppearanceSettingsPane(
                 model: model,
                 badges: badges,
-                pendingThemeSwatchFocus: $pendingThemeSwatchFocus
+                pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
+                pendingAppearanceRowFocus: $pendingAppearanceRowFocus
             )
         case .homeScreen:
             HomeScreenSettingsPane(model: model)

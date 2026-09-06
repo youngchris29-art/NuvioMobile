@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Central design tokens for the tvOS app.
 ///
@@ -159,21 +160,182 @@ enum Theme {
     // tvOS defaults already sit on the 10-foot size table (body 29, title3 48, title2 57…), so
     // each mapping below is the closest style to the old fixed size — call sites are unchanged.
 
+    /// User-selectable UI font family (FEAT-31), driven by the device-local `ui_font` UserDefaults
+    /// key — `"system"` (default) or `"openSans"`. The Settings row that writes this key is a
+    /// separate wave's work; this type plus `Theme.Font` below is the machinery it drives.
+    enum AppFontFamily: String, CaseIterable, Equatable {
+        case system = "system"
+        case openSans = "openSans"
+
+        static let defaultsKey = "ui_font"
+
+        /// Label for the (future) Settings row. "System" is a real word and gets localized; "Open
+        /// Sans" is a proper name, which HIG/translators leave as-is, so it stays a plain literal.
+        var displayName: String {
+            switch self {
+            case .system: return String(localized: "System")
+            case .openSans: return "Open Sans"
+            }
+        }
+
+        /// Reads the persisted choice. Missing key, or any value that isn't a known case (a future
+        /// downgrade, a corrupted default), resolves to `.system` — never a crash or an unknown state.
+        static func fromDefaults(_ defaults: UserDefaults = .standard) -> AppFontFamily {
+            guard let raw = defaults.string(forKey: defaultsKey) else { return .system }
+            return AppFontFamily(rawValue: raw) ?? .system
+        }
+    }
+
     enum Font {
+        /// Selected UI font family. Mutable so a user's choice applies without relaunching —
+        /// mutated only on the main actor (`NuvioTVApp.init()` at launch, or a future Settings
+        /// toggle via `apply(_:)`), and reads are re-evaluated by the `.id` remount in ContentView
+        /// the same way `Palette.accent` is. `nonisolated(unsafe)` for the same reason as that
+        /// property. Default `.system` — with the defaults key absent, every token below must
+        /// resolve byte-identically to its pre-FEAT-31 value.
+        nonisolated(unsafe) static var family: AppFontFamily = .system
+
+        /// Resolved-font cache for the CURRENT `family`, rebuilt only by `apply(_:)`. Tokens are
+        /// read in hot row bodies (every card title, every row header), so a hit here must be a
+        /// dictionary lookup, never a fresh descriptor/metrics computation.
+        /// `nonisolated(unsafe)`: mutated only on the main actor, inside `apply(_:)`.
+        nonisolated(unsafe) private static var cache: [Token: SwiftUI.Font] = buildCache(for: .system)
+
         /// Hero display text (was fixed 52pt bold → title2, 57pt): clearer step above screenTitle.
-        static let hero = SwiftUI.Font.title2.weight(.bold)
+        static var hero: SwiftUI.Font { resolved(.hero) }
         /// Screen titles (was fixed 48pt bold → title3, 48pt — exact match).
-        static let screenTitle = SwiftUI.Font.title3.weight(.bold)
+        static var screenTitle: SwiftUI.Font { resolved(.screenTitle) }
         /// Section/row headers (was fixed 30pt semibold → callout, 31pt).
-        static let sectionTitle = SwiftUI.Font.callout.weight(.semibold)
+        static var sectionTitle: SwiftUI.Font { resolved(.sectionTitle) }
         /// Card titles under posters (was fixed 24pt → caption2, 23pt).
-        static let cardTitle = SwiftUI.Font.caption2
+        static var cardTitle: SwiftUI.Font { resolved(.cardTitle) }
         /// Body copy (was fixed 28pt → body, 29pt — the HIG minimum for body text).
-        static let body = SwiftUI.Font.body
+        static var body: SwiftUI.Font { resolved(.body) }
         /// Metadata lines — year/runtime/rating (was fixed 26pt semibold → caption, 25pt).
-        static let meta = SwiftUI.Font.caption.weight(.semibold)
+        static var meta: SwiftUI.Font { resolved(.meta) }
         /// Fine print (was fixed 22pt → caption2, 23pt).
-        static let caption = SwiftUI.Font.caption2
+        static var caption: SwiftUI.Font { resolved(.caption) }
+
+        private static func resolved(_ token: Token) -> SwiftUI.Font {
+            cache[token] ?? build(token, family: family)
+        }
+
+        /// Applies a font family choice: a no-op if unchanged, otherwise swaps `family` and rebuilds
+        /// the cache. Main-actor only (same contract as the mutable `Palette` accent setters).
+        static func apply(_ newFamily: AppFontFamily) {
+            guard newFamily != family else { return }
+            family = newFamily
+            cache = buildCache(for: newFamily)
+        }
+
+        private static func buildCache(for family: AppFontFamily) -> [Token: SwiftUI.Font] {
+            var result: [Token: SwiftUI.Font] = [:]
+            for token in Token.allCases {
+                result[token] = build(token, family: family)
+            }
+            return result
+        }
+
+        /// Builds one token's font for one family. System mode reproduces the exact pre-FEAT-31
+        /// expression (`.system(textStyle)` + `.weight` only when the token has one, which is
+        /// Equatable-identical to the old `SwiftUI.Font.title2.weight(.bold)`-style literals) so
+        /// the default behavior stays byte-for-byte unchanged. Open Sans mode swaps the family for
+        /// a `.custom` font anchored to the same text style via `relativeTo:`, so Larger Text still
+        /// scales it.
+        private static func build(_ token: Token, family: AppFontFamily) -> SwiftUI.Font {
+            switch family {
+            case .system:
+                let base = SwiftUI.Font.system(token.textStyle)
+                guard let weight = token.weight else { return base }
+                return base.weight(weight)
+            case .openSans:
+                let size = baseSize(for: token.uiTextStyle)
+                let base = SwiftUI.Font.custom("Open Sans", size: size, relativeTo: token.textStyle)
+                guard let weight = token.weight else { return base }
+                return base.weight(weight)
+            }
+        }
+
+        /// The platform's own default-category point size for a text style — the base fed to
+        /// `.custom(_:size:relativeTo:)`. Derived, never a hard-coded number (the HIG contract bans
+        /// fixed point sizes at call sites): `.large` is the system's default content size
+        /// category, so this is exactly the un-scaled size `SwiftUI.Font.system(textStyle)` starts
+        /// from, and `relativeTo:`/`UIFontMetrics` above still let Larger Text scale it further.
+        static func baseSize(for textStyle: UIFont.TextStyle) -> CGFloat {
+            UIFontDescriptor.preferredFontDescriptor(
+                withTextStyle: textStyle,
+                compatibleWith: UITraitCollection(preferredContentSizeCategory: .large)
+            ).pointSize
+        }
+
+        /// A `UIFont` for the given text style — the system preferred font in system mode, or an
+        /// Open Sans face scaled through `UIFontMetrics` (so Larger Text still applies) in Open
+        /// Sans mode, falling back to the system font if the face isn't registered. The one UIKit
+        /// font-measurement call site in the app (`CollectionsUI.swift`) calls this instead of
+        /// `UIFont.preferredFont(forTextStyle:)` directly, so it follows the same family choice.
+        static func uiFont(for textStyle: UIFont.TextStyle) -> UIFont {
+            guard family == .openSans,
+                  let custom = UIFont(name: "OpenSans-Regular", size: baseSize(for: textStyle)) else {
+                return UIFont.preferredFont(forTextStyle: textStyle)
+            }
+            return UIFontMetrics(forTextStyle: textStyle).scaledFont(for: custom)
+        }
+
+        /// Whether the Open Sans face is actually registered — used by diagnostics/tests rather
+        /// than call sites (which always go through `build`/`uiFont`'s own fallback). Checks Bold
+        /// specifically since it's the heaviest weight the tokens above depend on.
+        static var isCustomFaceAvailable: Bool {
+            UIFont(name: "OpenSans-Bold", size: 20) != nil
+        }
+
+        /// Per-token text-style/weight mapping, exactly mirroring the values the 7 tokens above
+        /// hard-coded before FEAT-31 — see this section's header comment for the size rationale.
+        // `nonisolated`: used as a dictionary key from the `nonisolated(unsafe)` cache above; under
+        // the target's MainActor default isolation the Hashable conformance would otherwise be
+        // actor-isolated (a warning today, an error in Swift 6 mode).
+        nonisolated private enum Token: CaseIterable, Hashable {
+            case hero, screenTitle, sectionTitle, cardTitle, body, meta, caption
+
+            var textStyle: SwiftUI.Font.TextStyle {
+                switch self {
+                case .hero: return .title2
+                case .screenTitle: return .title3
+                case .sectionTitle: return .callout
+                case .cardTitle: return .caption2
+                case .body: return .body
+                case .meta: return .caption
+                case .caption: return .caption2
+                }
+            }
+
+            var uiTextStyle: UIFont.TextStyle {
+                // NOTE: UIFont.TextStyle names these differently from SwiftUI.Font.TextStyle —
+                // `.caption1` here, not `.caption` (SwiftUI has no `.title1`/`.caption1`, UIKit has
+                // no bare `.title`/`.caption`). Mixing them up is a compile error, not a bug — kept
+                // as its own switch (rather than deriving from `textStyle`) so that stays true.
+                switch self {
+                case .hero: return .title2
+                case .screenTitle: return .title3
+                case .sectionTitle: return .callout
+                case .cardTitle: return .caption2
+                case .body: return .body
+                case .meta: return .caption1
+                case .caption: return .caption2
+                }
+            }
+
+            var weight: SwiftUI.Font.Weight? {
+                switch self {
+                case .hero: return .bold
+                case .screenTitle: return .bold
+                case .sectionTitle: return .semibold
+                case .cardTitle: return nil
+                case .body: return nil
+                case .meta: return .semibold
+                case .caption: return nil
+                }
+            }
+        }
     }
 
     // MARK: - Spacing
@@ -425,6 +587,39 @@ enum Theme {
         /// app. `PinnedRowTitle.pinnedHeroCompression` logs loudly if the live `vh` ever disagrees
         /// with `budget + compression`, so the assumption cannot rot silently.
         static let heroPinnedRowsViewportBudget: CGFloat = 455
+
+        // MARK: FEAT-30 — sidebar chrome
+
+        /// Extra TOP safe-area padding applied to the tab shell in SIDEBAR mode only (FEAT-30);
+        /// lives here, not with the rest of the sidebar's numbers, because it exists purely to
+        /// keep `heroPinnedRowsViewportBudget` above honest.
+        ///
+        /// Hiding the system tab bar may change the shell's top safe area, and that budget is a
+        /// MEASURED platform constant the whole pinned-hero compression chain is derived from — if
+        /// the sidebar moves the top inset, every rest position on Home is computed against a
+        /// viewport that no longer exists (`PinnedRowTitle.pinnedHeroCompression` would start
+        /// logging its BUDGET MISMATCH line). Padding the top back by the delta keeps 455 valid
+        /// instead of forking the constant per chrome mode.
+        ///
+        /// SHIPS AS 0, and 0 means "no modifier applied at all" (`sidebarTopCompensation()` in
+        /// SidebarOverlay.swift branches structurally), so an untouched build in either mode is
+        /// unaffected. The Phase 0 device spike (`-debug.sidebarSpike YES`) measures the real delta
+        /// against 455 and the shipping value replaces the 0 below.
+        ///
+        /// The knob is what lets a device pass bisect the value without a rebuild — same override
+        /// pattern as `debug.pinnedTitleMaxSlide` (`PinnedRowTitle.maxSlideOverride`) and
+        /// `debug.heroFolderLogoHeight` above: `UserDefaults.standard` consults the launch-argument
+        /// domain first, so
+        ///
+        ///     xcrun devicectl device process launch --terminate-existing --device <udid> \
+        ///         com.nuvio.media.NuvioTV -debug.sidebarTopCompensation 32
+        ///
+        /// works on physical hardware. Launch-latched: the shell reads it during layout, and a
+        /// value that changed mid-session would move the rows viewport under a settled rest.
+        static let sidebarTopCompensation: CGFloat = {
+            let override = UserDefaults.standard.double(forKey: "debug.sidebarTopCompensation")
+            return override > 0 ? CGFloat(override) : 0
+        }()
         /// Hard ceiling on the compression: exactly what the pinned hero's internals can actually
         /// yield, and not a point more.
         ///
