@@ -708,7 +708,11 @@ struct HomeView: View {
                             // geometry as a fight and corrects against it. `fits` tells it whether
                             // it is even in play: when the plan cannot make the frame fit, the belt
                             // owns the residue exactly as it did before this fix.
-                            .onChange(of: pinnedPlan.regimeKey) { _, key in
+                            // Codex beta.18 r1 (P1): `initial: true` registers the launch regime on
+                            // appearance. Without it the first Medium → Large switch was ALSO
+                            // `noteRegimeChange`'s first call, whose no-previous-key guard only records
+                            // and never resets the brakes — the exact first-switch regression this fixes.
+                            .onChange(of: pinnedPlan.regimeKey, initial: true) { _, key in
                                 PinnedRowSettle.noteRegimeChange(key: key, fits: pinnedPlan.fits)
                             }
                         } else {

@@ -85,6 +85,10 @@ private final class ScrollDimModel: ObservableObject {
     func cancelScrollLatch() {
         clearTask?.cancel()
         clearTask = nil
+        // Codex beta.18 r1 (P2): the @StateObject survives a push/cover, so a page that disappears
+        // inside the 150 ms window (opening the full-screen trailer, navigating away) must not come
+        // back with the chips stuck flat — clear the flag with the only task that would have.
+        if isScrolling { isScrolling = false }
     }
 }
 
