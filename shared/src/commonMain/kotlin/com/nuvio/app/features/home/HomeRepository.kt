@@ -60,6 +60,14 @@ object HomeRepository {
     val launchSyncRunning: Boolean
         get() = LaunchSyncSignal.state.value == LaunchSyncSignal.LaunchSyncState.Running
 
+    /**
+     * Codex beta.18 r4 (P1): the gate's OWN settled semantics — `Idle` while a launch sync is still
+     * expected is NOT settled (the burst has not started yet), exactly as [syncSettled] reads it.
+     * The Swift no-sources bootstrap route holds on this, never on `launchSyncRunning` alone.
+     */
+    val launchSyncSettled: Boolean
+        get() = syncSettled(LaunchSyncSignal.state.value, launchSyncExpected())
+
     private var activeJob: Job? = null
     private var activeRequestKey: String? = null
     private var currentRequestKey: String? = null

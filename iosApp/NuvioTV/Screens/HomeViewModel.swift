@@ -936,20 +936,27 @@ final class HomeViewModel: ObservableObject {
             if latest.rowsGateReleased { openRowsGateAndRebuild() }
             return
         }
+        // Codex beta.18 r4 (P1): a wait already installed stays installed — add-on bootstrap,
+        // server pulls and retries all re-enter this method before the burst settles, and the old
+        // `watcher == nil` guard turned every re-entry into an immediate open.
+        if noSourcesSyncWatcher != nil { return }
+        if rowsGateOpen { return }
         let gen = pipelineGeneration
-        guard HomeRepository.shared.launchSyncRunning, noSourcesSyncWatcher == nil, !rowsGateOpen else {
+        // Codex beta.18 r4 (P1): `Idle` with a launch sync still expected is NOT settled (the burst
+        // has not started yet) — the same term `decideHeroGate` uses, read through Kotlin.
+        guard !HomeRepository.shared.launchSyncSettled else {
             openRowsGateAndRebuild()
             return
         }
         if HomeHeroProbe.enabled {
-            HomeHeroProbe.log(String(format: "rowsWait bootstrap=noSources sync=running sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
+            HomeHeroProbe.log(String(format: "rowsWait bootstrap=noSources sync=unsettled sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
         }
         noSourcesSyncWatcher = FlowWatcherKt.watch(LaunchSyncSignal.shared.state) { [weak self] emitted in
             guard let self, self.pipelineGeneration == gen, !self.rowsGateOpen else { return }
             _ = emitted
             // Read the state back through the Kotlin accessor rather than casting the emitted
             // value: the nested enum's Swift name is an interop detail nothing else here relies on.
-            guard !HomeRepository.shared.launchSyncRunning else { return }
+            guard HomeRepository.shared.launchSyncSettled else { return }
             self.noSourcesSyncWatcher?.cancel()
             self.noSourcesSyncWatcher = nil
             self.openRowsGateAndRebuild()
