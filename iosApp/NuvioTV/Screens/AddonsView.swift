@@ -48,16 +48,16 @@ struct AddonsView: View {
 
     private var installSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Install from manifest URL").font(.title2).bold()
+            Text("Install from manifest URL").font(Theme.Font.screenTitle)
             Text("Paste the manifest URL from your streaming addon's config page (e.g. your TorBox or Torrentio URL with your API key). It ends in /manifest.json.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(Theme.Font.body).foregroundStyle(.secondary)
                 .frame(maxWidth: 1200, alignment: .leading)
 
             HStack(spacing: 16) {
                 Image(systemName: "link").foregroundStyle(.secondary)
                 TextField("https://\u{2026}/manifest.json", text: $newUrl)
                     .textFieldStyle(.plain)
-                    .font(.title3)
+                    .font(Theme.Font.screenTitle.weight(.regular))
             }
             .padding(20)
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
@@ -88,7 +88,7 @@ struct AddonsView: View {
 
                 if model.isInstalling { ProgressView() }
                 if let status = model.statusMessage {
-                    Text(status).font(.callout).foregroundStyle(.secondary)
+                    Text(status).font(Theme.Font.body).foregroundStyle(.secondary)
                 }
             }
         }
@@ -96,7 +96,7 @@ struct AddonsView: View {
 
     private var installedSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Installed").font(.title2).bold()
+            Text("Installed").font(Theme.Font.screenTitle)
 
             if model.addons.isEmpty {
                 Text("No addons installed yet.").foregroundStyle(.secondary)
@@ -130,12 +130,12 @@ private struct AddonRow: View {
                     .font(Theme.Font.body)
                     .rowAccentTint(enabled)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.headline).lineLimit(1)
-                    Text(subtitle).font(.caption).rowTextColor(secondary: true).lineLimit(1)
+                    Text(title).font(Theme.Font.sectionTitle).lineLimit(1)
+                    Text(subtitle).font(Theme.Font.caption).rowTextColor(secondary: true).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 Text(enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
-                    .font(.callout)
+                    .font(Theme.Font.body)
                     .rowTextColor(secondary: true)
             }
             .padding(20)
