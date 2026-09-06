@@ -383,6 +383,11 @@ struct DetailView: View {
     @State private var detailScrollPosition = ScrollPosition()
     /// BUG-96: the pending anchor move; a newer focus change cancels the previous one.
     @State private var detailAnchorTask: Task<Void, Never>?
+    /// BUG-96: the row top the last anchor pass rested on. A later layout change that moves the
+    /// focused row (cast photos landing, a parental-guide row inserting above) shifts this, and
+    /// the focus engine re-reveals the moved card; `.onChange(of: detailRowOffsets)` re-anchors
+    /// once on that signal — a layout-settled trigger, never a polling loop.
+    @State private var lastAnchoredRowTop: CGFloat?
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -525,6 +530,20 @@ struct DetailView: View {
                 if phase != .idle { detailAnchorTask?.cancel(); detailAnchorTask = nil }
             }
             .onDisappear { detailAnchorTask?.cancel(); detailAnchorTask = nil }
+            // BUG-96 (fixture step 5): late layout under the focused row moved it 470 pt after the
+            // pass and the engine re-revealed the card. Re-anchor once per layout change, debounced.
+            .onChange(of: detailRowOffsets) { _, offsets in
+                guard let row = focusedRow, bridgePhase == .idle,
+                      let top = offsets[row], let last = lastAnchoredRowTop,
+                      abs(top - last) > DetailRowAnchor.verifyTolerance else { return }
+                detailAnchorTask?.cancel()
+                detailAnchorTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    guard anchorPass(row, note: "relayout") else { return }
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+                }
+            }
             // FEAT-32: the chrome fades out ahead of the dim on the way in, and waits for the
             // backdrop settle on the way back.
             .opacity(TrailerBridgeChoreography.chromeOpacity(bridgePhase))
@@ -937,6 +956,7 @@ struct DetailView: View {
         } else {
             withAnimation(.easeOut(duration: 0.3)) { detailScrollPosition.scrollTo(y: target) }
         }
+        lastAnchoredRowTop = rowTop
         if DetailScrollProbe.enabled {
             dimModel.anchorNote = String(format: "%@ top=%.0f y=%.0f %@", String(describing: row), rowTop, target, note)
         }

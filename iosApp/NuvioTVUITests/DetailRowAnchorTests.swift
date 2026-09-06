@@ -98,6 +98,7 @@ final class DetailRowAnchorTests: XCTestCase {
 
         var anchoredHits = 0
         var anchorSamples = 0
+        var anchoredRows = Set<String>()
         var straddles: [String] = []
         for step in 1...6 {
             press(.down, times: 1, gap: 1.4)
@@ -121,7 +122,14 @@ final class DetailRowAnchorTests: XCTestCase {
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
             if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
                 anchorSamples += 1
-                if abs((top - off) - 108) <= 4 { anchoredHits += 1 }
+                // ±16: the content height can shift a few points after the sample (late images).
+                if abs((top - off) - 108) <= 16 { anchoredHits += 1 }
+                // Codex BUG-96 r3 (P3): a stuck focus would repeat one good sample on every press —
+                // the walk must reach DISTINCT anchored rows, not the same one six times.
+                if let range = probeLabel.range(of: "anchor=") {
+                    let row = probeLabel[range.upperBound...].prefix { $0 != " " }
+                    anchoredRows.insert(String(row))
+                }
             }
             let visible = titles.filter { $0.frame.minY >= 0 && $0.frame.maxY <= 1080 }.map { "\($0.label)@\(Int($0.frame.minY))" }
             let shotAttachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -133,6 +141,8 @@ final class DetailRowAnchorTests: XCTestCase {
         }
         XCTAssertTrue(straddles.isEmpty, "BUG-96: a section header straddled the top edge at rest — \(straddles)")
         XCTAssertGreaterThanOrEqual(anchorSamples, 4, "BUG-96: the probe never reported an anchored row — is -debug.detailScrollProbe on?")
+        XCTAssertGreaterThanOrEqual(anchoredRows.count, 3,
+                                    "BUG-96: the Down walk must anchor at least three DISTINCT rows (saw \(anchoredRows.sorted())) — a repeated sample means focus was stuck")
         XCTAssertGreaterThanOrEqual(anchoredHits, anchorSamples - 1,
                                     "BUG-96: the focused row's top must rest at DetailRowAnchor.screenRest (108) after each move; \(anchoredHits)/\(anchorSamples) did")
         remote.press(.menu)
