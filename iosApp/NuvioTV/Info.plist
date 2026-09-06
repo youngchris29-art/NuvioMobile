@@ -40,5 +40,15 @@
 			</array>
 		</dict>
 	</array>
+	<!-- FEAT-31: bundled Open Sans faces for the optional custom UI font (Theme.Font). Filenames
+	     only — CTFontManagerRegisterFontsForURL resolves the actual bundle path at launch, with a
+	     subdirectory fallback (AppFontRegistrar) since the file-system-synced Resources group can
+	     flatten into the bundle root. -->
+	<key>UIAppFonts</key>
+	<array>
+		<string>OpenSans-Regular.ttf</string>
+		<string>OpenSans-SemiBold.ttf</string>
+		<string>OpenSans-Bold.ttf</string>
+	</array>
 </dict>
 </plist>
