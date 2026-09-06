@@ -114,7 +114,12 @@ final class CollectionFocusFrameSampler: NSObject {
         sequence += 1
         windowRowKey = rowKey
         windowGif = gif
-        lastTimestamp = nil
+        // Codex r2: seed the clock NOW rather than on the first tick. The hero callback that
+        // follows `arm()` runs synchronously on this same turn; if it stalls the main thread the
+        // first display-link tick arrives late, and with a nil seed that whole interval — the
+        // exact work this probe exists to measure — would be discarded instead of counted as a
+        // dropped-frame gap. `CADisplayLink.timestamp` and `CACurrentMediaTime()` share a clock.
+        lastTimestamp = CACurrentMediaTime()
         frameGapsMs = []
         droppedCount = 0
         maxGapMs = 0

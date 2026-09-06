@@ -93,6 +93,9 @@ struct AppearanceSettingsPane: View {
         Binding(
             get: { sidebarStyle },
             set: { newValue in
+                // Codex r2: a re-pick of the current value changes no `.id`, so no remount would
+                // consume the hint — it would then steal focus on the next unrelated remount.
+                guard newValue != sidebarStyle else { return }
                 pendingAppearanceRowFocus = "navigation"
                 sidebarStyle = newValue
             }
@@ -108,6 +111,7 @@ struct AppearanceSettingsPane: View {
         Binding(
             get: { uiFont },
             set: { newValue in
+                guard newValue != uiFont else { return }  // Codex r2, same reason as above
                 pendingAppearanceRowFocus = "typeface"
                 Theme.Font.apply(Theme.AppFontFamily(rawValue: newValue) ?? .system)
                 uiFont = newValue

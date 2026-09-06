@@ -1078,12 +1078,13 @@ struct HomeView: View {
                             .onAppear { model.rowAppeared(sectionKey: section.key) }
                         case .collection(let collection):
                             CollectionRowView(collection: collection, onFolderFocusChange: { folder in
-                                // FEAT-33 leg 1/3 (Codex r1): EVERY focus event — including the
+                                // FEAT-33 leg 1/3 (Codex r1+r2): EVERY focus event — including the
                                 // `nil` that fires when focus leaves the row — supersedes any
                                 // deferred commit still in flight, so a hero queued for a folder
-                                // the user has already left never lands. With the leg off the
-                                // counter is written and never read.
-                                folderFocusGeneration &+= 1
+                                // the user has already left never lands. Gated on the leg: with it
+                                // off (the default) this `@State` is never written, so the folder
+                                // focus path schedules no extra Home update.
+                                if CollectionFocusAB.deferHeroCommit { folderFocusGeneration &+= 1 }
                                 // BUG-38 round three: a focused folder tile hands its configured
                                 // backdrop + title logo to the hero, the Fusion behaviour the
                                 // reporter asked for on the HOME page. Folders with neither asset

@@ -414,5 +414,8 @@ struct ProfileTabView: View {
             }
             .padding(Theme.Spacing.screen)
         }
+        // FEAT-30 (Codex r2): Profile is a tab root too; with the system bar hidden in sidebar
+        // mode a Menu press here needs the same route to the sidebar the other roots have.
+        .sidebarMenuReveal()
     }
 }
