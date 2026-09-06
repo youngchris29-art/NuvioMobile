@@ -453,6 +453,34 @@ enum PinnedRowTitle {
         var intrusion: CGFloat
     }
 
+    /// A `Reading` stamped with the tracking modifier's `remeasureTick` (Wave W5, BUG-87).
+    ///
+    /// Why the observer's value type is this and not `Reading` itself. `onGeometryChange` fires its
+    /// action only when the transform's OUTPUT changes, and the two cases Wave W5 has to force a
+    /// re-derivation in are exactly the two where the output does NOT change on its own:
+    ///
+    ///  - the FIRST-READING GRACE. A title that publishes its very first `Reading` off a layout
+    ///    that is not final yet used to arm the belt on the spot; on an untouched cold-launch Home
+    ///    nothing re-fires geometry afterwards, so the hide became permanent and only a relaunch
+    ///    brought the title back — the tester's build-117 "the row title disappeared entirely"
+    ///    (BUG-87). The grace defers the arm and bumps the tick 0.5s later; if the layout HAS
+    ///    settled the fresh reading differs anyway, and if it has not, the tick is what still gets
+    ///    the action to run so a genuinely broken title arms (0.5s late) rather than never.
+    ///  - the RECOVERY WATCHDOG. A faded title only comes back through `showAgain`, which needs a
+    ///    measurement. A title hidden on a stale layout produces none, so it stayed hidden forever.
+    ///
+    /// The tick is carried in the OBSERVER's value rather than in `Reading` so nothing downstream
+    /// of `Reading` (`republishForModeChange`, `standDownFastPath`, `PinnedRowTitleProbe`,
+    /// `noteClearances`) has to know it exists, and so `Reading`'s equality keeps meaning "the same
+    /// measured geometry". A tick-only fire is byte-identical work to a no-op measurement: the
+    /// slide does not change, `updateFade` finds `previous?.hideCandidate == true` and declines to
+    /// re-arm, and `noteClearances` sees an unchanged value and returns.
+    // `nonisolated`: same @Sendable-transform requirement as `Reading` above.
+    nonisolated struct TickedReading: Equatable, Sendable {
+        var tick: Int
+        var reading: Reading
+    }
+
     /// The two geometry inputs a `Reading` is computed from, cached by `PinnedRowTitleTracking` so
     /// a mode change can recompute one WITHOUT a new geometry pass (Codex r10 P2).
     // `nonisolated`: same @Sendable-transform requirement as `Reading` above.
@@ -807,6 +835,35 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// `PinnedRowSettle.observeStandDown`. Written once on appear.
     @State private var standDownObserverID = 0
 
+    // ── Wave W5 (BUG-87: the title that vanished on a cold launch and only came back on relaunch) ──
+    //
+    // The belt's two one-way doors, closed. Both are timer-driven and both work by forcing the
+    // `Reading` observer to re-derive from a FRESH geometry pass — see `PinnedRowTitle.TickedReading`
+    // for why the tick has to live in the observer's value rather than in `Reading`.
+    //
+    // Cost note (the BUG-19/41 rule these must not break): `remeasureTick` is written only by the
+    // two timers below — never per frame, never from a geometry callback — and it is deliberately
+    // NOT read by the `TitleGeometry` observer's transform, whose whole job is to stay cheap enough
+    // to run on every scroll frame for every visible row. `sawFirstReading`/`graceHold` are written
+    // only on belt state TRANSITIONS, the same budget `fadeToken` already runs on.
+    /// Bumped to force the `Reading` transform to re-run and the action to fire even when the
+    /// measured geometry is byte-identical to last time.
+    @State private var remeasureTick = 0
+    /// Cancellation token for the first-reading grace timer AND the watchdog chain's bumps.
+    @State private var remeasureToken = 0
+    /// Cancellation token for the recovery watchdog chain specifically, so an un-fade kills it
+    /// without disturbing a grace bump that may be in flight.
+    @State private var watchdogToken = 0
+    /// Whether this title has ever published a `Reading` in THIS visit. The first one may not arm.
+    @State private var sawFirstReading = false
+    /// Set when the first reading WOULD have armed and was held by the grace instead, so the
+    /// second reading arms even though `previous?.hideCandidate` is already true (the belt's arming
+    /// is transition-driven; without this the deferred arm would be swallowed by its own deferral).
+    @State private var graceHold = false
+    /// Whether the recompute currently being processed came from the recovery watchdog, so an
+    /// un-fade caused by it can be logged as such. Scratch, valid only across one recompute.
+    @State private var remeasureFromWatchdog = false
+
     /// Longer than `PinnedRowSettle.settleDelay + nudgeDuration` on purpose: this is what gives the
     /// settle re-reveal first refusal at every rest. The corrector decides at 0.25s and its scroll
     /// lands by ~0.5s; the correction is itself motion, which defers this check further; and a
@@ -843,6 +900,40 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// still waited another 0.7s, making the real bound 3.2s while this comment claimed 2.5s.
     private static let fadeMaxDefer: TimeInterval = 2.5
 
+    /// Wave W5 (BUG-87). How long a title's FIRST reading is held before it may arm the belt.
+    ///
+    /// The tester's build-117 report: on his first launch of the build the row title disappeared
+    /// entirely and a relaunch fixed it. The mechanism is in `updateFade`'s arm path — a title's
+    /// very first `Reading` (`previous == nil`) arms immediately when it is a `hideCandidate`, by
+    /// design, so a title that mounts already-clipped does not wait for a transition that already
+    /// happened. What that design assumed is that the first reading describes a FINAL layout. On a
+    /// cold launch it does not: rows realize lazily, the hero publishes its height, the catalog
+    /// fan-out lands, and a title measured in the middle of that can read as deeply clipped for one
+    /// pass. It then fades 0.7s later — and on an untouched Home nothing re-fires geometry, so
+    /// there is no `showAgain` to bring it back. Permanent, until the process restarts.
+    ///
+    /// The fix is a grace, not a threshold change: the first reading records and schedules one
+    /// re-derivation, and only the SECOND reading may arm. A title that is genuinely broken loses
+    /// this much time and no more — 0.5s, comfortably inside `fadeDelay` (0.7), so the worst case
+    /// a viewer can see is the same "title on the artwork briefly, then hidden" as before with an
+    /// extra half second on it, and the `fadeMaxDefer` ceiling is measured from the first
+    /// unacceptable reading either way, so the terminal bound is unchanged.
+    private static let firstReadingGrace: TimeInterval = 0.5
+    /// Wave W5. Cadence of the recovery watchdog's re-derivations while the title is hidden.
+    ///
+    /// Recovery is measurement-driven (`showAgain`), and the whole BUG-87 failure is a title hidden
+    /// on a layout that then finishes settling with nothing left to fire a measurement. One bump a
+    /// second re-derives from live geometry and un-fades through the ordinary path if the rest is
+    /// now fine — no new recovery logic, just a heartbeat for the existing one.
+    private static let watchdogInterval: TimeInterval = 1
+    /// …and its bound. Five ticks is five seconds of re-checking after a fade, which covers a cold
+    /// launch's remaining settling with room to spare; past that the geometry is what it is and a
+    /// title still hidden is hidden because the rest is genuinely bad, not because nothing looked
+    /// again. Bounded rather than perpetual on purpose: an unbounded 1Hz state write on every
+    /// hidden title is exactly the ambient churn the BUG-19/41 rule exists to forbid, and any real
+    /// change after that window produces a geometry pass of its own.
+    private static let watchdogMaxTicks = 5
+
     /// The two Appearance settings the lift allowance branches on, as REACTIVE inputs (Codex r10
     /// P2). `@AppStorage` rather than the bare `UserDefaults` reads the computation used to do on
     /// its own: those only ran when a geometry pass happened to run, so toggling either setting
@@ -878,6 +969,11 @@ private struct PinnedRowTitleTracking: ViewModifier {
         let rowFocused = isFocused
         let rowTreatment = treatment
         let liftMode = focusMode
+        // Wave W5: hoisted like every other closure input so the `of:` transform captures a plain
+        // Int rather than this (view-isolated) modifier. Reading it HERE is also what makes a bump
+        // re-run the transform at all — the closure is rebuilt with the new value on the body
+        // re-evaluation the bump causes.
+        let tick = remeasureTick
         return content
             // Belt: render-time only (opacity changes no geometry), so the measurement feeding it
             // cannot be perturbed by it — the same invariant `visualEffect` buys for the slide.
@@ -914,15 +1010,20 @@ private struct PinnedRowTitleTracking: ViewModifier {
             }, action: { newValue in
                 if let newValue { tracking.geometry = newValue }
             })
-            .onGeometryChange(for: PinnedRowTitle.Reading?.self, of: { proxy in
-                PinnedRowTitle.reading(proxy,
-                                       artworkHeight: clampArtworkHeight,
-                                       cardTopReach: clampReach,
-                                       captionVisible: clampCaption,
-                                       rowIsFocused: rowFocused,
-                                       treatment: rowTreatment,
-                                       mode: liftMode)
-            }, action: { oldValue, newValue in
+            // Wave W5: the value type is `TickedReading?`, not `Reading?` — see that type's doc for
+            // why a tick has to ride along. The `TitleGeometry` observer ABOVE deliberately does
+            // not read `tick`: it runs on every scroll frame for every visible row, and adding a
+            // per-bump identity to it would spend the churn budget the BUG-19/41 rule protects.
+            .onGeometryChange(for: PinnedRowTitle.TickedReading?.self, of: { proxy in
+                guard let reading = PinnedRowTitle.reading(proxy,
+                                                           artworkHeight: clampArtworkHeight,
+                                                           cardTopReach: clampReach,
+                                                           captionVisible: clampCaption,
+                                                           rowIsFocused: rowFocused,
+                                                           treatment: rowTreatment,
+                                                           mode: liftMode) else { return nil }
+                return PinnedRowTitle.TickedReading(tick: tick, reading: reading)
+            }, action: { oldTicked, newTicked in
                 // Wave 4 item 6: a nil reading is "couldn't measure" (the enclosing scroll view
                 // hasn't resolved this pass — e.g. a mixed-shape row's lazy relayout mid-settle),
                 // never "measured 0". Assigning 0 here would un-park a correctly-slid title for a
@@ -934,7 +1035,11 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 // seen and must still take the seed branch below (store directly, no animation) —
                 // skipping the whole action on nil, rather than only skipping the assignment,
                 // is what keeps that guarantee for free.
-                guard let newValue else { return }
+                guard let newTicked else { return }
+                // Unwrapped once here so every line below reads exactly as it did before Wave W5
+                // wrapped the observer's value — the tick is plumbing, not a measurement.
+                let oldValue = oldTicked?.reading
+                let newValue = newTicked.reading
                 // Seeding must be recorded even when the first measurement equals the initial 0 —
                 // otherwise the first REAL change would take the unanimated seed path and snap,
                 // which is the exact defect this modifier exists to remove.
@@ -987,9 +1092,32 @@ private struct PinnedRowTitleTracking: ViewModifier {
             .onChange(of: isFocused) { _, focused in
                 tracking.isFocused = focused
             }
+            // Wave W5 (BUG-87): the recovery watchdog's lifetime, in one place. A hidden title
+            // heartbeats a bounded re-derivation so it can find its way back through `showAgain`
+            // even when nothing else will ever produce a measurement for it; an un-fade — by any
+            // path, including the watchdog's own — kills the chain. Driven from `onChange` rather
+            // than from the four sites that write `faded` so the two can never disagree.
+            .onChange(of: faded) { _, isFaded in
+                if isFaded {
+                    startRecoveryWatchdog()
+                } else {
+                    watchdogToken &+= 1
+                }
+            }
             .onDisappear {
                 PinnedRowSettle.stopObservingStandDown(rowKey: rowKey, token: standDownObserverID)
                 fadeToken &+= 1
+                // Wave W5: the same argument `fadeToken` gets here applies to both Wave W5 timers —
+                // a grace bump or a watchdog tick that outlives its row is a state write against a
+                // view that has gone. `sawFirstReading`/`graceHold` reset with them because the
+                // grace is a per-VISIT judgment for exactly the reason `faded` below is: a title
+                // coming back to a Home that has just been rebuilt is measuring a fresh layout and
+                // deserves the same first-reading caution as the very first time.
+                remeasureToken &+= 1
+                watchdogToken &+= 1
+                sawFirstReading = false
+                graceHold = false
+                remeasureFromWatchdog = false
                 PinnedRowSettle.clearBeltFaded(rowKey: rowKey)
                 // Codex Wave 9 r3: reset the LOCAL verdict too, not just the shared key. A
                 // retained subtree — leaving Home without destruction — comes back with its
@@ -1062,12 +1190,30 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// mechanism to titles still on screen — at most the one or two rows straddling the clip edge,
     /// never the whole stack above it.
     private func updateFade(previous: PinnedRowTitle.Reading?, current: PinnedRowTitle.Reading) {
+        // Wave W5 (BUG-87): "has this title ever published a reading in this visit?", which is a
+        // different question from `previous == nil` — a mode-change or watchdog republish passes
+        // `previous: nil` deliberately (a fresh verdict, not a continuation) and must not be
+        // mistaken for a first reading. Recorded before any early return so a title whose first
+        // reading is perfectly healthy still spends its "first", and a LATER genuine arm is not
+        // delayed by a grace it no longer needs.
+        let isFirstReading = !sawFirstReading
+        if isFirstReading { sawFirstReading = true }
+        // Consumed here, whatever this recompute turns out to say, so the flag can never leak into
+        // an unrelated later reading.
+        let fromWatchdog = remeasureFromWatchdog
+        if fromWatchdog { remeasureFromWatchdog = false }
         if current.showAgain {
             fadeArmedAt = nil
+            graceHold = false
             if faded {
                 fadeToken &+= 1          // cancels any pending hide
                 faded = false
-                beltLog("recover", current)
+                // Wave W5: name the watchdog when it is the thing that got the title back. This is
+                // the ONLY way a device log or the harness can tell "the layout settled and a
+                // normal geometry pass recovered it" from "nothing was ever going to fire again and
+                // the heartbeat found it" — which is the whole BUG-87 failure mode, and the line a
+                // future regression would stop printing.
+                beltLog(fromWatchdog ? "watchdog recover" : "recover", current)
                 PinnedRowSettle.noteBeltFaded(rowKey: rowKey, faded: false)
             } else if previous?.hideCandidate == true {
                 fadeToken &+= 1
@@ -1082,15 +1228,102 @@ private struct PinnedRowTitleTracking: ViewModifier {
             // The hysteresis band between the two edges: hold whatever state we have, but drop a
             // pending hide — this title is no longer in a state worth hiding for.
             if previous?.hideCandidate == true { fadeToken &+= 1 }
+            // Wave W5: and drop the grace hold with it. The title left the arm band, so the next
+            // entry into it is an ordinary transition and arms on its own.
+            graceHold = false
+            return
+        }
+        guard !faded else { return }
+        // Wave W5 (BUG-87) — the FIRST-READING GRACE. A title's very first reading of a visit may
+        // not arm, however bad it looks: on a cold launch it is routinely measured mid-fan-out, and
+        // the hide that follows is unrecoverable because an untouched Home fires no further
+        // geometry (see `firstReadingGrace`). Record, hold, and force one re-derivation; the second
+        // reading decides for real.
+        if isFirstReading {
+            graceHold = true
+            beltLog("grace", current)
+            scheduleFirstReadingRemeasure()
             return
         }
         // Already armed by an earlier transition (or already hidden) — the standing deferred check
-        // owns it from here. Note `previous == nil` (this title's FIRST measurement) takes the arm
-        // path, so a title that publishes already inside the arm band is armed immediately rather
-        // than waiting for a transition that already happened.
-        guard previous?.hideCandidate != true, !faded else { return }
+        // owns it from here. `graceHold` is the one exception, and it has to be: the grace above
+        // already saw `hideCandidate`, so the deferred reading arrives with
+        // `previous?.hideCandidate == true` and the transition test alone would swallow the arm the
+        // grace deferred. (`previous == nil` still takes the arm path for every other caller — a
+        // mode-change republish is a fresh verdict and arms immediately if it warrants one.)
+        guard graceHold || previous?.hideCandidate != true else { return }
+        graceHold = false
         beltLog("arm", current)
         scheduleFadeCheck(after: Self.fadeDelay)
+    }
+
+    /// Wave W5 (BUG-87). Forces one re-derivation of this title's `Reading` after the grace, so the
+    /// SECOND reading — the one that may actually arm the belt — is taken off a settled layout.
+    ///
+    /// Two mechanisms, deliberately both, because they fail in different places:
+    ///  - `remeasureTick` re-runs the `of:` transform against a LIVE `GeometryProxy`, which is the
+    ///    reading we actually want. It depends on SwiftUI re-evaluating the transform on a state
+    ///    change, which it does, but it is not a documented guarantee.
+    ///  - the cached-geometry republish is the same path `republishForModeChange` already uses and
+    ///    needs no geometry pass at all. It re-derives from whatever the `TitleGeometry` observer
+    ///    last saw — which, on a cold launch, IS the settled layout, because settling is a geometry
+    ///    change and that observer fires on every one of them.
+    ///
+    /// Running both cannot double-arm: whichever gets there first clears `graceHold` and the other
+    /// finds `previous?.hideCandidate == true` and declines. And `scheduleFadeCheck` bumps
+    /// `fadeToken`, so even a genuine double would leave exactly one live deferred check.
+    private func scheduleFirstReadingRemeasure() {
+        remeasureToken &+= 1
+        let token = remeasureToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.firstReadingGrace) {
+            guard token == remeasureToken, !faded else { return }
+            remeasure(fromWatchdog: false)
+        }
+    }
+
+    /// Wave W5 (BUG-87). The recovery heartbeat for a hidden title — see `watchdogInterval` /
+    /// `watchdogMaxTicks`. Started and stopped by the `onChange(of: faded)` in `body`, so there is
+    /// exactly one authority on when it runs.
+    private func startRecoveryWatchdog() {
+        watchdogToken &+= 1
+        scheduleWatchdogTick(token: watchdogToken, remaining: Self.watchdogMaxTicks)
+    }
+
+    private func scheduleWatchdogTick(token: Int, remaining: Int) {
+        guard remaining > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.watchdogInterval) {
+            // Un-faded (by this chain or any other), or superseded by a newer chain — either way
+            // this tick is stale. `faded` is the load-bearing half: the watchdog exists only to
+            // un-hide, so it must never run against a visible title.
+            guard token == watchdogToken, faded else { return }
+            if HomeGeometryProbe.enabled {
+                NSLog("[HomeScrollProbe] belt %@",
+                      "watchdog tick row=\(rowKey) remaining=\(remaining - 1)")
+            }
+            remeasure(fromWatchdog: true)
+            scheduleWatchdogTick(token: token, remaining: remaining - 1)
+        }
+    }
+
+    /// The shared body of both Wave W5 timers: force a live re-derivation, and republish from
+    /// cached geometry as the belt-and-braces path (see `scheduleFirstReadingRemeasure`).
+    ///
+    /// `previous: nil` into `updateFade` matches `republishForModeChange`'s reasoning exactly — this
+    /// is a fresh verdict rather than a continuation of an arm state, which is precisely what both
+    /// callers want (arm now if it still warrants it, un-fade now if it does not).
+    private func remeasure(fromWatchdog: Bool) {
+        remeasureFromWatchdog = fromWatchdog
+        remeasureTick &+= 1
+        guard let geometry = tracking.geometry else { return }
+        let reading = PinnedRowTitle.reading(geometry: geometry,
+                                             artworkHeight: artworkHeight,
+                                             cardTopReach: cardTopReach,
+                                             captionVisible: captionVisible,
+                                             rowIsFocused: tracking.isFocused,
+                                             treatment: treatment,
+                                             mode: focusMode)
+        updateFade(previous: nil, current: reading)
+        PinnedRowSettle.noteClearances(rowKey: rowKey, clearances: reading.clearances)
     }
 
     /// Fires the hide once the scroll has been still for `fadeDelay` — or once the title has been
@@ -1483,7 +1716,7 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// `key=value`, order not significant:
 ///
 ///     row= margin= net= vh= rowB= protB= y= inset= beltFaded= beltFadeReason=
-///     rowH= last= prevHidden= corrN= pull= pbDisarm= seq= armSrc=
+///     rowH= last= prevHidden= corrN= pull= pbDisarm= seq= armSrc= regime= fits=
 ///     clearance= clearanceLift= lift= intr= intrLifted= err= deficit= bandLo= bandHi= inBand=
 ///     [ nudge= bound= n= | nudge=0 <outcome> ]
 ///
@@ -1495,6 +1728,13 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// clearance-dependent trio (`bandLo`/`bandHi`/`inBand`) is absent on a `clearance=?` line for the
 /// same reason `deficit=` is — the band cannot be computed before the row's title has measured
 /// itself.
+///
+/// Wave W5 (BUG-89) appended `regime=` and `fits=`: which geometry regime this rest was measured
+/// under (Home's `plan.regimeKey`, `-` when no host has published one) and whether that regime's
+/// frame fits the rows viewport. A correction fired while `fits=1` also appends the bare token
+/// `UNEXPECTED-WITH-FIT` and writes a loud line of its own — with a fitting frame both band edges
+/// are satisfiable by construction, so a correction there is a device-anchoring surprise rather
+/// than routine work.
 ///
 /// Storage is plain static rather than `@State` for the same reason `HomeScrollProbeRest`'s is:
 /// every writer is a SwiftUI geometry callback on the main thread, and a state write here would
@@ -1759,6 +1999,13 @@ enum PinnedRowSettle {
     /// overwrites its own key.
     nonisolated(unsafe) private static var standDownObservers: [String: (token: Int, notify: @MainActor () -> Void)] = [:]
     nonisolated(unsafe) private static var standDownObserverSeq = 0
+    /// Wave W5 (BUG-89). The GEOMETRY REGIME the corrector's session-wide state was accumulated
+    /// under — see `noteRegimeChange`. Published by Home (`plan.regimeKey`), reported as `regime=`.
+    nonisolated(unsafe) private static var regimeKey: String?
+    /// Whether the CURRENT regime's frame fits the rows viewport, reported as `fits=`. Diagnostic:
+    /// nothing branches on it, but a correction fired while it is true is a surprise worth a loud
+    /// line (see the `UNEXPECTED-WITH-FIT` branch in `settlePlan`).
+    nonisolated(unsafe) private static var regimeFits = false
 
     /// The reveal modifier's deferred-settle scheduler, installed by whichever pinned rows
     /// ScrollView is mounted (Codex r6).
@@ -1779,7 +2026,14 @@ enum PinnedRowSettle {
     /// unregistration below, so the outgoing view's teardown cannot clear the incoming view's
     /// registration, and the probe-logged warning on overwrite so a genuinely unexpected second
     /// host shows up in a device log instead of silently double-firing.
-    nonisolated(unsafe) private static var scheduler: (@MainActor (Int) -> Void)?
+    ///
+    /// Wave W5 (BUG-89): the closure takes a DELAY as well as a token. Every pre-existing caller
+    /// passes `settleDelay` and is byte-identical; `noteRegimeChange` passes 0, because a poster-size
+    /// change is the one arming source that must be resolved DURING the layout change it belongs to
+    /// rather than a quarter second after it — a correction that lands late is the visible "oops"
+    /// snap the tester filmed, and one that lands inside the size change's own animation is not
+    /// separable from it.
+    nonisolated(unsafe) private static var scheduler: (@MainActor (Int, TimeInterval) -> Void)?
     nonisolated(unsafe) private static var schedulerGeneration = 0
     /// Per-row clearances, published by that row's title (`PinnedRowTitle.Reading`). Bounded by
     /// the number of pinned rows Home has ever mounted — a handful of entries, each written only
@@ -1822,7 +2076,7 @@ enum PinnedRowSettle {
         if faded { beltFadeReasons[rowKey] = reason } else { beltFadeReasons.removeValue(forKey: rowKey) }
         guard changed, !armed, let scheduler else { return }
         let token = rearm(source: "belt")
-        MainActor.assumeIsolated { scheduler(token) }
+        MainActor.assumeIsolated { scheduler(token, settleDelay) }
     }
 
     /// Drops a row's belt state because its title VIEW is going away — lazy eviction, leaving Home,
@@ -1887,7 +2141,78 @@ enum PinnedRowSettle {
             NSLog("[HomeScrollProbe] settle %@",
                   "\(wasLate ? "clearance-late" : "clearance-changed") rearm row=\(rowKey)")
         }
-        MainActor.assumeIsolated { scheduler(token) }
+        MainActor.assumeIsolated { scheduler(token, settleDelay) }
+    }
+
+    /// Wave W5 (BUG-89). The corrector's session-wide brakes describe a GEOMETRY REGIME, and this
+    /// says when that regime has been replaced.
+    ///
+    /// The tester's beta.17 report, verbatim: after switching Poster Size from Medium to Large in
+    /// Settings, the second-to-last row's regression comes back and stays back until the app is
+    /// restarted — and the correction, when it does eventually happen, is visible as an "oops" snap
+    /// rather than part of the size change.
+    ///
+    /// Both halves are this function's absence. `disarmed`, `verifyFailures`, `pullBacks`,
+    /// `pullBackDisarmed`, `correctionsFired` and `lastCorrection` are session-wide
+    /// `nonisolated(unsafe) static var`s that nothing resets short of process start —
+    /// `resetHostScopedState` deliberately keeps them, on the grounds that they "describe the
+    /// DEVICE, not the host". That grounds is right about a HOST swap and wrong about a REGIME
+    /// change: a pull-back or a MISS recorded at Medium is evidence about Medium's rests, not
+    /// Large's, and once two of them have accumulated the corrector is dead for a geometry it has
+    /// never actually been tried against. What is left is the belt, whose only tool is to hide the
+    /// title — which is precisely "the regression returns until restart".
+    ///
+    /// And the resolution delay is the snap. Every other arming source resolves a `settleDelay`
+    /// (0.25s) later, which is right when the arming event is a scroll that has to stop moving
+    /// first. A poster-size change is not that: the layout is being rewritten right now, and a
+    /// correction folded into that rewrite is invisible while the same correction a quarter second
+    /// afterwards is a discrete jump on a settled screen. Hence `retryAfter: 0` through the
+    /// scheduler (which Wave W5 gave a delay parameter for exactly this caller).
+    ///
+    /// The FIRST call of a session just records: there is no previous regime for the accumulated
+    /// state to be wrong about, and resetting on the way in would only throw away a clean slate.
+    ///
+    /// Deliberately NOT touched: `MeasurementReport.unmeasured`'s HOLD (Wave 9(a)'s root-cause fix —
+    /// clearing there is what livelocked the corrector against the belt on hardware) and the
+    /// pull-back detector itself. And the dead zone is NOT widened: Wave G settled that it is a
+    /// GATE on how far inside the band a correction aims, never a subtrahend on the correction.
+    ///
+    /// Called by `HomeView` from `.onChange(of: plan.regimeKey)` — the signature is fixed by that
+    /// call site.
+    @MainActor static func noteRegimeChange(key: String, fits: Bool) {
+        let previous = regimeKey
+        regimeKey = key
+        regimeFits = fits
+        // First call of the session: record and stop. Nothing has accumulated yet.
+        guard let previous, previous != key else { return }
+        // The brakes, released — every one of them is evidence gathered under `previous`.
+        disarmed = false
+        verifyFailures = 0
+        pullBacks = 0
+        pullBackDisarmed = false
+        pullBackFrom = 0
+        correctionsFired.removeAll()
+        lastCorrection = nil
+        // Siblings: an outstanding verification promises an offset measured under the OLD layout
+        // (landing it would be judged against content that no longer exists — a false MISS, and two
+        // of those are the session disarm this function just cleared), an in-flight window belongs
+        // to a correction the size change has already invalidated, and the epoch counters/latches
+        // are per-situation rather than per-device.
+        pendingVerification = nil
+        nudgeDeadline = nil
+        consecutiveNudges = 0
+        standDownRow = nil
+        clearanceLatePending = nil
+        // Loud and unconditional (not `HomeGeometryProbe.enabled`-gated): this is a once-per-setting-
+        // change line, it is the thing a device log needs to prove the reset happened at all, and the
+        // corrector's other terminal lines (DISARMED, DISARMED-PULLBACK, MISS, VOID) are unguarded
+        // for the same reason.
+        NSLog("[HomeScrollProbe] REGIME-CHANGE from=\(previous) to=\(key) fits=\(fits ? 1 : 0)")
+        guard let scheduler else { return }
+        let token = rearm(source: "regime")
+        // 0, not `settleDelay` — see the doc above. Already on the main actor here (this is called
+        // from a SwiftUI `onChange`), so no `assumeIsolated` is needed.
+        scheduler(token, 0)
     }
 
     /// Ends the current correction epoch: a different row has focus, so neither the oscillation
@@ -1954,7 +2279,7 @@ enum PinnedRowSettle {
             }
             return
         }
-        MainActor.assumeIsolated { scheduler(token) }
+        MainActor.assumeIsolated { scheduler(token, settleDelay) }
     }
 
     /// Records a scroll sample and returns a settle token to schedule against — or nil when a
@@ -2030,7 +2355,7 @@ enum PinnedRowSettle {
     /// caller passes back to `hostDidDisappear` so a teardown can only ever clear its OWN
     /// registration, never a newer one that has already replaced it.
     nonisolated static func registerScheduler(replacing previousID: Int,
-                                              _ schedule: @escaping @MainActor (Int) -> Void) -> Int {
+                                              _ schedule: @escaping @MainActor (Int, TimeInterval) -> Void) -> Int {
         // "A DIFFERENT host is taking over", not merely "a registration exists": a host whose
         // `onAppear` runs again without an intervening teardown passes its own live id back and is
         // a continuation, whose measurements are still its own.
@@ -2195,7 +2520,8 @@ enum PinnedRowSettle {
 
         guard let m = latest else {
             return Plan(report: "row=- state=nofocus y=\(Int(sample.offsetY.rounded()))"
-                            + " seq=\(settleSeq) armSrc=\(armSource)",
+                            + " seq=\(settleSeq) armSrc=\(armSource)"
+                            + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)",
                         targetY: nil)
         }
 
@@ -2257,6 +2583,12 @@ enum PinnedRowSettle {
             + " pull=\(pullBacks)"
             + " pbDisarm=\(pullBackDisarmed ? 1 : 0)"
             + " seq=\(settleSeq) armSrc=\(armSource)"
+            // Wave W5 (BUG-89): which GEOMETRY REGIME this rest was measured under, and whether
+            // that regime's frame fits the rows viewport — see `noteRegimeChange`. Appended at the
+            // END of the field list, so test47/test48's `key=value` parsers are untouched.
+            // `regime=-` means no host has published one: a non-Home `CatalogRowView`, or a build
+            // whose HomeView predates the call site.
+            + " regime=\(regimeKey ?? "-") fits=\(regimeFits ? 1 : 0)"
 
         // The correction target is a legibility BAND, not a point (Wave G, BUG-87). Both edges are
         // real constraints that the row's own geometry supplies, and every margin between them is
@@ -2525,6 +2857,25 @@ enum PinnedRowSettle {
         // `nudge` stays signed in the log: positive moved the row DOWN toward the clip edge,
         // negative pulled it UP. A device trace can read the direction straight off the line.
         line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded())) n=\(consecutiveNudges)"
+        // Wave W5 (BUG-89): a correction fired while the regime FITS is a surprise worth a line of
+        // its own. A fitting frame is one the rows viewport can show whole, and both band edges are
+        // then satisfiable by construction — the focus engine's own rest should already be inside
+        // the band and the corrector should have nothing to do. If it does have something to do,
+        // the interesting quantity is not this correction but the ANCHORING that produced the rest:
+        // hardware bottom-anchors an over-tall frame where the simulator top-anchors it (the Wave G
+        // header's ~55pt spread), and a fitting frame that still rests out of band means a third
+        // anchoring nobody has measured. Loud and ungated, like the corrector's other surprises
+        // (MISS, VOID, DISARMED), and mirrored onto the settle line so the harness sees it too.
+        if regimeFits {
+            let corrN = correctionsInWindow(m.rowKey)
+            line += " UNEXPECTED-WITH-FIT"
+            NSLog("[HomeScrollProbe] settle %@",
+                  "UNEXPECTED-WITH-FIT row=\(m.rowKey) regime=\(regimeKey ?? "-")"
+                    + " corrN=\(corrN) margin=\(Int(m.margin.rounded()))"
+                    + " bandLo=\(Int(bandLow.rounded())) bandHi=\(Int(bandHigh.rounded()))"
+                    + " vh=\(Int(m.viewportHeight.rounded())) lockup=\(Int(m.lockupExtent.rounded()))"
+                    + " — the regime reports a fitting frame, so this rest should already have been in band")
+        }
         if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
         return Plan(report: line, targetY: target)
     }
@@ -2750,9 +3101,12 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                     // `replacing:` is this host's own live id (0 before it has ever registered), so
                     // the coordinator can tell a re-`onAppear` from the SAME host apart from a
                     // different host taking over — only the latter invalidates the measurements.
-                    schedulerID = PinnedRowSettle.registerScheduler(replacing: schedulerID) { token in
+                    // Wave W5: the coordinator picks the delay. Every backstop that existed before
+                    // passes `settleDelay` and is unchanged; `noteRegimeChange` passes 0 so a
+                    // poster-size change is corrected inside its own layout change.
+                    schedulerID = PinnedRowSettle.registerScheduler(replacing: schedulerID) { token, delay in
                         scheduleSettle(token: token,
-                                       after: PinnedRowSettle.settleDelay,
+                                       after: delay,
                                        hops: Self.maxSettleHops)
                     }
                 }
@@ -3020,6 +3374,36 @@ struct CatalogRowView: View {
     /// lets a new expansion supersede the old one and lets `.onDisappear` cancel it outright.
     @State private var expansionScrollTask: Task<Void, Never>?
 
+    // ── BUG-92: the first card's bleed, clipped at the row's leading edge ────────────────────────
+    //
+    // The two Appearance settings the bleed's width depends on, as REACTIVE inputs (the same
+    // `@AppStorage` pair, under the same keys, that `PinnedRowTitleTracking` and `PosterCard` read —
+    // a bare `UserDefaults` read here would recompute the allowance only when something else
+    // happened to re-render the row, so toggling either setting would leave the clip sized for the
+    // previous mode indefinitely).
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+
+    /// How far past the row's leading edge a focused FIRST card may bleed — the width of the clip
+    /// `RowLeadingEdgeClip` opens for it. See that type's header for the whole BUG-92 argument;
+    /// this is the attachment it documents and deliberately did not make itself.
+    private var leadingEdgeAllowance: CGFloat {
+        let posterWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+        // No lift at all in No Zoom mode (`CardFocusMode.still` — `PosterCard.swift` swaps in
+        // `StillCardButtonStyle` + `.focusEffectDisabled(true)`, which scales nothing), so only the
+        // ring can bleed there. Otherwise this recomputes `PosterCard.swift`'s own
+        // `cardLiftScale(artworkHeight:)` from the SAME public constant, because that function is
+        // `private` to that file and one call site does not justify a new cross-file symbol. If it
+        // is ever made internal, call it instead of keeping two copies of the formula in step.
+        let liftScale = noZoomOnFocus ? 1 : 1 + 2 * Theme.Size.heroPinnedRowFocusLiftAllowance / rowArtworkHeight
+        // Mirrors `PosterCard.swift`'s `ringInset(accentFocusRing:noZoomOnFocus:)` — either ring
+        // reserves the same band, and neither reserves anything when both are off.
+        let ring: CGFloat = (accentFocusRing || noZoomOnFocus) ? ringWidth : 0
+        return RowLeadingEdgeClip.allowance(posterWidth: posterWidth,
+                                            liftScale: liftScale,
+                                            ringWidth: ring)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             // Classic keeps the title as a plain sibling above the shelf. PINNED mode instead
@@ -3103,6 +3487,20 @@ struct CatalogRowView: View {
                     // ALWAYS positive — the reach lives inside the buttons' labels, the row's
                     // frame contains it whole, and nothing pokes outside the focus section.
                     .padding(.vertical, Theme.Spacing.lg)
+                    // BUG-92: clip ONLY the leading edge, and only by what a focused card's lift +
+                    // ring can legitimately put outside its own frame. `.scrollClipDisabled()`
+                    // below exists so a focused card's bleed can land over its LEFT NEIGHBOUR,
+                    // which hides it; card #1 has no neighbour, so its bleed lands on the empty
+                    // overscan margin where nothing hides it — the "trailer spills past the edge"
+                    // the tester reported, on the first card of every row.
+                    //
+                    // On the CONTENT, never on the `ScrollView`: a `clipShape` on the scroll view
+                    // itself would re-clip in the viewport's space and undo the one thing
+                    // `.scrollClipDisabled()` is here for. Every other side of the shape is left
+                    // ~2000pt open, so this can never reach a direction BUG-92 was not about — a
+                    // card's vertical lift, the row's reach band, or the inline trailer's rightward
+                    // morph (UX-4a). See `RowLeadingEdgeClip`.
+                    .clipShape(RowLeadingEdgeClip(allowance: leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
                 // Pinned: the title floats over the (transparent) reach band at the shelf's
