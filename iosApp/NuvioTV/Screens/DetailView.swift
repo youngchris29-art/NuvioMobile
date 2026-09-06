@@ -41,6 +41,16 @@ private final class ScrollDimModel: ObservableObject {
     /// views that actually read it (the chip glass/flat swap — see `DetailView.chipGlassFlat`),
     /// not the whole `DetailView.body`.
     @Published var isScrolling: Bool = false
+    /// BUG-96 diagnostic: the last anchor decision (`row=… h=… vh=… k=…`), surfaced on the
+    /// `debug_ux6` probe so a UI leg can read it off the accessibility tree (the tvOS 27 runtime
+    /// never reports focus, and simulator NSLog lines do not reach the host's unified log here).
+    @Published var anchorNote: String = "-"
+    /// BUG-96 diagnostic: live scroll geometry (`off= inset= vis= content=`), probe-gated.
+    @Published var scrollGeoNote: String = "-"
+    /// BUG-96: live scroll geometry for the anchor — plain fields, NOT published: they are written
+    /// on every scroll frame and must not invalidate anything (the BUG-41 rule).
+    var contentInsetTop: CGFloat = 0
+    var lastContentOffset: CGFloat = 0
 
     /// `CACurrentMediaTime()` at the last `noteScrollChange` call — what `ScrollingLatch` measures
     /// the debounce window against.
@@ -105,6 +115,23 @@ private final class ScrollDimModel: ObservableObject {
 /// per scroll frame on the sim's D-pad walk — this isolation is invalidation hygiene, not a
 /// confirmed fix for BUG-41's reported choppiness, which needs a real-swipe device before/after
 /// (the `[BUG41]` probe below is there for exactly that).
+/// BUG-96 (beta.18): the fixed top scrim above the anchored row — see `DetailRowAnchor.topScrimHeight`.
+/// Observes the dim model itself so `DetailView.body` keeps not re-rendering per dim step (BUG-41).
+private struct DetailTopScrim: View {
+    @ObservedObject var model: ScrollDimModel
+
+    var body: some View {
+        LinearGradient(colors: [Color.black.opacity(0.96), Color.black.opacity(0.6), .clear],
+                       startPoint: .top, endPoint: .bottom)
+            .frame(height: DetailRowAnchor.topScrimHeight)
+            .frame(maxWidth: .infinity)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+            .opacity(model.value > 0.001 ? 1 : 0)
+            .animation(.linear(duration: 0.12), value: model.value > 0.001)
+    }
+}
+
 private struct ScrollDimOverlay: View {
     @ObservedObject var model: ScrollDimModel
     /// BUG-41: whether the live `AVPlayerLayer` hero trailer is currently mounted underneath this
@@ -136,7 +163,7 @@ private struct ScrollDimOverlay: View {
             // the three A/B signals a UITest needs to attribute choppiness — append-only, `dark=`
             // stays first so pre-existing reads of this token keep working. `scrolling=` (beta.18,
             // BUG-41 item 3) is the newest token, appended last for the same reason.
-            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0)")
+            Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_ux6")
@@ -338,6 +365,14 @@ struct DetailView: View {
     /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
     /// 2026-08-29 rounds 3-4).
     @FocusState private var focusedCastIndex: Int?
+    /// BUG-96 (beta.18): which detail row focus is inside, if any — see `DetailRowAnchor`.
+    @FocusState private var focusedRow: DetailRowID?
+    /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
+    @State private var detailRowOffsets: [DetailRowID: CGFloat] = [:]
+    /// BUG-96: the vertical scroll view's position, driven the way Home's corrector drives its rows.
+    @State private var detailScrollPosition = ScrollPosition()
+    /// BUG-96: the pending anchor move; a newer focus change cancels the previous one.
+    @State private var detailAnchorTask: Task<Void, Never>?
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -405,10 +440,13 @@ struct DetailView: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
                     topBlock
-                    // Grouped to stay under ViewBuilder's 10-subview ceiling.
+                    // Grouped to stay under ViewBuilder's 10-subview ceiling. BUG-96: every row
+                    // below the top block is anchored — see `DetailRowAnchor`.
                     Group {
                         companyLogosRow
+                            .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         parentalGuideSection
+                            .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
                         EpisodesSection(
@@ -419,17 +457,67 @@ struct DetailView: View {
                         // A discrete focus region: vertical D-pad moves must land here instead of
                         // geometrically skipping from the info/network chips down to the cast row.
                         .focusSection()
+                        .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                     }
                     Group {
                         castRow
+                            .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         collectionRow
+                            .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         trailersRow
+                            .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         moreLikeThisRow
+                            .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         commentsSection
+                            .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                     }
                 }
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .coordinateSpace(name: DetailRowAnchor.contentSpace)
+            }
+            .scrollPosition($detailScrollPosition)
+            // BUG-96: fades whatever of the previous row sits above the anchored rest.
+            .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
+            // BUG-96: anchor the focused row's top at `DetailRowAnchor.topInset`. Issued at once,
+            // in the same run of the run loop as the engine's own reveal, so the two animate as
+            // one move; `scrollTo` clamps at the end of content, so the last rows simply rest as
+            // low as the content allows.
+            .onChange(of: focusedRow) { _, row in
+                guard let row else {
+                    if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
+                    return
+                }
+                guard let rowTop = detailRowOffsets[row] else { return }
+                let inset = dimModel.contentInsetTop
+                let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset)
+                let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
+                if DetailScrollProbe.enabled {
+                    dimModel.anchorNote = String(format: "%@ top=%.0f y=%.0f", String(describing: row), rowTop, target)
+                }
+                // The engine's own reveal runs AFTER this handler and overrides an immediate
+                // scrollTo (first fixture run: an Episodes row top-aligned with k=0 still rested at
+                // 519 pt). Let the reveal settle, then slide the row to its place — one deliberate
+                // settle per focus change, never a repeated correction (the Home bounce class).
+                detailAnchorTask?.cancel()
+                detailAnchorTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleDelay * 1_000_000_000))
+                    guard !Task.isCancelled, focusedRow == row else { return }
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        detailScrollPosition.scrollTo(y: target)
+                    }
+                    if DetailScrollProbe.enabled { dimModel.anchorNote += " fired" }
+                    // One verify pass: a card whose thumbnails land after the settle makes the
+                    // engine re-reveal it and undo the rest. Re-issue once, never loop.
+                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
+                    guard !Task.isCancelled, focusedRow == row else { return }
+                    if abs(dimModel.lastContentOffset - expected) > DetailRowAnchor.verifyTolerance {
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            detailScrollPosition.scrollTo(y: target)
+                        }
+                        if DetailScrollProbe.enabled { dimModel.anchorNote += String(format: " re-issued(off=%.0f)", dimModel.lastContentOffset) }
+                    }
+                }
             }
             // FEAT-32: the chrome fades out ahead of the dim on the way in, and waits for the
             // backdrop settle on the way back.
@@ -483,6 +571,15 @@ struct DetailView: View {
             // (essentially) every scroll frame regardless of ramp state or A/B leg, so "is the user
             // actively scrolling" tracks real scroll motion instead of the dim value's own
             // throttling.
+            .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }, action: { _, geo in
+                // BUG-96: the anchor's live terms, written per frame into plain (non-published)
+                // fields — no invalidation. The probe note is the diagnostic mirror.
+                dimModel.contentInsetTop = geo.contentInsets.top
+                dimModel.lastContentOffset = geo.contentOffset.y
+                if DetailScrollProbe.enabled {
+                    dimModel.scrollGeoNote = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height)
+                }
+            })
             .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in
                 dimModel.noteScrollChange()
             })
