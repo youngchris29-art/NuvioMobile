@@ -30,27 +30,58 @@ import CoreGraphics
 ///
 /// ## What gets spent, and in what order
 ///
-/// Three dials, each a pure `min`, spent in a fixed order — cheapest and least regression-prone
-/// first:
+/// Three dials, each a pure `min`. The REACHES are spent first, down to their floors, and the hero
+/// compression takes only what is left:
 ///
-///  1. **Hero compression**, bounded by what the pinned hero's internals can actually yield
-///     (`Theme.Size.heroPinnedCompressionCap(showsCTA:)`). Costs nothing structural: the hero's own
-///     elastic slots absorb it.
-///  2. **The downward reach** (`heroPinnedRowBottomReach` 44 → `bottomReachFloor` 24), only if the
-///     demand still exceeds the cap. It covers the mirror-direction rest error and has no content
-///     to protect below it, so it is the cheaper of the two reaches.
-///  3. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor` 64), last and only if still
-///     short. This is the most regression-prone dial in the app — the band above the artwork is
-///     what makes the reveal include the section title, and the sim bisected reach 100 as the value
-///     where focus resolution dies outright. It is never RAISED here, only lowered, and never below
-///     `topReachFloor`: `heroPinnedRowTitleInset` (48) + a measured title (~38) − `Spacing.lg` (24)
-///     ≈ 62 is the arithmetic floor at which the title still renders inside the band at all.
+///  1. **The downward reach** (`heroPinnedRowBottomReach` 44 → `bottomReachFloor` 24, 20pt of
+///     give). It covers the mirror-direction rest error and has no content to protect below it, so
+///     it is the cheapest dial in the file.
+///  2. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor` 64, 24pt of give). It is
+///     never RAISED here, only lowered, and never below `topReachFloor`:
+///     `heroPinnedRowTitleInset` (48) + a measured title (~38) − `Spacing.lg` (24) ≈ 62 is the
+///     arithmetic floor at which the title still renders inside the band at all.
+///  3. **Hero compression**, for whatever demand the two reaches could not cover, bounded by what
+///     the pinned hero's internals can actually yield
+///     (`Theme.Size.heroPinnedCompressionCap(showsCTA:)`).
+///
+/// ### Why this order (rc2 tester feedback, 2026-09-06)
+///
+/// The first cut of this file spent compression FIRST, on the reasoning that the hero's elastic
+/// slots cost nothing structural while the reaches are the app's most regression-prone dials. At
+/// the tester's shape that produced a 112.33pt compression, and the FEAT-15 focus panel spends
+/// compression out of its synopsis slot first: 144 − min(112.33, 108) = 36pt of slot (the last
+/// 4.33 came out of the logo), one line of description where beta.17 showed three. He filmed it and objected — "one line is not enough". Christian's
+/// decision: keep the three lines, spend the two reach cushions instead. Both cushions exist to
+/// absorb REST ERROR, and the whole point of this file is that a frame which fits has exactly one
+/// rest and therefore no error to absorb; the compression's cost, by contrast, is content the
+/// viewer reads. Spending the reaches first drops the tester's compression to 68.33 — Wave 10's own
+/// Large number, the one beta.17 shipped and he never complained about — and the panel is back to
+/// three lines.
+///
+/// ### The trade this order makes, stated plainly — UNPROVEN ON HARDWARE
+///
+/// Reach is the most device-sensitive number in the app and the floors are now spent at EVERY
+/// Poster Size that compresses at all, not held in reserve for the shapes that could not otherwise
+/// fit. From `Theme.swift`'s own history (~L456-500): 72 was the long-proven value, the sim
+/// bisected reach **100** as the point where focus resolution dies outright, and BUG-53's device
+/// pass raised 72 → 88 to give a parked row title a 16pt cushion above the artwork against the
+/// system `hoverEffect(.highlight)` lift. `topReachFloor` is 64 — BELOW the long-proven 72 — and at
+/// 64 the title's static resting clearance (`PinnedRowTitle.staticClearance`, `Spacing.lg + reach −
+/// (titleInset + titleHeight)`) is **2pt**, not BUG-53's 26. With No Zoom ON (the tester's setting)
+/// there is no lift to clip it. With No Zoom OFF there is, and nothing here proves the outcome.
+///
+/// Only the device pass can answer three questions this file cannot: whether focus ever hesitates
+/// or skips a row at reach 64, whether a settled row title still reads clear of the artwork, and
+/// whether the focus lift clips it with No Zoom off. If any of those fails, the revert is to raise
+/// `topReachFloor` back to 72 (costing 8pt, which the compression then takes — the tester's shape
+/// becomes compression 76.33 and the panel drops to 2 lines) or to restore the compression-first
+/// order wholesale.
 ///
 /// ## Unsatisfiable by design
 ///
-/// Large + captions + carousel hero demands ~155.8pt against an elastic give of ~70 and 44pt of
-/// reach give — 114 against 156. That case CANNOT be made to fit and is not pretended otherwise:
-/// the plan reports `fits == false`, returns TODAY'S numbers verbatim (Wave 10's compression, reach
+/// Large + captions + carousel hero demands ~155.8pt against 44pt of reach give and an elastic give
+/// of ~70 — 114 against 156. That case CANNOT be made to fit and is not pretended otherwise: the
+/// plan reports `fits == false`, returns TODAY'S numbers verbatim (Wave 10's compression, reach
 /// 88/44) so the belt regime is bit-identical to beta.17, and logs once per regime. A too-tall row
 /// costs a hidden row title, never a broken hero — the same handoff contract `PinnedRowSettle` and
 /// the visibility belt have always had.
@@ -102,6 +133,9 @@ enum PinnedRowGeometry {
     /// Floor for the downward reach. It exists to absorb the mirror-direction rest error, and 24
     /// (`Theme.Spacing.lg`, the shelf's own bottom padding) is the point at which the focused
     /// card's caption still clears the fold without the reach's help.
+    ///
+    /// Spent FIRST as of the rc2 reordering, so every compressing Poster Size now runs at 24 rather
+    /// than only the shapes that could not otherwise fit — see the header's trade note.
     nonisolated static let bottomReachFloor: CGFloat = Theme.Spacing.lg
 
     /// Floor for the upward reach. DERIVED, and the hardest bound in this file: the overlaid title
@@ -110,7 +144,12 @@ enum PinnedRowGeometry {
     /// `heroPinnedRowTitleInset + titleHeight − Spacing.lg` for the title to render inside the reach
     /// at all. With the ~38pt measured title `PinnedRowTitle` records that is ≈62; 64 keeps 2pt of
     /// margin. NEVER raise this above `heroPinnedRowTopPad` — reach 100 kills focus resolution
-    /// outright (Theme.swift ~L310-315), and this dial only ever moves DOWN.
+    /// outright (Theme.swift ~L470-478), and this dial only ever moves DOWN.
+    ///
+    /// UNPROVEN ON HARDWARE, and as of the rc2 reordering it is reached at every compressing Poster
+    /// Size rather than only in the shapes that could not otherwise fit. 64 sits below the
+    /// long-proven 72, and it leaves the settled title 2pt of clearance above the artwork where
+    /// BUG-53's 88 leaves 26. The device pass owns the verdict; the revert is 72 (see the header).
     nonisolated static let topReachFloor: CGFloat = 64
 
     /// The measured height `topReachFloor` is derived against — `PinnedRowTitle`'s own record for a
@@ -128,6 +167,93 @@ enum PinnedRowGeometry {
     /// and the total is 142.
     nonisolated static func elasticGive(showsCTA: Bool) -> CGFloat {
         Theme.Size.heroPinnedCompressionCap(showsCTA: showsCTA)
+    }
+
+    // MARK: - How the hero spends it
+
+    /// How a given `compression` is divided between the pinned hero's two elastic slots.
+    ///
+    /// Extracted out of `HomeHeroForeground` (whose `synopsisSlotGive` / `logoSlotGive` are now thin
+    /// wrappers) purely so the arithmetic is unit-testable: it is a value function over three
+    /// booleans-and-a-number with no view, no environment and no measurement in it.
+    ///
+    /// ## The three tiers (rc2, 2026-09-06)
+    ///
+    /// FEAT-15's focus panel folds the CTA slot into its synopsis slot — 144pt against the
+    /// carousel's 72 (`Theme.Size.heroSynopsisSlotHeightPinnedPanel`) — and
+    /// `HomeHeroForeground.synopsisLineLimit` is `floor(slotHeight / 36)`. Spending the panel's
+    /// whole 108pt of synopsis give before touching the logo meant the tester's 68.33pt compression
+    /// came entirely out of the description: slot 75.67 ⇒ **2 lines**, where beta.17's Wave 10 split
+    /// (synopsis 36 + logo 32) left 108 ⇒ **3**. He objected to the one-line version at the old
+    /// 112.33 compression, and 2 is still a regression against what he had.
+    ///
+    /// So the panel spends in three tiers, and the first two are exactly the carousel's:
+    ///
+    ///  1. `heroSynopsisSlotPinnedGive` (36) — the synopsis give BOTH forms have.
+    ///  2. `heroLogoSlotPinnedGive` (32) — the logo, down to its 78pt floor.
+    ///  3. Only then the extra the panel absorbed from the CTA (108 − 36 = 72), and only for the
+    ///     part of the compression that exceeds tiers 1+2 by more than the hero frame's own
+    ///     `heroPinnedFrameSlack` (2pt of frame that holds no content).
+    ///
+    /// That slack term is what makes the tester's shape land on 3 lines rather than 2: at 68.33 the
+    /// first two tiers give 68 and the leftover 0.33 is frame slack, not content, so tier 3 stays
+    /// shut and the synopsis slot is a clean 108. Without it, 0.33pt of tier-3 spend would take the
+    /// slot to 107.67 and `floor(107.67 / 36)` is 2.
+    ///
+    /// ## Invariants
+    ///
+    ///  - **Nothing hard-clips**: `total >= compression - heroPinnedFrameSlack` for every
+    ///    compression up to that form's `elasticGive`. Tier 3 is defined as the excess PAST the
+    ///    slack, so in the region where it is open the total is exactly `compression - slack`.
+    ///  - **Floors hold**: synopsis give ≤ `slot - heroSynopsisSlotHeightPinnedFloor`, logo give ≤
+    ///    `heroLogoSlotPinnedGive`, for title heroes.
+    ///  - **The carousel is bit-identical** to what shipped: its tier-3 ceiling is
+    ///    `72 - 36 - 36 == 0`, so the function reduces to the old two-step `min`.
+    ///  - **Folder heroes are bit-identical** to FEAT-29: `folderHero` keeps its own rule (the whole
+    ///    synopsis slot has a genuine 0 floor because a folder preview carries no description, and
+    ///    the logo takes an unbounded remainder), untouched by the tiers above.
+    nonisolated enum HeroSlotGive {
+
+        /// What each slot yields. Both are subtracted from the slot's pinned height by the view.
+        struct Split: Equatable, Sendable {
+            var synopsis: CGFloat
+            var logo: CGFloat
+            /// What the CONTENT gave up, against which the frame shrank by `compression`.
+            var total: CGFloat { synopsis + logo }
+        }
+
+        /// - Parameters:
+        ///   - compression: `PinnedRowGeometry.Plan.compression`, i.e. how much shorter the hero's
+        ///     frame is being made. 0 outside pinned mode.
+        ///   - showsCTA: the carousel form (true) or FEAT-15's focus panel (false).
+        ///   - folderHero: `HomeView.isCollectionHero(item)` — a collection folder's preview, which
+        ///     has no description and no meta line to protect (FEAT-29).
+        static func split(compression: CGFloat,
+                          showsCTA: Bool,
+                          folderHero: Bool) -> Split {
+            guard compression > 0 else { return Split(synopsis: 0, logo: 0) }
+            let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
+                                : Theme.Size.heroSynopsisSlotHeightPinnedPanel
+
+            // FEAT-29, unchanged: a folder hero's synopsis slot is empty, so all of it is give and
+            // the logo takes whatever is left over with no ceiling of its own.
+            guard !folderHero else {
+                let synopsis = min(compression, slot)
+                return Split(synopsis: synopsis, logo: max(compression - synopsis, 0))
+            }
+
+            // Tier 1 — the synopsis give both hero forms have.
+            let firstSynopsis = min(compression, Theme.Size.heroSynopsisSlotPinnedGive)
+            // Tier 2 — the logo, down to its floor.
+            let logo = min(max(compression - firstSynopsis, 0), Theme.Size.heroLogoSlotPinnedGive)
+            // Tier 3 — the CTA slot the panel absorbed, past the frame's own slack. 0 for the
+            // carousel, whose synopsis give IS its whole give above the floor.
+            let panelExtra = max(slot
+                                 - Theme.Size.heroSynopsisSlotHeightPinnedFloor
+                                 - Theme.Size.heroSynopsisSlotPinnedGive, 0)
+            let beyond = max(compression - firstSynopsis - logo - Theme.Size.heroPinnedFrameSlack, 0)
+            return Split(synopsis: firstSynopsis + min(beyond, panelExtra), logo: logo)
+        }
     }
 
     // MARK: - The plan
@@ -188,10 +314,11 @@ enum PinnedRowGeometry {
             return unchanged
         }
 
-        // (a) Compression, keyed to the LINK frame — the extent the engine actually reveals — plus
-        //     the shelf's own top padding above it and the settled cushion below, which together
-        //     are what make a canonical rest sit fully inside the viewport rather than flush to its
-        //     edges. Each step below is a pure `min` against a real give; none can raise a dial.
+        // The demand, keyed to the LINK frame — the extent the engine actually reveals — plus the
+        // shelf's own top padding above it and the settled cushion below, which together are what
+        // make a canonical rest sit fully inside the viewport rather than flush to its edges. The
+        // formula is unchanged by the rc2 reordering; only the order the three dials pay it in is.
+        // Each step below is a pure `min` against a real give; none can raise a dial.
         let demand = Theme.Spacing.lg
             + baseTopReach
             + artwork
@@ -199,17 +326,22 @@ enum PinnedRowGeometry {
             + baseBottomReach
             + Theme.Size.heroPinnedRowsSettledCushion
             - budget
-        let compression = min(max(demand, 0), elasticGive(showsCTA: showsCTA))
-        var short = max(demand - compression, 0)
+        var short = max(demand, 0)
 
-        // (b) The downward reach, only past the cap.
+        // (a) The downward reach first — the cheapest dial, 20pt of give.
         let bottomSpend = min(short, baseBottomReach - bottomReachFloor)
         let bottomReach = baseBottomReach - bottomSpend
         short -= bottomSpend
 
-        // (c) The upward reach, last.
+        // (b) The upward reach next, 24pt of give down to its derived floor.
         let topSpend = min(short, baseTopReach - topReachFloor)
         let topReach = baseTopReach - topSpend
+        short -= topSpend
+
+        // (c) Hero compression LAST, for the remainder — every point of it is description the
+        //     viewer loses (the panel's synopsis slot is where it comes from), which is exactly the
+        //     rc2 complaint this order answers.
+        let compression = min(short, elasticGive(showsCTA: showsCTA))
 
         let plan = settled(compression: compression, topReach: topReach, bottomReach: bottomReach)
         guard plan.fits else {

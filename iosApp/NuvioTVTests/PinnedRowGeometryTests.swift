@@ -138,25 +138,44 @@ final class PinnedRowGeometryTests: XCTestCase {
     // MARK: - The tester's shape
 
     /// Large + Hide Labels ON + FEAT-15 focus panel — the configuration BUG-87/88/89 were filmed
-    /// in. It must FIT, on the hero's give alone (the panel can yield 142 where the carousel yields
-    /// 70), with both reaches left at their shipped values.
+    /// in. It must FIT, and it must fit at Wave 10's OWN compression rather than a larger one.
     ///
-    ///     demand    24 + 88 + 403.33 + 0 + 44 + 8 − 455  = 112.33
-    ///     give      logo 32 + synopsis (144 − 36) + slack 2 = 142   ⇒ nothing else is spent
-    ///     viewport  455 + 112.33                          = 567.33
-    ///     linkFrame 88 + 403.33 + 0 + 44                  = 535.33
-    ///     restRange                                       = 32  (Spacing.lg + cushion)
-    func testStevensShapeFitsOnHeroGiveAlone() {
+    /// rc2 (2026-09-06) reordered the dials. The first cut spent compression first, which at this
+    /// shape meant 108pt out of the panel's synopsis slot (its whole give; the remaining 4.33 came
+    /// from the logo): 144 − 108 = 36 ⇒ one line of description, which the tester filmed and
+    /// objected to ("one line is not enough"). Christian's
+    /// call: spend the two reach CUSHIONS first — they exist to absorb rest error, and a frame that
+    /// fits has no rest error — and let the compression take only the remainder.
+    ///
+    ///     demand      24 + 88 + 403.33 + 0 + 44 + 8 − 455      = 112.33   (formula unchanged)
+    ///     (a) bottom  44 → 24 (bottomReachFloor)                 −20  ⇒ 92.33 left
+    ///     (b) top     88 → 64 (topReachFloor)                    −24  ⇒ 68.33 left
+    ///     (c) hero    min(68.33, panel give 142)                = 68.33  ⇒ 0 left
+    ///     viewport    455 + 68.33                              = 523.33
+    ///     linkFrame   64 + 403.33 + 0 + 24                      = 491.33
+    ///     restRange                                            = 32  (Spacing.lg + cushion)
+    ///
+    /// 68.33 is exactly `PinnedRowTitle.pinnedHeroCompression` at Large — the number beta.17
+    /// shipped and the tester never complained about — so the panel is back to a 108pt synopsis
+    /// slot and three lines (`PinnedRowGeometryHeroSlotGiveTests`).
+    ///
+    /// What this test CANNOT prove: that reach 64 behaves on hardware. It is below the long-proven
+    /// 72 and leaves the settled title 2pt of clearance above the artwork rather than BUG-53's 26 —
+    /// device pass only.
+    func testStevensShapeFitsOnTheReachCushionsAtWave10Compression() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
                                           showsCTA: false,
                                           landscapeRows: false)
         XCTAssertTrue(plan.fits)
-        XCTAssertEqual(plan.compression, 112.333, accuracy: 0.01)
-        XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon)
-        XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon)
-        XCTAssertEqual(plan.viewport, 567.333, accuracy: 0.01)
-        XCTAssertEqual(plan.linkFrame, 535.333, accuracy: 0.01)
+        XCTAssertEqual(plan.compression, 68.333, accuracy: 0.01)
+        XCTAssertEqual(plan.compression,
+                       PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: Self.large),
+                       accuracy: epsilon)
+        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.viewport, 523.333, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 491.333, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
         XCTAssertEqual(plan.regimeKey, "L403c0p1r0")
     }
@@ -165,13 +184,20 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// into, or the engine could still park somewhere the corrector wants to move — which is the
     /// bouncing the tester reported.
     ///
-    /// The band, from `PinnedRowSettle` (BrowseComponents ~L2265-2290) with the row's own geometry:
+    /// The band, from `PinnedRowSettle`'s `bandLow`/`bandHigh` in BrowseComponents (~L2674-2677 at the
+    /// time of writing; grep the symbols, the line numbers drift) with the row's own geometry,
+    /// at the rc2 reach of 64 (the plan now spends both reaches to their floors here):
     ///
-    ///     bandLow  = −clearance.focused = −26        (No Zoom ⇒ zero lift ⇒ focused == atRest)
-    ///     bandHigh = min(titleInset 48, titleInset + viewport − lockupExtent − cushion) = 48
-    ///     width    = 74
+    ///     clearance = max((Spacing.lg 24 + reach 64) − (titleInset 48 + title 38), 0) = 2
+    ///     bandLow   = −clearance.focused = −2        (No Zoom ⇒ zero lift ⇒ focused == atRest)
+    ///     lockup    = 24 + 64 + 403.33               = 491.33
+    ///     bandHigh  = min(48, 48 + 523.33 − 491.33 − 8) = min(48, 72) = 48
+    ///     width     = 50
     ///
-    /// against `restRange` = 32.
+    /// against `restRange` = 32, so the invariant still holds — but note the band NARROWED from 74
+    /// to 50, and it narrowed at the clearance end: the settled title now rests 2pt above the
+    /// artwork rather than 26. That is the reach floor's real cost, and it is the thing the device
+    /// pass has to look at (see `PinnedRowGeometry`'s header).
     func testStevensShapeRestRangeIsNarrowerThanTheLegibilityBand() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
@@ -186,32 +212,42 @@ final class PinnedRowGeometryTests: XCTestCase {
                            Theme.Size.heroPinnedRowTitleInset + plan.viewport - lockupExtent
                                - Theme.Size.heroPinnedRowsSettledCushion)
         let bandWidth = bandHigh - bandLow
-        XCTAssertEqual(clearance, 26, accuracy: epsilon)
-        XCTAssertEqual(bandWidth, 74, accuracy: epsilon)
+        XCTAssertEqual(clearance, 2, accuracy: epsilon)
+        XCTAssertEqual(bandWidth, 50, accuracy: epsilon)
         XCTAssertLessThanOrEqual(plan.restRange, bandWidth)
     }
 
-    /// The same Poster Size with the carousel hero has only 70pt of give, so the plan spends the
-    /// reaches too — bottom first (44 → 24, its floor), then the top reach for the remainder, which
-    /// stops well above its own floor. It still fits.
-    func testLargeHideLabelsWithCarouselHeroSpendsBottomReachBeforeTopReach() {
+    /// The same Poster Size with the CAROUSEL hero, which has only 70pt of elastic give where the
+    /// panel has 142. Under the rc2 order that no longer matters: the reaches are spent first, and
+    /// the 68.33 left over is inside 70 either way, so the carousel and the panel produce the SAME
+    /// plan at Hide Labels ON.
+    ///
+    ///     demand 112.33 → bottom 44→24 (−20) → top 88→64 (−24) → compression min(68.33, 70)
+    ///
+    /// Before the reordering this regime compressed the full 70 and stopped the top reach at 65.67;
+    /// it now stops at the floor and compresses 68.33 — 1.67pt LESS hero compression, both reaches
+    /// at their floors.
+    func testLargeHideLabelsWithCarouselHeroSpendsBothReachesThenTheRemainder() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
                                           showsCTA: true,
                                           landscapeRows: false)
         XCTAssertTrue(plan.fits)
-        XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true), accuracy: epsilon)
-        XCTAssertEqual(plan.compression, 70, accuracy: epsilon)
+        XCTAssertEqual(plan.compression, 68.333, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true) + epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
-        XCTAssertEqual(plan.topReach, 65.667, accuracy: 0.01)
-        XCTAssertGreaterThan(plan.topReach, PinnedRowGeometry.topReachFloor)
+        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.viewport, 523.333, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 491.333, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
     }
 
-    /// Large + captions + carousel hero is unsatisfiable by design: ~155.8pt of demand against 70pt
-    /// of elastic give and 44pt of reach give. The plan must NOT pretend — it reports `fits ==
-    /// false` and hands back TODAY'S numbers verbatim, so the visibility belt owns the residue in
-    /// exactly the regime that shipped in beta.17.
+    /// Large + captions + carousel hero is unsatisfiable by design: ~155.8pt of demand against 44pt
+    /// of reach give and 70pt of elastic give — 114 against 156, in either spend order. Under the
+    /// rc2 order the reaches floor at 24/64 and 111.83 is left over, which the carousel's 70pt cap
+    /// cannot cover. The plan must NOT pretend — it reports `fits == false` and hands back TODAY'S
+    /// numbers verbatim (compression 68.33, reaches 88/44), so the visibility belt owns the residue
+    /// in exactly the regime that shipped in beta.17.
     func testLargeWithCaptionsAndCarouselHeroFallsBackToTodaysNumbers() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: true,
@@ -228,19 +264,55 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.linkFrame, 578.833, accuracy: 0.01)
     }
 
-    /// Large + captions in the FEAT-15 panel IS satisfiable — the panel's 142pt of give covers all
-    /// but 13.8pt, which the bottom reach absorbs without reaching its floor.
-    func testLargeWithCaptionsInPanelModeFitsUsingSomeBottomReach() {
+    /// Large + captions in the FEAT-15 panel IS satisfiable: both reaches go to their floors and
+    /// the panel's 142pt of give covers the 111.83 that is left, short of its own cap.
+    ///
+    ///     demand    24 + 88 + 403.33 + 43.5 + 44 + 8 − 455 = 155.83
+    ///     (a) bottom 44 → 24                                −20  ⇒ 135.83
+    ///     (b) top    88 → 64                                −24  ⇒ 111.83
+    ///     (c) hero   min(111.83, 142)                      = 111.83, 30.17 of give unspent
+    ///     viewport  455 + 111.83                           = 566.83
+    ///     linkFrame 64 + 403.33 + 43.5 + 24                = 534.83
+    ///     restRange                                        = 32
+    ///
+    /// Before the reordering this regime compressed the full 142 and left the top reach at 88; it
+    /// now compresses 111.83 with both reaches floored — 30.17pt LESS hero compression. The panel's
+    /// synopsis still ends up at one line here (`HeroSlotGive` tiers: 36 + 32 + 41.83), which is
+    /// what this shape showed before too, so nothing regresses for it.
+    func testLargeWithCaptionsInPanelModeFitsAfterBothReachesFloor() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: true,
                                           showsCTA: false,
                                           landscapeRows: false)
         XCTAssertTrue(plan.fits)
-        XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: false), accuracy: epsilon)
-        XCTAssertEqual(plan.compression, 142, accuracy: epsilon)
-        XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon)
-        XCTAssertEqual(plan.bottomReach, 30.167, accuracy: 0.01)
-        XCTAssertGreaterThan(plan.bottomReach, PinnedRowGeometry.bottomReachFloor)
+        XCTAssertEqual(plan.compression, 111.833, accuracy: 0.01)
+        XCTAssertLessThan(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: false))
+        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.viewport, 566.833, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 534.833, accuracy: 0.01)
+        XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
+    }
+
+    // MARK: - The spend order itself
+
+    /// The rc2 order, stated as an invariant rather than as a number: the reaches are spent BEFORE
+    /// the compression, so any plan that ends up compressing at all must already have both reaches
+    /// on their floors. (The demand always exceeds the 44pt of reach give wherever the scope gate
+    /// is open at all: `demand == legacyRawDemand + captionChrome + 44`.)
+    ///
+    /// The mirror clause covers the two paths that spend nothing: the closed gate (Small, Medium,
+    /// landscape) and the unsatisfiable fallback both hand back the shipped reaches untouched.
+    func testCompressionIsOnlySpentAfterBothReachesAreOnTheirFloors() {
+        for (label, plan) in Self.crossProduct() {
+            if plan.fits, plan.compression > 0 {
+                XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon, label)
+                XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon, label)
+            } else {
+                XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
+                XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
+            }
+        }
     }
 
     // MARK: - Give, purity, identity
@@ -286,5 +358,222 @@ final class PinnedRowGeometryTests: XCTestCase {
         if label.hasPrefix("Small") { return Self.small }
         if label.hasPrefix("Medium") { return Self.medium }
         return Self.large
+    }
+}
+
+/// rc2 (2026-09-06) — `PinnedRowGeometry.HeroSlotGive`, the split of one `compression` across the
+/// pinned hero's two elastic slots. Extracted out of `HomeHeroForeground` so this arithmetic is
+/// asserted rather than reasoned about; the view's `synopsisSlotGive` / `logoSlotGive` are thin
+/// wrappers over it.
+///
+/// The tester's objection was about LINES OF DESCRIPTION, and the line count is a floor division:
+/// `HomeHeroForeground.synopsisLineLimit` is `floor(slotHeight / (heroSynopsisSlotHeightPinned/2))`,
+/// i.e. 36pt per line. So the tests below assert the slot height AND the line count it implies —
+/// the second is the thing the tester actually sees.
+final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
+
+    private let epsilon: CGFloat = 0.001
+
+    /// Mirror of `HomeHeroForeground.synopsisSlotHeight`'s compact branch.
+    private func slotHeight(showsCTA: Bool, synopsisGive: CGFloat) -> CGFloat {
+        let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
+                            : Theme.Size.heroSynopsisSlotHeightPinnedPanel
+        return slot - synopsisGive
+    }
+
+    /// Mirror of `HomeHeroForeground.synopsisLineLimit`'s compact branch.
+    private func lineLimit(slotHeight: CGFloat) -> Int {
+        max(1, Int((slotHeight / (Theme.Size.heroSynopsisSlotHeightPinned / 2)).rounded(.down)))
+    }
+
+    // MARK: - The three tiers
+
+    /// The whole point of the rc2 change, at the tester's shape.
+    ///
+    ///     compression 68.33  (PinnedRowGeometry.plan, Large + Hide Labels + panel)
+    ///     tier 1  synopsis   min(68.33, heroSynopsisSlotPinnedGive 36)          = 36
+    ///     tier 2  logo       min(32.33, heroLogoSlotPinnedGive 32)              = 32
+    ///     tier 3  synopsis   max(68.33 − 36 − 32 − slack 2, 0) = 0              = 0
+    ///     ⇒ synopsis slot 144 − 36 = 108   ⇒ floor(108/36) = 3 lines
+    ///
+    /// The 0.33 that tiers 1+2 do not cover is the hero frame's own `heroPinnedFrameSlack` — 2pt of
+    /// frame that holds no content — which is why tier 3 stays shut. Spending it would take the
+    /// slot to 107.67 and `floor(107.67/36)` is 2, i.e. the regression this test exists to catch.
+    func testPanelAtStevensCompressionKeepsThreeSynopsisLines() {
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: 68.333,
+                                                         showsCTA: false,
+                                                         folderHero: false)
+        XCTAssertEqual(split.synopsis, Theme.Size.heroSynopsisSlotPinnedGive, accuracy: epsilon)
+        XCTAssertEqual(split.synopsis, 36, accuracy: epsilon)
+        XCTAssertEqual(split.logo, Theme.Size.heroLogoSlotPinnedGive, accuracy: epsilon)
+        XCTAssertEqual(split.logo, 32, accuracy: epsilon)
+
+        let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
+        XCTAssertEqual(slot, 108, accuracy: epsilon)
+        XCTAssertEqual(lineLimit(slotHeight: slot), 3)
+
+        // The logo slot lands exactly on its floor, as it did in Wave 10.
+        XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo,
+                       Theme.Size.heroLogoSlotHeightPinnedFloor, accuracy: epsilon)
+    }
+
+    /// Tier 3 opens only past tiers 1+2 plus the frame slack, and then it is the panel's own extra.
+    ///
+    ///     compression 111.83  (Large + captions + panel)
+    ///     tier 1  36, tier 2  32, tier 3  min(111.83 − 68 − 2, 72) = 41.83
+    ///     ⇒ synopsis give 77.83, slot 144 − 77.83 = 66.17  ⇒ 1 line
+    ///
+    /// One line is what this shape produced before the reordering too (its old compression, 142,
+    /// drained the slot to 36), so nothing regresses for it — the panel simply cannot show three
+    /// lines and absorb a 43.5pt caption row at Large.
+    func testPanelPastTheSlackOpensTheThirdTier() {
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: 111.833,
+                                                         showsCTA: false,
+                                                         folderHero: false)
+        XCTAssertEqual(split.logo, Theme.Size.heroLogoSlotPinnedGive, accuracy: epsilon)
+        XCTAssertEqual(split.synopsis, 77.833, accuracy: 0.01)
+        let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
+        XCTAssertEqual(slot, 66.167, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: slot), 1)
+    }
+
+    /// Tier 1 alone, below the logo's turn: a small compression comes entirely out of the synopsis
+    /// in BOTH forms, exactly as it always has.
+    func testSmallCompressionsSpendOnlyTheSharedSynopsisGive() {
+        for showsCTA in [false, true] {
+            let split = PinnedRowGeometry.HeroSlotGive.split(compression: 20,
+                                                             showsCTA: showsCTA,
+                                                             folderHero: false)
+            XCTAssertEqual(split.synopsis, 20, accuracy: epsilon, "showsCTA=\(showsCTA)")
+            XCTAssertEqual(split.logo, 0, accuracy: epsilon, "showsCTA=\(showsCTA)")
+        }
+    }
+
+    /// Zero in, zero out — the non-pinned call sites (`compact == false`) always pass 0.
+    func testZeroCompressionSpendsNothing() {
+        for showsCTA in [false, true] {
+            for folder in [false, true] {
+                let split = PinnedRowGeometry.HeroSlotGive.split(compression: 0,
+                                                                 showsCTA: showsCTA,
+                                                                 folderHero: folder)
+                XCTAssertEqual(split.total, 0, accuracy: epsilon)
+            }
+        }
+    }
+
+    // MARK: - What must not have changed
+
+    /// The CAROUSEL form is bit-identical to the shipped two-step split at every compression it can
+    /// be handed: its tier-3 ceiling is `72 − 36 − 36 == 0`, so the third tier can never open.
+    func testCarouselSplitIsUnchangedAcrossItsWholeRange() {
+        var c: CGFloat = 0
+        while c <= PinnedRowGeometry.elasticGive(showsCTA: true) + 0.5 {
+            let split = PinnedRowGeometry.HeroSlotGive.split(compression: c,
+                                                             showsCTA: true,
+                                                             folderHero: false)
+            // The pre-rc2 formula, inlined.
+            let legacySynopsis = c > 0
+                ? min(c, Theme.Size.heroSynopsisSlotHeightPinned - Theme.Size.heroSynopsisSlotHeightPinnedFloor)
+                : 0
+            let legacyLogo = c > 0
+                ? min(max(c - legacySynopsis, 0), Theme.Size.heroLogoSlotPinnedGive)
+                : 0
+            XCTAssertEqual(split.synopsis, legacySynopsis, accuracy: epsilon, "compression=\(c)")
+            XCTAssertEqual(split.logo, legacyLogo, accuracy: epsilon, "compression=\(c)")
+            c += 0.25
+        }
+    }
+
+    /// FEAT-29's collection-folder rule is untouched: the whole synopsis slot is give (a folder
+    /// preview carries no description, so the slot has a genuine 0 floor) and the logo takes an
+    /// unbounded remainder. At Large + panel that is synopsis 68.33, logo 0 — the wordmark keeps
+    /// its full 110pt slot, which is the regression FEAT-29 closed.
+    func testFolderHeroSplitIsUnchanged() {
+        for showsCTA in [false, true] {
+            let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
+                                : Theme.Size.heroSynopsisSlotHeightPinnedPanel
+            var c: CGFloat = 0
+            while c <= PinnedRowGeometry.elasticGive(showsCTA: showsCTA) + 0.5 {
+                let split = PinnedRowGeometry.HeroSlotGive.split(compression: c,
+                                                                 showsCTA: showsCTA,
+                                                                 folderHero: true)
+                let legacySynopsis = c > 0 ? min(c, slot) : 0
+                XCTAssertEqual(split.synopsis, legacySynopsis, accuracy: epsilon,
+                               "showsCTA=\(showsCTA) compression=\(c)")
+                XCTAssertEqual(split.logo, max(c - legacySynopsis, 0), accuracy: epsilon,
+                               "showsCTA=\(showsCTA) compression=\(c)")
+                c += 0.25
+            }
+        }
+    }
+
+    // MARK: - Invariants
+
+    /// Nothing hard-clips. The hero's FRAME shrinks by `compression`; its CONTENT shrinks by
+    /// `split.total`, and the frame carries `heroPinnedFrameSlack` (2pt) that holds no content — so
+    /// the content must give up at least `compression − slack` everywhere up to that form's cap, or
+    /// the slots overflow into the rows below. This is the property
+    /// `Theme.Size.heroPinnedCompressionCap` exists to protect.
+    func testContentGiveAlwaysCoversTheFrameShrinkMinusItsSlack() {
+        for showsCTA in [false, true] {
+            for folder in [false, true] {
+                var c: CGFloat = 0
+                while c <= PinnedRowGeometry.elasticGive(showsCTA: showsCTA) + epsilon {
+                    let split = PinnedRowGeometry.HeroSlotGive.split(compression: c,
+                                                                     showsCTA: showsCTA,
+                                                                     folderHero: folder)
+                    XCTAssertGreaterThanOrEqual(split.total + epsilon,
+                                                c - Theme.Size.heroPinnedFrameSlack,
+                                                "showsCTA=\(showsCTA) folder=\(folder) compression=\(c)")
+                    c += 0.25
+                }
+            }
+        }
+    }
+
+    /// Both slot floors hold for a TITLE hero at every compression up to the cap: the logo never
+    /// goes below `heroLogoSlotHeightPinnedFloor` (78) and the synopsis never below
+    /// `heroSynopsisSlotHeightPinnedFloor` (36), which is one readable line.
+    func testTitleHeroSlotFloorsHold() {
+        for showsCTA in [false, true] {
+            var c: CGFloat = 0
+            while c <= PinnedRowGeometry.elasticGive(showsCTA: showsCTA) + epsilon {
+                let split = PinnedRowGeometry.HeroSlotGive.split(compression: c,
+                                                                 showsCTA: showsCTA,
+                                                                 folderHero: false)
+                let label = "showsCTA=\(showsCTA) compression=\(c)"
+                XCTAssertGreaterThanOrEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo + epsilon,
+                                            Theme.Size.heroLogoSlotHeightPinnedFloor, label)
+                XCTAssertGreaterThanOrEqual(slotHeight(showsCTA: showsCTA, synopsisGive: split.synopsis) + epsilon,
+                                            Theme.Size.heroSynopsisSlotHeightPinnedFloor, label)
+                XCTAssertGreaterThanOrEqual(split.synopsis, 0, label)
+                XCTAssertGreaterThanOrEqual(split.logo, 0, label)
+                c += 0.25
+            }
+        }
+    }
+
+    /// Monotone in the compression: a bigger frame shrink never gives a slot MORE room back. A
+    /// non-monotone split would make the synopsis line count jump around as the synced Poster Size
+    /// changes, which is the class of bug the tiers could plausibly have introduced.
+    func testSplitIsMonotoneInCompression() {
+        for showsCTA in [false, true] {
+            for folder in [false, true] {
+                var c: CGFloat = 0
+                var previous = PinnedRowGeometry.HeroSlotGive.split(compression: 0,
+                                                                    showsCTA: showsCTA,
+                                                                    folderHero: folder)
+                while c <= PinnedRowGeometry.elasticGive(showsCTA: showsCTA) + epsilon {
+                    let split = PinnedRowGeometry.HeroSlotGive.split(compression: c,
+                                                                     showsCTA: showsCTA,
+                                                                     folderHero: folder)
+                    let label = "showsCTA=\(showsCTA) folder=\(folder) compression=\(c)"
+                    XCTAssertGreaterThanOrEqual(split.synopsis + epsilon, previous.synopsis, label)
+                    XCTAssertGreaterThanOrEqual(split.logo + epsilon, previous.logo, label)
+                    previous = split
+                    c += 0.25
+                }
+            }
+        }
     }
 }

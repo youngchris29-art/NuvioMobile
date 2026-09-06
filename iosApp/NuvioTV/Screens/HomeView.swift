@@ -3636,20 +3636,25 @@ struct HomeHeroForeground: View {
     /// short of what the panel can really yield, which is why Steven's shape could not be made to
     /// fit: the FRAME would have shrunk past what the CONTENT gave up, the exact overflow
     /// `Theme.Size.heroPinnedCompressionCap` exists to prevent. Carousel numbers are unchanged.
+    ///
+    /// rc2 (2026-09-06): the split itself now lives in `PinnedRowGeometry.HeroSlotGive`, which is a
+    /// pure value function and therefore unit-tested rather than reasoned about here — these two
+    /// properties are thin wrappers over it. The behaviour change it carries is for the PANEL form
+    /// only: it no longer drains the panel's whole 108pt of synopsis give before touching the logo.
+    /// It spends the carousel's own 36 first, then the logo's 32, and only reaches the extra 72 the
+    /// panel absorbed from the CTA for compressions past those two plus the frame's 2pt of slack.
+    /// At the tester's 68.33 that is synopsis 36 + logo 32 ⇒ a 108pt synopsis slot ⇒ **3 lines**,
+    /// the beta.17 reading he asked to keep, where the drain-synopsis-first order gave 2. Carousel
+    /// and collection-folder heroes are numerically unchanged at every compression.
     private var synopsisSlotGive: CGFloat {
-        guard compression > 0 else { return 0 }
-        let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
-                            : Theme.Size.heroSynopsisSlotHeightPinnedPanel
-        let ceiling = isCollectionHero(item)
-            ? slot
-            : slot - Theme.Size.heroSynopsisSlotHeightPinnedFloor
-        return min(compression, ceiling)
+        PinnedRowGeometry.HeroSlotGive.split(compression: compression,
+                                             showsCTA: showsCTA,
+                                             folderHero: isCollectionHero(item)).synopsis
     }
     private var logoSlotGive: CGFloat {
-        guard compression > 0 else { return 0 }
-        let remainder = compression - synopsisSlotGive
-        guard remainder > 0 else { return 0 }
-        return isCollectionHero(item) ? remainder : min(remainder, Theme.Size.heroLogoSlotPinnedGive)
+        PinnedRowGeometry.HeroSlotGive.split(compression: compression,
+                                             showsCTA: showsCTA,
+                                             folderHero: isCollectionHero(item)).logo
     }
 
     /// The compact (pinned) logo slot's height after `logoSlotGive`, or the classic fixed slot
