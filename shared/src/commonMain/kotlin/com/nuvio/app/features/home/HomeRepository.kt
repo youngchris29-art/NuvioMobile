@@ -1212,7 +1212,11 @@ object HomeRepository {
 
         val rowsHeld = rowsHeldForPublish(
             decisionReleased = decision?.released,
-            decisionRowsReleased = decision?.rowsReleased ?: true,
+            // Codex beta.18 r5 (P2): the EFFECTIVE rows release after `applyRowsGateDecisionLocked`,
+            // not the raw decision — a mid-launch Show Hero toggle overrides the decision's hold
+            // (`rowsWait=toggle`), and publishing the raw `false` kept Swift holding the rows with
+            // nothing left to republish them.
+            decisionRowsReleased = if (decision?.released == true) rowsGateReleased else (decision?.rowsReleased ?: true),
             wasArmed = wasArmed,
             rowsGateReleased = rowsGateReleased,
         )

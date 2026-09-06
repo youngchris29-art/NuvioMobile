@@ -208,6 +208,10 @@ final class HomeViewModel: ObservableObject {
     /// is still running, this watches `LaunchSyncSignal` for the settle instead (see
     /// `openRowsForNoSourcesBootstrap`). Cancelled with the other watchers.
     private var noSourcesSyncWatcher: FlowWatcher?
+    /// Codex beta.18 r5 (P2): bumped whenever catalog loading takes over from the no-sources
+    /// bootstrap (a sync pull enabling an add-on), so a wait installed for the add-on-less shape can
+    /// never open the rows over Kotlin's own hold or the hero art prewarm. Both completions check it.
+    private var noSourcesWaitGeneration = 0
     private var progressWatcher: FlowWatcher?
     private var progressSourceWatcher: FlowWatcher?
     private var traktSettingsWatcher: FlowWatcher?
@@ -942,6 +946,7 @@ final class HomeViewModel: ObservableObject {
         if noSourcesSyncWatcher != nil { return }
         if rowsGateOpen { return }
         let gen = pipelineGeneration
+        let waitGen = noSourcesWaitGeneration
         // Codex beta.18 r4 (P1): `Idle` with a launch sync still expected is NOT settled (the burst
         // has not started yet) — the same term `decideHeroGate` uses, read through Kotlin.
         guard !HomeRepository.shared.launchSyncSettled else {
@@ -952,7 +957,8 @@ final class HomeViewModel: ObservableObject {
             HomeHeroProbe.log(String(format: "rowsWait bootstrap=noSources sync=unsettled sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
         }
         noSourcesSyncWatcher = FlowWatcherKt.watch(LaunchSyncSignal.shared.state) { [weak self] emitted in
-            guard let self, self.pipelineGeneration == gen, !self.rowsGateOpen else { return }
+            guard let self, self.pipelineGeneration == gen, self.noSourcesWaitGeneration == waitGen,
+                  !self.rowsGateOpen else { return }
             _ = emitted
             // Read the state back through the Kotlin accessor rather than casting the emitted
             // value: the nested enum's Swift name is an interop detail nothing else here relies on.
@@ -963,7 +969,8 @@ final class HomeViewModel: ObservableObject {
         }
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard let self, self.pipelineGeneration == gen, !self.rowsGateOpen else { return }
+            guard let self, self.pipelineGeneration == gen, self.noSourcesWaitGeneration == waitGen,
+                  !self.rowsGateOpen else { return }
             if HomeHeroProbe.enabled {
                 HomeHeroProbe.log(String(format: "rowsWait bootstrap=noSources timeout sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
             }
@@ -1258,6 +1265,12 @@ final class HomeViewModel: ObservableObject {
         // `HomeRepository.refresh` for its non-forced, metadata-only republish path instead — see
         // `AddonChangeRoute`'s doc comment for why `force: true` cannot take that path.
         HomeCatalogSettingsRepository.shared.syncCatalogs(addons: ready)
+        // Codex beta.18 r5 (P2): catalog loading takes over from any no-sources bootstrap wait —
+        // Kotlin's gate (and the hero art prewarm) now own the rows release, so the wait's
+        // pending completions must not open the Swift gate underneath them.
+        noSourcesWaitGeneration += 1
+        noSourcesSyncWatcher?.cancel()
+        noSourcesSyncWatcher = nil
         HomeRepository.shared.refresh(addons: ready, force: route == .refresh)
     }
 
