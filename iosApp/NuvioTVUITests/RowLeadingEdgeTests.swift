@@ -97,7 +97,10 @@ final class RowLeadingEdgeTests: XCTestCase {
     /// probe reads `.global`, the same space a screenshot's pixel columns are already in).
     private func tileGlobalOriginX(_ label: String) -> CGFloat? {
         for token in label.split(separator: " ") where token.hasPrefix("x=") {
-            return Double(token.dropFirst(2)).map(CGFloat.init)
+            // Spelled out: `Double(...).map(CGFloat.init)` made the Swift 6 type checker give up
+            // ("failed to produce diagnostic for expression") on the Phase 1 gate build.
+            guard let value = Double(String(token.dropFirst(2))) else { return nil }
+            return CGFloat(value)
         }
         return nil
     }
