@@ -322,7 +322,7 @@ final class NuvioTVUITests: XCTestCase {
     /// branch is a new `if`, not a change to the existing walk.
     private func openTab(_ app: XCUIApplication, named title: String) {
         let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
-        if app.buttons["sidebar_item_Home"].exists || app.otherElements["sidebar_overlay"].exists {
+        if app.descendants(matching: .any)["sidebar_item_Home"].exists || app.otherElements["sidebar_overlay"].exists {
             // The panel is visible even collapsed (showing only the CURRENT tab's own row), and it
             // only expands to show every row once focus actually lands ON one of them
             // (`SidebarOverlay.isExpanded` = `focusedItem != nil`). So climb Up until ANY
@@ -343,13 +343,10 @@ final class NuvioTVUITests: XCTestCase {
                 _ = moveFocus(.up, until: target, max: 8)
             }
             remote.press(.select)
+            // Selecting a row releases focus into the new tab's content (see
+            // `SidebarOverlay.basePanel`), so unlike the tab-bar branch below no post-select
+            // press is needed to leave the chrome.
             pause(2)
-            // Steps focus OUT of the panel and into the newly-selected tab's own content — the
-            // sidebar's equivalent of the tab-bar branch's post-select `press(.down, times: 1)`
-            // below. Selecting a row does not itself move focus (the button's action only flips
-            // `selectedTab`; see `SidebarOverlay.basePanel`'s doc comment on why), so without this
-            // the panel would stay open and expanded, still focused on the row just pressed.
-            press(.right, times: 1, gap: 0.5)
             return
         }
 
@@ -1391,6 +1388,23 @@ final class NuvioTVUITests: XCTestCase {
     /// Empty array (not a failure) when the container isn't on screen at all, or the runtime
     /// truncated its subtree away — callers are expected to fail loudly on that themselves rather
     /// than have this silently swallow the "pane never rendered" case.
+    /// FEAT-33: generic form of the `hero_probe_blob` read below — one `snapshot()` walk for a
+    /// hidden single-`Text` blob by identifier, regardless of its resolved AX type. `app.staticTexts`
+    /// subscripting missed `collection_frame_blob` on the first test54 run (the blob rides an
+    /// `.overlay` inside a `TimelineView` inside a List row), exactly the class the hero blob's
+    /// snapshot walk exists for. `nil` when the blob is not in the tree (caller decides to skip).
+    private func probeBlobLabel(_ app: XCUIApplication, identifier: String) -> String? {
+        guard let root = try? app.snapshot() else { return nil }
+        func find(_ node: XCUIElementSnapshot) -> String? {
+            if node.identifier == identifier { return node.label }
+            for child in node.children {
+                if let hit = find(child) { return hit }
+            }
+            return nil
+        }
+        return find(root)
+    }
+
     private func heroProbeLines(_ app: XCUIApplication) -> [String] {
         guard let root = try? app.snapshot() else { return [] }
         var container: XCUIElementSnapshot?
@@ -5710,27 +5724,35 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(debugSidebar.waitForExistence(timeout: 6), "debug_sidebar probe missing (DEBUG build?)")
         XCTAssertTrue(debugSidebar.label.contains("mode=1"), "sidebar mode did not turn on: \(debugSidebar.label)")
 
-        // Collapsed at rest: only the current tab's (Home's) own row exists.
-        XCTAssertTrue(app.buttons["sidebar_item_Home"].exists, "sidebar_item_Home must exist at rest on the Home tab")
-        XCTAssertFalse(app.buttons["sidebar_item_Search"].exists, "sidebar_item_Search must NOT exist while the panel is collapsed")
+        // Collapsed at rest: only the current tab's (Home's) own row exists — and at rest the pill
+        // is deliberately NOT a button (`SidebarOverlay.armed`: it is a plain label until a Menu or
+        // Up-with-no-target reveal arms it), so match any element type here.
+        XCTAssertTrue(app.descendants(matching: .any)["sidebar_item_Home"].exists, "sidebar_item_Home must exist at rest on the Home tab")
+        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "sidebar_item_Search must NOT exist while the panel is collapsed")
 
-        // The system tab bar must be gone outright, not just unfocused/off screen.
-        let tabBarHome = app.buttons["Home"]
-        XCTAssertTrue(
-            !tabBarHome.exists || tabBarHome.frame.minY <= 0,
-            "the system tab bar's Home button must not be visible in sidebar mode"
-        )
+        // The system tab bar must be gone outright. `app.buttons["Home"]` cannot say so — XCUI
+        // matches identifier OR label, and the sidebar's own Home row is labelled "Home" — but
+        // while the panel is collapsed NOTHING labelled "Search" may exist: the tab bar's Search
+        // button is hidden with the bar, and the sidebar's Search row only exists once expanded.
+        XCTAssertFalse(app.buttons["Search"].exists, "a 'Search' button exists while collapsed — the system tab bar is still present in sidebar mode")
         shot(app, "52a_collapsed")
 
         // Climb up from the hero until the collapsed row itself takes focus — that focus is
         // exactly what expands the panel to all six rows (`SidebarOverlay.isExpanded`).
         let homeRow = app.buttons["sidebar_item_Home"]
         var expanded = false
-        for _ in 0..<6 {
+        for step in 0..<6 {
             if homeRow.exists && homeRow.hasFocus { expanded = true; break }
+            // Diagnostic (2026-09-05): where does each Up actually land? Prints the focused
+            // element's identifier/label/frame and the sidebar's own state line so a failed
+            // climb is attributable (hidden tab bar still focusable? move command swallowed?).
+            let f = focusedButton(app)
+            let state = app.staticTexts["sidebar_state"].exists ? app.staticTexts["sidebar_state"].label : "(no sidebar_state)"
+            print("[test52] up#\(step) focused=\(f.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") \(state)")
             remote.press(.up)
             pause(0.6)
         }
+        print("[test52] after climb focused=\(focusedButton(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil")")
         XCTAssertTrue(expanded, "could not focus sidebar_item_Home by climbing up from the hero")
         pause(0.5)
         let stateProbe = app.staticTexts["sidebar_state"]
@@ -5747,11 +5769,10 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 6), "Search content did not appear after selecting sidebar_item_Search")
         shot(app, "52c_search")
 
-        // Right steps focus off the panel and into content, collapsing it back down. Selecting a
-        // row does not itself move focus (`SidebarOverlay.basePanel`'s doc comment: the reference
-        // keeps focus on the row you pressed), so the panel is still expanded and still focused on
-        // Search until this step.
-        press(.right, times: 1, gap: 0.6)
+        // Selecting a row releases focus to the new tab's content (`SidebarOverlay.basePanel`:
+        // our pages start below the panel, so the reference's keep-focus behaviour left no way
+        // out but Down past the last row), so the panel must now be collapsed with no further
+        // press.
         pause(0.5)
         if stateProbe.exists {
             XCTAssertTrue(stateProbe.label.contains("expanded=0"), "panel should report collapsed once focus left it: \(stateProbe.label)")
@@ -5839,7 +5860,7 @@ final class NuvioTVUITests: XCTestCase {
         var folderFound = false
         var lastFocusedItem = ""
         var stalledPresses = 0
-        for _ in 1...12 {
+        for _ in 1...28 {
             press(.down, times: 1)
             pause(0.5)
             let focused = probeField(liveHeroProbe(), "fitem") ?? ""
@@ -5854,7 +5875,7 @@ final class NuvioTVUITests: XCTestCase {
             if stalledPresses >= 5 { break }
         }
         guard folderFound else {
-            throw XCTSkip("no folder/collection tile focused within 12 Down presses on this profile's Home — cannot drive the collection frame probe without one")
+            throw XCTSkip("no folder/collection tile focused within 28 Down presses on this profile's Home — cannot drive the collection frame probe without one")
         }
         shot(app, "54a_folder_focused")
         // A second focus step inside the same row gives the sampler a second measured window, on
@@ -5877,16 +5898,23 @@ final class NuvioTVUITests: XCTestCase {
         // there but not here (here, the STOP CONDITION is the target itself existing, so an
         // over-shoot is simply a few harmless extra presses at the bottom of the pane, not a wrong
         // landing spot the way a blind fixed count risks).
-        let blob = app.staticTexts["collection_frame_blob"]
+        // Snapshot walk, not `app.staticTexts[…]` — see `probeBlobLabel`.
+        var blobText: String? = nil
         for _ in 0..<20 {
-            if blob.exists { break }
+            if let hit = probeBlobLabel(app, identifier: "collection_frame_blob") { blobText = hit; break }
             remote.press(.down)
             pause(0.5)
         }
-        guard blob.waitForExistence(timeout: 4) else {
+        if blobText == nil {
+            pause(2)
+            blobText = probeBlobLabel(app, identifier: "collection_frame_blob")
+        }
+        guard let text = blobText else {
+            shot(app, "54x_about_no_blob")
+            let f = focusedButton(app)
+            print("[test54] no blob; focused=\(f.map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") toggles=\(app.switches.count + app.descendants(matching: .toggle).count) cells=\(app.cells.count)")
             throw XCTSkip("collection_frame_blob never appeared on the About pane — cannot read the frame-timing harvest")
         }
-        let text = blob.label
         let attachment = XCTAttachment(string: text)
         attachment.name = "54a_frame_probe_text"
         attachment.lifetime = .keepAlways

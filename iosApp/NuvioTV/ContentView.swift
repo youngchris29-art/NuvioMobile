@@ -351,10 +351,10 @@ struct MainTabView: View {
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
         .environment(\.sidebarChrome, sidebarChrome)
-        // FEAT-30: the shell-wide focus scope `resetFocus(in:)` targets (declared on the TabView
-        // in BOTH modes — a scope by itself changes no focus behaviour; only the sidebar calls
-        // reset on it).
-        .focusScope(shellFocusScope)
+        // FEAT-30: the shell-wide focus scope `resetFocus(in:)` targets. Sidebar mode only, so
+        // tabs mode carries no new modifier at all (the byte-identical promise; test54's row walk
+        // stopped finding tiles in the one run where this scope was declared in both modes).
+        .modifier(ShellFocusScopeModifier(scope: shellFocusScope))
         // FEAT-30: keeps `Theme.Size.heroPinnedRowsViewportBudget` honest if hiding the system tab
         // bar moves the shell's top safe area. Ships as a no-op (the constant is 0 and the
         // modifier then applies nothing at all, in either mode) until the device spike measures
@@ -425,5 +425,18 @@ struct ProfileTabView: View {
         // FEAT-30 (Codex r2): Profile is a tab root too; with the system bar hidden in sidebar
         // mode a Menu press here needs the same route to the sidebar the other roots have.
         .sidebarMenuReveal()
+    }
+}
+
+/// FEAT-30: `.focusScope` over the tab shell, structurally absent in tabs mode.
+private struct ShellFocusScopeModifier: ViewModifier {
+    let scope: Namespace.ID
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if SidebarChrome.isEnabled() {
+            content.focusScope(scope)
+        } else {
+            content
+        }
     }
 }
