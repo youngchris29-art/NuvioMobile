@@ -290,6 +290,12 @@ struct HomeView: View {
     /// `heroPanelSeed` is the settings-independent content lookup (it also GATES the panel via
     /// `focusHeroActive`, so it must not consult it — that would be circular).
     private var heroPanelSeed: MetaPreview? {
+        // BUG-86 hero-off rows (beta.18): no seed until the rows gate has opened. Continue Watching
+        // and the collections publish ahead of the gated rows, and seeding from them painted a title
+        // that the rows' first publish then replaced (test31 leg D, first fixture run: CW title at
+        // 5659 ms, first-catalog-row title at 6507 ms). The "Loading catalogs…" placeholder stays up
+        // instead — the same hold the carousel hero already gets from `HeroPublishRoute.hold`.
+        guard model.rowsGateOpen else { return nil }
         for row in model.rows {
             if case .catalog(let section) = row, let first = section.items.first { return first }
         }
@@ -551,7 +557,12 @@ struct HomeView: View {
 
                 #if DEBUG
                 // BUG-25 diagnostic (invisible, harness-readable): the env values Home renders with.
-                Text("debug_env cr=\(Int(posterStyle.cornerRadius)) w=\(Int(posterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength)")
+                // BUG-87 (beta.18): the resolved pinned geometry, APPENDED — the harness parses
+                // `w>=260` and the existing tokens keep their exact spelling and order. `comp` is
+                // the hero's yield, `topR`/`botR` the reaches the rows actually render with,
+                // `fits` whether the focus engine's link frame is inside the rows viewport (the
+                // whole point of the fix), and `slack` the width of the legal-rest set.
+                Text("debug_env cr=\(Int(posterStyle.cornerRadius)) w=\(Int(posterStyle.width)) depth=\(debugCardDepth.enabled ? 1 : 0) edge=\(debugCardDepth.edgeStrength) comp=\(Int(pinnedPlan.compression.rounded())) topR=\(Int(pinnedPlan.topReach.rounded())) botR=\(Int(pinnedPlan.bottomReach.rounded())) fits=\(pinnedPlan.fits ? 1 : 0) slack=\(Int(pinnedPlan.restRange.rounded()))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_env")
@@ -674,6 +685,31 @@ struct HomeView: View {
                                     pinnedHeroHeader
                                 }
                                 rowsScroll(pinned: heroHeaderVisible, settleReveal: true)
+                            }
+                            // BUG-89 (beta.18): a Poster Size switch (Medium → Large) changes the
+                            // hero's height, both card reaches and the rows' bottom inset AT ONCE.
+                            // Attached HERE, on the common ancestor of the hero and the rows, so
+                            // all of it moves inside ONE transaction and reads as the layout
+                            // resizing. Before this it was three unanimated jumps followed, a beat
+                            // later, by the settle corrector dragging the second-to-last row into
+                            // place — the "regresses until you restart the app" half of the report.
+                            //
+                            // `.animation(_, value:)` rather than a `withAnimation` around the
+                            // change: the plan is a COMPUTED value derived from the synced
+                            // `posterStyle`, so there is no single mutation site to wrap — the new
+                            // value simply arrives with the repository's publish, from Settings on
+                            // this device or from a sync push on another. Keying it on the whole
+                            // `Plan` (Equatable) means a regime that resolves to identical geometry
+                            // animates nothing at all.
+                            .animation(.easeInOut(duration: 0.28), value: pinnedPlan)
+                            // The corrector has to be told, in the same breath, that every margin
+                            // it has measured for this regime is stale and that the rows want one
+                            // fresh reveal — otherwise its first post-switch sample reads the old
+                            // geometry as a fight and corrects against it. `fits` tells it whether
+                            // it is even in play: when the plan cannot make the frame fit, the belt
+                            // owns the residue exactly as it did before this fix.
+                            .onChange(of: pinnedPlan.regimeKey) { _, key in
+                                PinnedRowSettle.noteRegimeChange(key: key, fits: pinnedPlan.fits)
                             }
                         } else {
                             rowsScroll(pinned: false, settleReveal: false)
@@ -1093,8 +1129,15 @@ struct HomeView: View {
             // device's short-rest error in either direction. Rounds 2–3 proved padding
             // OUTSIDE the card frame can't do this: the reveal target simply doesn't
             // include it. See rowCardTopReach / rowCardBottomReach (BrowseComponents).
-            .environment(\.rowCardTopReach, pinned ? Theme.Size.heroPinnedRowTopPad : 0)
-            .environment(\.rowCardBottomReach, pinned ? Theme.Size.heroPinnedRowBottomReach : 0)
+            //
+            // BUG-87 (beta.18): the reaches come from `pinnedPlan`, not straight off Theme. They
+            // are two thirds of the frame the engine reveals, so when the hero's elastic give
+            // cannot cover the whole demand the plan spends them — bottom reach first (44 → 24: no
+            // content below it to protect), then, only if still short, the top reach (88 → 64, and
+            // never above 88, which is the dial that kills focus resolution). At every Poster Size
+            // that fits today these are exactly `heroPinnedRowTopPad` / `heroPinnedRowBottomReach`.
+            .environment(\.rowCardTopReach, pinned ? pinnedPlan.topReach : 0)
+            .environment(\.rowCardBottomReach, pinned ? pinnedPlan.bottomReach : 0)
             // "Trailer Location: Hero" — tell every row card to skip the inline morph, because
             // the focused title's trailer is playing in the pinned hero backdrop instead. Passed
             // unconditionally (the computed is already false in every other configuration, and
@@ -1138,7 +1181,7 @@ struct HomeView: View {
         // view moves; the pinned hero is a sibling above it in the VStack split. Full mechanism,
         // bounds and anti-oscillation argument: `PinnedRowSettle` in BrowseComponents.
         .modifier(PinnedRowSettleRevealModifier(enabled: settleReveal,
-                                               compression: pinnedHeroCompression,
+                                               compression: pinnedPlan.compression,
                                                onSettle: settleProbeSink))
         // BUG-30 A/B knob (see `homeScrollEdgeHard`). Not attached unless the knob is set, so
         // the shipped tree is unchanged.
@@ -1197,7 +1240,7 @@ struct HomeView: View {
                                        forceNuvioLayout: focusHeroActive,
                                        folderRoute: isCollectionHero(presentation.item)
                                            ? heroFolderRoutes[presentation.item.id] : nil,
-                                       compression: compact ? pinnedHeroCompression : 0)
+                                       compression: compact ? pinnedPlan.compression : 0)
                 }
             }
             // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
@@ -1212,7 +1255,7 @@ struct HomeView: View {
             // same amount (see `HomeHeroForeground.compression`), so this is a graceful compression
             // rather than a frame clipped around fixed content. 0 at Small/Medium — those layouts
             // are bit-identical to Wave 9.
-            .frame(height: compact ? Theme.Size.heroCarouselHeightPinned - pinnedHeroCompression
+            .frame(height: compact ? Theme.Size.heroCarouselHeightPinned - pinnedPlan.compression
                                    : Theme.Size.heroCarouselHeight)
             // BUG-30 (classic only, `topReach > 0`): grow the frame upward to the content top,
             // bottom-aligning the fixed-height slot above so the panel does not move a pixel.
@@ -1341,18 +1384,24 @@ struct HomeView: View {
     ///
     /// The fix is a bottom content inset sized so the scroll range ALONE can reveal the last row
     /// fully, with no corrector involved: `vh` (the pinned rows viewport, STATIC — never the live
-    /// viewport, the same Wave 10 rule `pinnedHeroCompression` follows) minus the last row's own
-    /// height, plus the same title-inset/dead-zone slack a settled correction would leave
-    /// (`heroPinnedRowTitleInset` 48, `heroPinnedRowSettleDeadZone` 4), plus 8pt of breathing
-    /// room. `Theme.Spacing.screen` floors it — every OTHER row is already tall enough that the
-    /// formula goes negative and the uniform inset every other edge carries is exactly right.
+    /// viewport, the same rule `pinnedPlan` follows) minus the last row's own height, plus the same
+    /// title-inset/dead-zone slack a settled correction would leave (`heroPinnedRowTitleInset` 48,
+    /// `heroPinnedRowSettleDeadZone` 4), plus 8pt of breathing room. `Theme.Spacing.screen` floors
+    /// it — every OTHER row is already tall enough that the formula goes negative and the uniform
+    /// inset every other edge carries is exactly right.
     ///
     /// At Large (poster 403.3, `vh` 523.3): a catalog last row (626.8pt) keeps the floor (60,
     /// unchanged); a hidden-title square-tile collection last row (436.9pt) gets 146; a captioned
     /// one (471.9pt) gets 111.
+    ///
+    /// BUG-87 (beta.18): both terms now move with `pinnedPlan` — `vh` is the plan's viewport (which
+    /// grows with the compression) and `pinnedLastRowHeight` is measured with the plan's REACHES
+    /// (which shrink the row when the hero's give runs out). Reading one from the plan and the
+    /// other from the Theme constants would mis-size this inset by exactly the reach spend, which
+    /// is the BUG-89 half of the report.
     private var pinnedRowsBottomInset: CGFloat {
         guard let lastRowHeight = pinnedLastRowHeight else { return Theme.Spacing.screen }
-        let vh = Theme.Size.heroPinnedRowsViewportBudget + pinnedHeroCompression
+        let vh = pinnedPlan.viewport
         let inset = max(Theme.Spacing.screen,
                          vh - lastRowHeight + Theme.Size.heroPinnedRowTitleInset
                             + Theme.Size.heroPinnedRowSettleDeadZone + 8)
@@ -1380,7 +1429,14 @@ struct HomeView: View {
                 let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
                 return artworkHeight + caption + pinnedUniformShelfChrome
             case .collection(let collection):
+                // BUG-87 (beta.18): `pinnedRowHeight` states the FIXED pinned reaches
+                // (`heroPinnedRowTopPad` / `heroPinnedRowBottomReach`) because they were the only
+                // values `HomeView` ever set. When the plan spends a reach, that helper overstates
+                // the row by exactly the spend, so correct it here rather than reaching into
+                // `CollectionsUI` — this is the helper's only caller, and it is the same
+                // "`HomeView` supplies the reaches" contract its own doc comment names.
                 return CollectionRowView.pinnedRowHeight(collection: collection, style: posterStyle)
+                    + pinnedPlanReachDelta
             }
         }
         // Codex r3 (P2): the caption term is gated exactly like the catalog branch above.
@@ -1399,6 +1455,14 @@ struct HomeView: View {
         return nil
     }
 
+    /// How much SHORTER (negative) a row is than the fixed-reach arithmetic assumes, because
+    /// `pinnedPlan` spent one or both reaches. 0 at every Poster Size that fits without spending
+    /// them, which is every configuration that shipped before BUG-87.
+    private var pinnedPlanReachDelta: CGFloat {
+        (pinnedPlan.topReach - Theme.Size.heroPinnedRowTopPad)
+            + (pinnedPlan.bottomReach - Theme.Size.heroPinnedRowBottomReach)
+    }
+
     /// Identifies `pinnedLastRowHeight`'s row for the probe line — `HomeRow.id` in the common
     /// case, the fixed row keys `rowsScroll` uses for CW/Upcoming otherwise.
     private var pinnedLastRowId: String? {
@@ -1412,27 +1476,46 @@ struct HomeView: View {
     /// Upcoming — every row whose cards go through `CatalogRowView`'s or `UpcomingRow`'s/
     /// `ContinueWatchingRow`'s identical shelf padding) carries around its artwork, verified
     /// against the shelf's own vertical padding (`BrowseComponents.swift:2795`
-    /// `.padding(.vertical, Theme.Spacing.lg)`, top AND bottom) and the pinned row reach constants
-    /// (`Theme.Size.heroPinnedRowTopPad` 88, `heroPinnedRowBottomReach` 44):
-    ///     Spacing.lg (24) + heroPinnedRowTopPad (88) + heroPinnedRowBottomReach (44) + Spacing.lg (24) = 180
+    /// `.padding(.vertical, Theme.Spacing.lg)`, top AND bottom) and the pinned row reaches:
+    ///     Spacing.lg (24) + topReach (88) + bottomReach (44) + Spacing.lg (24) = 180
     /// `CollectionRowView` does NOT use this — its shelf padding is asymmetric top/bottom, so it
     /// states its own arithmetic in `CollectionRowView.pinnedRowHeight`.
+    ///
+    /// BUG-87 (beta.18): the two reach terms come from `pinnedPlan`, which is what the rows are
+    /// actually rendering with (`\.rowCardTopReach` / `\.rowCardBottomReach` above). They equal the
+    /// Theme constants at every Poster Size that fits without spending them.
     private var pinnedUniformShelfChrome: CGFloat {
-        Theme.Spacing.lg + Theme.Size.heroPinnedRowTopPad + Theme.Size.heroPinnedRowBottomReach
-            + Theme.Spacing.lg
+        Theme.Spacing.lg + pinnedPlan.topReach + pinnedPlan.bottomReach + Theme.Spacing.lg
     }
 
-    /// Wave 10: how far the pinned hero yields to the rows below it, so the focused row fits below
-    /// the clip edge at the canonical rest. Derived from the CURRENT Poster Size and nothing else —
-    /// see `PinnedRowTitle.pinnedHeroCompression` for the arithmetic and for why this is static
-    /// rather than per-row.
+    /// BUG-87 (beta.18): structural fit. The ONE resolved geometry every pinned-mode consumer on
+    /// this screen reads — the hero's compression, both card reaches, the rows viewport, and
+    /// whether the focus engine's link frame fits inside it at all.
     ///
-    /// The tallest artwork any pinned row can present at a given size is the poster height:
-    /// landscape catalog rows (203) and folder tiles (square/landscape take their height from the
-    /// row's WIDTH dial) are all shorter, and Continue Watching/Upcoming are landscape cards. So
-    /// the poster height is the budget every row fits inside.
-    private var pinnedHeroCompression: CGFloat {
-        PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: posterStyle.height)
+    /// It replaces Wave 10's `pinnedHeroCompression` (which sized the hero against `Spacing.lg +
+    /// topReach + artwork + cushion` and charged neither the caption chrome nor the DOWNWARD reach,
+    /// leaving Steven's shape 12pt over its viewport and the settle corrector fighting the engine
+    /// forever). `PinnedRowTitle.pinnedHeroCompression` still exists and is still the scope gate
+    /// inside the plan — it is simply no longer read directly from here.
+    ///
+    /// Inputs, and why each is the right one:
+    ///  - `posterStyle.height` — the tallest artwork a PORTRAIT pinned row can present. Landscape
+    ///    catalog rows (203) and square/landscape folder tiles (height from the WIDTH dial) are
+    ///    shorter, and Continue Watching/Upcoming are landscape cards.
+    ///  - `posterStyle.showTitle` — Hide Labels. The caption is INSIDE the focusable label, so it
+    ///    is part of the frame the engine reveals.
+    ///  - `heroCarouselActive` — exactly what `heroCarousel` passes as `showsCTA`, so the plan's
+    ///    give matches the hero form actually on screen (FEAT-15's panel can give 142, not 70).
+    ///  - `posterStyle.landscapeCatalogRows` — a landscape page's rows are 203pt tall and need
+    ///    nothing spent for them.
+    ///
+    /// STATIC in the Wave 10 sense: it changes when a Settings/Appearance value changes and at no
+    /// other time — never per row, per focus, or per rest.
+    private var pinnedPlan: PinnedRowGeometry.Plan {
+        PinnedRowGeometry.plan(posterHeight: posterStyle.height,
+                               captionVisible: posterStyle.showTitle,
+                               showsCTA: heroCarouselActive,
+                               landscapeRows: posterStyle.landscapeCatalogRows)
     }
 
     /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact
@@ -3430,11 +3513,21 @@ struct HomeHeroForeground: View {
     /// at INTERMEDIATE compressions (a synced custom Poster Size between Medium and Large), where
     /// the logo now stays at its full 110pt until the synopsis alone has given all 36 of its own
     /// pt — the same regression class this fix closes for folder heroes, closed here too.
+    ///
+    /// BUG-87 (beta.18): the ceiling is stated against the slot this hero form ACTUALLY has. In
+    /// FEAT-15's panel (`showsCTA == false`) the synopsis has already absorbed the CTA slot and the
+    /// `md` above it — 144pt, not 72 — so its give against the same one-line floor is 108, and a
+    /// folder hero's is the whole 144. Charging the carousel's 36/72 there capped the give 72pt
+    /// short of what the panel can really yield, which is why Steven's shape could not be made to
+    /// fit: the FRAME would have shrunk past what the CONTENT gave up, the exact overflow
+    /// `Theme.Size.heroPinnedCompressionCap` exists to prevent. Carousel numbers are unchanged.
     private var synopsisSlotGive: CGFloat {
         guard compression > 0 else { return 0 }
+        let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
+                            : Theme.Size.heroSynopsisSlotHeightPinnedPanel
         let ceiling = isCollectionHero(item)
-            ? Theme.Size.heroSynopsisSlotHeightPinned
-            : Theme.Size.heroSynopsisSlotPinnedGive
+            ? slot
+            : slot - Theme.Size.heroSynopsisSlotHeightPinnedFloor
         return min(compression, ceiling)
     }
     private var logoSlotGive: CGFloat {
@@ -3521,20 +3614,37 @@ struct HomeHeroForeground: View {
     /// both inside the 352pt `heroCarouselHeightPinned` frame the caller pins. The line limit
     /// grows with the slot: 144pt fits four 29pt body lines, so the panel FEAT-15 asks for shows
     /// twice the description the pinned carousel could.
+    ///
+    /// BUG-87 (beta.18): the compact branch resolves the panel's slot from
+    /// `heroSynopsisSlotHeightPinnedPanel` (which IS `72 + 56 + 16`) before subtracting the give,
+    /// instead of subtracting the give from 72 and adding the CTA terms back afterwards. Same
+    /// number in every configuration that shipped; it stops being the same one once the give can
+    /// exceed 72, which is what the panel's real ceiling now allows.
     private var synopsisSlotHeight: CGFloat {
-        let base = compact ? Theme.Size.heroSynopsisSlotHeightPinned - synopsisSlotGive
-                           : Theme.Size.heroSynopsisSlotHeightNuvio
-        guard !showsCTA else { return base }
-        return base + Theme.Size.heroButtonSlotHeight + Theme.Spacing.md
+        guard compact else {
+            let base = Theme.Size.heroSynopsisSlotHeightNuvio
+            return showsCTA ? base : base + Theme.Size.heroButtonSlotHeight + Theme.Spacing.md
+        }
+        let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
+                            : Theme.Size.heroSynopsisSlotHeightPinnedPanel
+        return slot - synopsisSlotGive
     }
 
     /// Lines the synopsis may use, tracking `synopsisSlotHeight` above.
+    ///
+    /// Wave 10: a compressed synopsis slot must drop a line with it, or the text clips inside its
+    /// own frame instead of shortening.
+    ///
+    /// BUG-87 (beta.18): DERIVED from the resolved slot rather than from a give>0 flag. The pinned
+    /// slot is exactly two 36pt lines, so the line height is the constant divided by two and the
+    /// limit is however many whole lines the slot still holds. That reproduces every number the
+    /// flag produced — carousel 72 → 2, carousel compressed 36 → 1, panel 144 → 4, panel at Wave
+    /// 10's Large give (108) → 3 — and keeps holding once the panel's give can take the slot below
+    /// 72, where the flag would have claimed three lines in a one-line box.
     private var synopsisLineLimit: Int {
-        // Wave 10: a compressed synopsis slot must drop a line with it, or the text clips inside
-        // its own frame instead of shortening. The pinned slot is two 36pt lines, so any give at
-        // all takes it to one.
-        let base = compact ? (synopsisSlotGive > 0 ? 1 : 2) : 3
-        return showsCTA ? base : base + 2
+        guard compact else { return showsCTA ? 3 : 5 }
+        let lineHeight = Theme.Size.heroSynopsisSlotHeightPinned / 2
+        return max(1, Int((synopsisSlotHeight / lineHeight).rounded(.down)))
     }
 
     /// "movie" is the only meta type that reads as a film; series/tv both read as shows.

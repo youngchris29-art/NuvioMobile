@@ -448,6 +448,29 @@ enum Theme {
         /// contract). A too-tall poster costs a hidden row title, never a broken hero.
         static let heroPinnedCompressionCap: CGFloat =
             heroLogoSlotPinnedGive + heroSynopsisSlotPinnedGive + heroPinnedFrameSlack
+        /// BUG-87 (beta.18): the same ceiling, stated for the hero form that is actually on screen.
+        ///
+        /// The constant above is the CAROUSEL form's give. FEAT-15's focus panel (`showsCTA ==
+        /// false`) renders the same pinned hero with the CTA removed and its slot folded into the
+        /// synopsis (`heroSynopsisSlotHeightPinnedPanel`, 144 against 72 — see
+        /// `HomeHeroForeground.synopsisSlotHeight`), so the panel can give 108pt of synopsis where
+        /// the carousel gives 36 — 142 in total against 70. Sizing the compression against the
+        /// carousel number in panel mode is what left Steven's shape (Large + Hide Labels + Show
+        /// Hero off) 12pt over its viewport with 72pt of unspent give sitting in the hero.
+        ///
+        /// Same derivation rule as the constant, for the same reason (Codex Wave 10 r4): it is the
+        /// sum of the gives `HomeHeroForeground` actually spends, never a hand-picked number, so a
+        /// future slot or floor change moves the ceiling with it. `PinnedRowGeometry.plan` is the
+        /// only caller; carousel-only call sites keep reading the constant.
+        ///
+        /// `nonisolated`: read from `PinnedRowGeometry`'s pure, non-main-actor plan (and its unit
+        /// tests). The `static let`s it sums are immutable and Sendable, so they are already
+        /// reachable from anywhere; only the function needs saying so.
+        nonisolated static func heroPinnedCompressionCap(showsCTA: Bool) -> CGFloat {
+            heroLogoSlotPinnedGive
+                + (showsCTA ? heroSynopsisSlotPinnedGive : heroSynopsisSlotPanelPinnedGive)
+                + heroPinnedFrameSlack
+        }
         /// Breathing room below the focused row's artwork at the canonical rest, so the poster's
         /// bottom edge is not flush with the fold. Reuses the rows headroom rather than inventing
         /// a number: it is the same "absorb the rest error" budget, spent at the other end.
@@ -512,6 +535,18 @@ enum Theme {
             heroLogoSlotHeightPinned - heroLogoSlotHeightPinnedFloor          // 110 → 78 = 32
         static let heroSynopsisSlotPinnedGive: CGFloat =
             heroSynopsisSlotHeightPinned - heroSynopsisSlotHeightPinnedFloor  // 72 → 36 = 36
+        /// The pinned synopsis slot in FEAT-15's CTA-less focus panel: the carousel slot plus the
+        /// CTA slot and the `md` gap that preceded it, which the panel folds in so its summed panel
+        /// height stays identical to the carousel's (`HomeHeroForeground.synopsisSlotHeight` states
+        /// the same arithmetic: 32 + 110 + 16 + 32 + 16 + 144 = 350 = 32 + 110 + 16 + 32 + 16 + 72
+        /// + 16 + 56). Named here (BUG-87, beta.18) because the compression ceiling and the slot's
+        /// own give both have to be derived from it rather than from the carousel's 72.
+        static let heroSynopsisSlotHeightPinnedPanel: CGFloat =
+            heroSynopsisSlotHeightPinned + heroButtonSlotHeight + Theme.Spacing.md  // 72 + 56 + 16 = 144
+        /// The panel form's synopsis give against the SAME one-line floor the carousel uses:
+        /// 144 → 36 = 108.
+        static let heroSynopsisSlotPanelPinnedGive: CGFloat =
+            heroSynopsisSlotHeightPinnedPanel - heroSynopsisSlotHeightPinnedFloor  // 144 → 36 = 108
         /// The pinned hero's frame is 2pt taller than the content it holds — 352 against
         /// `32 padding + 110 logo + 16 + 32 meta + 16 + 72 synopsis + 16 + 56 CTA = 350` (the
         /// arithmetic `HomeHeroForeground.synopsisSlotHeight` documents). That slack is real give:
