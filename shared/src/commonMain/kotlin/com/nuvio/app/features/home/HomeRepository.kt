@@ -567,7 +567,6 @@ object HomeRepository {
         rowsGateReason = null
         rowsGateElapsedMs = 0
         rowsHeldUnderHeroEnabled = true
-        rowsHoldBaselineHeroEnabled = null
         catalogOutcomes = emptyMap()
         heroGateGeneration += 1
         val generation = heroGateGeneration
