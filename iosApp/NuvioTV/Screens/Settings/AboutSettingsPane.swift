@@ -58,6 +58,14 @@ struct AboutSettingsPane: View {
     @AppStorage("debug.detailScrollAB") private var detailScrollAB = 0
     @AppStorage("debug.detailScrollProbe") private var detailScrollProbeEnabled = false
 
+    /// FEAT-33 (Wave 1, agent C): same release-safe toggle pattern as the probes above —
+    /// `CollectionFocusFrameProbe`'s buffer and `CollectionFocusAB`'s knob (`CollectionsUI.swift`,
+    /// `CollectionFocusFrameProbe.swift`) are both keyed off these two, live in-session except the
+    /// A/B leg, which is read once at launch (`CollectionFocusAB.leg`) — flipping the picker here
+    /// only takes effect on the next launch, hence the subtitle below.
+    @AppStorage("debug.collectionFrameProbe") private var collectionFrameProbe = false
+    @AppStorage("debug.collectionFocusAB") private var collectionFocusAB = 0
+
     private var trailerZoomCacheCount: Int {
         _ = trailerZoomCacheGeneration // dependency only — see the property's doc comment
         return TrailerZoomCache.shared.count
@@ -230,6 +238,15 @@ struct AboutSettingsPane: View {
                     title: String(localized: "Accent Focus Ring"),
                     value: accentFocusRing ? String(localized: "On") : String(localized: "Off")
                 )
+                // FEAT-31 attribution: the font ships in this same branch (Theme.Font.uiFont,
+                // used by FEAT-33's own CollectionsUI.swift caption measurement). Added here
+                // rather than the plain About/credits rows above so this Group's ViewBuilder
+                // absorbs it without pushing the outer SettingsSection past its 10-child
+                // @ViewBuilder ceiling (see this file's header comment on that constraint).
+                SettingsValueRow(
+                    title: String(localized: "Fonts"),
+                    value: "Open Sans — SIL Open Font License 1.1"
+                )
             }
 
             // Grouped so this whole block (Trailer Diagnostics + BUG-41's Detail Scroll controls)
@@ -306,6 +323,72 @@ struct AboutSettingsPane: View {
                     title: String(localized: "Detail Scroll Probe"),
                     subtitle: String(localized: "BUG-41: logs a hitch counter for one Detail visit on Menu-back"),
                     isOn: $detailScrollProbeEnabled
+                )
+
+                // FEAT-33 (Wave 1, agent C): release-safe frame-timing probe for the Home
+                // collection row's focus-step animation. Same live-toggle pattern as the trailer
+                // diagnostics above it; only the A/B leg is launch-latched (`CollectionFocusAB`
+                // reads it once at process start), hence the relaunch note in the picker's row.
+                SettingsToggleRow(
+                    title: String(localized: "Collection Frame Probe"),
+                    subtitle: String(localized: "Frame timing per focus step on collection rows; requires relaunch to change the A/B leg"),
+                    isOn: $collectionFrameProbe
+                )
+
+                if collectionFrameProbe {
+                    // 1 Hz re-read, same reasoning as the trailer/stream readouts above:
+                    // `CollectionFocusFrameProbe` is a plain lock-guarded buffer with no publisher.
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        let lines = CollectionFocusFrameProbe.lines
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("refresh=\(UIScreen.main.maximumFramesPerSecond) leg=\(CollectionFocusAB.leg)")
+                                .font(.system(size: 20, design: .monospaced))
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                            if lines.isEmpty {
+                                Text(String(localized: "No focus steps measured yet \u{2014} walk a collection row on Home."))
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(Theme.Palette.textSecondary)
+                            } else {
+                                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.system(size: 20, design: .monospaced))
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                        }
+                        // Hidden single-Text blob (mirrors `hero_probe_blob`/`trailer_probe_blob`):
+                        // the visible per-line `Text` children beyond the List row's clipped
+                        // height never enter the accessibility tree, so a UITest reads the WHOLE
+                        // buffer through this one element instead.
+                        .overlay(alignment: .topLeading) {
+                            Text(lines.joined(separator: "\n"))
+                                .font(.system(size: 4))
+                                .opacity(0.011)
+                                .accessibilityIdentifier("collection_frame_blob")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("collection_frame_probe_lines")
+
+                    SettingsActionRow(title: String(localized: "Clear")) {
+                        CollectionFocusFrameProbe.clear()
+                    }
+                }
+
+                SettingsPickerRow(
+                    title: String(localized: "Collection Focus A/B"),
+                    selection: $collectionFocusAB,
+                    options: [0, 1, 2, 3],
+                    label: { leg in
+                        switch leg {
+                        case 0: return String(localized: "0 as shipped")
+                        case 1: return String(localized: "1 defer hero")
+                        case 2: return String(localized: "2 no tile animation")
+                        default: return String(localized: "3 both")
+                        }
+                    }
                 )
             }
         }
