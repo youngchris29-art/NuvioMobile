@@ -849,6 +849,12 @@ struct InlineTrailerCard: View {
     /// Read for the neutral still ring below (Codex 2026-08-29 round 6) — same key/pattern as
     /// `PosterCard`'s copy.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    #if DEBUG
+    /// BUG-92 (beta.18 follow-up): the tile's own frame origin in `.global` space, fed to
+    /// `debug_trailerTile`'s `x=` field — see that overlay's doc comment for why `.global` and not
+    /// a named coordinate space.
+    @State private var debugTileGlobalOriginX: CGFloat = 0
+    #endif
 
     /// Landscape rows prefer the wide banner; a poster fallback is cropped to 16:9 by the tile's
     /// aspect-fill, which reads better than an empty slot.
@@ -990,7 +996,16 @@ struct InlineTrailerCard: View {
                     // BUG-59: the measured zoom is remembered per TITLE, not per playback URL.
                     zoomKey: TrailerResolutionCache.key(type: item.type, id: item.id),
                     loops: false,
-                    onPlaybackEnded: { model.playbackFinished() }
+                    onPlaybackEnded: { model.playbackFinished() },
+                    // BUG-92 (beta.18): the hosted view's own CALayer now gets the tile's INNER
+                    // corner radius (`TrailerPlayerUIView` in TrailerHeroPlayerView.swift), so the
+                    // video is clipped by its own layer regardless of the SwiftUI `.clipShape` mask
+                    // below. That mask alone left a rectangular sliver of leaked video at the tile's
+                    // rounded corners on the first card of a row (nothing else clips it there — see
+                    // `RowLeadingEdgeClip`'s header). `geometry.radius` is the exact inner radius
+                    // this tile's own `.clipShape(RoundedRectangle(cornerRadius: geometry.radius))`
+                    // uses a few lines down, so the two can never disagree.
+                    cornerRadius: geometry.radius
                 )
                 // UX-9: no `.scaleEffect` here any more — the zoom over the baked-in letterbox bars
                 // is measured per stream and applied to the player layer (`TrailerLetterboxProbe`,
@@ -1069,12 +1084,30 @@ struct InlineTrailerCard: View {
         // inset/ring/video actually agree instead of trusting a screenshot alone. Only while the
         // tile is up; band/rOut/rIn included so a default-config run (band=0) reads as identity
         // without cross-referencing the settings separately.
+        //
+        // BUG-92 (beta.18 follow-up, first-card leading-edge bleed): `x=` appended — append-only,
+        // like every other probe string in this file — the tile's frame origin in the row's
+        // coordinate space. `BrowseComponents.swift`'s row `ScrollView`/`LazyHStack` defines no
+        // NAMED coordinate space, so this reads `.global`: the same space a `RowLeadingEdgeTests`
+        // screenshot's pixel columns are already in, which is exactly what that UI test compares a
+        // fixed screen column against. Measured via a `.background` `GeometryReader`
+        // (`TileFocusLift`'s `measuredSize` pattern in PosterCard.swift) rather than read inline,
+        // so this diagnostic never influences the tile's own layout.
         .overlay(alignment: .topLeading) {
             if model.isExpanded {
-                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius))")
+                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_trailerTile")
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear { debugTileGlobalOriginX = proxy.frame(in: .global).minX }
+                                .onChange(of: proxy.frame(in: .global).minX) { _, newValue in
+                                    debugTileGlobalOriginX = newValue
+                                }
+                        }
+                    }
             }
         }
         #endif

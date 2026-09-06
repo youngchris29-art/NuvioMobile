@@ -291,4 +291,49 @@ final class TrailerZoomCacheVerifyTests: XCTestCase {
         TrailerVideoIdRegistry.register("rNZ0xKaCdus", forPlaybackURL: registered)
         XCTAssertEqual(TrailerLetterboxProbe.streamIdentity(of: other), "direct:id=two")
     }
+
+    // MARK: - BUG-94 (beta.18): the full surface must never touch TrailerZoomCache
+
+    /// `TrailerLetterboxProbe.start()`/`finish()` hardcode `TrailerZoomCache.shared` — there is no
+    /// seam to inject `makeCache()`'s isolated instance into a real probe run, and driving `start()`
+    /// end to end needs a live `AVPlayer`/`AVPlayerItemVideoOutput` decoding real frames, which is
+    /// outside what an XCTest can stand up (see the file's own header on why every case here goes
+    /// through `TrailerLocalHLS`/`TrailerVideoIdRegistry` seams instead of a live probe). This test
+    /// therefore exercises the two things that jointly make "the full surface can never write the
+    /// cache" true — `TrailerSurfaceZoomPolicy.decide(surface: "full", …)` answering
+    /// `persist == false` regardless of the cache's current contents, and `TrailerZoomCache` itself
+    /// only ever mutating on an explicit `store`/`remove`/`noteVerifyMiss` call — rather than driving
+    /// `start()` itself. Said plainly: this proves the cache is inert to the *decision*, not that a
+    /// live full-screen play never calls `store()` (that is `start()`'s own early return in
+    /// `TrailerHeroPlayerView.swift`, unit-tested indirectly via `TrailerZoomProbeTests`'
+    /// `fullSurfaceNeverMeasures`/`fullSurfaceAlwaysPlaysAtOne*`).
+    func testFullSurfaceRunLeavesTheCacheByteIdentical() {
+        let cache = makeCache()
+        let key = "movie:tt0000000"
+        cache.store(1.343, for: key, token: "yt:rNZ0xKaCdus", verifyMisses: 1)
+        guard let seeded = cache.entry(for: key) else {
+            XCTFail("seed must be readable back before simulating a run against it")
+            return
+        }
+
+        // A real `start()` decides the full surface's policy from `cached: nil` (it never reads
+        // the cache at all — see `TrailerHeroPlayerView.swift`'s `start()`), but passing the
+        // ACTUAL seeded entry here is the stronger check: it proves `persist == false` even when a
+        // real, matching entry exists to tempt a future refactor into consulting it.
+        let policy = TrailerSurfaceZoomPolicy.decide(surface: "full", cached: seeded)
+        XCTAssertFalse(policy.persist, "a full-screen play must never be allowed to persist")
+
+        // Simulate exactly what `start()`/`finish()` do with that answer: nothing. No `store`, no
+        // `remove`, no `noteVerifyMiss` call happens on this path — so the entry must read back
+        // byte-identical, field for field, to what was seeded.
+        guard let after = cache.entry(for: key) else {
+            XCTFail("a policy decision alone must never evict or mutate the entry")
+            return
+        }
+        XCTAssertEqual(after.zoom, seeded.zoom)
+        XCTAssertEqual(after.token, seeded.token)
+        XCTAssertEqual(after.at, seeded.at)
+        XCTAssertEqual(after.verifyMisses, seeded.verifyMisses)
+        XCTAssertEqual(cache.count, 1, "no entry should have been added or evicted")
+    }
 }

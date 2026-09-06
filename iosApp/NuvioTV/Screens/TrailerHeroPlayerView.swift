@@ -163,6 +163,13 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     var loops: Bool = true
     /// Only ever fires when `loops == false`; main-queue.
     var onPlaybackEnded: (() -> Void)? = nil
+    /// BUG-92 (beta.18): the tile's INNER corner radius (`InlineTrailerTileGeometry.inner(...).radius`
+    /// for the inline card), applied directly to the hosted view's own `CALayer` so the video is
+    /// clipped by its own layer — see `makeUIView` below. Defaults to 0 (a plain rectangular clip,
+    /// i.e. no visible rounding), which is exactly what the Detail hero loop wants (its surface is
+    /// the full-bleed hero backdrop, never rounded) and what every existing caller that doesn't pass
+    /// this parameter keeps getting.
+    var cornerRadius: CGFloat = 0
 
     /// UX-9: our YouTube trailer encodes bake letterboxing directly into the frame (2.39:1 film
     /// inside a 16:9 container), so `.resizeAspectFill` alone still shows black bars — it fills the
@@ -191,12 +198,29 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         // (InlineTrailerCard) and the screen edges (Detail hero / full-screen) as the outer
         // clips.
         view.clipsToBounds = true
+        // BUG-92: rounds the HOST view's own layer (the one `clipsToBounds` above already crops
+        // against), independent of whatever SwiftUI `.clipShape` mask the caller draws over this
+        // representable. A SwiftUI mask alone left a rectangular sliver of the video showing past
+        // the tile's rounded corners — a mask composites AFTER the platform draws the hosted
+        // UIKit content, and on some focus/depth-effect frames that composite pass lands a half
+        // pixel outside the mask's own anti-aliased edge. Rounding the layer that actually holds
+        // the pixels removes the seam at the source instead of relying on a second, independently
+        // laid-out shape to line up with it exactly.
+        view.layer.cornerRadius = cornerRadius
+        view.layer.cornerCurve = .continuous
+        view.layer.masksToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
         context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId)
         return view
     }
 
-    func updateUIView(_ uiView: TrailerPlayerUIView, context: Context) {}
+    func updateUIView(_ uiView: TrailerPlayerUIView, context: Context) {
+        // BUG-92: `cornerRadius` can change across re-renders (Poster Style → Corners is a live
+        // Settings toggle) even while a tile keeps playing — `makeUIView` alone would leave a
+        // stale radius on screen until the next expand/collapse recreated the view.
+        guard uiView.layer.cornerRadius != cornerRadius else { return }
+        uiView.layer.cornerRadius = cornerRadius
+    }
 
     static func dismantleUIView(_ uiView: TrailerPlayerUIView, coordinator: Coordinator) {
         coordinator.teardown()
@@ -506,7 +530,11 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         // view's bounds (see the note in `TrailerHeroPlayer.makeUIView`), with the screen edges
         // as the outer clip.
         view.clipsToBounds = true
-        view.playerLayer.videoGravity = .resizeAspectFill
+        // BUG-94: policy-driven, not hardcoded — `TrailerSurfaceZoomPolicy.decide(surface: "full", …)`
+        // always answers `.resizeAspect` regardless of `cached` (there's nothing cache-dependent to
+        // read yet at `makeUIView` time), so this is the single source of truth `start()` below
+        // will also consult, rather than a `.resizeAspectFill` literal that could drift from it.
+        view.playerLayer.videoGravity = TrailerSurfaceZoomPolicy.decide(surface: "full", cached: nil).gravity
         if let url = URL(string: urlString) {
             let player = AVPlayer(url: url)
             player.isMuted = false
@@ -572,6 +600,55 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         }
 
         deinit { teardown() }
+    }
+}
+
+// MARK: - BUG-94: full-screen "never crop" policy
+
+/// BUG-94 (beta.18, product decision): the full-screen trailer surface (`surface == "full"` —
+/// `FullScreenTrailerSurface` / its `Coordinator.startLetterboxProbe` below) must always play
+/// UNCROPPED at zoom 1.0 with letterbox bars, the way the official Nuvio app does — never the
+/// measured/cached crop the Detail hero loop and inline poster surfaces apply. Before this fix
+/// `surface` was a log label only: `TrailerLetterboxProbe.start()` applied whatever
+/// `TrailerZoomCache` had under `zoomKey` (title-keyed, and shared with the hero loop —
+/// `DetailView.swift`'s hero and full-screen presenters pass the SAME key, so the full surface
+/// inherited the hero loop's measured crop), `maxZoom`/`parityZoom` applied to every surface alike,
+/// and both `makeUIView`s hardcoded `.resizeAspectFill`.
+///
+/// A pure, testable policy so "is this the full surface" is decided in exactly one place instead of
+/// being sprinkled through `start()`, `finish()` and both representables' `makeUIView`.
+enum TrailerSurfaceZoomPolicy {
+    struct Decision {
+        /// The zoom to apply immediately. Only consulted when `measure` is `false` — on the
+        /// hero/inline path the existing ladder derives and applies its own zoom regardless of this
+        /// value (see `measure`'s doc below).
+        let zoom: CGFloat
+        /// `.resizeAspect` never crops — this is what "never crop" actually requires:
+        /// `.resizeAspectFill` at zoom 1.0 still crops a non-16:9 stream to fill the container,
+        /// because it fills the box, not the picture. `.resizeAspectFill` is today's hero/inline
+        /// treatment, unchanged.
+        let gravity: AVLayerVideoGravity
+        /// Whether `TrailerLetterboxProbe` may run its sampling ladder at all. `false` for the full
+        /// surface: it never attaches a video output, never arms the tick timer, never reads or
+        /// writes `TrailerZoomCache` — `start()` applies `zoom`/`gravity` once and returns. `true`
+        /// for hero/inline: `start()`'s existing cache-read → parity-floor → interim → final ladder
+        /// runs exactly as it did before this fix; this policy's `zoom` is never consulted there.
+        let measure: Bool
+        /// Whether a completed measurement may write `TrailerZoomCache`. Always `false` for the full
+        /// surface (which never measures far enough to ask); `true` for hero/inline, unchanged.
+        let persist: Bool
+    }
+
+    /// `cached` is accepted (not merely `nil`-defaulted) so a caller can prove the full branch is
+    /// unconditional — a matching cached entry must not change the answer (see
+    /// `TrailerZoomProbeTests.fullSurfaceAlwaysPlaysAtOne*`).
+    static func decide(surface: String, cached: TrailerZoomCache.Entry?) -> Decision {
+        if surface == "full" {
+            return Decision(zoom: 1.0, gravity: .resizeAspect, measure: false, persist: false)
+        }
+        // hero/inline: unchanged. The values here document today's floor/gravity contract; the
+        // actual zoom that ends up on screen still comes from `start()`'s existing ladder.
+        return Decision(zoom: TrailerHeroPlayer.parityZoom, gravity: .resizeAspectFill, measure: true, persist: true)
     }
 }
 
@@ -907,6 +984,13 @@ final class TrailerLetterboxProbe {
     /// The cached zoom `start()` applied on the token-match branch — `finish()`'s verify-mode
     /// comparison baseline. Set once, alongside `verifyMode = true`, never touched by sampling.
     private var verifyAppliedZoom: CGFloat?
+    /// BUG-94: whether `finish()` may write `TrailerZoomCache`, decided once in `start()` from
+    /// `TrailerSurfaceZoomPolicy.Decision.persist`. Defaults `true` (today's hero/inline behavior)
+    /// so a probe that somehow reached `finish()` without ever calling `start()` fails open rather
+    /// than silently going mute. Belt-and-braces on the full surface: its `measure == false` early
+    /// return in `start()` never reaches `finish()`/any `store()` call site at all, so this guard
+    /// is a second, independent reason the full surface can never write the cache, not the only one.
+    private var persistAllowed = true
 
     init(view: TrailerPlayerUIView, player: AVPlayer, urlString: String, zoomKey: String? = nil,
          videoId: String? = nil, surface: String) {
@@ -992,6 +1076,29 @@ final class TrailerLetterboxProbe {
     /// * Nothing → parity floor, measure.
     func start() {
         logAttach()
+        // BUG-94: the policy is decided from `cached: nil` — `TrailerSurfaceZoomPolicy.decide`'s
+        // answer never actually depends on the cache's contents (see that type's doc: the full
+        // branch is unconditional and the hero/inline branch doesn't inspect `cached` either) — so
+        // this runs BEFORE any `TrailerZoomCache` read at all. That is what lets the full surface
+        // avoid the cache entirely: it never even takes the read lock, not merely the write.
+        let policy = TrailerSurfaceZoomPolicy.decide(surface: surface, cached: nil)
+        persistAllowed = policy.persist
+        guard policy.measure else {
+            // BUG-94: the full surface never measures. It never conceals either — 1.0 is honest
+            // from the very first frame, so there is nothing to hide while a measurement is
+            // pending — which is why `revealed`/`view.alpha` are set directly here rather than
+            // through `reveal(reason:)`: that helper's own `guard !revealed else { return }` would
+            // silently swallow the very case this branch exists to make certain of if some future
+            // caller ever left this surface concealed before calling `start()`. `persistAllowed`
+            // was already latched to `false` above; this path also never reaches `armSamplingTimer()`
+            // or `attachOutputIfNeeded()`, so `TrailerZoomCache` is never touched again either.
+            revealed = true
+            view?.alpha = 1
+            apply(policy.zoom, animated: false)
+            TrailerZoomProbe.log(String(format: "policy=uncropped surface=%@ zoom=%.3f key=%@", surface, policy.zoom, zoomKey))
+            return
+        }
+        // Hero/inline only, from here on — the ONLY `TrailerZoomCache` read `start()` ever makes.
         if let cached = TrailerZoomCache.shared.entry(for: zoomKey) {
             // A blob entry with no token (never written by this build, but decodable) never matches.
             let tokenMatches = cached.token == token
@@ -1384,7 +1491,12 @@ final class TrailerLetterboxProbe {
             if abs(zoom - appliedZoom) > 0.02 {
                 // `verifyMisses: 0` — a stream that just re-verified (however the comparison came
                 // out) starts its miss count clean; misses only ever come from `insufficient`.
-                TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token, verifyMisses: 0)
+                // BUG-94: `persistAllowed` guards every `store()` call — see its doc comment. This
+                // branch is unreachable on the full surface today (verify mode is never armed
+                // there), but the guard is here anyway rather than trusted to that structural fact.
+                if persistAllowed {
+                    TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token, verifyMisses: 0)
+                }
                 apply(zoom, animated: true)
                 TrailerZoomProbe.log(String(format: "verify-corrected key=%@ old=%.3f new=%.3f surface=%@",
                                              zoomKey, appliedZoom, zoom, surface))
@@ -1392,7 +1504,9 @@ final class TrailerLetterboxProbe {
                 // Confirmed good: re-store the SAME zoom purely to refresh `Entry.at`, so a title
                 // that's still being watched correctly never ages out of the 30-day cache just
                 // because its crop hasn't needed to change. Nothing on screen moves.
-                TrailerZoomCache.shared.store(appliedZoom, for: zoomKey, token: token, verifyMisses: 0)
+                if persistAllowed {
+                    TrailerZoomCache.shared.store(appliedZoom, for: zoomKey, token: token, verifyMisses: 0)
+                }
                 TrailerZoomProbe.log(String(format: "verify-confirmed key=%@ zoom=%.3f surface=%@", zoomKey, appliedZoom, surface))
             }
             reveal(reason: "final") // No-op: verify mode is revealed from `start()` onward.
@@ -1404,7 +1518,11 @@ final class TrailerLetterboxProbe {
                  left: min(acc.left, next.left), right: min(acc.right, next.right))
         }
 
-        TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token)
+        // BUG-94: guarded like the two verify-mode `store()` calls above — unreachable on the full
+        // surface today (it never gets this far), guarded anyway rather than trusted to that fact.
+        if persistAllowed {
+            TrailerZoomCache.shared.store(zoom, for: zoomKey, token: token)
+        }
         apply(zoom, animated: true)
         reveal(reason: "final")
 
