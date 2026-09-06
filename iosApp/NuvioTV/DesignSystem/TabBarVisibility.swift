@@ -157,6 +157,13 @@ private struct TabBarImmersiveHideModifier: ViewModifier {
     @Environment(\.tabBarVisibility) private var vis
     @State private var immersive = false
 
+    /// FEAT-30 Phase 0 spike knob (`-debug.sidebarSpike YES`): resolve the tab bar to a CONSTANT
+    /// `.hidden` for the whole session so the hardware can answer two questions the simulator
+    /// cannot — whether the hidden bar changes the Home rows viewport away from
+    /// `heroPinnedRowsViewportBudget`, and what Menu does at a tab root with no bar to receive
+    /// focus. Launch-latched like every other probe knob; release-inert unless passed.
+    nonisolated static let sidebarSpike = UserDefaults.standard.bool(forKey: "debug.sidebarSpike")
+
     func body(content: Content) -> some View {
         content
             // Round 4 (see TabBarVisibility.immersiveHidden): scroll no longer toggles bar
@@ -165,7 +172,7 @@ private struct TabBarImmersiveHideModifier: ViewModifier {
             // force-hides. Rounds 1–3 proved any hidden→shown reshow can freeze mid-slide
             // on hardware (clipped at the top until focus re-entered the bar), so the fix
             // is to not have a reshow.
-            .toolbarVisibility(immersive ? .hidden : .automatic, for: .tabBar)
+            .toolbarVisibility((immersive || Self.sidebarSpike) ? .hidden : .automatic, for: .tabBar)
             // T3: use the PAYLOAD from `onReceive`, not the property — `@Published` emits on
             // willSet, same house rule as HomeView.swift's hero-trailer sync (~L1762-1768:
             // "`@Published` emits on willSet, so use the payload, not the property"). A
