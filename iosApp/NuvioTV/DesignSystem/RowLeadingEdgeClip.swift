@@ -107,7 +107,15 @@ struct RowLeadingEdgeClip: Shape {
     /// `ceil`, not a bare half-width: a fractional point of uncovered bleed is exactly the "thin
     /// dark sliver" shape BUG-92 is about, and over-provisioning the clip by rounding UP costs
     /// nothing a 10-foot viewer would ever notice.
-    static func allowance(posterWidth: CGFloat, liftScale: CGFloat, ringWidth: CGFloat) -> CGFloat {
-        ceil(posterWidth * (liftScale - 1) / 2) + ringWidth
+    /// The focused card's drop shadow (`PosterCard` `.shadow(radius: 22, y: 10)` in every style,
+    /// including the No Zoom `.still` style; `InlineTrailerCard`'s tile shadow is the same 22 when
+    /// no ring band is active). Codex beta.18 r2 (P2): the allowance used to cover only the lift
+    /// bleed and the ring, so the first card's shadow was sliced into a hard vertical edge on
+    /// every row. The shadow is a blur, so its visible extent is its radius.
+    static let cardShadowRadius: CGFloat = 22
+
+    static func allowance(posterWidth: CGFloat, liftScale: CGFloat, ringWidth: CGFloat,
+                          shadowRadius: CGFloat = cardShadowRadius) -> CGFloat {
+        ceil(posterWidth * (liftScale - 1) / 2) + ringWidth + shadowRadius
     }
 }

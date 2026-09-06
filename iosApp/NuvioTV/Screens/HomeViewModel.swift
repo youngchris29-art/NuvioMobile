@@ -203,6 +203,11 @@ final class HomeViewModel: ObservableObject {
     /// (see `maybeSeedDefaultAddon()`) gets retried once the signed-in account's first pull lands.
     private var seedGateWatcher: FlowWatcher?
     private var homeWatcher: FlowWatcher?
+    /// Codex beta.18 r2 (P2): the no-sources add-on bootstrap route used to open the rows gate on its
+    /// own, bypassing the Kotlin rows hold. When Kotlin has not decided yet and the launch sync burst
+    /// is still running, this watches `LaunchSyncSignal` for the settle instead (see
+    /// `openRowsForNoSourcesBootstrap`). Cancelled with the other watchers.
+    private var noSourcesSyncWatcher: FlowWatcher?
     private var progressWatcher: FlowWatcher?
     private var progressSourceWatcher: FlowWatcher?
     private var traktSettingsWatcher: FlowWatcher?
@@ -847,6 +852,7 @@ final class HomeViewModel: ObservableObject {
         addonWatcher?.cancel()
         seedGateWatcher?.cancel()
         homeWatcher?.cancel()
+        noSourcesSyncWatcher?.cancel()
         progressWatcher?.cancel()
         progressSourceWatcher?.cancel()
         traktSettingsWatcher?.cancel()
@@ -855,6 +861,7 @@ final class HomeViewModel: ObservableObject {
         addonWatcher = nil
         seedGateWatcher = nil
         homeWatcher = nil
+        noSourcesSyncWatcher = nil
         progressWatcher = nil
         progressSourceWatcher = nil
         traktSettingsWatcher = nil
@@ -912,6 +919,50 @@ final class HomeViewModel: ObservableObject {
     /// Opens the rows gate and performs the one commit-time rebuild. Called from the two routes
     /// that publish a commit: `.noHero` (including `heroGateReason == "heroOff"`, which opened the
     /// rows on its first publish before this gate existed) and the commit continuation.
+    /// Codex beta.18 r2 (P2): `AddonBootstrapRoute.openRowsNoSources` (a settled add-on bootstrap
+    /// with nothing ready — offline fresh install, failed seed, add-on-less profile) opened the Swift
+    /// rows gate directly, so on a signed-in profile whose launch sync burst was still running the
+    /// collections/settings watchers could rebuild and seed the focus panel before the pull landed:
+    /// the reorder-then-repaint the Kotlin rows hold (`HeroGateDecision.rowsReleased`) exists to
+    /// prevent, by another door. Three cases, no second decision table:
+    ///   1. Kotlin has decided (`heroGateReleased`): honour its rows decision — open now if the rows
+    ///      are released, otherwise the released publish routes `.noHero` and opens them.
+    ///   2. Kotlin has not decided and the launch sync is RUNNING: wait for the settle on
+    ///      `LaunchSyncSignal`, bounded by the same 4 s budget the Kotlin hold uses, then open.
+    ///   3. Otherwise (settled, not applicable, signed out): open now, exactly as before.
+    private func openRowsForNoSourcesBootstrap() {
+        if let latest = HomeRepository.shared.uiState.value as? HomeUiState, latest.heroGateReleased {
+            if latest.rowsGateReleased { openRowsGateAndRebuild() }
+            return
+        }
+        let gen = pipelineGeneration
+        let syncState = LaunchSyncSignal.shared.state.value as? LaunchSyncSignalLaunchSyncState
+        guard syncState == .running, noSourcesSyncWatcher == nil, !rowsGateOpen else {
+            openRowsGateAndRebuild()
+            return
+        }
+        if HomeHeroProbe.enabled {
+            HomeHeroProbe.log(String(format: "rowsWait bootstrap=noSources sync=running sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
+        }
+        noSourcesSyncWatcher = FlowWatcherKt.watch(LaunchSyncSignal.shared.state) { [weak self] emitted in
+            guard let self, self.pipelineGeneration == gen, !self.rowsGateOpen else { return }
+            guard let state = emitted as? LaunchSyncSignalLaunchSyncState, state != .running else { return }
+            self.noSourcesSyncWatcher?.cancel()
+            self.noSourcesSyncWatcher = nil
+            self.openRowsGateAndRebuild()
+        }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard let self, self.pipelineGeneration == gen, !self.rowsGateOpen else { return }
+            if HomeHeroProbe.enabled {
+                HomeHeroProbe.log(String(format: "rowsWait bootstrap=noSources timeout sinceLaunch=%dms", HomeHeroProbe.sinceLaunchMs))
+            }
+            self.noSourcesSyncWatcher?.cancel()
+            self.noSourcesSyncWatcher = nil
+            self.openRowsGateAndRebuild()
+        }
+    }
+
     private func openRowsGateAndRebuild() {
         if let held = rowsGate.open() {
             pendingHeldRebuildsProbe = held
@@ -1109,7 +1160,7 @@ final class HomeViewModel: ObservableObject {
                                                        seedPending: !seedFailed,
                                                        hasRefreshed: !lastManifestSignature.isEmpty)
             if bootstrap == .openRowsNoSources {
-                openRowsGateAndRebuild()
+                openRowsForNoSourcesBootstrap()
             }
             return
         }
@@ -1151,7 +1202,7 @@ final class HomeViewModel: ObservableObject {
             // delivered to this watcher before `AddonRepository.initialize()` even runs - from
             // looking exactly like a settled add-on-less profile. See `AddonBootstrapRoute`.
             if bootstrap == .openRowsNoSources {
-                openRowsGateAndRebuild()
+                openRowsForNoSourcesBootstrap()
             }
             return
         }
@@ -1210,6 +1261,7 @@ final class HomeViewModel: ObservableObject {
         addonWatcher?.cancel()
         seedGateWatcher?.cancel()
         homeWatcher?.cancel()
+        noSourcesSyncWatcher?.cancel()
         upcomingWatcher?.cancel()
     }
 }
