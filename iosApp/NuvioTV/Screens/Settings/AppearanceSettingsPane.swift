@@ -16,6 +16,17 @@ struct AppearanceSettingsPane: View {
     @ObservedObject var badges: BadgeSettingsViewModel
     /// Swatch to refocus after a theme-change remount; consumed by [ThemePickerRow].
     @Binding var pendingThemeSwatchFocus: String?
+    /// FEAT-30/31: which row ("navigation" / "typeface") should reclaim focus after a
+    /// theme-`.id()`-driven remount; consumed by this pane's own `.onAppear` below, same contract
+    /// as `pendingThemeSwatchFocus`/`ThemePickerRow`.
+    @Binding var pendingAppearanceRowFocus: String?
+    /// Backs the `.focused($appearanceRowFocus, equals:)` modifiers on the Navigation and
+    /// Typeface rows below. `SettingsPickerRow`'s own body is a single `Menu` (see
+    /// `SettingsRowViews.swift`), so `.focused` applied to the row view — not to something inside
+    /// it — still binds correctly: SwiftUI's `focused(_:equals:)` on a container reports focus
+    /// when any focusable descendant (here, the row's `Menu`) has it, and there is exactly one
+    /// such descendant per row.
+    @FocusState private var appearanceRowFocus: String?
 
     /// Mirrors HomeView's `hero_poster_focus_only` @AppStorage key (same UserDefaults key, read
     /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
@@ -74,14 +85,30 @@ struct AppearanceSettingsPane: View {
         ($0.rawValue, $0.displayName)
     }
 
-    /// Wraps `uiFont` so selecting a typeface applies it to `Theme.Font` first, then writes the
-    /// `@AppStorage` value. Mutation precedes the state write deliberately: ContentView's `.id`
-    /// remount key includes `ui_font`, so the remount that follows this write must see the tokens
-    /// already resolved to the new family, not the stale cache from before `apply(_:)` ran.
+    /// Wraps `sidebarStyle` so picking a navigation style arms the focus-restore hint BEFORE the
+    /// `@AppStorage` write — the write is what re-identifies ContentView's `.id()`-keyed tree, so
+    /// anything set after it belongs to a view already being torn down (same ordering rule as
+    /// `pendingThemeSwatchFocus` in `ThemePickerRow.onSelect` above).
+    private var sidebarStyleBinding: Binding<String> {
+        Binding(
+            get: { sidebarStyle },
+            set: { newValue in
+                pendingAppearanceRowFocus = "navigation"
+                sidebarStyle = newValue
+            }
+        )
+    }
+
+    /// Wraps `uiFont` so selecting a typeface arms the focus-restore hint and applies the family
+    /// to `Theme.Font` first, then writes the `@AppStorage` value. Both must precede the state
+    /// write deliberately: ContentView's `.id` remount key includes `ui_font`, so the remount that
+    /// follows this write must see the tokens already resolved to the new family (and the hint
+    /// already armed), not the stale cache from before `apply(_:)` ran.
     private var uiFontBinding: Binding<String> {
         Binding(
             get: { uiFont },
             set: { newValue in
+                pendingAppearanceRowFocus = "typeface"
                 Theme.Font.apply(Theme.AppFontFamily(rawValue: newValue) ?? .system)
                 uiFont = newValue
             }
@@ -89,6 +116,25 @@ struct AppearanceSettingsPane: View {
     }
 
     var body: some View {
+        Group {
+            content
+        }
+        .onAppear {
+            // FEAT-30/31: mirrors ThemePickerRow's own consumption block above — put focus back
+            // on the row the user just picked instead of letting the post-remount focus engine
+            // default to the tab bar. No `DispatchQueue.main.async` delay here, matching
+            // ThemePickerRow's `.onAppear` (it reads/clears the hint synchronously; it isn't
+            // waiting for anything to finish laying out). Cleared immediately so an unrelated
+            // later remount, or a fresh entry into Settings, does not steal focus back into
+            // Appearance.
+            guard let row = pendingAppearanceRowFocus else { return }
+            pendingAppearanceRowFocus = nil
+            appearanceRowFocus = row
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         SettingsSection(String(localized: "Theme")) {
             Text("The accent color used for focus rings, highlights, and controls. Applies instantly and syncs per profile.")
                 .font(Theme.Font.caption)
@@ -143,11 +189,12 @@ struct AppearanceSettingsPane: View {
             SettingsPickerRow(
                 title: String(localized: "Navigation"),
                 subtitle: String(localized: "Sidebar hides the top tab bar behind a floating panel"),
-                selection: $sidebarStyle,
+                selection: sidebarStyleBinding,
                 options: Self.navigationOptions.map(\.value),
                 label: { value in Self.navigationOptions.first { $0.value == value }?.label ?? value }
             )
             .accessibilityIdentifier("appearance_row_navigation")
+            .focused($appearanceRowFocus, equals: "navigation")
 
             // FEAT-31: opt-in Open Sans typeface. The binding's setter applies the font family
             // BEFORE writing `uiFont` — ContentView's `.id` remount key reads `ui_font` from
@@ -160,6 +207,7 @@ struct AppearanceSettingsPane: View {
                 label: { value in Self.typefaceOptions.first { $0.value == value }?.label ?? value }
             )
             .accessibilityIdentifier("appearance_row_typeface")
+            .focused($appearanceRowFocus, equals: "typeface")
         }
 
         SettingsSection(String(localized: "Poster Style")) {

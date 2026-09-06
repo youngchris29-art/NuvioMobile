@@ -78,6 +78,10 @@ struct SettingsView: View {
     /// Theme name whose swatch should reclaim focus after a theme-change remount (see
     /// `ContentView.pendingThemeSwatchFocus`); the Appearance pane consumes and clears it.
     @Binding var pendingThemeSwatchFocus: String?
+    /// FEAT-30/31: which Appearance row ("navigation" / "typeface") should reclaim focus after a
+    /// remount (see `ContentView.pendingAppearanceRowFocus`); the Appearance pane consumes and
+    /// clears it, same contract as `pendingThemeSwatchFocus`.
+    @Binding var pendingAppearanceRowFocus: String?
     @FocusState private var focusedCategory: SettingsCategory?
     /// Scope that owns the sidebar's default focus — see the focus graph above.
     @Namespace private var sidebarFocus
@@ -226,7 +230,8 @@ struct SettingsView: View {
             AppearanceSettingsPane(
                 model: model,
                 badges: badges,
-                pendingThemeSwatchFocus: $pendingThemeSwatchFocus
+                pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
+                pendingAppearanceRowFocus: $pendingAppearanceRowFocus
             )
         case .homeScreen:
             HomeScreenSettingsPane(model: model)

@@ -334,14 +334,10 @@ struct MainTabView: View {
             // `tabBarImmersiveHide()` is the only safe uniform value here: `.visible` would pin
             // the bar open (BUG-66 itself), and `.hidden` is wrong for a tab root.
             Tab("Settings", systemImage: "gearshape", value: 4) {
-                // FEAT-30/31 Wave 2: SettingsView(pendingAppearanceRowFocus:) wiring — the
-                // binding is already held above the rebuild boundary (see
-                // `ContentView.pendingAppearanceRowFocus`); only the Settings-side signature and
-                // the Appearance pane's focus restore are outstanding, and those files belong to
-                // that wave.
                 SettingsView(
                     selectedCategory: $settingsCategory,
-                    pendingThemeSwatchFocus: $pendingThemeSwatchFocus
+                    pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
+                    pendingAppearanceRowFocus: $pendingAppearanceRowFocus
                 )
                     .tabBarImmersiveHide()
             }
