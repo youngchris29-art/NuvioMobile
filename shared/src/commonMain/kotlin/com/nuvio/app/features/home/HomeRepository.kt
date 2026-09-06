@@ -556,7 +556,6 @@ object HomeRepository {
         }
         heroGateState = HeroGateState.Armed
         heroGateArmedAt = TimeSource.Monotonic.markNow()
-        rowsHoldBaselineHeroEnabled = HomeCatalogSettingsRepository.snapshot().heroEnabled
         heroGateReleaseReason = null
         heroGateWaiting = HeroGateWait.SOURCES
         // BUG-86 hero-off rows (beta.18), the `noSources` re-arm: this era's rows answer goes with
@@ -705,6 +704,9 @@ object HomeRepository {
         }
         val rowsElapsedMs = (heroGateArmedAt ?: idleSince).elapsedNow().inWholeMilliseconds
         rowsGateElapsedMs = rowsElapsedMs
+        // The baseline is stamped HERE, on the first evaluation after arming (or in the Idle era),
+        // from the snapshot the caller already holds — never by calling `snapshot()` under
+        // `heroSelectionLock`, which no other path in this file does.
         if (rowsHoldBaselineHeroEnabled == null) rowsHoldBaselineHeroEnabled = snapshot.heroEnabled
 
         if (heroGateState == HeroGateState.Idle) {
