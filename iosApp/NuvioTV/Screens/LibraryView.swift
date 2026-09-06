@@ -62,6 +62,9 @@ struct LibraryView: View {
                 }
                 .scrollClipDisabled()
                 .reportsScrollToTabBar(tab: "Library")
+                // FEAT-30: Menu summons the sidebar in sidebar mode (a second Menu, with focus in
+                // the sidebar, exits as before). No modifier at all in tabs mode.
+                .sidebarMenuReveal()
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)

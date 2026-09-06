@@ -22,6 +22,9 @@ struct AddonsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .reportsScrollToTabBar(tab: "Add-ons")
+            // FEAT-30: Menu summons the sidebar in sidebar mode (a second Menu, with focus in the
+            // sidebar, exits as before). No modifier at all in tabs mode.
+            .sidebarMenuReveal()
             .navigationTitle("Add-ons")
         }
         .onAppear { model.start() }

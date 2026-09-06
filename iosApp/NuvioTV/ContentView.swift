@@ -45,6 +45,24 @@ struct ContentView: View {
     /// put focus back on the swatch it was on. Not persisted: a cold launch must never steal
     /// focus into Appearance.
     @State private var pendingThemeSwatchFocus: String?
+    /// FEAT-30/31: same job as `pendingThemeSwatchFocus`, for the two Appearance rows that also
+    /// remount the whole tree when pressed — the navigation-style picker (tabs ↔ sidebar) and the
+    /// UI-font picker (see the `.id` below). Owned HERE for the identical reason: focus cannot
+    /// survive a remount at all, so without a hint the rebuilt pane drops the user at the top of
+    /// Settings and the row they just changed looks like it did nothing.
+    ///
+    /// Wave 1 (agent A) only OWNS the state and threads it as far as `MainTabView` — the Settings
+    /// files belong to another wave, so `SettingsView`'s signature is deliberately untouched here.
+    /// Not persisted: a cold launch must never steal focus into Appearance.
+    @State private var pendingAppearanceRowFocus: String?
+    /// FEAT-30: the navigation chrome mode (`"tabs"` default / `"sidebar"`). Read here for ONE
+    /// purpose — it is part of the rebuild key below. `SidebarChrome.isEnabled()` is what the
+    /// shell's own call sites read.
+    @AppStorage(SidebarChrome.defaultsKey) private var sidebarStyle = "tabs"
+    /// FEAT-31: the UI font family (`"system"` default / `"openSans"`). Also purely a rebuild-key
+    /// input — `Theme.Font` resolves the family itself, and its tokens are static reads that only
+    /// re-evaluate when the tree is re-identified, exactly like `Theme.Palette.accent`.
+    @AppStorage(Theme.AppFontFamily.defaultsKey) private var uiFont = "system"
     /// Deep link currently presented (Top Shelf → resume / title). Held until the user is past
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
@@ -73,6 +91,7 @@ struct ContentView: View {
                         selectedTab: $selectedTab,
                         settingsCategory: $settingsCategory,
                         pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
+                        pendingAppearanceRowFocus: $pendingAppearanceRowFocus,
                         // FEAT-25 (Codex beta.14 r8): the app-root deep-link cover (Top Shelf)
                         // presents over the whole shell without touching tab selection or push
                         // depth — it must count as covering Home, or the hero trailer plays
@@ -102,7 +121,19 @@ struct ContentView: View {
         // Theme change → rebuild the tree so every static Theme.Palette.accent read re-evaluates.
         // Focus resets on change; the state that would visibly strand the user — the selected tab
         // and the Settings category — is held above this boundary so it survives.
-        .id(appTheme.themeName)
+        //
+        // FEAT-30/31 join the key. Both are rare, deliberate user actions in Appearance, and both
+        // change something a mid-session flip cannot safely carry:
+        //  * `sidebarStyle` decides the resolved `.toolbarVisibility` preference for the tab bar.
+        //    Changing a resolved toolbar preference while the shell is live is the BUG-66 latch
+        //    class exactly — three device rounds proved a hidden→shown bar can freeze mid-slide on
+        //    hardware — so the mode switches the only way that has ever been safe: the shell is
+        //    rebuilt, and the new tree resolves one constant value for its whole lifetime.
+        //  * `uiFont` is read through `Theme.Font`'s static cache, the same static-read pattern
+        //    `Palette.accent` uses, so it needs the same re-identification to take effect.
+        // Selected tab, Settings category and the two focus hints above are all held ABOVE this
+        // boundary, so a mode or font change costs the user nothing but the rebuild.
+        .id("\(appTheme.themeName)|\(sidebarStyle)|\(uiFont)")
         .onAppear {
             auth.start()
             posterStyle.start()
@@ -243,6 +274,9 @@ struct MainTabView: View {
     /// See `ContentView.pendingThemeSwatchFocus` — threaded through for the same reason
     /// `settingsCategory` is: it must live above the theme rebuild boundary.
     @Binding var pendingThemeSwatchFocus: String?
+    /// FEAT-30/31: see `ContentView.pendingAppearanceRowFocus`. Threaded to here now so the state
+    /// already lives above the rebuild boundary; the consumer is Wave 2's Settings work.
+    @Binding var pendingAppearanceRowFocus: String?
     /// FEAT-25: true while ContentView's app-root deep-link cover is presented — a fourth way
     /// Home gets covered that neither tab selection nor push depth can see (Codex beta.14 r8).
     var rootCoverActive: Bool = false
@@ -263,6 +297,14 @@ struct MainTabView: View {
     /// subscription to exactly the one publisher that should move it. A well-meaning revert to
     /// `@StateObject` here would silently restore the every-tab-switch toolbar re-resolution.
     @State private var tabBarVisibility = TabBarVisibility()
+
+    /// FEAT-30: the sidebar's shared state, provided to every tab root alongside
+    /// `tabBarVisibility` below. `@State` on a reference type for the SAME load-bearing reason as
+    /// the property above (T3 / BUG-66) — see `SidebarChromeModel`'s own doc comment: observing it
+    /// here would put every scroll crossing on every tab back into the shell's invalidation path,
+    /// which is precisely what re-resolved `.toolbarVisibility` mid-transition. Only
+    /// `SidebarOverlay` observes it.
+    @State private var sidebarChrome = SidebarChromeModel()
 
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
@@ -292,6 +334,11 @@ struct MainTabView: View {
             // `tabBarImmersiveHide()` is the only safe uniform value here: `.visible` would pin
             // the bar open (BUG-66 itself), and `.hidden` is wrong for a tab root.
             Tab("Settings", systemImage: "gearshape", value: 4) {
+                // FEAT-30/31 Wave 2: SettingsView(pendingAppearanceRowFocus:) wiring — the
+                // binding is already held above the rebuild boundary (see
+                // `ContentView.pendingAppearanceRowFocus`); only the Settings-side signature and
+                // the Appearance pane's focus restore are outstanding, and those files belong to
+                // that wave.
                 SettingsView(
                     selectedCategory: $settingsCategory,
                     pendingThemeSwatchFocus: $pendingThemeSwatchFocus
@@ -304,6 +351,29 @@ struct MainTabView: View {
             }
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
+        .environment(\.sidebarChrome, sidebarChrome)
+        // FEAT-30: keeps `Theme.Size.heroPinnedRowsViewportBudget` honest if hiding the system tab
+        // bar moves the shell's top safe area. Ships as a no-op (the constant is 0 and the
+        // modifier then applies nothing at all, in either mode) until the device spike measures
+        // the delta — see that constant's doc comment.
+        .sidebarTopCompensation()
+        // FEAT-30: the sidebar is mounted HERE — on the TabView, after the environment modifiers
+        // (so it inherits `\.tabBarVisibility` for the immersive-push signal) and deliberately
+        // OUTSIDE every `Tab` closure. Inside one it would live in that tab's kept-alive subtree:
+        // pruned or deferred with it, re-created per tab, and re-evaluated on every `Tab` closure
+        // rebuild — the T3 class again. As an overlay it is a pure floating layer, so nothing
+        // behind it reflows and tabs mode gets no view at all.
+        .overlay(alignment: .topLeading) {
+            if SidebarChrome.isEnabled() {
+                SidebarOverlay(
+                    selectedTab: $selectedTab,
+                    rootCoverActive: rootCoverActive,
+                    chrome: sidebarChrome
+                )
+                .padding(.leading, Theme.Spacing.screen)
+                .padding(.top, Theme.Spacing.lg)
+            }
+        }
         // FEAT-25: keep the "is Home frontmost" signal current from OUTSIDE the kept-alive tab
         // subtrees — this closure runs on the always-visible shell, so the hero trailer's
         // teardown can't be deferred along with a hidden tab's rendering.

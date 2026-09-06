@@ -587,6 +587,39 @@ enum Theme {
         /// app. `PinnedRowTitle.pinnedHeroCompression` logs loudly if the live `vh` ever disagrees
         /// with `budget + compression`, so the assumption cannot rot silently.
         static let heroPinnedRowsViewportBudget: CGFloat = 455
+
+        // MARK: FEAT-30 — sidebar chrome
+
+        /// Extra TOP safe-area padding applied to the tab shell in SIDEBAR mode only (FEAT-30);
+        /// lives here, not with the rest of the sidebar's numbers, because it exists purely to
+        /// keep `heroPinnedRowsViewportBudget` above honest.
+        ///
+        /// Hiding the system tab bar may change the shell's top safe area, and that budget is a
+        /// MEASURED platform constant the whole pinned-hero compression chain is derived from — if
+        /// the sidebar moves the top inset, every rest position on Home is computed against a
+        /// viewport that no longer exists (`PinnedRowTitle.pinnedHeroCompression` would start
+        /// logging its BUDGET MISMATCH line). Padding the top back by the delta keeps 455 valid
+        /// instead of forking the constant per chrome mode.
+        ///
+        /// SHIPS AS 0, and 0 means "no modifier applied at all" (`sidebarTopCompensation()` in
+        /// SidebarOverlay.swift branches structurally), so an untouched build in either mode is
+        /// unaffected. The Phase 0 device spike (`-debug.sidebarSpike YES`) measures the real delta
+        /// against 455 and the shipping value replaces the 0 below.
+        ///
+        /// The knob is what lets a device pass bisect the value without a rebuild — same override
+        /// pattern as `debug.pinnedTitleMaxSlide` (`PinnedRowTitle.maxSlideOverride`) and
+        /// `debug.heroFolderLogoHeight` above: `UserDefaults.standard` consults the launch-argument
+        /// domain first, so
+        ///
+        ///     xcrun devicectl device process launch --terminate-existing --device <udid> \
+        ///         com.nuvio.media.NuvioTV -debug.sidebarTopCompensation 32
+        ///
+        /// works on physical hardware. Launch-latched: the shell reads it during layout, and a
+        /// value that changed mid-session would move the rows viewport under a settled rest.
+        static let sidebarTopCompensation: CGFloat = {
+            let override = UserDefaults.standard.double(forKey: "debug.sidebarTopCompensation")
+            return override > 0 ? CGFloat(override) : 0
+        }()
         /// Hard ceiling on the compression: exactly what the pinned hero's internals can actually
         /// yield, and not a point more.
         ///
