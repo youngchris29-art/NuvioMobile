@@ -305,6 +305,9 @@ struct MainTabView: View {
     /// which is precisely what re-resolved `.toolbarVisibility` mid-transition. Only
     /// `SidebarOverlay` observes it.
     @State private var sidebarChrome = SidebarChromeModel()
+    /// FEAT-30: focus scope over the whole tab shell, so the sidebar can hand focus back to content
+    /// with `resetFocus(in:)` after a row press (see `SidebarOverlay.handOffFocusToContent`).
+    @Namespace private var shellFocusScope
 
     var body: some View {
         // tvOS 26+ `Tab` syntax: gets the modern floating Liquid Glass top bar (the legacy
@@ -348,6 +351,10 @@ struct MainTabView: View {
         }
         .environment(\.tabBarVisibility, tabBarVisibility)
         .environment(\.sidebarChrome, sidebarChrome)
+        // FEAT-30: the shell-wide focus scope `resetFocus(in:)` targets (declared on the TabView
+        // in BOTH modes — a scope by itself changes no focus behaviour; only the sidebar calls
+        // reset on it).
+        .focusScope(shellFocusScope)
         // FEAT-30: keeps `Theme.Size.heroPinnedRowsViewportBudget` honest if hiding the system tab
         // bar moves the shell's top safe area. Ships as a no-op (the constant is 0 and the
         // modifier then applies nothing at all, in either mode) until the device spike measures
@@ -364,6 +371,7 @@ struct MainTabView: View {
                 SidebarOverlay(
                     selectedTab: $selectedTab,
                     rootCoverActive: rootCoverActive,
+                    shellFocusScope: shellFocusScope,
                     chrome: sidebarChrome
                 )
                 .padding(.leading, Theme.Spacing.screen)

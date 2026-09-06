@@ -774,6 +774,9 @@ struct HomeView: View {
                             }
                         }
                     } : sidebarMenuRevealHandler)
+                    // FEAT-30: same summon on an Up press the focus engine could not place (see
+                    // `SidebarMenuRevealModifier` in SidebarOverlay.swift); nil in tabs mode.
+                    .onMoveCommand(perform: sidebarUpRevealHandler)
                     // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
                     // Rounds 5–6 tried completing the scroll to the true top when focus
                     // re-entered the hero; both caused worse regressions on device (wedged Down
@@ -1300,6 +1303,14 @@ struct HomeView: View {
                     : 0
             ))
             .modifier(HeroCarouselInteractionModifier(enabled: heroCarouselActive) { direction in
+                // FEAT-30: this handler sits closer to the focused CTA than Home's root one, so
+                // an Up with no focus target (the hidden bar's band is a dead zone — device spike
+                // + test52, 2026-09-05) arrives HERE first. Route it to the sidebar in sidebar
+                // mode; tabs mode falls through to the existing paging logic (a no-op for Up).
+                if direction == .up, SidebarChrome.isEnabled() {
+                    if !sidebarChrome.isFocusedChrome { sidebarChrome.requestReveal() }
+                    return
+                }
                 guard heroItems.count > 1 else { return }
                 let count = heroItems.count
                 let clamped = min(heroIndex, count - 1)
@@ -1596,6 +1607,17 @@ struct HomeView: View {
     ///
     /// Search/Library/Add-ons get the same behaviour from `.sidebarMenuReveal()`; Home cannot use
     /// that modifier because its exit handler has to compose with the branch above.
+    /// FEAT-30: Up with no focus target → reveal + focus the sidebar. Only arrives when the
+    /// engine found nothing above (an ordinary Up between rows never reaches it). Nil in tabs mode
+    /// so that mode installs no handler at all.
+    private var sidebarUpRevealHandler: ((MoveCommandDirection) -> Void)? {
+        guard SidebarChrome.isEnabled() else { return nil }
+        return { direction in
+            guard direction == .up, !sidebarChrome.isFocusedChrome else { return }
+            sidebarChrome.requestReveal()
+        }
+    }
+
     private var sidebarMenuRevealHandler: (() -> Void)? {
         guard SidebarChrome.isEnabled(), !isScrolledDown else { return nil }
         return {

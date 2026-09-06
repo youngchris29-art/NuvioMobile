@@ -335,7 +335,11 @@ struct AboutSettingsPane: View {
                     isOn: $collectionFrameProbe
                 )
 
-                if collectionFrameProbe {
+                // `|| enabled`: the harness passes `-debug.collectionFrameProbe YES`, which the
+                // sampler's `UserDefaults.bool(forKey:)` coerces but an `@AppStorage<Bool>` does
+                // not (the argument domain holds the String "YES"), so the readout must also
+                // honour the live read or a launch-arg run shows lines in the log and nothing here.
+                if collectionFrameProbe || CollectionFocusFrameProbe.enabled {
                     // 1 Hz re-read, same reasoning as the trailer/stream readouts above:
                     // `CollectionFocusFrameProbe` is a plain lock-guarded buffer with no publisher.
                     TimelineView(.periodic(from: .now, by: 1)) { _ in
