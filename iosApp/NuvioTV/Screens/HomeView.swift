@@ -2270,6 +2270,31 @@ final class HeroArtResolver: ObservableObject {
     }
 
     /// THE commit. One assignment, one animation, every field of the hero at once.
+    ///
+    /// BUG-95 (beta.18) note on the `withAnimation` below, because the fix plan for that bug
+    /// explicitly asked this line to lose it and this comment is the record of why it did not.
+    /// The bug itself was that this transaction reached `HeroCrossfadeImage`'s ZStack while it had
+    /// NO children (no bitmap resolved yet) and so no size of its own; SwiftUI then interpolated
+    /// that size from collapsed to full the moment the first bitmap landed, so a fixed
+    /// `.scaledToFill()` computed its crop against a box that was still growing — the tester's
+    /// "blank panel → logo → heavily-cropped mosaic → settles ~35 frames later" (full mechanism on
+    /// `HeroCrossfadeImage.body`, which fixes it: `Color.clear` makes that container's size
+    /// INVARIANT, so there is no longer any geometry here for a transaction to reach).
+    ///
+    /// What this transaction DOES still legitimately drive is `HomeHeroForeground`'s info block,
+    /// which keys a `.id(presentation.identity)` + `.transition(.opacity)` off this exact
+    /// `presented` publish (see that struct's own doc: "in the same transaction as the backdrop
+    /// behind them"). A SwiftUI `.transition` only animates an insert/remove when the state change
+    /// that causes it runs inside an active animation — moving this assignment to a plain write
+    /// would silently turn that text/logo crossfade into a hard cut, and fixing that properly (an
+    /// `.animation(_:value:)` scoped inside `HomeHeroForeground` so this transaction could be
+    /// dropped entirely) touches a region this wave's diff is deliberately kept out of — a
+    /// different wave owns the rest of this file. So the transaction stays: with the geometry hole
+    /// closed independently, it is now provably "the non-geometry part" and nothing else, which is
+    /// the fix plan's own fallback for exactly this situation. `HeroCrossfadeImage`'s two `Image`
+    /// layers additionally opt out of it on their own (`.transaction { $0.animation = nil }`,
+    /// belt-and-braces) so even a future consumer of `presented` cannot reintroduce an implicit
+    /// geometry animation there by accident.
     private func commit(item: MetaPreview, backdrop: UIImage?, logo: UIImage?, identity: String,
                         backdropSource: String, logoSource: String, waitedMs: Int) {
         logPresent(identity: identity, backdrop: backdropSource, logo: logoSource,
@@ -2280,7 +2305,8 @@ final class HeroArtResolver: ObservableObject {
     }
 
     /// `present item=<type:id> backdrop=<cached|fetched|poster|none> logo=<cached|fetched|text>
-    /// waited=<ms> same=<0|1>`. `backdrop=poster` (append-only addition to the vocabulary) is a
+    /// waited=<ms> same=<0|1> frame=<w>x<h>|none`. `frame=` is BUG-95's append-only diagnostic —
+    /// see `logPresent`. `backdrop=poster` (append-only addition to the vocabulary) is a
     /// TITLE hero whose primary backdrop missed or stalled and whose own poster stood in for it;
     /// `same=1` is a re-present of the item already on screen that
     /// actually swaps its backdrop or logo bitmap, i.e. the repaint signature. A healthy
@@ -2316,11 +2342,24 @@ final class HeroArtResolver: ObservableObject {
         return false
     }
 
+    /// BUG-95 (beta.18): `frame=<w>x<h>|none` (append-only) is diagnostic —
+    /// `HeroCrossfadeImage.lastReportedSize`, the container's own last-measured layout size, read
+    /// here because the resolver has no view access of its own. Proof, photographable off the
+    /// About pane's ring buffer, that the container's size no longer differs between a hero with
+    /// no bitmap yet and one that just painted. `item=` already leads this line rather than
+    /// trailing it (unlike `paint`, where Wave H had to insert new fields BEFORE it), so there is
+    /// no "everything after item=" ordering to protect here; `frame=` is appended at the very end
+    /// regardless, the same append-only discipline. `none` means no `HeroCrossfadeImage` has
+    /// completed a layout pass yet this launch — expected on the very first `present` line, before
+    /// SwiftUI's first layout.
     private func logPresent(identity: String, backdrop: String, logo: String,
                             waitedMs: Int, same: Bool) {
         guard HomeHeroProbe.enabled else { return }
-        HomeHeroProbe.log(String(format: "present item=%@ backdrop=%@ logo=%@ waited=%d same=%d",
-                                 identity, backdrop, logo, waitedMs, same ? 1 : 0))
+        let frame: String = HeroCrossfadeImage.lastReportedSize.map {
+            String(format: "%.0fx%.0f", $0.width, $0.height)
+        } ?? "none"
+        HomeHeroProbe.log(String(format: "present item=%@ backdrop=%@ logo=%@ waited=%d same=%d frame=%@",
+                                 identity, backdrop, logo, waitedMs, same ? 1 : 0, frame))
     }
 }
 
@@ -2917,14 +2956,48 @@ struct HeroCrossfadeImage: View {
     /// primary pins the stale poster indefinitely.
     @State private var paintedFallbackURL: String?
 
+    /// BUG-95 (beta.18) diagnostic only: the container's LAST rendered size, reported by the
+    /// `onGeometryChange` in `body` below. `HeroArtResolver.logPresent` has no view access of its
+    /// own, so it reads this static to append `frame=<w>x<h>` to the `present` probe line — proof,
+    /// photographable off the About pane's ring buffer, that this view's size no longer differs
+    /// between a hero with no bitmap yet and one that just painted (see the fix note on `body`).
+    /// `@MainActor` because every reader/writer (this view, `HeroArtResolver`) already runs there;
+    /// never read by anything that decides what to draw.
+    @MainActor static var lastReportedSize: CGSize?
+
     var body: some View {
+        GeometryReader { geo in
         ZStack {
+            // BUG-95 (beta.18): folder backdrop grew into place — a folder hero (`poster: nil`,
+            // Wave H's `HeroArtResolver`) commits with `backdrop == nil` on its FIRST paint while
+            // the fetch is still in flight, so `current`/`previous` were both nil and this ZStack
+            // had NO children at all. A childless ZStack ignores whatever size its parent proposes
+            // (`HomeHeroBackdrop`'s fixed `.frame(width: heroNuvioArtworkWidth, height:
+            // heroBackdropHeight)`) and collapses to nothing; the first bitmap to land then gave it
+            // its first real child and its size jumped from that collapsed point straight to the
+            // full frame — and because `HeroArtResolver.commit` committed that bitmap inside a
+            // `withAnimation`, SwiftUI interpolated the jump, so `.scaledToFill()` computed its
+            // crop against a box that started tiny and grew over ~0.3s: exactly the tester's video
+            // (blank panel → logo → heavily-cropped mosaic → settles less cropped ~35 frames
+            // later). `Color.clear` is a shape-backed view — it always reports the FULL proposed
+            // size whether or not a bitmap child exists alongside it — so this ZStack's own size is
+            // now CONSTANT across every state the crossfade passes through, with nothing left for
+            // any transaction (ambient or explicit) to animate. `.clipped()` below is
+            // belt-and-braces: once the box can no longer collapse, a `.scaledToFill()` image can
+            // never overflow it either.
+            Color.clear
             // Content-mode/frame/clipping are the caller's job (parity with what
             // CachedAsyncImage used to provide at these call sites).
             if let current {
                 Image(uiImage: current)
                     .resizable()
                     .scaledToFill()
+                    // BUG-95 belt-and-braces: this layer has no animation of its own to protect
+                    // (unlike `previous` below), so pin it to the ambient transaction unconditionally
+                    // — a future caller-side `withAnimation` (e.g. `HeroArtResolver.commit`, which
+                    // still wraps its commit for reasons explained on that function) can no longer
+                    // interpolate anything about this image, geometry included, by accident.
+                    .transaction { $0.animation = nil }
             }
             // The OUTGOING image sits on top and fades out to reveal the new one beneath —
             // stacked the other way (opaque newcomer above) the animated removal is invisible
@@ -2933,9 +3006,29 @@ struct HeroCrossfadeImage: View {
                 Image(uiImage: previous)
                     .resizable()
                     .scaledToFill()
+                    // BUG-95 belt-and-braces, same as `current` above — applied BEFORE `.opacity`
+                    // in the chain, so it only pins the image content itself; the `.opacity`
+                    // modifier stacked on top of it is deliberately left OUTSIDE this override and
+                    // keeps animating exactly as `crossfade(to:)`/`fadeToEmpty()`'s own explicit
+                    // `withAnimation` calls below intend.
+                    .transaction { $0.animation = nil }
                     .opacity(previousOpacity)
             }
         }
+        // BUG-95 gate run (beta.18): `Color.clear` alone was not enough — the simulator layout probe
+        // showed a filled container at 1250x1250 for a square bitmap, because `.scaledToFill()`
+        // reports a size LARGER than the proposal and a ZStack sizes to the union of its children.
+        // The GeometryReader takes exactly the proposed size no matter what its children want,
+        // and this frame pins the stack to it; the images are cropped inside, never resized by.
+        .frame(width: geo.size.width, height: geo.size.height)
+        .clipped()
+        // BUG-95 diagnostic only (see `lastReportedSize`'s own doc) — never consulted by any
+        // drawing or state-machine decision in this file.
+        .onGeometryChange(for: CGSize.self, of: { proxy in
+            proxy.size
+        }, action: { newSize in
+            HeroCrossfadeImage.lastReportedSize = newSize
+        })
         // Keyed on BOTH urls: between same-title previews the primary can stay identical while
         // only the fallback poster changes (CW adaptation without a poster → catalog card with
         // one) — keyed on the primary alone, a terminally-failed primary never retried the newly
@@ -3125,6 +3218,7 @@ struct HeroCrossfadeImage: View {
                 return
             }
             fadeToEmpty()
+        }
         }
     }
 
