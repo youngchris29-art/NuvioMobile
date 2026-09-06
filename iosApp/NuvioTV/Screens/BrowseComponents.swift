@@ -2207,6 +2207,12 @@ enum PinnedRowSettle {
         // change line, it is the thing a device log needs to prove the reset happened at all, and the
         // corrector's other terminal lines (DISARMED, DISARMED-PULLBACK, MISS, VOID) are unguarded
         // for the same reason.
+        // Codex beta.18 r4 (P2): the previous regime's measurements are stale by definition — a
+        // zero-delay settle that reads them would compute a scroll target from the OLD row frame,
+        // the exact post-switch snap this path exists to remove. Drop them; `MeasurementReport.
+        // unmeasured` then HOLDS until the new geometry publishes, and the settle runs on that.
+        latest = nil
+        sample = nil
         NSLog("[HomeScrollProbe] REGIME-CHANGE from=\(previous) to=\(key) fits=\(fits ? 1 : 0)")
         guard let scheduler else { return }
         let token = rearm(source: "regime")
@@ -3388,7 +3394,12 @@ struct CatalogRowView: View {
     /// `RowLeadingEdgeClip` opens for it. See that type's header for the whole BUG-92 argument;
     /// this is the attachment it documents and deliberately did not make itself.
     private var leadingEdgeAllowance: CGFloat {
-        let posterWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+        // Codex beta.18 r4 (P2): the widest thing the first card can be is the EXPANDED inline trailer
+        // tile (`posterStyle.height * 16/9` for a portrait card, see InlineTrailerCard's tile
+        // geometry), and the focus lift scales that whole label — size the bleed off the maximum,
+        // not the resting poster width, or the first playing trailer gets a hard clipped edge.
+        let restingWidth = posterStyle.landscapeCatalogRows ? Theme.Size.landscapeWidth : posterStyle.width
+        let posterWidth = max(restingWidth, rowArtworkHeight * 16 / 9)
         // No lift at all in No Zoom mode (`CardFocusMode.still` — `PosterCard.swift` swaps in
         // `StillCardButtonStyle` + `.focusEffectDisabled(true)`, which scales nothing), so only the
         // ring can bleed there. Otherwise this recomputes `PosterCard.swift`'s own
