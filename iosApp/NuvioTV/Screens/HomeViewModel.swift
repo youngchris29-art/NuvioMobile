@@ -931,13 +931,13 @@ final class HomeViewModel: ObservableObject {
     ///      `LaunchSyncSignal`, bounded by the same 4 s budget the Kotlin hold uses, then open.
     ///   3. Otherwise (settled, not applicable, signed out): open now, exactly as before.
     private func openRowsForNoSourcesBootstrap() {
-        if let latest = HomeRepository.shared.uiState.value as? HomeUiState, latest.heroGateReleased {
+        let latest = HomeRepository.shared.currentUiState
+        if latest.heroGateReleased {
             if latest.rowsGateReleased { openRowsGateAndRebuild() }
             return
         }
         let gen = pipelineGeneration
-        let syncState = LaunchSyncSignal.shared.state.value as? LaunchSyncSignalLaunchSyncState
-        guard syncState == .running, noSourcesSyncWatcher == nil, !rowsGateOpen else {
+        guard HomeRepository.shared.launchSyncRunning, noSourcesSyncWatcher == nil, !rowsGateOpen else {
             openRowsGateAndRebuild()
             return
         }
@@ -946,7 +946,10 @@ final class HomeViewModel: ObservableObject {
         }
         noSourcesSyncWatcher = FlowWatcherKt.watch(LaunchSyncSignal.shared.state) { [weak self] emitted in
             guard let self, self.pipelineGeneration == gen, !self.rowsGateOpen else { return }
-            guard let state = emitted as? LaunchSyncSignalLaunchSyncState, state != .running else { return }
+            _ = emitted
+            // Read the state back through the Kotlin accessor rather than casting the emitted
+            // value: the nested enum's Swift name is an interop detail nothing else here relies on.
+            guard !HomeRepository.shared.launchSyncRunning else { return }
             self.noSourcesSyncWatcher?.cancel()
             self.noSourcesSyncWatcher = nil
             self.openRowsGateAndRebuild()

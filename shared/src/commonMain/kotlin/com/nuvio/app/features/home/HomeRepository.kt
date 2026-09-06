@@ -51,6 +51,15 @@ object HomeRepository {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
+    /**
+     * Swift-facing snapshot accessors (beta.18, Codex r2 bootstrap fix): `StateFlow.value` is not
+     * reachable through the ObjC export, so the no-sources add-on bootstrap route reads the current
+     * publish and the launch-sync state here instead of guessing at interop names.
+     */
+    val currentUiState: HomeUiState get() = _uiState.value
+    val launchSyncRunning: Boolean
+        get() = LaunchSyncSignal.state.value == LaunchSyncSignal.LaunchSyncState.Running
+
     private var activeJob: Job? = null
     private var activeRequestKey: String? = null
     private var currentRequestKey: String? = null
