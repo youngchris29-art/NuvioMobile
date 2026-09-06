@@ -1308,7 +1308,9 @@ struct HomeView: View {
                 // + test52, 2026-09-05) arrives HERE first. Route it to the sidebar in sidebar
                 // mode; tabs mode falls through to the existing paging logic (a no-op for Up).
                 if direction == .up, SidebarChrome.isEnabled() {
-                    if !sidebarChrome.isFocusedChrome { sidebarChrome.requestReveal() }
+                    if !sidebarChrome.isFocusedChrome, SidebarChrome.upIsDeliberate() {
+                        sidebarChrome.requestReveal()
+                    }
                     return
                 }
                 guard heroItems.count > 1 else { return }
@@ -1614,6 +1616,7 @@ struct HomeView: View {
         guard SidebarChrome.isEnabled() else { return nil }
         return { direction in
             guard direction == .up, !sidebarChrome.isFocusedChrome else { return }
+            guard SidebarChrome.upIsDeliberate() else { return }   // swipe overshoot, not a press
             sidebarChrome.requestReveal()
         }
     }
