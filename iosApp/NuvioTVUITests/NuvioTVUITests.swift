@@ -4974,8 +4974,22 @@ final class NuvioTVUITests: XCTestCase {
     ///
     /// Prerequisites fail LOUDLY (suite convention): a missing probe is an `XCTFail`, a fixture in
     /// the wrong Poster Size or hero mode is a self-describing `XCTSkip`.
+    /// beta.18 gate run: the fixture's SYNCED profile is Medium, and a `defaults write` of the
+    /// poster payload is clobbered by the cloud pull on launch — so the Large-only legs carry the
+    /// payload as launch arguments instead. On Apple platforms a `-key value` argument lands in
+    /// `NSUserDefaults`' argument domain, which `PosterCardStyleStorage.apple.kt`'s `stringForKey`
+    /// reads ahead of the persisted (and pulled) value, for the life of the process only. The key
+    /// is profile-scoped (`poster_card_style_payload_<activeProfileIndex>`), and the picked profile's
+    /// index is not knowable here, so the first four indices all get it. Captions stay ON
+    /// (`hideLabelsEnabled: false`): that is the 579 pt over-tall frame these two gates were
+    /// written against; Steven's Hide-Labels shape is covered by PinnedRowGeometryTests + device.
+    static let largePosterFixtureArguments: [String] = (0..<4).flatMap { index -> [String] in
+        ["-poster_card_style_payload_\(index)",
+         "{\"widthDp\":154,\"heightDp\":231,\"cornerRadiusDp\":12,\"catalogLandscapeModeEnabled\":false,\"hideLabelsEnabled\":false}"]
+    }
+
     func test47LargePinnedRowTitleClearsArtwork() throws {
-        let app = launchToHome(forceFreshLaunch: true) // a prior still-mode process (test46) must not be reused: the settle probe reads its geometry
+        let app = launchToHome(extraArguments: Self.largePosterFixtureArguments + Self.largePosterFixtureArguments, forceFreshLaunch: true) // a prior still-mode process (test46) must not be reused: the settle probe reads its geometry
         openTab(app, named: "Home")
         pause(1.5)
 
@@ -5364,7 +5378,7 @@ final class NuvioTVUITests: XCTestCase {
         // ── Leg A: the device-failure gate ───────────────────────────────────────────────────
         // Hunt for a rest that is BOTH clipped and on the artwork, the shape the device produced.
         let app = launchToHome(
-            extraArguments: ["-no_zoom_on_focus", "YES",
+            extraArguments: Self.largePosterFixtureArguments + Self.largePosterFixtureArguments + ["-no_zoom_on_focus", "YES",
                              // Restores the pre-Wave-10 shortfall (vh 524 → ~455) so a deep park
                              // clips again, and turns the corrector off so it stays clipped. See
                              // the header for why both are needed.
@@ -5470,7 +5484,7 @@ final class NuvioTVUITests: XCTestCase {
         // knobs recreate history; this one has to prove the belt stays out of the way in the
         // present.
         let healthyApp = launchToHome(
-            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
+            extraArguments: Self.largePosterFixtureArguments + Self.largePosterFixtureArguments + ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
             forceFreshLaunch: true
         )
         openTab(healthyApp, named: "Home")
