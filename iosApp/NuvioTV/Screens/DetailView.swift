@@ -51,6 +51,8 @@ private final class ScrollDimModel: ObservableObject {
     /// on every scroll frame and must not invalidate anything (the BUG-41 rule).
     var contentInsetTop: CGFloat = 0
     var lastContentOffset: CGFloat = 0
+    /// BUG-96 diagnostic sample (plain field); published into `scrollGeoNote` by the anchor pass.
+    var geometrySample: String = "-"
 
     /// `CACurrentMediaTime()` at the last `noteScrollChange` call — what `ScrollingLatch` measures
     /// the debounce window against.
@@ -146,6 +148,10 @@ private struct ScrollDimOverlay: View {
     /// `detailChipBackground`'s own condition) — folded into `debug_ux6` alongside `trailer=`/`ab=`
     /// so a UI test can read all four BUG-41 A/B signals off one accessibility node.
     let glassFlat: Bool
+    /// The FEAT-32 trailer cover composes its own copy of this overlay; that copy must not carry
+    /// the `debug_ux6` probe, or the page has two matching elements while the cover is up
+    /// (test17 "Multiple matching elements found").
+    var showsProbe: Bool = true
 
     var body: some View {
         ZStack {
@@ -163,10 +169,12 @@ private struct ScrollDimOverlay: View {
             // the three A/B signals a UITest needs to attribute choppiness — append-only, `dark=`
             // stays first so pre-existing reads of this token keep working. `scrolling=` (beta.18,
             // BUG-41 item 3) is the newest token, appended last for the same reason.
+            if showsProbe {
             Text("debug_ux6 dark=\(Int(model.value * 1000)) trailer=\(trailerActive ? 1 : 0) glass=\(glassFlat ? 1 : 0) ab=\(DetailScrollAB.leg) scrolling=\(model.isScrolling ? 1 : 0) anchor=\(model.anchorNote) geo=\(model.scrollGeoNote)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .accessibilityIdentifier("debug_ux6")
+            }
             #endif
         }
     }
@@ -367,6 +375,8 @@ struct DetailView: View {
     @FocusState private var focusedCastIndex: Int?
     /// BUG-96 (beta.18): which detail row focus is inside, if any — see `DetailRowAnchor`.
     @FocusState private var focusedRow: DetailRowID?
+    /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
     @State private var detailRowOffsets: [DetailRowID: CGFloat] = [:]
     /// BUG-96: the vertical scroll view's position, driven the way Home's corrector drives its rows.
@@ -488,13 +498,6 @@ struct DetailView: View {
                     if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
                     return
                 }
-                guard let rowTop = detailRowOffsets[row] else { return }
-                let inset = dimModel.contentInsetTop
-                let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset)
-                let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
-                if DetailScrollProbe.enabled {
-                    dimModel.anchorNote = String(format: "%@ top=%.0f y=%.0f", String(describing: row), rowTop, target)
-                }
                 // The engine's own reveal runs AFTER this handler and overrides an immediate
                 // scrollTo (first fixture run: an Episodes row top-aligned with k=0 still rested at
                 // 519 pt). Let the reveal settle, then slide the row to its place — one deliberate
@@ -502,23 +505,22 @@ struct DetailView: View {
                 detailAnchorTask?.cancel()
                 detailAnchorTask = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleDelay * 1_000_000_000))
-                    guard !Task.isCancelled, focusedRow == row else { return }
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        detailScrollPosition.scrollTo(y: target)
-                    }
-                    if DetailScrollProbe.enabled { dimModel.anchorNote += " fired" }
+                    guard anchorPass(row, note: "fired") else { return }
                     // One verify pass: a card whose thumbnails land after the settle makes the
                     // engine re-reveal it and undo the rest. Re-issue once, never loop.
                     try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
-                    guard !Task.isCancelled, focusedRow == row else { return }
-                    if abs(dimModel.lastContentOffset - expected) > DetailRowAnchor.verifyTolerance {
-                        withAnimation(.easeOut(duration: 0.3)) {
-                            detailScrollPosition.scrollTo(y: target)
-                        }
-                        if DetailScrollProbe.enabled { dimModel.anchorNote += String(format: " re-issued(off=%.0f)", dimModel.lastContentOffset) }
-                    }
+                    _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
+                    // Publish the geometry sample once, AT REST, for the probe (never per frame).
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
                 }
             }
+            // Codex BUG-96 r1 (P2): a correction must not land on a page that is leaving or
+            // under the trailer cover's 0.6 s leave transition.
+            .onChange(of: bridgePhase) { _, phase in
+                if phase != .idle { detailAnchorTask?.cancel(); detailAnchorTask = nil }
+            }
+            .onDisappear { detailAnchorTask?.cancel(); detailAnchorTask = nil }
             // FEAT-32: the chrome fades out ahead of the dim on the way in, and waits for the
             // backdrop settle on the way back.
             .opacity(TrailerBridgeChoreography.chromeOpacity(bridgePhase))
@@ -576,8 +578,11 @@ struct DetailView: View {
                 // fields — no invalidation. The probe note is the diagnostic mirror.
                 dimModel.contentInsetTop = geo.contentInsets.top
                 dimModel.lastContentOffset = geo.contentOffset.y
+                // Codex BUG-96 r1 (P3): the diagnostic string is SAMPLED here into a plain field and
+                // published only from the anchor pass, so the probe never invalidates the page per
+                // frame and cannot contaminate its own hitch measurements.
                 if DetailScrollProbe.enabled {
-                    dimModel.scrollGeoNote = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height)
+                    dimModel.geometrySample = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height)
                 }
             })
             .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in
@@ -740,7 +745,7 @@ struct DetailView: View {
                 // (scrim, then the scroll dim at its current value; the poster layer is held for
                 // the whole bridge), or the crossfade runs between a raw and a darkened frame.
                 scrimOverlay(posterBackdropVisible: false)
-                ScrollDimOverlay(model: dimModel, trailerActive: false, glassFlat: chipGlassFlat)
+                ScrollDimOverlay(model: dimModel, trailerActive: false, glassFlat: chipGlassFlat, showsProbe: false)
                 FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                     model.trailerPlayback = nil
                 }, zoomKey: item.zoomKey, videoId: item.videoId, onWillDismiss: {
@@ -907,6 +912,31 @@ struct DetailView: View {
     /// buttons" for the A/B attribution question BUG-41 is still mid-answering on-device. Folding
     /// `dimModel.isScrolling` in here would silently make ordinary (leg 0) scrolling flatten the
     /// action row too, widening that experiment's scope as a side effect of this fix.
+    /// BUG-96: one anchor pass. Codex r1 (P2): geometry is read HERE, at fire time — the row's
+    /// content-space top and the live top inset — never captured before the wait (a parental-guide
+    /// row inserting asynchronously moves every row below it). Gated on the page being visible and
+    /// the trailer bridge idle; honours Reduce Motion (no animated translation). Returns false when
+    /// the pass was skipped for good.
+    @discardableResult
+    private func anchorPass(_ row: DetailRowID, note: String, onlyIfDrifted: Bool = false) -> Bool {
+        guard focusedRow == row, bridgePhase == .idle, let rowTop = detailRowOffsets[row] else { return false }
+        let inset = dimModel.contentInsetTop
+        let target = DetailRowAnchor.scrollTarget(rowTop: rowTop, contentInsetTop: inset)
+        let expected = DetailRowAnchor.expectedOffset(scrollTarget: target, contentInsetTop: inset)
+        if onlyIfDrifted, abs(dimModel.lastContentOffset - expected) <= DetailRowAnchor.verifyTolerance { return true }
+        if reduceMotion {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { detailScrollPosition.scrollTo(y: target) }
+        } else {
+            withAnimation(.easeOut(duration: 0.3)) { detailScrollPosition.scrollTo(y: target) }
+        }
+        if DetailScrollProbe.enabled {
+            dimModel.anchorNote = String(format: "%@ top=%.0f y=%.0f %@", String(describing: row), rowTop, target, note)
+        }
+        return true
+    }
+
     private var chipGlassFlat: Bool {
         Self.chipGlassFlat(trailerActive: isTrailerActive, scrolling: dimModel.isScrolling, glassDisabled: DetailScrollAB.glassDisabled)
     }
