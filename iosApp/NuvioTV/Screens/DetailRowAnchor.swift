@@ -95,47 +95,69 @@ enum DetailRowID: Hashable {
     case logos, parental, episodes, cast, collection, trailers, moreLikeThis, comments
 }
 
-/// BUG-96 oracle: counts how many separate *motions* a run of content-offset samples shows,
-/// where "one motion" is the whole point of the blend fix — the engine's reveal and the anchor
-/// pass are meant to read as a single continuous move, not the old land-then-nudge (two motions).
-/// Pure and stateless so `DetailRowAnchorTests` can drive it with fabricated sample arrays instead
-/// of a live `ScrollView`.
+/// One `onScrollGeometryChange` callback's content offset, timestamped at the moment it fired.
+struct MotionSample {
+    let time: TimeInterval
+    let offset: CGFloat
+
+    init(time: TimeInterval, offset: CGFloat) {
+        self.time = time
+        self.offset = offset
+    }
+}
+
+/// BUG-96 oracle: counts how many separate *motions* a run of timestamped content-offset samples
+/// shows, where "one motion" is the whole point of the blend fix — the engine's reveal and the
+/// anchor pass are meant to read as a single continuous move, not the old land-then-nudge (two
+/// motions). Pure and stateless so `DetailRowAnchorTests` can drive it with fabricated sample
+/// arrays instead of a live `ScrollView`.
+///
+/// Codex P2 (rc5 follow-up): the original design split segments on a RUN of consecutive
+/// near-stationary SAMPLES, which assumed the callback keeps delivering samples while the page
+/// sits still. It does not — `onScrollGeometryChange` fires only on a CHANGE to the observed
+/// value, so a genuine pause between the engine's reveal and the anchor correction (exactly the
+/// land-then-nudge regression this oracle exists to catch) can produce zero samples in the gap,
+/// and the fabricated plateau arrays the old unit tests fed in never occur from the real callback.
+/// The split is therefore TIME-based, not sample-count-based: a new segment starts when the gap
+/// since the last moving sample is long enough that a real pause, not a dropped frame, must have
+/// happened.
 enum DetailScrollMotion {
     /// The per-sample threshold below which two consecutive offsets count as "the page did not
     /// move" rather than genuine (if slow) motion — matches the sub-pixel jitter a `ScrollView`
     /// can report even at rest.
     static let stationaryThreshold: CGFloat = 0.5
 
-    /// How many consecutive stationary samples it takes to end a motion. Chosen deliberately above
-    /// 1: a resized card's layout catching its breath mid-reveal (fixture: a 2-sample gap) must
-    /// not read as two motions, only a genuine pause — e.g. the old settle-then-nudge design's gap
-    /// between the engine's reveal finishing and the anchor's own animation starting — should.
-    static let stationaryRunToSplit: Int = 4
+    /// How long a gap since the last MOVING sample has to be before a new sample starts a new
+    /// segment instead of continuing the current one. ~3 frames at 30 fps — comfortably above a
+    /// single dropped callback (the callback fires on change only, so one skipped frame under
+    /// continuous motion must not read as a pause) and well under the old fixed `settleDelay`
+    /// (0.35 s) this oracle was built to catch a regression back to.
+    static let pauseToSplit: TimeInterval = 0.10
 
-    /// A "segment" is a run of consecutive offset changes at or above `stationaryThreshold`,
-    /// broken only by at least `stationaryRunToSplit` consecutive near-stationary samples in a
-    /// row — a shorter pause does not split one continuous motion into two. `moves=1` at rest on
-    /// the `debug_ux6` probe means the engine's reveal and the anchor pass blended into one
-    /// visible motion; `moves=2` means the land-then-nudge regression is back.
-    static func segments(_ offsets: [CGFloat]) -> Int {
-        guard offsets.count > 1 else { return 0 }
+    /// A "segment" is a run of samples whose |Δoffset| from the last MOVING sample is at or above
+    /// `stationaryThreshold`, broken only when the time since that last moving sample reaches
+    /// `pauseToSplit` — a shorter gap (including no gap at all, since the callback may simply not
+    /// fire while the page is genuinely at rest) does not split one continuous motion into two.
+    /// A sample that is itself sub-threshold (jitter) never starts or extends a segment and is
+    /// ignored for gap timing. `moves=1` at rest on the `debug_ux6` probe means the engine's
+    /// reveal and the anchor pass blended into one visible motion; `moves=2` means the
+    /// land-then-nudge regression is back.
+    static func segments(_ samples: [MotionSample]) -> Int {
+        guard samples.count > 1 else { return 0 }
         var count = 0
-        var inSegment = false
-        var stationaryRun = 0
-        for i in 1..<offsets.count {
-            let delta = abs(offsets[i] - offsets[i - 1])
-            if delta >= stationaryThreshold {
-                if !inSegment {
-                    count += 1
-                    inSegment = true
-                }
-                stationaryRun = 0
+        var lastMovingTime: TimeInterval?
+        var lastOffset = samples[0].offset
+        for i in 1..<samples.count {
+            let sample = samples[i]
+            let delta = abs(sample.offset - lastOffset)
+            lastOffset = sample.offset
+            guard delta >= stationaryThreshold else { continue }
+            if let last = lastMovingTime, sample.time - last < pauseToSplit {
+                // Continues the current segment.
             } else {
-                stationaryRun += 1
-                if stationaryRun >= stationaryRunToSplit {
-                    inSegment = false
-                }
+                count += 1
             }
+            lastMovingTime = sample.time
         }
         return count
     }

@@ -59,11 +59,14 @@ private final class ScrollDimModel: ObservableObject {
     /// anchor pass fires. Plain fields, not published: read/written on the per-frame geometry path.
     var awaitingRevealRow: DetailRowID?
     var awaitingRevealStartOffset: CGFloat = 0
-    /// BUG-96 oracle: raw content-offset samples for the current focus visit, capped at ~600 and
-    /// reset on every `focusedRow` change — feeds `DetailScrollMotion.segments` for the `moves=`
-    /// count appended to `geometrySample`. Plain field for the same reason as `geometrySample`
-    /// itself; only ever grown when `DetailScrollProbe.enabled`.
-    var motionSamples: [CGFloat] = []
+    /// BUG-96 oracle: timestamped content-offset samples for the current focus visit, capped at
+    /// ~600 and reset on every `focusedRow` change — feeds `DetailScrollMotion.segments` for the
+    /// `moves=` count appended to `geometrySample`. Timestamped (not just the raw offset) because
+    /// `onScrollGeometryChange` delivers CHANGES only — a genuine pause between motions can produce
+    /// no samples at all, so the split has to be time-based, not a run of stationary samples (see
+    /// `DetailScrollMotion`). Plain field for the same reason as `geometrySample` itself; only ever
+    /// grown when `DetailScrollProbe.enabled`.
+    var motionSamples: [MotionSample] = []
 
     /// `CACurrentMediaTime()` at the last `noteScrollChange` call — what `ScrollingLatch` measures
     /// the debounce window against.
@@ -633,10 +636,15 @@ struct DetailView: View {
                 // published only from the anchor pass, so the probe never invalidates the page per
                 // frame and cannot contaminate its own hitch measurements.
                 if DetailScrollProbe.enabled {
-                    // BUG-96 oracle: append this frame's offset and re-derive the motion-segment
-                    // count so `moves=` in the probe always reflects every sample taken since the
-                    // last focus change, not just the ones seen before the last publish.
-                    if dimModel.motionSamples.count < 600 { dimModel.motionSamples.append(geo.contentOffset.y) }
+                    // BUG-96 oracle: append this frame's timestamped offset and re-derive the
+                    // motion-segment count so `moves=` in the probe always reflects every sample
+                    // taken since the last focus change, not just the ones seen before the last
+                    // publish. Timestamped with `CACurrentMediaTime()` (matches `HitchCounter`
+                    // elsewhere in this file) because the split is time-based — see
+                    // `DetailScrollMotion`.
+                    if dimModel.motionSamples.count < 600 {
+                        dimModel.motionSamples.append(MotionSample(time: CACurrentMediaTime(), offset: geo.contentOffset.y))
+                    }
                     let moves = DetailScrollMotion.segments(dimModel.motionSamples)
                     dimModel.geometrySample = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f moves=%d", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height, moves)
                 }

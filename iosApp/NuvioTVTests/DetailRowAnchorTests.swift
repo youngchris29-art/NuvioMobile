@@ -47,49 +47,72 @@ final class DetailRowAnchorTests: XCTestCase {
     }
 }
 
-/// BUG-96 (rc5 regression fix): `DetailScrollMotion.segments` is the `moves=` oracle — one motion
+/// BUG-96 (Codex P2 follow-up): `DetailScrollMotion.segments` is the `moves=` oracle — one motion
 /// (engine reveal blended with the anchor pass) must read as `1`, and the old land-then-nudge
 /// design (a settle wait long enough for the engine to fully rest before the anchor slid it again)
-/// would read as `2`. Fabricated offset arrays stand in for a live `ScrollView`'s per-frame samples.
+/// would read as `2`. The split is TIME-based (see `DetailScrollMotion`'s doc comment for why:
+/// `onScrollGeometryChange` delivers changes only, so a genuine pause can produce zero samples),
+/// so every fixture here is a timestamped `MotionSample` array, not a bare offset array — these
+/// shapes are ones the real callback can actually produce, unlike the old plateau-of-N-samples
+/// fixtures it replaces.
 final class DetailScrollMotionTests: XCTestCase {
 
+    /// Builds a run of samples moving at a fixed cadence, starting at `t0`/`offset0`, each
+    /// `interval` seconds after the last and `step` points further (step magnitude always at or
+    /// above `stationaryThreshold` so every sample in the ramp counts as moving).
+    private func ramp(t0: TimeInterval, offset0: CGFloat, count: Int, interval: TimeInterval, step: CGFloat) -> [MotionSample] {
+        (0..<count).map { i in
+            MotionSample(time: t0 + TimeInterval(i) * interval, offset: offset0 + CGFloat(i) * step)
+        }
+    }
+
     func testSingleRampIsOneSegment() {
-        let offsets: [CGFloat] = [0, 40, 90, 150, 220, 300, 390, 460, 500, 520, 528, 530]
-        XCTAssertEqual(DetailScrollMotion.segments(offsets), 1)
+        // 10 samples, 16ms apart (one 30fps-ish cadence), steadily moving.
+        let samples = ramp(t0: 0, offset0: 0, count: 10, interval: 0.016, step: 20)
+        XCTAssertEqual(DetailScrollMotion.segments(samples), 1)
     }
 
-    func testRampPlateauOfSixThenRampIsTwoSegments() {
-        // A ramp settles at 300, holds there for 6 samples (5 stationary deltas plus the delta
-        // that lands on the plateau — 6 in all, at/above `stationaryRunToSplit`), then a second
-        // ramp begins.
-        let ramp1: [CGFloat] = [0, 60, 130, 210, 300]
-        let plateau: [CGFloat] = Array(repeating: 300, count: 6)
-        let ramp2: [CGFloat] = [300, 380, 470, 560]
-        XCTAssertEqual(DetailScrollMotion.segments(ramp1 + plateau + ramp2), 2)
+    func testRampPauseRampIsTwoSegments() {
+        // A ramp, a 350ms gap (comfortably above `pauseToSplit` — the engine's reveal finishing
+        // and the anchor pass starting, the old land-then-nudge shape), then a second ramp.
+        let ramp1 = ramp(t0: 0, offset0: 0, count: 5, interval: 0.016, step: 20)
+        let ramp2 = ramp(t0: (ramp1.last?.time ?? 0) + 0.350, offset0: 90, count: 5, interval: 0.016, step: 20)
+        XCTAssertEqual(DetailScrollMotion.segments(ramp1 + ramp2), 2)
     }
 
-    func testPlateauOnlyIsZeroSegments() {
-        let offsets: [CGFloat] = Array(repeating: 200, count: 10)
-        XCTAssertEqual(DetailScrollMotion.segments(offsets), 0)
+    func testRampWithOneHiccupInsideIsOneSegment() {
+        // A ramp where one inter-sample gap is 40ms instead of the usual 16ms — a dropped frame,
+        // not a pause — must still read as one continuous motion (well under `pauseToSplit`, 0.10s).
+        let samples: [MotionSample] = [
+            MotionSample(time: 0.000, offset: 0),
+            MotionSample(time: 0.016, offset: 20),
+            MotionSample(time: 0.032, offset: 40),
+            MotionSample(time: 0.072, offset: 60), // 40ms hiccup here
+            MotionSample(time: 0.088, offset: 80),
+            MotionSample(time: 0.104, offset: 100),
+            MotionSample(time: 0.120, offset: 120)
+        ]
+        XCTAssertEqual(DetailScrollMotion.segments(samples), 1)
     }
 
-    func testSubThresholdJitterIsIgnored() {
-        // Every delta stays under `stationaryThreshold` (0.5pt) — sub-pixel `ScrollView` noise at
-        // rest, not real motion.
-        let offsets: [CGFloat] = [100, 100.3, 100.1, 100.4, 100.2, 100.0, 100.3]
-        XCTAssertEqual(DetailScrollMotion.segments(offsets), 0)
-    }
-
-    func testShortStationaryGapInsideARampDoesNotSplitIt() {
-        // A 2-sample stationary gap mid-ramp — below `stationaryRunToSplit` (4) — must read as
-        // one continuous motion, not two: the fixture case a resized card's layout catching its
-        // breath mid-reveal must not be mistaken for the land-then-nudge regression.
-        let offsets: [CGFloat] = [0, 50, 110, 110, 110, 180, 260, 340]
-        XCTAssertEqual(DetailScrollMotion.segments(offsets), 1)
+    func testLoneJitterSampleAfterALongGapDoesNotStartASegment() {
+        // A ramp (one segment), then a 400ms gap, then a single sub-threshold jitter sample —
+        // sub-pixel `ScrollView` noise, not real motion — must not itself start a second segment.
+        let ramp1 = ramp(t0: 0, offset0: 0, count: 5, interval: 0.016, step: 20)
+        let jitter = MotionSample(time: (ramp1.last?.time ?? 0) + 0.400, offset: (ramp1.last?.offset ?? 0) + 0.3)
+        XCTAssertEqual(DetailScrollMotion.segments(ramp1 + [jitter]), 1)
     }
 
     func testEmptyAndSingleSampleAreZeroSegments() {
         XCTAssertEqual(DetailScrollMotion.segments([]), 0)
-        XCTAssertEqual(DetailScrollMotion.segments([42]), 0)
+        XCTAssertEqual(DetailScrollMotion.segments([MotionSample(time: 0, offset: 42)]), 0)
+    }
+
+    func testTwoRampsExactlyPauseToSplitApartIsTwoSegments() {
+        // Boundary inclusive: a gap of exactly `pauseToSplit` (0.10s) since the last moving sample
+        // must split, not join — `segments` treats the split as `gap >= pauseToSplit`.
+        let ramp1 = ramp(t0: 0, offset0: 0, count: 3, interval: 0.016, step: 20)
+        let ramp2 = ramp(t0: (ramp1.last?.time ?? 0) + DetailScrollMotion.pauseToSplit, offset0: 60, count: 3, interval: 0.016, step: 20)
+        XCTAssertEqual(DetailScrollMotion.segments(ramp1 + ramp2), 2)
     }
 }
