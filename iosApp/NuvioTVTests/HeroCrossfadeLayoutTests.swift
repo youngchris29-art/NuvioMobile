@@ -162,4 +162,83 @@ final class HeroCrossfadeLayoutTests: XCTestCase {
         let b = HeroPresentation(item: makeItem(name: "New Title"), backdrop: backdrop, logo: nil, identity: "movie:1")
         XCTAssertNotEqual(a, b, "a renamed item at the same identity must still diff as a change")
     }
+
+    // MARK: - Fix #2 (BUG-95, 2026-09-08): the leaves are UIKit-backed, not SwiftUI `Image`
+
+    /// Recursively finds every `UIImageView` under `root` — `HeroBitmapLayer`'s hosted view is
+    /// nested inside whatever SwiftUI's `UIViewRepresentable` bridging wraps it in, so a direct
+    /// `subviews` check is not enough.
+    private func findImageViews(_ root: UIView) -> [UIImageView] {
+        var found: [UIImageView] = []
+        if let imageView = root as? UIImageView {
+            found.append(imageView)
+        }
+        for subview in root.subviews {
+            found.append(contentsOf: findImageViews(subview))
+        }
+        return found
+    }
+
+    /// Hosts `rootView` inside a real `UIWindow` (a `UIHostingController` needs to be window-backed
+    /// for `layoutIfNeeded()` to drive a real layout pass all the way down to the UIKit-backed
+    /// `HeroBitmapLayer` leaves — `sizeThatFits(in:)`, which the rest of this file uses, only
+    /// measures the SwiftUI side and never actually lays out the hosted `UIImageView`s). `.frame`
+    /// is set to `proposed` directly rather than proposed through the hosting controller, matching
+    /// how `HomeHeroBackdrop.backdrop`'s real call site constrains this view — a fixed-size parent
+    /// frame, not a `sizeThatFits` negotiation. The hosting controller otherwise applies tvOS
+    /// safe-area insets (80 pt horizontal, 60 pt vertical total) to its root view, shrinking the
+    /// content box and making the assertion measure the wrong dimensions.
+    @discardableResult
+    private func hostAndLayout(_ rootView: HeroCrossfadeImage, in proposed: CGSize) -> UIHostingController<HeroCrossfadeImage> {
+        let controller = UIHostingController(rootView: rootView)
+        controller.safeAreaRegions = []
+        controller.view.backgroundColor = .clear
+        let window = UIWindow(frame: CGRect(origin: .zero, size: proposed))
+        window.rootViewController = controller
+        controller.view.frame = CGRect(origin: .zero, size: proposed)
+        window.isHidden = false
+        controller.view.layoutIfNeeded()
+        return controller
+    }
+
+    /// Direct regression probe for the `HeroBitmapLayer` swap itself: seeds `current` from
+    /// `HeroCrossfadeImage.init(image:identity:)` (which seeds `current` synchronously — see that
+    /// initializer) with a 16:9 bitmap, lays it out at `proposed`, and asserts the hosted
+    /// `UIImageView`'s `bounds` exactly matches the container — never the bitmap's own 160×90 size —
+    /// then repeats with a 1:1 bitmap at the same proposal. Before the fix (`Image(uiImage:)
+    /// .resizable().scaledToFill()`) there was no UIKit view to bound-check at all; after it, the
+    /// `UIImageView`'s bounds are driven purely by the container frame regardless of the bitmap's
+    /// aspect ratio, which is the whole point of the UIKit-backed leaf (see `HeroBitmapLayer`'s doc
+    /// comment in HomeView.swift).
+    func testBitmapLayerBoundsMatchTheContainerForBothAspects() {
+        let widescreen = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 90)).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 160, height: 90))
+        }
+        let square = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100)).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+        }
+
+        for (label, img) in [("16x9", widescreen), ("1x1", square)] {
+            let controller = hostAndLayout(
+                HeroCrossfadeImage(image: img, identity: "bug95-layer:\(label)"),
+                in: proposed
+            )
+            let imageViews = findImageViews(controller.view)
+            XCTAssertEqual(imageViews.count, 1,
+                           "\(label): expected exactly one hosted UIImageView (the seeded 'current' HeroBitmapLayer) — found \(imageViews.count)")
+            guard let imageView = imageViews.first else { continue }
+            XCTAssertEqual(imageView.bounds.size.width, proposed.width, accuracy: 0.5,
+                           "\(label): UIImageView width must match the container's proposed width, not the \(img.size) bitmap's own size — got \(imageView.bounds.size)")
+            XCTAssertEqual(imageView.bounds.size.height, proposed.height, accuracy: 0.5,
+                           "\(label): UIImageView height must match the container's proposed height, not the \(img.size) bitmap's own size — got \(imageView.bounds.size)")
+            XCTAssertEqual(imageView.contentMode, .scaleAspectFill,
+                           "\(label): HeroBitmapLayer must configure aspect-fill content mode")
+            XCTAssertTrue(imageView.clipsToBounds,
+                          "\(label): HeroBitmapLayer must clip to bounds — otherwise an aspect-filled image can overflow its frame")
+            XCTAssertTrue(imageView.image === img,
+                          "\(label): the hosted UIImageView must display the exact seeded bitmap instance")
+        }
+    }
 }

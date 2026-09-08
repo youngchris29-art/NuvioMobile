@@ -3134,6 +3134,58 @@ enum HomeHeroProbe {
     }
 }
 
+/// BUG-95 (beta.18, 2026-09-08): the tester still saw a collection folder's mosaic backdrop
+/// "re-crop itself after it appears when the previous image had a different size" even after the
+/// `Color.clear`/frame fix of `ecc00536` pinned `HeroCrossfadeImage`'s own container size. Root
+/// cause: the leaves were SwiftUI `Image(uiImage:).resizable().scaledToFill()` — SwiftUI computes
+/// that layer's aspect-fill geometry as part of its own layout pass, and when `crossfade(to:)`
+/// swaps in a bitmap with a different aspect ratio than the outgoing one, the NEW layer's
+/// aspect-fill size differs from the OLD layer's, even though the surrounding container's size is
+/// now invariant. `.transaction { $0.animation = nil }` on each `Image` only strips animation from
+/// that image's OWN modifiers (opacity, etc.) — it cannot stop SwiftUI from interpolating the
+/// parent ZStack's placement of a child whose intrinsic-fill geometry just changed, because that
+/// interpolation is driven by whatever transaction is active on the PARENT when the child's layout
+/// inputs change, not by a transaction override written on the child itself. `ecc00536` fixed the
+/// container-collapse jump; this is the layer-crop jump underneath it — the class of bug that fix
+/// could not close on hardware (see u/mrStevenx3's rc5 report).
+///
+/// `HeroBitmapLayer` below replaces both `Image` leaves with a `UIViewRepresentable`-hosted
+/// `UIImageView`. UIKit computes the aspect-fill crop at LAYOUT time, directly from the view's
+/// `bounds` and the bitmap — there is no SwiftUI layout pass for it to participate in, so a bitmap
+/// swap between two different aspect ratios can never be interpolated by any transaction, ambient
+/// or explicit: `updateUIView` only ever swaps `image`, never touches `bounds`, and `bounds` itself
+/// is driven solely by the (already-invariant, per `ecc00536`) container frame above it.
+struct HeroBitmapLayer: UIViewRepresentable {
+    let image: UIImage
+
+    func makeUIView(context: Context) -> UIImageView {
+        let view = UIImageView(image: image)
+        view.contentMode = .scaleAspectFill
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        view.isAccessibilityElement = false
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        return view
+    }
+
+    func updateUIView(_ view: UIImageView, context: Context) {
+        if view.image !== image {
+            view.image = image
+        }
+    }
+
+    /// Take exactly the proposed size — never the bitmap's own intrinsic size — so SwiftUI's
+    /// layout never has a reason to size this view off the image at all; the crop is entirely
+    /// `UIImageView`'s job once `bounds` lands.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIImageView, context: Context) -> CGSize? {
+        let resolved = proposal.replacingUnspecifiedDimensions()
+        return CGSize(width: resolved.width, height: resolved.height)
+    }
+}
+
 /// UX-7 flash-free backdrop swapper: unlike `HomeHeroBackdrop`'s old approach, this view is NEVER
 /// re-identified as `url` changes — see the BUG-19 note on `HomeHeroBackdrop`. Instead it holds up
 /// to two decoded images itself and crossfades between them in place, so churn as fast as a row
@@ -3253,25 +3305,26 @@ struct HeroCrossfadeImage: View {
             // never overflow it either.
             Color.clear
             // Content-mode/frame/clipping are the caller's job (parity with what
-            // CachedAsyncImage used to provide at these call sites).
+            // CachedAsyncImage used to provide at these call sites). Both leaves below are
+            // `HeroBitmapLayer` (UIKit-backed), not SwiftUI `Image` — see that type's doc comment
+            // above `HeroCrossfadeImage` for why: a UIImageView computes its aspect-fill crop at
+            // UIKit layout time from its own bounds, so no SwiftUI transaction can ever interpolate
+            // it when the bitmap's aspect ratio changes mid-crossfade.
             if let current {
-                Image(uiImage: current)
-                    .resizable()
-                    .scaledToFill()
+                HeroBitmapLayer(image: current)
                     // BUG-95 belt-and-braces: this layer has no animation of its own to protect
                     // (unlike `previous` below), so pin it to the ambient transaction unconditionally
                     // — a future caller-side `withAnimation` (e.g. `HeroArtResolver.commit`, which
                     // still wraps its commit for reasons explained on that function) can no longer
-                    // interpolate anything about this image, geometry included, by accident.
+                    // interpolate anything about this image, geometry included, by accident. Belt
+                    // and braces only: `HeroBitmapLayer` itself is already immune (see its doc).
                     .transaction { $0.animation = nil }
             }
             // The OUTGOING image sits on top and fades out to reveal the new one beneath —
             // stacked the other way (opaque newcomer above) the animated removal is invisible
             // and every swap reads as a hard cut.
             if let previous {
-                Image(uiImage: previous)
-                    .resizable()
-                    .scaledToFill()
+                HeroBitmapLayer(image: previous)
                     // BUG-95 belt-and-braces, same as `current` above — applied BEFORE `.opacity`
                     // in the chain, so it only pins the image content itself; the `.opacity`
                     // modifier stacked on top of it is deliberately left OUTSIDE this override and
