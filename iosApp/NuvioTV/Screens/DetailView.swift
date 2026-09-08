@@ -625,11 +625,14 @@ struct DetailView: View {
             }
             // FEAT-32: the title fades in bottom-left with the Back hint while the page leaves; the
             // player draws its own copy for the first seconds of playback. rc2 (u/mrStevenx3): the
-            // logo, not plain text, and no scale — and `placedBottomLeading()` is the shared
-            // placement that keeps this copy and the player's in the same rect at the hand-over.
+            // logo, not plain text, and `placedBottomLeading()` is the shared placement that keeps
+            // this copy and the player's in the same rect at the hand-over. The scale removed in
+            // rc2/rc5 is back as of 2026-09-08 (his 09-07 ask, "the logo growing while the page
+            // fades to dark") — description-side only, the cover-side copy below still never scales.
             TrailerBridgeCaption(title: model.trailerPlayback?.title ?? title, logoURL: logoUrl)
                 .placedBottomLeading()
                 .opacity(TrailerBridgeChoreography.captionOpacity(bridgePhase))
+                .scaleEffect(TrailerBridgeChoreography.captionScale(bridgePhase), anchor: .bottomLeading)
                 .animation(TrailerBridgeChoreography.captionAnimation(to: bridgePhase), value: bridgePhase)
                 .accessibilityHidden(TrailerBridgeChoreography.captionOpacity(bridgePhase) == 0)
             #if DEBUG

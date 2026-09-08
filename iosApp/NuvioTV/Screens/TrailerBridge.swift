@@ -15,9 +15,13 @@ extension Notification.Name {
 /// enlarged and settles before the chrome fades back in. Before this the `fullScreenCover` simply
 /// appeared over the description.
 ///
-/// rc2 feedback (u/mrStevenx3, 2026-09-06) reshaped the caption: it used to arrive by shrinking from
-/// 1.25 into place ("the title resizes with the still (odd)") — it now only fades — and it used to
-/// be plain text where the header above it had just shown the logo ("the logo is missing").
+/// rc2 feedback (u/mrStevenx3, 2026-09-06) reshaped the caption: the shrink-into-place scale was
+/// removed ("the title resizes with the still (odd)") and plain text became the title's logo art
+/// where the header above it had just shown one ("the logo is missing"). His 09-07 follow-up asked
+/// for the scale back ("the logo growing while the page fades to dark"), so as of 2026-09-08 the
+/// description-side caption again animates opacity 0→1 and scale 1.25→1 together, under
+/// `captionAnimation(to: .leaving)`, now driving the logo rather than text; the cover-side copy the
+/// player draws was never scaled and stays that way.
 ///
 /// `DetailView` owns the phase and drives every visual through the pure functions below, so the
 /// choreography is testable without a view: `TrailerBridgeTests` pins the state machine and the
@@ -113,9 +117,17 @@ enum TrailerBridgeChoreography {
         }
     }
 
-    // The caption used to arrive by shrinking from 1.25 into place (`captionScale`), standing in
-    // for Nuvio's title-to-caption move. rc2 (u/mrStevenx3): "the title resizes with the still
-    // (odd)" — the caption now only fades, so there is no scale term at all.
+    /// The caption arrives by shrinking into place, standing in for Nuvio's title-to-caption move.
+    /// Removed in rc5 (2026-09-06) on the rc2 remark "the title resizes with the still (odd)";
+    /// restored 2026-09-08 on u/mrStevenx3's 09-07 ask for "the logo growing while the page fades
+    /// to dark" — rc2's motion was what he liked, so it comes back driving the logo caption instead
+    /// of plain text.
+    static func captionScale(_ phase: TrailerBridgePhase) -> CGFloat {
+        switch phase {
+        case .leaving, .playing: return 1
+        case .idle, .returning: return 1.25
+        }
+    }
 
     // MARK: Animations, keyed on the phase being ENTERED. `nil` = jump.
 

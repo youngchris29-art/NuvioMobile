@@ -84,15 +84,20 @@ final class TrailerBridgeTests: XCTestCase {
         XCTAssertNil(TrailerBridgeChoreography.chromeAnimation(to: .returning))
     }
 
-    /// rc2 (u/mrStevenx3, 2026-09-06): "the title resizes with the still (odd)". The caption used to
-    /// arrive by shrinking from `captionScale(.idle) == 1.25` into place; it now only fades, so
-    /// opacity is the ONLY per-phase term the caption has and there is no scale function to pin.
+    /// rc2 (u/mrStevenx3, 2026-09-06): "the title resizes with the still (odd)" removed the scale-in,
+    /// leaving opacity as the caption's only per-phase term. Restored 2026-09-08 on his 09-07 ask for
+    /// "the logo growing while the page fades to dark" — scale is again a per-phase caption term,
+    /// pinned here alongside opacity.
     func testCaptionShowsWhileLeavingAndIsGoneOnReturn() {
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.leaving), 1)
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.playing), 1)
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.returning), 0)
         XCTAssertEqual(TrailerBridgeChoreography.captionOpacity(.idle), 0)
         XCTAssertNotNil(TrailerBridgeChoreography.captionAnimation(to: .leaving))
+        XCTAssertEqual(TrailerBridgeChoreography.captionScale(.leaving), 1)
+        XCTAssertEqual(TrailerBridgeChoreography.captionScale(.playing), 1)
+        XCTAssertGreaterThan(TrailerBridgeChoreography.captionScale(.idle), 1)
+        XCTAssertEqual(TrailerBridgeChoreography.captionScale(.returning), TrailerBridgeChoreography.captionScale(.idle))
     }
 
     /// The whole entry should read as Nuvio's ~0.6 s, and the caption should outlast the cover's
