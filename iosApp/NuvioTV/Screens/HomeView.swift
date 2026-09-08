@@ -2332,7 +2332,31 @@ final class HeroArtResolver: ObservableObject {
     /// Collection folders get longer: their artwork is the user's own configured backdrop/logo, it
     /// has no poster stand-in (`folderHeroPreview` passes `poster: nil` on purpose), and the row's
     /// `.onAppear` prefetch usually makes this moot anyway.
+    ///
+    /// 2026-09-08: rig-only knob so `HeroFolderSwapTests` can force a deadline miss and prove the
+    /// `adoptLateBackdrop` late-arrival path — on the simulator's real image hosts the fetch
+    /// routinely answers in under 60 ms, well inside even a shortened deadline, so the rig needs a
+    /// way to make the miss happen on demand rather than hoping for a slow network. `#if DEBUG`
+    /// only: the `debug.heroFolderDeadlineMs` launch/default override is never read in a release
+    /// build, where `folderDeadline` stays the plain compile-time constant it always was — the
+    /// `#if DEBUG` guard is the whole point, not an incidental detail. Read via
+    /// `UserDefaults.integer(forKey:)`, not `object(forKey:) as? Int` — a `-debug.heroFolderDeadlineMs
+    /// <ms>` launch argument lands in the argument domain as a STRING, and `as? Int` on a string
+    /// always fails, silently disarming the knob; `integer(forKey:)` coerces it (and answers `0`,
+    /// treated below as "absent", for any key that is missing entirely). Read once (`UserDefaults`
+    /// lookups are not free on a hot path this is adjacent to) and cached in a `static let`, so a
+    /// value set before launch (via `-debug.heroFolderDeadlineMs <ms>` or a prior `defaults write`)
+    /// applies for the whole process lifetime.
+    #if DEBUG
+    private static let debugFolderDeadlineOverrideMs: Int =
+        UserDefaults.standard.integer(forKey: "debug.heroFolderDeadlineMs")
+    static var folderDeadline: UInt64 {
+        if debugFolderDeadlineOverrideMs > 0 { return UInt64(debugFolderDeadlineOverrideMs) * 1_000_000 }
+        return 1_500_000_000
+    }
+    #else
     static let folderDeadline: UInt64 = 1_500_000_000
+    #endif
 
     /// The in-flight resolve, if any. Also the whole of `isIdle` — the carousel's auto-advance tick
     /// must not page while a commit is pending, or the resolve it started is thrown away and the
@@ -2473,9 +2497,17 @@ final class HeroArtResolver: ObservableObject {
         // goes to the front of the six-slot gate rather than queueing behind a screenful of row
         // poster prefetches.
         if needsBackdrop, let backdropURL {
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 let image = try? await ArtworkStore.fetch(backdropURL, admission: .head)
                 wait.resolveBackdrop(image)
+                // 2026-09-08 finding: on a cold cache this fetch routinely lands AFTER the deadline
+                // already committed with no backdrop (see `adoptLateBackdrop`'s doc comment). Past
+                // the deadline `wait.resolveBackdrop` above is a no-op (pinned by
+                // `HeroPresentArtWaitTests.testStalledBackdropResumesAtTheDeadlineWithTheCachedLogo`),
+                // so the image reaching here is read off this closure's own local, never off `wait`.
+                if wait.hitDeadline, let image {
+                    self?.adoptLateBackdrop(image, identity: identity, startedAt: started)
+                }
             }
         }
         if needsLogo, let logoURL {
@@ -2524,6 +2556,22 @@ final class HeroArtResolver: ObservableObject {
                         backdropSource: backdropSource,
                         logoSource: Self.source(cached: cachedLogo, resolved: logo, empty: "text"),
                         waitedMs: Int(Date().timeIntervalSince(started) * 1000))
+            // 2026-09-08 finding: a backdrop that lands during the deadline hand-off ITSELF — after
+            // `deadlineElapsed()` above already finished the wait, but before this task's `commit`
+            // just above runs — is lost by both existing paths. `resolveBackdrop`'s own `!finished`
+            // guard drops it (see `wait.lateBackdrop` below, which is exactly this image, retained
+            // for this one read). And the fetch closure's `adoptLateBackdrop` call is rejected too:
+            // `resolveTask` was still non-nil at that moment, since clearing it is `self.resolveTask
+            // = nil` above, a few lines into THIS task. By the time execution reaches here,
+            // `resolveTask` is nil, `presented` already carries this identity (the `commit` just
+            // above set it), and `presented`'s backdrop is nil (that commit had nothing to paint) —
+            // every `shouldAdoptLateBackdrop` guard now passes. The fetch closure's own
+            // `adoptLateBackdrop` call stays for the ordinary later-arrival case (the ordering above
+            // is a hand-off race, not the common case); a second call here is harmless because
+            // `presentedBackdrop == nil` fails after the first adoption commits one.
+            if backdrop == nil, let late = wait.lateBackdrop {
+                self.adoptLateBackdrop(late, identity: identity, startedAt: started)
+            }
         }
     }
 
@@ -2570,10 +2618,71 @@ final class HeroArtResolver: ObservableObject {
         withAnimation(.easeInOut(duration: 0.3)) { presented = next }
     }
 
-    /// `present item=<type:id> backdrop=<cached|fetched|poster|none> logo=<cached|fetched|text>
+    /// 2026-09-08 finding (simulator rig, the tester's real collections): when Home focus lands on
+    /// a collection folder, `present`'s backdrop fetch routinely misses `folderDeadline` (1.5 s) on
+    /// a cold cache — the probe logs `present item=nuvio.folder:… backdrop=none logo=text
+    /// waited=1509` — and `commit` paints the hero with NO backdrop. Unlike a title hero, which
+    /// falls back to its poster (`posterFallbackURL` above), a folder has no stand-in —
+    /// `folderHeroPreview` passes `poster: nil` on purpose, so a square cover never gets scaled
+    /// into the 16:9 hero and then replaced (Wave H hole H2). So the deadline miss is a BLANK
+    /// screen, not a poster, and it used to stay blank until focus moved to a different folder
+    /// whose art happened to already be cached. The fetch itself is never cancelled by the
+    /// deadline (round 3's design: the image still lands in `ArtworkStore` for next time) — this
+    /// method is where that late image gets painted onto the CURRENT hero instead of being wasted
+    /// on a folder the viewer has since left.
+    ///
+    /// The safety argument is entirely `presentedBackdrop == nil`, mirrored in
+    /// `shouldAdoptLateBackdrop` below so it can be pinned by a unit test with no `ArtworkStore`
+    /// and no live view (`HeroArtResolverLateBackdropTests`). A hero that already has ANY bitmap on
+    /// screen — a title's primary, a title's poster stand-in, or a folder's own earlier-landed
+    /// backdrop — must never have that bitmap swapped out from under the viewer; that is exactly
+    /// the late-arrival repaint BUG-90 forbids and the "double commit" BUG-42 exists to prevent.
+    /// `presented?.backdrop == nil` is true in exactly the one case this method exists for: the
+    /// deadline already committed with nothing to show, so painting something can only help. The
+    /// other guards (`targetIdentity`, `presented?.identity`, `resolveTask == nil`) only rule out a
+    /// newer `present` having superseded this one in the meantime.
+    ///
+    /// Commits with `presented.item` — the LIVE presentation's item — never the item `present`
+    /// captured when this resolve started. A same-identity payload refresh (the allowed silent
+    /// gap-fill in `present`'s identity-match branch: a synopsis or genre list landing from TMDB
+    /// after the commit) can land in the gap between this resolve starting and this method running.
+    /// Identity does not change on a gap-fill, so `presented` is updated directly without going
+    /// through `commit` — which means `presented.item` is always at least as fresh as the item this
+    /// resolve started with. Committing the stale captured item instead would rewind that text, and
+    /// because the identity is unchanged, `commit`'s `same=0` line would make the rollback invisible
+    /// to the photo oracle: nothing would look wrong that flags this class of regression.
+    private func adoptLateBackdrop(_ image: UIImage, identity: String, startedAt: Date) {
+        guard HeroArtResolver.shouldAdoptLateBackdrop(
+            targetIdentity: targetIdentity, presentedIdentity: presented?.identity,
+            presentedBackdrop: presented?.backdrop, resolveTaskIsNil: resolveTask == nil,
+            identity: identity
+        ), let presented else { return }
+        commit(item: presented.item, backdrop: image, logo: presented.logo, identity: identity,
+               backdropSource: "late",
+               logoSource: presented.logo != nil ? "cached" : "text",
+               waitedMs: Int(Date().timeIntervalSince(startedAt) * 1000))
+    }
+
+    /// Pure predicate behind `adoptLateBackdrop` — see that method's doc comment for the finding
+    /// and the full safety argument. Factored out the same way `isVisibleRepaint` was, so the
+    /// no-double-commit guard can be pinned by a unit test with no `ArtworkStore` and no live view.
+    nonisolated static func shouldAdoptLateBackdrop(targetIdentity: String?, presentedIdentity: String?,
+                                        presentedBackdrop: UIImage?, resolveTaskIsNil: Bool,
+                                        identity: String) -> Bool {
+        guard targetIdentity == identity else { return false }
+        guard presentedIdentity == identity else { return false }
+        guard presentedBackdrop == nil else { return false }
+        guard resolveTaskIsNil else { return false }
+        return true
+    }
+
+    /// `present item=<type:id> backdrop=<cached|fetched|poster|late|none> logo=<cached|fetched|text>
     /// waited=<ms> same=<0|1> frame=<w>x<h>|none`. `frame=` is BUG-95's append-only diagnostic —
-    /// see `logPresent`. `backdrop=poster` (append-only addition to the vocabulary) is a
-    /// TITLE hero whose primary backdrop missed or stalled and whose own poster stood in for it;
+    /// see `logPresent`. `backdrop=poster` is a TITLE hero whose primary backdrop missed or
+    /// stalled and whose own poster stood in for it. `backdrop=late` (2026-09-08, append-only
+    /// addition to the vocabulary) is `adoptLateBackdrop` painting a backdrop that arrived after
+    /// the deadline already committed with none — see that method's doc comment; it can appear for
+    /// either a title or a folder hero, though the finding that motivated it was folder-only.
     /// `same=1` is a re-present of the item already on screen that
     /// actually swaps its backdrop or logo bitmap, i.e. the repaint signature. A healthy
     /// cold-launch photo has none. A same-identity present that only refreshes TEXT (the allowed
@@ -2660,6 +2769,14 @@ final class HeroPresentArtWait {
     /// by the resolver for the probe line's `backdrop=poster` token; also the only way the commit
     /// can tell a poster apart from a primary that happened to be cached.
     private(set) var usedPosterFallback = false
+    /// 2026-09-08 finding: a backdrop that resolves AFTER the wait already finished via
+    /// `deadlineElapsed()` used to be dropped outright by `resolveBackdrop`'s `!finished` guard —
+    /// exactly the deadline-hand-off image `present`'s resolve task needs one turn later to adopt
+    /// via `adoptLateBackdrop`. Retained here, read there, once. Set only when the wait finished
+    /// via the deadline (`hitDeadline`): a wait finished by `cancelWait()` belongs to a `present`
+    /// call that has already been superseded, and must not retain anything for a resolver that has
+    /// moved on to a different target.
+    private(set) var lateBackdrop: UIImage?
 
     private var pendingBackdrop: Bool
     private var pendingLogo: Bool
@@ -2701,7 +2818,14 @@ final class HeroPresentArtWait {
     }
 
     func resolveBackdrop(_ image: UIImage?) {
-        guard !finished else { return }
+        guard !finished else {
+            // The wait is already over. If it ended via the deadline, this image is exactly the
+            // late arrival `adoptLateBackdrop` exists for — keep it for that one read. If it ended
+            // via `cancelWait()` instead, this `present` call has been superseded; there is nothing
+            // left waiting to adopt it, so nothing is retained.
+            if hitDeadline, let image { lateBackdrop = image }
+            return
+        }
         pendingBackdrop = false
         if let image {
             backdrop = image

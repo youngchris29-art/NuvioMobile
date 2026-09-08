@@ -159,6 +159,16 @@ enum ArtworkStore {
             directory: cacheDir
         )
         config.requestCachePolicy = .returnCacheDataElseLoad
+        // BUG-95 rig finding (2026-09-08): with the default 60 s request timeout, a stalled image
+        // host (i.postimg.cc answered 32 KB in 30 s from the fixture) holds one of the six fetch
+        // slots for a full minute per request, and every later fetch — the Home hero's own
+        // `.head`-admitted backdrop included — queues behind it, so a folder hero can sit blank
+        // long after its (healthy, GitHub-hosted) mosaic could have loaded. 20 s is the inactivity
+        // window between bytes, not a total budget, so a slow-but-alive download still completes;
+        // a dead host now frees its slot three times sooner. The failed URL is not retried by a
+        // loader that is still showing it (`CachedAsyncImage`'s unchanged-URL guard); the next
+        // fresh `fetch` for that URL — a new tile, a re-presented hero — starts over.
+        config.timeoutIntervalForRequest = 20
         return URLSession(configuration: config)
     }()
 

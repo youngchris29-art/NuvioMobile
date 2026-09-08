@@ -59,6 +59,40 @@ final class HeroPresentArtWaitTests: XCTestCase {
         XCTAssertTrue(wait.logo === cachedLogo)
     }
 
+    /// 2026-09-08 finding: the deadline hand-off race. `deadlineElapsed()` finishes the wait first,
+    /// and only THEN does the stalled fetch resolve — the ordinary shape of the miss this class
+    /// exists to survive. `resolveBackdrop` still drops the image from THIS wait's own `backdrop`
+    /// (the assertion above already pins that), but it must no longer be lost outright: `present`'s
+    /// resolve task reads it back one turn later via `lateBackdrop` to adopt it onto the live hero.
+    @MainActor
+    func testDeadlineThenLateBackdropIsRetainedForAdoption() {
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: false)
+        wait.deadlineElapsed()
+        XCTAssertTrue(wait.hitDeadline)
+        XCTAssertNil(wait.backdrop, "the deadline already committed with nothing to show")
+
+        let image = makeImage()
+        wait.resolveBackdrop(image)
+        XCTAssertNil(wait.backdrop, "still dropped from THIS wait's own commit — existing contract")
+        XCTAssertTrue(wait.lateBackdrop === image, "but retained for the resolve task to adopt")
+    }
+
+    /// The other half of the same guard: a wait that ended via `cancelWait()` (a superseded
+    /// `present`, not a timeout) must not retain anything. There is no resolve task left that would
+    /// ever read `lateBackdrop` back, and retaining an image here would be silently pointless at
+    /// best and a stale reference at worst.
+    @MainActor
+    func testCancelledWaitNeverRetainsALateBackdrop() {
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: true, needsLogo: true)
+        wait.cancelWait()
+        XCTAssertFalse(wait.hitDeadline, "cancellation is not a timeout")
+
+        wait.resolveBackdrop(makeImage())
+        XCTAssertNil(wait.lateBackdrop, "a superseded resolve has nothing waiting to adopt it")
+    }
+
     @MainActor
     func testBothFetchesLandingResumeBeforeTheDeadlineIsEverConsulted() async {
         let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
