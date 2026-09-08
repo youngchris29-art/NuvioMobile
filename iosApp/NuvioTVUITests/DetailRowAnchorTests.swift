@@ -100,6 +100,13 @@ final class DetailRowAnchorTests: XCTestCase {
         var anchorSamples = 0
         var anchoredRows = Set<String>()
         var straddles: [String] = []
+        // BUG-96 rc5 regression fix: `moves=` is `DetailScrollMotion.segments` over this focus
+        // visit's raw offset samples — `1` means the engine's reveal and the anchor pass blended
+        // into one motion, `2`+ means the old land-then-nudge two-step move is back. Kept alongside
+        // the `(top − off) − 108` residual per step so both survive in the failure message and in
+        // an attachment even when the run passes.
+        var movesByStep: [(step: Int, moves: Int)] = []
+        var residualByStep: [(step: Int, residual: Double)] = []
         for step in 1...6 {
             press(.down, times: 1, gap: 1.4)
             // Only the anchored rows' section titles are the oracle; the top block's details grid
@@ -122,13 +129,21 @@ final class DetailRowAnchorTests: XCTestCase {
             let probeLabel = app.staticTexts["debug_ux6"].exists ? app.staticTexts["debug_ux6"].label : ""
             if let top = probeNumber(probeLabel, key: "top="), let off = probeNumber(probeLabel, key: "off=") {
                 anchorSamples += 1
+                let residual = (top - off) - 108
+                residualByStep.append((step, residual))
                 // ±16: the content height can shift a few points after the sample (late images).
-                if abs((top - off) - 108) <= 16 { anchoredHits += 1 }
+                if abs(residual) <= 16 { anchoredHits += 1 }
                 // Codex BUG-96 r3 (P3): a stuck focus would repeat one good sample on every press —
                 // the walk must reach DISTINCT anchored rows, not the same one six times.
                 if let range = probeLabel.range(of: "anchor=") {
                     let row = probeLabel[range.upperBound...].prefix { $0 != " " }
                     anchoredRows.insert(String(row))
+                }
+                // BUG-96 rc5: the motion-segment count sampled alongside this same at-rest probe
+                // read — `debug_ux6`'s `geo=` mirrors `dimModel.geometrySample`, which carries
+                // `moves=` (see `DetailView`'s scroll-geometry handler).
+                if let moves = probeNumber(probeLabel, key: "moves=") {
+                    movesByStep.append((step, Int(moves)))
                 }
             }
             let visible = titles.filter { $0.frame.minY >= 0 && $0.frame.maxY <= 1080 }.map { "\($0.label)@\(Int($0.frame.minY))" }
@@ -145,6 +160,27 @@ final class DetailRowAnchorTests: XCTestCase {
                                     "BUG-96: the Down walk must anchor at least three DISTINCT rows (saw \(anchoredRows.sorted())) — a repeated sample means focus was stuck")
         XCTAssertGreaterThanOrEqual(anchoredHits, anchorSamples - 1,
                                     "BUG-96: the focused row's top must rest at DetailRowAnchor.screenRest (108) after each move; \(anchoredHits)/\(anchorSamples) did")
+
+        // BUG-96 rc5 regression fix: numbers first, so they survive a PASSING run too — the
+        // experiment report needs the moves= distribution and residuals per variant regardless of
+        // outcome, not just on failure.
+        let movesDescription = movesByStep.map { "step\($0.step)=\($0.moves)" }.joined(separator: " ")
+        let residualDescription = residualByStep.map { "step\($0.step)=\(String(format: "%.0f", $0.residual))" }.joined(separator: " ")
+        XCTContext.runActivity(named: "BUG-96 moves= distribution and (top-off-108) residuals") { activity in
+            let attachment = XCTAttachment(string: "moves: \(movesDescription)\nresiduals(top-off-108): \(residualDescription)")
+            attachment.name = "bug96_moves_and_residuals"
+            attachment.lifetime = .keepAlways
+            activity.add(attachment)
+        }
+        print("[BUG96] moves=\(movesDescription) residuals=\(residualDescription)")
+
+        // The blend fix's whole point: every at-rest sample reads as ONE motion. `moves=2`+ is the
+        // land-then-nudge regression rc5 reported.
+        let multiMoveSteps = movesByStep.filter { $0.moves > 1 }
+        XCTAssertTrue(multiMoveSteps.isEmpty,
+                      "BUG-96: a Down press landed in more than one visible motion (land-then-nudge) — " +
+                      "steps \(multiMoveSteps.map { "step\($0.step)=\($0.moves)" }) — full distribution moves: \(movesDescription) residuals(top-off-108): \(residualDescription)")
+
         remote.press(.menu)
         pause(1)
     }

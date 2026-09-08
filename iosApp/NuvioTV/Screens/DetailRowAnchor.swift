@@ -8,20 +8,31 @@ import SwiftUI
 /// edge. Official Nuvio's Compose TV list pivots the focused row to a fixed viewport fraction, so
 /// headers above scroll off whole.
 ///
-/// The fix anchors the FOCUSED ROW to a fixed top inset: on a focused-row change, `DetailView`
-/// issues an animated `scrollTo(rowId, anchor:)` at once, so the engine's own reveal and the anchor
-/// move run as one motion rather than a land-then-nudge (the Home "oops" class). There is nothing
-/// here for the two to fight over — no pinned header, no compression, and every row is far shorter
-/// than the viewport, so the engine's rest is unique and ours simply supersedes it.
+/// The fix anchors the FOCUSED ROW to a fixed top inset. The first shipped version (build 121,
+/// `46ab30f0`) let the engine's own reveal run to completion, then slid the row to its rest after
+/// a fixed `settleDelay` — which is exactly a land-then-nudge, and rc5 (u/mrStevenx3) caught it:
+/// one Down press visibly scrolled in two steps on every movie. The fix BLENDS instead of
+/// following: on a focused-row change, `DetailView` arms a flag and waits for the very first
+/// scroll-geometry frame that shows the engine has actually started moving the page, then issues
+/// the anchor's own animated `scrollTo(y:)` immediately — so the engine's reveal and the anchor
+/// move run as one continuous motion instead of two. A short fallback timer
+/// (`blendFallbackDelay`) covers the case where the focused card was already fully visible and the
+/// engine never moves the page at all (nothing to blend with, so the anchor just fires on its
+/// own). There is nothing here for the two to fight over once blended — no pinned header, no
+/// compression, and every row is far shorter than the viewport, so the engine's rest is unique and
+/// ours simply supersedes it.
 enum DetailRowAnchor {
     /// Where a focused row's TOP rests, in points from the scroll view's top edge. Room for the
     /// row above's bottom padding to have scrolled away whole, and for the focused row's title to
     /// sit clear of the top edge with a cushion under the dim ramp's first steps.
     static let topInset: CGFloat = 72
 
-    /// How long after a focus change the anchor move is issued: the engine's own reveal animates
-    /// for roughly a quarter second and overrides anything issued before it finishes.
-    static let settleDelay: TimeInterval = 0.35
+    /// Fallback only: fires the anchor pass on its own if the engine's reveal never moves the page
+    /// (BUG-96 blend regression fix — the prior `settleDelay`, a fixed wait for the reveal to
+    /// FINISH before sliding, was deleted; a wait that long is exactly the two-step motion the fix
+    /// removes). Short because it only covers the "nothing to blend with" case — the focused card
+    /// was already fully visible, so there is no engine motion to catch and start with.
+    static let blendFallbackDelay: TimeInterval = 0.05
 
     /// The named coordinate space on the scroll content (the padded VStack), so row tops can be read
     /// as content offsets.
@@ -82,6 +93,52 @@ enum DetailRowAnchor {
 /// there means "the page is at the top", and anchoring it would scroll the backdrop away.
 enum DetailRowID: Hashable {
     case logos, parental, episodes, cast, collection, trailers, moreLikeThis, comments
+}
+
+/// BUG-96 oracle: counts how many separate *motions* a run of content-offset samples shows,
+/// where "one motion" is the whole point of the blend fix — the engine's reveal and the anchor
+/// pass are meant to read as a single continuous move, not the old land-then-nudge (two motions).
+/// Pure and stateless so `DetailRowAnchorTests` can drive it with fabricated sample arrays instead
+/// of a live `ScrollView`.
+enum DetailScrollMotion {
+    /// The per-sample threshold below which two consecutive offsets count as "the page did not
+    /// move" rather than genuine (if slow) motion — matches the sub-pixel jitter a `ScrollView`
+    /// can report even at rest.
+    static let stationaryThreshold: CGFloat = 0.5
+
+    /// How many consecutive stationary samples it takes to end a motion. Chosen deliberately above
+    /// 1: a resized card's layout catching its breath mid-reveal (fixture: a 2-sample gap) must
+    /// not read as two motions, only a genuine pause — e.g. the old settle-then-nudge design's gap
+    /// between the engine's reveal finishing and the anchor's own animation starting — should.
+    static let stationaryRunToSplit: Int = 4
+
+    /// A "segment" is a run of consecutive offset changes at or above `stationaryThreshold`,
+    /// broken only by at least `stationaryRunToSplit` consecutive near-stationary samples in a
+    /// row — a shorter pause does not split one continuous motion into two. `moves=1` at rest on
+    /// the `debug_ux6` probe means the engine's reveal and the anchor pass blended into one
+    /// visible motion; `moves=2` means the land-then-nudge regression is back.
+    static func segments(_ offsets: [CGFloat]) -> Int {
+        guard offsets.count > 1 else { return 0 }
+        var count = 0
+        var inSegment = false
+        var stationaryRun = 0
+        for i in 1..<offsets.count {
+            let delta = abs(offsets[i] - offsets[i - 1])
+            if delta >= stationaryThreshold {
+                if !inSegment {
+                    count += 1
+                    inSegment = true
+                }
+                stationaryRun = 0
+            } else {
+                stationaryRun += 1
+                if stationaryRun >= stationaryRunToSplit {
+                    inSegment = false
+                }
+            }
+        }
+        return count
+    }
 }
 
 /// Attach to each detail row at its call site: gives it a scroll id, reports whether focus is

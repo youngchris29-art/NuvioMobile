@@ -53,6 +53,17 @@ private final class ScrollDimModel: ObservableObject {
     var lastContentOffset: CGFloat = 0
     /// BUG-96 diagnostic sample (plain field); published into `scrollGeoNote` by the anchor pass.
     var geometrySample: String = "-"
+    /// BUG-96 blend: armed with the just-focused row the instant `focusedRow` changes, and the
+    /// content offset captured at that moment — disarmed (`nil`) the first time the scroll-geometry
+    /// handler sees the engine's own reveal actually move the page, which is also the instant the
+    /// anchor pass fires. Plain fields, not published: read/written on the per-frame geometry path.
+    var awaitingRevealRow: DetailRowID?
+    var awaitingRevealStartOffset: CGFloat = 0
+    /// BUG-96 oracle: raw content-offset samples for the current focus visit, capped at ~600 and
+    /// reset on every `focusedRow` change — feeds `DetailScrollMotion.segments` for the `moves=`
+    /// count appended to `geometrySample`. Plain field for the same reason as `geometrySample`
+    /// itself; only ever grown when `DetailScrollProbe.enabled`.
+    var motionSamples: [CGFloat] = []
 
     /// `CACurrentMediaTime()` at the last `noteScrollChange` call — what `ScrollingLatch` measures
     /// the debounce window against.
@@ -496,26 +507,37 @@ struct DetailView: View {
             .scrollPosition($detailScrollPosition)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
             .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
-            // BUG-96: anchor the focused row's top at `DetailRowAnchor.topInset`. Issued at once,
-            // in the same run of the run loop as the engine's own reveal, so the two animate as
-            // one move; `scrollTo` clamps at the end of content, so the last rows simply rest as
-            // low as the content allows.
+            // BUG-96: anchor the focused row's top at `DetailRowAnchor.topInset`. rc5
+            // (u/mrStevenx3): the first shipped design waited for the engine's own reveal to
+            // FINISH, then slid the row to rest — a visible two-step move on every Down press. The
+            // fix now BLENDS: arm a flag here, remember the offset the page is at right now, and
+            // let the scroll-geometry handler below fire the anchor pass the instant it sees the
+            // engine actually start moving the page, so the two read as one motion. This handler's
+            // own job is just to arm the flag and start the fallback timer for the case where the
+            // engine never moves the page at all (the focused card was already fully visible).
             .onChange(of: focusedRow) { _, row in
+                dimModel.motionSamples.removeAll(keepingCapacity: true)
                 guard let row else {
                     detailAnchorTask?.cancel()
                     detailAnchorTask = nil
+                    dimModel.awaitingRevealRow = nil
                     if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
                     return
                 }
-                // The engine's own reveal runs AFTER this handler and overrides an immediate
-                // scrollTo (first fixture run: an Episodes row top-aligned with k=0 still rested at
-                // 519 pt). Let the reveal settle, then slide the row to its place — one deliberate
-                // settle per focus change, never a repeated correction (the Home bounce class).
                 detailAnchorTask?.cancel()
+                dimModel.awaitingRevealRow = row
+                dimModel.awaitingRevealStartOffset = dimModel.lastContentOffset
                 detailAnchorTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleDelay * 1_000_000_000))
-                    guard anchorPass(row, note: "fired") else { return }
-                    // One verify pass: a card whose thumbnails land after the settle makes the
+                    // Fallback only: if the scroll-geometry handler hasn't already disarmed by the
+                    // time this fires, the engine never moved the page — fire the pass ourselves.
+                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    if dimModel.awaitingRevealRow == row {
+                        dimModel.awaitingRevealRow = nil
+                        guard anchorPass(row, note: "blend-fallback") else { return }
+                    }
+                    // Whether the geometry handler blended in already or the fallback just fired:
+                    // one verify pass. A card whose thumbnails land after the settle makes the
                     // engine re-reveal it and undo the rest. Re-issue once, never loop.
                     try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
                     _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
@@ -527,9 +549,15 @@ struct DetailView: View {
             // Codex BUG-96 r1 (P2): a correction must not land on a page that is leaving or
             // under the trailer cover's 0.6 s leave transition.
             .onChange(of: bridgePhase) { _, phase in
-                if phase != .idle { detailAnchorTask?.cancel(); detailAnchorTask = nil }
+                if phase != .idle {
+                    detailAnchorTask?.cancel(); detailAnchorTask = nil
+                    dimModel.awaitingRevealRow = nil
+                }
             }
-            .onDisappear { detailAnchorTask?.cancel(); detailAnchorTask = nil }
+            .onDisappear {
+                detailAnchorTask?.cancel(); detailAnchorTask = nil
+                dimModel.awaitingRevealRow = nil
+            }
             // BUG-96 (fixture step 5): late layout under the focused row moved it 470 pt after the
             // pass and the engine re-revealed the card. Re-anchor once per layout change, debounced.
             .onChange(of: detailRowOffsets) { _, offsets in
@@ -605,7 +633,21 @@ struct DetailView: View {
                 // published only from the anchor pass, so the probe never invalidates the page per
                 // frame and cannot contaminate its own hitch measurements.
                 if DetailScrollProbe.enabled {
-                    dimModel.geometrySample = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height)
+                    // BUG-96 oracle: append this frame's offset and re-derive the motion-segment
+                    // count so `moves=` in the probe always reflects every sample taken since the
+                    // last focus change, not just the ones seen before the last publish.
+                    if dimModel.motionSamples.count < 600 { dimModel.motionSamples.append(geo.contentOffset.y) }
+                    let moves = DetailScrollMotion.segments(dimModel.motionSamples)
+                    dimModel.geometrySample = String(format: "off=%.0f inset=%.0f vis=%.0f content=%.0f moves=%d", geo.contentOffset.y, geo.contentInsets.top, geo.bounds.height, geo.contentSize.height, moves)
+                }
+                // BUG-96 blend: the instant the engine's own reveal actually moves the page, fire
+                // the anchor pass right here instead of waiting for the reveal to finish — the two
+                // motions then read as one. `anchorPass` re-checks `focusedRow`/`bridgePhase` itself,
+                // so a stale `row` captured just before a newer focus change is harmless.
+                if let row = dimModel.awaitingRevealRow,
+                   abs(geo.contentOffset.y - dimModel.awaitingRevealStartOffset) >= DetailScrollMotion.stationaryThreshold {
+                    dimModel.awaitingRevealRow = nil
+                    _ = anchorPass(row, note: "blend")
                 }
             })
             .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in

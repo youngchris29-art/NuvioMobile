@@ -46,3 +46,50 @@ final class DetailRowAnchorTests: XCTestCase {
         return k * 1080 - k * 300
     }
 }
+
+/// BUG-96 (rc5 regression fix): `DetailScrollMotion.segments` is the `moves=` oracle — one motion
+/// (engine reveal blended with the anchor pass) must read as `1`, and the old land-then-nudge
+/// design (a settle wait long enough for the engine to fully rest before the anchor slid it again)
+/// would read as `2`. Fabricated offset arrays stand in for a live `ScrollView`'s per-frame samples.
+final class DetailScrollMotionTests: XCTestCase {
+
+    func testSingleRampIsOneSegment() {
+        let offsets: [CGFloat] = [0, 40, 90, 150, 220, 300, 390, 460, 500, 520, 528, 530]
+        XCTAssertEqual(DetailScrollMotion.segments(offsets), 1)
+    }
+
+    func testRampPlateauOfSixThenRampIsTwoSegments() {
+        // A ramp settles at 300, holds there for 6 samples (5 stationary deltas plus the delta
+        // that lands on the plateau — 6 in all, at/above `stationaryRunToSplit`), then a second
+        // ramp begins.
+        let ramp1: [CGFloat] = [0, 60, 130, 210, 300]
+        let plateau: [CGFloat] = Array(repeating: 300, count: 6)
+        let ramp2: [CGFloat] = [300, 380, 470, 560]
+        XCTAssertEqual(DetailScrollMotion.segments(ramp1 + plateau + ramp2), 2)
+    }
+
+    func testPlateauOnlyIsZeroSegments() {
+        let offsets: [CGFloat] = Array(repeating: 200, count: 10)
+        XCTAssertEqual(DetailScrollMotion.segments(offsets), 0)
+    }
+
+    func testSubThresholdJitterIsIgnored() {
+        // Every delta stays under `stationaryThreshold` (0.5pt) — sub-pixel `ScrollView` noise at
+        // rest, not real motion.
+        let offsets: [CGFloat] = [100, 100.3, 100.1, 100.4, 100.2, 100.0, 100.3]
+        XCTAssertEqual(DetailScrollMotion.segments(offsets), 0)
+    }
+
+    func testShortStationaryGapInsideARampDoesNotSplitIt() {
+        // A 2-sample stationary gap mid-ramp — below `stationaryRunToSplit` (4) — must read as
+        // one continuous motion, not two: the fixture case a resized card's layout catching its
+        // breath mid-reveal must not be mistaken for the land-then-nudge regression.
+        let offsets: [CGFloat] = [0, 50, 110, 110, 110, 180, 260, 340]
+        XCTAssertEqual(DetailScrollMotion.segments(offsets), 1)
+    }
+
+    func testEmptyAndSingleSampleAreZeroSegments() {
+        XCTAssertEqual(DetailScrollMotion.segments([]), 0)
+        XCTAssertEqual(DetailScrollMotion.segments([42]), 0)
+    }
+}
