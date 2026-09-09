@@ -20,8 +20,12 @@ import SharedCore
 /// rather than reusing `LandscapeCard` itself, and adds its own artwork-overlay logo/text and an
 /// always-shown two-line caption in place of `LandscapeCard`'s badges/progress bar.
 ///
-/// Sized and shaped identically to `LandscapeCard`: `Theme.Size.landscapeWidth` ×
-/// `Theme.Size.landscapeHeight` (360×203, 16:9), `style.cornerRadius` from Poster Style.
+/// Sized larger than `LandscapeCard`: `Theme.Size.sagaCardWidth` × `Theme.Size.sagaCardHeight`
+/// (440×248, 16:9), `style.cornerRadius` from Poster Style. FEAT-34 follow-up (2026-09-09):
+/// rc7 tester feedback (u/mrStevenx3) called the original `landscapeWidth`/`landscapeHeight`
+/// size (360×203, matching the trailer cards) too small next to official Nuvio's saga row, where
+/// three cards span roughly two thirds of the screen width — Christian's call was a dedicated,
+/// larger size for this card only.
 struct SagaCard: View {
     let item: MetaPreview
 
@@ -39,8 +43,8 @@ struct SagaCard: View {
     @ObservedObject private var logoStore = SagaLogoStore.shared
     @State private var logoImage: UIImage?
 
-    private let width: CGFloat = Theme.Size.landscapeWidth
-    private let height: CGFloat = Theme.Size.landscapeHeight
+    private let width: CGFloat = Theme.Size.sagaCardWidth
+    private let height: CGFloat = Theme.Size.sagaCardHeight
 
     private var focusMode: CardFocusMode {
         .resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
