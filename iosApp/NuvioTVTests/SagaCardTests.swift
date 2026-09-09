@@ -62,4 +62,30 @@ final class SagaCardTests: XCTestCase {
         let item = makeItem(logo: "")
         XCTAssertTrue(SagaCardArt.needsLogoLookup(item))
     }
+
+    // MARK: - SagaLogoStore.shouldCommit
+
+    /// Codex r2 findings 3+4: a lookup's completion must only be written to the cache when it is
+    /// still the live `.pending` attempt for its key. `shouldCommit` is the pure decision behind
+    /// that — no store, no dictionary, just the entry that was read for a key and the request id
+    /// the completion carries.
+
+    func testShouldCommitTrueForMatchingPending() {
+        XCTAssertTrue(SagaLogoStore.shouldCommit(entry: .pending(requestId: 7), requestId: 7))
+    }
+
+    func testShouldCommitFalseForDifferentRequestId() {
+        // A newer `lookupIfNeeded` call for the same key installed its own `.pending` — this
+        // (older) request's completion must not clobber it.
+        XCTAssertFalse(SagaLogoStore.shouldCommit(entry: .pending(requestId: 7), requestId: 3))
+    }
+
+    func testShouldCommitFalseWhenAlreadyResolved() {
+        XCTAssertFalse(SagaLogoStore.shouldCommit(entry: .resolved("https://example.com/logo.png"), requestId: 7))
+    }
+
+    func testShouldCommitFalseWhenEntryMissing() {
+        // The key was never populated, or its `.pending` was wiped by a capacity reset.
+        XCTAssertFalse(SagaLogoStore.shouldCommit(entry: nil, requestId: 7))
+    }
 }

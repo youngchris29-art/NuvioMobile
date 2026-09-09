@@ -112,11 +112,13 @@ final class PinnedRowSettleProbeBufferTests: XCTestCase {
         XCTAssertEqual(displayedWithMarker[tail.count], marker, "the elision marker sits right after the reversed tail")
         XCTAssertEqual(Array(displayedWithMarker.suffix(head.count)), Array(head.reversed()), "the reversed head must trail")
 
-        // Case 2 (no marker, at or under `headMaxLines`): the buffer hasn't started evicting
-        // yet, so there is no tail to prioritize — the result equals the input verbatim.
+        // Case 2 (no marker, at or under `headMaxLines`): the buffer hasn't started evicting yet,
+        // so there is no tail to prioritize over the head — but review finding 8 (09-09) points
+        // out the pane's "Newest first" caption still applies to an all-head buffer, so a short
+        // 7-12 line buffer is reversed too rather than returned in persisted (oldest-first) order.
         XCTAssertEqual(PinnedRowSettleProbe.headMaxLines, 12, "test assumes the documented head size; update the math below if this constant changes")
         let smallBuffer = (1...12).map { "s\($0)ms early line \($0)" }
-        XCTAssertEqual(PinnedRowSettleProbe.displayOrder(smallBuffer), smallBuffer, "an unevicted, marker-less buffer should be returned as-is")
+        XCTAssertEqual(PinnedRowSettleProbe.displayOrder(smallBuffer), Array(smallBuffer.reversed()), "a short, still-all-head buffer must still read newest first")
 
         // Case 3 (no marker, over `headMaxLines`): 15 raw lines with no elision marker yet — the
         // fallback `headMaxLines`-based split still applies, so the 3 trailing lines are the

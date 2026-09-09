@@ -77,8 +77,12 @@ struct SagaCard: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: width * 0.82, maxHeight: height * 0.36)
-                        .frame(width: width, height: height, alignment: .bottomLeading)
+                        // Padding INSIDE the fixed bounds below, not outside — otherwise this
+                        // overlay's own outer frame grows to `width + 2*xs` × `height + 2*xs`
+                        // (e.g. 376×219 against a 360×203 card) and centers/displaces relative to
+                        // the focus ring/treatment, which are both sized off `width`/`height`.
                         .padding(Theme.Spacing.xs)
+                        .frame(width: width, height: height, alignment: .bottomLeading)
                         .allowsHitTesting(false)
                         .transition(.opacity)
                         .accessibilityLabel(item.name)
@@ -93,8 +97,10 @@ struct SagaCard: View {
                         .minimumScaleFactor(0.7)
                         .shadow(color: .black.opacity(0.6), radius: 4, y: 1)
                         .frame(maxWidth: width * 0.82, alignment: .leading)
-                        .frame(width: width, height: height, alignment: .bottomLeading)
+                        // Same size-neutral ordering as the logo branch above: padding inside the
+                        // fixed bounds, not applied to an already width×height-framed view.
                         .padding(Theme.Spacing.xs)
+                        .frame(width: width, height: height, alignment: .bottomLeading)
                         .allowsHitTesting(false)
                 }
             }
@@ -201,49 +207,137 @@ enum SagaCardArt {
     }
 }
 
-/// FEAT-34: per-item (id + type) cache of a saga-row part's resolved TMDB title-logo URL,
-/// including a resolved-but-empty result — so the `collectionRow`'s `LazyHStack` recycling a
-/// `SagaCard`'s view identity while scrolling never re-issues the same TMDB lookup. Scoped as a
-/// process-wide singleton (mirrors `ArtworkStore`'s own in-memory cache) rather than per-row state,
-/// since the same part can appear in more than one title's saga row (e.g. two films in the same
-/// franchise both show every other part).
+/// FEAT-34: per-item (id + type), per-settings-scope cache of a saga-row part's resolved TMDB
+/// title-logo URL, including a resolved-but-empty result — so the `collectionRow`'s `LazyHStack`
+/// recycling a `SagaCard`'s view identity while scrolling never re-issues the same TMDB lookup.
+/// Scoped as a process-wide singleton (mirrors `ArtworkStore`'s own in-memory cache) rather than
+/// per-row state, since the same part can appear in more than one title's saga row (e.g. two films
+/// in the same franchise both show every other part).
+///
+/// Every mounted `SagaCard` holds `@ObservedObject private var logoStore = SagaLogoStore.shared`,
+/// so ANY `results` mutation (any card's lookup resolving) republishes to every saga card on
+/// screen, not just the one that changed — `@Published` on a dictionary has no per-key
+/// granularity. Each card's own re-render is cheap (`logoURL(for:)` is a dictionary lookup keyed
+/// off its own item + the current scope), so this is a non-issue at saga-row scale.
 @MainActor
 final class SagaLogoStore: ObservableObject {
     static let shared = SagaLogoStore()
 
     private init() {}
 
-    /// `.pending` from the moment a lookup starts until its callback lands; `.resolved(nil)` is a
-    /// completed lookup that found no logo (TMDB disabled/no key/no match/network failure) or a
-    /// part this store has decided never to look up — remembered exactly like a real URL so it is
-    /// never retried on every scroll.
-    private enum LookupState {
-        case pending
+    /// `.pending(requestId:)` from the moment a lookup starts until its callback lands. The
+    /// request id lets a late completion recognize it has been superseded — by a fresh
+    /// `lookupIfNeeded` call for the same key, or by the whole cache being dropped in
+    /// `evictIfAtCapacity()` — before it can latch a stale `.pending` in place forever (see
+    /// `shouldCommit`). `.resolved(nil)` is a completed lookup that found no logo (no
+    /// match/network failure) — remembered exactly like a real URL so it is never retried on every
+    /// scroll. A lookup skipped because settings gate it off is NEVER written here at all (see
+    /// `lookupIfNeeded`), so it is not covered by this case. Internal, not private, so
+    /// `SagaCardTests` can exercise `shouldCommit` with `@testable import`.
+    enum LookupState: Equatable {
+        case pending(requestId: UInt64)
         case resolved(String?)
     }
 
     @Published private var results: [String: LookupState] = [:]
 
+    /// Monotonically increasing id handed to each lookup attempt so its completion can tell, via
+    /// `shouldCommit`, whether it is still the one live attempt for its key rather than a
+    /// superseded or evicted one.
+    private var nextRequestId: UInt64 = 0
+
+    private func makeRequestId() -> UInt64 {
+        nextRequestId += 1
+        return nextRequestId
+    }
+
+    /// Bumped every time `results` is dropped wholesale by `evictIfAtCapacity()`. Not itself
+    /// consulted by `shouldCommit` — a `.pending` entry wiped by a reset already fails the
+    /// `requestId` match on its own — but kept as the store's own record of how many times a
+    /// reset has happened.
+    private var generation: UInt64 = 0
+
+    /// Bounds `results` across a long session — many collections browsed, or repeated settings
+    /// changes each adding a fresh generation of keys for the same items, would otherwise grow it
+    /// without limit. Past this many entries the whole cache is dropped; a lookup already pending
+    /// under a dropped key just gets requested again (`TmdbMetadataService` has no dedup problem
+    /// with a redundant in-flight request completing twice — the second write just replaces the
+    /// first with the same value).
+    private static let maxEntries = 200
+
+    /// Eviction used before a new `.pending` write in `lookupIfNeeded`, the single place that
+    /// keeps `results` from growing past `maxEntries`. Codex r3 (Finding P2): only drops
+    /// `.resolved` entries — a `.pending` one is a lookup already in flight for a card that is
+    /// (or was, moments ago) mounted, and wiping it here would strand it forever, since
+    /// `lookupIfNeeded`'s own `results[key] == nil` guard treats a missing entry as "never
+    /// looked up" while the mounted card's `.task(id:)` keys only on type|id and so never re-runs
+    /// to ask again. Dropping only `.resolved` entries is safe: a card whose logo was already
+    /// resolved just re-fetches it once, cheaply, next time it is looked up.
+    private func evictIfAtCapacity() {
+        guard results.count >= Self.maxEntries else { return }
+        results = results.filter { _, state in
+            if case .pending = state { return true }
+            return false
+        }
+        generation += 1
+    }
+
+    /// Pure decision for whether a completed lookup's result should be written into `results`:
+    /// true only when `entry` is the exact `.pending` placeholder this request itself installed.
+    /// False for a different (newer) request's `.pending`, an already-`.resolved` entry, or a
+    /// missing entry — the key was superseded by a newer lookup, or its `.pending` was wiped by a
+    /// capacity reset (`evictIfAtCapacity()`, which also bumps `generation`). Internal + testable
+    /// on its own, with no store/dictionary access, so `SagaCardTests` can cover every case
+    /// directly.
+    nonisolated static func shouldCommit(entry: LookupState?, requestId: UInt64) -> Bool {
+        entry == .pending(requestId: requestId)
+    }
+
     static func key(for item: MetaPreview) -> String { "\(item.type)|\(item.id)" }
 
-    /// The resolved logo URL for `item`, or nil while unresolved / if resolution found nothing.
+    /// The settings that change what a logo lookup returns or whether it even runs — folded into
+    /// the cache key so a Metadata Language change, or the artwork/TMDB gate flipping, can never
+    /// serve a stale-language logo or a permanently-latched nil from a session where the gate was
+    /// off.
+    private static func scopeToken(_ settings: TmdbSettings) -> String {
+        "\(settings.language)|\(settings.enabled)|\(settings.hasApiKey)|\(settings.useArtwork)"
+    }
+
+    private static func scopedKey(for item: MetaPreview, scope: String) -> String {
+        "\(key(for: item))|\(scope)"
+    }
+
+    /// The resolved logo URL for `item` under the CURRENT settings snapshot, or nil while
+    /// unresolved / if resolution found nothing / if this item has no entry under the current
+    /// scope yet (e.g. settings changed since the last lookup — see `lookupIfNeeded`).
     func logoURL(for item: MetaPreview) -> String? {
-        if case .resolved(let url) = results[Self.key(for: item)] { return url }
+        let scope = Self.scopeToken(TmdbSettingsRepository.shared.snapshot())
+        if case .resolved(let url) = results[Self.scopedKey(for: item, scope: scope)] { return url }
         return nil
     }
 
-    /// Starts (at most once per key) the TMDB preview-enrichment lookup for `item`'s logo. A
-    /// second call for the same key while one is pending, or after one has resolved, is a no-op.
+    /// Starts (at most once per key, where the key includes the current settings scope) the TMDB
+    /// preview-enrichment lookup for `item`'s logo. A second call for the same item under the same
+    /// scope, while one is pending or after one has resolved, is a no-op; a call under a NEW scope
+    /// (language changed, or the artwork/TMDB gate flipped) always gets its own fresh attempt.
     func lookupIfNeeded(_ item: MetaPreview) {
-        let key = Self.key(for: item)
-        guard results[key] == nil else { return }
-        results[key] = .pending
-
         let settings = TmdbSettingsRepository.shared.snapshot()
+        let scope = Self.scopeToken(settings)
+        let key = Self.scopedKey(for: item, scope: scope)
+        guard results[key] == nil else { return }
+
         guard settings.enabled, settings.hasApiKey, settings.useArtwork else {
-            results[key] = .resolved(nil)
+            // Deliberately NOT cached: writing `.resolved(nil)` here would latch a permanent "no
+            // logo" for this scope even though no lookup was ever attempted. Leaving no entry
+            // means the very next call under this same scope (gate still off) still short-circuits
+            // here cheaply — it's the scope changing, not this branch, that ever triggers a retry.
             return
         }
+
+        evictIfAtCapacity()
+        let requestId = makeRequestId()
+        results[key] = .pending(requestId: requestId)
+
         // suspend fun → Swift completion; result may arrive off the main thread (same convention
         // as `HomeView.enrichIfNeeded`), so hop back before touching `@Published` state.
         TmdbMetadataService.shared.fetchPreviewEnrichment(
@@ -251,7 +345,31 @@ final class SagaLogoStore: ObservableObject {
         ) { [weak self] enrichment, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
+                // Not the live attempt for this key anymore — either a newer `lookupIfNeeded` call
+                // for the same key took over (its `.pending(requestId:)` won't match ours), or a
+                // capacity reset wiped the entry entirely. Either way, writing now would be wrong:
+                // in the superseded case it would clobber the newer attempt's own eventual result;
+                // in the wiped case there is nothing to correct — the key simply has no entry until
+                // something looks it up again. Drop this completion.
+                guard Self.shouldCommit(entry: self.results[key], requestId: requestId) else { return }
+                // The live attempt, but for a scope the user has since moved away from. Leaving the
+                // `.pending` entry in place here would permanently wedge scope A: `lookupIfNeeded`'s
+                // `results[key] == nil` guard above would reject every future lookup for this exact
+                // key, so returning to scope A later would never retry and the logo would never
+                // appear (Finding 3). Remove the stale entry instead, so scope A starts fresh next
+                // time it is looked up; don't write the (now off-scope) result anywhere.
+                guard Self.scopeToken(TmdbSettingsRepository.shared.snapshot()) == scope else {
+                    self.results.removeValue(forKey: key)
+                    return
+                }
                 let logo: String? = enrichment?.logo
+                // Codex r3 (Finding P2): no `evictIfAtCapacity()` call here — this write replaces
+                // an existing `.pending` key with `.resolved`, so it can never itself grow
+                // `results` past the cap; there was previously a "defensive" eviction call on this
+                // path, but `evictIfAtCapacity()` used to drop the whole cache wholesale, which
+                // could wipe out the very entry this line just wrote (plus every other in-flight
+                // `.pending` lookup) with no mounted card ever re-requesting it — see that
+                // function's own doc for why eviction now only touches `.resolved` entries.
                 self.results[key] = .resolved((logo?.isEmpty ?? true) ? nil : logo)
             }
         }

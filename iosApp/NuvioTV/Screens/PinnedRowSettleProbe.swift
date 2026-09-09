@@ -128,9 +128,13 @@ enum PinnedRowSettleProbe {
     ///   the visible fold; the very first line ever logged (the launch `regime`/`plan` pair) lands
     ///   last, at the bottom, past where the clipped row is scrolled anyway.
     /// - Without a marker (the buffer hasn't started evicting yet — an early-in-the-walk photo,
-    ///   or any caller feeding this function a raw unmarked array): fall back to the same
-    ///   `headMaxLines`-based split. If the whole input still fits inside `headMaxLines`, there is
-    ///   no tail yet and nothing to reorder — return the input as-is. Otherwise split it exactly
+    ///   or any caller feeding this function a raw unmarked array): there is no tail to
+    ///   prioritize over the head, but the pane's caption still promises "Newest first" — so even
+    ///   a short, still-all-head buffer (7-12 lines, no marker) is reversed newest-first rather
+    ///   than left in persisted (oldest-first) order. Decision (Christian, 09-09, review finding
+    ///   8): a tester photographing mid-walk, before eviction has ever started, should still see
+    ///   their most recent settle at the top, not buried under the launch `regime`/`plan` pair. If
+    ///   the input is at or under `headMaxLines`, just reverse it whole. Otherwise split it exactly
     ///   as `log(_:)` would (first `headMaxLines` lines are head, the rest is tail) and apply the
     ///   same newest-first reordering.
     nonisolated static func displayOrder(_ persisted: [String]) -> [String] {
@@ -140,7 +144,7 @@ enum PinnedRowSettleProbe {
             let tail = Array(persisted[(markerIndex + 1)...])
             return Array(tail.reversed()) + [marker] + Array(head.reversed())
         }
-        guard persisted.count > headMaxLines else { return persisted }
+        guard persisted.count > headMaxLines else { return Array(persisted.reversed()) }
         let head = Array(persisted.prefix(headMaxLines))
         let tail = Array(persisted.suffix(from: headMaxLines))
         return Array(tail.reversed()) + Array(head.reversed())
