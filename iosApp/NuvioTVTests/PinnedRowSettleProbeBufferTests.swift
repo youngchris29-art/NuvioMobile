@@ -86,4 +86,44 @@ final class PinnedRowSettleProbeBufferTests: XCTestCase {
             )
         }
     }
+
+    /// BUG-100 (rc6): `PinnedRowSettleProbe.displayOrder(_:)` is the pure reordering
+    /// `AboutSettingsPane` renders instead of the persisted chronological order, because the
+    /// pane's List row clips to its own height and cannot be scrolled — only the reordered
+    /// function's OUTPUT order is ever photographable. This test drives the pure function
+    /// directly with hand-built arrays; it does not touch the shared process-global buffer
+    /// `testHeadPreservedTailRolledWithElisionMarker` above exercises, so it needs no
+    /// `resetForTesting()` call and cannot interfere with that test either way.
+    func testDisplayOrderPutsNewestTailFirstAndHeadLast() {
+        // Case 1 (marker present): the real `PinnedRowSettleProbe.log` shape once eviction has
+        // begun — head, one elision marker, tail. Newest-first end to end: the result starts
+        // with the very last persisted line (the newest tail entry) and ends with `head[0]`,
+        // the oldest line ever logged (the launch `regime`/`plan` pair), pushed to the bottom.
+        let head = (1...12).map { "h\($0)ms regime/plan line \($0)" }
+        let marker = "\u{2026} 5 lines elided \u{2026}"
+        let tail = (1...28).map { "t\($0)ms settle line \($0)" }
+        let persistedWithMarker = head + [marker] + tail
+        let displayedWithMarker = PinnedRowSettleProbe.displayOrder(persistedWithMarker)
+
+        XCTAssertEqual(displayedWithMarker.count, persistedWithMarker.count, "reordering must not drop or duplicate lines")
+        XCTAssertEqual(displayedWithMarker.first, tail.last, "expected the newest persisted line at the top")
+        XCTAssertEqual(displayedWithMarker.last, head.first, "expected head[0], the oldest launch line, at the bottom")
+        XCTAssertEqual(Array(displayedWithMarker.prefix(tail.count)), Array(tail.reversed()), "the reversed tail must lead")
+        XCTAssertEqual(displayedWithMarker[tail.count], marker, "the elision marker sits right after the reversed tail")
+        XCTAssertEqual(Array(displayedWithMarker.suffix(head.count)), Array(head.reversed()), "the reversed head must trail")
+
+        // Case 2 (no marker, at or under `headMaxLines`): the buffer hasn't started evicting
+        // yet, so there is no tail to prioritize — the result equals the input verbatim.
+        XCTAssertEqual(PinnedRowSettleProbe.headMaxLines, 12, "test assumes the documented head size; update the math below if this constant changes")
+        let smallBuffer = (1...12).map { "s\($0)ms early line \($0)" }
+        XCTAssertEqual(PinnedRowSettleProbe.displayOrder(smallBuffer), smallBuffer, "an unevicted, marker-less buffer should be returned as-is")
+
+        // Case 3 (no marker, over `headMaxLines`): 15 raw lines with no elision marker yet — the
+        // fallback `headMaxLines`-based split still applies, so the 3 trailing lines are the
+        // tail and come first, reversed.
+        let fifteen = (1...15).map { "l\($0)" }
+        let displayedFifteen = PinnedRowSettleProbe.displayOrder(fifteen)
+        XCTAssertEqual(Array(displayedFifteen.prefix(3)), ["l15", "l14", "l13"], "the 3 tail lines must lead, reversed")
+        XCTAssertEqual(displayedFifteen.count, fifteen.count, "reordering must not drop or duplicate lines")
+    }
 }

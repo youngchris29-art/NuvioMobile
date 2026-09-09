@@ -103,4 +103,46 @@ enum PinnedRowSettleProbe {
         display.append(contentsOf: tailLines)
         UserDefaults.standard.set(display, forKey: linesKey)
     }
+
+    /// BUG-100 (rc6, Steven's tester photo): the About pane renders this buffer inside a native
+    /// `List` row, which clips to the row's own height and cannot be scrolled — only the first
+    /// ~6 lines were ever photographable. Those 6 lines are always the frozen launch head (the
+    /// `regime`/`plan` pair and the first couple of rests), never the tail, which is exactly
+    /// where a walk's LATER row settles live — the evidence the pane exists to capture was
+    /// permanently below the fold. Decision (Christian, 09-08): render newest first, so the
+    /// photographable top of the pane shows what the tester just did, not what happened at
+    /// launch three minutes earlier.
+    ///
+    /// Pure and stateless: takes whatever `linesKey` currently holds, in the PERSISTED,
+    /// chronological order `log(_:)` writes (frozen head, one elision marker once the tail has
+    /// started rolling, then the rolling tail, oldest to newest) and returns a VIEW order for
+    /// `AboutSettingsPane` to render. The persisted order itself is untouched by this function —
+    /// `log(_:)` and the harness's `settle_probe_blob` overlay both still read/write the
+    /// chronological order, which is load-bearing for `PinnedRowSettleProbeBufferTests` and for
+    /// any device-log cross-reference a tester's report makes against `[HomeScrollProbe]` lines.
+    ///
+    /// Reordering, split at the elision marker (a line containing "lines elided"):
+    /// - With a marker: everything before it is `head`, everything after is `tail`. The result is
+    ///   `tail.reversed() + [marker] + head.reversed()` — the whole array reads newest-first end
+    ///   to end. The most recent tail line (the walk's last settle) lands first, at the top of
+    ///   the visible fold; the very first line ever logged (the launch `regime`/`plan` pair) lands
+    ///   last, at the bottom, past where the clipped row is scrolled anyway.
+    /// - Without a marker (the buffer hasn't started evicting yet — an early-in-the-walk photo,
+    ///   or any caller feeding this function a raw unmarked array): fall back to the same
+    ///   `headMaxLines`-based split. If the whole input still fits inside `headMaxLines`, there is
+    ///   no tail yet and nothing to reorder — return the input as-is. Otherwise split it exactly
+    ///   as `log(_:)` would (first `headMaxLines` lines are head, the rest is tail) and apply the
+    ///   same newest-first reordering.
+    nonisolated static func displayOrder(_ persisted: [String]) -> [String] {
+        if let markerIndex = persisted.firstIndex(where: { $0.contains("lines elided") }) {
+            let head = Array(persisted[..<markerIndex])
+            let marker = persisted[markerIndex]
+            let tail = Array(persisted[(markerIndex + 1)...])
+            return Array(tail.reversed()) + [marker] + Array(head.reversed())
+        }
+        guard persisted.count > headMaxLines else { return persisted }
+        let head = Array(persisted.prefix(headMaxLines))
+        let tail = Array(persisted.suffix(from: headMaxLines))
+        return Array(tail.reversed()) + Array(head.reversed())
+    }
 }

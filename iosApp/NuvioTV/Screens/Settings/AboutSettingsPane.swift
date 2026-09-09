@@ -419,15 +419,27 @@ struct AboutSettingsPane: View {
                     )
 
                     if rowSettleDiagnostics, !rowSettleProbeLines.isEmpty {
-                        // Identical in shape to the hero probe's block above, for identical
-                        // reasons — including `.truncationMode(.middle)`, which is load-bearing
-                        // here rather than cosmetic: a settle report is long, and the two ends are
-                        // exactly what a reader needs (the head carries `row= margin= net= vh=`,
-                        // the tail carries `nudge=… endOfContent=… room=…`). The buffer is
-                        // head-preserving, so the launch regime survives however long the walk
-                        // runs, with one "… N lines elided …" marker once the tail starts rolling.
+                        // BUG-100 (rc6, Steven's tester photo): this List row clips to its own
+                        // height and cannot be scrolled, so only the first ~6 lines were ever
+                        // photographable — always the frozen launch head, never the tail where a
+                        // walk's later row settles live. The VISIBLE order below is therefore
+                        // `PinnedRowSettleProbe.displayOrder(...)`, newest first, rather than the
+                        // PERSISTED chronological order `rowSettleProbeLines` itself holds — see
+                        // that function's doc comment for the exact reordering and why. The
+                        // persisted order is untouched: `settle_probe_blob` below still joins
+                        // `rowSettleProbeLines` as logged, because the XCUI harness's readers
+                        // depend on that chronological shape, not the display order.
+                        //
+                        // Otherwise identical in shape to the hero probe's block above, including
+                        // `.truncationMode(.middle)`, which is load-bearing here rather than
+                        // cosmetic: a settle report is long, and the two ends are exactly what a
+                        // reader needs (the head carries `row= margin= net= vh=`, the tail carries
+                        // `nudge=… endOfContent=… room=…`).
+                        Text(String(localized: "Newest first; the launch lines are at the end."))
+                            .font(SettingsRowFont.subtitle)
+                            .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(rowSettleProbeLines.enumerated()), id: \.offset) { _, line in
+                            ForEach(Array(PinnedRowSettleProbe.displayOrder(rowSettleProbeLines).enumerated()), id: \.offset) { _, line in
                                 Text(line)
                                     .font(.system(size: 20, design: .monospaced))
                                     .foregroundStyle(Theme.Palette.textSecondary)
@@ -439,7 +451,10 @@ struct AboutSettingsPane: View {
                         .accessibilityIdentifier("settle_probe_lines")
                         // Same hidden single-Text blob as `hero_probe_blob`: the List row clips to
                         // visible height, so per-line children beyond the fold never enter the
-                        // accessibility tree and a harness walk would read one or two lines.
+                        // accessibility tree and a harness walk would read one or two lines. Joins
+                        // the PERSISTED (chronological) order, not the visible reordered one —
+                        // harness readers that cross-reference this blob against a device log
+                        // depend on that shape being unchanged.
                         .overlay(alignment: .topLeading) {
                             Text(rowSettleProbeLines.joined(separator: "\n"))
                                 .font(.system(size: 4))

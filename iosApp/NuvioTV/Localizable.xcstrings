@@ -13149,6 +13149,40 @@
         }
       }
     },
+    "Newest first; the launch lines are at the end.": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plus récent en premier ; les lignes de lancement sont à la fin."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neueste zuerst; die Startzeilen stehen am Ende."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más reciente primero; las líneas de inicio están al final."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Più recente per primo; le righe di avvio sono alla fine."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mới nhất trước; các dòng khởi động ở cuối."
+          }
+        }
+      }
+    },
     "No Upcoming row on Home": {},
     "No Zoom on Focus": {
       "localizations": {
