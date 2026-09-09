@@ -1610,8 +1610,22 @@ struct DetailView: View {
 
     // MARK: - Collection row ("Part of the X Collection")
 
-    /// The title's collection (e.g. sequels/prequels) as a poster row. TMDB-backed via
+    /// The title's collection (e.g. sequels/prequels) as a saga row. TMDB-backed via
     /// `collectionItems` — stays hidden until TMDB enrichment is on.
+    ///
+    /// FEAT-34 (2026-09-08, Christian's decision, tester photo
+    /// `docs/research/steven-beta18-photos/2026-09-08-official-nuvio-saga-row-landscape.jpg`):
+    /// official Nuvio renders this row as 16:9 backdrop cards with the franchise's title-logo
+    /// composited bottom-leading and film name + year captioned underneath, not the portrait
+    /// `PosterCard` this row used before (see the superseded rc2 note below). `SagaCard`
+    /// (`DesignSystem/SagaCard.swift`) is the dedicated card for this — it always shows its
+    /// caption regardless of Hide Labels, same as the row's prior `showTitle: true` override, so
+    /// the rc2 fix below carries forward unchanged.
+    ///
+    /// rc2 (u/mrStevenx3, 2026-09-06): "saga/franchise titles missing in the description — only
+    /// images". He runs Hide Labels ON, and a row of bare sequel artwork says nothing about which
+    /// film is which. On the description page this row is informational — like the Cast row,
+    /// whose names always show — so it opts out of the setting.
     @ViewBuilder
     private var collectionRow: some View {
         let items = model.meta?.collectionItems ?? []
@@ -1624,19 +1638,7 @@ struct DetailView: View {
                     LazyHStack(spacing: Theme.Spacing.lg) {
                         ForEach(items, id: \.id) { item in
                             NavigationLink(value: TitleRoute(preview: item)) {
-                                PosterCard(
-                                    title: item.name,
-                                    imageURL: item.poster,
-                                    width: Theme.Size.miniPosterWidth,
-                                    height: Theme.Size.miniPosterHeight,
-                                    // rc2 (u/mrStevenx3, 2026-09-06): "saga/franchise titles
-                                    // missing in the description — only images". He runs Hide
-                                    // Labels ON, which `showTitle: nil` follows, and a row of bare
-                                    // sequel posters says nothing about which film is which. On the
-                                    // description page this row is informational — like the Cast
-                                    // row, whose names always show — so it opts out of the setting.
-                                    showTitle: true
-                                )
+                                SagaCard(item: item)
                             }
                             .cardFocusButtonStyle()
                             .posterButtonShape()
