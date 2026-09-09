@@ -33,19 +33,6 @@ enum SidebarChrome {
         defaults.string(forKey: defaultsKey) == sidebarValue
     }
 
-    /// Device pass 2026-09-05 (Christian's video): a Siri Remote SWIPE up scrolls a list with
-    /// momentum, and when the list reaches its top the trailing movement arrives as the same
-    /// "Up with no focus target" move command a deliberate press produces — so scrolling back up
-    /// in Settings, Search or Library flung focus into the sidebar. A continuing swipe follows a
-    /// focus change by tens of milliseconds; a deliberate press at the top comes after focus has
-    /// been still. Reveal on Up only in the second case. The window is generous enough that a
-    /// normal repeated D-pad press (~0.3 s cadence) at the top still needs one settled press —
-    /// the same "one more press" grammar Menu-to-top already has. Menu reveals are unaffected.
-    static let upRevealSettleSeconds: CFTimeInterval = 0.45
-    static func upIsDeliberate(now: CFTimeInterval = CACurrentMediaTime()) -> Bool {
-        now - HiddenTabBarFocusBlocker.lastFocusUpdate >= upRevealSettleSeconds
-    }
-
     /// See `Theme.Size.sidebarTopCompensation` — the constant itself lives with the rest of the
     /// pinned-hero viewport arithmetic it has to stay consistent with. Surfaced here so every
     /// FEAT-30 call site reads one namespace.
@@ -652,9 +639,6 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
     nonisolated(unsafe) private(set) static var isBlocking = false
     /// The live blocker view, for `focusedItemIsNil()` (it has a window, hence a focus system).
     nonisolated(unsafe) private static weak var current: BlockerView?
-    /// `CACurrentMediaTime()` of the last `UIFocusSystem.didUpdateNotification` (sidebar mode
-    /// only — the observer lives on the blocker). Feeds `SidebarChrome.upIsDeliberate()`.
-    nonisolated(unsafe) private(set) static var lastFocusUpdate: CFTimeInterval = 0
 
     /// Whether the window's focus system currently has NO focused item (the BUG-47 dead end).
     /// `false` when unknown (no window yet) so callers do not react to a missing probe.
@@ -695,7 +679,6 @@ struct HiddenTabBarFocusBlocker: UIViewRepresentable {
                 focusObserver = NotificationCenter.default.addObserver(
                     forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
                 ) { [weak self] _ in
-                    HiddenTabBarFocusBlocker.lastFocusUpdate = CACurrentMediaTime()
                     self?.apply()
                 }
             }
@@ -800,9 +783,17 @@ private struct SidebarMenuRevealModifier: ViewModifier {
                 // commands only arrive here when the engine found no focus target for the press
                 // (the same contract the hero carousel's Left/Right paging relies on), so an
                 // ordinary Up between two rows never comes through this closure.
+                //
+                // 2026-09-08 (u/mrStevenx3, rc6 video, BUG-98): this used to also gate on
+                // `SidebarChrome.upIsDeliberate()` — reveal only if 0.45s had passed since the
+                // last focus update — to tell a deliberate press apart from a swipe's trailing
+                // overshoot at a list's top. On his hardware the gate inverted: a clickpad Up
+                // press lost because its OWN focus update landed inside the settle window, while a
+                // swipe won. Christian's call: any Up with nowhere to go reveals the sidebar, for
+                // both inputs. The gate is gone, so scrolling a list to its top with a swipe now
+                // also reveals — the tester already sees that and is fine with it.
                 .onMoveCommand { direction in
                     guard direction == .up, !chrome.isFocusedChrome else { return }
-                    guard SidebarChrome.upIsDeliberate() else { return }   // swipe overshoot, not a press
                     chrome.requestReveal()
                 }
         } else {

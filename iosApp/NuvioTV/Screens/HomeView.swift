@@ -1389,8 +1389,11 @@ struct HomeView: View {
                 // an Up with no focus target (the hidden bar's band is a dead zone — device spike
                 // + test52, 2026-09-05) arrives HERE first. Route it to the sidebar in sidebar
                 // mode; tabs mode falls through to the existing paging logic (a no-op for Up).
+                // 2026-09-08 (BUG-98): this used to also require `SidebarChrome.upIsDeliberate()`
+                // — see `SidebarOverlay.swift`'s `SidebarMenuRevealModifier.onMoveCommand` for why
+                // that settle-window gate was removed. Any Up with nowhere to go reveals now.
                 if direction == .up, SidebarChrome.isEnabled() {
-                    if !sidebarChrome.isFocusedChrome, SidebarChrome.upIsDeliberate() {
+                    if !sidebarChrome.isFocusedChrome {
                         sidebarChrome.requestReveal()
                     }
                     return
@@ -1767,11 +1770,13 @@ struct HomeView: View {
     /// FEAT-30: Up with no focus target → reveal + focus the sidebar. Only arrives when the
     /// engine found nothing above (an ordinary Up between rows never reaches it). Nil in tabs mode
     /// so that mode installs no handler at all.
+    /// 2026-09-08 (BUG-98): this used to also require `SidebarChrome.upIsDeliberate()` — see
+    /// `SidebarOverlay.swift`'s `SidebarMenuRevealModifier.onMoveCommand` for why that
+    /// settle-window gate was removed. Any Up with nowhere to go reveals now.
     private var sidebarUpRevealHandler: ((MoveCommandDirection) -> Void)? {
         guard SidebarChrome.isEnabled() else { return nil }
         return { direction in
             guard direction == .up, !sidebarChrome.isFocusedChrome else { return }
-            guard SidebarChrome.upIsDeliberate() else { return }   // swipe overshoot, not a press
             sidebarChrome.requestReveal()
         }
     }
