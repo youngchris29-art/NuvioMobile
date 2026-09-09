@@ -75,6 +75,61 @@ final class DetailRowAnchorDecisionTests: XCTestCase {
     }
 }
 
+/// Codex P2 review finding (BUG-99 follow-up, round 2): `DetailRowAnchor.direction` is the pure
+/// rule behind which way a focus change moved, factored out of `DetailView.onChange(of:
+/// focusedRow)` so every case is covered without a live view. Round 1 needed a `lastKnownTop`/
+/// `contentOffset` heuristic because `focusedRow` reported nil both in the unanchored top block AND
+/// in the (then-untracked) Comments section, and that heuristic broke whenever Comments was
+/// reachable without scrolling past the last row's own rest. Round 2 makes Comments a TRACKED row
+/// instead (`commentsSection` now carries `.detailRowAnchored(.comments, …)`), which retires the
+/// heuristic entirely: `old == nil` now means only one thing — the top block.
+final class DetailRowAnchorDirectionTests: XCTestCase {
+    func testOldNilIsDown() {
+        // The only row that ever reports `focusedRow == nil` now is the unanchored top block.
+        XCTAssertEqual(
+            DetailRowAnchor.direction(old: nil, oldTop: nil, newTop: 300),
+            .down
+        )
+    }
+
+    func testOldAboveIsDown() {
+        // The row that just lost focus sits higher in the content (a smaller top) than the
+        // newly-focused one.
+        XCTAssertEqual(
+            DetailRowAnchor.direction(old: .cast, oldTop: 300, newTop: 900),
+            .down
+        )
+    }
+
+    func testOldBelowIsUp() {
+        // The row that just lost focus sits lower in the content than the newly-focused one —
+        // covers an ordinary anchored-row-to-anchored-row Up, and leaving Comments (now a real,
+        // measured row sitting below everything else) for any row above it.
+        XCTAssertEqual(
+            DetailRowAnchor.direction(old: .comments, oldTop: 900, newTop: 300),
+            .up
+        )
+    }
+
+    func testOldCommentsWithMissingTopIsUp() {
+        // Comments' very first `onGeometryChange` callback has not landed yet, so its top is
+        // missing from the map even though `old` itself is `.comments` — Comments sits below every
+        // anchored row, so leaving it can only be Up.
+        XCTAssertEqual(
+            DetailRowAnchor.direction(old: .comments, oldTop: nil, newTop: 300),
+            .up
+        )
+    }
+
+    func testOldOtherRowWithMissingTopIsDown() {
+        // Any other row's top dropping out of the map falls back to the original default: Down.
+        XCTAssertEqual(
+            DetailRowAnchor.direction(old: .cast, oldTop: nil, newTop: 300),
+            .down
+        )
+    }
+}
+
 /// BUG-96 (Codex P2 follow-up): `DetailScrollMotion.segments` is the `moves=` oracle — one motion
 /// (engine reveal blended with the anchor pass) must read as `1`, and the old land-then-nudge
 /// design (a settle wait long enough for the engine to fully rest before the anchor slid it again)

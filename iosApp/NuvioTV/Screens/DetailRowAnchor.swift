@@ -112,6 +112,43 @@ enum DetailRowAnchor {
         case anchor, free
     }
 
+    /// Codex P2 review finding (BUG-99 follow-up), round 2: the round-1 fix distinguished "focus
+    /// came back from the unanchored Comments section" from "focus came from the top block" with a
+    /// `contentOffset`-vs-`lastKnownTop` heuristic, because `focusedRow` went nil in BOTH places —
+    /// Comments had no focus tracking of its own. That heuristic broke whenever Comments was
+    /// reachable without scrolling the page past the last row's own rest (`lastKnownTop == newTop`
+    /// straddling the settle check the same way BUG-99's original straddle case did): resting
+    /// short of it read as "still above", so a genuine Up out of Comments misread as Down and the
+    /// header the Up path exists to anchor never got anchored.
+    ///
+    /// The actual fix is structural, not a better heuristic: `commentsSection` now carries
+    /// `.detailRowAnchored(.comments, …)` the same as every other row below the top block (see its
+    /// call site in `DetailView`), so `focusedRow` reports `.comments` — never nil — while focus is
+    /// inside it, and `DetailView.detailRowOffsets[.comments]` holds its real top like any other
+    /// row. `focusedRow == nil` now happens ONLY in the unanchored top block (hero, synopsis,
+    /// actions), so the ambiguity this heuristic existed to resolve is gone: `old == nil` is
+    /// unambiguously "first entry from the top block", full stop. (Comments is still never
+    /// anchored or straddle-checked itself — `DetailView.onChange(of: focusedRow)` bails out for
+    /// `row == .comments` before calling this function at all.)
+    ///
+    /// Pure direction rule, `DetailRowAnchorTests`-covered. `old` is the row that just lost focus
+    /// (`DetailView`'s own `onChange(of: focusedRow)` `old` parameter — no separate "last known
+    /// row" state is needed any more, since a real `old` is available whenever there is one to
+    /// have). `oldTop`/`newTop` are row tops in content-space coordinates
+    /// (`DetailView.detailRowOffsets`); `oldTop` is `offsets[old]` and can be nil even when `old`
+    /// itself is not, if that row's very first `onGeometryChange` callback has not landed yet.
+    ///
+    /// `old == nil`: the top block — Down. `old` present with `oldTop` known: the ordinary
+    /// top-vs-top comparison — a lower content offset is Down. `old` present but `oldTop` missing:
+    /// falls back on which row `old` was — `.comments` reads Up (it sits below every anchored row,
+    /// so leaving it can only be Up), anything else reads Down (the original default for a row
+    /// whose top dropped out of the map).
+    static func direction(old: DetailRowID?, oldTop: CGFloat?, newTop: CGFloat) -> Direction {
+        guard let old else { return .down }
+        guard let oldTop else { return old == .comments ? .up : .down }
+        return newTop > oldTop ? .down : .up
+    }
+
     /// Pure decision table (`DetailRowAnchorTests`). Up is unconditional — always `.anchor`,
     /// matching Up's behaviour before BUG-99 exactly. Down is conditional: `.anchor` only when
     /// `screenTop` (the row's current on-screen top) sits ABOVE `screenRest` — a smaller y, closer
@@ -142,6 +179,11 @@ enum DetailRowAnchor {
 
 /// The rows the anchor tracks. `topBlock` (hero, synopsis, actions) is deliberately absent: focus
 /// there means "the page is at the top", and anchoring it would scroll the backdrop away.
+/// `.comments` IS tracked (`commentsSection` carries `.detailRowAnchored(.comments, …)`, Codex P2
+/// BUG-99 follow-up round 2) but is never itself anchored — `DetailView.onChange(of: focusedRow)`
+/// bails out for it before any anchor decision runs. It needs tracking only so `direction(old:…)`
+/// can see a real top for it instead of the `nil` that made it indistinguishable from the top
+/// block.
 enum DetailRowID: Hashable {
     case logos, parental, episodes, cast, collection, trailers, moreLikeThis, comments
 }

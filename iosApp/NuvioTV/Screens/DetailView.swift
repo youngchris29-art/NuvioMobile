@@ -391,6 +391,13 @@ struct DetailView: View {
     /// 2026-08-29 rounds 3-4).
     @FocusState private var focusedCastIndex: Int?
     /// BUG-96 (beta.18): which detail row focus is inside, if any — see `DetailRowAnchor`.
+    /// Codex P2 review finding (BUG-99 follow-up, round 2): `.comments` is now a TRACKED row
+    /// (`commentsSection` carries `.detailRowAnchored(.comments, …)` below) like every other row
+    /// past the top block, so this reports `.comments` — never nil — while focus is inside it. A
+    /// round-1 fix added a separate `lastKnownRow` state field to tell "focus is nil because it's
+    /// in the top block" apart from "focus is nil because it's in Comments"; tracking Comments here
+    /// retires that field entirely — `onChange(of: focusedRow)`'s own `old` parameter is already
+    /// the row that lost focus, real or nil, with no separate bookkeeping needed.
     @FocusState private var focusedRow: DetailRowID?
     /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -400,11 +407,17 @@ struct DetailView: View {
     @State private var detailScrollPosition = ScrollPosition()
     /// BUG-96: the pending anchor move; a newer focus change cancels the previous one.
     @State private var detailAnchorTask: Task<Void, Never>?
-    /// BUG-96: the row top the last anchor pass rested on. A later layout change that moves the
-    /// focused row (cast photos landing, a parental-guide row inserting above) shifts this, and
-    /// the focus engine re-reveals the moved card; `.onChange(of: detailRowOffsets)` re-anchors
-    /// once on that signal — a layout-settled trigger, never a polling loop.
-    @State private var lastAnchoredRowTop: CGFloat?
+    /// BUG-96: which row the last anchor pass rested, and where. A later layout change that moves
+    /// the focused row (cast photos landing, a parental-guide row inserting above) shifts that
+    /// row's top away from here, and the focus engine re-reveals the moved card;
+    /// `.onChange(of: detailRowOffsets)` re-anchors once on that signal — a layout-settled
+    /// trigger, never a polling loop. Codex P2 review finding (BUG-99 follow-up): ownership is now
+    /// per ROW, not just a top — the old bare `CGFloat?` compared the new focused row's top against
+    /// whatever the PREVIOUS row's anchor pass had left here, so a relayout within 350 ms of a
+    /// focus change could anchor a row that was deliberately left `.free`. Cleared at the top of
+    /// `.onChange(of: focusedRow)` on every change; set only by `anchorPass`, for the row it
+    /// anchored. The relayout pass below only fires when `lastAnchored?.row == focusedRow`.
+    @State private var lastAnchored: (row: DetailRowID, top: CGFloat)?
 
     init(preview: MetaPreview) {
         self.preview = preview
@@ -500,10 +513,19 @@ struct DetailView: View {
                             .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                         moreLikeThisRow
                             .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        // Codex BUG-96 r1/r2 (P2): NOT anchored — a vertical list of expandable cards
-                        // whose focus moves never change `focusedRow`, so a pending correction
-                        // could scroll back to the section top under a later comment.
+                        // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
+                        // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
+                        // "a vertical list of expandable cards whose focus moves never change
+                        // `focusedRow`" — which was true only because nothing here reported focus
+                        // in the first place; that left `focusedRow` nil both here and in the top
+                        // block, indistinguishable to `DetailRowAnchor.direction`. Tracking this
+                        // section resolves that ambiguity structurally (see `DetailRowID`'s and
+                        // `direction`'s doc comments); it still must never anchor — a pending
+                        // correction could scroll back to the section top under a later comment —
+                        // so `DetailView.onChange(of: focusedRow)` bails out for `row == .comments`
+                        // before any anchor decision runs.
                         commentsSection
+                            .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                     }
                 }
                 .padding(Theme.Spacing.screen)
@@ -535,6 +557,11 @@ struct DetailView: View {
             // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
             .onChange(of: focusedRow) { old, row in
                 dimModel.motionSamples.removeAll(keepingCapacity: true)
+                // Codex P2 review finding (BUG-99 follow-up): ownership of the last anchor pass is
+                // cleared on EVERY focus change, whichever direction it turns out to be — a stale
+                // `lastAnchored` from the row that just lost focus must never let the relayout pass
+                // below anchor the newly-focused row on its behalf.
+                lastAnchored = nil
                 guard let row else {
                     detailAnchorTask?.cancel()
                     detailAnchorTask = nil
@@ -543,12 +570,25 @@ struct DetailView: View {
                     return
                 }
                 detailAnchorTask?.cancel()
-                // BUG-99: focus arriving from the unanchored top block (`old == nil` — hero,
-                // synopsis, actions) counts as Down, since there is nothing above it that could
-                // have scrolled past. Otherwise Down is "the newly-focused row sits lower in the
-                // content than the one that just lost focus."
-                let down = old == nil || (detailRowOffsets[row] ?? 0) > (old.flatMap { detailRowOffsets[$0] } ?? -.infinity)
-                let direction: DetailRowAnchor.Direction = down ? .down : .up
+                // Codex P2 review finding (BUG-99 follow-up, round 2): Comments is now a TRACKED
+                // row (`commentsSection` carries `.detailRowAnchored(.comments, …)` above) but must
+                // still never anchor or straddle-check — bail out here, before `DetailRowAnchor
+                // .direction` runs at all, exactly like the `guard let row else` branch above does
+                // for the top block.
+                guard row != .comments else {
+                    dimModel.awaitingRevealRow = nil
+                    if DetailScrollProbe.enabled { dimModel.anchorNote = "comments free" }
+                    return
+                }
+                // `focusedRow` now reports `.comments` (never nil) while focus is inside it, so
+                // `old == nil` unambiguously means "first entry from the top block" — see
+                // `DetailRowAnchor.direction`'s doc comment for why the old
+                // `contentOffset`/`lastKnownTop` heuristic this replaced was wrong.
+                let direction = DetailRowAnchor.direction(
+                    old: old,
+                    oldTop: old.flatMap { detailRowOffsets[$0] },
+                    newTop: detailRowOffsets[row] ?? 0
+                )
                 switch direction {
                 case .up:
                     dimModel.awaitingRevealRow = row
@@ -595,9 +635,11 @@ struct DetailView: View {
                             _ = anchorPass(row, note: "down-straddle")
                         case .free:
                             // A free row is not this pass's rest — a later layout change under it
-                            // must not pull it up to the anchor either (see
+                            // must not pull it up to the anchor either. `lastAnchored` is already
+                            // nil (cleared at the top of this handler and never set by this branch,
+                            // since `anchorPass` was not called), so the relayout pass below's
+                            // `lastAnchored?.row == focusedRow` guard already excludes this row (see
                             // `.onChange(of: detailRowOffsets)` below).
-                            lastAnchoredRowTop = nil
                             if DetailScrollProbe.enabled {
                                 // `top=` stays in CONTENT space like `anchorPass`'s note: the UI test derives the
                                 // on-screen rest as `(top − off) − 108`. `screen=` is the settled on-screen top.
@@ -626,14 +668,18 @@ struct DetailView: View {
             }
             // BUG-96 (fixture step 5): late layout under the focused row moved it 470 pt after the
             // pass and the engine re-revealed the card. Re-anchor once per layout change, debounced.
-            // BUG-99: `let last = lastAnchoredRowTop` already gates this on `lastAnchoredRowTop !=
-            // nil` — a Down focus change that landed `.free` (see above) sets it to `nil`, so a
-            // free row's later layout shift never gets pulled up into the anchor it was
-            // deliberately left without.
+            // Codex P2 review finding (BUG-99 follow-up): gated on `lastAnchored?.row ==
+            // focusedRow`, not just `lastAnchored != nil` — the old bare `CGFloat?` compared the
+            // newly-focused row's top against whatever the PREVIOUS row's anchor pass had left
+            // there, so a relayout within 350 ms of a focus change (`lastAnchoredRowTop` still
+            // held the old row's rest) could anchor a row that was deliberately left `.free`. Per
+            // row ownership fixes that: a free row's later layout shift never gets pulled up into
+            // an anchor it was deliberately left without, and a stale prior row's rest can never be
+            // mistaken for the current row's.
             .onChange(of: detailRowOffsets) { _, offsets in
                 guard let row = focusedRow, bridgePhase == .idle,
-                      let top = offsets[row], let last = lastAnchoredRowTop,
-                      abs(top - last) > DetailRowAnchor.verifyTolerance else { return }
+                      let top = offsets[row], let last = lastAnchored, last.row == row,
+                      abs(top - last.top) > DetailRowAnchor.verifyTolerance else { return }
                 detailAnchorTask?.cancel()
                 detailAnchorTask = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 250_000_000)
@@ -1084,7 +1130,7 @@ struct DetailView: View {
         } else {
             withAnimation(.easeOut(duration: 0.3)) { detailScrollPosition.scrollTo(y: target) }
         }
-        lastAnchoredRowTop = rowTop
+        lastAnchored = (row, rowTop)
         if DetailScrollProbe.enabled {
             dimModel.anchorNote = String(format: "%@ top=%.0f y=%.0f %@", String(describing: row), rowTop, target, note)
         }
