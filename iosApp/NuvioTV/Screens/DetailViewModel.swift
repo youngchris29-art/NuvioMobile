@@ -61,6 +61,23 @@ final class DetailViewModel: ObservableObject {
     private var didRequestComments = false
     private var didRequestRatings = false
     private var didRequestGuide = false
+    /// BUG-101 (War Machine, 2026-09-08): the ranked hero-trailer candidates for the current title
+    /// (`HeroTrailerSelectorKt.rankHeroTrailers`) and which one is currently being tried/playing —
+    /// a dead/blocked top pick (e.g. a TMDB-listed French trailer whose YouTube id no longer
+    /// resolves) falls through to the next ranked candidate instead of leaving Detail with no
+    /// trailer at all, even though a playable one (usually the English one `fetchTmdbVideos`
+    /// always merges in) sits right behind it.
+    private var trailerCandidates: [MetaTrailer] = []
+    private var trailerCandidateIndex = 0
+    /// One retry after an AVPlayer *playback* failure (as opposed to an extraction miss) per
+    /// title — otherwise a title whose every remaining candidate fails to actually play would
+    /// retry without end.
+    private var trailerRetriedAfterPlaybackFailure = false
+    /// Bumped in `stop()` so a completion from a resolution the current title has already walked
+    /// away from (a stop()/start() reuse of this same view model instance mid-flight) can never
+    /// apply — the identity guard `resolveTrailerIfNeeded`'s completions check before touching
+    /// `trailerVideoURL`/`trailerVideoId`.
+    private var trailerResolveGeneration = 0
 
     private let preview: MetaPreview
     private var type: String { preview.type }
@@ -139,6 +156,10 @@ final class DetailViewModel: ObservableObject {
         trailerVideoURL = nil
         trailerVideoId = nil
         didRequestTrailer = false
+        trailerCandidates = []
+        trailerCandidateIndex = 0
+        trailerRetriedAfterPlaybackFailure = false
+        trailerResolveGeneration &+= 1
         // Only the current owner clears the shared repo — a source screen disappearing mid-push
         // must not cancel the destination's request (HI-005).
         if Self.currentOwner == ownerToken {
@@ -149,18 +170,43 @@ final class DetailViewModel: ObservableObject {
 
     // MARK: - Hero trailer
 
-    /// Once per title: pick the best trailer (`selectHeroTrailer`), resolve its YouTube URL into a
-    /// directly-playable stream via the shared `HeroTrailerResolver`, and publish it. Fails soft —
-    /// if nothing resolves, `trailerVideoURL` stays nil and Detail keeps the static backdrop.
+    /// Once per title: rank the hero-trailer candidates (`rankHeroTrailers`) and resolve them in
+    /// ranked order into a directly-playable stream via the shared `HeroTrailerResolver`,
+    /// publishing the first one that actually works. Fails soft — if nothing resolves,
+    /// `trailerVideoURL` stays nil and Detail keeps the static backdrop.
     private func resolveTrailerIfNeeded(_ meta: MetaDetails) {
         guard !didRequestTrailer else { return }
         let trailers = meta.trailers
-        guard !trailers.isEmpty,
-              let trailer = HeroTrailerSelectorKt.selectHeroTrailer(
-                  trailers: trailers,
-                  preferredLanguage: TmdbSettingsRepository.shared.snapshot().language
-              ) else { return }
+        guard !trailers.isEmpty else { return }
+        // BUG-101 (War Machine, 2026-09-08): the FULL ranking, not just the head — a dead/blocked
+        // top candidate (e.g. a TMDB-listed French trailer whose YouTube id no longer resolves)
+        // falls through to the next one instead of leaving Detail with no trailer at all, even
+        // though a playable one (usually the English one `fetchTmdbVideos` always merges in) sits
+        // right behind it.
+        let ranked = HeroTrailerSelectorKt.rankHeroTrailers(
+            trailers: trailers,
+            preferredLanguage: TmdbSettingsRepository.shared.snapshot().language
+        )
+        guard !ranked.isEmpty else { return }
         didRequestTrailer = true
+        trailerCandidates = ranked
+        trailerCandidateIndex = 0
+        trailerRetriedAfterPlaybackFailure = false
+        attemptTrailerResolution(generation: trailerResolveGeneration)
+    }
+
+    /// BUG-101: walks `trailerCandidates` starting at `trailerCandidateIndex`, advancing to the
+    /// next one whenever `HeroTrailerResolver` extraction comes back nil — capped at 3 attempts
+    /// total so a title with nothing but dead links doesn't chain an unbounded run of extractions.
+    /// `generation` is the value `trailerResolveGeneration` held when this title's resolution
+    /// began; every completion re-checks it before touching published state, so a stale completion
+    /// from a resolution this title has already walked away from (a `stop()`/`start()` reuse of
+    /// this same view model instance mid-flight) can never apply.
+    private func attemptTrailerResolution(generation: Int) {
+        guard trailerCandidateIndex < trailerCandidates.count, trailerCandidateIndex < 3 else { return }
+        let trailer = trailerCandidates[trailerCandidateIndex]
+        let attemptIndex = trailerCandidateIndex
+        let totalCandidates = min(trailerCandidates.count, 3)
 
         var youtubeUrl = trailer.youtubePlaybackUrl()
         // Sim/device verification knob for the SABR repackaging path: force every Detail hero
@@ -174,15 +220,27 @@ final class DetailViewModel: ObservableObject {
         if TrailerProbe.enabled, let forced = TrailerProbe.smokeVideoId {
             youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
         }
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] hero resolve candidate=%d/%d id=%@", attemptIndex + 1, totalCandidates, trailer.id)
+        }
         HeroTrailerResolver.shared.resolveYouTube(youtubeUrl: youtubeUrl) { [weak self] source, _ in
             DispatchQueue.main.async {
-                guard let self, let source else { return }
+                guard let self, self.trailerResolveGeneration == generation else { return }
+                guard let source else {
+                    // BUG-101: extraction miss — this candidate's YouTube id didn't resolve
+                    // (dead/blocked/deleted). Try the next ranked one rather than give up.
+                    self.trailerCandidateIndex = attemptIndex + 1
+                    self.attemptTrailerResolution(generation: generation)
+                    return
+                }
                 // AVPlayer-friendly URL only (tvOS plays trailers via AVPlayer, not libmpv):
                 // a local byte-range HLS repackage of the demuxed 1080p pair when the extractor
                 // surfaced one (SABR fallback), else the progressive/HLS URL as before. Nil →
-                // static backdrop when only adaptive VP9/AV1 exists.
+                // static backdrop when only adaptive VP9/AV1 exists (extraction itself succeeded,
+                // so this is not the BUG-101 dead-link case — no further candidate walk here).
                 TrailerLocalHLS.shared.playbackURL(for: source) { [weak self] url in
-                    guard let self, let url else { return }
+                    guard let self, self.trailerResolveGeneration == generation else { return }
+                    guard let url else { return }
                     self.trailerVideoURL = url
                     self.trailerVideoId = source.videoId
                 }
@@ -190,11 +248,22 @@ final class DetailViewModel: ObservableObject {
         }
     }
 
-    /// The trailer surface reports it couldn't start (undecodable/stalled) — drop it so Detail keeps
-    /// the static backdrop. Not retried for this title.
+    /// The trailer surface reports it couldn't start (undecodable/stalled) — drop it so Detail
+    /// keeps the static backdrop, unless a next-ranked candidate is worth one retry first.
+    ///
+    /// BUG-101: an AVPlayer *playback* failure (as opposed to the extraction miss
+    /// `attemptTrailerResolution` already handles) doesn't mean the title has nothing to show —
+    /// try the next ranked candidate once before giving up, the same one-retry discipline
+    /// `InlineTrailerCardModel.playbackFailed` uses.
     func trailerFailed() {
         trailerVideoURL = nil
         trailerVideoId = nil
+        guard !trailerRetriedAfterPlaybackFailure,
+              trailerCandidateIndex + 1 < trailerCandidates.count,
+              trailerCandidateIndex + 1 < 3 else { return }
+        trailerRetriedAfterPlaybackFailure = true
+        trailerCandidateIndex += 1
+        attemptTrailerResolution(generation: trailerResolveGeneration)
     }
 
     /// Trailers row: resolve one trailer's YouTube URL into an AVPlayer-friendly stream and present

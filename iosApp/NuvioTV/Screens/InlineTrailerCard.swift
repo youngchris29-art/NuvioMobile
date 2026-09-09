@@ -373,6 +373,18 @@ final class InlineTrailerCardModel: ObservableObject {
     /// while focus stays put; cleared by `reset()`, so leaving and coming back plays it again.
     private var didFinishForKey: String?
 
+    /// BUG-101: the ranked candidate list `resolve()` last extracted from, and the index that
+    /// actually produced the current/most recent playable source — kept around so `playbackFailed`
+    /// can retry the NEXT candidate instead of just collapsing. `candidateTrailersKey` ties both to
+    /// the key they were populated for, since the cache-hit branch of `expand()` starts playback
+    /// without ever calling `resolve()` and must not let a retry fire against a stale, unrelated list.
+    private var candidateTrailers: [MetaTrailer] = []
+    private var candidateIndex = 0
+    private var candidateTrailersKey: String?
+    /// One playback-failure retry per title per dwell — otherwise a title whose every remaining
+    /// candidate fails to actually decode would retry without end.
+    private var retriedAfterPlaybackFailureKey: String?
+
     // MARK: Focus
 
     func focusChanged(_ focused: Bool, item: MetaPreview) {
@@ -425,6 +437,10 @@ final class InlineTrailerCardModel: ObservableObject {
         dwellTask = nil
         activeKey = nil
         didFinishForKey = nil
+        candidateTrailers = []
+        candidateIndex = 0
+        candidateTrailersKey = nil
+        retriedAfterPlaybackFailureKey = nil
         InlineTrailerCoordinator.shared.releasePlayback(self)
         setPhase(.idle)
     }
@@ -451,6 +467,7 @@ final class InlineTrailerCardModel: ObservableObject {
     /// * three failures inside a minute is a shared-resource storm, so the negative entries those
     ///   failures wrote are purged outright rather than left to expire one by one.
     func playbackFailed(_ report: TrailerFailureReport) {
+        var retrying = false
         if let activeKey {
             let isLoopback404 = report.httpStatus == 404
                 && report.urlString.flatMap(TrailerLocalHLS.token(inPlaybackURL:)) != nil
@@ -463,11 +480,34 @@ final class InlineTrailerCardModel: ObservableObject {
                     causeSite: "playbackFailed:\(report.cause.tag)"
                 )
             }
+            // BUG-101: a playback failure says THIS stream didn't pan out, not that the title has
+            // nothing to show — walk to the next ranked candidate once before giving up, mirroring
+            // the extraction-miss fallback in `resolve()`. Excludes the loopback-404 case (our own
+            // repack cache going stale, not the candidate being bad — `expand()`'s stale-token check
+            // already re-resolves the SAME candidate from scratch on the next focus) and requires
+            // `candidateTrailersKey == activeKey`, since the cache-hit branch of `expand()` can start
+            // playback without ever populating `candidateTrailers` for this key.
+            if !isLoopback404,
+               candidateTrailersKey == activeKey,
+               retriedAfterPlaybackFailureKey != activeKey,
+               candidateIndex + 1 < candidateTrailers.count,
+               candidateIndex + 1 < 3 {
+                retriedAfterPlaybackFailureKey = activeKey
+                retrying = true
+                // The failed player still owns the single playback slot; hand it back before
+                // dropping the phase to `.expandedStatic` so `startPlayback` (which only promotes
+                // from `.expandedStatic`/`.dwelling`) can re-promote once the retry lands.
+                InlineTrailerCoordinator.shared.releasePlayback(self)
+                setPhase(.expandedStatic)
+                retryNextCandidate(key: activeKey, startIndex: candidateIndex + 1)
+            }
         }
         if InlineTrailerCoordinator.shared.recordPlaybackFailure() {
             TrailerResolutionCache.shared.clearTransient()
         }
-        collapse()
+        if !retrying {
+            collapse()
+        }
     }
 
     /// The trailer played through. Collapse, and remember the title so sitting on the card doesn't
@@ -618,12 +658,15 @@ final class InlineTrailerCardModel: ObservableObject {
         // (peek() missed above, in `expand()`) behaves deterministically too — every title takes
         // the noTrailerListed branch below instead of only the ones peek() happened to catch warm.
         let trailers = TrailerProbe.forceNoTrailer ? [] : meta.trailers
-        guard !trailers.isEmpty,
-              // BUG-63: prefer the Metadata Language among the (now language-inclusive) list.
-              let trailer = HeroTrailerSelectorKt.selectHeroTrailer(
-                  trailers: trailers,
-                  preferredLanguage: TmdbSettingsRepository.shared.snapshot().language
-              ) else {
+        // BUG-63: prefer the Metadata Language among the (now language-inclusive) list. BUG-101:
+        // the FULL ranking, not just the head — a dead/blocked top candidate (e.g. a TMDB-listed
+        // trailer whose YouTube id no longer resolves) falls through to the next one during
+        // extraction below instead of collapsing the card outright.
+        let rankedTrailers = HeroTrailerSelectorKt.rankHeroTrailers(
+            trailers: trailers,
+            preferredLanguage: TmdbSettingsRepository.shared.snapshot().language
+        )
+        guard !rankedTrailers.isEmpty else {
             // BUG-63: say how many the meta listed and under which language, so a device log can
             // tell "TMDB has none" from "wrong language" (the two look identical from the tile).
             if TrailerProbe.enabled {
@@ -661,29 +704,27 @@ final class InlineTrailerCardModel: ObservableObject {
         // (armed by `startResolution`, never touched by it); a title with nothing to play, or a
         // refused slot, never puts anything on screen to undo.
         setPhase(.expandedStatic)
-        let source: TrailerPlaybackSource?
+        // BUG-101: remembered so a later `playbackFailed` can retry the NEXT candidate — tagged
+        // with `key` so a stale list from a previous title/resolve can never be mistaken for this
+        // one's (see `candidateTrailersKey`'s doc comment).
+        candidateTrailers = rankedTrailers
+        candidateIndex = 0
+        candidateTrailersKey = key
+        retriedAfterPlaybackFailureKey = nil
+        var source: TrailerPlaybackSource?
         // BUG-46/B4: the latch is released by a `defer` in its OWN scope, so no future early return
         // between here and the end of the extraction can strand it (a stranded latch means nothing
         // in the app ever extracts again). Deliberately a scoped `do` rather than a function-wide
         // `defer`: the `TrailerLocalHLS` repack fetches below are not extraction, and holding the
-        // single extraction slot through them would serialize the pipeline for no reason.
+        // single extraction slot through them would serialize the pipeline for no reason. BUG-101:
+        // `extractPlayableSource` walks `rankedTrailers` (capped at 3) inside this same held ticket
+        // — still one logical extraction episode, just sequential across candidates instead of one.
         do {
             defer { InlineTrailerCoordinator.shared.endExtraction(extractionTicket) }
-            var youtubeUrl = trailer.youtubePlaybackUrl()
-            // Phase 0 (0.5): honor the same `debug.trailerSmokeVideoId` knob
-            // `DetailViewModel.resolveTrailerIfNeeded` uses, so every inline dwell resolves the SAME
-            // known videoId — deterministic `[TrailerRepack]`/`[TrailerZoom]` logs for the soak. The
-            // substitution happens AFTER `key` was derived above, so cache behavior stays per-title
-            // (many distinct keys, one known stream) rather than collapsing every card onto one entry.
-            // BUG-59 (beta.13): honored ONLY while `debug.trailerProbe` is also on. This knob
-            // persists in the container and, alone, would silently point EVERY tile at one
-            // videoId (one shared zoom, one shared trailer) — the profile of the "all trailers
-            // extremely zoomed until I reinstalled" report. Pairing it with the probe knob means
-            // a forgotten `defaults write` can no longer hijack a release, and the soak sets both.
-            if TrailerProbe.enabled, let forced = TrailerProbe.smokeVideoId {
-                youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
+            if let result = await extractPlayableSource(candidates: rankedTrailers, startIndex: 0, key: key) {
+                source = result.source
+                candidateIndex = result.index
             }
-            source = await resolveYouTube(youtubeUrl)
         }
 
         // AVPlayer-friendly URL only — a local byte-range HLS repackage of the demuxed 1080p pair
@@ -703,6 +744,78 @@ final class InlineTrailerCardModel: ObservableObject {
         }
         TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
         startPlayback(playable, key: key)
+    }
+
+    /// BUG-101: tries `candidates[startIndex..<min(candidates.count, 3)]` in ranked order, stopping
+    /// at the first one whose YouTube extraction actually produces a source. Shared by the
+    /// cache-miss path in `resolve()` (`startIndex: 0`) and the `playbackFailed` retry (`startIndex`
+    /// past whatever already played). Bails early if focus has moved off `key` mid-loop, so a card
+    /// nobody is looking at any more doesn't keep making YouTube extraction calls on its way out.
+    private func extractPlayableSource(
+        candidates: [MetaTrailer],
+        startIndex: Int,
+        key: String
+    ) async -> (source: TrailerPlaybackSource, index: Int)? {
+        let maxIndex = min(candidates.count, 3)
+        var index = startIndex
+        while index < maxIndex {
+            guard activeKey == key else { return nil }
+            let candidate = candidates[index]
+            var youtubeUrl = candidate.youtubePlaybackUrl()
+            // Phase 0 (0.5): honor the same `debug.trailerSmokeVideoId` knob
+            // `DetailViewModel.resolveTrailerIfNeeded` uses, so every inline dwell resolves the SAME
+            // known videoId — deterministic `[TrailerRepack]`/`[TrailerZoom]` logs for the soak. The
+            // substitution happens AFTER `key` was derived, so cache behavior stays per-title (many
+            // distinct keys, one known stream) rather than collapsing every card onto one entry.
+            // BUG-59 (beta.13): honored ONLY while `debug.trailerProbe` is also on — see the
+            // comment at the smoke-id call site in `DetailViewModel.resolveTrailerIfNeeded`.
+            if TrailerProbe.enabled, let forced = TrailerProbe.smokeVideoId {
+                youtubeUrl = "https://www.youtube.com/watch?v=\(forced)"
+            }
+            if TrailerProbe.enabled {
+                NSLog("[TrailerPipeline] resolve candidate=%d/%d key=%@", index + 1, maxIndex, key)
+            }
+            if let source = await resolveYouTube(youtubeUrl) {
+                return (source, index)
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    /// BUG-101 retry path for `playbackFailed`: `resolve()` already released its extraction ticket,
+    /// so this reacquires one for the single follow-up attempt. Leaves the card at `.expandedStatic`
+    /// (never collapses it directly) unless the retry itself comes up empty, in which case
+    /// `abandonExpansion` takes over exactly as it would from `resolve()`.
+    private func retryNextCandidate(key: String, startIndex: Int) {
+        guard activeKey == key else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            guard let extractionTicket = InlineTrailerCoordinator.shared.beginExtraction() else {
+                self.abandonExpansion(key: key)
+                return
+            }
+            var result: (source: TrailerPlaybackSource, index: Int)?
+            do {
+                defer { InlineTrailerCoordinator.shared.endExtraction(extractionTicket) }
+                result = await self.extractPlayableSource(candidates: self.candidateTrailers, startIndex: startIndex, key: key)
+            }
+            guard self.activeKey == key else { return }
+            guard let result else {
+                self.abandonExpansion(key: key)
+                return
+            }
+            self.candidateIndex = result.index
+            let playable = await TrailerLocalHLS.shared.playbackURL(for: result.source)
+            guard self.activeKey == key else { return }
+            guard let playable, !playable.isEmpty else {
+                TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "notPlayable")
+                self.abandonExpansion(key: key)
+                return
+            }
+            TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
+            self.startPlayback(playable, key: key)
+        }
     }
 
     /// Only attaches when this card is *still* sitting on the title that was resolved —

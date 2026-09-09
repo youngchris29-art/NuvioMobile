@@ -19,20 +19,35 @@ fun selectHeroTrailer(trailers: List<MetaTrailer>): MetaTrailer? =
  * `InlineTrailerCard.swift`). `preferredLanguage` accepts either a bare code (`fr`) or a TMDB
  * locale (`fr-FR`, `pt-BR`).
  */
-fun selectHeroTrailer(trailers: List<MetaTrailer>, preferredLanguage: String?): MetaTrailer? {
+fun selectHeroTrailer(trailers: List<MetaTrailer>, preferredLanguage: String?): MetaTrailer? =
+    rankHeroTrailers(trailers, preferredLanguage).firstOrNull()
+
+/**
+ * BUG-101: the full ranking `selectHeroTrailer` picks its head from, best first. A dead/blocked
+ * top pick (e.g. a TMDB-listed French trailer whose YouTube id no longer resolves) used to be a
+ * dead end — `selectHeroTrailer` only ever offered ONE candidate, so both tvOS callers
+ * (`DetailViewModel.resolveTrailerIfNeeded`, `InlineTrailerCardModel.resolve`) gave up entirely
+ * once extraction failed, even when a perfectly playable English trailer (merged into the
+ * candidate list by `fetchTmdbVideos`'s preferred-language + en-US fetch) sat right behind it.
+ * Exposing the ranked list lets both callers fall through to the next candidate instead of
+ * failing soft to "no trailer" — same filter, same dedup, same comparator as `selectHeroTrailer`,
+ * just not collapsed to a single result.
+ */
+fun rankHeroTrailers(trailers: List<MetaTrailer>, preferredLanguage: String?): List<MetaTrailer> {
     return trailers
         .asSequence()
         .filter { it.isPlayableYouTubeTrailerCandidate() }
         .distinctBy { it.key }
-        .maxWithOrNull(
+        .sortedWith(
             compareBy<MetaTrailer>(
                 { it.metadataLanguagePriority(preferredLanguage) },
                 { it.heroTrailerPriority() },
                 { it.publishedAt.orEmpty() },
                 { it.size ?: 0 },
                 { it.name },
-            ),
+            ).reversed(),
         )
+        .toList()
 }
 
 /**
