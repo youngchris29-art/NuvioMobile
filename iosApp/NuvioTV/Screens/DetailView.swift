@@ -57,6 +57,9 @@ private final class ScrollDimModel: ObservableObject {
     /// content offset captured at that moment — disarmed (`nil`) the first time the scroll-geometry
     /// handler sees the engine's own reveal actually move the page, which is also the instant the
     /// anchor pass fires. Plain fields, not published: read/written on the per-frame geometry path.
+    /// BUG-99: only ever armed on an UP focus change now — a Down change leaves this `nil`, so the
+    /// blend trigger in the scroll-geometry handler below is inert for the whole visit; Down has
+    /// its own settle-check task instead (see `DetailView.onChange(of: focusedRow)`).
     var awaitingRevealRow: DetailRowID?
     var awaitingRevealStartOffset: CGFloat = 0
     /// BUG-96 oracle: timestamped content-offset samples for the current focus visit, capped at
@@ -510,15 +513,27 @@ struct DetailView: View {
             .scrollPosition($detailScrollPosition)
             // BUG-96: fades whatever of the previous row sits above the anchored rest.
             .overlay(alignment: .top) { DetailTopScrim(model: dimModel) }
-            // BUG-96: anchor the focused row's top at `DetailRowAnchor.topInset`. rc5
-            // (u/mrStevenx3): the first shipped design waited for the engine's own reveal to
-            // FINISH, then slid the row to rest — a visible two-step move on every Down press. The
-            // fix now BLENDS: arm a flag here, remember the offset the page is at right now, and
-            // let the scroll-geometry handler below fire the anchor pass the instant it sees the
-            // engine actually start moving the page, so the two read as one motion. This handler's
-            // own job is just to arm the flag and start the fallback timer for the case where the
-            // engine never moves the page at all (the focused card was already fully visible).
-            .onChange(of: focusedRow) { _, row in
+            // BUG-96/BUG-99: a focus change is decided by DIRECTION first — see
+            // `DetailRowAnchor.Direction`/`decision` and that type's doc comment for the tester
+            // reports behind the split. UP always anchors the focused row's top at
+            // `DetailRowAnchor.topInset`, exactly as every row did before BUG-99: rc5
+            // (u/mrStevenx3) reported the first shipped design waited for the engine's own reveal
+            // to FINISH, then slid the row to rest — a visible two-step move on every press. The
+            // fix BLENDS: arm a flag here, remember the offset the page is at right now, and let
+            // the scroll-geometry handler below fire the anchor pass the instant it sees the
+            // engine actually start moving the page, so the two read as one motion, with a short
+            // fallback timer for the case where the engine never moves the page at all (the
+            // focused card was already fully visible).
+            //
+            // DOWN does not blend or anchor by default any more (rc6, BUG-99): once the blend fix
+            // made one Down press one motion, the row still rested at the anchor every time, which
+            // pushed the title, synopsis, buttons and meta fully off screen on the very FIRST Down
+            // off the header — official Nuvio's Down instead reveals the next section at the
+            // BOTTOM of the screen, description still visible (the engine's own minimal reveal).
+            // Christian's call 2026-09-08: keep that minimal reveal on Down, and only pull the row
+            // up to `screenRest` when it would otherwise leave the header straddling the top scrim
+            // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
+            .onChange(of: focusedRow) { old, row in
                 dimModel.motionSamples.removeAll(keepingCapacity: true)
                 guard let row else {
                     detailAnchorTask?.cancel()
@@ -528,25 +543,73 @@ struct DetailView: View {
                     return
                 }
                 detailAnchorTask?.cancel()
-                dimModel.awaitingRevealRow = row
-                dimModel.awaitingRevealStartOffset = dimModel.lastContentOffset
-                detailAnchorTask = Task { @MainActor in
-                    // Fallback only: if the scroll-geometry handler hasn't already disarmed by the
-                    // time this fires, the engine never moved the page — fire the pass ourselves.
-                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
-                    guard !Task.isCancelled else { return }
-                    if dimModel.awaitingRevealRow == row {
-                        dimModel.awaitingRevealRow = nil
-                        guard anchorPass(row, note: "blend-fallback") else { return }
+                // BUG-99: focus arriving from the unanchored top block (`old == nil` — hero,
+                // synopsis, actions) counts as Down, since there is nothing above it that could
+                // have scrolled past. Otherwise Down is "the newly-focused row sits lower in the
+                // content than the one that just lost focus."
+                let down = old == nil || (detailRowOffsets[row] ?? 0) > (old.flatMap { detailRowOffsets[$0] } ?? -.infinity)
+                let direction: DetailRowAnchor.Direction = down ? .down : .up
+                switch direction {
+                case .up:
+                    dimModel.awaitingRevealRow = row
+                    dimModel.awaitingRevealStartOffset = dimModel.lastContentOffset
+                    detailAnchorTask = Task { @MainActor in
+                        // Fallback only: if the scroll-geometry handler hasn't already disarmed by
+                        // the time this fires, the engine never moved the page — fire the pass
+                        // ourselves.
+                        try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
+                        guard !Task.isCancelled else { return }
+                        if dimModel.awaitingRevealRow == row {
+                            dimModel.awaitingRevealRow = nil
+                            guard anchorPass(row, note: "blend-fallback") else { return }
+                        }
+                        // Whether the geometry handler blended in already or the fallback just
+                        // fired: one verify pass. A card whose thumbnails land after the settle
+                        // makes the engine re-reveal it and undo the rest. Re-issue once, never
+                        // loop.
+                        try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
+                        _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
+                        // Publish the geometry sample once, AT REST, for the probe (never per
+                        // frame).
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
                     }
-                    // Whether the geometry handler blended in already or the fallback just fired:
-                    // one verify pass. A card whose thumbnails land after the settle makes the
-                    // engine re-reveal it and undo the rest. Re-issue once, never loop.
-                    try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
-                    _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
-                    // Publish the geometry sample once, AT REST, for the probe (never per frame).
-                    try? await Task.sleep(nanoseconds: 350_000_000)
-                    if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+                case .down:
+                    // BUG-99: no blend arm, no fallback pass, no verify pass — leave the engine's
+                    // own reveal running unmodified. One task waits for it to settle, then
+                    // straddle-checks the result and anchors only if the header needs rescuing.
+                    dimModel.awaitingRevealRow = nil
+                    detailAnchorTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleCheckDelay * 1_000_000_000))
+                        guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle,
+                              let rowTop = detailRowOffsets[row] else { return }
+                        // The row's on-screen top is `rowTop − contentOffset` on this runtime: the
+                        // anchor's own `scrollTo(y: rowTop + inset − rest)` lands at `y − inset`,
+                        // i.e. `contentOffset == rowTop − rest` at rest, which is also the
+                        // `(top − off) − 108` residual the UI test reads. No inset term here — with
+                        // it the check would overshoot by the inset (157 pt on the fixture) and a
+                        // header sitting under the scrim would read as free.
+                        let screenTop = rowTop - dimModel.lastContentOffset
+                        switch DetailRowAnchor.decision(direction: .down, screenTop: screenTop) {
+                        case .anchor:
+                            _ = anchorPass(row, note: "down-straddle")
+                        case .free:
+                            // A free row is not this pass's rest — a later layout change under it
+                            // must not pull it up to the anchor either (see
+                            // `.onChange(of: detailRowOffsets)` below).
+                            lastAnchoredRowTop = nil
+                            if DetailScrollProbe.enabled {
+                                // `top=` stays in CONTENT space like `anchorPass`'s note: the UI test derives the
+                                // on-screen rest as `(top − off) − 108`. `screen=` is the settled on-screen top.
+                                dimModel.anchorNote = String(format: "%@ top=%.0f screen=%.0f free", String(describing: row), rowTop, screenTop)
+                            }
+                        }
+                        // Publish the geometry sample once, AT REST, for the probe (never per
+                        // frame) — same as the Up path, so the UI test still gets a sample per
+                        // step regardless of direction.
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+                    }
                 }
             }
             // Codex BUG-96 r1 (P2): a correction must not land on a page that is leaving or
@@ -563,6 +626,10 @@ struct DetailView: View {
             }
             // BUG-96 (fixture step 5): late layout under the focused row moved it 470 pt after the
             // pass and the engine re-revealed the card. Re-anchor once per layout change, debounced.
+            // BUG-99: `let last = lastAnchoredRowTop` already gates this on `lastAnchoredRowTop !=
+            // nil` — a Down focus change that landed `.free` (see above) sets it to `nil`, so a
+            // free row's later layout shift never gets pulled up into the anchor it was
+            // deliberately left without.
             .onChange(of: detailRowOffsets) { _, offsets in
                 guard let row = focusedRow, bridgePhase == .idle,
                       let top = offsets[row], let last = lastAnchoredRowTop,
@@ -652,6 +719,9 @@ struct DetailView: View {
                 // the anchor pass right here instead of waiting for the reveal to finish — the two
                 // motions then read as one. `anchorPass` re-checks `focusedRow`/`bridgePhase` itself,
                 // so a stale `row` captured just before a newer focus change is harmless.
+                // BUG-99: `awaitingRevealRow` is only ever armed on an UP focus change now — see
+                // `onChange(of: focusedRow)` above — so this block is inert for the whole duration
+                // of a Down-focused visit, which has its own settle-check task instead.
                 if let row = dimModel.awaitingRevealRow,
                    abs(geo.contentOffset.y - dimModel.awaitingRevealStartOffset) >= DetailScrollMotion.stationaryThreshold {
                     dimModel.awaitingRevealRow = nil

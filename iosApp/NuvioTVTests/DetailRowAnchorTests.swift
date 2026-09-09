@@ -47,6 +47,34 @@ final class DetailRowAnchorTests: XCTestCase {
     }
 }
 
+/// BUG-99 (rc6, u/mrStevenx3): `DetailRowAnchor.decision` is the pure rule behind the direction
+/// split — Up always anchors (unchanged behaviour); Down anchors only when the row's current
+/// on-screen top straddles (is at or under) the `topScrimHeight` scrim near the top edge, i.e. is
+/// below `screenRest`'s threshold, and otherwise stays `.free` so the engine's own minimal reveal
+/// is left alone. See `DetailRowAnchor`'s doc comment for the tester report this decouples.
+final class DetailRowAnchorDecisionTests: XCTestCase {
+    func testUpAlwaysAnchorsRegardlessOfScreenTop() {
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .up, screenTop: 600), .anchor)
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .up, screenTop: 60), .anchor)
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .up, screenTop: 0), .anchor)
+    }
+
+    func testDownStaysFreeWhenClearOfTheRest() {
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .down, screenTop: 600), .free)
+    }
+
+    func testDownAnchorsWhenStraddlingTheTopScrim() {
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .down, screenTop: 60), .anchor)
+    }
+
+    func testDownBoundaryAtScreenRestIsFree() {
+        // Closed lower bound on the FREE side: a row already resting exactly at `screenRest` does
+        // not need rescuing, so the boundary itself must not anchor (only strictly *above* the
+        // rest — a smaller screenTop — does).
+        XCTAssertEqual(DetailRowAnchor.decision(direction: .down, screenTop: DetailRowAnchor.screenRest), .free)
+    }
+}
+
 /// BUG-96 (Codex P2 follow-up): `DetailScrollMotion.segments` is the `moves=` oracle — one motion
 /// (engine reveal blended with the anchor pass) must read as `1`, and the old land-then-nudge
 /// design (a settle wait long enough for the engine to fully rest before the anchor slid it again)

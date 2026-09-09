@@ -21,6 +21,21 @@ import SwiftUI
 /// own). There is nothing here for the two to fight over once blended — no pinned header, no
 /// compression, and every row is far shorter than the viewport, so the engine's rest is unique and
 /// ours simply supersedes it.
+///
+/// BUG-99 (rc6, u/mrStevenx3): the blend fix made one Down press one motion, but the row still
+/// rested at `screenRest` every time — so the FIRST Down off the header pushed the title,
+/// synopsis, buttons and meta fully off screen to reveal one row. Official Nuvio's Down instead
+/// reveals the next section at the BOTTOM of the screen, description still visible — the engine's
+/// own minimal reveal, which tvOS was already doing before this fix ever anchored anything.
+/// Christian's decision (2026-09-08): stop overriding that minimal reveal on Down by default. Up
+/// keeps anchoring unconditionally, exactly as it did before BUG-99 — going back up the page still
+/// wants the destination row pinned, not wherever the engine's own reveal happens to leave it.
+/// Down only anchors when the engine's reveal would otherwise leave the row's header straddling
+/// (at or under) the `topScrimHeight` scrim near the top edge — i.e. when leaving it alone would
+/// reproduce the ORIGINAL BUG-96 photo (a header cut in half under the top edge), not the two-step
+/// motion BUG-96's blend fix already solved. `Direction`/`decision` below is the pure rule; the
+/// `DetailView.onChange(of: focusedRow)` handler decides which direction a focus change was and
+/// applies it — see that handler's own doc comment for the two different task shapes this produces.
 enum DetailRowAnchor {
     /// Where a focused row's TOP rests, in points from the scroll view's top edge. Room for the
     /// row above's bottom padding to have scrolled away whole, and for the focused row's title to
@@ -76,6 +91,42 @@ enum DetailRowAnchor {
     /// (fixture step 6: 286 pt short). One retry, never a loop — the Home bounce class.
     static let verifyTolerance: CGFloat = 24
     static let verifyDelay: TimeInterval = 0.45
+
+    /// BUG-99 (rc6): the DOWN-only settle wait. Down no longer blends or arms a fallback — it just
+    /// lets the engine's own minimal reveal run, waits for it to have settled, then straddle-checks
+    /// the result once. Long enough that the engine's reveal (which, unlike the blend path, nothing
+    /// here is racing to catch mid-flight) has actually finished moving the page before the check
+    /// reads `dimModel.lastContentOffset`.
+    static let settleCheckDelay: TimeInterval = 0.35
+
+    /// BUG-99: which way focus moved — the deciding factor for whether a focus change anchors at
+    /// all. See `DetailRowAnchor`'s doc comment and `decision(direction:screenTop:screenRest:)`.
+    enum Direction {
+        case up, down
+    }
+
+    /// The outcome of `decision(direction:screenTop:screenRest:)`: `.anchor` runs the usual
+    /// `anchorPass`; `.free` leaves whatever position the focus engine's own reveal already
+    /// settled on alone.
+    enum Decision: Equatable {
+        case anchor, free
+    }
+
+    /// Pure decision table (`DetailRowAnchorTests`). Up is unconditional — always `.anchor`,
+    /// matching Up's behaviour before BUG-99 exactly. Down is conditional: `.anchor` only when
+    /// `screenTop` (the row's current on-screen top) sits ABOVE `screenRest` — a smaller y, closer
+    /// to the top edge, meaning the header would rest under/near the `topScrimHeight` scrim, the
+    /// straddle case BUG-96 exists to fix. `.free` otherwise (at or below `screenRest`, screenRest
+    /// itself included — a row already resting at or past its own target rest needs no rescuing),
+    /// leaving the engine's own minimal reveal in place (BUG-99).
+    static func decision(direction: Direction, screenTop: CGFloat, screenRest: CGFloat = screenRest) -> Decision {
+        switch direction {
+        case .up:
+            return .anchor
+        case .down:
+            return screenTop < screenRest ? .anchor : .free
+        }
+    }
 
     /// `scrollTo(_:anchor:)` aligns the row's anchor POINT with the scroll view's same anchor point:
     /// `row.minY + k·rowHeight == viewport.minY + k·viewportHeight`. Solving for the row's top to
