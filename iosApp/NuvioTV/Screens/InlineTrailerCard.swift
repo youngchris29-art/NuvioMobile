@@ -203,8 +203,20 @@ final class InlineTrailerCoordinator: ObservableObject {
     /// time by design) — a value that ever reads >1 would itself be a bug worth knowing about.
     private var inFlightExtractions = 0
     /// BUG-46/B4: last resort against a latch that never gets released. B4 makes `endExtraction()`
-    /// structurally unskippable, so this should never fire — sized above the 15s extraction
-    /// deadline so it can only ever mean "something we didn't model stalled".
+    /// structurally unskippable, so this should never fire — sized above the single-candidate 15s
+    /// extraction deadline so it can only ever mean "something we didn't model stalled".
+    ///
+    /// Finding 5 (BUG-101 follow-up) — CONTRACT: this bounds a single held *attempt*, not a
+    /// caller's whole walk across ranked candidates. BUG-101 added sequential candidate retries
+    /// that can hold ONE ticket across up to three attempts (≤45s total) — well past this
+    /// constant — so every ticket holder that may make more than one attempt MUST call
+    /// `touchExtraction(_:)` at the start of each attempt to refresh `extractionStartedAt`.
+    /// Skipping that would let this watchdog force-clear a ticket that's still legitimately in
+    /// progress, handing a second ticket to another caller and overlapping two extraction
+    /// pipelines. Because the refresh only happens once per attempt (not continuously), a SINGLE
+    /// attempt that itself hangs past this deadline since its own refresh is still reclaimed —
+    /// the contract only forgives the walk taking a while across attempts, never one attempt
+    /// stalling.
     private static let latchWatchdogSeconds: TimeInterval = 20
     /// BUG-46/B2 (storm breaker): when the last player failures landed. Process-wide, because the
     /// storm this detects is a shared resource running out, not one card misbehaving.
@@ -272,6 +284,15 @@ final class InlineTrailerCoordinator: ObservableObject {
             NSLog("[TrailerPipeline] beginExtraction granted ticket=%d inFlight=%d", extractionTicket, inFlightExtractions)
         }
         return extractionTicket
+    }
+
+    /// Finding 5 (BUG-101 follow-up): refreshes the watchdog clock for the ticket currently held —
+    /// see the CONTRACT note on `latchWatchdogSeconds`. Call this at the start of every candidate
+    /// attempt a held ticket makes; a stale/superseded ticket (one that lost the latch to a
+    /// force-clear, or that isn't the current holder) is silently ignored, same as `endExtraction`.
+    func touchExtraction(_ ticket: Int) {
+        guard extracting, ticket == extractionTicket else { return }
+        extractionStartedAt = Date()
     }
 
     func endExtraction(_ ticket: Int) {
@@ -368,6 +389,34 @@ final class InlineTrailerCardModel: ObservableObject {
     private var activeKey: String?
     /// Key of the resolution currently in flight for this card, so a re-focus mid-resolve doesn't
     /// start a second pipeline (the in-flight one attaches itself when it lands).
+    ///
+    /// Finding 6 (BUG-101 follow-up, r2) — CONTRACT: this represents ownership of the WHOLE
+    /// candidate walk for `key`, not just the `resolve()` async function that first set it.
+    /// `resolve()`'s own extraction can hand the walk off to `retryNextCandidate` (a repack
+    /// failure) in a SEPARATE `Task`, and `playbackFailed` can start a walk of its own well after
+    /// `resolve()` has already returned — both are still the same logical resolution and must
+    /// keep holding this key, or `reset()`'s "keep `candidateTrailers` while a resolution for this
+    /// key is in flight" check (which compares `candidateTrailersKey` to this property) goes blind
+    /// the moment focus leaves and returns, and a refocus's `startResolution` sees `resolvingKey`
+    /// as free and starts a second, concurrent pipeline against the same key. Concretely:
+    /// * `resolve()` sets this (via `startResolution`) before its `Task` starts, and clears it
+    ///   itself on every return that is a TRUE end of the walk — but NOT on the return that hands
+    ///   off to `retryNextCandidate`, and only when that hand-off is ACCEPTED (see the
+    ///   `retryOwnsResolution` flag there).
+    /// * `retryNextCandidate` returns `true` when it accepts a hand-off — claiming this
+    ///   (idempotently, if `resolve()` already holds it; freshly, if `playbackFailed` is the
+    ///   caller) — and is thereafter the sole owner: it clears this on every branch that truly
+    ///   ends the walk, but never before its own recursive hand-off to itself for the next
+    ///   candidate. It returns `false`, WITHOUT ever touching this property, when its own
+    ///   early-return guard rejects the hand-off outright (e.g. `activeKey` already went nil
+    ///   because focus left mid-`await`) — a rejected hand-off must still release `resolvingKey`,
+    ///   which the caller does by only setting `retryOwnsResolution`/treating the walk as "in
+    ///   flight" when the return value is `true`; a caller that ignored the return value would
+    ///   leave this key latched with no resolver running, stranding a later refocus in
+    ///   `.dwelling` forever.
+    /// * Either owner clears this ONLY when it still equals `key` — a walk that bails because
+    ///   focus moved to a different title must never clobber that other title's own in-flight
+    ///   `resolvingKey`.
     private var resolvingKey: String?
     /// Title whose trailer already played through on *this* dwell. Blocks an immediate re-expansion
     /// while focus stays put; cleared by `reset()`, so leaving and coming back plays it again.
@@ -430,17 +479,32 @@ final class InlineTrailerCardModel: ObservableObject {
 
     /// Focus lost, or the card scrolled out of the row: back to the plain poster immediately. Any
     /// in-flight resolution keeps running to completion (it still populates the cache, so coming
-    /// back is instant) but can no longer attach anything — `activeKey` is gone.
+    /// back is instant); if focus returns to the SAME title before it finishes, `startResolution`
+    /// re-arms `activeKey` (it bails on `resolvingKey == key` rather than starting a second
+    /// pipeline) and the original result attaches when it lands — see `startPlayback`'s "original
+    /// result attaches" comment.
+    ///
+    /// Finding 4 (BUG-101 follow-up): that late attach used to strand `playbackFailed`'s retry —
+    /// this unconditionally wiped `candidateTrailers`/`candidateTrailersKey` the moment focus
+    /// left, so by the time the reattached resolution's result played and then failed, there was
+    /// no candidate list left to retry from. Keep them across `reset()` for as long as the
+    /// resolution they were populated for (`candidateTrailersKey`) is still the one in flight
+    /// (`resolvingKey`); drop them here only once that resolution is no longer in flight —
+    /// finished, abandoned, or superseded by a different key's `startResolution` (which
+    /// overwrites `resolvingKey` and leaves this stale list orphaned but harmless, since
+    /// `candidateTrailersKey` no longer matches `activeKey` for anything that reads it).
     func reset() {
         generation &+= 1
         dwellTask?.cancel()
         dwellTask = nil
         activeKey = nil
         didFinishForKey = nil
-        candidateTrailers = []
-        candidateIndex = 0
-        candidateTrailersKey = nil
-        retriedAfterPlaybackFailureKey = nil
+        if candidateTrailersKey == nil || candidateTrailersKey != resolvingKey {
+            candidateTrailers = []
+            candidateIndex = 0
+            candidateTrailersKey = nil
+            retriedAfterPlaybackFailureKey = nil
+        }
         InlineTrailerCoordinator.shared.releasePlayback(self)
         setPhase(.idle)
     }
@@ -493,13 +557,21 @@ final class InlineTrailerCardModel: ObservableObject {
                candidateIndex + 1 < candidateTrailers.count,
                candidateIndex + 1 < 3 {
                 retriedAfterPlaybackFailureKey = activeKey
-                retrying = true
                 // The failed player still owns the single playback slot; hand it back before
                 // dropping the phase to `.expandedStatic` so `startPlayback` (which only promotes
                 // from `.expandedStatic`/`.dwelling`) can re-promote once the retry lands.
                 InlineTrailerCoordinator.shared.releasePlayback(self)
                 setPhase(.expandedStatic)
-                retryNextCandidate(key: activeKey, startIndex: candidateIndex + 1)
+                // Finding 6 (BUG-101 follow-up, r2): `resolve()` already returned by the time
+                // playback can fail, so `resolvingKey` is normally free here — `retryNextCandidate`
+                // claims it fresh for this retry (see the CONTRACT on `resolvingKey`) so a
+                // focus-out/focus-back-in mid-retry re-arms `activeKey` instead of racing a second
+                // `startResolution` pipeline against the one already walking. Codex r3 (Finding
+                // P2): read its return value into `retrying` rather than assuming the hand-off
+                // succeeded — its own early-return guard can reject it (e.g. focus already moved
+                // off `activeKey`), and treating that as "retrying" would fall through to
+                // `collapse()` being skipped below while nothing is actually resolving.
+                retrying = retryNextCandidate(key: activeKey, startIndex: candidateIndex + 1)
             }
         }
         if InlineTrailerCoordinator.shared.recordPlaybackFailure() {
@@ -625,7 +697,14 @@ final class InlineTrailerCardModel: ObservableObject {
     /// cache miss → meta (peek, else fetch) → best trailer → extraction → playable URL. Mirrors
     /// `DetailViewModel.resolveTrailerIfNeeded`, just with Swift-side deadlines and the cache.
     private func resolve(_ item: MetaPreview, key: String) async {
-        defer { if resolvingKey == key { resolvingKey = nil } }
+        // Finding 6 (BUG-101 follow-up, r2): see the CONTRACT on `resolvingKey`. This function
+        // owns `resolvingKey` for `key` from the moment `startResolution` set it — EXCEPT when it
+        // hands the walk off to `retryNextCandidate` (a repack failure on its own extraction,
+        // below), which runs in a separate `Task` that outlives this `defer`. `retryOwnsResolution`
+        // is flipped to `true` right before that hand-off so this defer steps aside instead of
+        // clearing a key `retryNextCandidate` is still walking.
+        var retryOwnsResolution = false
+        defer { if !retryOwnsResolution, resolvingKey == key { resolvingKey = nil } }
 
         let type = item.type
         let id = item.id
@@ -721,7 +800,7 @@ final class InlineTrailerCardModel: ObservableObject {
         // — still one logical extraction episode, just sequential across candidates instead of one.
         do {
             defer { InlineTrailerCoordinator.shared.endExtraction(extractionTicket) }
-            if let result = await extractPlayableSource(candidates: rankedTrailers, startIndex: 0, key: key) {
+            if let result = await extractPlayableSource(candidates: rankedTrailers, startIndex: 0, key: key, ticket: extractionTicket) {
                 source = result.source
                 candidateIndex = result.index
             }
@@ -737,13 +816,36 @@ final class InlineTrailerCardModel: ObservableObject {
             playable = nil
         }
         guard languageStillCurrent() else { abandonExpansion(key: key); return }
-        guard let playable, !playable.isEmpty else {
+        if let playable, !playable.isEmpty {
+            TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
+            startPlayback(playable, key: key)
+            return
+        }
+        guard source != nil else {
+            // No candidate's YouTube extraction produced anything at all — the budget is already
+            // exhausted (`extractPlayableSource` walked every candidate up to the cap).
             TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "notPlayable")
             abandonExpansion(key: key)
             return
         }
-        TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
-        startPlayback(playable, key: key)
+        // Finding 3 (BUG-101 follow-up): extraction succeeded but the local repack of THIS
+        // candidate yielded nothing playable (conversion failure, no progressive fallback) — a
+        // dead end for this candidate, not for the title. Walk to the next ranked one within the
+        // same three-candidate budget rather than give up; `retryNextCandidate` reacquires the
+        // extraction ticket and applies the same generation/activeKey guards as the
+        // extraction-miss and playback-failure paths.
+        //
+        // Finding 6 (BUG-101 follow-up, r2): this is the hand-off from the CONTRACT on
+        // `resolvingKey` — `retryNextCandidate` runs the rest of the walk in its own `Task`, so
+        // tell this function's `defer` to leave `resolvingKey` alone rather than clear it out from
+        // under the retry the instant this `async` function returns. Codex r3 (Finding P2):
+        // `retryNextCandidate` can reject the hand-off outright via its own early-return guard
+        // (e.g. `activeKey` already went nil because focus left during the `playbackURL(for:)`
+        // repack above) without ever claiming `resolvingKey` — only flip `retryOwnsResolution`
+        // when the hand-off was actually accepted, so a rejection falls through to this
+        // function's own `defer` and releases the key instead of leaving it latched with no
+        // resolver running (which would strand a later refocus in `.dwelling` forever).
+        retryOwnsResolution = retryNextCandidate(key: key, startIndex: candidateIndex + 1)
     }
 
     /// BUG-101: tries `candidates[startIndex..<min(candidates.count, 3)]` in ranked order, stopping
@@ -751,15 +853,23 @@ final class InlineTrailerCardModel: ObservableObject {
     /// cache-miss path in `resolve()` (`startIndex: 0`) and the `playbackFailed` retry (`startIndex`
     /// past whatever already played). Bails early if focus has moved off `key` mid-loop, so a card
     /// nobody is looking at any more doesn't keep making YouTube extraction calls on its way out.
+    ///
+    /// `ticket` is the extraction ticket the caller is holding for this whole walk — Finding 5
+    /// (BUG-101 follow-up): touched at the start of every candidate attempt so
+    /// `InlineTrailerCoordinator`'s stranded-ticket watchdog measures time-since-last-progress,
+    /// not time-since-the-walk-began (three sequential 15s attempts can outlast the 20s watchdog
+    /// on their own). See the CONTRACT note on `latchWatchdogSeconds`.
     private func extractPlayableSource(
         candidates: [MetaTrailer],
         startIndex: Int,
-        key: String
+        key: String,
+        ticket: Int
     ) async -> (source: TrailerPlaybackSource, index: Int)? {
         let maxIndex = min(candidates.count, 3)
         var index = startIndex
         while index < maxIndex {
             guard activeKey == key else { return nil }
+            InlineTrailerCoordinator.shared.touchExtraction(ticket)
             let candidate = candidates[index]
             var youtubeUrl = candidate.youtubePlaybackUrl()
             // Phase 0 (0.5): honor the same `debug.trailerSmokeVideoId` knob
@@ -783,39 +893,85 @@ final class InlineTrailerCardModel: ObservableObject {
         return nil
     }
 
-    /// BUG-101 retry path for `playbackFailed`: `resolve()` already released its extraction ticket,
-    /// so this reacquires one for the single follow-up attempt. Leaves the card at `.expandedStatic`
-    /// (never collapses it directly) unless the retry itself comes up empty, in which case
-    /// `abandonExpansion` takes over exactly as it would from `resolve()`.
-    private func retryNextCandidate(key: String, startIndex: Int) {
-        guard activeKey == key else { return }
+    /// BUG-101 retry path for `playbackFailed` and (Finding 3) for `resolve()`'s own
+    /// extraction-succeeded/repack-failed dead end: the prior attempt already released its
+    /// extraction ticket, so this reacquires one for the follow-up walk starting at `startIndex`.
+    /// Leaves the card at `.expandedStatic` (never collapses it directly) unless the retry itself
+    /// comes up empty, in which case `abandonExpansion` takes over exactly as it would from
+    /// `resolve()`.
+    ///
+    /// Finding 6 (BUG-101 follow-up, r2): this is the OTHER owner named in the CONTRACT on
+    /// `resolvingKey` — claims it up front (a no-op re-assignment when `resolve()` is the caller
+    /// and already holds it; a fresh claim when `playbackFailed` is the caller, since by then
+    /// `resolve()` has long since returned and released it) and stays the sole owner for the rest
+    /// of this walk, including every further recursive hop to itself for the next candidate. A
+    /// caller-supplied `key` this function no longer owns (because focus moved to a different
+    /// title, which will have claimed `resolvingKey` for ITS OWN key by now) must never be
+    /// clobbered — `releaseResolutionOwnership()` only clears when `resolvingKey` still reads
+    /// `key`, exactly like `resolve()`'s own defer.
+    ///
+    /// Codex r3 (Finding P2): returns whether the hand-off was ACCEPTED. The early-return guard
+    /// below can reject it outright — without ever claiming `resolvingKey` or starting the
+    /// `Task` — when `activeKey` has already moved off `key` (focus left during an `await` in the
+    /// caller). Every caller must use this return value rather than assume acceptance: neither
+    /// this function nor anything it started will release `resolvingKey` on a rejected hand-off,
+    /// so the caller is the only one left who can — see the CONTRACT on `resolvingKey`.
+    @discardableResult
+    private func retryNextCandidate(key: String, startIndex: Int) -> Bool {
+        guard activeKey == key else { return false }
+        resolvingKey = key
         Task { [weak self] in
             guard let self else { return }
             guard let extractionTicket = InlineTrailerCoordinator.shared.beginExtraction() else {
+                self.releaseResolutionOwnership(for: key)
                 self.abandonExpansion(key: key)
                 return
             }
             var result: (source: TrailerPlaybackSource, index: Int)?
             do {
                 defer { InlineTrailerCoordinator.shared.endExtraction(extractionTicket) }
-                result = await self.extractPlayableSource(candidates: self.candidateTrailers, startIndex: startIndex, key: key)
+                result = await self.extractPlayableSource(candidates: self.candidateTrailers, startIndex: startIndex, key: key, ticket: extractionTicket)
             }
-            guard self.activeKey == key else { return }
+            guard self.activeKey == key else {
+                self.releaseResolutionOwnership(for: key)
+                return
+            }
             guard let result else {
+                self.releaseResolutionOwnership(for: key)
                 self.abandonExpansion(key: key)
                 return
             }
             self.candidateIndex = result.index
             let playable = await TrailerLocalHLS.shared.playbackURL(for: result.source)
-            guard self.activeKey == key else { return }
-            guard let playable, !playable.isEmpty else {
-                TrailerResolutionCache.shared.store(.unavailable(Date()), for: key, causeSite: "notPlayable")
-                self.abandonExpansion(key: key)
+            guard self.activeKey == key else {
+                self.releaseResolutionOwnership(for: key)
                 return
             }
-            TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
-            self.startPlayback(playable, key: key)
+            if let playable, !playable.isEmpty {
+                self.releaseResolutionOwnership(for: key)
+                TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
+                self.startPlayback(playable, key: key)
+                return
+            }
+            // Finding 3 (BUG-101 follow-up): same dead end as `resolve()`'s initial walk — this
+            // candidate's extraction succeeded but its repack didn't. Keep walking within the same
+            // three-candidate budget instead of stopping here; `extractPlayableSource`'s own
+            // `maxIndex` cap is what actually terminates this recursion once every candidate has
+            // been tried. Finding 6: deliberately no `releaseResolutionOwnership` on this path —
+            // the recursive call re-claims `resolvingKey` (a no-op, already held) and stays the
+            // owner; releasing here and reclaiming a beat later would open the exact window this
+            // fix closes.
+            self.retryNextCandidate(key: key, startIndex: result.index + 1)
         }
+        return true
+    }
+
+    /// Finding 6 (BUG-101 follow-up, r2): the shared release half of the `resolvingKey` ownership
+    /// contract — see the CONTRACT comment on that property. Guards on `resolvingKey == key` so a
+    /// walk that bails after focus moved to a different title can never clobber that other
+    /// title's own in-flight `resolvingKey`.
+    private func releaseResolutionOwnership(for key: String) {
+        if resolvingKey == key { resolvingKey = nil }
     }
 
     /// Only attaches when this card is *still* sitting on the title that was resolved —

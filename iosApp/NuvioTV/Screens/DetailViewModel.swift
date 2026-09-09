@@ -196,12 +196,14 @@ final class DetailViewModel: ObservableObject {
     }
 
     /// BUG-101: walks `trailerCandidates` starting at `trailerCandidateIndex`, advancing to the
-    /// next one whenever `HeroTrailerResolver` extraction comes back nil — capped at 3 attempts
-    /// total so a title with nothing but dead links doesn't chain an unbounded run of extractions.
-    /// `generation` is the value `trailerResolveGeneration` held when this title's resolution
-    /// began; every completion re-checks it before touching published state, so a stale completion
-    /// from a resolution this title has already walked away from (a `stop()`/`start()` reuse of
-    /// this same view model instance mid-flight) can never apply.
+    /// next one whenever `HeroTrailerResolver` extraction comes back nil, OR (Finding 3) when
+    /// extraction succeeds but `TrailerLocalHLS`'s repack of that source yields no playable URL —
+    /// capped at 3 attempts total so a title with nothing but dead links doesn't chain an
+    /// unbounded run of extractions. `generation` is the value `trailerResolveGeneration` held
+    /// when this title's resolution began; every completion re-checks it before touching
+    /// published state, so a stale completion from a resolution this title has already walked
+    /// away from (a `stop()`/`start()` reuse of this same view model instance mid-flight) can
+    /// never apply.
     private func attemptTrailerResolution(generation: Int) {
         guard trailerCandidateIndex < trailerCandidates.count, trailerCandidateIndex < 3 else { return }
         let trailer = trailerCandidates[trailerCandidateIndex]
@@ -235,12 +237,19 @@ final class DetailViewModel: ObservableObject {
                 }
                 // AVPlayer-friendly URL only (tvOS plays trailers via AVPlayer, not libmpv):
                 // a local byte-range HLS repackage of the demuxed 1080p pair when the extractor
-                // surfaced one (SABR fallback), else the progressive/HLS URL as before. Nil →
-                // static backdrop when only adaptive VP9/AV1 exists (extraction itself succeeded,
-                // so this is not the BUG-101 dead-link case — no further candidate walk here).
+                // surfaced one (SABR fallback), else the progressive/HLS URL as before.
                 TrailerLocalHLS.shared.playbackURL(for: source) { [weak self] url in
                     guard let self, self.trailerResolveGeneration == generation else { return }
-                    guard let url else { return }
+                    guard let url else {
+                        // Finding 3 (BUG-101 follow-up): extraction succeeded but the local repack
+                        // yielded nothing playable (conversion failure, no progressive fallback) —
+                        // this candidate is a dead end exactly like an extraction miss. Walk to the
+                        // next ranked one within the same budget instead of leaving Detail with no
+                        // trailer; a playback failure can't help here because no player ever starts.
+                        self.trailerCandidateIndex = attemptIndex + 1
+                        self.attemptTrailerResolution(generation: generation)
+                        return
+                    }
                     self.trailerVideoURL = url
                     self.trailerVideoId = source.videoId
                 }
