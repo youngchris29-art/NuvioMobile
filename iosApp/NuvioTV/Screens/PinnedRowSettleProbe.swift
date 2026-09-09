@@ -149,4 +149,26 @@ enum PinnedRowSettleProbe {
         let tail = Array(persisted.suffix(from: headMaxLines))
         return Array(tail.reversed()) + Array(head.reversed())
     }
+
+    /// BUG-102 (rc7, Steven's tester photo): newest-first (`displayOrder` above) fixed WHICH lines
+    /// land at the top, but not how many are ever visible — the List row still clips after about
+    /// three lines once the "Newest first" caption takes one, so the 28-line rolling tail stayed
+    /// unphotographable in one shot. Decision (Christian, 09-09): stop trying to fit the whole
+    /// buffer in one clipped block. Instead PAGE it — `AboutSettingsPane` renders one List row PER
+    /// PAGE, a few lines each, so the tester scrolls the About LIST itself (native, focus-driven
+    /// scrolling that isn't clipped) and photographs one page at a time.
+    ///
+    /// Pure: chunks `displayOrder(persisted)` — already newest-first — into `linesPerPage`-line
+    /// pages, in order. Page 1 therefore starts with the newest persisted line, same as
+    /// `displayOrder`'s own head; the last page is shorter whenever the count doesn't divide
+    /// evenly; an empty buffer produces zero pages, not one empty page, so the caller's
+    /// `!rowSettleProbeLines.isEmpty` gate stays the only thing deciding whether the block renders
+    /// at all.
+    nonisolated static func displayPages(_ persisted: [String], linesPerPage: Int = 5) -> [[String]] {
+        let ordered = displayOrder(persisted)
+        guard !ordered.isEmpty else { return [] }
+        return stride(from: 0, to: ordered.count, by: linesPerPage).map {
+            Array(ordered[$0..<Swift.min($0 + linesPerPage, ordered.count)])
+        }
+    }
 }

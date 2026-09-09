@@ -19419,6 +19419,40 @@
         }
       }
     },
+    "Row Settle Diagnostics · page %lld/%lld": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic de position des rangées · page %lld/%lld"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnose der Zeilenposition · Seite %lld/%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnóstico de posición de filas · página %lld/%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostica posizione righe · pagina %lld/%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chẩn đoán vị trí hàng · trang %lld/%lld"
+          }
+        }
+      }
+    },
     "Run enabled plugin providers when loading streams.": {
       "localizations": {
         "de": {

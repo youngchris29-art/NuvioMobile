@@ -419,47 +419,69 @@ struct AboutSettingsPane: View {
                     )
 
                     if rowSettleDiagnostics, !rowSettleProbeLines.isEmpty {
-                        // BUG-100 (rc6, Steven's tester photo): this List row clips to its own
-                        // height and cannot be scrolled, so only the first ~6 lines were ever
-                        // photographable — always the frozen launch head, never the tail where a
-                        // walk's later row settles live. The VISIBLE order below is therefore
-                        // `PinnedRowSettleProbe.displayOrder(...)`, newest first, rather than the
-                        // PERSISTED chronological order `rowSettleProbeLines` itself holds — see
-                        // that function's doc comment for the exact reordering and why. The
-                        // persisted order is untouched: `settle_probe_blob` below still joins
-                        // `rowSettleProbeLines` as logged, because the XCUI harness's readers
-                        // depend on that chronological shape, not the display order.
+                        // BUG-100 (rc6, Steven's tester photo): newest-first ordering
+                        // (`PinnedRowSettleProbe.displayOrder`) fixed WHICH lines are most
+                        // valuable at the top, but rc7's photo showed the List row still clips
+                        // after ~3 lines once this caption takes one — one clipped block can
+                        // never show the 28-line rolling tail regardless of ordering.
                         //
-                        // Otherwise identical in shape to the hero probe's block above, including
-                        // `.truncationMode(.middle)`, which is load-bearing here rather than
-                        // cosmetic: a settle report is long, and the two ends are exactly what a
-                        // reader needs (the head carries `row= margin= net= vh=`, the tail carries
-                        // `nudge=… endOfContent=… room=…`).
+                        // BUG-102 (rc7): PAGED instead. One List row PER PAGE of
+                        // `PinnedRowSettleProbe.displayPages(...)`, a few lines each, so the
+                        // tester scrolls the About LIST itself — native, focus-driven scrolling,
+                        // not the block's own clipped height — and photographs one page at a
+                        // time. See that function's doc comment for the exact chunking.
+                        //
+                        // The persisted order is untouched by any of this: `settle_probe_blob`
+                        // below still joins `rowSettleProbeLines` as logged (chronological), not
+                        // the reordered/paged display order, because the XCUI harness's readers
+                        // depend on that shape.
                         Text(String(localized: "Newest first; the launch lines are at the end."))
                             .font(SettingsRowFont.subtitle)
                             .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(PinnedRowSettleProbe.displayOrder(rowSettleProbeLines).enumerated()), id: \.offset) { _, line in
-                                Text(line)
-                                    .font(.system(size: 20, design: .monospaced))
-                                    .foregroundStyle(Theme.Palette.textSecondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+
+                        let pages = PinnedRowSettleProbe.displayPages(rowSettleProbeLines)
+                        ForEach(Array(pages.enumerated()), id: \.offset) { pageIndex, pageLines in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(String(localized: "Row Settle Diagnostics · page \(pageIndex + 1)/\(pages.count)"))
+                                    .font(SettingsRowFont.subtitle)
+                                    .foregroundStyle(.secondary)
+                                // Identical in shape to the hero probe's block above, including
+                                // `.truncationMode(.middle)`, which is load-bearing here rather
+                                // than cosmetic: a settle report is long, and the two ends are
+                                // exactly what a reader needs (the head carries
+                                // `row= margin= net= vh=`, the tail carries
+                                // `nudge=… endOfContent=… room=…`).
+                                ForEach(Array(pageLines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.system(size: 20, design: .monospaced))
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
                             }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("settle_probe_lines")
-                        // Same hidden single-Text blob as `hero_probe_blob`: the List row clips to
-                        // visible height, so per-line children beyond the fold never enter the
-                        // accessibility tree and a harness walk would read one or two lines. Joins
-                        // the PERSISTED (chronological) order, not the visible reordered one —
-                        // harness readers that cross-reference this blob against a device log
-                        // depend on that shape being unchanged.
-                        .overlay(alignment: .topLeading) {
-                            Text(rowSettleProbeLines.joined(separator: "\n"))
-                                .font(.system(size: 4))
-                                .opacity(0.011)
-                                .accessibilityIdentifier("settle_probe_blob")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            // A native `List` only scrolls as far as focus can move — a page with
+                            // no focusable content is a dead end the remote can never reach past.
+                            // Same no-op-focusable pattern `PersonDetailView.topBlock` documents:
+                            // Select does nothing, Menu still pops the screen as normal, this
+                            // exists purely so the tester can swipe/click down to the next page.
+                            .focusable()
+                            .accessibilityIdentifier(pageIndex == 0 ? "settle_probe_lines" : "settle_probe_page_\(pageIndex + 1)")
+                            .overlay(alignment: .topLeading) {
+                                if pageIndex == 0 {
+                                    // Same hidden single-Text blob as `hero_probe_blob`: the List
+                                    // row clips to visible height, so per-line children beyond the
+                                    // fold never enter the accessibility tree and a harness walk
+                                    // would read one or two lines. Joins the PERSISTED
+                                    // (chronological) order, not the visible paged/reordered one —
+                                    // harness readers that cross-reference this blob against a
+                                    // device log depend on that shape being unchanged.
+                                    Text(rowSettleProbeLines.joined(separator: "\n"))
+                                        .font(.system(size: 4))
+                                        .opacity(0.011)
+                                        .accessibilityIdentifier("settle_probe_blob")
+                                }
+                            }
                         }
                     }
                 }
