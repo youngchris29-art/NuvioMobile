@@ -776,26 +776,32 @@ private struct SidebarMenuRevealModifier: ViewModifier {
                     guard !chrome.isFocusedChrome else { return }
                     chrome.requestReveal()
                 }
-                // Up with nowhere to go = the sidebar. Device spike + test52 (2026-09-05): with
-                // the system bar hidden, the focus engine treats the band it occupied as a dead
-                // zone — Up from the hero CTA or a page's first row moves nothing, and it does NOT
-                // reach the panel geometrically even though the pill sits right there. Move
-                // commands only arrive here when the engine found no focus target for the press
-                // (the same contract the hero carousel's Left/Right paging relies on), so an
-                // ordinary Up between two rows never comes through this closure.
+                // Up used to reveal the sidebar too — the whole arc, for the record:
                 //
-                // 2026-09-08 (u/mrStevenx3, rc6 video, BUG-98): this used to also gate on
-                // `SidebarChrome.upIsDeliberate()` — reveal only if 0.45s had passed since the
-                // last focus update — to tell a deliberate press apart from a swipe's trailing
-                // overshoot at a list's top. On his hardware the gate inverted: a clickpad Up
-                // press lost because its OWN focus update landed inside the settle window, while a
-                // swipe won. Christian's call: any Up with nowhere to go reveals the sidebar, for
-                // both inputs. The gate is gone, so scrolling a list to its top with a swipe now
-                // also reveals — the tester already sees that and is fine with it.
-                .onMoveCommand { direction in
-                    guard direction == .up, !chrome.isFocusedChrome else { return }
-                    chrome.requestReveal()
-                }
+                // 2026-09-05 (device spike + test52, Phase 0): with the system bar hidden, the
+                // focus engine treats the band it occupied as a dead zone — Up from the hero CTA
+                // or a page's first row moved nothing, and it did NOT reach the panel
+                // geometrically even though the pill sits right there. So an `.onMoveCommand` was
+                // added here: any Up the engine found no focus target for (never an ordinary Up
+                // between two rows — the same contract the hero carousel's Left/Right paging
+                // relies on) revealed the panel. The same day, a 0.45s "deliberate Up" gate was
+                // added on top (`SidebarChrome.upIsDeliberate()`) because a Siri Remote SWIPE's
+                // trailing momentum at a list's top arrives as the identical "Up, no target"
+                // command a deliberate press produces.
+                //
+                // 2026-09-08 (u/mrStevenx3, rc6 video, BUG-98): his hardware looked like the gate
+                // had inverted — a clickpad Up lost while a touch-surface swipe won — so the gate
+                // was removed outright, leaving every Up-with-no-target reveal live.
+                //
+                // 2026-09-09 (rc7 tester verdict): that read the video wrong. With no gate at all
+                // the reveal was, in his words, "a disaster" — the panel opened no matter where he
+                // was and navigation became impossible. His actual hardware never opened the panel
+                // on a clickpad Up before any of this existed, and that is what he wants back; the
+                // real rc6 bug was a touch-surface swipe opening the panel and immediately closing
+                // it again (a flicker), not a deliberate press going unheard. Christian's decision:
+                // there is no Up-reveal path any more, gated or not. The sidebar opens on Menu
+                // only — see `.onExitCommand` above — and Up here is whatever it was before FEAT-30
+                // touched this modifier (nothing; an ordinary move command with no target).
         } else {
             content
         }
@@ -811,22 +817,6 @@ private struct SidebarTopCompensationModifier: ViewModifier {
     func body(content: Content) -> some View {
         if SidebarChrome.isEnabled(), SidebarChrome.topCompensation > 0 {
             content.safeAreaPadding(.top, SidebarChrome.topCompensation)
-        } else {
-            content
-        }
-    }
-}
-
-/// Structural (`if`/`else`) form of `.onMoveCommand` for Home's root, which composes its own
-/// Menu grammar by hand and so cannot use `SidebarMenuRevealModifier` wholesale. Tabs mode gets
-/// no modifier at all (internal review r3 P2-7 — `.onMoveCommand(perform: nil)` was the one
-/// non-structural FEAT-30 site).
-struct SidebarUpRevealModifier: ViewModifier {
-    let perform: ((MoveCommandDirection) -> Void)?
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if let perform {
-            content.onMoveCommand(perform: perform)
         } else {
             content
         }

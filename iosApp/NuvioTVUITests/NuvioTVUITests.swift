@@ -5712,6 +5712,15 @@ final class NuvioTVUITests: XCTestCase {
     /// only coverage of that mode — every other test in this file runs in tabs mode, which is why
     /// the fixture restore at the end matters as much as the assertions above it.
     ///
+    /// Reveal is Menu-only. FEAT-30 briefly (2026-09-05 device spike through 2026-09-08's BUG-98)
+    /// also revealed the panel on an Up press with no focus target above it, gated for a day on a
+    /// 0.45s "deliberate Up" settle window and then ungated on a misread of a tester's rc6 video.
+    /// The rc7 tester verdict (2026-09-09) was that reveal-on-Up was unusable on hardware no
+    /// matter how it was gated — the panel opened "no matter where he is" — so Christian dropped
+    /// that path entirely; see `SidebarOverlay.swift`'s `SidebarMenuRevealModifier` doc comment for
+    /// the full arc. This test now asserts BOTH directions of that decision: a lone Up does
+    /// nothing, and Menu is what reveals + focuses the panel.
+    ///
     /// Deliberately never presses Menu while a sidebar row could hold focus: `SidebarOverlay`
     /// installs no exit handler of its own, so Menu there falls through to the system's
     /// suspend-the-app default (see its doc comment, and `openTab`'s sidebar branch above, which
@@ -5725,8 +5734,8 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(debugSidebar.label.contains("mode=1"), "sidebar mode did not turn on: \(debugSidebar.label)")
 
         // Collapsed at rest: only the current tab's (Home's) own row exists — and at rest the pill
-        // is deliberately NOT a button (`SidebarOverlay.armed`: it is a plain label until a Menu or
-        // Up-with-no-target reveal arms it), so match any element type here.
+        // is deliberately NOT a button (`SidebarOverlay.armed`: it is a plain label until a Menu
+        // reveal arms it), so match any element type here.
         XCTAssertTrue(app.descendants(matching: .any)["sidebar_item_Home"].exists, "sidebar_item_Home must exist at rest on the Home tab")
         XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "sidebar_item_Search must NOT exist while the panel is collapsed")
 
@@ -5737,23 +5746,27 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Search"].exists, "a 'Search' button exists while collapsed — the system tab bar is still present in sidebar mode")
         shot(app, "52a_collapsed")
 
-        // Climb up from the hero until the collapsed row itself takes focus — that focus is
-        // exactly what expands the panel to all six rows (`SidebarOverlay.isExpanded`).
+        // 2026-09-09 (rc7 tester verdict, BUG-98 follow-up): a lone Up press with focus at rest on
+        // the hero/first row must NOT reveal the panel any more — the Up-reveal path (device spike
+        // through BUG-98) is gone outright, gated or not. Assert this BEFORE summoning the panel,
+        // while focus is still exactly where launch left it.
+        remote.press(.up)
+        pause(0.6)
+        XCTAssertFalse(app.buttons["sidebar_item_Search"].exists, "a lone Up press revealed the panel — the sidebar must only open on Menu now")
+        XCTAssertTrue(app.descendants(matching: .any)["sidebar_item_Home"].exists, "sidebar_item_Home should still exist collapsed after a no-op Up")
+        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "sidebar_item_Search must still not exist after a no-op Up")
+
+        // Menu is the ONLY reveal path now. Home's own Menu grammar (the BUG-27 ternary in
+        // HomeView's body) only routes to the sidebar via `sidebarMenuRevealHandler` while
+        // `!isScrolledDown` — true here since the test just launched and never scrolled — so this
+        // one press both reveals AND focuses `sidebar_item_Home`, which is what expands the panel
+        // to all six rows (`SidebarOverlay.isExpanded`).
         let homeRow = app.buttons["sidebar_item_Home"]
-        var expanded = false
-        for step in 0..<6 {
-            if homeRow.exists && homeRow.hasFocus { expanded = true; break }
-            // Diagnostic (2026-09-05): where does each Up actually land? Prints the focused
-            // element's identifier/label/frame and the sidebar's own state line so a failed
-            // climb is attributable (hidden tab bar still focusable? move command swallowed?).
-            let f = focusedButton(app)
-            let state = app.staticTexts["sidebar_state"].exists ? app.staticTexts["sidebar_state"].label : "(no sidebar_state)"
-            print("[test52] up#\(step) focused=\(f.map { "\($0.elementType.rawValue):\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") \(state)")
-            remote.press(.up)
-            pause(0.6)
-        }
-        print("[test52] after climb focused=\(focusedButton(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil")")
-        XCTAssertTrue(expanded, "could not focus sidebar_item_Home by climbing up from the hero")
+        remote.press(.menu)
+        pause(1.0)
+        print("[test52] after Menu focused=\(focusedButton(app).map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil")")
+        let expanded = homeRow.waitForExistence(timeout: 4) && homeRow.hasFocus
+        XCTAssertTrue(expanded, "Menu did not reveal + focus sidebar_item_Home")
         pause(0.5)
         let stateProbe = app.staticTexts["sidebar_state"]
         XCTAssertTrue(stateProbe.waitForExistence(timeout: 4), "sidebar_state probe missing while the panel is shown")

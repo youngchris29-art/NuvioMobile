@@ -849,9 +849,13 @@ struct HomeView: View {
                             }
                         }
                     } : sidebarMenuRevealHandler)
-                    // FEAT-30: same summon on an Up press the focus engine could not place (see
-                    // `SidebarMenuRevealModifier` in SidebarOverlay.swift); nil in tabs mode.
-                    .modifier(SidebarUpRevealModifier(perform: sidebarUpRevealHandler))
+                    // FEAT-30 (2026-09-05) briefly added an `.onMoveCommand` here too, summoning
+                    // the sidebar on an Up press the focus engine could not place — see
+                    // `SidebarOverlay.swift`'s `SidebarMenuRevealModifier` doc comment for the full
+                    // arc (device spike → settle-window gate → BUG-98 gate removal → the 2026-09-09
+                    // rc7 tester verdict that reveal-on-Up is unusable at all). Christian's decision
+                    // was to drop the Up-reveal path everywhere, so that modifier (and the
+                    // `sidebarUpRevealHandler` it read) is gone; Menu (above) is the only reveal.
                     // Tab-bar clip after a D-pad walk back to the top: STILL OPEN (see tracker).
                     // Rounds 5–6 tried completing the scroll to the true top when focus
                     // re-entered the hero; both caused worse regressions on device (wedged Down
@@ -1385,19 +1389,20 @@ struct HomeView: View {
                     : 0
             ))
             .modifier(HeroCarouselInteractionModifier(enabled: heroCarouselActive) { direction in
-                // FEAT-30: this handler sits closer to the focused CTA than Home's root one, so
-                // an Up with no focus target (the hidden bar's band is a dead zone — device spike
-                // + test52, 2026-09-05) arrives HERE first. Route it to the sidebar in sidebar
-                // mode; tabs mode falls through to the existing paging logic (a no-op for Up).
-                // 2026-09-08 (BUG-98): this used to also require `SidebarChrome.upIsDeliberate()`
-                // — see `SidebarOverlay.swift`'s `SidebarMenuRevealModifier.onMoveCommand` for why
-                // that settle-window gate was removed. Any Up with nowhere to go reveals now.
-                if direction == .up, SidebarChrome.isEnabled() {
-                    if !sidebarChrome.isFocusedChrome {
-                        sidebarChrome.requestReveal()
-                    }
-                    return
-                }
+                // FEAT-30 (2026-09-05) briefly routed an Up with no focus target reaching HERE
+                // (the hidden bar's band is a dead zone — device spike + test52) to the sidebar,
+                // gated same-day on a 0.45s "deliberate Up" settle window to tell a press apart
+                // from a Siri Remote swipe's trailing overshoot at a row's top. BUG-98 (2026-09-08)
+                // removed that gate on a misread of u/mrStevenx3's rc6 video. His rc7 verdict
+                // (2026-09-09): reveal-on-Up is unusable on his hardware regardless of gating — the
+                // panel opened "no matter where he is" and navigation became impossible; a clickpad
+                // Up never opened anything here before FEAT-30 and that is what he wants back. The
+                // actual rc6 bug was a touch-surface swipe flicking the panel open and immediately
+                // closed again, not a lost deliberate press. Christian's decision: no Up-reveal
+                // path at all, in the carousel or anywhere else — the sidebar opens on Menu only
+                // (`SidebarMenuRevealModifier` / Home's own `.onExitCommand` grammar below). So an
+                // Up here is exactly what it was before FEAT-30 ever touched this closure: it falls
+                // through to the paging switch's `default: return`, a no-op.
                 guard heroItems.count > 1 else { return }
                 let count = heroItems.count
                 let clamped = min(heroIndex, count - 1)
@@ -1767,20 +1772,12 @@ struct HomeView: View {
     ///
     /// Search/Library/Add-ons get the same behaviour from `.sidebarMenuReveal()`; Home cannot use
     /// that modifier because its exit handler has to compose with the branch above.
-    /// FEAT-30: Up with no focus target → reveal + focus the sidebar. Only arrives when the
-    /// engine found nothing above (an ordinary Up between rows never reaches it). Nil in tabs mode
-    /// so that mode installs no handler at all.
-    /// 2026-09-08 (BUG-98): this used to also require `SidebarChrome.upIsDeliberate()` — see
-    /// `SidebarOverlay.swift`'s `SidebarMenuRevealModifier.onMoveCommand` for why that
-    /// settle-window gate was removed. Any Up with nowhere to go reveals now.
-    private var sidebarUpRevealHandler: ((MoveCommandDirection) -> Void)? {
-        guard SidebarChrome.isEnabled() else { return nil }
-        return { direction in
-            guard direction == .up, !sidebarChrome.isFocusedChrome else { return }
-            sidebarChrome.requestReveal()
-        }
-    }
-
+    ///
+    /// FEAT-30 (2026-09-05) briefly added a sibling `sidebarUpRevealHandler` here too — Up with no
+    /// focus target reveal + focus the sidebar, same as the hero carousel's own branch. Removed
+    /// 2026-09-09 on the rc7 tester verdict (BUG-98's follow-up): reveal-on-Up proved unusable on
+    /// hardware regardless of gating, so Christian's call was Menu-only, everywhere. See
+    /// `SidebarOverlay.swift`'s `SidebarMenuRevealModifier` doc comment for the full arc.
     private var sidebarMenuRevealHandler: (() -> Void)? {
         guard SidebarChrome.isEnabled(), !isScrolledDown else { return nil }
         return {
