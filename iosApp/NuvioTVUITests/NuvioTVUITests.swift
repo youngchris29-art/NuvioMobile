@@ -5950,4 +5950,49 @@ final class NuvioTVUITests: XCTestCase {
         let restored = launchToHome(forceFreshLaunch: true)
         XCTAssertTrue(restored.state == .runningForeground)
     }
+
+    /// BUG-102 (rc9, 2026-09-10): with No Zoom on Focus OFF and the accent ring ON, a focused
+    /// collection folder tile draws the accent ring (it drew nothing before rc9 — `FolderTile`
+    /// only knew the no-zoom still ring). Evidence leg, not a measurement: the walk is test54's
+    /// (Down until the hero probe's `fitem` names a `nuvio-folder://` item — the collection row
+    /// can be ~40 rows deep on this profile), then one screenshot of the focused tile for the
+    /// record. Asserts only that a folder tile was reached and that a screenshot was attached;
+    /// whether the ring survives the native lift on hardware is the device pass's question.
+    func test56CollectionFolderRingWithZoomOn() throws {
+        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "NO", "-accent_focus_ring", "YES"],
+                               forceFreshLaunch: true)
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+        var folderFound = false
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...45 {
+            press(.down, times: 1)
+            pause(0.5)
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.contains("nuvio-folder://") { folderFound = true; break }
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
+        }
+        guard folderFound else {
+            throw XCTSkip("no folder/collection tile focused within 45 Down presses on this profile's Home")
+        }
+        pause(1)
+        shot(app, "56a_folder_ring_zoom_on")
+        press(.right, times: 1, gap: 0.5)
+        pause(1)
+        shot(app, "56b_folder_ring_zoom_on_second_tile")
+
+        let restored = launchToHome(forceFreshLaunch: true)
+        XCTAssertTrue(restored.state == .runningForeground)
+    }
 }

@@ -2030,7 +2030,14 @@ private struct CastCard: View {
     var stillFocused: Bool = false
 
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-102 (rc9): same gap as `FolderTile` — the avatar only knew the no-zoom still ring, so
+    /// with zoom on and the accent ring on it drew nothing. Resolved through `PlainLabelRing`.
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
     @Environment(\.isFocused) private var isFocused
+
+    private var reservesRingBand: Bool {
+        PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     var body: some View {
         VStack(spacing: Theme.Spacing.xs) {
@@ -2053,12 +2060,15 @@ private struct CastCard: View {
             // never-focus-linked shrink (matches `ringInset`'s "always reserved, never pops"
             // contract) so the `.overlay` below measures the avatar's TRUE, unscaled bounds. A
             // single scalar is enough — the avatar is always a perfect circle/square.
-            .scaleEffect(noZoomOnFocus && Theme.Size.castAvatar > 0
+            // BUG-102: band reserved whenever a ring may draw (`ringInset`'s rule), as FolderTile.
+            .scaleEffect(reservesRingBand && Theme.Size.castAvatar > 0
                 ? max(0, Theme.Size.castAvatar - 2 * ringWidth) / Theme.Size.castAvatar
                 : 1)
             .overlay {
-                if noZoomOnFocus && stillFocused {
-                    Circle().strokeBorder(stillHighlight, lineWidth: ringWidth)
+                if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
+                                                     noZoomOnFocus: noZoomOnFocus,
+                                                     focused: stillFocused) {
+                    Circle().strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
             Text(person.name)

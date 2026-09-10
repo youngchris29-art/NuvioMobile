@@ -152,10 +152,13 @@ private struct RingCardButtonStyle: ButtonStyle {
 ///   `LandscapeCard`), so in ring mode it draws its own scale and shadow and must NOT also wear
 ///   `.borderless`'s treatment.
 /// - `.plain` - the label owns no manual treatment (`CastCard`, `TrailerThumbCard`, `SeeAllCard`,
-///   `FolderTile`, `SeasonPosterCard`, `EpisodeThumbCard`). Ring mode is irrelevant to these: they
-///   have never had a `.manualScale` branch, so taking `.borderless` away would leave them with no
-///   focus motion at all. They keep the bare `.borderless` in every zoom-on state, which is what
+///   `FolderTile`, `SeasonPosterCard`, `EpisodeThumbCard`). They have never had a `.manualScale`
+///   branch, so taking `.borderless` away would leave them with no focus motion at all. They keep
+///   the bare `.borderless` in every zoom-on state, which is what
 ///   `PinnedRowTitle.RowCardTreatment.plainBorderless` in BrowseComponents already assumes.
+///   BUG-102 (rc9): ring mode is no longer irrelevant to `FolderTile`/`CastCard` — they draw the
+///   accent ring inside their label under that native lift (see `PlainLabelRing`); the four
+///   `TileFocusLift` tiles still draw no ring with zoom on (follow-up).
 enum CardButtonLift {
     case card
     case plain
@@ -297,6 +300,51 @@ let ringWidth: CGFloat = 4      // thicker for 10-foot visibility
 /// would shrink the picture at the moment it should read as marked.
 private func ringInset(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CGFloat {
     (accentFocusRing || noZoomOnFocus) ? ringWidth : 0
+}
+
+/// BUG-102 (u/mrStevenx3, rc8, 2026-09-10: "when you disable No Zoom on Focus, the focus ring
+/// doesn't work in the collections"): the ring verdict for labels that draw their focus ring
+/// INSIDE their own artwork frame because they own no treatment of their own — `FolderTile`
+/// (CollectionsUI.swift) and `CastCard` (DetailView.swift). Until rc9 both only knew the no-zoom
+/// STILL ring (`stillHighlight`), so with zoom on and the accent ring on they drew nothing while
+/// every `PosterCard`/`LandscapeCard`/`SagaCard` around them wore the accent ring.
+///
+/// Same precedence as `CardFocusMode.resolve` + the ring overlays in this file: the accent ring
+/// wins whenever the setting is on (in still mode too — `.still(ringed: true)` suppresses the
+/// neutral highlight for the same reason), the neutral still ring is the no-zoom fallback, and
+/// nothing draws in the default mode. The reserved band follows `ringInset`: a label that may
+/// ever draw a ring keeps its 4 pt margin in every focus state, never popping it in on focus.
+///
+/// The lift itself is NOT changed here: these labels keep the native `.borderless` lift in ring
+/// mode (`CardButtonLift.plain`), and the pinned collection row's clearance math
+/// (`PinnedRowTitle.RowCardTreatment.plainBorderless`) depends on exactly that lift. The ring is
+/// drawn inside the button label, so it is part of what the system lift raises — unlike the
+/// `.hoverEffect(.highlight)` overlay case in the FEAT-14 note above, which is why the
+/// `TileFocusLift` tiles (trailer thumbs, See All, season posters, episode thumbs) are NOT covered
+/// by this helper: their zoom-on branch is a hover effect, and an overlay there is known to render
+/// under the lifted artwork on hardware. Those need the `.manualScale` architecture — follow-up.
+enum PlainLabelRing: Equatable {
+    case accent
+    case still
+
+    /// Which ring a focused plain label draws, or nil for none.
+    static func resolve(accentFocusRing: Bool, noZoomOnFocus: Bool, focused: Bool) -> PlainLabelRing? {
+        guard focused else { return nil }
+        if accentFocusRing { return .accent }
+        return noZoomOnFocus ? .still : nil
+    }
+
+    /// Whether the label reserves the `ringWidth` band around its artwork — `ringInset`'s rule.
+    static func reservesBand(accentFocusRing: Bool, noZoomOnFocus: Bool) -> Bool {
+        accentFocusRing || noZoomOnFocus
+    }
+
+    var color: Color {
+        switch self {
+        case .accent: return Theme.Palette.focusRingColor
+        case .still: return stillHighlight
+        }
+    }
 }
 
 /// How far a focused card's artwork TOP edge rises, in points, in either zoom-on mode.

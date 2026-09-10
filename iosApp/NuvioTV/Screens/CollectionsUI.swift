@@ -381,12 +381,17 @@ struct FolderTile: View {
     /// BUG-38 probe: folder ids are unique per COLLECTION, so the diagnostics key on both.
     var collectionId: String = ""
 
-    /// Caller-supplied focus truth for the no-zoom still ring (Codex 2026-08-29 rounds 3-5):
-    /// this tile has no focus treatment of its own, and the ring must hug the ARTWORK frame —
-    /// only this view knows it — not the padded outer button bounds.
+    /// Caller-supplied focus truth for the ring drawn on the artwork (Codex 2026-08-29 rounds
+    /// 3-5): this tile has no focus treatment of its own, and the ring must hug the ARTWORK frame —
+    /// only this view knows it — not the padded outer button bounds. Named for the no-zoom still
+    /// ring it was added for; since BUG-102 (rc9) it gates the accent ring in zoom-on mode too.
     var stillFocused: Bool = false
 
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// BUG-102: with zoom on and the accent ring on, every `PosterCard` in the neighbouring rows
+    /// wore the ring and this tile drew nothing (it only knew the still ring). Same key as every
+    /// other card, resolved through `PlainLabelRing` (PosterCard.swift).
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
 
@@ -457,6 +462,11 @@ struct FolderTile: View {
 
     private var tileWidth: CGFloat {
         folder.posterShape == PosterShape.landscape ? style.width * 16 / 9 : style.width
+    }
+
+    /// See the BUG-102 note on the `.scaleEffect` below.
+    private var reservesRingBand: Bool {
+        PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
     }
 
     private var tileHeight: CGFloat { FolderTile.artworkHeight(for: folder, style: style) }
@@ -590,15 +600,21 @@ struct FolderTile: View {
             // smaller size the way PosterCard redraws its own artwork frame — shrunk in place with
             // the same static, never-focus-linked `.scaleEffect` TileFocusLift uses instead, which
             // leaves the `.overlay` below measuring the TRUE, unscaled tile bounds.
+            // BUG-102 (rc9): the band is reserved whenever a ring may ever draw (`ringInset`'s
+            // rule — accent ring on OR no-zoom on), not only in still mode, so the accent ring
+            // lands in the vacated margin instead of over the artwork's edge.
             .scaleEffect(
-                x: noZoomOnFocus && tileWidth > 0 ? max(0, tileWidth - 2 * ringWidth) / tileWidth : 1,
-                y: noZoomOnFocus && tileHeight > 0 ? max(0, tileHeight - 2 * ringWidth) / tileHeight : 1
+                x: reservesRingBand && tileWidth > 0 ? max(0, tileWidth - 2 * ringWidth) / tileWidth : 1,
+                y: reservesRingBand && tileHeight > 0 ? max(0, tileHeight - 2 * ringWidth) / tileHeight : 1
             )
             .overlay {
-                if noZoomOnFocus && stillFocused {
-                    // No-zoom still ring on the artwork itself, mirroring TileFocusLift's look.
+                // Still ring (no-zoom) or accent ring (setting on, zoom on or off) on the artwork
+                // itself — `PlainLabelRing` holds the precedence, shared with CastCard.
+                if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
+                                                     noZoomOnFocus: noZoomOnFocus,
+                                                     focused: stillFocused) {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
-                        .strokeBorder(stillHighlight, lineWidth: ringWidth)
+                        .strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
             // BUG-38: keyed on the folder's Kotlin data-class hash (NOT `isFocused` — see the
