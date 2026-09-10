@@ -273,6 +273,15 @@ struct CollectionRowView: View {
                 .padding(.top, cardTopReach > 0 ? Theme.Spacing.lg : Theme.Spacing.sm)
                 .padding(.bottom, Theme.Spacing.sm)
             }
+            // BUG-103 (u/mrStevenx3, 2026-09-10 photos + video): this row was the only Home row
+            // still clipped to its own padded bounds, so its first and last visible tiles were cut
+            // ~60 pt inside the screen edges while every catalog row (`CatalogRowView`,
+            // BrowseComponents.swift) bleeds to the edge through the same modifier. Unlike the
+            // catalog rows there is no `RowLeadingEdgeClip` here on purpose: BUG-92's leading-edge
+            // clip exists for the inline trailer's rightward morph, and a folder tile has no
+            // trailer — its only bleed past the padded edge is the native lift + ring, the exact
+            // allowance that clip lets through anyway.
+            .scrollClipDisabled()
             .overlay(alignment: .topLeading) {
                 if cardTopReach > 0 {
                     Text(collection.title)
@@ -593,6 +602,13 @@ struct FolderTile: View {
             }
             .frame(width: tileWidth, height: tileHeight)
             .clipShape(RoundedRectangle(cornerRadius: style.cornerRadius))
+            // BUG-105 (u/mrStevenx3, 2026-09-10: "depth effect does not apply to images in
+            // collections"): this tile never carried the card-depth rail every PosterCard /
+            // LandscapeCard / SagaCard wears. Attached BEFORE the ring-band `.scaleEffect` below so
+            // the rail scales with the artwork and traces the picture, not the outer tile box —
+            // the same "rail hugs the INSET artwork" rule BUG-91 set for PosterCard. `.posters` is
+            // the surface a collection tile reads as (the Settings toggle that governs poster rows).
+            .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
             // 2026-08-30 no-zoom investigation: same overpaint as TileFocusLift's ring, same fix —
             // the ring used to strokeBorder straight over this tile's own cover/logo/GIF stack.
             // That stack's internal layout (the logo overlay in particular) is pinned to this
