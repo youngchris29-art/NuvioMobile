@@ -21,11 +21,13 @@ import SharedCore
 /// always-shown two-line caption in place of `LandscapeCard`'s badges/progress bar.
 ///
 /// Sized larger than `LandscapeCard`: `Theme.Size.sagaCardWidth` × `Theme.Size.sagaCardHeight`
-/// (440×248, 16:9), `style.cornerRadius` from Poster Style. FEAT-34 follow-up (2026-09-09):
+/// (500×281, 16:9), `style.cornerRadius` from Poster Style. FEAT-34 follow-up (2026-09-09):
 /// rc7 tester feedback (u/mrStevenx3) called the original `landscapeWidth`/`landscapeHeight`
-/// size (360×203, matching the trailer cards) too small next to official Nuvio's saga row, where
-/// three cards span roughly two thirds of the screen width — Christian's call was a dedicated,
-/// larger size for this card only.
+/// size (360×203, matching the trailer cards) too small next to official Nuvio's saga row —
+/// Christian's call was a dedicated, larger size for this card only. rc8's 440×248 was still
+/// "too small"; rc9 (2026-09-10) sizes it from a measurement of the reference photo instead of
+/// an eyeball (the unfocused official cards read ≈500 pt wide, three cards + gaps ≈84% of the
+/// screen width — see `Theme.Size.sagaCardWidth`).
 struct SagaCard: View {
     let item: MetaPreview
 

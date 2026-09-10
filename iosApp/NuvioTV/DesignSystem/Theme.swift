@@ -372,10 +372,17 @@ enum Theme {
         static let landscapeHeight: CGFloat = 203   // 16:9
         /// FEAT-34 (2026-09-09, tester ask via u/mrStevenx3 on rc7): the description page's saga
         /// row read as the same size as the trailer cards; official Nuvio's saga cards read
-        /// noticeably larger (~440pt wide in the reference photo). `SagaCard`-only size, distinct
-        /// from `landscapeWidth`/`landscapeHeight`.
-        static let sagaCardWidth: CGFloat = 440
-        static let sagaCardHeight: CGFloat = 248    // 16:9
+        /// noticeably larger. `SagaCard`-only size, distinct from `landscapeWidth`/`landscapeHeight`.
+        ///
+        /// rc9 (2026-09-10): 440×248 was still "too small" on rc8 (u/mrStevenx3). Measured from the
+        /// reference photo (`docs/research/steven-beta18-photos/2026-09-08-official-nuvio-saga-row-
+        /// landscape.jpg`, outer repo): the visible screen spans ~1010 px for 1920 pt, the two
+        /// UNFOCUSED cards span ~271 / ~261 px (≈515 / ≈496 pt, the spread is camera perspective)
+        /// at a 16:9 ratio, and the three cards plus gaps cover ~84% of the screen width — the
+        /// earlier "two thirds" note in `SagaCard.swift` under-read the photo. 500×281 reproduces
+        /// that: 3 × 500 + 2 × `Spacing.lg` + `Spacing.screen` = 1608 pt of 1920 (84%).
+        static let sagaCardWidth: CGFloat = 500
+        static let sagaCardHeight: CGFloat = 281    // 16:9 (500 × 9 / 16 = 281.25)
         /// Episode thumbnail cards in the Detail episodes row (16:9, larger than landscape cards
         /// so the still + badges stay readable at 10 feet).
         static let episodeWidth: CGFloat = 420
