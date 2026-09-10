@@ -1681,7 +1681,9 @@ struct DetailView: View {
                     .font(Theme.Font.sectionTitle)
                     .foregroundStyle(Theme.Palette.textPrimary)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: Theme.Spacing.lg) {
+                    // BUG-106: the ring-mode lift grows a 16:9 card ≈71 pt in width, so `lg` (24)
+                    // put the raised card onto its neighbour — see `landscapeLiftRowGap`.
+                    LazyHStack(spacing: Theme.Spacing.landscapeLiftRowGap) {
                         ForEach(items, id: \.id) { item in
                             NavigationLink(value: TitleRoute(preview: item)) {
                                 SagaCard(item: item)

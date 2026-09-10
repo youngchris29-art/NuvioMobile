@@ -353,6 +353,14 @@ enum Theme {
         static let sectionGap: CGFloat = 48
         /// Horizontal gap between cards in a row.
         static let rowGap: CGFloat = 28
+        /// BUG-106 (u/mrStevenx3, rc8 video 2026-09-10): gap for rows of 16:9 cards that wear the
+        /// ring-mode manual lift (`CardArtworkFocusLift.manualScale` — today the Saga row). That
+        /// lift is a uniform scale of `1 + 2 × heroPinnedRowFocusLiftAllowance / height`, so a
+        /// 16:9 card grows `2 × 20 × 16 / 9 ≈ 71 pt` in width WHATEVER its size — ≈35.5 pt per
+        /// side. Under `lg` (24) the raised card landed ≈11.5 pt onto each neighbour; 40 leaves
+        /// ≈4.5 pt clear in ring mode and ≈15 pt under the default system lift (≈1.1×, ≈25 pt per
+        /// side at 500 wide). Portrait cards grow only ≈13 pt per side, so `rowGap` stays.
+        static let landscapeLiftRowGap: CGFloat = 40
     }
 
     // MARK: - Corner radii
