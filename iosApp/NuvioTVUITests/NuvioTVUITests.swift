@@ -5961,6 +5961,14 @@ final class NuvioTVUITests: XCTestCase {
     func test56CollectionFolderRingWithZoomOn() throws {
         let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "NO", "-accent_focus_ring", "YES"],
                                forceFreshLaunch: true)
+        // Codex r1 P2: restore the default settings on EVERY exit, the skip below included — a
+        // skipped run otherwise leaves the app running with the forced ring-on/zoom-on overrides,
+        // and a later `launchToHome()` without arguments can attach to that process and inherit
+        // them (order-dependent results in the rest of the suite).
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
         pause(1.5)
 
         func liveHeroProbe() -> String {
@@ -5991,8 +5999,5 @@ final class NuvioTVUITests: XCTestCase {
         press(.right, times: 1, gap: 0.5)
         pause(1)
         shot(app, "56b_folder_ring_zoom_on_second_tile")
-
-        let restored = launchToHome(forceFreshLaunch: true)
-        XCTAssertTrue(restored.state == .runningForeground)
     }
 }
