@@ -5767,6 +5767,9 @@ final class NuvioTVUITests: XCTestCase {
         press(.down, times: 3, gap: 0.9)
         pause(4.0)
         guard let healthyLine = readSettleLine(app, "58a_healthy_rest") else { return }
+        if Self.probeValue(healthyLine, key: "last") == 1 {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the three-Down entry already landed on the LAST row (\(healthyLine)); this fixture has too few Home rows for a parity walk (test58 needs at least one middle row between the entry rest and the last row).")
+        }
         guard Self.probeValue(healthyLine, key: "margin") != nil,
               Self.probeValue(healthyLine, key: "intr") != nil else {
             throw XCTSkip("no focused pinned settle was reported ('\(healthyLine)') — the settle re-reveal and its belt are armed only in Home's PINNED (Nuvio-style) hero container, so this fixture is running the classic in-scroll hero. Turn Settings > Home Screen > Nuvio-style hero on and rerun.")
@@ -5794,15 +5797,23 @@ final class NuvioTVUITests: XCTestCase {
               let lastRowCorrN = Self.probeValue(lastRowLine, key: "corrN"),
               let lastRowPull = Self.probeValue(lastRowLine, key: "pull"),
               let lastBeltFaded = Self.probeValue(lastRowLine, key: "beltFaded"),
-              let lastMargin = Self.probeValue(lastRowLine, key: "margin") else {
-            XCTFail("last-row settle line is missing one of lastRowShaped=/prevHidden=/inBand=/nudge=/corrN=/pull=/beltFaded=/margin= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
+              let lastMargin = Self.probeValue(lastRowLine, key: "margin"),
+              let lastPbDisarm = Self.probeValue(lastRowLine, key: "pbDisarm") else {
+            XCTFail("last-row settle line is missing one of lastRowShaped=/prevHidden=/inBand=/nudge=/corrN=/pull=/beltFaded=/margin=/pbDisarm= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
             return
         }
         let bandLo = Self.probeValue(lastRowLine, key: "bandLo") ?? -4
 
         // ── Parity data: the middle-row margins read on the way down to the last row, plus the
         //    healthy rest read before the walk started ───────────────────────────────────────
-        var middleMargins = walk.walked.compactMap { Self.probeValue($0, key: "margin") }
+        guard !walk.walked.isEmpty else {
+            XCTFail("no middle row was observed between the entry rest and the last row — parity needs at least one middle-row sample. Full settle line: \(lastRowLine)")
+            return
+        }
+        let lastRowKey = Self.probeToken(lastRowLine, key: "row")
+        var middleMargins = walk.walked
+            .filter { Self.probeToken($0, key: "row") != lastRowKey }
+            .compactMap { Self.probeValue($0, key: "margin") }
         if let healthyMargin = Self.probeValue(healthyLine, key: "margin") {
             middleMargins.append(healthyMargin)
         }
@@ -5811,8 +5822,14 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         let sortedMiddleMargins = middleMargins.sorted()
-        let medianMiddle = sortedMiddleMargins[sortedMiddleMargins.count / 2]
-        let middleMarginsReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(medianMiddle) bandLo=\(bandLo)")
+        let medianMiddle: Double
+        if sortedMiddleMargins.count % 2 == 0 {
+            let upperIndex = sortedMiddleMargins.count / 2
+            medianMiddle = Double(sortedMiddleMargins[upperIndex - 1] + sortedMiddleMargins[upperIndex]) / 2.0
+        } else {
+            medianMiddle = Double(sortedMiddleMargins[sortedMiddleMargins.count / 2])
+        }
+        let middleMarginsReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(String(format: "%.1f", medianMiddle)) bandLo=\(bandLo)")
         middleMarginsReport.name = "58_middle_margins"
         middleMarginsReport.lifetime = .keepAlways
         add(middleMarginsReport)
@@ -5828,14 +5845,13 @@ final class NuvioTVUITests: XCTestCase {
             "the last row settled with the previous row's sliver still visible above it (prevHidden=\(lastPrevHidden)) — BUG-89: a short last row does not get enough trailing scroll range to hide its predecessor. Full settle line: \(lastRowLine)"
         )
         XCTAssertTrue(
-            abs(lastMargin - medianMiddle) <= 8,
-            "the shaped last row must rest where the middle rows rest — the floor gives it the same revealed frame, so the focus engine's own reveal constraint should park it inside the same interval (last margin=\(lastMargin), middle-row median=\(medianMiddle), margins=\(middleMargins)). Full settle line: \(lastRowLine)"
+            abs(Double(lastMargin) - medianMiddle) <= 8,
+            "the shaped last row must rest where the middle rows rest — the floor gives it the same revealed frame, so the focus engine's own reveal constraint should park it inside the same interval (last margin=\(lastMargin), middle-row median=\(String(format: "%.1f", medianMiddle)), margins=\(middleMargins)). Full settle line: \(lastRowLine)"
         )
 
         // ── Corrector assertions: only meaningful while the corrector is still armed going into
         //    the last row — once a pullback has disarmed it (pbDisarm=1/disarmed=1), a fresh
         //    nudge/corrN/pull reading proves nothing about the last row specifically ───────────
-        let lastPbDisarm = Self.probeValue(lastRowLine, key: "pbDisarm")
         let lastDisarmed = Self.probeValue(lastRowLine, key: "disarmed")
         if lastPbDisarm == 0 && lastDisarmed != 1 {
             XCTAssertEqual(
@@ -5861,7 +5877,7 @@ final class NuvioTVUITests: XCTestCase {
         // ── In-band assertions: only meaningful when this run's engine actually parks the
         //    middle rows in band — on the FA87 simulator it does not (see the doc comment
         //    above); the in-band/belt contract is otherwise a device-only check ────────────────
-        if medianMiddle >= bandLo {
+        if medianMiddle >= Double(bandLo) {
             XCTAssertEqual(
                 lastInBand, 1,
                 "the last row's own title did not settle inside its legibility band (inBand=\(lastInBand)) — the last row is exempt from the canonical target but its own title still has to clear its own artwork. Full settle line: \(lastRowLine)"
@@ -5875,11 +5891,11 @@ final class NuvioTVUITests: XCTestCase {
                 "the shaped last row must rest inside the band [\(bandLo), 48] (margin=\(lastMargin)). Full settle line: \(lastRowLine)"
             )
         } else {
-            let outOfBandReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(medianMiddle) bandLo=\(bandLo)")
+            let outOfBandReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(String(format: "%.1f", medianMiddle)) bandLo=\(bandLo)")
             outOfBandReport.name = "58_sim_engine_parks_out_of_band"
             outOfBandReport.lifetime = .keepAlways
             add(outOfBandReport)
-            NSLog("[WAVE9] 58 simulator engine parks the middle rows out of band (median=%d) — in-band/belt contract is a DEVICE check (tester's Row Settle pane); parity asserted only", medianMiddle)
+            NSLog("[WAVE9] 58 simulator engine parks the middle rows out of band (median=%@) — in-band/belt contract is a DEVICE check (tester's Row Settle pane); parity asserted only", String(format: "%.1f", medianMiddle))
         }
 
         shot(app, "58c_last_row")
