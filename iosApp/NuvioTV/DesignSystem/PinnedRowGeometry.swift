@@ -143,7 +143,7 @@ enum PinnedRowGeometry {
         /// width of the set of legal rests: 0 means a single rest, and it is bounded above by
         /// `Spacing.lg + heroPinnedRowsSettledCushion` (32) whenever the full demand was spent.
         var restRange: CGFloat
-        /// Short stable identity for this regime, e.g. `L403c0p1r0z1` — Large, no captions, panel
+        /// Short stable identity for this regime, e.g. `L403c0p1r0z1t38` — Large, no captions, panel
         /// hero, portrait rows, No Zoom on. Used as the `onChange` key that re-reveals the rows
         /// after a Poster Size switch (BUG-89) and as the log-once key below.
         var regimeKey: String
@@ -370,12 +370,10 @@ enum PinnedRowGeometry {
     ///     (see `topReachFloor(lift:titleHeight:)`). Tests pass a fixed number so their arithmetic
     ///     does not depend on the host's font.
     ///
-    ///     Known limit: `regimeKey` does NOT encode the font. Two families can therefore produce
-    ///     different plans under one key, which `PinnedRowSettle.noteRegimeChange` would not see as a
-    ///     regime change — but the family can only change through Settings (FEAT-31), which remounts
-    ///     the whole tree by `.id()` in `ContentView`, and that swap already runs the corrector's
-    ///     host-scoped reset through `registerScheduler`. Encoding it would churn the `onChange`
-    ///     re-reveal for a value that cannot move without a remount.
+    ///     `regimeKey` also takes this parameter and encodes it (rc10 Codex P2 fix 4): the plan has
+    ///     been title-metric-dependent since fix 3 above, so two title metrics must not share a
+    ///     regime — see `regimeKey`'s doc comment for why the previous "the remount already resets
+    ///     everything" argument did not hold.
     nonisolated static func plan(posterHeight: CGFloat,
                                  captionVisible: Bool,
                                  showsCTA: Bool,
@@ -391,7 +389,8 @@ enum PinnedRowGeometry {
                             captionVisible: captionVisible,
                             showsCTA: showsCTA,
                             landscapeRows: landscapeRows,
-                            mode: mode)
+                            mode: mode,
+                            titleHeight: titleHeight)
 
         // BUG-87/89: the top reach's floor depends on the lift the band has to hold, read from the
         // same flags `PinnedRowTitle.focusLiftAllowance` reads. `.cardTreatment` because every
@@ -472,16 +471,30 @@ enum PinnedRowGeometry {
         return plan
     }
 
-    /// `L403c0p1r0z1` — size tag + rounded artwork height, captions, panel (i.e. `!showsCTA`),
-    /// landscape rows, and (BUG-87/89 rc10) the zoom mode. Stable across renders for one regime and
-    /// different for every other, which is all `onChange` and the log-once key need it to be.
+    /// `L403c0p1r0z1t38` — size tag + rounded artwork height, captions, panel (i.e. `!showsCTA`),
+    /// landscape rows, (BUG-87/89 rc10) the zoom mode, and (rc10 Codex P2 fix 4) the rounded title
+    /// metric. Stable across renders for one regime and different for every other, which is all
+    /// `onChange` and the log-once key need it to be.
     ///
-    /// `z` is the new trailing component and it is not cosmetic: the plan is MODE-DEPENDENT now
-    /// (`topReachFloor(lift:)` holds the focus lift, so the two zoom modes produce different reaches
-    /// and a different compression at the same Poster Size), so two modes must not share a regime
-    /// key. `PinnedRowSettle.regimeFits` and its log-once sets are keyed on this string — letting a
-    /// No-Zoom key describe a zoom-on plan would hand the corrector the wrong `fits` and suppress
-    /// the first line of the mode it actually switched into.
+    /// `z` is not cosmetic: the plan is MODE-DEPENDENT (`topReachFloor(lift:)` holds the focus lift,
+    /// so the two zoom modes produce different reaches and a different compression at the same
+    /// Poster Size), so two modes must not share a regime key. `PinnedRowSettle.regimeFits` and its
+    /// log-once sets are keyed on this string — letting a No-Zoom key describe a zoom-on plan would
+    /// hand the corrector the wrong `fits` and suppress the first line of the mode it actually
+    /// switched into.
+    ///
+    /// `t` is the same reasoning applied to the title metric. `plan(...)` has been title-metric-
+    /// dependent since Codex r1 fix 3 (`topReachFloor(lift:titleHeight:)` reserves room for the
+    /// ACTIVE font's measured title line, not a hard-coded constant), but this key did not encode it
+    /// until now — so System and Open Sans, which measure `sectionTitle` at 38 and ≈42.2
+    /// respectively, produced DIFFERENT reaches/compressions under the SAME key. A prior version of
+    /// this doc comment argued that was safe because the family can only change via Settings
+    /// (FEAT-31), which remounts the whole tree by `.id()` — but the remount does not reset the
+    /// corrector's regime-scoped state (`PinnedRowSettle.resetHostScopedState()` deliberately
+    /// preserves `disarmed`/`verifyFailures`/`pullBackDisarmed` across an UNCHANGED key, and
+    /// `noteRegimeChange()` returns early for one), so a font switch inherited whatever
+    /// disarm/verify-failure state the previous geometry had left behind. Two title metrics must not
+    /// share a regime, exactly like the two zoom modes above.
     ///
     /// Only `noZoom` is encoded, not `accentRing`: since BUG-93 both zoom-on treatments raise the
     /// artwork by the same `heroPinnedRowFocusLiftAllowance`, so a ring flip produces an IDENTICAL
@@ -491,7 +504,8 @@ enum PinnedRowGeometry {
                                       captionVisible: Bool,
                                       showsCTA: Bool,
                                       landscapeRows: Bool,
-                                      mode: PinnedRowTitle.FocusModeFlags = .current) -> String {
+                                      mode: PinnedRowTitle.FocusModeFlags = .current,
+                                      titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight) -> String {
         let rounded = Int(posterHeight.rounded())
         let small = Int((Theme.Size.posterHeight * PosterSizePreset.smallScale).rounded())
         let medium = Int(Theme.Size.posterHeight.rounded())
@@ -507,7 +521,7 @@ enum PinnedRowGeometry {
             tag = "X"
         }
         return "\(tag)\(rounded)c\(captionVisible ? 1 : 0)p\(showsCTA ? 0 : 1)r\(landscapeRows ? 1 : 0)"
-            + "z\(mode.noZoom ? 1 : 0)"
+            + "z\(mode.noZoom ? 1 : 0)t\(Int(titleHeight.rounded()))"
     }
 
     /// The three synced Poster Size presets, as RATIOS of the Medium default rather than as pixel

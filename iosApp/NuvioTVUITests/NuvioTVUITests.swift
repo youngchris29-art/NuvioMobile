@@ -5988,27 +5988,76 @@ final class NuvioTVUITests: XCTestCase {
             return out
         }
 
+        // Group rects by aspect ratio (width / height, tolerance ±0.03 against the group's first
+        // member) so a mixed-shape row (poster 2:3, square, landscape 16:9) never compares a
+        // tile's height against a differently-shaped sibling's.
+        func aspectGroups(_ rects: [CGRect]) -> [[CGRect]] {
+            var groups: [[CGRect]] = []
+            for rect in rects {
+                guard rect.height > 0 else { continue }
+                let ratio = rect.width / rect.height
+                if let idx = groups.firstIndex(where: { group in
+                    guard let rep = group.first, rep.height > 0 else { return false }
+                    return abs(rep.width / rep.height - ratio) <= 0.03
+                }) {
+                    groups[idx].append(rect)
+                } else {
+                    groups.append([rect])
+                }
+            }
+            return groups
+        }
+        // The modal (most common, within 1pt) height in a group of same-shape rects — i.e. the
+        // group's "rest" height. Ties are broken toward the smaller height: a lift only ever
+        // grows a tile, so on a tie the smaller value is the more plausible rest state.
+        func modalHeight(_ rects: [CGRect]) -> CGFloat? {
+            let heights = rects.map { $0.height }.sorted()
+            guard !heights.isEmpty else { return nil }
+            var bestHeight: CGFloat?
+            var bestCount = 0
+            for h in heights {
+                let count = heights.filter { abs($0 - h) < 1 }.count
+                if count > bestCount {
+                    bestCount = count
+                    bestHeight = h
+                }
+            }
+            return bestHeight
+        }
+        // Rects in `group` that stand at least `margin`pt taller than the group's own rest height.
+        func liftedRects(in group: [CGRect], margin: CGFloat) -> [CGRect] {
+            guard let rest = modalHeight(group) else { return [] }
+            return group.filter { $0.height - rest >= margin }
+        }
+
         // P2 fix (was an unconditional XCTSkip below): before this runtime is trusted to say "I
         // cannot report transformed frames," prove that claim against an INDEPENDENT control this
         // same walk already passes through — the poster catalog rows, which `test49RingModeRiseMatchesAllowance`
-        // shows this harness CAN measure a 20pt rise on (`poster_card`). The walk crosses catalog
-        // rows before it ever reaches the folder row, so the very first Down press still has a
-        // catalog card focused — collect `poster_artwork` there and check whether exactly one rect
-        // stands out as taller than the rest. If it does, this runtime DOES report transformed
-        // frames, and an equal-height reading at the folder row later is a real regression, not a
-        // runtime limitation — only skip when the control itself shows no transform.
+        // shows this harness CAN measure a 20pt rise on (`poster_card`). The walk crosses several
+        // catalog rows before it ever reaches the folder row, and the first Down press can just as
+        // easily land on the Continue Watching row (`LandscapeCard`, no `poster_artwork` lift) as on
+        // a poster row — so the control is sampled on EVERY Down press, not only the first, and
+        // `framesReportTransforms` latches true the first time a press shows exactly one
+        // `poster_artwork` rect standing ≥10pt above its shape group's rest height. `controlObserved`
+        // (any press saw ≥2 poster rects at all) is tracked separately so a folder-row skip can say
+        // whether the control was simply unavailable, as opposed to having demonstrated untransformed
+        // frames.
         var framesReportTransforms = false
+        var controlObserved = false
         var folderFound = false
         var lastFocusedItem = ""
         var stalledPresses = 0
-        for i in 1...45 {
+        for _ in 1...45 {
             press(.down, times: 1)
             pause(0.5)
-            if i == 1 {
-                let posterArtworkHeights = namedFrames("poster_artwork").map { $0.height }
-                if let maxH = posterArtworkHeights.max() {
-                    let tallCount = posterArtworkHeights.filter { abs($0 - maxH) < 1 }.count
-                    framesReportTransforms = (tallCount == 1)
+            let posterArtworkRects = namedFrames("poster_artwork")
+            if posterArtworkRects.count >= 2 {
+                controlObserved = true
+            }
+            if !framesReportTransforms {
+                let lifted = aspectGroups(posterArtworkRects).flatMap { liftedRects(in: $0, margin: 10) }
+                if lifted.count == 1 {
+                    framesReportTransforms = true
                 }
             }
             let focused = probeField(liveHeroProbe(), "fitem") ?? ""
@@ -6037,29 +6086,32 @@ final class NuvioTVUITests: XCTestCase {
             XCTFail("`-debug.cardGeometryProbe YES` published \(artworkRects.count) folder_artwork / \(cardRects.count) folder_card rects — the probe is not armed (DEBUG + NSArgumentDomain) or no folder row is on screen")
             return
         }
-        let sorted = artworkRects.sorted { $0.height > $1.height }
-        let focusedArt = sorted[0]
-        // Identify the focused tile by standing OUT, not merely by being tallest: the folder tiles
-        // publish no ids to match the hero probe's `fitem` against, so this is still a height
-        // ranking — but now checked, not assumed. When the poster-row control above proved this
-        // runtime reports transformed frames, exactly one folder_artwork rect should be taller than
-        // the rest; more than one (or none) means the "focused" pick above is ambiguous.
-        let maxArtHeight = focusedArt.height
-        let liftedCount = artworkRects.filter { abs($0.height - maxArtHeight) < 1 }.count
-        if framesReportTransforms {
-            XCTAssertEqual(liftedCount, 1,
-                           "expected exactly one lifted folder tile taller than the rest, found \(liftedCount) (heights: \(artworkRects.map { $0.height }))")
-        }
-        let ratio = focusedArt.width / focusedArt.height
-        guard let restArt = sorted.dropFirst().first(where: { abs($0.width / $0.height - ratio) < 0.02 }) else {
-            throw XCTSkip("no resting folder tile of the same shape on screen to compare against")
-        }
-        if abs(focusedArt.height - restArt.height) < 1 {
+        // P3 fix: the collection row is mixed-shape (poster 2:3, square, landscape 16:9), so a
+        // single tallest-rect-wins heuristic across ALL shapes can pick a resting POSTER over a
+        // correctly lifted SQUARE (at Medium a lifted square is ~260pt tall, a resting poster
+        // ~330pt). Group by aspect ratio first and judge "lifted" against each group's own rest
+        // height, then require exactly one lifted rect across every group.
+        let artworkGroups = aspectGroups(artworkRects)
+        let allLifted = artworkGroups.flatMap { liftedRects(in: $0, margin: 10) }
+        guard allLifted.count == 1 else {
             if framesReportTransforms {
-                XCTFail("focused folder tile has no lift (focused \(focusedArt) vs rest \(restArt)) — the poster-row control proved this runtime DOES report transformed frames, so equal heights here means the manual lift regressed")
+                let perGroupHeights = artworkGroups.map { $0.map { $0.height } }
+                XCTFail("expected exactly one lifted folder tile across all shape groups, found \(allLifted.count) (per-group heights: \(perGroupHeights))")
                 return
             }
-            throw XCTSkip("this runtime reports UNTRANSFORMED accessibility frames (focused \(focusedArt) vs rest \(restArt)) — the geometric oracle is unavailable; 56a/56b attachments are the record")
+            throw XCTSkip("control never saw a lifted poster (observed=\(controlObserved))")
+        }
+        let focusedArt = allLifted[0]
+        guard let group = artworkGroups.first(where: { $0.contains(focusedArt) }) else {
+            throw XCTSkip("control never saw a lifted poster (observed=\(controlObserved))")
+        }
+        guard group.count >= 2 else {
+            throw XCTSkip("the only lifted folder tile is in a shape group with no resting sibling to compare against (singleton group, height \(focusedArt.height))")
+        }
+        guard let restHeight = modalHeight(group),
+              let restArt = group.filter({ $0 != focusedArt })
+                  .min(by: { abs($0.height - restHeight) < abs($1.height - restHeight) }) else {
+            throw XCTSkip("no resting folder tile of the same shape on screen to compare against")
         }
         let rise = restArt.minY - focusedArt.minY
         XCTAssertEqual(rise, 20, accuracy: 2.5, "focused folder artwork rose \(rise)pt; focused=\(focusedArt) rest=\(restArt)")

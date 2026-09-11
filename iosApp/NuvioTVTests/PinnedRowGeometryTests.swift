@@ -223,7 +223,7 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.viewport, 525.333, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 493.333, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
-        XCTAssertEqual(plan.regimeKey, "L403c0p1r0z1")
+        XCTAssertEqual(plan.regimeKey, "L403c0p1r0z1t38")
     }
 
     /// The same shape in the DEFAULT Appearance state (zoom on), which is where BUG-87/89 actually
@@ -255,7 +255,7 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.viewport, 545.333, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 513.333, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
-        XCTAssertEqual(plan.regimeKey, "L403c0p1r0z0")
+        XCTAssertEqual(plan.regimeKey, "L403c0p1r0z0t38")
     }
 
     /// The set of legal rests must be narrower than the legibility band `PinnedRowSettle` corrects
@@ -629,21 +629,37 @@ final class PinnedRowGeometryTests: XCTestCase {
                                               landscapeRows: false,
                                               mode: Self.noZoom,
                                               titleHeight: Self.systemTitle).regimeKey,
-                       "M330c1p0r0z1")
+                       "M330c1p0r0z1t38")
         XCTAssertEqual(PinnedRowGeometry.plan(posterHeight: Self.medium,
                                               captionVisible: true,
                                               showsCTA: true,
                                               landscapeRows: false,
                                               mode: Self.zoomOn,
                                               titleHeight: Self.systemTitle).regimeKey,
-                       "M330c1p0r0z0")
+                       "M330c1p0r0z0t38")
         // The ring is not part of the key, because it is not part of the plan.
         XCTAssertEqual(PinnedRowGeometry.regimeKey(posterHeight: Self.medium,
                                                    captionVisible: true,
                                                    showsCTA: true,
                                                    landscapeRows: false,
-                                                   mode: .init(noZoom: false, accentRing: true)),
-                       "M330c1p0r0z0")
+                                                   mode: .init(noZoom: false, accentRing: true),
+                                                   titleHeight: Self.systemTitle),
+                       "M330c1p0r0z0t38")
+        // Two title metrics at the SAME (size × captions × hero form × row shape × mode) tuple must
+        // not share a key either (rc10 Codex P2 fix 4) — a font switch (System ↔ Open Sans) must not
+        // inherit the previous geometry's disarm/verify-failure state.
+        XCTAssertNotEqual(PinnedRowGeometry.regimeKey(posterHeight: Self.medium,
+                                                      captionVisible: true,
+                                                      showsCTA: true,
+                                                      landscapeRows: false,
+                                                      mode: Self.noZoom,
+                                                      titleHeight: Self.systemTitle),
+                          PinnedRowGeometry.regimeKey(posterHeight: Self.medium,
+                                                      captionVisible: true,
+                                                      showsCTA: true,
+                                                      landscapeRows: false,
+                                                      mode: Self.noZoom,
+                                                      titleHeight: Self.openSansTitle))
     }
 
     private func planHeight(for label: String) -> CGFloat {
@@ -670,6 +686,27 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
 
     private let epsilon: CGFloat = 0.001
 
+    // MARK: - Body line metrics (Codex P3 fix 4)
+    //
+    // `lineLimit(slotHeight:)` used to read the live `Theme.Font.bodyLineHeight`, which follows
+    // whatever font family the host has applied (System by default, Open Sans under FEAT-31's
+    // `-ui_font openSans` launch argument, persisted across runs). A suite that asserts a fixed
+    // line count has to pin the metric it measures against, exactly like `systemTitle`/
+    // `openSansTitle` above pin the title metric — so every caller below passes an EXPLICIT
+    // `lineHeight` instead of letting the helper read the live value.
+
+    /// System body line height (`UIFont.preferredFont(forTextStyle: .body).lineHeight`) — the
+    /// metric `HomeHeroForeground.synopsisLineLimit` measures when the host renders the System
+    /// font, and the one every "3 lines" expectation in this file was written against.
+    private static let systemBodyLine = UIFont.preferredFont(forTextStyle: .body).lineHeight
+
+    /// FEAT-31's Open Sans body line height at the same text style, from the bundled face itself
+    /// rather than a derived constant — the tester's configuration, where the SAME slot holds one
+    /// fewer line than under the System font.
+    private static func openSansBodyLine() -> CGFloat? {
+        UIFont(name: "OpenSans-Regular", size: Theme.Font.baseSize(for: .body))?.lineHeight
+    }
+
     /// Mirror of `HomeHeroForeground.synopsisSlotHeight`'s compact branch.
     private func slotHeight(showsCTA: Bool, synopsisGive: CGFloat) -> CGFloat {
         let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
@@ -678,8 +715,9 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
     }
 
     /// Mirror of `HomeHeroForeground.synopsisLineLimit`'s compact branch — measured, not assumed.
-    private func lineLimit(slotHeight: CGFloat) -> Int {
-        let lineHeight = Theme.Font.bodyLineHeight
+    /// `lineHeight` is an explicit parameter, not a live read, so a caller controls which font
+    /// metric its expectation is arithmetic against (Codex P3 fix 4).
+    private func lineLimit(slotHeight: CGFloat, lineHeight: CGFloat) -> Int {
         let lineTolerance: CGFloat = 1
         guard lineHeight > 0 else { return 1 }
         return max(1, Int(((slotHeight + lineTolerance) / lineHeight).rounded(.down)))
@@ -709,7 +747,7 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
 
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
         XCTAssertEqual(slot, 108, accuracy: epsilon)
-        XCTAssertEqual(lineLimit(slotHeight: slot), 3)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
 
         // The logo slot lands exactly on its floor, as it did in Wave 10.
         XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo,
@@ -724,20 +762,18 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
         XCTAssertEqual(slot, 107.667, accuracy: 0.01)
         // System body line height on tvOS is ~35 pt; assert the measurement, not a literal.
-        let systemLine = UIFont.preferredFont(forTextStyle: .body).lineHeight
-        XCTAssertLessThan(systemLine, 36)
-        XCTAssertEqual(Int(((slot + 1) / systemLine).rounded(.down)), 3)
+        XCTAssertLessThan(Self.systemBodyLine, 36)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
     }
 
     /// The tester's case: Open Sans body renders taller than the 36 pt the slot math assumed, so
     /// the SAME 108 pt slot holds two lines, not three. This is the measurement, not a fix.
     func testOpenSansBodyLineIsTallerThanTheAssumedSlotLine() throws {
-        let bodySize = Theme.Font.baseSize(for: .body)
-        guard let font = UIFont(name: "OpenSans-Regular", size: bodySize) else {
+        guard let openSansLine = Self.openSansBodyLine() else {
             throw XCTSkip("Open Sans is not bundled in the unit-test host")
         }
-        XCTAssertGreaterThan(font.lineHeight, 36)
-        XCTAssertEqual(Int(((108 + 1) / font.lineHeight).rounded(.down)), 2)
+        XCTAssertGreaterThan(openSansLine, 36)
+        XCTAssertEqual(lineLimit(slotHeight: 108, lineHeight: openSansLine), 2)
     }
 
     /// Tier 3 opens only past tiers 1+2 plus the frame slack, and then it is the panel's own extra.
@@ -757,7 +793,7 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         XCTAssertEqual(split.synopsis, 77.833, accuracy: 0.01)
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
         XCTAssertEqual(slot, 66.167, accuracy: 0.01)
-        XCTAssertEqual(lineLimit(slotHeight: slot), 1)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 1)
     }
 
     /// Tier 1 alone, below the logo's turn: a small compression comes entirely out of the synopsis
