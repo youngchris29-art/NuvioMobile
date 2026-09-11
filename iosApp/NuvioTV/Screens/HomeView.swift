@@ -90,6 +90,18 @@ struct HomeView: View {
     /// same reason `inline_trailers_enabled` is; Settings › Home Screen owns the picker UI. Inert
     /// while Trailers on Focus is off — see `heroFocusTrailerMode`.
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
+    /// BUG-87/89 (rc10): the two Appearance flags `CardFocusMode.resolve` branches on, read HERE
+    /// because `pinnedPlan` is now mode-dependent — `PinnedRowGeometry.topReachFloor(lift:)` has to
+    /// hold whatever the focus treatment raises a focused card's artwork by, so the row reaches and
+    /// the hero compression differ between the zoom modes. `@AppStorage` rather than a bare
+    /// `UserDefaults` read (which is what `FocusModeFlags.current` would have done) so returning from
+    /// Settings re-plans: this is the same staleness class Codex r10 P2 closed for
+    /// `PinnedRowTitleTracking`, where nothing in Home moves on a flag flip and the previous mode's
+    /// geometry would otherwise stand until something happened to scroll.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// Paired with `noZoomOnFocus` above — `FocusModeFlags` carries both, and the ring branch is the
+    /// one that could make the lift height-dependent again (BUG-93 made the two zoom modes equal).
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
     /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
     /// the entire preference map on every call, so it cannot be read from `body` at render
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
@@ -1677,13 +1689,24 @@ struct HomeView: View {
     ///  - `posterStyle.landscapeCatalogRows` — a landscape page's rows are 203pt tall and need
     ///    nothing spent for them.
     ///
+    ///  - `mode` (BUG-87/89 rc10) — the two Appearance focus flags. The top reach's floor holds the
+    ///    FOCUS LIFT now (`PinnedRowGeometry.topReachFloor(lift:)`), so the plan is mode-dependent:
+    ///    reach 86 and compression 90.33 at Large with zoom on, 66 and 70.33 with No Zoom. Reading
+    ///    the flags as `@AppStorage` is what makes a flip in Settings re-plan on return (the
+    ///    `.animation(.easeInOut(duration: 0.28), value: pinnedPlan)` in `body` cross-fades the hero
+    ///    into the new numbers) instead of leaving the rows describing the previous mode — the r10 P2
+    ///    staleness class, which on this path would also have published a stale `regimeKey`/`fits`
+    ///    pair to the settle corrector.
+    ///
     /// STATIC in the Wave 10 sense: it changes when a Settings/Appearance value changes and at no
     /// other time — never per row, per focus, or per rest.
     private var pinnedPlan: PinnedRowGeometry.Plan {
         PinnedRowGeometry.plan(posterHeight: posterStyle.height,
                                captionVisible: posterStyle.showTitle,
                                showsCTA: heroCarouselActive,
-                               landscapeRows: posterStyle.landscapeCatalogRows)
+                               landscapeRows: posterStyle.landscapeCatalogRows,
+                               mode: PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
+                                                                   accentRing: accentFocusRing))
     }
 
     /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact

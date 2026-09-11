@@ -35,7 +35,22 @@ final class PinnedRowGeometryTests: XCTestCase {
         ("Small", small), ("Medium", medium), ("Large", large),
     ]
 
-    /// Every flag combination, as the app can actually produce them.
+    // MARK: - Focus modes
+
+    /// BUG-87/89 (rc10): `plan` is MODE-DEPENDENT — `topReachFloor(lift:)` has to hold the focus
+    /// lift, so the top reach and the compression differ between the zoom modes. Every call below
+    /// therefore passes an EXPLICIT mode: the `FocusModeFlags.current` default reads
+    /// `UserDefaults`, which would make this suite depend on whatever the last test (or the
+    /// developer's simulator) left in the two Appearance keys.
+    ///
+    /// `noZoom` is the mode every pre-rc10 expectation in this file was written against (lift 0), so
+    /// it is what the shared helpers use; the numbers moved anyway, because the floor gained the
+    /// belt's `fadeIntrusionArm` (64 → 66).
+    private static let noZoom = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false)
+    /// The DEFAULT Appearance state, and the one the defect was filmed in: lift 20 ⇒ floor 86.
+    private static let zoomOn = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false)
+
+    /// Every flag combination, as the app can actually produce them, in No Zoom.
     private static func crossProduct() -> [(name: String, plan: PinnedRowGeometry.Plan)] {
         var out: [(name: String, plan: PinnedRowGeometry.Plan)] = []
         for (name, height) in allSizes {
@@ -46,7 +61,8 @@ final class PinnedRowGeometryTests: XCTestCase {
                         let plan = PinnedRowGeometry.plan(posterHeight: height,
                                                           captionVisible: captions,
                                                           showsCTA: cta,
-                                                          landscapeRows: landscape)
+                                                          landscapeRows: landscape,
+                                                          mode: noZoom)
                         out.append((name: label, plan: plan))
                     }
                 }
@@ -101,13 +117,15 @@ final class PinnedRowGeometryTests: XCTestCase {
                 let oversized = PinnedRowGeometry.plan(posterHeight: Self.posterHeight(dp: 200),
                                                        captionVisible: captions,
                                                        showsCTA: cta,
-                                                       landscapeRows: false)
+                                                       landscapeRows: false,
+                                                       mode: Self.noZoom)
                 cases.append((name: "Oversized captions=\(captions) showsCTA=\(cta)", plan: oversized))
             }
         }
         for (label, plan) in cases {
             XCTAssertLessThanOrEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad + epsilon, label)
-            XCTAssertGreaterThanOrEqual(plan.topReach, PinnedRowGeometry.topReachFloor - epsilon, label)
+            XCTAssertGreaterThanOrEqual(plan.topReach,
+                                        PinnedRowGeometry.topReachFloor(lift: 0) - epsilon, label)
             XCTAssertLessThanOrEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach + epsilon, label)
             XCTAssertGreaterThanOrEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor - epsilon, label)
             XCTAssertGreaterThanOrEqual(plan.compression, 0, label)
@@ -138,46 +156,81 @@ final class PinnedRowGeometryTests: XCTestCase {
     // MARK: - The tester's shape
 
     /// Large + Hide Labels ON + FEAT-15 focus panel — the configuration BUG-87/88/89 were filmed
-    /// in. It must FIT, and it must fit at Wave 10's OWN compression rather than a larger one.
+    /// in — in **No Zoom**. It must FIT, and it must fit with both reaches on their floors.
     ///
-    /// rc2 (2026-09-06) reordered the dials. The first cut spent compression first, which at this
-    /// shape meant 108pt out of the panel's synopsis slot (its whole give; the remaining 4.33 came
-    /// from the logo): 144 − 108 = 36 ⇒ one line of description, which the tester filmed and
-    /// objected to ("one line is not enough"). Christian's
-    /// call: spend the two reach CUSHIONS first — they exist to absorb rest error, and a frame that
-    /// fits has no rest error — and let the compression take only the remainder.
+    /// rc2 (2026-09-06) reordered the dials so the reach CUSHIONS are spent before the hero
+    /// compression: they exist to absorb rest error, and a frame that fits has no rest error, while
+    /// every point of compression is description the viewer loses.
     ///
     ///     demand      24 + 88 + 403.33 + 0 + 44 + 8 − 455      = 112.33   (formula unchanged)
     ///     (a) bottom  44 → 24 (bottomReachFloor)                 −20  ⇒ 92.33 left
-    ///     (b) top     88 → 64 (topReachFloor)                    −24  ⇒ 68.33 left
-    ///     (c) hero    min(68.33, panel give 142)                = 68.33  ⇒ 0 left
-    ///     viewport    455 + 68.33                              = 523.33
-    ///     linkFrame   64 + 403.33 + 0 + 24                      = 491.33
+    ///     (b) top     88 → 66 (topReachFloor(lift: 0))           −22  ⇒ 70.33 left
+    ///     (c) hero    min(70.33, panel give 142)                = 70.33  ⇒ 0 left
+    ///     viewport    455 + 70.33                              = 525.33
+    ///     linkFrame   66 + 403.33 + 0 + 24                      = 493.33
     ///     restRange                                            = 32  (Spacing.lg + cushion)
     ///
-    /// 68.33 is exactly `PinnedRowTitle.pinnedHeroCompression` at Large — the number beta.17
-    /// shipped and the tester never complained about — so the panel is back to a 108pt synopsis
-    /// slot and three lines (`PinnedRowGeometryHeroSlotGiveTests`).
+    /// ## Why this no longer equals Wave 10's own compression (rc10, BUG-87/89)
     ///
-    /// What this test CANNOT prove: that reach 64 behaves on hardware. It is below the long-proven
-    /// 72 and leaves the settled title 2pt of clearance above the artwork rather than BUG-53's 26 —
-    /// device pass only.
-    func testStevensShapeFitsOnTheReachCushionsAtWave10Compression() {
+    /// rc4's version of this test asserted `compression == PinnedRowTitle.pinnedHeroCompression`
+    /// (68.33) — "it fits at the number beta.17 already shipped" — which held only because the top
+    /// reach floored at a flat 64. That flat floor was derived against the TITLE alone and ignored
+    /// the focus lift, which is the whole of BUG-87/89: with zoom on, `staticClearance` 2 minus the
+    /// 20pt lift is −18, and `Clearances`' `max(…, 0)` reported that permanent overlap as 0. The
+    /// floor is derived and lift-aware now (`title floor 62 + lift + fadeIntrusionArm 4`), so it is
+    /// 66 here and 2pt of the reach's give goes unspent — the compression takes 70.33 instead, and
+    /// this shape is 2pt past the `HeroSlotGive` tier-3 gate, so the panel's synopsis is 2 lines
+    /// rather than 3. That is the documented price of the clearance (see
+    /// `PinnedRowGeometry.topReachFloor(lift:)`), not a drift to be tuned away here.
+    func testStevensShapeFitsOnTheReachCushionsWithNoZoom() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
                                           showsCTA: false,
-                                          landscapeRows: false)
+                                          landscapeRows: false,
+                                          mode: Self.noZoom)
         XCTAssertTrue(plan.fits)
-        XCTAssertEqual(plan.compression, 68.333, accuracy: 0.01)
-        XCTAssertEqual(plan.compression,
-                       PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: Self.large),
-                       accuracy: epsilon)
-        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.compression, 70.333, accuracy: 0.01)
+        // 2pt MORE than Wave 10's own Large number, and exactly the 2pt the lift-aware floor keeps.
+        XCTAssertEqual(plan.compression
+                        - PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: Self.large),
+                       2, accuracy: 0.01)
+        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon)
+        XCTAssertEqual(plan.topReach, 66, accuracy: epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
-        XCTAssertEqual(plan.viewport, 523.333, accuracy: 0.01)
-        XCTAssertEqual(plan.linkFrame, 491.333, accuracy: 0.01)
+        XCTAssertEqual(plan.viewport, 525.333, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 493.333, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
-        XCTAssertEqual(plan.regimeKey, "L403c0p1r0")
+        XCTAssertEqual(plan.regimeKey, "L403c0p1r0z1")
+    }
+
+    /// The same shape in the DEFAULT Appearance state (zoom on), which is where BUG-87/89 actually
+    /// lived. The floor holds the 20pt lift, so only 2pt of the top reach's give is spendable and
+    /// the compression takes the other 22.
+    ///
+    ///     (b) top     88 → 86 (topReachFloor(lift: 20))          −2   ⇒ 90.33 left
+    ///     (c) hero    min(90.33, panel give 142)                = 90.33
+    ///     viewport    455 + 90.33                              = 545.33
+    ///     linkFrame   86 + 403.33 + 0 + 24                      = 513.33
+    ///
+    /// Reach 86 is back inside the proven 72-88 corridor, which is what retires rc4's unanswered
+    /// "is 64 safe on hardware?" question rather than doubling it.
+    func testStevensShapeWithZoomOnPaysTheLiftOutOfCompression() {
+        let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                          captionVisible: false,
+                                          showsCTA: false,
+                                          landscapeRows: false,
+                                          mode: Self.zoomOn)
+        XCTAssertTrue(plan.fits)
+        XCTAssertEqual(plan.topReach,
+                       PinnedRowGeometry.topReachFloor(lift: Theme.Size.heroPinnedRowFocusLiftAllowance),
+                       accuracy: epsilon)
+        XCTAssertEqual(plan.topReach, 86, accuracy: epsilon)
+        XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.compression, 90.333, accuracy: 0.01)
+        XCTAssertEqual(plan.viewport, 545.333, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 513.333, accuracy: 0.01)
+        XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
+        XCTAssertEqual(plan.regimeKey, "L403c0p1r0z0")
     }
 
     /// The set of legal rests must be narrower than the legibility band `PinnedRowSettle` corrects
@@ -186,23 +239,24 @@ final class PinnedRowGeometryTests: XCTestCase {
     ///
     /// The band, from `PinnedRowSettle`'s `bandLow`/`bandHigh` in BrowseComponents (~L2674-2677 at the
     /// time of writing; grep the symbols, the line numbers drift) with the row's own geometry,
-    /// at the rc2 reach of 64 (the plan now spends both reaches to their floors here):
+    /// at the rc10 No-Zoom reach of 66 (the plan spends both reaches to their floors here):
     ///
-    ///     clearance = max((Spacing.lg 24 + reach 64) − (titleInset 48 + title 38), 0) = 2
-    ///     bandLow   = −clearance.focused = −2        (No Zoom ⇒ zero lift ⇒ focused == atRest)
-    ///     lockup    = 24 + 64 + 403.33               = 491.33
-    ///     bandHigh  = min(48, 48 + 523.33 − 491.33 − 8) = min(48, 72) = 48
-    ///     width     = 50
+    ///     clearance = max((Spacing.lg 24 + reach 66) − (titleInset 48 + title 38), 0) = 4
+    ///     bandLow   = −clearance.focused = −4        (No Zoom ⇒ zero lift ⇒ focused == atRest)
+    ///     lockup    = 24 + 66 + 403.33               = 493.33
+    ///     bandHigh  = min(48, 48 + 525.33 − 493.33 − 8) = min(48, 72) = 48
+    ///     width     = 52
     ///
-    /// against `restRange` = 32, so the invariant still holds — but note the band NARROWED from 74
-    /// to 50, and it narrowed at the clearance end: the settled title now rests 2pt above the
-    /// artwork rather than 26. That is the reach floor's real cost, and it is the thing the device
-    /// pass has to look at (see `PinnedRowGeometry`'s header).
+    /// against `restRange` = 32, so the invariant still holds. The band is still much narrower than
+    /// the pre-rc2 74 (it narrowed at the clearance end when the reach floor was first spent), but
+    /// the 4pt it now keeps is `PinnedRowTitle.fadeIntrusionArm` by construction rather than the 2pt
+    /// of arithmetic margin rc4 left — see `PinnedRowGeometry.topReachFloor(lift:)`.
     func testStevensShapeRestRangeIsNarrowerThanTheLegibilityBand() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
                                           showsCTA: false,
-                                          landscapeRows: false)
+                                          landscapeRows: false,
+                                          mode: Self.noZoom)
         // No Zoom on Focus ⇒ `focusLiftAllowance` is 0, so the focused clearance is the static one.
         let clearance = PinnedRowTitle.staticClearance(titleHeight: PinnedRowGeometry.measuredTitleHeight,
                                                        cardTopReach: plan.topReach)
@@ -212,47 +266,122 @@ final class PinnedRowGeometryTests: XCTestCase {
                            Theme.Size.heroPinnedRowTitleInset + plan.viewport - lockupExtent
                                - Theme.Size.heroPinnedRowsSettledCushion)
         let bandWidth = bandHigh - bandLow
-        XCTAssertEqual(clearance, 2, accuracy: epsilon)
-        XCTAssertEqual(bandWidth, 50, accuracy: epsilon)
+        XCTAssertEqual(clearance, 4, accuracy: epsilon)
+        XCTAssertEqual(bandWidth, 52, accuracy: epsilon)
         XCTAssertLessThanOrEqual(plan.restRange, bandWidth)
     }
 
+    /// BUG-87/89: the same shape as the test above, in BOTH zoom modes.
+    ///
+    /// The test above only ever asked the No-Zoom question, where the lift is 0 — so the rc4 reach
+    /// floor passed it with a 2pt clearance while the DEFAULT Appearance state (zoom on) had a
+    /// NEGATIVE one: `focused = max(2 − 20, 0)` clamped an 18pt permanent overlap to zero, the
+    /// corrector's `bandLow` became 0, and the engine's own 32pt of rest freedom sat almost entirely
+    /// outside the band. The three things this asserts are the three that broke:
+    ///   1. the reach holds the title AND the lift, with the belt's arm edge to spare;
+    ///   2. the clamp is therefore inert (`focused == focusedRaw`), i.e. nothing is being hidden;
+    ///   3. the band is wider than the set of rests the engine may choose — the premise
+    ///      `PinnedRowSettle`'s `UNEXPECTED-WITH-FIT` line asserts and could not rely on.
+    func testLargeTopReachHoldsTheFocusLiftInBothZoomModes() {
+        for noZoom in [false, true] {
+            let label = "noZoom=\(noZoom)"
+            let mode = PinnedRowTitle.FocusModeFlags(noZoom: noZoom, accentRing: false)
+            let expectedLift: CGFloat = noZoom ? 0 : Theme.Size.heroPinnedRowFocusLiftAllowance
+            let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                              captionVisible: false,
+                                              showsCTA: false,
+                                              landscapeRows: false,
+                                              mode: mode)
+            XCTAssertTrue(plan.fits, label)
+            XCTAssertEqual(plan.topReach,
+                           PinnedRowGeometry.topReachFloor(lift: expectedLift),
+                           accuracy: epsilon, label)
+
+            let clearance = PinnedRowTitle.clearances(titleHeight: PinnedRowGeometry.measuredTitleHeight,
+                                                      cardTopReach: plan.topReach,
+                                                      artworkHeight: Self.large,
+                                                      captionVisible: false,
+                                                      treatment: .cardTreatment,
+                                                      mode: mode)
+            XCTAssertEqual(clearance.lift, expectedLift, accuracy: epsilon, label)
+            // (1) and (2): the band holds title + lift with the belt's arm to spare, so the clamp
+            // never bites and `focusedRaw` is not hiding a deficit behind a clean 0.
+            XCTAssertGreaterThanOrEqual(clearance.focusedRaw,
+                                        PinnedRowTitle.fadeIntrusionArm - epsilon, label)
+            XCTAssertEqual(clearance.focused, clearance.focusedRaw, accuracy: epsilon, label)
+
+            // (3) mirrors `PinnedRowSettle.settlePlan`'s band math — grep `bandLow`/`bandHigh` there.
+            let lockupExtent = Theme.Spacing.lg + plan.topReach + Self.large  // Hide Labels ⇒ no caption
+            let bandLow = -clearance.focused
+            let bandHigh = min(Theme.Size.heroPinnedRowTitleInset,
+                               Theme.Size.heroPinnedRowTitleInset + plan.viewport - lockupExtent
+                                   - Theme.Size.heroPinnedRowsSettledCushion)
+            XCTAssertLessThanOrEqual(plan.restRange, bandHigh - bandLow, label)
+        }
+    }
+
+    /// The floor's contract as a function, independent of any one Poster Size: whatever lift it is
+    /// handed, the reach it returns leaves the settled title clear of the FOCUSED card's artwork by
+    /// at least the belt's arm. Skipped where the cap binds — the floor may never exceed
+    /// `heroPinnedRowTopPad`, because reach 100 kills focus resolution outright, so a lift larger
+    /// than 22 is simply not coverable and the cap is the right answer rather than a raised reach.
+    func testTopReachFloorNeverLeavesTheLiftUncovered() {
+        for lift in [0, 10, Theme.Size.heroPinnedRowFocusLiftAllowance, 30] as [CGFloat] {
+            let reach = PinnedRowGeometry.topReachFloor(lift: lift)
+            XCTAssertLessThanOrEqual(reach, Theme.Size.heroPinnedRowTopPad + epsilon, "lift=\(lift)")
+            guard reach < Theme.Size.heroPinnedRowTopPad else { continue }
+            let atRest = PinnedRowTitle.staticClearance(titleHeight: PinnedRowGeometry.measuredTitleHeight,
+                                                        cardTopReach: reach)
+            XCTAssertGreaterThanOrEqual(atRest - lift,
+                                        PinnedRowTitle.fadeIntrusionArm - epsilon, "lift=\(lift)")
+        }
+    }
+
     /// The same Poster Size with the CAROUSEL hero, which has only 70pt of elastic give where the
-    /// panel has 142. Under the rc2 order that no longer matters: the reaches are spent first, and
-    /// the 68.33 left over is inside 70 either way, so the carousel and the panel produce the SAME
-    /// plan at Hide Labels ON.
+    /// panel has 142, in No Zoom. The reaches are still spent first, but as of rc10's lift-aware
+    /// floor the leftover (70.33) is 0.33pt MORE than the carousel can give, so its 70pt cap binds
+    /// and this regime stops being an exact twin of the panel's plan:
     ///
-    ///     demand 112.33 → bottom 44→24 (−20) → top 88→64 (−24) → compression min(68.33, 70)
+    ///     demand 112.33 → bottom 44→24 (−20) → top 88→66 (−22) → compression min(70.33, 70) = 70
+    ///     viewport  455 + 70                 = 525
+    ///     linkFrame 66 + 403.33 + 0 + 24     = 493.33
+    ///     restRange                          = 31.67   (0.33 short of Spacing.lg + cushion)
     ///
-    /// Before the reordering this regime compressed the full 70 and stopped the top reach at 65.67;
-    /// it now stops at the floor and compresses 68.33 — 1.67pt LESS hero compression, both reaches
-    /// at their floors.
+    /// It still FITS with room to spare, which is what matters — the 0.33 comes off the settled
+    /// cushion, not off the frame. rc4's version of this test read 68.33 / 523.33 / 491.33 / 32 at
+    /// the flat reach floor of 64.
     func testLargeHideLabelsWithCarouselHeroSpendsBothReachesThenTheRemainder() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
                                           showsCTA: true,
-                                          landscapeRows: false)
+                                          landscapeRows: false,
+                                          mode: Self.noZoom)
         XCTAssertTrue(plan.fits)
-        XCTAssertEqual(plan.compression, 68.333, accuracy: 0.01)
-        XCTAssertLessThanOrEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true) + epsilon)
+        XCTAssertEqual(plan.compression, 70, accuracy: 0.01)
+        // The carousel's cap is what binds here, not the leftover demand.
+        XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true), accuracy: epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
-        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon)
-        XCTAssertEqual(plan.viewport, 523.333, accuracy: 0.01)
-        XCTAssertEqual(plan.linkFrame, 491.333, accuracy: 0.01)
-        XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
+        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon)
+        XCTAssertEqual(plan.viewport, 525, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 493.333, accuracy: 0.01)
+        XCTAssertEqual(plan.restRange, 31.667, accuracy: 0.01)
+        XCTAssertLessThan(plan.restRange,
+                          Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion)
     }
 
     /// Large + captions + carousel hero is unsatisfiable by design: ~155.8pt of demand against 44pt
     /// of reach give and 70pt of elastic give — 114 against 156, in either spend order. Under the
-    /// rc2 order the reaches floor at 24/64 and 111.83 is left over, which the carousel's 70pt cap
-    /// cannot cover. The plan must NOT pretend — it reports `fits == false` and hands back TODAY'S
-    /// numbers verbatim (compression 68.33, reaches 88/44), so the visibility belt owns the residue
-    /// in exactly the regime that shipped in beta.17.
+    /// rc10 order the reaches floor at 24/66 (No Zoom) and 113.83 is left over, which the carousel's
+    /// 70pt cap cannot cover. The plan must NOT pretend — it reports `fits == false` and hands back
+    /// TODAY'S numbers verbatim (compression 68.33, reaches 88/44), so the visibility belt owns the
+    /// residue in exactly the regime that shipped in beta.17. The fallback is mode-INDEPENDENT: with
+    /// zoom on the reach floors at 86 and 133.83 is left over, still far past 70.
     func testLargeWithCaptionsAndCarouselHeroFallsBackToTodaysNumbers() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: true,
                                           showsCTA: true,
-                                          landscapeRows: false)
+                                          landscapeRows: false,
+                                          mode: Self.noZoom)
         XCTAssertFalse(plan.fits)
         XCTAssertEqual(plan.compression,
                        PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: Self.large),
@@ -264,33 +393,33 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.linkFrame, 578.833, accuracy: 0.01)
     }
 
-    /// Large + captions in the FEAT-15 panel IS satisfiable: both reaches go to their floors and
-    /// the panel's 142pt of give covers the 111.83 that is left, short of its own cap.
+    /// Large + captions in the FEAT-15 panel IS satisfiable, in No Zoom: both reaches go to their
+    /// floors and the panel's 142pt of give covers the 113.83 that is left, short of its own cap.
     ///
     ///     demand    24 + 88 + 403.33 + 43.5 + 44 + 8 − 455 = 155.83
     ///     (a) bottom 44 → 24                                −20  ⇒ 135.83
-    ///     (b) top    88 → 64                                −24  ⇒ 111.83
-    ///     (c) hero   min(111.83, 142)                      = 111.83, 30.17 of give unspent
-    ///     viewport  455 + 111.83                           = 566.83
-    ///     linkFrame 64 + 403.33 + 43.5 + 24                = 534.83
+    ///     (b) top    88 → 66 (topReachFloor(lift: 0))        −22  ⇒ 113.83
+    ///     (c) hero   min(113.83, 142)                      = 113.83, 28.17 of give unspent
+    ///     viewport  455 + 113.83                           = 568.83
+    ///     linkFrame 66 + 403.33 + 43.5 + 24                = 536.83
     ///     restRange                                        = 32
     ///
-    /// Before the reordering this regime compressed the full 142 and left the top reach at 88; it
-    /// now compresses 111.83 with both reaches floored — 30.17pt LESS hero compression. The panel's
-    /// synopsis still ends up at one line here (`HeroSlotGive` tiers: 36 + 32 + 41.83), which is
-    /// what this shape showed before too, so nothing regresses for it.
+    /// rc4's version of this test read 111.83 / 566.83 / 534.83 at the flat reach floor of 64. The
+    /// panel's synopsis was already at one line in this regime and stays there (`HeroSlotGive`
+    /// tiers: 36 + 32 + 43.83), so nothing regresses for it.
     func testLargeWithCaptionsInPanelModeFitsAfterBothReachesFloor() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: true,
                                           showsCTA: false,
-                                          landscapeRows: false)
+                                          landscapeRows: false,
+                                          mode: Self.noZoom)
         XCTAssertTrue(plan.fits)
-        XCTAssertEqual(plan.compression, 111.833, accuracy: 0.01)
+        XCTAssertEqual(plan.compression, 113.833, accuracy: 0.01)
         XCTAssertLessThan(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: false))
-        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
-        XCTAssertEqual(plan.viewport, 566.833, accuracy: 0.01)
-        XCTAssertEqual(plan.linkFrame, 534.833, accuracy: 0.01)
+        XCTAssertEqual(plan.viewport, 568.833, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 536.833, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
     }
 
@@ -306,7 +435,8 @@ final class PinnedRowGeometryTests: XCTestCase {
     func testCompressionIsOnlySpentAfterBothReachesAreOnTheirFloors() {
         for (label, plan) in Self.crossProduct() {
             if plan.fits, plan.compression > 0 {
-                XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor, accuracy: epsilon, label)
+                XCTAssertEqual(plan.topReach,
+                               PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon, label)
                 XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon, label)
             } else {
                 XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
@@ -338,20 +468,41 @@ final class PinnedRowGeometryTests: XCTestCase {
             let again = PinnedRowGeometry.plan(posterHeight: planHeight(for: label),
                                                captionVisible: label.contains("captions=true"),
                                                showsCTA: label.contains("showsCTA=true"),
-                                               landscapeRows: label.contains("landscape=true"))
+                                               landscapeRows: label.contains("landscape=true"),
+                                               mode: Self.noZoom)
             XCTAssertEqual(plan, again, label)
         }
     }
 
     /// One key per regime, and a different key for every other regime — the `onChange` contract.
+    ///
+    /// rc10 added the trailing `z` component, because the plan is mode-dependent now: the SAME
+    /// (size × captions × hero form × row shape) tuple produces different reaches in the two zoom
+    /// modes, so they must not share a key (`PinnedRowSettle.regimeFits` and its log-once sets are
+    /// keyed on this string). `accentRing` is deliberately NOT encoded — since BUG-93 both zoom-on
+    /// treatments lift by the same amount, so a ring flip produces an identical plan.
     func testRegimeKeysAreDistinctAcrossTheCrossProduct() {
         let keys = Self.crossProduct().map { $0.plan.regimeKey }
         XCTAssertEqual(Set(keys).count, keys.count)
         XCTAssertEqual(PinnedRowGeometry.plan(posterHeight: Self.medium,
                                               captionVisible: true,
                                               showsCTA: true,
-                                              landscapeRows: false).regimeKey,
-                       "M330c1p0r0")
+                                              landscapeRows: false,
+                                              mode: Self.noZoom).regimeKey,
+                       "M330c1p0r0z1")
+        XCTAssertEqual(PinnedRowGeometry.plan(posterHeight: Self.medium,
+                                              captionVisible: true,
+                                              showsCTA: true,
+                                              landscapeRows: false,
+                                              mode: Self.zoomOn).regimeKey,
+                       "M330c1p0r0z0")
+        // The ring is not part of the key, because it is not part of the plan.
+        XCTAssertEqual(PinnedRowGeometry.regimeKey(posterHeight: Self.medium,
+                                                   captionVisible: true,
+                                                   showsCTA: true,
+                                                   landscapeRows: false,
+                                                   mode: .init(noZoom: false, accentRing: true)),
+                       "M330c1p0r0z0")
     }
 
     private func planHeight(for label: String) -> CGFloat {

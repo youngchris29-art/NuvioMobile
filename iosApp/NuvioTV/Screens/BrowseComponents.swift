@@ -243,8 +243,9 @@ enum PinnedRowTitle {
     /// One row's two clearances. Both are "title bottom → artwork top at slide 0"; they differ by
     /// which card is being measured against (Codex r4 P1).
     ///
-    ///     atRest  = (Spacing.lg + reach) − (titleInset + titleHeight)      ≈ 26pt
-    ///     focused = max(atRest − lift, 0)
+    ///     atRest     = (Spacing.lg + reach) − (titleInset + titleHeight)   ≈ 26pt
+    ///     focused    = max(atRest − lift, 0)
+    ///     focusedRaw = atRest − lift                                       (BUG-87/89, unclamped)
     ///
     /// The focus treatment raises the FOCUSED card's artwork while the title stays put, so the
     /// card the title actually rides over has that much less room than the row's resting geometry
@@ -261,6 +262,14 @@ enum PinnedRowTitle {
         /// What was subtracted — `focusLiftAllowance` for the ACTIVE focus mode. Carried so the
         /// settle log can name it: `focused` alone hides the magnitude once the clamp bites.
         var lift: CGFloat
+        /// BUG-87/89: `focused` is CLAMPED at 0 because both consumers — the corrector's `bandLow`
+        /// and the belt's `intrusion` — are written in "how much slide is free" units, where a
+        /// negative free travel is meaningless. That clamp is also how an 18pt PERMANENT overlap at
+        /// Large read as a clean 0 for a whole release. This is the unclamped value: negative means
+        /// the focused card's artwork sits that far OVER the settled title's bottom at every rest,
+        /// which no correction can fix. Reported on every settle line as `clearanceLiftRaw=`, and
+        /// `PinnedRowGeometry.topReachFloor(lift:)` is where it is kept non-negative.
+        var focusedRaw: CGFloat
     }
 
     /// Which focus treatment a ROW's cards actually wear. Since BUG-108 every pinned row's cards
@@ -378,7 +387,10 @@ enum PinnedRowTitle {
                                       captionVisible: captionVisible,
                                       treatment: treatment,
                                       mode: mode)
-        return Clearances(atRest: atRest, focused: max(atRest - lift, 0), lift: lift)
+        return Clearances(atRest: atRest,
+                          focused: max(atRest - lift, 0),
+                          lift: lift,
+                          focusedRaw: atRest - lift)
     }
 
     /// How far the title must ride DOWN to stay fully inside the rows viewport, clamped.
@@ -1757,7 +1769,8 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///
 ///     row= margin= net= vh= rowB= protB= y= inset= beltFaded= beltFadeReason=
 ///     rowH= last= prevHidden= corrN= pull= pbDisarm= seq= armSrc= regime= fits=
-///     clearance= clearanceLift= lift= intr= intrLifted= err= deficit= bandLo= bandHi= inBand=
+///     clearance= clearanceLift= clearanceLiftRaw= lift= intr= intrLifted= err= deficit=
+///     bandLo= bandHi= inBand=
 ///     [ nudge= bound= n= | nudge=0 <outcome> ]
 ///
 /// where `<outcome>` is one of `clearance=?`, `budget=1`, `unsat=1`, `pull=N`, `disarmed=1`,
@@ -2727,6 +2740,32 @@ enum PinnedRowSettle {
                         retryAfter: settleDelay)
         }
         clearanceLatePending = nil
+        // BUG-87/89: a NEGATIVE unclamped focused clearance is not a bad rest, it is bad GEOMETRY.
+        // The band above the artwork is too short to hold the title AND the focus lift, so the
+        // focused card's picture is under the title at every margin, and a correction can only
+        // trade one out-of-band rest for another (it did help — 49.5pt of real overlap down to
+        // 18 — which is why it kept firing, and why the clamp then reported the result as a clean
+        // 0). Stand down instead: the belt owns an unfixable rest, and this branch cannot fire in
+        // any shipping regime once `topReachFloor(lift:)` holds the lift. Same dedup discipline as
+        // `standDown`'s own log — loud, but once per row.
+        if clearance.focusedRaw < 0 {
+            let firstTime = standDownRow != m.rowKey
+            standDown(rowKey: m.rowKey, reason: "lift-deficit")
+            if firstTime {
+                NSLog("[HomeScrollProbe] settle %@",
+                      "LIFT-DEFICIT row=\(m.rowKey) regime=\(regimeKey ?? "-")"
+                        + " clearance=\(Int(clearance.atRest.rounded()))"
+                        + " lift=\(Int(clearance.lift.rounded()))"
+                        + " deficit=\(Int(clearance.focusedRaw.rounded()))"
+                        + " — the row's top band cannot hold the title AND the focus lift; no scroll"
+                        + " can fix it, so the reach floor is the bug (PinnedRowGeometry.topReachFloor)")
+            }
+            return Plan(report: line
+                        + " clearance=\(Int(clearance.atRest.rounded())) clearanceLift=0"
+                        + " clearanceLiftRaw=\(Int(clearance.focusedRaw.rounded()))"
+                        + " nudge=0 standDown=lift-deficit",
+                        targetY: nil)
+        }
         let liftedIntrusion = slide - clearance.focused
         // ── The band ─────────────────────────────────────────────────────────────────────────
         // See the block comment above for what each edge means and why a band replaced Wave 10's
@@ -2758,6 +2797,7 @@ enum PinnedRowSettle {
         // `lift=0 clearanceLift=26` — the whole point of Codex r7 P1.
         line += " clearance=\(Int(clearance.atRest.rounded()))"
             + " clearanceLift=\(Int(clearance.focused.rounded()))"
+            + " clearanceLiftRaw=\(Int(clearance.focusedRaw.rounded()))"
             + " lift=\(Int(clearance.lift.rounded()))"
             + " intr=\(Int((slide - clearance.atRest).rounded()))"
             + " intrLifted=\(Int(liftedIntrusion.rounded()))"
@@ -2951,7 +2991,8 @@ enum PinnedRowSettle {
                     + " corrN=\(corrN) margin=\(Int(m.margin.rounded()))"
                     + " bandLo=\(Int(bandLow.rounded())) bandHi=\(Int(bandHigh.rounded()))"
                     + " vh=\(Int(m.viewportHeight.rounded())) lockup=\(Int(m.lockupExtent.rounded()))"
-                    + " — the regime reports a fitting frame, so this rest should already have been in band")
+                    + " — the regime reports a fitting frame, so this rest should already have been in band"
+                    + " — fits constrains the FRAME, not the band; read clearanceLiftRaw and bandLo first")
         }
         if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
         return Plan(report: line, targetY: target)
