@@ -5959,7 +5959,8 @@ final class NuvioTVUITests: XCTestCase {
     /// record. Asserts only that a folder tile was reached and that a screenshot was attached;
     /// whether the ring survives the native lift on hardware is the device pass's question.
     func test56CollectionFolderRingWithZoomOn() throws {
-        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "NO", "-accent_focus_ring", "YES"],
+        let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "NO", "-accent_focus_ring", "YES",
+                                                 "-debug.cardGeometryProbe", "YES"],
                                forceFreshLaunch: true)
         // Codex r1 P2: restore the default settings on EVERY exit, the skip below included — a
         // skipped run otherwise leaves the app running with the forced ring-on/zoom-on overrides,
