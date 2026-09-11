@@ -2835,7 +2835,16 @@ enum PinnedRowSettle {
         // but non-negative, so the corrector keeps its rest. (The `deficit=` line below still names
         // the reach floor, because that is the right first suspect whenever it fires at a NORMAL
         // type size.)
-        if clearance.focusedRaw < 0 {
+        //
+        // A deficit smaller than the belt's own arm band (`PinnedRowTitle.fadeIntrusionArm`, 4pt) is
+        // absorbed by the belt's hysteresis rather than treated as unfixable geometry: `topReachFloor`
+        // reserves the FONT metric of the title, but the clearance here is judged against the LIVE
+        // rendered title height (`PinnedRowTitle.reading`'s `titleHeight`), and a fallback face (CJK,
+        // Thai, Arabic collection/addon names) can measure a few points taller than its font metric —
+        // enough to make `focusedRaw` slightly negative (e.g. −1.4) without the row actually being
+        // unfixable. Only a genuine over-band deficit (the rc4 18pt case, accessibility sizes) should
+        // disarm the corrector.
+        if clearance.focusedRaw < -PinnedRowTitle.fadeIntrusionArm {
             let firstTime = standDownRow != m.rowKey
             standDown(rowKey: m.rowKey, reason: "lift-deficit")
             if firstTime {

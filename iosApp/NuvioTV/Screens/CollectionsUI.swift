@@ -681,9 +681,11 @@ struct FolderTile: View {
                         .strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
-            // BUG-108 probe (test56): the DRAWN artwork box — inside the ring band's static
-            // `.scaleEffect` and inside the lift below, so its published rect is the picture the
-            // viewer sees. Armed only by `-debug.cardGeometryProbe YES`, DEBUG only.
+            // BUG-108 probe (test56): the tile box the ring is drawn on, inside the lift —
+            // `.scaleEffect` is render-only, so in ring/no-zoom modes the drawn picture is
+            // `ringWidth` smaller on each edge than this rect; test56's assertions are relative
+            // (rise/growth), so this is the right box for them. Armed only by
+            // `-debug.cardGeometryProbe YES`, DEBUG only.
             .modifier(DebugAXIdentifier("folder_artwork"))
             // BUG-108 (u/mrStevenx3, rc9 device photos: with the ring on, the collection tile's
             // picture lifts out of its ring): this tile's lift hangs HERE — outside the ring overlay

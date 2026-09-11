@@ -6103,7 +6103,8 @@ final class NuvioTVUITests: XCTestCase {
         }
         let focusedArt = allLifted[0]
         guard let group = artworkGroups.first(where: { $0.contains(focusedArt) }) else {
-            throw XCTSkip("control never saw a lifted poster (observed=\(controlObserved))")
+            XCTFail("internal: lifted rect \(focusedArt) not found in its own aspect group")
+            return
         }
         guard group.count >= 2 else {
             throw XCTSkip("the only lifted folder tile is in a shape group with no resting sibling to compare against (singleton group, height \(focusedArt.height))")

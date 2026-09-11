@@ -139,24 +139,39 @@ enum TabBarStateProbe {
         UserDefaults.standard.stringArray(forKey: linesKey) ?? []
     }
 
-    /// Starts the 2 s sampling timer against `window`. Idempotent — a second call while already
-    /// armed (e.g. a spurious extra `didMoveToWindow`) is a no-op rather than a second competing
-    /// timer. No-ops entirely when the probe is off, so an armer mounted unconditionally in the
-    /// view tree costs nothing beyond the one `enabled` read.
+    /// Starts the 2 s sampling timer against `window`. Re-armable — a later call (e.g. the armer
+    /// re-attaching to a new window) invalidates any existing timer first and replaces it, rather
+    /// than being a no-op forever after the first arm. No-ops entirely when the probe is off, so an
+    /// armer mounted unconditionally in the view tree costs nothing beyond the one `enabled` read.
     ///
     /// Must be called on the main thread — `Timer`/`RunLoop.main` and the `UIKit` walk in
     /// `sample(reason:)` both require it, matching every call site this is invoked from
     /// (`TabBarProbeArmer`'s `UIView.didMoveToWindow`, always on main).
     static func arm(in window: UIWindow?) {
-        guard enabled, timer == nil, let window else { return }
+        guard enabled, let window else { return }
+        timer?.invalidate()
         armedWindow = window
         armStart = Date()
         sample(reason: "arm")
         let ticker = Timer(timeInterval: 2.0, repeats: true) { _ in
-            TabBarStateProbe.sample(reason: "tick")
+            MainActor.assumeIsolated {
+                TabBarStateProbe.sample(reason: "tick")
+            }
         }
         RunLoop.main.add(ticker, forMode: .common)
         timer = ticker
+    }
+
+    /// Invalidates and clears the sampling timer and the weak window reference, and logs the
+    /// disarm so the pane's trace shows why sampling stopped instead of just trailing off. Called
+    /// from `ArmerView.didMoveToWindow` when the armer leaves its window (e.g. torn down between
+    /// tab switches) — without this the old timer kept firing against a window the armer no longer
+    /// tracks until ARC happened to deinit it.
+    static func disarm() {
+        timer?.invalidate()
+        timer = nil
+        armedWindow = nil
+        log("NOT-FOUND state=unknown reason=window-removed")
     }
 
     /// Fed by `TabBarVisibility.swift`'s `TabBarScrollAutoHide` on a real hysteresis crossing
@@ -179,7 +194,11 @@ enum TabBarStateProbe {
     /// is force-hidden and unfocusable there, see `HiddenTabBarFocusBlocker`), mirroring that
     /// type's own "say so instead of silently doing nothing" house rule.
     static func sample(reason: String) {
-        guard enabled, let window = armedWindow else { return }
+        guard enabled else { return }
+        guard let window = armedWindow else {
+            log("NOT-FOUND state=unknown mode=\(lastMode) reason=\(reason)")
+            return
+        }
         guard let bar = findTabBar(in: window) else {
             log("NOT-FOUND state=unknown mode=\(lastMode) reason=\(reason)")
             return
@@ -243,6 +262,10 @@ struct TabBarProbeArmer: UIViewRepresentable {
         override func didMoveToWindow() {
             super.didMoveToWindow()
             guard TabBarStateProbe.enabled else { return }
+            if window == nil {
+                TabBarStateProbe.disarm()
+                return
+            }
             DispatchQueue.main.async { [weak self] in
                 TabBarStateProbe.arm(in: self?.window)
             }
