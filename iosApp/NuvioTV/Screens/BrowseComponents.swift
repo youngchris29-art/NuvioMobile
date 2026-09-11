@@ -42,9 +42,13 @@ private struct RowCardBottomReachKey: EnvironmentKey {
 /// `style.width`, not `style.height`) widens that set by the difference and lets a Down step park the
 /// row ~134pt deep with its title far below the band. No correction can hold: the deep rest is legal,
 /// so the engine re-reveals straight back to it (`pullback=1`, three rounds, `pullBackDisarmed`).
-/// Floor the label at the regime's own `PinnedRowGeometry.Plan.linkFrame` and the last row inherits
-/// the rest interval every uniform poster row already settles inside — `[24, 24 + restRange]` in
-/// margin terms, which is inside the band by construction wherever `plan.fits`.
+/// Floor the label at `PinnedRowGeometry.lastRowLinkFrameFloor(plan:)` — the LARGER of the regime's
+/// own `Plan.linkFrame` and `viewport − Theme.Spacing.lg` — and the last row's rest interval is
+/// confined to `[24, 48]` in margin terms: the band's full width and no more, which is inside the
+/// band by construction wherever `plan.fits`. `linkFrame` alone is NOT enough (rc11 → rc12 fix): a
+/// regime whose own `restRange` runs past 24 (the hero-OFF panel at Large/Medium+ carries 32; Small
+/// without captions carries 72) would otherwise let the last row rest with margin up to `24 +
+/// restRange`, past the band's 48 upper edge.
 ///
 /// Transparent padding below the caption: it changes no artwork, no caption, no ring, and no
 /// `focusedLockupExtent` (CollectionsUI) — only the rectangle the focus engine reveals.
@@ -3059,12 +3063,14 @@ enum PinnedRowSettle {
             return Plan(report: line + " nudge=0 endOfContent=1 room=\(Int(scrollRoomUp.rounded()))",
                         targetY: nil)
         }
-        // BUG-87/89 (rc11): the exemption `PinnedRowEnvironment.swift` has promised since BUG-89.
-        // With the frame shaped (`rowCardLinkFrameFloor`), the engine's own reveal constraint already
-        // confines this row to `margin ∈ [24, 24 + restRange]`, so a rest ABOVE the band here means
-        // the shaping did not take — and a correction is exactly the wrong answer: the deep rest is
-        // legal for the engine, which re-reveals straight back to it (the rc10 `pullback=1` ×3 →
-        // `pullBackDisarmed` trace). Log it and let the belt judge the title.
+        // BUG-87/89 (rc11, floor hardened rc12): the exemption `PinnedRowEnvironment.swift` has
+        // promised since BUG-89. With the frame shaped (`rowCardLinkFrameFloor` ==
+        // `PinnedRowGeometry.lastRowLinkFrameFloor(plan:)`, the LARGER of `plan.linkFrame` and
+        // `viewport − Spacing.lg`), the engine's own reveal constraint already confines this row to
+        // `margin ∈ [24, 48]` — the band's own upper edge, not `24 + restRange` — so a rest ABOVE
+        // the band here means the shaping did not take — and a correction is exactly the wrong
+        // answer: the deep rest is legal for the engine, which re-reveals straight back to it (the
+        // rc10 `pullback=1` ×3 → `pullBackDisarmed` trace). Log it and let the belt judge the title.
         //
         // Strictly a GUARD, not the fix: when the shaping is in force this branch is unreachable
         // (`deficit == 0` returns above). It earns its place in the regime where the floor is 0 —

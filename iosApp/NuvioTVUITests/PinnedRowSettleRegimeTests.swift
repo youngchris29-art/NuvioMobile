@@ -226,8 +226,12 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
         // Large transition specifically. Poster Size is synced profile state, so this can only be
         // read and reported on — see the type doc.
         guard let startWidth = posterWidth(app) else { return }
-        guard startWidth >= 200, startWidth < 260 else {
-            throw XCTSkip("FIXTURE ASSUMPTION UNMET — Poster Size is not Medium (debug_env w=\(startWidth); Medium is ~220pt, Large ~269). This leg drives the Medium → Large transition the tester reported, so it has to start at Medium. Set Settings > Appearance > Poster Size to Medium on this fixture and rerun.")
+        // FEAT-39: 212…228 keeps Medium+ (~234) out of this band, matching
+        // `FixtureSetupTests.testSetPosterSizeMedium`'s tightened Medium gate — the old 200..<260
+        // gate admitted Medium+ (~234) as "Medium", and this leg's Medium → Large premise silently
+        // ran as a Medium+ → Large one instead.
+        guard startWidth > 212, startWidth < 228 else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — Poster Size is not Medium (debug_env w=\(startWidth); Medium is ~220pt, Medium+ ~234, Large ~269). This leg drives the Medium → Large transition the tester reported, so it has to start at Medium. Set Settings > Appearance > Poster Size to Medium on this fixture and rerun.")
         }
 
         // Walk into a poster row so a pinned row is actually focused and publishing settles —
@@ -244,6 +248,13 @@ final class PinnedRowSettleRegimeTests: XCTestCase {
         }
         guard let beforeRegime = Self.probeToken(beforeLine, key: "regime"), beforeRegime != "-" else {
             throw XCTSkip("the settle line carries no usable `regime=` ('\(beforeLine)') — that field is published by HomeView's `.onChange(of: plan.regimeKey)` into `PinnedRowSettle.noteRegimeChange`, so this build predates the Wave W5 call site (or is running a host that never publishes a regime). Nothing to compare; rebuild and rerun.")
+        }
+        // Belt and suspenders on top of the width gate above: `regime=`'s own tag
+        // (`PinnedRowGeometry.regimeKey`'s leading `S`/`M`/`P`/`L`/`X`) is the app's own account of
+        // which Poster Size it thinks it is running, so confirm it agrees with the width probe
+        // before trusting the Medium-start premise at all.
+        guard beforeRegime.hasPrefix("M") else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the settle line's regime tag ('\(beforeRegime)') is not Medium ('M…') even though debug_env's width gate passed (w=\(startWidth)); the two probes disagree, most likely Medium+ ('P…'). Run `testSetPosterSizeMedium` (FixtureSetupTests) to restore the fixture to Medium and rerun.")
         }
 
         // ── Drive the real setting ───────────────────────────────────────────────────────────

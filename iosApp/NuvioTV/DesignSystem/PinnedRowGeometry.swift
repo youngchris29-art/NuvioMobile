@@ -149,16 +149,36 @@ enum PinnedRowGeometry {
         var regimeKey: String
     }
 
-    /// BUG-87/89 (rc11): the minimum focusable-label height Home's LAST pinned row must carry so the
-    /// focus engine cannot park it outside the legibility band — see `EnvironmentValues
-    /// .rowCardLinkFrameFloor` for the reveal argument.
+    /// BUG-87/89 (rc11, hardened rc12): the minimum focusable-label height Home's LAST pinned row
+    /// must carry so the focus engine cannot park it outside the legibility band — see
+    /// `EnvironmentValues.rowCardLinkFrameFloor` for the reveal argument.
     ///
-    /// `plan.linkFrame` and nothing else: the last row then has the SAME revealed extent as every
-    /// other row in the regime, so it inherits their rest interval (`[−shelfTopPad, −shelfTopPad +
-    /// restRange]` in row-top terms) exactly. 0 when the regime does not fit — an over-tall frame
-    /// already has two anchorings and raising a short row to match it would only add a third.
+    /// The floor is the LARGER of the plan's own link frame and `viewport − Theme.Spacing.lg`, not
+    /// `plan.linkFrame` alone (rc11's version). `plan.linkFrame` matches every OTHER row's revealed
+    /// extent, so it looks like the right floor — but the engine tolerates any rest whose margin
+    /// falls in `[24, 24 + restRange]`, and `restRange = viewport − linkFrame` can run past the
+    /// band's own upper edge (48) whenever a regime's reach-spend left slack above 24pt: the
+    /// hero-OFF panel at Large/Medium+ carries `restRange` 32 (max margin 56), and Small without
+    /// captions carries 72 (max margin 96). Flooring at `linkFrame` alone permits the label to rest
+    /// as high as that slack allows — legal for the engine, but the last row can then park with its
+    /// title well above the band, and the rc11 exemption below (`lastRowShaped`) then suppresses the
+    /// correction that would otherwise have pulled it back down.
+    ///
+    /// `viewport − Spacing.lg` closes that gap: it is the height that makes the label's OWN
+    /// `restRange` exactly `Spacing.lg` (24), i.e. `margin ∈ [24, 24 + 24] = [24, 48]` — the band's
+    /// full width and no more, so "fully revealed" forces `rowTop ∈ [−24, 0]` regardless of what the
+    /// regime's own restRange was. Taking the max with `plan.linkFrame` keeps the rc11 guarantee for
+    /// every regime where the plan's own frame already confines the rest that tightly (every
+    /// carousel plan; every regime with `restRange <= Spacing.lg`) — the floor never goes SHORTER
+    /// than the frame itself. The frame still fits the viewport by construction: `floor +
+    /// Spacing.lg <= viewport` always holds, because `plan.linkFrame + Spacing.lg <= viewport +
+    /// Spacing.lg` (trivial) and `(viewport − Spacing.lg) + Spacing.lg == viewport`.
+    ///
+    /// 0 when the regime does not fit — an over-tall frame already has two anchorings and raising a
+    /// short row to match it would only add a third.
     nonisolated static func lastRowLinkFrameFloor(plan: Plan) -> CGFloat {
-        plan.fits ? plan.linkFrame : 0
+        guard plan.fits else { return 0 }
+        return max(plan.linkFrame, plan.viewport - Theme.Spacing.lg)
     }
 
     /// How much transparent bottom padding `lastRowLinkFrameFloor` adds to a label whose natural

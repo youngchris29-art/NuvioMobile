@@ -706,30 +706,107 @@ final class PinnedRowGeometryTests: XCTestCase {
 
     // MARK: - BUG-87/89 (rc11): the last-row link-frame floor
 
-    /// BUG-87/89 (rc11): the last row's label floor IS the plan's link frame, so a uniform row needs
-    /// no extra and a short-tile collection row gets exactly the difference.
-    func testLastRowLinkFrameFloorMatchesThePlansOwnLinkFrame() {
-        let plan = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
-                                          showsCTA: true, landscapeRows: false,
-                                          mode: Self.zoomOn, titleHeight: 37)
-        XCTAssertTrue(plan.fits)
-        XCTAssertEqual(PinnedRowGeometry.lastRowLinkFrameFloor(plan: plan), plan.linkFrame, accuracy: 0.01)
+    /// BUG-87/89 (rc11, hardened rc12): the last row's label floor is the LARGER of the plan's own
+    /// link frame and `viewport − Spacing.lg` — not `linkFrame` alone. The carousel case here is
+    /// where the two coincide (its `restRange`, 12.67, is under `Spacing.lg`), so a uniform row
+    /// needs no extra and a short-tile collection row gets exactly the difference, unchanged from
+    /// rc11. The panel case below is where they DON'T coincide (`restRange` 32 > `Spacing.lg`), which
+    /// is exactly the shape Finding 1 closes: `linkFrame` alone would have permitted a rest above the
+    /// band.
+    func testLastRowLinkFrameFloorTakesTheLargerOfLinkFrameAndTheBandCeiling() {
+        let carousel = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
+                                              showsCTA: true, landscapeRows: false,
+                                              mode: Self.zoomOn, titleHeight: 37)
+        XCTAssertTrue(carousel.fits)
+        // `linkFrame` (512.33) already exceeds `viewport − lg` (525 − 24 = 501): the `max` picks
+        // `linkFrame`, exactly rc11's behavior.
+        XCTAssertGreaterThan(carousel.linkFrame, carousel.viewport - Theme.Spacing.lg)
+        XCTAssertEqual(PinnedRowGeometry.lastRowLinkFrameFloor(plan: carousel), carousel.linkFrame,
+                       accuracy: 0.01)
         // A uniform poster row's own label IS the plan's link frame — nothing to add.
-        XCTAssertEqual(PinnedRowGeometry.lastRowBottomReachExtra(plan: plan, labelFrame: plan.linkFrame),
+        XCTAssertEqual(PinnedRowGeometry.lastRowBottomReachExtra(plan: carousel, labelFrame: carousel.linkFrame),
                        0, accuracy: 0.01)
         // The tester's last row: hidden-title SQUARE folder tiles, whose artwork is `style.width`
         // (FolderTile.artworkHeight), not `style.height`.
         let squareTile = Theme.Size.posterWidth / 126.0 * 154.0          // 268.88…
-        let tileLabel = plan.topReach + squareTile + plan.bottomReach     // 377.89
-        XCTAssertEqual(PinnedRowGeometry.lastRowBottomReachExtra(plan: plan, labelFrame: tileLabel),
+        let carouselTileLabel = carousel.topReach + squareTile + carousel.bottomReach   // 377.89
+        XCTAssertEqual(PinnedRowGeometry.lastRowBottomReachExtra(plan: carousel, labelFrame: carouselTileLabel),
                        134.44, accuracy: 0.5)
         // The point of the number: the shaped label leaves the engine only the rest interval every
         // other row in this regime already settles inside.
         let shelfTopPad = Theme.Spacing.lg
-        let deepestRowTop = plan.viewport - shelfTopPad - plan.linkFrame
+        let deepestRowTop = carousel.viewport - shelfTopPad - carousel.linkFrame
         let deepestMargin = deepestRowTop + Theme.Size.heroPinnedRowTitleInset
         XCTAssertLessThanOrEqual(deepestMargin, Theme.Size.heroPinnedRowTitleInset)   // ≤ bandHigh
         XCTAssertGreaterThanOrEqual(deepestMargin, -4)                                // ≥ bandLow
+
+        // The panel case Finding 1 is about: hero-OFF (FEAT-15, showsCTA: false) at Large, systemTitle
+        // (38 ⇒ topReachFloor 86, the canonical zoom-on number). Its `restRange` (32) is bigger than
+        // `Spacing.lg` (24), so the ceiling — not `linkFrame` — is the binding term.
+        let panel = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
+                                           showsCTA: false, landscapeRows: false,
+                                           mode: Self.zoomOn, titleHeight: Self.systemTitle)
+        XCTAssertTrue(panel.fits)
+        XCTAssertGreaterThan(panel.restRange, Theme.Spacing.lg)
+        let panelFloor = PinnedRowGeometry.lastRowLinkFrameFloor(plan: panel)
+        // floor == viewport − lg (the ceiling), strictly greater than linkFrame alone.
+        XCTAssertEqual(panelFloor, panel.viewport - Theme.Spacing.lg, accuracy: 0.01)
+        XCTAssertGreaterThan(panelFloor, panel.linkFrame)
+        // …and by construction that ceiling makes the margin range exactly [24, 48]: the band's full
+        // width, no more.
+        XCTAssertEqual(Theme.Spacing.lg + panel.viewport - panelFloor, 48, accuracy: 0.01)
+        // The frame still fits: floor + lg <= viewport.
+        XCTAssertLessThanOrEqual(panelFloor + Theme.Spacing.lg, panel.viewport + 0.01)
+        // Same square-tile arithmetic as the carousel case above, now against the ceiling-derived
+        // floor rather than `linkFrame` — the number is bigger because the floor is.
+        let panelTileLabel = panel.topReach + squareTile + panel.bottomReach
+        let panelExtra = PinnedRowGeometry.lastRowBottomReachExtra(plan: panel, labelFrame: panelTileLabel)
+        XCTAssertEqual(panelExtra, panelFloor - panelTileLabel, accuracy: 0.01)
+        XCTAssertEqual(panelExtra, 142.44, accuracy: 0.5)
+    }
+
+    /// Finding 1 (P2): the floor confines EVERY fitting regime to the band `[24, 48]` in margin
+    /// terms — not just the two cases spelled out above. Sweeps every Poster Size the app can
+    /// actually produce, both caption states, both hero forms, both zoom modes and both title
+    /// metrics (System vs FEAT-31's Open Sans) — 4 × 2 × 2 × 2 × 2 = 64 regimes.
+    func testLastRowFloorConfinesEveryFittingRegimeToTheBand() {
+        for (name, height) in Self.allSizes {
+            for captionVisible in [false, true] {
+                for showsCTA in [false, true] {
+                    for mode in [Self.zoomOn, Self.noZoom] {
+                        for titleHeight in [Self.systemTitle, Self.openSansTitle] {
+                            let label = "\(name) captions=\(captionVisible) showsCTA=\(showsCTA)"
+                                + " noZoom=\(mode.noZoom) title=\(titleHeight)"
+                            let plan = PinnedRowGeometry.plan(posterHeight: height,
+                                                              captionVisible: captionVisible,
+                                                              showsCTA: showsCTA,
+                                                              landscapeRows: false,
+                                                              mode: mode,
+                                                              titleHeight: titleHeight)
+                            let floor = PinnedRowGeometry.lastRowLinkFrameFloor(plan: plan)
+                            guard plan.fits else {
+                                XCTAssertEqual(floor, 0, accuracy: epsilon, label)
+                                continue
+                            }
+                            // The floored label must fit the viewport (floor ≤ viewport); it may exceed
+                            // viewport − shelfTopPad when the regime's own link frame already does (Small + captions:
+                            // 450.5 in 455), in which case the engine's tolerated interval is [−24, viewport − 24 − floor],
+                            // non-empty as long as floor ≤ viewport, and its margin ceiling 24 + viewport − floor is
+                            // still checked below.
+                            XCTAssertLessThanOrEqual(floor, plan.viewport + 0.01, label)
+                            // The max margin the floor permits never exceeds the band's own upper
+                            // edge (48) — the whole point of taking the ceiling over `linkFrame`
+                            // alone.
+                            XCTAssertLessThanOrEqual(Theme.Spacing.lg + plan.viewport - floor,
+                                                     Theme.Size.heroPinnedRowTitleInset + 0.01, label)
+                            // The min margin (24, i.e. rowTop == −shelfTopPad) is trivially inside
+                            // the band's lower edge with the corrector's ±2 tolerance to spare.
+                            XCTAssertGreaterThanOrEqual(Theme.Spacing.lg, -4, label)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The floor never manufactures an over-tall frame: `!fits` regimes opt out.

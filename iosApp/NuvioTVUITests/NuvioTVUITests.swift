@@ -5584,6 +5584,14 @@ final class NuvioTVUITests: XCTestCase {
         let maxLastRowWalk = 40
         var lastRowLine: String?
         var previousDownRow: String?
+        // Finding 2 (P3, test48 leg B): `pull=` on the settle line counts pullbacks for the WHOLE
+        // session, not this row — an earlier row's pullback would otherwise fail the last-row
+        // check spuriously. Seed the baseline from the last settle line read BEFORE this walk even
+        // starts (leg B's own healthy-rest read above), then advance it to each non-terminal line
+        // as the walk proceeds, so by the time `last=1` shows, this holds the count from the LAST
+        // sample taken before the walk entered the last row — the last row's own line must show no
+        // NEW pullback against that baseline, not merely `pull == 0`.
+        var previousPull = Self.probeValue(healthyLine, key: "pull")
         var downWalkStalled = false
         for step in 0..<maxLastRowWalk {
             press(.down, times: 1, gap: 0.9)
@@ -5597,11 +5605,12 @@ final class NuvioTVUITests: XCTestCase {
                 downWalkStalled = true
                 break
             }
-            previousDownRow = rowKey
             if Self.probeValue(line, key: "last") == 1 {
                 lastRowLine = line
                 break
             }
+            previousDownRow = rowKey
+            previousPull = Self.probeValue(line, key: "pull")
         }
 
         guard let lastRowLine else {
@@ -5637,13 +5646,34 @@ final class NuvioTVUITests: XCTestCase {
         // reveal constraint should already confine this row to the band — the corrector's
         // `settlePlan` exemption (`lastRowShaped=1`) means it must never fire on this row, and the
         // engine must never pull a fired correction back.
+        //
+        // Finding 2 (P3): this leg samples the settle line after a fixed `settleWindow`/2.5s pause,
+        // so a correction fired earlier in that window can already have LANDED and settled by the
+        // time this line is read — `nudge=0` on its own cannot tell "never fired" apart from
+        // "fired, corrected, and is now quiet". `corrN=` (`correctionsInWindow(m.rowKey)`, the
+        // per-ROW corrections-in-window counter on the settle line) is the field that actually
+        // answers "did anything fire on THIS row", so it is asserted alongside `nudge` rather than
+        // instead of it.
+        guard let lastRowNudge = Self.probeValue(lastRowLine, key: "nudge"),
+              let lastRowCorrN = Self.probeValue(lastRowLine, key: "corrN"),
+              let lastRowPull = Self.probeValue(lastRowLine, key: "pull") else {
+            XCTFail("last-row settle line is missing nudge=/corrN=/pull= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
+            return
+        }
         XCTAssertEqual(
-            Self.probeValue(lastRowLine, key: "nudge"), 0,
+            lastRowNudge, 0,
             "the corrector fired on the last row — with the frame shaped (rowCardLinkFrameFloor) the focus engine's own reveal constraint should already confine this row to the band. Full settle line: \(lastRowLine)"
         )
         XCTAssertEqual(
-            Self.probeValue(lastRowLine, key: "pull"), 0,
-            "the last row was pulled back by the focus engine after a correction — the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
+            lastRowCorrN, 0,
+            "the corrector recorded a correction against the last row within its window (corrN=\(lastRowCorrN)) even though nudge read 0 on this sample — a correction landed and settled between samples. Full settle line: \(lastRowLine)"
+        )
+        // `pull=` is a SESSION-WIDE counter, not this row's — comparing it to the baseline taken
+        // just before the walk entered the last row (rather than asserting `== 0` outright) is what
+        // keeps an EARLIER row's pullback, elsewhere in the same walk, from failing this check.
+        XCTAssertEqual(
+            lastRowPull, previousPull ?? lastRowPull,
+            "the last row absorbed a NEW pullback since the last sample taken before the walk reached it (pull=\(lastRowPull), baseline=\(previousPull.map(String.init) ?? "unavailable")) — the focus engine pulled a fired correction back on this row, the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
         )
         XCTAssertEqual(
             lastBeltFaded, 0,
