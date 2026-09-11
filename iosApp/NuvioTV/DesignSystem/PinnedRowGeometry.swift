@@ -530,12 +530,18 @@ enum PinnedRowGeometry {
         let rounded = Int(posterHeight.rounded())
         let small = Int((Theme.Size.posterHeight * PosterSizePreset.smallScale).rounded())
         let medium = Int(Theme.Size.posterHeight.rounded())
+        // FEAT-39: Medium+ (134dp) sits between Medium and Large but shares Large's dial (both are
+        // above the 335pt hero-compression gate), so it gets its own tag rather than falling into
+        // `X` — `PinnedRowSettle`'s log-once sets must not conflate it with an arbitrary synced width.
+        let mediumPlus = Int((Theme.Size.posterHeight * PosterSizePreset.mediumPlusScale).rounded())
         let large = Int((Theme.Size.posterHeight * PosterSizePreset.largeScale).rounded())
         let tag: String
         if rounded == small {
             tag = "S"
         } else if rounded == medium {
             tag = "M"
+        } else if rounded == mediumPlus {
+            tag = "P"
         } else if rounded == large {
             tag = "L"
         } else {
@@ -545,14 +551,17 @@ enum PinnedRowGeometry {
             + "z\(mode.noZoom ? 1 : 0)t\(Int(titleHeight.rounded()))"
     }
 
-    /// The three synced Poster Size presets, as RATIOS of the Medium default rather than as pixel
+    /// The four synced Poster Size presets, as RATIOS of the Medium default rather than as pixel
     /// literals — `PosterStyle.init(from:)` scales `widthDp` by `Theme.Size.posterWidth / 126`, so
-    /// Small (105dp) and Large (154dp) are exactly these fractions of `Theme.Size.posterHeight`
-    /// whatever that constant becomes. Only the regime key's cosmetic size tag reads them; no
-    /// geometry is derived from them (a synced width outside the presets is an ordinary payload
-    /// here and simply tags as `X`).
+    /// Small (105dp), Medium+ (134dp), and Large (154dp) are exactly these fractions of
+    /// `Theme.Size.posterHeight` whatever that constant becomes. Only the regime key's cosmetic size
+    /// tag reads them; no geometry is derived from them (a synced width outside the presets is an
+    /// ordinary payload here and simply tags as `X`).
     nonisolated enum PosterSizePreset {
         static let smallScale: CGFloat = 105.0 / 126.0
+        /// FEAT-39: 134dp, the mobile app's own "comfort" preset. Above the 335pt hero-compression
+        /// gate, so it shares Large's dial rather than getting a geometry of its own.
+        static let mediumPlusScale: CGFloat = 134.0 / 126.0
         static let largeScale: CGFloat = 154.0 / 126.0
     }
 

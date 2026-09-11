@@ -136,9 +136,10 @@ final class FixtureSetupTests: XCTestCase {
         return nil
     }
 
-    /// `debug_env`'s live `w=` (poster artwork width in pt — Small ~183, Medium ~220, Large ~269;
-    /// `PosterStyle`'s own scale of the synced `widthDp`). nil when the probe is missing/unparseable
-    /// (DEBUG-only, HomeView.swift) rather than defaulting to a value that could hide a real gap.
+    /// `debug_env`'s live `w=` (poster artwork width in pt — Small ~183, Medium ~220, Medium+ ~234,
+    /// Large ~269; `PosterStyle`'s own scale of the synced `widthDp`). nil when the probe is
+    /// missing/unparseable (DEBUG-only, HomeView.swift) rather than defaulting to a value that
+    /// could hide a real gap.
     private func readPosterArtworkWidth(_ app: XCUIApplication) -> Int? {
         let env = app.staticTexts["debug_env"]
         guard env.waitForExistence(timeout: 15) else { return nil }
@@ -195,11 +196,12 @@ final class FixtureSetupTests: XCTestCase {
         pause(0.8)
     }
 
-    /// Selects `optionLabel` ("Small"/"Medium"/"Large") from an ALREADY-OPEN Size/Corners popover
-    /// (`SettingsPickerRow`'s `Menu { Picker }`, opened by pressing Select on the row).
+    /// Selects `optionLabel` ("Small"/"Medium"/"Medium+"/"Large") from an ALREADY-OPEN Size/Corners
+    /// popover (`SettingsPickerRow`'s `Menu { Picker }`, opened by pressing Select on the row).
     ///
-    /// Ground truth from an `app.debugDescription` dump taken with the popover open (2026-09-04):
-    /// the three options are NOT `Button`s — each is a plain `Other`-typed element carrying the
+    /// Ground truth from an `app.debugDescription` dump taken with the popover open (2026-09-04,
+    /// three options at the time — FEAT-39 later added "Medium+" as a fourth, same shape): the
+    /// options are NOT `Button`s — each is a plain `Other`-typed element carrying the
     /// exact label ("Small"/"Medium"/"Large"), wrapped in an unlabeled `Cell` that carries the
     /// real `Focused`/`Selected` traits (the same "Cell carries focus, inner element carries the
     /// label" shape every other row in this pane has). The popover renders as a SEPARATE overlay
@@ -234,7 +236,7 @@ final class FixtureSetupTests: XCTestCase {
     }
 
     /// Navigates Settings > Appearance and sets Poster Style > Size to `optionLabel`
-    /// ("Small"/"Medium"/"Large") through the real UI.
+    /// ("Small"/"Medium"/"Medium+"/"Large") through the real UI.
     private func selectPosterSize(_ app: XCUIApplication, _ optionLabel: String) throws {
         openTab(app, named: "Settings")
         _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
@@ -297,7 +299,8 @@ final class FixtureSetupTests: XCTestCase {
     func testSetPosterSizeMedium() throws {
         let app = launchToHome()
 
-        if let before = readPosterArtworkWidth(app), before > 200, before < 260 {
+        // FEAT-39: 212…228 keeps Medium+ (~234) and Large (~269) out of the pass band.
+        if let before = readPosterArtworkWidth(app), before > 212, before < 228 {
             let attachment = XCTAttachment(string: "already Medium before this test ran: w=\(before)")
             attachment.name = "fixture_already_medium"
             attachment.lifetime = .keepAlways
@@ -318,8 +321,41 @@ final class FixtureSetupTests: XCTestCase {
         report.lifetime = .keepAlways
         add(report)
         XCTAssertTrue(
-            after > 200 && after < 260,
+            after > 212 && after < 228,
             "Poster Size did not switch to Medium via the UI (debug_env w=\(after))"
+        )
+    }
+
+    /// FEAT-39: the fourth Size option, between Medium and Large. Same idempotent-restore shape as
+    /// `testSetPosterSizeMedium`/`testSetPosterSizeLarge`. `w=` at 134dp is ≈234, comfortably clear
+    /// of Medium's ≈220 and Large's ≈269 on either side — 228…240 leaves 6pt of margin to both
+    /// neighbors without overlapping either.
+    func testSetPosterSizeMediumPlus() throws {
+        let app = launchToHome()
+
+        if let before = readPosterArtworkWidth(app), before > 228, before < 240 {
+            let attachment = XCTAttachment(string: "already Medium+ before this test ran: w=\(before)")
+            attachment.name = "fixture_already_medium_plus"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            return
+        }
+
+        try selectPosterSize(app, "Medium+")
+
+        openTab(app, named: "Home")
+        pause(2)
+        guard let after = readPosterArtworkWidth(app) else {
+            XCTFail("debug_env probe missing after setting Poster Size to Medium+ — is this a Release build, or did Home never remount?")
+            return
+        }
+        let report = XCTAttachment(string: "debug_env w=\(after) after selecting Medium+ via the UI")
+        report.name = "fixture_after_medium_plus"
+        report.lifetime = .keepAlways
+        add(report)
+        XCTAssertTrue(
+            after > 228 && after < 240,
+            "Poster Size did not switch to Medium+ via the UI (debug_env w=\(after))"
         )
     }
 

@@ -405,8 +405,13 @@ private struct PosterStyleControls: View {
     let onLandscape: (Bool) -> Void
     let onReset: () -> Void
 
+    // FEAT-39 (u/mrStevenx3, 2026-09-11): "Large is too big, Medium too small" — 134 dp is the
+    // mobile app's own "comfort" preset, so the synced payload stays legal on both platforms;
+    // above 335 pt it takes the Large hero-compression dial (see `PinnedRowGeometry`), so it
+    // trades one description line for the size.
     private let sizes: [(name: String, dp: Int32)] = [
-        (String(localized: "Small"), 105), (String(localized: "Medium"), 126), (String(localized: "Large"), 154)
+        (String(localized: "Small"), 105), (String(localized: "Medium"), 126),
+        (String(localized: "Medium+"), 134), (String(localized: "Large"), 154)
     ]
     private let corners: [(name: String, dp: Int32)] = [
         (String(localized: "Square"), 0), (String(localized: "Rounded"), 12), (String(localized: "Round"), 28)

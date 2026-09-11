@@ -30,10 +30,12 @@ final class PinnedRowGeometryTests: XCTestCase {
     }
     private static let small = posterHeight(dp: 105)    // 275.0
     private static let medium = posterHeight(dp: 126)   // 330.0 == Theme.Size.posterHeight
+    /// FEAT-39: 134dp, above the 335pt hero-compression gate, so it takes the Large dial.
+    private static let mediumPlus = posterHeight(dp: 134) // 350.95…
     private static let large = posterHeight(dp: 154)    // 403.33…
 
     private static let allSizes: [(name: String, height: CGFloat)] = [
-        ("Small", small), ("Medium", medium), ("Large", large),
+        ("Small", small), ("Medium", medium), ("Medium+", mediumPlus), ("Large", large),
     ]
 
     // MARK: - Focus modes
@@ -103,7 +105,10 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// the link frame would compress the default configuration's hero by ~82pt to fix a rest nobody
     /// has reported. The fix applies to the sizes that were already compressing.
     func testSmallAndMediumSpendNothingAtEveryFlagCombination() {
-        for (label, plan) in Self.crossProduct() where label.hasPrefix("Small") || label.hasPrefix("Medium") {
+        // FEAT-39: "Medium " (with the trailing space from the label's own " captions=..." suffix)
+        // deliberately excludes "Medium+" — that size is above the hero-compression gate and takes
+        // the Large dial, so it is NOT bit-identical to what shipped.
+        for (label, plan) in Self.crossProduct() where label.hasPrefix("Small") || label.hasPrefix("Medium ") {
             XCTAssertEqual(plan.compression, 0, accuracy: epsilon, label)
             XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
             XCTAssertEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach, accuracy: epsilon, label)
@@ -256,6 +261,43 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.linkFrame, 513.333, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
         XCTAssertEqual(plan.regimeKey, "L403c0p1r0z0t38")
+    }
+
+    /// FEAT-39: Medium+ (134dp → 350.952… pt) sits above the 335pt hero-compression gate, so it
+    /// takes the Large dial exactly the way Large does — `topReachFloor` and `bottomReachFloor` are
+    /// artwork-height-independent (lift + title only), so both reaches land on the SAME 86/66/24
+    /// numbers as Large. Only the compression differs, because Medium+'s artwork demands
+    /// ~52.4pt less than Large's:
+    ///
+    ///     demand         350.952380952 − 291                          = 59.952380952
+    ///     (a) bottom     44 → 24 (bottomReachFloor)            −20    ⇒ 39.952380952 left
+    ///     (b) top        88 → 86 (topReachFloor(lift: 20))     −2     ⇒ 37.952380952 left   (zoom on)
+    ///                     88 → 66 (topReachFloor(lift: 0))     −22    ⇒ 17.952380952 left   (no zoom)
+    ///     (c) hero       min(left, panel give 142)             = left (unclamped either way)
+    ///
+    /// The rough numbers in the FEAT-39 spec (compression 38/18, viewport 493, linkFrame 461) were
+    /// hand-rounded; the exact arithmetic above is what `plan(...)` actually returns, asserted here
+    /// to three decimals. `restRange` still nets to exactly 32 (`Spacing.lg + settledCushion`) by the
+    /// same construction that gives Large's Stevens shape 32 — the repeating decimals in viewport
+    /// and linkFrame cancel.
+    func testMediumPlusTakesTheLargeDialWithThreeSystemLines() {
+        let plan = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
+                                          showsCTA: false, landscapeRows: false,
+                                          mode: Self.zoomOn, titleHeight: 38)
+        XCTAssertTrue(plan.fits)
+        XCTAssertEqual(plan.topReach, 86, accuracy: epsilon)
+        XCTAssertEqual(plan.bottomReach, 24, accuracy: epsilon)
+        XCTAssertEqual(plan.compression, 37.952, accuracy: 0.01)
+        XCTAssertEqual(plan.viewport, 492.952, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 460.952, accuracy: 0.01)
+        XCTAssertEqual(plan.restRange, 32, accuracy: epsilon)
+        XCTAssertEqual(plan.regimeKey, "P351c0p1r0z0t38")
+
+        let noZoom = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
+                                            showsCTA: false, landscapeRows: false,
+                                            mode: Self.noZoom, titleHeight: 38)
+        XCTAssertEqual(noZoom.topReach, 66, accuracy: epsilon)
+        XCTAssertEqual(noZoom.compression, 17.952, accuracy: 0.01)
     }
 
     /// The set of legal rests must be narrower than the legibility band `PinnedRowSettle` corrects
@@ -794,6 +836,27 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         // The logo slot lands exactly on its floor, as it did in Wave 10.
         XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo,
                        Theme.Size.heroLogoSlotHeightPinnedFloor, accuracy: epsilon)
+    }
+
+    /// FEAT-39: Medium+'s own compression at the tester's zoom-on panel shape
+    /// (`PinnedRowGeometryTests.testMediumPlusTakesTheLargeDialWithThreeSystemLines`, 37.952 — the
+    /// spec's hand-rounded "38" is close enough that either number lands in the SAME tier). 37.952
+    /// is comfortably inside tier 1 alone (< the 36 cap plus the logo's 32 give), so the synopsis
+    /// give is capped at exactly 36, same as Large's Stevens shape, and the slot nets to the SAME
+    /// 108pt → 3 lines under the System font, 2 under Open Sans.
+    func testMediumPlusPanelKeepsThreeSynopsisLines() {
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: 37.952,
+                                                         showsCTA: false,
+                                                         folderHero: false)
+        XCTAssertEqual(split.synopsis, Theme.Size.heroSynopsisSlotPinnedGive, accuracy: epsilon)
+        XCTAssertEqual(split.synopsis, 36, accuracy: epsilon)
+
+        let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
+        XCTAssertEqual(slot, 108, accuracy: epsilon)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
+        if let openSansLine = Self.openSansBodyLine() {
+            XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: openSansLine), 2)
+        }
     }
 
     /// rc10: the No-Zoom Large panel lands at compression 70.33 (the lift-aware floor), which the

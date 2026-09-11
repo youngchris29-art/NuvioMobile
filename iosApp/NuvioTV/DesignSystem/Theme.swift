@@ -634,6 +634,7 @@ enum Theme {
         ///     Poster Size       artwork height              46pt intrusion
         ///     Small  (105 dp)   275pt (183 × 1.5)           16.7%
         ///     Medium (126 dp)   330pt                       13.9%
+        ///     Medium+ 351: takes the Large dial (FEAT-39)
         ///     Large  (154 dp)   403pt                       11.4%
         ///     Landscape rows    203pt                       22.7%
         ///     Folder tile,      183pt (square/16:9 folder   25.1%  ← the tester's
@@ -778,6 +779,7 @@ enum Theme {
         ///
         ///     Small      24 + 88 + 275.0 + 8 = 395.0  →  under 455, compression 0
         ///     Medium     24 + 88 + 330.0 + 8 = 450.0  →  under 455, compression 0 (5pt spare)
+        ///     Medium+ 351: takes the Large dial (FEAT-39)
         ///     Large      24 + 88 + 403.3 + 8 = 523.3  →  compression 68.3
         ///     Landscape  24 + 88 + 203.0 + 8 = 323.0  →  0 (landscape rows are shorter)
         ///
@@ -824,7 +826,8 @@ enum Theme {
         /// enough that a 2:1 wordmark spans 300+pt at Large. 160 is a FIXED point value (not
         /// poster-scaled) so the wordmark reads the same size at every Poster Size rather than
         /// shrinking with the grid — 0.40x Small (275), 0.48x Medium (330), 0.58x Large (403.3)
-        /// poster height; a 2:1 wordmark renders 320pt wide. The inside-collection folder page
+        /// poster height; a 2:1 wordmark renders 320pt wide. Medium+ 351: takes the Large dial
+        /// (FEAT-39). The inside-collection folder page
         /// title (`FolderRoute`) is untouched — this only sizes the HOME hero's wordmark.
         static let heroFolderLogoSlotHeight: CGFloat = 160
 
