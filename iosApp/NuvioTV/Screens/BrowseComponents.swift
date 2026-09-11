@@ -45,7 +45,7 @@ private struct RowCardBottomReachKey: EnvironmentKey {
 /// Floor the label at `PinnedRowGeometry.lastRowLinkFrameFloor(plan:)` — the LARGER of the regime's
 /// own `Plan.linkFrame` and `viewport − Theme.Spacing.lg` — and the last row's rest interval is
 /// confined to `[24, 48]` in margin terms: the band's full width and no more, which is inside the
-/// band by construction wherever `plan.fits`. `linkFrame` alone is NOT enough (rc11 → rc12 fix): a
+/// band by construction wherever `plan.fits`. `linkFrame` alone is NOT enough (rc11 → rc11 (Codex r1) fix): a
 /// regime whose own `restRange` runs past 24 (the hero-OFF panel at Large/Medium+ carries 32; Small
 /// without captions carries 72) would otherwise let the last row rest with margin up to `24 +
 /// restRange`, past the band's 48 upper edge.
@@ -1866,10 +1866,20 @@ enum PinnedRowSettle {
         /// which the corrector alone could never tell apart. See `PinnedRowEnvironment.swift`.
         var isLastRow: Bool = false
 
-        /// BUG-87/89 (rc11): whether this row's cards are carrying `rowCardLinkFrameFloor` — i.e.
-        /// whether the FRAME SHAPING is active for it. Read from the same environment the cards read,
-        /// so it cannot disagree with what is actually laid out.
-        var lastRowShaped: Bool = false
+        /// BUG-87/89 (rc11), carrying the VALUE rather than a Bool since Codex r2 on rc11: the
+        /// `rowCardLinkFrameFloor` this row's cards are carrying — i.e. the label-height floor the
+        /// FRAME SHAPING applies, or 0 where shaping is inactive. Read from the same environment the
+        /// cards read, so it cannot disagree with what is actually laid out.
+        ///
+        /// A bare Bool only said a floor EXISTED, not that it GOVERNS the focused label — see
+        /// `PinnedRowSettle.lastRowExemptionApplies(lockupExtent:linkFrameFloor:)`, which needs the
+        /// actual number to compare against `lockupExtent`.
+        var linkFrameFloor: CGFloat = 0
+
+        /// Whether the frame-shaping floor is active at all (`linkFrameFloor > 0`) — kept for the
+        /// settle report line, whose `lastRowShaped=` field predates the value-carrying fix and is
+        /// parsed by device traces as a 0/1 flag, not a magnitude.
+        var lastRowShaped: Bool { linkFrameFloor > 0 }
 
         /// The title's top vs the viewport's top edge — the probe's `margin`, reproduced from the
         /// ROW's frame. The pinned title is an overlay at the shelf's top-leading corner inset by
@@ -1912,6 +1922,30 @@ enum PinnedRowSettle {
         /// height the band target is sized against, independent of where the row is currently
         /// parked. `protectedBottom` is the same quantity in viewport coordinates.
         var lockupExtent: CGFloat { protectedBottom - rowTop }
+    }
+
+    /// BUG-87/89 (rc11, Codex r2): the last-row exemption may fire only when the label floor actually
+    /// GOVERNS the focused label — i.e. the label's natural lockup extent is no taller than the floored
+    /// frame. A collection row in Landscape Rows mode can hold a PORTRAIT folder whose natural label
+    /// (535 at Large) exceeds both the plan's landscape link frame and the floor (431): its reveal is
+    /// then bounded by its own height, the frame can clip at the top-anchored rest, and the ordinary
+    /// upward correction is the right answer. `lockupExtent` is the focused card's measured lockup
+    /// (`Measurement.lockupExtent`, top of the row to the bottom of the focused card's caption);
+    /// `linkFrameFloor` is `rowCardLinkFrameFloor`.
+    ///
+    /// `lockupExtent` is `Theme.Spacing.lg + topReach + artwork + captionChrome` — see
+    /// `Measurement.protectedBottom`/`lockupExtent` for the uniform-row derivation and
+    /// `CollectionRowView.focusedTileLockupExtent` (CollectionsUI.swift) for the mixed-shape one; BOTH
+    /// start from the shelf's top `Spacing.lg` pad, so `lockupExtent` already carries it. `linkFrameFloor`,
+    /// by contrast, is the floor `rowCardLinkFrameFloor` applies to the card's LABEL — the region
+    /// INSIDE that same `lg` pad — so it is compared against `lockupExtent` only after adding the pad
+    /// back: `lockupExtent <= lg + linkFrameFloor`. (`lockupExtent` deliberately excludes the trailing
+    /// `rowCardBottomReach` below the caption — `protectedBottom`'s own header calls that band
+    /// transparent and free to leave the viewport without hiding anything, so it plays no part in
+    /// whether the floor governs the VISIBLE label either.) `0.5` absorbs point-rounding in the two
+    /// independent derivations without opening the door to a real 1pt+ overshoot.
+    nonisolated static func lastRowExemptionApplies(lockupExtent: CGFloat, linkFrameFloor: CGFloat) -> Bool {
+        linkFrameFloor > 0 && lockupExtent <= Theme.Spacing.lg + linkFrameFloor + 0.5
     }
 
     /// What one pinned row's settle tracker saw this geometry pass (Wave 9(a)).
@@ -3063,23 +3097,36 @@ enum PinnedRowSettle {
             return Plan(report: line + " nudge=0 endOfContent=1 room=\(Int(scrollRoomUp.rounded()))",
                         targetY: nil)
         }
-        // BUG-87/89 (rc11, floor hardened rc12): the exemption `PinnedRowEnvironment.swift` has
-        // promised since BUG-89. With the frame shaped (`rowCardLinkFrameFloor` ==
-        // `PinnedRowGeometry.lastRowLinkFrameFloor(plan:)`, the LARGER of `plan.linkFrame` and
-        // `viewport − Spacing.lg`), the engine's own reveal constraint already confines this row to
-        // `margin ∈ [24, 48]` — the band's own upper edge, not `24 + restRange` — so a rest ABOVE
-        // the band here means the shaping did not take — and a correction is exactly the wrong
-        // answer: the deep rest is legal for the engine, which re-reveals straight back to it (the
-        // rc10 `pullback=1` ×3 → `pullBackDisarmed` trace). Log it and let the belt judge the title.
+        // BUG-87/89 (rc11, floor hardened by Codex r1 on rc11, governance-checked by Codex r2 on rc11 — Codex r2 P2): the
+        // exemption `PinnedRowEnvironment.swift` has promised since BUG-89. With the frame shaped
+        // (`rowCardLinkFrameFloor` == `PinnedRowGeometry.lastRowLinkFrameFloor(plan:)`, the LARGER of
+        // `plan.linkFrame` and `viewport − Spacing.lg`), the engine's own reveal constraint already
+        // confines this row to `margin ∈ [24, 48]` — the band's own upper edge, not `24 + restRange`
+        // — so a rest ABOVE the band here means the shaping did not take — and a correction is
+        // exactly the wrong answer: the deep rest is legal for the engine, which re-reveals straight
+        // back to it (the rc10 `pullback=1` ×3 → `pullBackDisarmed` trace). Log it and let the belt
+        // judge the title.
         //
-        // Strictly a GUARD, not the fix: when the shaping is in force this branch is unreachable
-        // (`deficit == 0` returns above). It earns its place in the regime where the floor is 0 —
-        // `!plan.fits`, or a Poster Size whose last row is already the plan's shape.
+        // That guarantee only holds while the floor actually GOVERNS this focused label — a floor
+        // that EXISTS is not enough. A mixed-shape collection row in Landscape Rows mode can hold a
+        // PORTRAIT folder whose own natural label is taller than the regime's (landscape-shaped)
+        // floor; the label's `.frame(minHeight:)` then sizes to its own taller content instead of the
+        // floor, the `margin ∈ [24, 48]` promise is void for it, and — the rc11 (Codex r2) device finding — a
+        // top-anchored rest clips the artwork with `error > 0` and real scroll range to spend. Taller
+        // labels keep the normal correction path below rather than being waved through here.
+        // `lastRowExemptionApplies` is the governance check; see its own doc for the arithmetic.
+        //
+        // Strictly a GUARD, not the fix: when the shaping is in force AND governs this branch is
+        // unreachable (`deficit == 0` returns above). It earns its place in the regime where the
+        // floor is 0 — `!plan.fits`, or a Poster Size whose last row is already the plan's shape —
+        // and now also where the floor exists but a taller-than-floor label makes it moot.
         //
         // Upward only. `error < 0` means the row is parked ABOVE the band (title clipped), which the
         // reveal constraint cannot produce and which the downward correction is still the right
         // answer for if something else ever does.
-        if error > 0, m.isLastRow, m.lastRowShaped {
+        if error > 0, m.isLastRow,
+           PinnedRowSettle.lastRowExemptionApplies(lockupExtent: m.lockupExtent,
+                                                   linkFrameFloor: m.linkFrameFloor) {
             consecutiveNudges = 0
             if standDownRow == m.rowKey { standDownRow = nil }
             return Plan(report: line + " nudge=0 lastRowShaped=1 room=\(Int(scrollRoomUp.rounded()))",
@@ -3278,8 +3325,8 @@ private struct PinnedRowSettleTracking: ViewModifier {
     /// row types that attach that modifier need no signature change and every non-Home host keeps
     /// the `false` default for free.
     @Environment(\.pinnedRowIsLast) private var isLastRow
-    /// BUG-87/89 (rc11): whether this row's cards are carrying `rowCardLinkFrameFloor` — see
-    /// `EnvironmentValues.rowCardLinkFrameFloor`.
+    /// BUG-87/89 (rc11), carrying the VALUE since Codex r2 on rc11 — see
+    /// `EnvironmentValues.rowCardLinkFrameFloor` and `PinnedRowSettle.Measurement.linkFrameFloor`.
     @Environment(\.rowCardLinkFrameFloor) private var linkFrameFloor
 
     func body(content: Content) -> some View {
@@ -3289,7 +3336,7 @@ private struct PinnedRowSettleTracking: ViewModifier {
         let active = isFocused && cardTopReach > 0
         let lockupExtent = focusedLockupExtent
         let isLast = isLastRow
-        let shaped = linkFrameFloor > 0
+        let floor = linkFrameFloor
         // Wave 9(a): THREE states, not two. Collapsing "this row is not focused" and "the enclosing
         // scroll view didn't resolve this pass" into one `nil` is what livelocked the corrector
         // against the belt on hardware — see `PinnedRowSettle.clear` and the device trace in the
@@ -3307,7 +3354,7 @@ private struct PinnedRowSettleTracking: ViewModifier {
                                                          viewportHeight: visible.height,
                                                          focusedLockupExtent: lockupExtent,
                                                          isLastRow: isLast,
-                                                         lastRowShaped: shaped))
+                                                         linkFrameFloor: floor))
         }, action: { newValue in
             switch newValue {
             case .measured(let measurement):

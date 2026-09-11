@@ -706,7 +706,7 @@ final class PinnedRowGeometryTests: XCTestCase {
 
     // MARK: - BUG-87/89 (rc11): the last-row link-frame floor
 
-    /// BUG-87/89 (rc11, hardened rc12): the last row's label floor is the LARGER of the plan's own
+    /// BUG-87/89 (rc11, hardened by Codex r1 on rc11): the last row's label floor is the LARGER of the plan's own
     /// link frame and `viewport − Spacing.lg` — not `linkFrame` alone. The carousel case here is
     /// where the two coincide (its `restRange`, 12.67, is under `Spacing.lg`), so a uniform row
     /// needs no extra and a short-tile collection row gets exactly the difference, unchanged from
@@ -819,6 +819,58 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           mode: Self.zoomOn, titleHeight: 38)
         XCTAssertFalse(plan.fits)
         XCTAssertEqual(PinnedRowGeometry.lastRowLinkFrameFloor(plan: plan), 0, accuracy: epsilon)
+    }
+
+    // MARK: - BUG-87/89 (rc11, governance-checked by Codex r2 on rc11): the last-row exemption's own predicate
+
+    /// `PinnedRowSettle.lastRowExemptionApplies` (Codex r2 P2) — a floor that EXISTS is not enough;
+    /// it must also GOVERN the focused label, i.e. the label's natural lockup extent must not exceed
+    /// the floored frame. Three shapes:
+    ///
+    ///  (a) no floor at all (every non-last row, and a last row outside pinned mode) — never exempt.
+    ///  (b) a uniform SQUARE folder tile inside the carousel regime whose floor is its own
+    ///      `linkFrame` — the floor is sized for exactly this tile's shape, so it governs.
+    ///  (c) the rc11 Codex-r2 finding: a PORTRAIT folder inside a LANDSCAPE-ROWS regime. The row's floor
+    ///      is calibrated to the regime's own (landscape) `linkFrame`, but this doc's own note on
+    ///      `PinnedRowGeometry.plan(landscapeRows:)` says a portrait folder in that mode still
+    ///      presents `posterHeight`-tall tiles — taller than the floor was ever sized for — so the
+    ///      floor does not govern and the exemption must not fire.
+    func testLastRowExemptionAppliesOnlyWhenTheFloorGovernsTheLabel() {
+        // (a) No floor published (0 — the field's default, and every row but Home's last while
+        // pinned mode is even active) — never exempt, whatever the label's own extent is.
+        XCTAssertFalse(PinnedRowSettle.lastRowExemptionApplies(lockupExtent: 100, linkFrameFloor: 0))
+
+        // (b) The carousel regime from `testLastRowLinkFrameFloorTakesTheLargerOfLinkFrameAndTheBandCeiling`
+        // above: its floor IS `plan.linkFrame` (512.33), sized for this same Large artwork. A
+        // hidden-title SQUARE folder tile's own lockup extent — `lg + topReach + squareTile`, the
+        // same `Measurement.lockupExtent`/`CollectionRowView.focusedTileLockupExtent` shape, with no
+        // caption term because the title is hidden — sits well under it, so the floor governs.
+        let carousel = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
+                                              showsCTA: true, landscapeRows: false,
+                                              mode: Self.zoomOn, titleHeight: 37)
+        let carouselFloor = PinnedRowGeometry.lastRowLinkFrameFloor(plan: carousel)
+        let squareTile = Theme.Size.posterWidth / 126.0 * 154.0   // 268.88…, FolderTile.artworkHeight
+        let squareLockupExtent = Theme.Spacing.lg + carousel.topReach + squareTile
+        XCTAssertTrue(PinnedRowSettle.lastRowExemptionApplies(lockupExtent: squareLockupExtent,
+                                                              linkFrameFloor: carouselFloor))
+
+        // (c) The rc11 Codex-r2 regression: Large + Landscape Rows + No Zoom, hero-off panel shape
+        // (`showsCTA: false`), captions off. `landscapeRows: true` sizes the floor off the 203pt
+        // landscape artwork (floor 431 — `max(linkFrame 335, viewport-lg 431)`), but a collection
+        // row's folder that keeps its PORTRAIT shape (`FolderTile.artworkHeight`, per `plan`'s own
+        // doc comment on `landscapeRows`) still stands `posterHeight` (403.33) tall. That lockup
+        // extent — `lg + topReach + posterHeight`, again no caption term (hidden title) — overshoots
+        // the floor by far more than rounding, so the exemption must not apply.
+        let landscapeRowsPlan = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
+                                                       showsCTA: false, landscapeRows: true,
+                                                       mode: Self.noZoom, titleHeight: Self.systemTitle)
+        let landscapeFloor = PinnedRowGeometry.lastRowLinkFrameFloor(plan: landscapeRowsPlan)
+        let portraitFolderLockupExtent = Theme.Spacing.lg + landscapeRowsPlan.topReach + Self.large
+        XCTAssertFalse(PinnedRowSettle.lastRowExemptionApplies(lockupExtent: portraitFolderLockupExtent,
+                                                               linkFrameFloor: landscapeFloor))
+        // Sanity-check the finding's own numbers rather than trusting the predicate alone: the
+        // portrait tile's lockup extent clears the floor by (well) more than a rounding slop.
+        XCTAssertGreaterThan(portraitFolderLockupExtent, Theme.Spacing.lg + landscapeFloor + 0.5)
     }
 
     private func planHeight(for label: String) -> CGFloat {
