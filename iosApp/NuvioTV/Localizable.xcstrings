@@ -19453,6 +19453,40 @@
         }
       }
     },
+    "Relaunch, scroll Home down ten rows and back up, then photograph this panel": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relancez, parcourez dix rangées de l'accueil vers le bas puis vers le haut, puis photographiez ce panneau"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neu starten, zehn Zeilen auf der Startseite nach unten und wieder nach oben scrollen, dann dieses Feld fotografieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reinicia, desplaza diez filas de Inicio hacia abajo y hacia arriba, luego fotografía este panel"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riavvia, scorri dieci righe della Home verso il basso e poi verso l'alto, quindi fotografa questo pannello"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khởi động lại, cuộn mười hàng trên Trang chủ xuống rồi lên, sau đó chụp ảnh bảng này"
+          }
+        }
+      }
+    },
     "Run enabled plugin providers when loading streams.": {
       "localizations": {
         "de": {
@@ -23884,6 +23918,74 @@
         }
       }
     },
+    "Tab Bar Geometry Diagnostics": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic de géométrie de la barre d'onglets"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnose der Tab-Leisten-Geometrie"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnóstico de geometría de la barra de pestañas"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostica geometria barra delle schede"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chẩn đoán hình học thanh tab"
+          }
+        }
+      }
+    },
+    "Tab Bar Geometry Diagnostics · page %lld/%lld": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostic de géométrie de la barre d'onglets · page %lld/%lld"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnose der Tab-Leisten-Geometrie · Seite %lld/%lld"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnóstico de geometría de la barra de pestañas · página %lld/%lld"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostica geometria barra delle schede · pagina %lld/%lld"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chẩn đoán hình học thanh tab · trang %lld/%lld"
+          }
+        }
+      }
+    },
     "Test": {
       "localizations": {
         "de": {
@@ -25860,6 +25962,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bật nếu được yêu cầu gửi báo cáo vị trí hàng, sau đó khởi động lại ứng dụng"
+          }
+        }
+      }
+    },
+    "Turn on if asked to capture the tab bar's on-device geometry, then relaunch the app": {
+      "localizations": {
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activez si l'on vous demande de capturer la géométrie de la barre d'onglets sur l'appareil, puis relancez l'app"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einschalten, wenn die Geometrie der Tab-Leiste auf dem Gerät erfasst werden soll, dann die App neu starten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actívalo si te piden capturar la geometría de la barra de pestañas en el dispositivo, luego reinicia la app"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attiva se ti viene chiesto di acquisire la geometria della barra delle schede sul dispositivo, poi riavvia l'app"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bật nếu được yêu cầu ghi lại hình học thanh tab trên thiết bị, sau đó khởi động lại ứng dụng"
           }
         }
       }

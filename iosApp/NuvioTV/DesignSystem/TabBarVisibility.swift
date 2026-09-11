@@ -280,14 +280,26 @@ private struct TabBarScrollAutoHide: ViewModifier {
         }, action: { _, sample in
             TabBarProbe.recordScrollFire(tab: tab, offsetY: sample.offsetY, insetTop: sample.insetTop)
             let residual = sample.residual
+            var crossedHysteresis = false
             if !hidesBar, residual > Self.hideArm {
                 hidesBar = true
                 isScrolledDown?.wrappedValue = true
                 reportToSidebar(true)
+                crossedHysteresis = true
             } else if hidesBar, residual < Self.showArm {
                 hidesBar = false
                 isScrolledDown?.wrappedValue = false
                 reportToSidebar(false)
+                crossedHysteresis = true
+            }
+            // BUG-66 evidence probe (2026-09-10): `TabBarStateProbe` samples the SYSTEM tab bar's
+            // own geometry on a real hysteresis crossing, not per scroll-geometry tick (this
+            // closure fires many times a second while scrolling — see `TabBarProbe`'s own doc
+            // comment on why ITS readout is a counter snapshot, not a per-fire log). One call
+            // site, gated by the probe's own toggle so an off probe costs nothing beyond the
+            // `Bool` read.
+            if crossedHysteresis, TabBarStateProbe.enabled {
+                TabBarStateProbe.noteScrollState(isScrolledDown: hidesBar, mode: SidebarChrome.isEnabled() ? "sidebar" : "classic")
             }
         })
     }

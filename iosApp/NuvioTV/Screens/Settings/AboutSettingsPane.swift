@@ -20,6 +20,18 @@ struct AboutSettingsPane: View {
     @AppStorage("debug.pinnedRowSettleProbe") private var rowSettleDiagnostics = false
     @State private var rowSettleProbeLines: [String] = []
 
+    /// BUG-66 evidence probe (2026-09-10): `TabBarStateProbe` records the SYSTEM tab bar's own
+    /// on-device GEOMETRY (frame/alpha/hidden/minimized), which no existing instrument has ever
+    /// captured — the "Tab Bar Diagnostics" toggle further down this pane (`TabBarProbe`, bound to
+    /// `debug.tabBarProbe`) only ever read a scroll-view offset/inset. Distinct title and key so
+    /// the two never collide (see `TabBarStateProbe`'s own doc comment for the naming judgment
+    /// call). Same launch-latched/persisted-buffer/paged-readout shape as `PinnedRowSettleProbe`
+    /// above, reusing that type's `displayOrder`/`displayPages` directly — both are pure functions
+    /// over a plain `[String]`, unrelated to that enum's own buffer, so there was nothing to
+    /// extract or duplicate.
+    @AppStorage("debug.tabBarStateProbe") private var tabBarStateDiagnostics = false
+    @State private var tabBarStateProbeLines: [String] = []
+
     /// BUG-30/66/62 (beta.14): same release-safe pattern as the hero probe above, but the readout
     /// is a live in-memory snapshot (`TabBarProbe`) rather than a persisted log — see that type's
     /// doc comment for why.
@@ -484,12 +496,69 @@ struct AboutSettingsPane: View {
                             }
                         }
                     }
+
+                    // BUG-66 evidence probe (2026-09-10): nested in this SAME Group rather than as
+                    // a new sibling of it — the outer `SettingsSection` and this Group's own
+                    // parent `Group` are both already at the 10-child @ViewBuilder ceiling
+                    // documented above this file's `Group` blocks, but THIS inner Group itself
+                    // only held two children (the toggle and its conditional readout) before this
+                    // addition, so there is room here without touching either ceiling.
+                    SettingsToggleRow(
+                        title: String(localized: "Tab Bar Geometry Diagnostics"),
+                        subtitle: tabBarStateDiagnostics
+                            ? String(localized: "Relaunch, scroll Home down ten rows and back up, then photograph this panel")
+                            : String(localized: "Turn on if asked to capture the tab bar's on-device geometry, then relaunch the app"),
+                        isOn: $tabBarStateDiagnostics
+                    )
+
+                    if tabBarStateDiagnostics, !tabBarStateProbeLines.isEmpty {
+                        // Same newest-first, paged rendering as Row Settle Diagnostics above,
+                        // reusing `PinnedRowSettleProbe.displayOrder`/`displayPages` directly (see
+                        // this file's property doc comment on `tabBarStateProbeLines`).
+                        Text(String(localized: "Newest first; the launch lines are at the end."))
+                            .font(SettingsRowFont.subtitle)
+                            .foregroundStyle(.secondary)
+
+                        let tabBarStatePages = PinnedRowSettleProbe.displayPages(tabBarStateProbeLines)
+                        ForEach(Array(tabBarStatePages.enumerated()), id: \.offset) { pageIndex, pageLines in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(String(localized: "Tab Bar Geometry Diagnostics · page \(pageIndex + 1)/\(tabBarStatePages.count)"))
+                                    .font(SettingsRowFont.subtitle)
+                                    .foregroundStyle(.secondary)
+                                ForEach(Array(pageLines.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.system(size: 20, design: .monospaced))
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            // Same no-op-focusable pattern as the Row Settle pages above: a native
+                            // `List` only scrolls as far as focus can move, so a page needs a
+                            // focusable anchor even though Select does nothing on it.
+                            .focusable()
+                            .accessibilityIdentifier(pageIndex == 0 ? "tab_bar_state_probe_lines" : "tab_bar_state_probe_page_\(pageIndex + 1)")
+                            .overlay(alignment: .topLeading) {
+                                if pageIndex == 0 {
+                                    // Hidden single-Text blob, same pattern as `settle_probe_blob`:
+                                    // joins the PERSISTED (chronological) order, not the visible
+                                    // paged/reordered one.
+                                    Text(tabBarStateProbeLines.joined(separator: "\n"))
+                                        .font(.system(size: 4))
+                                        .opacity(0.011)
+                                        .accessibilityIdentifier("tab_bar_state_probe_blob")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
         .onAppear {
             heroProbeLines = UserDefaults.standard.stringArray(forKey: "debug.homeHeroProbe.lines") ?? []
             rowSettleProbeLines = UserDefaults.standard.stringArray(forKey: PinnedRowSettleProbe.linesKey) ?? []
+            tabBarStateProbeLines = UserDefaults.standard.stringArray(forKey: TabBarStateProbe.linesKey) ?? []
         }
         // The shared-side sink is installed/removed here rather than at the toggle, so it also
         // recovers if the switch was flipped in a previous session (startup does the same call).
