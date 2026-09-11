@@ -390,6 +390,18 @@ struct DetailView: View {
     /// still ring in no-zoom mode (CastCard has no border treatment of its own; Codex
     /// 2026-08-29 rounds 3-4).
     @FocusState private var focusedCastIndex: Int?
+    /// BUG-108: read here only to order the focused cast avatar above its neighbours — see
+    /// `liftedCastZIndex`. The avatar's own treatments read the same keys inside `CastCard`.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
+
+    /// BUG-108: ring mode's lift is SwiftUI's own scale, so the raised avatar's platter+shadow can
+    /// draw under its unfocused neighbours. On the `LazyHStack`'s child, not inside the label.
+    private func liftedCastZIndex(_ index: Int) -> Double {
+        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
+                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        return raises && focusedCastIndex == index ? 1 : 0
+    }
     /// BUG-96 (beta.18): which detail row focus is inside, if any — see `DetailRowAnchor`.
     /// Codex P2 review finding (BUG-99 follow-up, round 2): `.comments` is now a TRACKED row
     /// (`commentsSection` carries `.detailRowAnchored(.comments, …)` below) like every other row
@@ -1551,9 +1563,14 @@ struct DetailView: View {
                                 }
                                 // Card-like navigation element: joins the no-zoom sweep so the
                                 // setting stills every card on the page, not most (Codex 2026-08-29).
-                                // BUG-93: CastCard draws its own still ring and no manual scale, so ring mode leaves it on the native .borderless lift.
-                                .cardFocusButtonStyle(lift: .plain)
+                                // BUG-108: same as FolderTile — the avatar owns its ring-mode lift now,
+                                // so ring mode must take the native lift away (`.card`, the default).
+                                // No `.posterButtonShape()` here on purpose: it sets a rounded-RECT
+                                // border shape that only a system button style consumes, and the
+                                // avatar is a circle.
+                                .cardFocusButtonStyle()
                                 .focused($focusedCastIndex, equals: index)
+                                .zIndex(liftedCastZIndex(index))
                             } else {
                                 CastCard(person: person)
                             }
@@ -2036,9 +2053,16 @@ private struct CastCard: View {
     /// with zoom on and the accent ring on it drew nothing. Resolved through `PlainLabelRing`.
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var reservesRingBand: Bool {
         PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
+    /// BUG-108: same architecture as `FolderTile` — ring mode takes the native `.borderless` lift
+    /// away from this label, so the avatar lifts itself and carries its ring up with it.
+    private var artworkLift: CardFocusMode {
+        PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
     }
 
     var body: some View {
@@ -2073,20 +2097,40 @@ private struct CastCard: View {
                     Circle().strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
-            Text(person.name)
-                .font(Theme.Font.caption)
-                .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))
-                .lineLimit(1)
-                .frame(width: Theme.Size.castAvatar + 10)
-            if let role = person.role, !role.isEmpty {
-                Text(role)
+            .modifier(CardArtworkFocusLift(
+                mode: artworkLift,
+                isFocused: stillFocused,
+                artworkHeight: Theme.Size.castAvatar,
+                // `CardArtworkFocusLift.manualScale` draws its platter as a
+                // `RoundedRectangle(cornerRadius:)` at the attached view's bounds. The bounds here
+                // are the avatar's 140×140 square, and a rounded rect of half that side IS that
+                // square's inscribed circle — so the platter and its shadow follow the photo's own
+                // edge instead of a square behind it. Derived from the constant, never literal 70.
+                cornerRadius: Theme.Size.castAvatar / 2
+            ))
+            VStack(spacing: Theme.Spacing.xs) {
+                Text(person.name)
                     .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .foregroundStyle(isFocused ? Theme.Palette.textPrimary : Theme.Palette.textPrimary.opacity(0.9))
                     .lineLimit(1)
                     .frame(width: Theme.Size.castAvatar + 10)
+                if let role = person.role, !role.isEmpty {
+                    Text(role)
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .lineLimit(1)
+                        .frame(width: Theme.Size.castAvatar + 10)
+                }
             }
+            // BUG-108: the avatar grows downward by the same 20pt it rises, so name+role follow it
+            // together — one modifier on the pair, so the two lines can never drift apart. 0 in
+            // both other modes.
+            .modifier(CardCaptionFocusDrop(mode: artworkLift, isFocused: stillFocused,
+                                           artworkHeight: Theme.Size.castAvatar))
         }
-        .animation(.easeOut(duration: 0.15), value: isFocused)
+        // BUG-108: gated on Reduce Motion now that this wraps a manual `.scaleEffect` — see
+        // `CardArtworkFocusLift`, which passes a nil animation there and would be overridden here.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
     }
 
     /// BUG-41 failure/no-photo fallback — pulled out of `body` so both the "no `person.photo`"

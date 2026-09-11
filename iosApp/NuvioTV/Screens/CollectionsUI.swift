@@ -57,6 +57,10 @@ struct CollectionRowView: View {
     /// was the Home page, not the folder page.
     var onFolderFocusChange: ((CollectionFolder?) -> Void)? = nil
     @FocusState private var focusedFolderId: String?
+    /// BUG-108: read here only for `rowGap`'s doc and `liftedTileZIndex` — the tile's own
+    /// treatments read the same keys inside `FolderTile`.
+    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    @AppStorage("accent_focus_ring") private var accentFocusRing = false
     /// Pinned-hero card reach (UX-7 extension, device rounds 4–5) — see `rowCardTopReach` /
     /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
@@ -78,6 +82,36 @@ struct CollectionRowView: View {
         collection.folders
             .map { FolderTile.artworkHeight(for: $0, style: style) }
             .min() ?? style.height
+    }
+
+    /// BUG-108 / BUG-106: ring mode's lift is a UNIFORM scale of `1 + 2 × 20 / artworkHeight`, so a
+    /// 16:9 folder tile grows `2 × 20 × 16/9 ≈ 71pt` of width at every Poster Size — ≈35.5 per side,
+    /// which overruns `rowGap` (28) by ≈7.5 and lands the raised tile's 4pt ring on its neighbour's
+    /// artwork. Exactly the BUG-106 arithmetic and exactly the BUG-106 dial, applied whenever this
+    /// mixed-shape row holds a landscape folder at all (square tiles grow 20/side → 8 clear,
+    /// posters ≈13.3/side → ≈14.7 clear, so they keep `rowGap`).
+    ///
+    /// NOT gated on the ring setting, for two reasons: the native `.borderless` lift grows the tile
+    /// by a comparable amount in the default mode, and a row gap that changed with an Appearance
+    /// toggle would move this row's scroll geometry under the focus engine. Nothing in the pinned
+    /// math reads the gap (`shortestTileHeight`, `shelfMinHeight` and `focusedTileLockupExtent` are
+    /// all vertical).
+    private var rowGap: CGFloat {
+        collection.folders.contains { $0.posterShape == PosterShape.landscape }
+            ? Theme.Spacing.landscapeLiftRowGap
+            : Theme.Spacing.rowGap
+    }
+
+    /// BUG-108: ring mode's lift is SwiftUI's own `.scaleEffect`, which — unlike the native lift —
+    /// does not composite the focused card into its own layer, so without an explicit zIndex the
+    /// raised tile (and its ring, and its drop shadow) can draw UNDER its unfocused neighbours.
+    /// `PosterCard` carries the same rule (PosterCard.swift, `.zIndex(focusMode.raisesFocusedCard …)`);
+    /// the difference is WHERE: this one has to sit on the `LazyHStack`'s own child — a zIndex
+    /// inside the `NavigationLink` label has no siblings to order against.
+    private func liftedTileZIndex(_ folder: CollectionFolder) -> Double {
+        let raises = CardFocusMode.resolve(accentFocusRing: accentFocusRing,
+                                           noZoomOnFocus: noZoomOnFocus).raisesFocusedCard
+        return raises && focusedFolderId == folder.id ? 1 : 0
     }
 
     /// Wave 4 item 2 (the source fix; tester repro: scroll a mixed-shape collection row right,
@@ -238,7 +272,7 @@ struct CollectionRowView: View {
                 // shorter tiles' frames below the overlaid title, breaking the reveal-contains-
                 // title invariant for them (Codex review). Classic keeps center, as ever.
                 LazyHStack(alignment: cardTopReach > 0 ? .top : .center,
-                           spacing: Theme.Spacing.rowGap) {
+                           spacing: rowGap) {
                     ForEach(collection.folders, id: \.id) { folder in
                         NavigationLink(value: FolderRoute(collectionId: collection.id, folder: folder)) {
                             FolderTile(
@@ -253,10 +287,17 @@ struct CollectionRowView: View {
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
                         }
-                        // BUG-93: FolderTile draws its own still ring and has no manual-scale branch - keep the native lift in ring mode.
-                        .cardFocusButtonStyle(lift: .plain)
+                        // BUG-108: this label draws its own ring AND (since rc10) its own ring-mode
+                        // lift, so ring mode must take the native `.borderless` lift away from it —
+                        // `CardButtonLift.card`, the default. On the native lift the ring stayed at
+                        // base geometry while the artwork rose (rc9 device photos).
+                        .cardFocusButtonStyle()
                         .posterButtonShape()   // BUG-32/BUG-25: without this the system radius overrides Corners
                         .focused($focusedFolderId, equals: folder.id)
+                        // BUG-109: a stable identity for native focus restoration after the folder page
+                        // pops — parity with CatalogRowView's `.id(item.id)` on its cards.
+                        .id(folder.id)
+                        .zIndex(liftedTileZIndex(folder))
                     }
                 }
                 // Wave 4 item 2: floor the stack's height independent of scroll position — see
@@ -293,18 +334,17 @@ struct CollectionRowView: View {
                         // Codex r7 P2: `isFocused` picks which clearance the belt judges this row
                         // by — only a FOCUSED row's tiles are raised by the focus treatment.
                         //
-                        // Codex r9 P2: and `.plainBorderless` is what decides HOW MUCH. This row
-                        // is the one pinned row whose cards do NOT go through `CardFocusTreatment`
-                        // — `FolderTile` draws its own still-mode shrink-and-ring and never adopts
-                        // ring mode's manual scale, so its zoom-on branch is the bare `.borderless`
-                        // native lift whatever the accent-ring setting says. Left on the default
-                        // (`.cardTreatment`) the allowance was a scale derived from this row's
-                        // SHORTEST tile, well under the real ~20pt, so a ring-on user's title could
-                        // still sit on the focused folder's artwork.
+                        // Codex r9 P2 / BUG-108: this row's cards now resolve through
+                        // `CardFocusMode` like every other pinned row's — `FolderTile` carries
+                        // `CardArtworkFocusLift`, so its zoom-on rise IS
+                        // `heroPinnedRowFocusLiftAllowance` in both zoom modes rather than the
+                        // native lift's ~20pt by coincidence. `.plainBorderless` described the
+                        // pre-BUG-108 architecture and is gone; the published allowance is
+                        // unchanged either way (`focusLiftAllowance` charges 20 unless No Zoom).
                         .pinnedRowTitleTracking(rowKey: collection.id,
                                                 artworkHeight: shortestTileHeight,
                                                 isFocused: focusedFolderId != nil,
-                                                treatment: .plainBorderless)
+                                                treatment: .cardTreatment)
                         .padding(.top, Theme.Size.heroPinnedRowTitleInset)
                         .allowsHitTesting(false)
                 }
@@ -403,6 +443,14 @@ struct FolderTile: View {
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// BUG-108: in ring mode this tile owns its lift, so the ring it draws on its own artwork rides
+    /// that lift instead of standing still under the native one. `.still` (a no-op) in both other
+    /// modes — see `PlainLabelRing.lift` for why it must never be `.systemLift` here.
+    private var artworkLift: CardFocusMode {
+        PlainLabelRing.lift(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
 
     /// BUG-38 display-time fallback: genre folders are TMDB DISCOVER sources, which
     /// `TmdbCollectionSourceResolver.importMetadata` never mints a cover for (only
@@ -633,6 +681,37 @@ struct FolderTile: View {
                         .strokeBorder(ring.color, lineWidth: ringWidth)
                 }
             }
+            // BUG-108 probe (test56): the DRAWN artwork box — inside the ring band's static
+            // `.scaleEffect` and inside the lift below, so its published rect is the picture the
+            // viewer sees. Armed only by `-debug.cardGeometryProbe YES`, DEBUG only.
+            .modifier(DebugAXIdentifier("folder_artwork"))
+            // BUG-108 (u/mrStevenx3, rc9 device photos: with the ring on, the collection tile's
+            // picture lifts out of its ring): this tile's lift hangs HERE — outside the ring overlay
+            // above, outside the ring band's `.scaleEffect`, outside `.nuvioCardDepth`'s rail, and
+            // outside the `.clipShape` — so all four are one SwiftUI layer that scales together.
+            // Attached after the overlay on purpose: the overlay must keep measuring the TRUE,
+            // unscaled tile bounds (the band-scale comment above), and the lift must be the
+            // outermost of the pair so it carries both.
+            //
+            // `stillFocused`, not `@Environment(\.isFocused)`: the ring is drawn off the ROW's own
+            // FocusState (Codex 2026-08-29 rounds 3-5 — a second `.focused` binding collides with
+            // `focusedFolderId`), and a lift keyed on a different truth could scale the artwork in a
+            // frame where the ring is not drawn, which is the very split this bug is about.
+            //
+            // `artworkHeight: tileHeight` is what keeps the rise at exactly
+            // `heroPinnedRowFocusLiftAllowance` (20pt) for all three tile shapes, so the pinned
+            // row's clip budget (`PinnedRowTitle.focusLiftAllowance`, already 20 for this row) is
+            // unchanged by this commit.
+            .modifier(CardArtworkFocusLift(
+                mode: artworkLift,
+                isFocused: stillFocused,
+                artworkHeight: tileHeight,
+                cornerRadius: style.cornerRadius
+            ))
+            // BUG-108 probe (test56): the tile's LAYOUT box, outside the lift. `.scaleEffect` is
+            // render-only, so this rect must NOT move when the tile lifts — that is the negative
+            // control that proves the rise costs the row no reflow.
+            .modifier(DebugAXIdentifier("folder_card"))
             // BUG-38: keyed on the folder's Kotlin data-class hash (NOT `isFocused` — see the
             // BUG-19 comment above on why this tile must never key off focus), so a cloud-sync
             // edit that keeps the folder's id but changes its sources/cover/emoji re-runs the
@@ -700,12 +779,25 @@ struct FolderTile: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, Theme.Spacing.xs)
                     .frame(width: tileWidth, alignment: .leading)
+                    // BUG-108: in ring mode the artwork grows DOWNWARD by the same 20pt it rises,
+                    // so the caption follows its bottom edge exactly as every other card's does.
+                    // 0 in both other modes: the native lift moves the whole label itself, and
+                    // still mode moves nothing. Render-only `.offset`, so the lockup's measured
+                    // height is unchanged and `shortestTileHeight`/`shelfMinHeight` do not move.
+                    .modifier(CardCaptionFocusDrop(
+                        mode: artworkLift, isFocused: stillFocused, artworkHeight: tileHeight
+                    ))
             }
         }
         // FEAT-33 (Wave 1, agent C): leg 2/3 of `debug.collectionFocusAB` drops this animation
         // entirely to test whether it's the source of the reported 30fps-looking focus step.
         // Identical to shipping behavior with the knob off (the default).
-        .animation(CollectionFocusAB.dropTileAnimation ? nil : .easeOut(duration: 0.15), value: isFocused)
+        // BUG-108: `reduceMotion` added because this animation now wraps `CardArtworkFocusLift`'s
+        // manual scale. That modifier honours Reduce Motion by passing a nil animation; a blanket
+        // `.animation` out here would animate the scale anyway and undo it.
+        .animation(CollectionFocusAB.dropTileAnimation || reduceMotion
+                   ? nil : .easeOut(duration: 0.15),
+                   value: isFocused)
     }
 }
 

@@ -148,17 +148,20 @@ private struct RingCardButtonStyle: ButtonStyle {
 /// Which lift a card button's LABEL provides for itself, and therefore whether ring mode may take
 /// the system treatment away from it (BUG-93).
 ///
-/// - `.card` - the label goes through `CardFocusTreatment`/`CardArtworkFocusLift` (`PosterCard`,
-///   `LandscapeCard`), so in ring mode it draws its own scale and shadow and must NOT also wear
-///   `.borderless`'s treatment.
-/// - `.plain` - the label owns no manual treatment (`CastCard`, `TrailerThumbCard`, `SeeAllCard`,
-///   `FolderTile`, `SeasonPosterCard`, `EpisodeThumbCard`). They have never had a `.manualScale`
-///   branch, so taking `.borderless` away would leave them with no focus motion at all. They keep
-///   the bare `.borderless` in every zoom-on state, which is what
-///   `PinnedRowTitle.RowCardTreatment.plainBorderless` in BrowseComponents already assumes.
-///   BUG-102 (rc9): ring mode is no longer irrelevant to `FolderTile`/`CastCard` — they draw the
-///   accent ring inside their label under that native lift (see `PlainLabelRing`); the four
-///   `TileFocusLift` tiles still draw no ring with zoom on (follow-up).
+/// - `.card` - the label goes through `CardArtworkFocusLift`, so in ring mode it draws its own
+///   scale and shadow and must NOT also wear `.borderless`'s treatment: `PosterCard`,
+///   `LandscapeCard`, `SagaCard`, and — since BUG-108 — `FolderTile` (CollectionsUI) and `CastCard`
+///   (DetailView). Those last two draw their ring INSIDE their own artwork frame
+///   (`PlainLabelRing`), and rc9 device photos showed the native `.borderless` lift raising the
+///   artwork while the ring stayed at base geometry — the FEAT-14 graveyard's third entry verbatim,
+///   on the two labels that had been left on that lift. They now own the lift too
+///   (`PlainLabelRing.lift`), so ring and picture are one SwiftUI layer on every card class.
+/// - `.plain` - the label owns no manual treatment: the four `TileFocusLift` tiles
+///   (`TrailerThumbCard`, `SeeAllCard`, `SeasonPosterCard`, `EpisodeThumbCard`). Their zoom-on
+///   branch is a system hover effect, and an overlay under one of those is known to render beneath
+///   the lifted artwork on hardware, so they draw NO ring with zoom on and keep the bare
+///   `.borderless` in every zoom-on state. Giving them the `.manualScale` architecture is the
+///   remaining follow-up (BUG-104).
 enum CardButtonLift {
     case card
     case plain
@@ -192,6 +195,24 @@ enum CardButtonLift {
 /// `.borderless` was both bordering the titles and compounding with the manual scale. Default mode
 /// (both settings off) is still exactly the bare `.borderless` it always was, and so is every
 /// `lift: .plain` call site in every zoom-on state.
+/// BUG-108: the three-way branch `CardFocusButtonStyle.body` installs, as a pure value function.
+///
+/// Extracted for one reason: the invariant that broke in rc9 is a RELATION between two files —
+/// "the cell where this modifier takes the system lift away must be the cell where the label draws
+/// its own" — and that relation is unit-testable without a device only if both sides are pure. See
+/// `PlainLabelRingTests.testRingModeGivesPlainLabelsTheirOwnLift`.
+enum CardButtonStyleKind: Equatable {
+    case still
+    case ring
+    case borderless
+
+    static func resolve(noZoomOnFocus: Bool, accentFocusRing: Bool, lift: CardButtonLift) -> CardButtonStyleKind {
+        if noZoomOnFocus { return .still }
+        if accentFocusRing, lift == .card { return .ring }
+        return .borderless
+    }
+}
+
 struct CardFocusButtonStyle: ViewModifier {
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     /// BUG-93: read here as well as in the cards themselves, and with the same independent
@@ -202,15 +223,18 @@ struct CardFocusButtonStyle: ViewModifier {
     let lift: CardButtonLift
 
     func body(content: Content) -> some View {
-        if noZoomOnFocus {
+        switch CardButtonStyleKind.resolve(noZoomOnFocus: noZoomOnFocus,
+                                          accentFocusRing: accentFocusRing,
+                                          lift: lift) {
+        case .still:
             content
                 .buttonStyle(StillCardButtonStyle())
                 .focusEffectDisabled(true)
-        } else if accentFocusRing, lift == .card {
+        case .ring:
             content
                 .buttonStyle(RingCardButtonStyle())
                 .focusEffectDisabled(true)
-        } else {
+        case .borderless:
             content
                 .buttonStyle(.borderless)
         }
@@ -315,14 +339,13 @@ private func ringInset(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CGFloat {
 /// nothing draws in the default mode. The reserved band follows `ringInset`: a label that may
 /// ever draw a ring keeps its 4 pt margin in every focus state, never popping it in on focus.
 ///
-/// The lift itself is NOT changed here: these labels keep the native `.borderless` lift in ring
-/// mode (`CardButtonLift.plain`), and the pinned collection row's clearance math
-/// (`PinnedRowTitle.RowCardTreatment.plainBorderless`) depends on exactly that lift. The ring is
-/// drawn inside the button label, so it is part of what the system lift raises — unlike the
-/// `.hoverEffect(.highlight)` overlay case in the FEAT-14 note above, which is why the
-/// `TileFocusLift` tiles (trailer thumbs, See All, season posters, episode thumbs) are NOT covered
-/// by this helper: their zoom-on branch is a hover effect, and an overlay there is known to render
-/// under the lifted artwork on hardware. Those need the `.manualScale` architecture — follow-up.
+/// BUG-108 (rc10): the lift IS changed. rc9 kept the native `.borderless` lift under these two
+/// labels and the device showed the artwork rising out of its ring, so they now draw their own
+/// `.manualScale` lift (`lift(accentFocusRing:noZoomOnFocus:)`) inside `RingCardButtonStyle`, the
+/// same architecture every `PosterCard` uses. The pinned collection row's clearance math is
+/// unaffected: `PinnedRowTitle.focusLiftAllowance` charges the same 20 pt in both zoom-on modes
+/// whatever the treatment. The four `TileFocusLift` tiles are still NOT covered (their zoom-on
+/// branch is a hover effect) — BUG-104.
 enum PlainLabelRing: Equatable {
     case accent
     case still
@@ -337,6 +360,22 @@ enum PlainLabelRing: Equatable {
     /// Whether the label reserves the `ringWidth` band around its artwork — `ringInset`'s rule.
     static func reservesBand(accentFocusRing: Bool, noZoomOnFocus: Bool) -> Bool {
         accentFocusRing || noZoomOnFocus
+    }
+
+    /// BUG-108: which lift a plain-label card draws for ITSELF, now that ring mode takes the native
+    /// `.borderless` lift away from it (`CardButtonLift.card`). Shared by `FolderTile` and
+    /// `CastCard` so the two cannot drift, and sited next to `resolve` because it must branch on
+    /// the same two settings in the same precedence.
+    ///
+    /// `.manualScale` in ring mode ONLY. Both other modes map to `.still`, which is
+    /// `CardArtworkFocusLift`'s NO-OP branch — deliberately not `.systemLift`: these labels sit
+    /// inside a `.borderless` button in the default mode, so the button already lifts the whole
+    /// label (caption included), and `.systemLift` would hang a SECOND `.hoverEffect(.highlight)`
+    /// inside that lift. `.still(ringed:)` carries the accent flag only so the value reads
+    /// truthfully in a log or a test; `CardArtworkFocusLift` and `CardCaptionFocusDrop` both ignore
+    /// the payload.
+    static func lift(accentFocusRing: Bool, noZoomOnFocus: Bool) -> CardFocusMode {
+        (accentFocusRing && !noZoomOnFocus) ? .manualScale : .still(ringed: accentFocusRing)
     }
 
     var color: Color {
@@ -425,7 +464,7 @@ struct CardArtworkShape: Shape, InsettableShape {
 ///   geometry, so ring mode has to own the lift).
 /// - `.still` — BUG-36's "No Zoom on Focus" (`no_zoom_on_focus`), either ring state: no scale of
 ///   any kind, focus is drawn as a highlight border plus a shadow.
-enum CardFocusMode {
+enum CardFocusMode: Equatable {
     case systemLift
     case manualScale
     /// `ringed` = the accent focus ring is already drawing on the artwork, so still mode must not
