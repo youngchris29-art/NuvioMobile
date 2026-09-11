@@ -19,6 +19,9 @@ struct UpcomingRow: View {
     /// 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
+    /// last.
+    @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -45,6 +48,11 @@ struct UpcomingRow: View {
                             )
                             .padding(.top, cardTopReach)
                             .padding(.bottom, cardBottomReach)
+                            // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0 for
+                            // every row but Home's last. `.top` so the artwork and caption do not
+                            // move a point.
+                            .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                   alignment: .top)
                         }
                         .cardFocusButtonStyle()
                         .posterButtonShape()

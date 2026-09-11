@@ -5619,10 +5619,12 @@ final class NuvioTVUITests: XCTestCase {
             return
         }
         // BUG-89 fixture note: this only exercises the defect for real when the last row is
-        // SHORT (a hidden-title square-tile collection, ~146pt tall at Large) — a tall catalog
-        // last row has enough height on its own to clear the previous row's sliver regardless
-        // of the fix. `rowH=` on the settle line says which shape this fixture actually walked
-        // into; check the attached line if this gate ever needs to explain a vacuous pass.
+        // SHORT (a hidden-title square-tile collection) — a tall catalog last row has enough
+        // height on its own to clear the previous row's sliver regardless of the fix. BUG-87/89
+        // (rc11): the row is now frame-shaped to the regime's own link frame, so it is ~548pt tall
+        // at Large rather than the pre-rc11 ~146 — `rowH=` on the settle line says which shape
+        // this fixture actually walked into; check the attached line if this gate ever needs to
+        // explain a vacuous pass.
         XCTAssertEqual(
             lastPrevHidden, 1,
             "the last row settled with the previous row's sliver still visible above it (prevHidden=\(lastPrevHidden)) — BUG-89: a short last row does not get enough trailing scroll range to hide its predecessor. Full settle line: \(lastRowLine)"
@@ -5630,6 +5632,18 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertEqual(
             lastInBand, 1,
             "the last row's own title did not settle inside its legibility band (inBand=\(lastInBand)) — the last row is exempt from the canonical target but its own title still has to clear its own artwork. Full settle line: \(lastRowLine)"
+        )
+        // BUG-87/89 (rc11): with the frame shaped (`rowCardLinkFrameFloor`), the focus engine's own
+        // reveal constraint should already confine this row to the band — the corrector's
+        // `settlePlan` exemption (`lastRowShaped=1`) means it must never fire on this row, and the
+        // engine must never pull a fired correction back.
+        XCTAssertEqual(
+            Self.probeValue(lastRowLine, key: "nudge"), 0,
+            "the corrector fired on the last row — with the frame shaped (rowCardLinkFrameFloor) the focus engine's own reveal constraint should already confine this row to the band. Full settle line: \(lastRowLine)"
+        )
+        XCTAssertEqual(
+            Self.probeValue(lastRowLine, key: "pull"), 0,
+            "the last row was pulled back by the focus engine after a correction — the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
         )
         XCTAssertEqual(
             lastBeltFaded, 0,

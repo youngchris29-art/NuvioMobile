@@ -65,6 +65,9 @@ struct CollectionRowView: View {
     /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
+    /// last.
+    @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
     @Environment(\.posterStyle) private var style
 
     /// Wave 4 item 6 (tester: the section title sliding onto his "Streaming Services" tiles): the
@@ -171,7 +174,10 @@ struct CollectionRowView: View {
         let maxTileHeight = collection.folders
             .map { FolderTile.artworkHeight(for: $0, style: style) + ($0.hideTitle ? 0 : captionChrome) }
             .max() ?? style.height
-        return maxTileHeight + cardTopReach + cardBottomReach
+        // BUG-87/89 (rc11): the scroll-stable floor must agree with the per-label floor
+        // (`rowCardLinkFrameFloor`) or a recycle pass can still collapse the stack below the
+        // height the last row's labels are actually holding.
+        return max(maxTileHeight + cardTopReach + cardBottomReach, cardLinkFrameFloor)
     }
 
     /// `Theme.Font.cardTitle` (`.caption2`) single-line height under the CURRENT content size
@@ -286,6 +292,11 @@ struct CollectionRowView: View {
                             )
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
+                                // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0 for
+                                // every row but Home's last. `.top` so the artwork and caption do
+                                // not move a point.
+                                .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                       alignment: .top)
                         }
                         // BUG-108: this label draws its own ring AND (since rc10) its own ring-mode
                         // lift, so ring mode must take the native `.borderless` lift away from it —

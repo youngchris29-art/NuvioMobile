@@ -1252,6 +1252,11 @@ struct HomeView: View {
                     // `debug_pinned` line say `last=1` instead of reading an unreachable rest as a
                     // fresh failure.
                     .environment(\.pinnedRowIsLast, row.id == model.rows.last?.id)
+                    // BUG-87/89 (rc11): the frame-shaping half of the last-row fix. Published ONLY on
+                    // the row `pinnedRowIsLast` marks, because only that row has no content below it
+                    // to force the engine deeper — and only in pinned mode, where the reaches exist.
+                    .environment(\.rowCardLinkFrameFloor,
+                                 pinned && row.id == model.rows.last?.id ? pinnedLastRowLinkFrameFloor : 0)
                 }
             }
             // Pinned only (device rounds 4–5): every row card extends its focusable frame
@@ -1601,13 +1606,22 @@ struct HomeView: View {
     /// `nil` when Home has nothing to lay out yet (placeholder only) — the caller floors to the
     /// uniform inset in that case.
     private var pinnedLastRowHeight: CGFloat? {
+        // BUG-87/89 (rc11): the last row's cards carry `rowCardLinkFrameFloor`, so its shelf is the
+        // LARGER of its own tallest label and that floor. For a uniform catalog row the two are equal
+        // by construction (the floor IS `plan.linkFrame`); for a short-tile collection row the floor
+        // wins and the row is `floor − naturalLabel` taller than the pre-rc11 arithmetic said.
+        let floor = pinnedLastRowLinkFrameFloor
         if let last = model.rows.last {
             switch last {
             case .catalog:
                 let artworkHeight = posterStyle.landscapeCatalogRows
                     ? Theme.Size.landscapeHeight : posterStyle.height
                 let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
-                return artworkHeight + caption + pinnedUniformShelfChrome
+                // `pinnedUniformShelfChrome` bundles the two `Spacing.lg` shelf paddings with the
+                // reaches; pull the label (topReach + artwork + caption + bottomReach) back out so
+                // the floor is compared against the label alone, not the whole shelf.
+                let label = pinnedPlan.topReach + artworkHeight + caption + pinnedPlan.bottomReach
+                return Theme.Spacing.lg + max(label, floor) + Theme.Spacing.lg
             case .collection(let collection):
                 // BUG-87 (beta.18): `pinnedRowHeight` states the FIXED pinned reaches
                 // (`heroPinnedRowTopPad` / `heroPinnedRowBottomReach`) because they were the only
@@ -1615,8 +1629,12 @@ struct HomeView: View {
                 // the row by exactly the spend, so correct it here rather than reaching into
                 // `CollectionsUI` — this is the helper's only caller, and it is the same
                 // "`HomeView` supplies the reaches" contract its own doc comment names.
-                return CollectionRowView.pinnedRowHeight(collection: collection, style: posterStyle)
+                let natural = CollectionRowView.pinnedRowHeight(collection: collection, style: posterStyle)
                     + pinnedPlanReachDelta
+                // `natural` already includes this row's own `lg` top and `sm` bottom padding, so the
+                // floor is compared against its shelf, not against the whole row.
+                let shelf = natural - Theme.Spacing.lg - Theme.Spacing.sm
+                return Theme.Spacing.lg + max(shelf, floor) + Theme.Spacing.sm
             }
         }
         // Codex r3 (P2): the caption term is gated exactly like the catalog branch above.
@@ -1633,6 +1651,13 @@ struct HomeView: View {
             return Theme.Size.landscapeHeight + fallbackCaption + pinnedUniformShelfChrome
         }
         return nil
+    }
+
+    /// BUG-87/89 (rc11): the label-height floor Home's LAST pinned row publishes — see
+    /// `PinnedRowGeometry.lastRowLinkFrameFloor` and `EnvironmentValues.rowCardLinkFrameFloor`.
+    /// `0` outside pinned mode (the reaches are 0 there and the floor would be a visible gap).
+    private var pinnedLastRowLinkFrameFloor: CGFloat {
+        PinnedRowGeometry.lastRowLinkFrameFloor(plan: pinnedPlan)
     }
 
     /// How much SHORTER (negative) a row is than the fixed-reach arithmetic assumes, because
@@ -2960,6 +2985,9 @@ struct ContinueWatchingRow: View {
     /// `rowCardBottomReach` in BrowseComponents for the mechanism. 0 (no-op) outside pinned Home.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
+    /// last.
+    @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -2987,6 +3015,11 @@ struct ContinueWatchingRow: View {
                                 )
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
+                                // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0 for
+                                // every row but Home's last. `.top` so the artwork and caption do
+                                // not move a point.
+                                .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                       alignment: .top)
                             }
                             .cardFocusButtonStyle()
                             .posterButtonShape()

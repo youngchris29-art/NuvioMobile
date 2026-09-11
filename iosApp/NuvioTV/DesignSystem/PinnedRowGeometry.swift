@@ -149,6 +149,27 @@ enum PinnedRowGeometry {
         var regimeKey: String
     }
 
+    /// BUG-87/89 (rc11): the minimum focusable-label height Home's LAST pinned row must carry so the
+    /// focus engine cannot park it outside the legibility band — see `EnvironmentValues
+    /// .rowCardLinkFrameFloor` for the reveal argument.
+    ///
+    /// `plan.linkFrame` and nothing else: the last row then has the SAME revealed extent as every
+    /// other row in the regime, so it inherits their rest interval (`[−shelfTopPad, −shelfTopPad +
+    /// restRange]` in row-top terms) exactly. 0 when the regime does not fit — an over-tall frame
+    /// already has two anchorings and raising a short row to match it would only add a third.
+    nonisolated static func lastRowLinkFrameFloor(plan: Plan) -> CGFloat {
+        plan.fits ? plan.linkFrame : 0
+    }
+
+    /// How much transparent bottom padding `lastRowLinkFrameFloor` adds to a label whose natural
+    /// height is `labelFrame` (= topReach + artwork + captionChrome + bottomReach for that CARD).
+    /// Reporting/verification only — the layout applies the floor as a `minHeight`, which needs no
+    /// per-card arithmetic. Uniform poster/landscape rows return 0 by construction: their label IS
+    /// the plan's link frame.
+    nonisolated static func lastRowBottomReachExtra(plan: Plan, labelFrame: CGFloat) -> CGFloat {
+        max(lastRowLinkFrameFloor(plan: plan) - labelFrame, 0)
+    }
+
     // MARK: - Floors
 
     /// Floor for the downward reach. It exists to absorb the mirror-direction rest error, and 24

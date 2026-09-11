@@ -30,6 +30,28 @@ private struct RowCardBottomReachKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
+/// BUG-87/89 (rc11): a MINIMUM height for the focusable card label, in points, applied inside the
+/// label after the two reaches. 0 (the default) everywhere except Home's LAST pinned row.
+///
+/// tvOS scrolls to reveal the focused LABEL frame and nothing else, so the set of rests the engine
+/// will tolerate for a row is exactly
+///
+///     rowTop ∈ [−shelfTopPad, viewport − shelfTopPad − labelFrameHeight]
+///
+/// — a SHORT label (the mixed-shape collection row's square/landscape folder tiles, whose artwork is
+/// `style.width`, not `style.height`) widens that set by the difference and lets a Down step park the
+/// row ~134pt deep with its title far below the band. No correction can hold: the deep rest is legal,
+/// so the engine re-reveals straight back to it (`pullback=1`, three rounds, `pullBackDisarmed`).
+/// Floor the label at the regime's own `PinnedRowGeometry.Plan.linkFrame` and the last row inherits
+/// the rest interval every uniform poster row already settles inside — `[24, 24 + restRange]` in
+/// margin terms, which is inside the band by construction wherever `plan.fits`.
+///
+/// Transparent padding below the caption: it changes no artwork, no caption, no ring, and no
+/// `focusedLockupExtent` (CollectionsUI) — only the rectangle the focus engine reveals.
+private struct RowCardLinkFrameFloorKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
 /// Home's "Trailer Location: Hero" mode: the focused title's trailer plays in the PINNED HERO
 /// backdrop (which already follows focus), so the focused poster must NOT morph into an inline
 /// trailer tile — two surfaces cannot share the single player slot, and the hero is the one the
@@ -51,6 +73,10 @@ extension EnvironmentValues {
     var rowCardBottomReach: CGFloat {
         get { self[RowCardBottomReachKey.self] }
         set { self[RowCardBottomReachKey.self] = newValue }
+    }
+    var rowCardLinkFrameFloor: CGFloat {
+        get { self[RowCardLinkFrameFloorKey.self] }
+        set { self[RowCardLinkFrameFloorKey.self] = newValue }
     }
     var trailerPlaysInHero: Bool {
         get { self[TrailerPlaysInHeroKey.self] }
@@ -1657,6 +1683,8 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///         Large    403.3     558.8          523.3    [−26,  4.5]    sim +24          1 × 23.5
 ///         Large    403.3     558.8          523.3    [−26,  4.5]    device −31.5     1 × 9.5
 ///
+///     Medium+ 351: takes the Large dial (FEAT-39) — not separately measured above.
+///
 ///     Large's corrected rests are Wave 10's to the point (+24 → 0.5; BUG-84 still holds because
 ///     the whole band is at or above `bandLow`), while Medium and Small stop being dragged to 0.
 ///     That is the one intended visual change: their titles now sit fully visible with a taller
@@ -1773,10 +1801,10 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// `key=value`, order not significant:
 ///
 ///     row= margin= net= vh= rowB= protB= y= inset= beltFaded= beltFadeReason=
-///     rowH= last= prevHidden= corrN= pull= pbDisarm= seq= armSrc= regime= fits=
+///     rowH= last= lastRowShaped= prevHidden= corrN= pull= pbDisarm= seq= armSrc= regime= fits=
 ///     clearance= clearanceLift= clearanceLiftRaw= lift= intr= intrLifted= err= deficit=
 ///     bandLo= bandHi= inBand=
-///     [ nudge= bound= n= | nudge=0 <outcome> ]
+///     [ nudge= bound= roomUp= n= | nudge=0 <outcome> ]
 ///
 /// where `<outcome>` is one of `clearance=?`, `budget=1`, `unsat=1`, `pull=N`, `disarmed=1`,
 /// `knobDisarm=1`, `inflight=1`, `pullback=1`, `endOfContent=1 room=`, `bound=`, `room=`, or
@@ -1833,6 +1861,11 @@ enum PinnedRowSettle {
         /// it came from the exempt row or from a mid-list row whose range had unexpectedly run out,
         /// which the corrector alone could never tell apart. See `PinnedRowEnvironment.swift`.
         var isLastRow: Bool = false
+
+        /// BUG-87/89 (rc11): whether this row's cards are carrying `rowCardLinkFrameFloor` — i.e.
+        /// whether the FRAME SHAPING is active for it. Read from the same environment the cards read,
+        /// so it cannot disagree with what is actually laid out.
+        var lastRowShaped: Bool = false
 
         /// The title's top vs the viewport's top edge — the probe's `margin`, reproduced from the
         /// ROW's frame. The pinned title is an overlay at the shelf's top-leading corner inset by
@@ -2745,6 +2778,9 @@ enum PinnedRowSettle {
             // a row parked at the clip edge hides everything above it.
             + " rowH=\(Int(m.rowHeight.rounded()))"
             + " last=\(m.isLastRow ? 1 : 0)"
+            // BUG-87/89 (rc11): whether the frame-shaping floor was actually active on this row —
+            // see `EnvironmentValues.rowCardLinkFrameFloor` and the `settlePlan` exemption below.
+            + " lastRowShaped=\(m.lastRowShaped ? 1 : 0)"
             + " prevHidden=\(m.rowTop <= 2 ? 1 : 0)"
             + " corrN=\(correctionsInWindow(m.rowKey))"
             + " pull=\(pullBacks)"
@@ -3023,6 +3059,26 @@ enum PinnedRowSettle {
             return Plan(report: line + " nudge=0 endOfContent=1 room=\(Int(scrollRoomUp.rounded()))",
                         targetY: nil)
         }
+        // BUG-87/89 (rc11): the exemption `PinnedRowEnvironment.swift` has promised since BUG-89.
+        // With the frame shaped (`rowCardLinkFrameFloor`), the engine's own reveal constraint already
+        // confines this row to `margin ∈ [24, 24 + restRange]`, so a rest ABOVE the band here means
+        // the shaping did not take — and a correction is exactly the wrong answer: the deep rest is
+        // legal for the engine, which re-reveals straight back to it (the rc10 `pullback=1` ×3 →
+        // `pullBackDisarmed` trace). Log it and let the belt judge the title.
+        //
+        // Strictly a GUARD, not the fix: when the shaping is in force this branch is unreachable
+        // (`deficit == 0` returns above). It earns its place in the regime where the floor is 0 —
+        // `!plan.fits`, or a Poster Size whose last row is already the plan's shape.
+        //
+        // Upward only. `error < 0` means the row is parked ABOVE the band (title clipped), which the
+        // reveal constraint cannot produce and which the downward correction is still the right
+        // answer for if something else ever does.
+        if error > 0, m.isLastRow, m.lastRowShaped {
+            consecutiveNudges = 0
+            if standDownRow == m.rowKey { standDownRow = nil }
+            return Plan(report: line + " nudge=0 lastRowShaped=1 room=\(Int(scrollRoomUp.rounded()))",
+                        targetY: nil)
+        }
         let headroom = error > 0 ? scrollRoomUp : max(bottomRoom, 0)
         // Magnitude first, then the sign of the correction we actually apply. Unbounded, this is
         // the FULL distance to the target, so a correction lands ON it; `min` can only ever
@@ -3069,7 +3125,12 @@ enum PinnedRowSettle {
         lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt)
         // `nudge` stays signed in the log: positive moved the row DOWN toward the clip edge,
         // negative pulled it UP. A device trace can read the direction straight off the line.
-        line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded())) n=\(consecutiveNudges)"
+        line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded()))"
+            // BUG-87/89 (rc11): `bound=` is the DOWNWARD bound; an upward nudge is bounded by
+            // `scrollRoomUp`. Printing both makes "the correction was cut short by range" separable
+            // from "the correction landed and the engine put the row back" (`pullback=`).
+            + " roomUp=\(Int(scrollRoomUp.rounded()))"
+            + " n=\(consecutiveNudges)"
         // Wave W5 (BUG-89): a correction fired while the regime FITS is a surprise worth a line of
         // its own. A fitting frame is one the rows viewport can show whole, and both band edges are
         // then satisfiable by construction — the focus engine's own rest should already be inside
@@ -3211,6 +3272,9 @@ private struct PinnedRowSettleTracking: ViewModifier {
     /// row types that attach that modifier need no signature change and every non-Home host keeps
     /// the `false` default for free.
     @Environment(\.pinnedRowIsLast) private var isLastRow
+    /// BUG-87/89 (rc11): whether this row's cards are carrying `rowCardLinkFrameFloor` — see
+    /// `EnvironmentValues.rowCardLinkFrameFloor`.
+    @Environment(\.rowCardLinkFrameFloor) private var linkFrameFloor
 
     func body(content: Content) -> some View {
         // Captured by value so the geometry closure holds a plain String and a Bool rather than
@@ -3219,6 +3283,7 @@ private struct PinnedRowSettleTracking: ViewModifier {
         let active = isFocused && cardTopReach > 0
         let lockupExtent = focusedLockupExtent
         let isLast = isLastRow
+        let shaped = linkFrameFloor > 0
         // Wave 9(a): THREE states, not two. Collapsing "this row is not focused" and "the enclosing
         // scroll view didn't resolve this pass" into one `nil` is what livelocked the corrector
         // against the belt on hardware — see `PinnedRowSettle.clear` and the device trace in the
@@ -3235,7 +3300,8 @@ private struct PinnedRowSettleTracking: ViewModifier {
                                                          rowHeight: proxy.size.height,
                                                          viewportHeight: visible.height,
                                                          focusedLockupExtent: lockupExtent,
-                                                         isLastRow: isLast))
+                                                         isLastRow: isLast,
+                                                         lastRowShaped: shaped))
         }, action: { newValue in
             switch newValue {
             case .measured(let measurement):
@@ -3603,6 +3669,9 @@ struct CatalogRowView: View {
     /// `rowCardBottomReach` for the mechanism. 0 (no-op) everywhere except Home's pinned mode.
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
+    /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
+    /// last.
+    @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
 
     /// Wave 4 item 6: the RESTING artwork height of this row's cards, handed to the pinned title's
     /// slide clamp so the title's intrusion is a fraction of the card rather than a fixed 46pt of
@@ -3694,6 +3763,11 @@ struct CatalogRowView: View {
                                         card(for: item, proxy: proxy)
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
+                                            // BUG-87/89 (rc11): transparent floor on the REVEALED
+                                            // frame — 0 for every row but Home's last. `.top` so the
+                                            // artwork and caption do not move a point.
+                                            .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                                   alignment: .top)
                                     }
                                         .cardFocusButtonStyle()
                                         .posterButtonShape()
@@ -3702,6 +3776,11 @@ struct CatalogRowView: View {
                                         card(for: item, proxy: proxy)
                                             .padding(.top, cardTopReach)
                                             .padding(.bottom, cardBottomReach)
+                                            // BUG-87/89 (rc11): transparent floor on the REVEALED
+                                            // frame — 0 for every row but Home's last. `.top` so the
+                                            // artwork and caption do not move a point.
+                                            .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                                   alignment: .top)
                                     }
                                     .cardFocusButtonStyle()
                                     .posterButtonShape()
@@ -3723,6 +3802,11 @@ struct CatalogRowView: View {
                                 SeeAllCard()
                                     .padding(.top, cardTopReach)
                                     .padding(.bottom, cardBottomReach)
+                                    // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0
+                                    // for every row but Home's last. `.top` so the artwork and
+                                    // caption do not move a point.
+                                    .frame(minHeight: cardLinkFrameFloor > 0 ? cardLinkFrameFloor : nil,
+                                           alignment: .top)
                             }
                             // BUG-93: SeeAllCard uses tileFocusLift, not CardFocusTreatment - keep the native lift in ring mode.
                             .cardFocusButtonStyle(lift: .plain)

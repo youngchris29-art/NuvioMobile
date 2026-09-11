@@ -662,8 +662,50 @@ final class PinnedRowGeometryTests: XCTestCase {
                                                       titleHeight: Self.openSansTitle))
     }
 
+    // MARK: - BUG-87/89 (rc11): the last-row link-frame floor
+
+    /// BUG-87/89 (rc11): the last row's label floor IS the plan's link frame, so a uniform row needs
+    /// no extra and a short-tile collection row gets exactly the difference.
+    func testLastRowLinkFrameFloorMatchesThePlansOwnLinkFrame() {
+        let plan = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
+                                          showsCTA: true, landscapeRows: false,
+                                          mode: Self.zoomOn, titleHeight: 37)
+        XCTAssertTrue(plan.fits)
+        XCTAssertEqual(PinnedRowGeometry.lastRowLinkFrameFloor(plan: plan), plan.linkFrame, accuracy: 0.01)
+        // A uniform poster row's own label IS the plan's link frame — nothing to add.
+        XCTAssertEqual(PinnedRowGeometry.lastRowBottomReachExtra(plan: plan, labelFrame: plan.linkFrame),
+                       0, accuracy: 0.01)
+        // The tester's last row: hidden-title SQUARE folder tiles, whose artwork is `style.width`
+        // (FolderTile.artworkHeight), not `style.height`.
+        let squareTile = Theme.Size.posterWidth / 126.0 * 154.0          // 268.88…
+        let tileLabel = plan.topReach + squareTile + plan.bottomReach     // 377.89
+        XCTAssertEqual(PinnedRowGeometry.lastRowBottomReachExtra(plan: plan, labelFrame: tileLabel),
+                       134.44, accuracy: 0.5)
+        // The point of the number: the shaped label leaves the engine only the rest interval every
+        // other row in this regime already settles inside.
+        let shelfTopPad = Theme.Spacing.lg
+        let deepestRowTop = plan.viewport - shelfTopPad - plan.linkFrame
+        let deepestMargin = deepestRowTop + Theme.Size.heroPinnedRowTitleInset
+        XCTAssertLessThanOrEqual(deepestMargin, Theme.Size.heroPinnedRowTitleInset)   // ≤ bandHigh
+        XCTAssertGreaterThanOrEqual(deepestMargin, -4)                                // ≥ bandLow
+    }
+
+    /// The floor never manufactures an over-tall frame: `!fits` regimes opt out.
+    func testLastRowLinkFrameFloorIsZeroWhenTheRegimeDoesNotFit() {
+        // Large + captions + carousel is the documented unsatisfiable regime (fits == false) — see
+        // `testLargeWithCaptionsAndCarouselHeroFallsBackToTodaysNumbers` above (No Zoom); the header's
+        // trade note documents the fallback as mode-independent, so zoom-on is unsatisfiable too.
+        let plan = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: true,
+                                          showsCTA: true, landscapeRows: false,
+                                          mode: Self.zoomOn, titleHeight: 38)
+        XCTAssertFalse(plan.fits)
+        XCTAssertEqual(PinnedRowGeometry.lastRowLinkFrameFloor(plan: plan), 0, accuracy: epsilon)
+    }
+
     private func planHeight(for label: String) -> CGFloat {
         if label.hasPrefix("Small") { return Self.small }
+        // FEAT-39: "Medium+" must be checked before the "Medium" prefix it itself starts with.
+        if label.hasPrefix("Medium+") { return Self.mediumPlus }
         if label.hasPrefix("Medium") { return Self.medium }
         return Self.large
     }
