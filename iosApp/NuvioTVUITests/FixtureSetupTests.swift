@@ -23,6 +23,22 @@ import XCTest
 /// turned out to need its own navigation entirely; see `walkFromSwatchesToSizeRow`'s doc for why
 /// `walkToRowByTreeIndex`'s label-based approach (which works fine for every toggle row) and a
 /// naive Y-position search both failed against this row kind.
+///
+/// `testSetHideLabelsOn`/`testSetHideLabelsOff` (added for test48's last-row leg,
+/// `NuvioTVUITests.test48BeltHidesUncorrectableTitle`) drive the Poster Style section's "Hide
+/// Titles" toggle (`AppearanceSettingsPane.swift`'s `PosterStyleControls`, bound to
+/// `model.posterHideLabels`/`setPosterHideLabels` — `PosterStyle.showTitle = !hideLabels`, the same
+/// profile-synced struct Poster Size lives on). test48's belt-hides-title gate needs a FITTING
+/// pinned-row regime (`fits=1`) to exercise, and Large + captions + a carousel row is the
+/// documented `fits=0` regime (`PinnedRowGeometry.plan`'s hero-compression notes) — so that leg's
+/// fixture is Large **plus** Hide Titles ON, not Large alone. Verified the same way Poster Size is:
+/// through the app's own `debug_pinned` probe (`regime=`'s `c0`/`c1` field —
+/// `PinnedRowGeometry.regimeKey`'s `captionVisible` bit), not a UI screenshot, for the identical
+/// "profile sync could silently clobber a `defaults write`" reason the type doc gives above.
+/// Restore order after a run that used the Large+Hide-Titles-ON fixture: Hide Titles OFF
+/// (`testSetHideLabelsOff`) first, then Poster Size back to Medium (`testSetPosterSizeMedium`) —
+/// reversed from setup order so the intermediate state is never "Medium + Hide Titles ON", which no
+/// other test expects.
 final class FixtureSetupTests: XCTestCase {
 
     let remote = XCUIRemote.shared
@@ -136,6 +152,18 @@ final class FixtureSetupTests: XCTestCase {
         return nil
     }
 
+    /// String twin of `probeValue`, for fields that carry a token rather than a number
+    /// (`regime=L403c1p1r0z1t38`) — copy of `PinnedRowSettleRegimeTests.probeToken`, same
+    /// exact-key parsing, same reason (private to that file).
+    private static func probeToken(_ label: String, key: String) -> String? {
+        for token in label.split(separator: " ") {
+            let parts = token.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2, String(parts[0]) == key else { continue }
+            return String(parts[1])
+        }
+        return nil
+    }
+
     /// `debug_env`'s live `w=` (poster artwork width in pt — Small ~183, Medium ~220, Medium+ ~234,
     /// Large ~269; `PosterStyle`'s own scale of the synced `widthDp`). nil when the probe is
     /// missing/unparseable (DEBUG-only, HomeView.swift) rather than defaulting to a value that
@@ -144,6 +172,29 @@ final class FixtureSetupTests: XCTestCase {
         let env = app.staticTexts["debug_env"]
         guard env.waitForExistence(timeout: 15) else { return nil }
         return Self.probeValue(env.label, key: "w")
+    }
+
+    /// The app's own account of the pinned-row regime it settled on — `debug_pinned`'s `regime=`
+    /// field, e.g. `L403c1p1r0z1t38` (`PinnedRowGeometry.regimeKey`: size tag + rounded artwork
+    /// height + `c`aptionVisible + `p`anel + land`r`scape + `z`oom-mode + `t`itle-metric). Same
+    /// probe `PinnedRowSettleRegimeTests`/test47/test48 read, for the same render-vs-layout reason
+    /// their doc comments give — a screenshot or AX frame can't be trusted for this, only the
+    /// app's own settled plan can. nil when the probe is missing (DEBUG-only, HomeView.swift).
+    private func readPinnedRegime(_ app: XCUIApplication) -> String? {
+        let probe = app.staticTexts["debug_pinned"]
+        guard probe.waitForExistence(timeout: 15) else { return nil }
+        return Self.probeToken(probe.label, key: "regime")
+    }
+
+    /// Pulls the `captionVisible` bit back out of a `regime=` token. The digit sits immediately
+    /// after `c` and immediately before `p` in `regimeKey`'s fixed field order (`c\(0|1)p\(0|1)…`),
+    /// so `"c1p"`/`"c0p"` are the only two shapes that substring can take — no other field in the
+    /// key contains a bare `c`. nil (not a default) when neither is found, so a format change fails
+    /// loudly instead of silently reading as "hidden" or "visible".
+    private func captionsVisible(inRegime regime: String) -> Bool? {
+        if regime.contains("c1p") { return true }
+        if regime.contains("c0p") { return false }
+        return nil
     }
 
     /// Deterministic anchor: the Theme swatches row is the topmost focusable row in the
@@ -233,6 +284,76 @@ final class FixtureSetupTests: XCTestCase {
             pause(0.5)
         }
         XCTFail("could not settle focus on popover option '\(optionLabel)' (target y=\(targetY))")
+    }
+
+    /// Walks from the Theme swatches to the "Hide Titles" row (Poster Style section, the
+    /// `SettingsToggleRow` right after Corners in `PosterStyleControls`) with the same FIXED
+    /// down-count technique as `walkFromSwatchesToSizeRow`, extended two rows further: swatches ->
+    /// Accent Focus Ring (1) -> No Zoom on Focus (2) -> Settings Style (3) -> Navigation (4) ->
+    /// Typeface (5) -> Size (6) -> Corners (7) -> Hide Titles (8). Unlike Size/Corners, "Hide
+    /// Titles" is a real `Toggle` (`SettingsToggleRow`), so — per `walkFromSwatchesToSizeRow`'s own
+    /// doc — a label-prefix walk (`NuvioTVUITests.walkToRowByTreeIndex`'s technique) WOULD work
+    /// here; the fixed count is used anyway to stay consistent with this file's already-proven
+    /// navigation and avoid porting that walk's ~100-line row-detection machinery for one row. Every
+    /// row after Hide Titles in this section (Landscape Rows, the conditional Trailer Duration
+    /// picker) sits BELOW it, so neither affects this count.
+    private func walkFromSwatchesToHideTitlesRow(_ app: XCUIApplication) {
+        press(.down, times: 8, gap: 0.6)
+        pause(0.8)
+    }
+
+    /// Reads the "Hide Titles" `SettingsToggleRow`'s On/Off state. Copy of
+    /// `NuvioTVUITests.ensureToggleRow`'s `readState()` — the row surfaces under one label across
+    /// several AX element kinds (wrapping `Cell` with a composed "Hide Titles, …, On/Off" label, the
+    /// `Toggle` itself with a bare `.value` "On"/"Off", and a label-less `StaticText`); scan every
+    /// candidate, prefer one with a real `.value`, and return nil (never a silent default) when none
+    /// is readable.
+    private func hideTitlesToggleState(_ app: XCUIApplication) -> Bool? {
+        let matches = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Hide Titles"))
+            .allElementsBoundByIndex
+        for e in matches {
+            if let value = e.value as? String, value == "On" || value == "Off" {
+                return value == "On"
+            }
+        }
+        for e in matches {
+            if e.label.hasSuffix(", On") { return true }
+            if e.label.hasSuffix(", Off") { return false }
+        }
+        return nil
+    }
+
+    /// Navigates Settings > Appearance and sets Poster Style > Hide Titles to `on`, idempotently
+    /// (presses Select only when the current state disagrees). Mirrors `selectPosterSize`'s
+    /// navigation prologue exactly, then swaps the popover interaction for a direct toggle press —
+    /// "Hide Titles" is a `Toggle`, not a `Menu`+`Picker`.
+    private func selectHideTitles(_ app: XCUIApplication, on: Bool) throws {
+        openTab(app, named: "Settings")
+        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
+        remote.press(.select)
+        pause(1.5)
+        press(.right, times: 1)
+        pause(1)
+
+        climbToThemeSwatches(app)
+        walkFromSwatchesToHideTitlesRow(app)
+        shot(app, "fixture_hide_titles_row_before")
+
+        guard let before = hideTitlesToggleState(app) else {
+            XCTFail("Hide Titles toggle state unreadable — did the fixed-count walk land on the wrong row?")
+            return
+        }
+        if before != on {
+            remote.press(.select)
+            pause(1.5)
+        }
+        shot(app, "fixture_hide_titles_row_after_\(on ? "on" : "off")")
+        guard let after = hideTitlesToggleState(app) else {
+            XCTFail("Hide Titles toggle state unreadable after the press")
+            return
+        }
+        XCTAssertEqual(after, on, "Hide Titles toggle did not end up \(on ? "ON" : "OFF") (was \(before))")
     }
 
     /// Navigates Settings > Appearance and sets Poster Style > Size to `optionLabel`
@@ -356,6 +477,74 @@ final class FixtureSetupTests: XCTestCase {
         XCTAssertTrue(
             after > 228 && after < 240,
             "Poster Size did not switch to Medium+ via the UI (debug_env w=\(after))"
+        )
+    }
+
+    /// Sets the fixture's "Hide Titles" toggle ON (captions hidden) through the real Settings UI —
+    /// half of the setup `test48BeltHidesUncorrectableTitle`'s last-row leg needs, alongside
+    /// `testSetPosterSizeLarge`, for a FITTING pinned-row regime (see the type doc). Idempotent: if
+    /// `debug_pinned`'s `regime=` already reads captions-hidden (`c0`) this is a no-op pass —
+    /// verified through the app's own settled plan, not a screenshot, for the same
+    /// profile-sync-could-clobber-it reason `testSetPosterSizeLarge` gives.
+    func testSetHideLabelsOn() throws {
+        let app = launchToHome()
+
+        if let before = readPinnedRegime(app), captionsVisible(inRegime: before) == false {
+            let attachment = XCTAttachment(string: "already Hide Titles ON before this test ran: regime=\(before)")
+            attachment.name = "fixture_already_hide_labels_on"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            return
+        }
+
+        try selectHideTitles(app, on: true)
+
+        openTab(app, named: "Home")
+        pause(2)
+        guard let after = readPinnedRegime(app) else {
+            XCTFail("debug_pinned probe missing after enabling Hide Titles — is this a Release build, or did Home never remount?")
+            return
+        }
+        let report = XCTAttachment(string: "debug_pinned regime=\(after) after enabling Hide Titles via the UI")
+        report.name = "fixture_after_hide_labels_on"
+        report.lifetime = .keepAlways
+        add(report)
+        XCTAssertEqual(
+            captionsVisible(inRegime: after), false,
+            "Hide Titles did not reach Home's pinned-row regime as captions-hidden (debug_pinned regime=\(after)) — either the toggle press did not land, or a cloud pull clobbered the just-written value (profile-synced setting, per this file's header comment)"
+        )
+    }
+
+    /// Restore path — sets "Hide Titles" OFF (captions visible) through the real Settings UI, the
+    /// inverse of `testSetHideLabelsOn`. Per the type doc's restore order, run this BEFORE
+    /// `testSetPosterSizeMedium` when putting the fixture back after the Large+Hide-Titles-ON
+    /// leg. Idempotent the same way as `testSetHideLabelsOn`.
+    func testSetHideLabelsOff() throws {
+        let app = launchToHome()
+
+        if let before = readPinnedRegime(app), captionsVisible(inRegime: before) == true {
+            let attachment = XCTAttachment(string: "already Hide Titles OFF before this test ran: regime=\(before)")
+            attachment.name = "fixture_already_hide_labels_off"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            return
+        }
+
+        try selectHideTitles(app, on: false)
+
+        openTab(app, named: "Home")
+        pause(2)
+        guard let after = readPinnedRegime(app) else {
+            XCTFail("debug_pinned probe missing after disabling Hide Titles — is this a Release build, or did Home never remount?")
+            return
+        }
+        let report = XCTAttachment(string: "debug_pinned regime=\(after) after disabling Hide Titles via the UI")
+        report.name = "fixture_after_hide_labels_off"
+        report.lifetime = .keepAlways
+        add(report)
+        XCTAssertEqual(
+            captionsVisible(inRegime: after), true,
+            "Hide Titles did not reach Home's pinned-row regime as captions-visible (debug_pinned regime=\(after))"
         )
     }
 
