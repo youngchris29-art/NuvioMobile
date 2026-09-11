@@ -5996,8 +5996,98 @@ final class NuvioTVUITests: XCTestCase {
         }
         pause(1)
         shot(app, "56a_folder_ring_zoom_on")
+
+        func namedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        // BUG-108 gate. What the SIMULATOR can prove is not the hardware compositor bug (it does not
+        // reproduce it — see the FEAT-14 graveyard in PosterCard.swift): it is the GEOMETRIC claim
+        // underneath the fix, that the ring and the artwork are one scaled layer and the rise costs
+        // the row no reflow.
+        let artworkRects = namedFrames("folder_artwork")
+        let cardRects = namedFrames("folder_card")
+        guard artworkRects.count >= 2, cardRects.count >= 2 else {
+            XCTFail("`-debug.cardGeometryProbe YES` published \(artworkRects.count) folder_artwork / \(cardRects.count) folder_card rects — the probe is not armed (DEBUG + NSArgumentDomain) or no folder row is on screen")
+            return
+        }
+        let sorted = artworkRects.sorted { $0.height > $1.height }
+        let focusedArt = sorted[0]
+        let ratio = focusedArt.width / focusedArt.height
+        guard let restArt = sorted.dropFirst().first(where: { abs($0.width / $0.height - ratio) < 0.02 }) else {
+            throw XCTSkip("no resting folder tile of the same shape on screen to compare against")
+        }
+        if abs(focusedArt.height - restArt.height) < 1 {
+            throw XCTSkip("this runtime reports UNTRANSFORMED accessibility frames (focused \(focusedArt) vs rest \(restArt)) — the geometric oracle is unavailable; 56a/56b attachments are the record")
+        }
+        let rise = restArt.minY - focusedArt.minY
+        XCTAssertEqual(rise, 20, accuracy: 2.5, "focused folder artwork rose \(rise)pt; focused=\(focusedArt) rest=\(restArt)")
+        XCTAssertEqual(focusedArt.maxY - restArt.maxY, rise, accuracy: 2.5)
+        XCTAssertEqual((focusedArt.width - restArt.width) / 2,
+                       rise * (restArt.width / restArt.height), accuracy: 3.0,
+                       "width growth must be the same uniform scale as the height growth")
+        let focusedCard = cardRects.min(by: { abs($0.midX - focusedArt.midX) < abs($1.midX - focusedArt.midX) })!
+        let restCard = cardRects.min(by: { abs($0.midX - restArt.midX) < abs($1.midX - restArt.midX) })!
+        XCTAssertEqual(focusedCard.minY, restCard.minY, accuracy: 2.0,
+                       "the tile's LAYOUT box moved — the lift is not render-only")
+
         press(.right, times: 1, gap: 0.5)
         pause(1)
         shot(app, "56b_folder_ring_zoom_on_second_tile")
+    }
+
+    /// BUG-109 (rc9, u/mrStevenx3): entering a collection folder page and pressing Menu must put
+    /// Home focus back on the folder tile the user left from, not on the catalog row above it.
+    /// Evidence + gate: the hero probe's `fitem` names the focused item; the same
+    /// `nuvio-folder://` id must be reported after the pop. `-debug.pinnedRowSettleProbe YES` is
+    /// on so a `covered=1 skipped=1` line lands in the Row Settle pane when the corrector tried to
+    /// scroll the covered Home (diagnostics only; the assertion is the landing).
+    func test57FolderExitRestoresFocus() throws {
+        let app = launchToHome(extraArguments: ["-debug.pinnedRowSettleProbe", "YES"], forceFreshLaunch: true)
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+        var folderItem: String?
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...45 {
+            press(.down, times: 1)
+            pause(0.5)
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.contains("nuvio-folder://") { folderItem = focused; break }
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
+        }
+        guard let folderItem else {
+            throw XCTSkip("no folder/collection tile focused within 45 Down presses on this profile's Home")
+        }
+        shot(app, "57a_folder_focused_before_push")
+        remote.press(.select)
+        pause(3)
+        shot(app, "57b_folder_page")
+        remote.press(.menu)
+        pause(2.5)
+        shot(app, "57c_after_pop")
+        let after = probeField(liveHeroProbe(), "fitem") ?? ""
+        XCTAssertEqual(after, folderItem, "focus after popping the folder page landed on \(after), expected the folder tile \(folderItem)")
     }
 }

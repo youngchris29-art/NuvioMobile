@@ -2507,6 +2507,29 @@ enum PinnedRowSettle {
         return generation
     }
 
+    /// BUG-109: whether Home is currently COVERED by a pushed screen (folder page, Detail). A
+    /// correction that lands while covered scrolls a view the user cannot see, and native focus
+    /// restoration on the pop then resolves by geometry to whatever row now sits at the remembered
+    /// rect — the tester's "exiting a collection moves me back to the row above". Home's root gets
+    /// no `onDisappear` on a push (its own doc says so), so the host's teardown cancel never runs
+    /// for this case; this flag is the push-scoped equivalent. Set by HomeView from its
+    /// `NavigationPath`; read by the settle host before applying a target.
+    // `nonisolated(unsafe)`: mutable static, same as every other piece of shared state in this
+    // enum (`armed`, `generation`, …) — read and written off the main actor's static-isolation
+    // guarantees by design, per the header note on those.
+    nonisolated(unsafe) static var hostCovered = false
+
+    nonisolated static func setCovered(_ covered: Bool) {
+        guard covered != hostCovered else { return }
+        hostCovered = covered
+        if !covered {
+            // The rest the user comes back to is the product of focus restoration, not of a scroll
+            // the corrector chose (see the "host is leaving" note in the settle host). Judge it
+            // fresh.
+            _ = rearm(source: "uncover")
+        }
+    }
+
     /// How long the rows scroll view has been still, in seconds — `.greatestFiniteMagnitude` when
     /// it has never moved this session (a title clipped at mount with no scrolling is at rest by
     /// any reading, and must still be allowed to fade).
@@ -3174,10 +3197,14 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 //
                 // Known limit, stated rather than implied: Home's own doc records that neither a
                 // Detail push nor a tab switch fires `onDisappear` on its root, so this covers
-                // teardown rather than every way the rows can stop being visible. A correction
-                // that lands during a push is bounded anyway — the pop re-reveals the focused card
-                // through the focus engine, and the returning focus change invalidates the epoch,
-                // which voids the verification it would otherwise have failed.
+                // teardown rather than every way the rows can stop being visible. BUG-109 showed a
+                // correction that lands during a push is NOT bounded by the pop's focus engine —
+                // `position.scrollTo(y:)` fires against the covered scroll view and native focus
+                // restoration on the pop then resolves by geometry to whatever row now sits at the
+                // remembered rect, not the row the user actually left. `PinnedRowSettle.hostCovered`
+                // (set by HomeView from its `NavigationPath`) now gates the apply directly, in
+                // `scheduleSettle` below, for exactly this case; this `onDisappear` teardown stays
+                // as the belt-and-suspenders path for whatever DOES tear the host down.
                 .onDisappear {
                     settleWork.item?.cancel()
                     settleWork.item = nil
@@ -3229,6 +3256,28 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
             // which is the whole diagnosis.
             if PinnedRowSettleProbe.enabled, plan.report.contains("margin=") {
                 PinnedRowSettleProbe.log("settle " + plan.report)
+            }
+            // BUG-109: never scroll a covered Home. A pushed folder page (or Detail) clears focus
+            // from this row, and applying a correction while the rows scroll view is hidden behind
+            // that push moves a scroll position the user cannot see — native focus restoration on
+            // the pop then resolves by geometry to whatever row now sits at the remembered rect,
+            // which is what read as "leaving a collection moves me back to the row above". Drop the
+            // target here and let `PinnedRowSettle.setCovered(false)` re-arm a fresh settle once the
+            // pop actually restores focus. Logged loudly (the probe line plus NSLog) because this
+            // branch firing is exactly what the Row Settle pane device pass looks for.
+            //
+            // NOTE (judgment call): there is no per-measurement `rowKey` bound in this scope — only
+            // `plan.report`, which already starts with `row=<key> margin=…` — so the row identity
+            // rides along in `plan.report` rather than a separate `row=` token.
+            if PinnedRowSettle.hostCovered, plan.targetY != nil {
+                if PinnedRowSettleProbe.enabled {
+                    PinnedRowSettleProbe.log("settle " + plan.report
+                        + " covered=1 skipped=1 target=\(Int(plan.targetY!.rounded()))")
+                }
+                NSLog("[HomeScrollProbe] settle covered=1 skipped=1 report=%@", plan.report)
+                settleWork.item?.cancel()
+                settleWork.item = nil
+                return
             }
             if let target = plan.targetY {
                 if reduceMotion {

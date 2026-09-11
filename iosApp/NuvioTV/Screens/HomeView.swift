@@ -1002,6 +1002,10 @@ struct HomeView: View {
             #if DEBUG
             LaunchTrace.mark("home_appear")  // BUG-26: profile gate passed, Home mounting
             #endif
+            // BUG-109: seed the pinned-row corrector's covered flag for the case where Home is
+            // re-entered with a non-empty `homePath` (e.g. a theme `.id()` swap while a folder page
+            // is pushed) — the `.onChange(of: homePath.count)` below only sees CHANGES from here on.
+            PinnedRowSettle.setCovered(!homePath.isEmpty)
             // H-1B-ii: retain, don't start. During a theme `.id()` swap SwiftUI inserts the
             // incoming subtree BEFORE removing the outgoing one, so this runs while the previous
             // HomeView still holds the model — the count goes 1 → 2 → 1 and the pipeline never
@@ -1034,6 +1038,14 @@ struct HomeView: View {
             // The latch's initial read: heroItems can already be populated at mount (repository
             // cache published before this view appeared), and `.onChange` only sees changes.
             if !heroItems.isEmpty { heroSurfaceSeen = true }
+        }
+        // BUG-109: tell the pinned-row corrector when Home is covered by a pushed screen (folder
+        // page, Detail, See All, …) so it never applies a `position.scrollTo(y:)` correction against
+        // a scroll view the user cannot see — see `PinnedRowSettle.hostCovered`. `homePath.count`
+        // going 0 -> nonzero is a push; back to 0 is every pop landing on Home's root, at which point
+        // `setCovered(false)` re-arms a fresh settle judged against the focus the pop just restored.
+        .onChange(of: homePath.count) { _, count in
+            PinnedRowSettle.setCovered(count > 0)
         }
         .onChange(of: heroFocusTrailerMode) { _, mode in
             NSLog("[TrailerPipeline] trailerLocation heroMode=%@", mode ? "YES" : "NO")
