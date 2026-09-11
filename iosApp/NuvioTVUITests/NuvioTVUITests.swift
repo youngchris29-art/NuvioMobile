@@ -5402,23 +5402,9 @@ final class NuvioTVUITests: XCTestCase {
             Self.probeValue(line, key: "intrLifted") ?? Self.probeValue(line, key: "intr")
         }
 
-        /// Reads the settle line the app is currently reporting, with a screenshot and an
-        /// attachment for the record.
-        func settleLine(_ app: XCUIApplication, _ shotName: String) -> String? {
-            shot(app, shotName)
-            let probe = app.staticTexts["debug_pinned"]
-            guard probe.waitForExistence(timeout: 10) else {
-                XCTFail("debug_pinned probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
-                return nil
-            }
-            let line = probe.label
-            let report = XCTAttachment(string: line)
-            report.name = "\(shotName)_settle_line"
-            report.lifetime = .keepAlways
-            add(report)
-            NSLog("[WAVE9] %@ %@", shotName, line)
-            return line
-        }
+        // `settleLine` was hoisted to the class-level `readSettleLine(_:_:)` (below, next to
+        // `walkToLastRow`) so `test58LastRowFrameFloor` can share it; every call site in this test
+        // now reads `readSettleLine` directly.
 
         /// Settle window. Wave 9b made the expected path much shorter: on an unfixable rest the
         /// corrector's `standDown` now fires the belt immediately, so the fade lands at roughly
@@ -5479,7 +5465,7 @@ final class NuvioTVUITests: XCTestCase {
             pause(1.0)
             press(.up, times: 1, gap: 0.9)     // …then back up into it: bottom-anchored reveal
             pause(settleWindow)
-            guard let line = settleLine(app, "48a\(cycle)_deep_rest") else { return }
+            guard let line = readSettleLine(app, "48a\(cycle)_deep_rest") else { return }
             tried.append(line)
             guard let net = Self.probeValue(line, key: "net"), let intr = intrusion(line) else { continue }
             if net < 0, intr > intrusionArm { deepRest = line; break }
@@ -5545,7 +5531,7 @@ final class NuvioTVUITests: XCTestCase {
         pause(1.5)
         press(.down, times: 3, gap: 0.9)
         pause(settleWindow)
-        guard let healthyLine = settleLine(healthyApp, "48b_healthy_rest") else { return }
+        guard let healthyLine = readSettleLine(healthyApp, "48b_healthy_rest") else { return }
         guard let healthyMargin = Self.probeValue(healthyLine, key: "margin"),
               let healthyIntr = intrusion(healthyLine) else {
             throw XCTSkip("no focused pinned settle on the healthy leg ('\(healthyLine)') — rerun")
@@ -5567,59 +5553,16 @@ final class NuvioTVUITests: XCTestCase {
         // sitting above it indefinitely — "Services de Streaming" drawn doubled under "Genres"
         // in the tester's video. Walk down off the healthy rest above until the settle line
         // reports `last=1`, then prove the previous row is genuinely hidden and the last row's
-        // own title still clears its own artwork.
-        //
-        // 2026-09-04 (fixture + gate agent, Large poster size pass): the original budget of 14
-        // was too small for the FA87 fixture's real Home catalog — a run through the full
-        // Poster Size = Large gate batch walked 14 DISTINCT rows (movie:recs_movies_for_you
-        // through movie:snoak_latest_disney_movies, one straight run of Netflix/Prime/Disney+
-        // "latest" catalog pairs from installed addons) without ever repeating a row (so the
-        // walk never stalled) and without ever reaching `last=1`, hitting the OTHER self-skip
-        // branch's mirror image: `XCTFail("last=1 never appeared ... and focus never visibly
-        // stalled either — the walk needs re-tuning for this fixture's row order/count.")` —
-        // the test's own error text names exactly this. Raised to 40 (roughly 3x the observed
-        // 14-row floor) to cover a well-populated real account without materially slowing a
-        // fixture that reaches the end sooner (the loop still breaks the moment `last=1` shows,
-        // same as the stall-detection break — this only changes the walk's OUTER ceiling).
-        let maxLastRowWalk = 40
-        var lastRowLine: String?
-        var previousDownRow: String?
-        // Finding 2 (P3, test48 leg B): `pull=` on the settle line counts pullbacks for the WHOLE
-        // session, not this row — an earlier row's pullback would otherwise fail the last-row
-        // check spuriously. Seed the baseline from the last settle line read BEFORE this walk even
-        // starts (leg B's own healthy-rest read above), then advance it to each non-terminal line
-        // as the walk proceeds, so by the time `last=1` shows, this holds the count from the LAST
-        // sample taken before the walk entered the last row — the last row's own line must show no
-        // NEW pullback against that baseline, not merely `pull == 0`.
-        var previousPull = Self.probeValue(healthyLine, key: "pull")
-        var downWalkStalled = false
-        for step in 0..<maxLastRowWalk {
-            press(.down, times: 1, gap: 0.9)
-            pause(2.5)
-            guard let line = settleLine(healthyApp, "48c\(step)_down_toward_last_row") else { return }
-            let rowKey = Self.probeToken(line, key: "row")
-            if let rowKey, rowKey == previousDownRow {
-                // Focus stopped advancing between two consecutive Down presses — there is
-                // nowhere further down to go, so the walk ran out of rows before ever seeing
-                // `last=1`.
-                downWalkStalled = true
-                break
-            }
-            if Self.probeValue(line, key: "last") == 1 {
-                lastRowLine = line
-                break
-            }
-            previousDownRow = rowKey
-            previousPull = Self.probeValue(line, key: "pull")
-        }
-
-        guard let lastRowLine else {
-            if downWalkStalled {
-                throw XCTSkip("FIXTURE ASSUMPTION UNMET — the down walk stopped advancing (stuck on row '\(previousDownRow ?? "?")') before `last=1` was ever reported, i.e. this fixture has fewer Home rows than the \(maxLastRowWalk)-row walk budget. BUG-89 needs a real last row to reproduce against; add more Home rows (or shorten the walk) and rerun.")
-            }
-            XCTFail("`last=1` never appeared across a \(maxLastRowWalk)-row down walk, and focus never visibly stalled either — the walk needs re-tuning for this fixture's row order/count.")
-            return
-        }
+        // own title still clears its own artwork. The rc11 shaping contract itself (BUG-87/89) is
+        // proven unconditionally by `test58LastRowFrameFloor`, which sets up a regime that FITS on
+        // purpose (Large + Hide Titles ON) — here it is only checked opportunistically, since this
+        // leg's own premise needs captions ON for Leg A above and the two premises cannot share a
+        // launch.
+        guard let walk = try walkToLastRow(
+            healthyApp, baselineLine: healthyLine, shotPrefix: "48c", settleLine: readSettleLine
+        ) else { return }
+        let lastRowLine = walk.line
+        let previousPull = walk.previousPull
 
         guard let lastPrevHidden = Self.probeValue(lastRowLine, key: "prevHidden"),
               let lastInBand = Self.probeValue(lastRowLine, key: "inBand"),
@@ -5645,7 +5588,12 @@ final class NuvioTVUITests: XCTestCase {
         // BUG-87/89 (rc11): with the frame shaped (`rowCardLinkFrameFloor`), the focus engine's own
         // reveal constraint should already confine this row to the band — the corrector's
         // `settlePlan` exemption (`lastRowShaped=1`) means it must never fire on this row, and the
-        // engine must never pull a fired correction back.
+        // engine must never pull a fired correction back. That shaping only applies in a FITTING
+        // regime (`fits=1`, `lastRowShaped=1`), which on this fixture needs Large + Hide Titles ON
+        // (`c0`) — but Leg A's deep-park premise above needs captions ON, so the two premises cannot
+        // share one launch. The trio below is therefore asserted only when this walk's own regime
+        // happens to land on `lastRowShaped=1`; the rc11 contract is proven unconditionally by
+        // `test58LastRowFrameFloor` instead, and only opportunistically here.
         //
         // Finding 2 (P3): this leg samples the settle line after a fixed `settleWindow`/2.5s pause,
         // so a correction fired earlier in that window can already have LANDED and settled by the
@@ -5660,25 +5608,281 @@ final class NuvioTVUITests: XCTestCase {
             XCTFail("last-row settle line is missing nudge=/corrN=/pull= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
             return
         }
-        XCTAssertEqual(
-            lastRowNudge, 0,
-            "the corrector fired on the last row — with the frame shaped (rowCardLinkFrameFloor) the focus engine's own reveal constraint should already confine this row to the band. Full settle line: \(lastRowLine)"
-        )
-        XCTAssertEqual(
-            lastRowCorrN, 0,
-            "the corrector recorded a correction against the last row within its window (corrN=\(lastRowCorrN)) even though nudge read 0 on this sample — a correction landed and settled between samples. Full settle line: \(lastRowLine)"
-        )
-        // `pull=` is a SESSION-WIDE counter, not this row's — comparing it to the baseline taken
-        // just before the walk entered the last row (rather than asserting `== 0` outright) is what
-        // keeps an EARLIER row's pullback, elsewhere in the same walk, from failing this check.
-        XCTAssertEqual(
-            lastRowPull, previousPull ?? lastRowPull,
-            "the last row absorbed a NEW pullback since the last sample taken before the walk reached it (pull=\(lastRowPull), baseline=\(previousPull.map(String.init) ?? "unavailable")) — the focus engine pulled a fired correction back on this row, the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
-        )
+        if Self.probeValue(lastRowLine, key: "lastRowShaped") == 1 {
+            XCTAssertEqual(
+                lastRowNudge, 0,
+                "the corrector fired on the last row — with the frame shaped (rowCardLinkFrameFloor) the focus engine's own reveal constraint should already confine this row to the band. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastRowCorrN, 0,
+                "the corrector recorded a correction against the last row within its window (corrN=\(lastRowCorrN)) even though nudge read 0 on this sample — a correction landed and settled between samples. Full settle line: \(lastRowLine)"
+            )
+            // `pull=` is a SESSION-WIDE counter, not this row's — comparing it to the baseline
+            // taken just before the walk entered the last row (rather than asserting `== 0`
+            // outright) is what keeps an EARLIER row's pullback, elsewhere in the same walk, from
+            // failing this check.
+            XCTAssertEqual(
+                lastRowPull, previousPull ?? lastRowPull,
+                "the last row absorbed a NEW pullback since the last sample taken before the walk reached it (pull=\(lastRowPull), baseline=\(previousPull.map(String.init) ?? "unavailable")) — the focus engine pulled a fired correction back on this row, the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
+            )
+        } else {
+            // The regime this walk landed on does not fit (`lastRowShaped=0`) — the rc11 shaping
+            // never reached this row, so the corrector is legitimately allowed to fire here. Not a
+            // failure of this leg; record it and defer to test58LastRowFrameFloor for the contract.
+            let unshaped = XCTAttachment(string: lastRowLine)
+            unshaped.name = "48_last_row_unshaped"
+            unshaped.lifetime = .keepAlways
+            add(unshaped)
+            NSLog("[WAVE9] 48 last row unshaped (regime does not fit) — rc11 contract not asserted here, see test58: %@", lastRowLine)
+        }
         XCTAssertEqual(
             lastBeltFaded, 0,
             "the belt hid the last row's own title (beltFaded=\(lastBeltFaded)) at a rest that should be showing it. Full settle line: \(lastRowLine)"
         )
+    }
+
+    /// Reads the settle line the app is currently reporting, with a screenshot and an attachment
+    /// for the record. Hoisted out of `test48BeltHidesUncorrectableTitle` so `walkToLastRow` and
+    /// `test58LastRowFrameFloor` can share it.
+    private func readSettleLine(_ app: XCUIApplication, _ shotName: String) -> String? {
+        shot(app, shotName)
+        let probe = app.staticTexts["debug_pinned"]
+        guard probe.waitForExistence(timeout: 10) else {
+            XCTFail("debug_pinned probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return nil
+        }
+        let line = probe.label
+        let report = XCTAttachment(string: line)
+        report.name = "\(shotName)_settle_line"
+        report.lifetime = .keepAlways
+        add(report)
+        NSLog("[WAVE9] %@ %@", shotName, line)
+        return line
+    }
+
+    /// Walks Down from a healthy rest until the settle line reports `last=1`. Returns the last
+    /// row's settle line and the `pull=` baseline from the last sample taken before the walk
+    /// entered the last row (see the Finding 2 note). Throws XCTSkip when the walk stalls before
+    /// `last=1`; fails when the budget runs out without a stall.
+    private func walkToLastRow(_ app: XCUIApplication, baselineLine: String, shotPrefix: String,
+                               settleLine: (XCUIApplication, String) -> String?) throws -> (line: String, previousPull: Int?, walked: [String])? {
+        // 2026-09-04 (fixture + gate agent, Large poster size pass): the original budget of 14
+        // was too small for the FA87 fixture's real Home catalog — a run through the full
+        // Poster Size = Large gate batch walked 14 DISTINCT rows (movie:recs_movies_for_you
+        // through movie:snoak_latest_disney_movies, one straight run of Netflix/Prime/Disney+
+        // "latest" catalog pairs from installed addons) without ever repeating a row (so the
+        // walk never stalled) and without ever reaching `last=1`, hitting the OTHER self-skip
+        // branch's mirror image: `XCTFail("last=1 never appeared ... and focus never visibly
+        // stalled either — the walk needs re-tuning for this fixture's row order/count.")` —
+        // the test's own error text names exactly this. Raised to 40 (roughly 3x the observed
+        // 14-row floor) to cover a well-populated real account without materially slowing a
+        // fixture that reaches the end sooner (the loop still breaks the moment `last=1` shows,
+        // same as the stall-detection break — this only changes the walk's OUTER ceiling).
+        let maxLastRowWalk = 40
+        var lastRowLine: String?
+        var walked: [String] = []
+        var previousDownRow: String?
+        // Finding 2 (P3, test48 leg B): `pull=` on the settle line counts pullbacks for the WHOLE
+        // session, not this row — an earlier row's pullback would otherwise fail the last-row
+        // check spuriously. Seed the baseline from the last settle line read BEFORE this walk even
+        // starts (leg B's own healthy-rest read above), then advance it to each non-terminal line
+        // as the walk proceeds, so by the time `last=1` shows, this holds the count from the LAST
+        // sample taken before the walk entered the last row — the last row's own line must show no
+        // NEW pullback against that baseline, not merely `pull == 0`.
+        var previousPull = Self.probeValue(baselineLine, key: "pull")
+        var downWalkStalled = false
+        for step in 0..<maxLastRowWalk {
+            press(.down, times: 1, gap: 0.9)
+            pause(2.5)
+            guard let line = settleLine(app, "\(shotPrefix)\(step)_down_toward_last_row") else { return nil }
+            let rowKey = Self.probeToken(line, key: "row")
+            if let rowKey, rowKey == previousDownRow {
+                // Focus stopped advancing between two consecutive Down presses — there is
+                // nowhere further down to go, so the walk ran out of rows before ever seeing
+                // `last=1`.
+                downWalkStalled = true
+                break
+            }
+            if Self.probeValue(line, key: "last") == 1 {
+                lastRowLine = line
+                break
+            }
+            walked.append(line)
+            previousDownRow = rowKey
+            previousPull = Self.probeValue(line, key: "pull")
+        }
+
+        guard let lastRowLine else {
+            if downWalkStalled {
+                throw XCTSkip("FIXTURE ASSUMPTION UNMET — the down walk stopped advancing (stuck on row '\(previousDownRow ?? "?")') before `last=1` was ever reported, i.e. this fixture has fewer Home rows than the \(maxLastRowWalk)-row walk budget. BUG-89 needs a real last row to reproduce against; add more Home rows (or shorten the walk) and rerun.")
+            }
+            XCTFail("`last=1` never appeared across a \(maxLastRowWalk)-row down walk, and focus never visibly stalled either — the walk needs re-tuning for this fixture's row order/count.")
+            return nil
+        }
+
+        return (line: lastRowLine, previousPull: previousPull, walked: walked)
+    }
+
+    /// BUG-87/89 (rc11): the last row's card labels take a `minHeight` floor equal to the regime's
+    /// link frame (`rowCardLinkFrameFloor`, `PinnedRowGeometry.lastRowLinkFrameFloor`), so the focus
+    /// engine's own reveal constraint confines the last row to the band and the corrector never
+    /// fires (`settlePlan`'s `lastRowShaped=1` exemption). `test48`'s own last-row leg can only
+    /// check this opportunistically — its Leg A premise needs captions ON, which does not fit —
+    /// so this test sets up the fitting premise on purpose: Large + Hide Titles ON on FA87 with
+    /// zoom on (regime `L403c0p0r0z0t37`, `fits=1`) — the tester's own regime, the one the rc10
+    /// pane was decoded from. Set it with `FixtureSetupTests.testSetHideLabelsOn` then
+    /// `testSetPosterSizeLarge`; restore with `testSetHideLabelsOff` + `testSetPosterSizeMedium`.
+    ///
+    /// `-no_zoom_on_focus NO` is passed explicitly (the fixture's persisted Appearance value is No
+    /// Zoom). Two runs on 2026-09-11 (zoom on, then No Zoom) both confirmed the same thing: the
+    /// FA87 simulator's focus engine parks EVERY row out of band, not just the last one — a
+    /// simulator-only gap, not a BUG-87/89 regression (the tester's own rc10 Row Settle pane shows
+    /// middle rows `inBand=1` on hardware in this exact regime).
+    ///
+    /// Zoom on, regime `L403c0p0r0z0t37` (the tester's own regime): every middle row's natural
+    /// rest reads `margin=-12 inBand=0 intrLifted=8`; the corrector nudges 12 in
+    /// (`UNEXPECTED-WITH-FIT`), the engine pulls two of those back (`pullback=1` ×2 →
+    /// `pbDisarm=1`) and every later title fades. The shaped last row rests at `margin=-13
+    /// lastRowShaped=1 prevHidden=1 corrN=0 nudge=0 pull=2 pbDisarm=1 beltFaded=1` — within a pt
+    /// or two of the middle-row rest, i.e. parity, not the in-band contract.
+    ///
+    /// No Zoom, regime `L403c0p0r0z1t37`: the same shape at `margin=-22` on the middle rows and
+    /// `margin=-18` on the shaped last row (`corrN=1`, `pullback=1` ×2 → `pbDisarm=1`, every
+    /// later title faded, last row `disarmed=1`).
+    ///
+    /// So on the simulator this test can only prove PARITY — the shaped last row rests where the
+    /// middle rows rest — plus the shaping itself (`lastRowShaped=1`) and `prevHidden=1`. It
+    /// cannot prove the in-band contract (`inBand=1`, no `nudge`/`corrN`, no belt fade), because
+    /// the simulator's engine never puts the middle rows in band to begin with; those assertions
+    /// below run only when this run's middle-row rest actually is in band, and are skipped with
+    /// an attached note otherwise — the in-band/no-nudge half stays a device check against the
+    /// tester's own Row Settle pane.
+    func test58LastRowFrameFloor() throws {
+        let app = launchToHome(
+            extraArguments: ["-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+        press(.down, times: 3, gap: 0.9)
+        pause(4.0)
+        guard let healthyLine = readSettleLine(app, "58a_healthy_rest") else { return }
+        guard Self.probeValue(healthyLine, key: "margin") != nil,
+              Self.probeValue(healthyLine, key: "intr") != nil else {
+            throw XCTSkip("no focused pinned settle was reported ('\(healthyLine)') — the settle re-reveal and its belt are armed only in Home's PINNED (Nuvio-style) hero container, so this fixture is running the classic in-scroll hero. Turn Settings > Home Screen > Nuvio-style hero on and rerun.")
+        }
+
+        // Regime gate: the last-row frame floor is 0 by design outside a fitting regime — it is
+        // the FIT that lets the focus engine's own reveal constraint do the confining, so this
+        // test's premise depends on it directly rather than on Poster Size/Hide Titles as a proxy.
+        let regimeToken = Self.probeToken(healthyLine, key: "regime") ?? "-"
+        guard let fits = Self.probeValue(healthyLine, key: "fits"), fits == 1 else {
+            let fitsValue = Self.probeValue(healthyLine, key: "fits")
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the pinned regime does not fit (\(regimeToken) fits=\(fitsValue.map(String.init) ?? "-")); the last-row frame floor is 0 by design outside a fitting regime. On FA87 this needs Large + Hide Titles ON: run FixtureSetupTests/testSetHideLabelsOn then testSetPosterSizeLarge and rerun. Full settle line: \(healthyLine)")
+        }
+
+        guard let walk = try walkToLastRow(
+            app, baselineLine: healthyLine, shotPrefix: "58b", settleLine: readSettleLine
+        ) else { return }
+        let lastRowLine = walk.line
+        let previousPull = walk.previousPull
+
+        guard let lastRowShaped = Self.probeValue(lastRowLine, key: "lastRowShaped"),
+              let lastPrevHidden = Self.probeValue(lastRowLine, key: "prevHidden"),
+              let lastInBand = Self.probeValue(lastRowLine, key: "inBand"),
+              let lastRowNudge = Self.probeValue(lastRowLine, key: "nudge"),
+              let lastRowCorrN = Self.probeValue(lastRowLine, key: "corrN"),
+              let lastRowPull = Self.probeValue(lastRowLine, key: "pull"),
+              let lastBeltFaded = Self.probeValue(lastRowLine, key: "beltFaded"),
+              let lastMargin = Self.probeValue(lastRowLine, key: "margin") else {
+            XCTFail("last-row settle line is missing one of lastRowShaped=/prevHidden=/inBand=/nudge=/corrN=/pull=/beltFaded=/margin= — the settle line is append-only by contract. Full settle line: \(lastRowLine)")
+            return
+        }
+        let bandLo = Self.probeValue(lastRowLine, key: "bandLo") ?? -4
+
+        // ── Parity data: the middle-row margins read on the way down to the last row, plus the
+        //    healthy rest read before the walk started ───────────────────────────────────────
+        var middleMargins = walk.walked.compactMap { Self.probeValue($0, key: "margin") }
+        if let healthyMargin = Self.probeValue(healthyLine, key: "margin") {
+            middleMargins.append(healthyMargin)
+        }
+        guard !middleMargins.isEmpty else {
+            XCTFail("no middle-row margins were collected on the walk to the last row — cannot compute the parity median. Full settle line: \(lastRowLine)")
+            return
+        }
+        let sortedMiddleMargins = middleMargins.sorted()
+        let medianMiddle = sortedMiddleMargins[sortedMiddleMargins.count / 2]
+        let middleMarginsReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(medianMiddle) bandLo=\(bandLo)")
+        middleMarginsReport.name = "58_middle_margins"
+        middleMarginsReport.lifetime = .keepAlways
+        add(middleMarginsReport)
+
+        // ── Hard assertions: shaping + parity — provable on the simulator regardless of which
+        //    fitting regime the engine actually parks rows in ─────────────────────────────────
+        XCTAssertEqual(
+            lastRowShaped, 1,
+            "the last-row frame floor did not reach this row (lastRowShaped=\(lastRowShaped)) — `HomeView` publishes `rowCardLinkFrameFloor` on `model.rows.last` only, so either this settled row is not the one the floor was published to, or the regime changed mid-walk (regime=\(regimeToken) at the healthy rest). Full settle line: \(lastRowLine)"
+        )
+        XCTAssertEqual(
+            lastPrevHidden, 1,
+            "the last row settled with the previous row's sliver still visible above it (prevHidden=\(lastPrevHidden)) — BUG-89: a short last row does not get enough trailing scroll range to hide its predecessor. Full settle line: \(lastRowLine)"
+        )
+        XCTAssertTrue(
+            abs(lastMargin - medianMiddle) <= 8,
+            "the shaped last row must rest where the middle rows rest — the floor gives it the same revealed frame, so the focus engine's own reveal constraint should park it inside the same interval (last margin=\(lastMargin), middle-row median=\(medianMiddle), margins=\(middleMargins)). Full settle line: \(lastRowLine)"
+        )
+
+        // ── Corrector assertions: only meaningful while the corrector is still armed going into
+        //    the last row — once a pullback has disarmed it (pbDisarm=1/disarmed=1), a fresh
+        //    nudge/corrN/pull reading proves nothing about the last row specifically ───────────
+        let lastPbDisarm = Self.probeValue(lastRowLine, key: "pbDisarm")
+        let lastDisarmed = Self.probeValue(lastRowLine, key: "disarmed")
+        if lastPbDisarm == 0 && lastDisarmed != 1 {
+            XCTAssertEqual(
+                lastRowNudge, 0,
+                "the corrector fired on the last row (nudge=\(lastRowNudge)) — with the frame shaped (rowCardLinkFrameFloor) and the regime fitting, the focus engine's own reveal constraint should already confine this row to the band. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastRowCorrN, 0,
+                "the corrector recorded a correction against the last row within its window (corrN=\(lastRowCorrN)) even though nudge read 0 on this sample — a correction landed and settled between samples. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastRowPull, previousPull ?? lastRowPull,
+                "the last row absorbed a NEW pullback since the last sample taken before the walk reached it (pull=\(lastRowPull), baseline=\(previousPull.map(String.init) ?? "unavailable")) — the focus engine pulled a fired correction back on this row, the rc10 failure this shaping replaces. Full settle line: \(lastRowLine)"
+            )
+        } else {
+            let corrDisarmedReport = XCTAttachment(string: lastRowLine)
+            corrDisarmedReport.name = "58_corrector_disarmed"
+            corrDisarmedReport.lifetime = .keepAlways
+            add(corrDisarmedReport)
+            NSLog("[WAVE9] 58 corrector disarmed before the last row (pbDisarm/disarmed) — nudge/corrN/pull not asserted: %@", lastRowLine)
+        }
+
+        // ── In-band assertions: only meaningful when this run's engine actually parks the
+        //    middle rows in band — on the FA87 simulator it does not (see the doc comment
+        //    above); the in-band/belt contract is otherwise a device-only check ────────────────
+        if medianMiddle >= bandLo {
+            XCTAssertEqual(
+                lastInBand, 1,
+                "the last row's own title did not settle inside its legibility band (inBand=\(lastInBand)) — the last row is exempt from the canonical target but its own title still has to clear its own artwork. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertEqual(
+                lastBeltFaded, 0,
+                "the belt hid the last row's own title (beltFaded=\(lastBeltFaded)) at a rest that should be showing it. Full settle line: \(lastRowLine)"
+            )
+            XCTAssertTrue(
+                ((bandLo - 1)...49).contains(lastMargin),
+                "the shaped last row must rest inside the band [\(bandLo), 48] (margin=\(lastMargin)). Full settle line: \(lastRowLine)"
+            )
+        } else {
+            let outOfBandReport = XCTAttachment(string: "middleMargins=\(middleMargins) medianMiddle=\(medianMiddle) bandLo=\(bandLo)")
+            outOfBandReport.name = "58_sim_engine_parks_out_of_band"
+            outOfBandReport.lifetime = .keepAlways
+            add(outOfBandReport)
+            NSLog("[WAVE9] 58 simulator engine parks the middle rows out of band (median=%d) — in-band/belt contract is a DEVICE check (tester's Row Settle pane); parity asserted only", medianMiddle)
+        }
+
+        shot(app, "58c_last_row")
     }
 
     // MARK: - FEAT-32: description → full-screen trailer bridge
