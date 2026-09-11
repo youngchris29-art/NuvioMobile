@@ -196,11 +196,11 @@ enum TabBarStateProbe {
     static func sample(reason: String) {
         guard enabled else { return }
         guard let window = armedWindow else {
-            log("NOT-FOUND state=unknown mode=\(lastMode) reason=\(reason)")
+            log("NOT-FOUND why=no-window state=unknown mode=\(lastMode) reason=\(reason)")
             return
         }
         guard let bar = findTabBar(in: window) else {
-            log("NOT-FOUND state=unknown mode=\(lastMode) reason=\(reason)")
+            log("NOT-FOUND why=no-tabbar state=unknown mode=\(lastMode) reason=\(reason)")
             return
         }
         let frameInWindow = bar.convert(bar.bounds, to: window)

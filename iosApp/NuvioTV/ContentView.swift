@@ -355,11 +355,11 @@ struct MainTabView: View {
         // sampler once this view lands in a window. Hosted here (rather than inside a `Tab`
         // closure, or in `HomeView.swift`, which this task may not edit) because `MainTabView`'s
         // `TabView` is reachable from every tab and mounted exactly once for the whole shell —
-        // zero-sized and a no-op when the probe's toggle is off. DEBUG-only: this is a diagnostics
-        // armer, not something a Release build should mount at all.
-        #if DEBUG
+        // zero-sized and a no-op when the probe's toggle is off. Mounted in EVERY build, not just
+        // DEBUG: `TabBarStateProbe.enabled` is a launch-latched read of `debug.tabBarStateProbe`
+        // (TabBarStateProbe.swift) which the About pane's toggle writes in Release too, so a
+        // DEBUG-only armer meant every rc sample logged `NOT-FOUND state=unknown`.
         .background(TabBarProbeArmer())
-        #endif
         // FEAT-30: the shell-wide focus scope `resetFocus(in:)` targets. Sidebar mode only, so
         // tabs mode carries no new modifier at all (the byte-identical promise; test54's row walk
         // stopped finding tiles in the one run where this scope was declared in both modes).
