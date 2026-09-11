@@ -36,11 +36,12 @@ import CoreGraphics
 ///  1. **The downward reach** (`heroPinnedRowBottomReach` 44 → `bottomReachFloor` 24, 20pt of
 ///     give). It covers the mirror-direction rest error and has no content to protect below it, so
 ///     it is the cheapest dial in the file.
-///  2. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor(lift:)`, 22pt of give with
-///     No Zoom on and 2pt with either zoom mode). It is never RAISED here, only lowered, and never
-///     below the floor: `heroPinnedRowTitleInset` (48) + a measured title (~38) − `Spacing.lg` (24)
-///     ≈ 62 holds the TITLE, and the floor adds the focus lift and the belt's `fadeIntrusionArm`
-///     on top of it — see `topReachFloor(lift:)` and the rc10 note below.
+///  2. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor(lift:titleHeight:)`, 22pt of
+///     give with No Zoom on and 2pt with either zoom mode in the system font). It is never RAISED
+///     here, only lowered, and never below the floor: `heroPinnedRowTitleInset` (48) + the ACTIVE
+///     font's measured title line (38 system, ≈42.2 Open Sans) − `Spacing.lg` (24) holds the TITLE,
+///     and the floor adds the focus lift and the belt's `fadeIntrusionArm` on top of it — see
+///     `topReachFloor(lift:titleHeight:)` and the rc10 note below.
 ///  3. **Hero compression**, for whatever demand the two reaches could not cover, bounded by what
 ///     the pinned hero's internals can actually yield
 ///     (`Theme.Size.heroPinnedCompressionCap(showsCTA:)`).
@@ -73,11 +74,21 @@ import CoreGraphics
 /// swap one out-of-band rest for another; the belt, measuring intrusion against the same 0, faded
 /// the titles it could not help (`clearanceLift=0` on every belt line of that pane).
 ///
-/// Christian's decision: **take the clearance.** The floor is now derived and MODE-AWARE —
-/// `topReachFloor(lift:)` = title floor 62 + the active lift + the belt's `fadeIntrusionArm` (4) —
-/// which is 66 with No Zoom on and **86** with either zoom mode. 86 is back INSIDE the proven 72-88
-/// corridor, so rc4's "is 64 safe?" question is retired rather than doubled, and the settled focused
-/// title clears the artwork by 4pt (one arm width) in BOTH modes by construction instead of by luck.
+/// Christian's decision: **take the clearance.** The floor is now derived, MODE-AWARE and
+/// FONT-AWARE — `topReachFloor(lift:titleHeight:)` = title inset 48 + the active font's measured
+/// title line − `Spacing.lg` 24 + the active lift + the belt's `fadeIntrusionArm` (4) — which in the
+/// system font is 66 with No Zoom on and **86** with either zoom mode. 86 is back INSIDE the proven
+/// 72-88 corridor, so rc4's "is 64 safe?" question is retired rather than doubled, and the settled
+/// focused title clears the artwork by 4pt (one arm width) in BOTH modes by construction instead of
+/// by luck.
+///
+/// The font term is the rc10 Codex P2 half of the same defect: the floor reserved a hard-coded 38pt
+/// title while the clearance it protects is measured live, so FEAT-31's Open Sans (≈42.2pt at the
+/// same text style) reproduced the negative `focusedRaw` the derived floor exists to remove — and the
+/// `LIFT-DEFICIT` stand-down with it. Open Sans + zoom on now wants 90.2 and takes the 88 cap, which
+/// leaves 1.8pt of clearance: positive, so the corrector keeps working, but inside the belt's arm
+/// band. See `topReachFloor(lift:titleHeight:)` for that trade and for where the stand-down is still
+/// the right answer (titles past ≈44pt, i.e. accessibility text sizes).
 ///
 /// The price is paid in hero compression: at Large + Hide Labels + panel it goes 68.33 → **90.33**
 /// with zoom on (70.33 with No Zoom), which takes the panel's synopsis from 3 lines to 2 in both
@@ -189,13 +200,46 @@ enum PinnedRowGeometry {
     /// Capped at `heroPinnedRowTopPad`: this dial only ever moves DOWN (reach 100 kills focus
     /// resolution outright). 86 also lands INSIDE the proven 72-88 corridor, so the rc4 header's
     /// unanswered hardware questions about reach 64 are retired rather than doubled.
-    nonisolated static func topReachFloor(lift: CGFloat) -> CGFloat {
-        let titleFloor = Theme.Size.heroPinnedRowTitleInset + measuredTitleHeight - Theme.Spacing.lg
+    ///
+    /// ### `titleHeight` is the ACTIVE FONT's metric, not a constant (rc10 Codex P2)
+    ///
+    /// The first cut of this floor hard-coded 38 — the system font's `sectionTitle` line as measured
+    /// on the FA87 fixture — while the clearance it is supposed to reserve room for
+    /// (`PinnedRowTitle.staticClearance`) is computed from the title's LIVE measured height. Under
+    /// FEAT-31's Open Sans the two disagree by ≈4pt (42.2 against 38), which is the entire margin
+    /// this floor keeps, so at Large with zoom on the derived reach of 86 left
+    /// `atRest = (24 + 86) − (48 + 42.2) = 19.8`, `focusedRaw = −0.2` — negative, i.e. the corrector's
+    /// `LIFT-DEFICIT` stand-down, permanently, for the session, on a font the app ships. The default
+    /// is therefore `Theme.Font.sectionTitleLineHeight`, measured from the face the token actually
+    /// resolves to. A DEFAULT ARGUMENT rather than a read inside the body, so the unit suite can pin
+    /// a fixed height and assert numbers instead of following whatever family the host has applied —
+    /// which is also why that metric is the one `Theme.Font` member declared `nonisolated(unsafe)`:
+    /// a nonisolated function's default value expression may not touch main-actor state.
+    ///
+    /// ### At the 88 cap the belt's arm is no longer guaranteed — by design
+    ///
+    /// Open Sans + zoom on wants `48 + 42.2 − 24 + 20 + 4 = 90.2` and gets the cap, 88. The settled
+    /// focused title then clears the artwork by `24 + 88 − 48 − 42.2 − 20 = 1.8`: still POSITIVE, so
+    /// the geometry is legible and the corrector keeps working (`focusedRaw >= 0`, no stand-down, and
+    /// the band the corrector aims into is simply 2.2pt narrower at its low edge), but under
+    /// `fadeIntrusionArm`, so the belt may arm on a rest that is technically clear. That is the right
+    /// trade at the cap: the alternative is a reach past 88, which kills focus resolution outright.
+    /// A title taller than ≈44pt (accessibility text sizes, in either font) pushes `focusedRaw`
+    /// negative even at the cap, and that IS the stand-down's job — see the `LIFT-DEFICIT` branch in
+    /// `PinnedRowSettle.settlePlan`.
+    nonisolated static func topReachFloor(lift: CGFloat,
+                                          titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight) -> CGFloat {
+        let titleFloor = Theme.Size.heroPinnedRowTitleInset + titleHeight - Theme.Spacing.lg
         return min(Theme.Size.heroPinnedRowTopPad, titleFloor + lift + PinnedRowTitle.fadeIntrusionArm)
     }
 
-    /// The measured height `topReachFloor` is derived against — `PinnedRowTitle`'s own record for a
-    /// `Theme.Font.sectionTitle` line as rendered on the FA87 fixture.
+    /// The SYSTEM font's `Theme.Font.sectionTitle` line as rendered on the FA87 fixture — the number
+    /// this floor was originally derived against, and every arithmetic expectation in
+    /// `PinnedRowGeometryTests` with it.
+    ///
+    /// No longer read by any shipping path (`topReachFloor` takes the live metric — see above). It
+    /// survives as the tests' fixed reference, so the unit suite asserts numbers rather than
+    /// whatever font family the host simulator happens to be running.
     nonisolated static let measuredTitleHeight: CGFloat = 38
 
     // MARK: - Give
@@ -319,11 +363,25 @@ enum PinnedRowGeometry {
     ///     — so a caller inside SwiftUI must pass `@AppStorage`-backed flags rather than let the
     ///     `.current` default latch whatever the defaults said last (the Codex r10 P2 staleness
     ///     class, closed for `PinnedRowTitleTracking` and closed here the same way).
+    ///   - titleHeight: the rendered height of ONE `Theme.Font.sectionTitle` line, which the top
+    ///     reach's floor has to reserve room for. Defaults to the ACTIVE font family's measured
+    ///     metric (`Theme.Font.sectionTitleLineHeight`) — the plan is font-dependent for the same
+    ///     reason it is mode-dependent, and a hard-coded 38 stood the corrector down under Open Sans
+    ///     (see `topReachFloor(lift:titleHeight:)`). Tests pass a fixed number so their arithmetic
+    ///     does not depend on the host's font.
+    ///
+    ///     Known limit: `regimeKey` does NOT encode the font. Two families can therefore produce
+    ///     different plans under one key, which `PinnedRowSettle.noteRegimeChange` would not see as a
+    ///     regime change — but the family can only change through Settings (FEAT-31), which remounts
+    ///     the whole tree by `.id()` in `ContentView`, and that swap already runs the corrector's
+    ///     host-scoped reset through `registerScheduler`. Encoding it would churn the `onChange`
+    ///     re-reveal for a value that cannot move without a remount.
     nonisolated static func plan(posterHeight: CGFloat,
                                  captionVisible: Bool,
                                  showsCTA: Bool,
                                  landscapeRows: Bool,
-                                 mode: PinnedRowTitle.FocusModeFlags = .current) -> Plan {
+                                 mode: PinnedRowTitle.FocusModeFlags = .current,
+                                 titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight) -> Plan {
         let artwork = landscapeRows ? Theme.Size.landscapeHeight : posterHeight
         let captionChrome = captionVisible ? PinnedRowTitle.cardLockupCaptionChrome : 0
         let baseTopReach = Theme.Size.heroPinnedRowTopPad
@@ -343,7 +401,7 @@ enum PinnedRowGeometry {
                                                     captionVisible: captionVisible,
                                                     treatment: .cardTreatment,
                                                     mode: mode)
-        let topFloor = topReachFloor(lift: lift)
+        let topFloor = topReachFloor(lift: lift, titleHeight: titleHeight)
 
         // Wave 10's number for this artwork, and the scope gate in one read: it is 0 at exactly the
         // Poster Sizes whose rows already fit the pre-BUG-87 extent rule, and 0 everywhere when

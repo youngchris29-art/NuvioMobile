@@ -268,7 +268,9 @@ enum PinnedRowTitle {
         /// Large read as a clean 0 for a whole release. This is the unclamped value: negative means
         /// the focused card's artwork sits that far OVER the settled title's bottom at every rest,
         /// which no correction can fix. Reported on every settle line as `clearanceLiftRaw=`, and
-        /// `PinnedRowGeometry.topReachFloor(lift:)` is where it is kept non-negative.
+        /// `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` is where it is kept non-negative —
+        /// against the ACTIVE font's title metric as of rc10, which is what stopped Open Sans from
+        /// reproducing the exact deficit that floor exists to remove.
         var focusedRaw: CGFloat
     }
 
@@ -1622,10 +1624,13 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 ///  1. **It only ever runs from a settled rest, and only after real motion.** `noteScroll` arms a
 ///     single debounce and now REQUIRES motion to arm at all; a real scroll (motion beyond
 ///     `driftTolerance`, or a path length beyond `motionWindowDisplacement`) re-arms it, so
-///     nothing fires while the page moves and nothing fires when the page has not moved. The three
+///     nothing fires while the page moves and nothing fires when the page has not moved. The four
 ///     backstops that legitimately arm without motion (`invalidateEpoch`, `noteClearances`,
-///     `noteBeltFaded`) call `rearm(source:)` directly and are unaffected; `armSrc=` on the settle
-///     line names which one did.
+///     `noteBeltFaded`, and `setCovered(false)`'s uncover) call `rearm(source:)` directly and are
+///     unaffected; `armSrc=` on the settle line names which one did. Every one of them hands its
+///     token to the registered `scheduler` — arming without scheduling leaves a settle nobody will
+///     ever run, which is the class of bug Codex r6 found on the clearance path and rc10 found on
+///     the uncover path.
 ///  2. **The target is a legibility BAND, not a point.** Both edges come from the row's own
 ///     geometry:
 ///
@@ -2021,7 +2026,7 @@ enum PinnedRowSettle {
     /// idle window can tell "the same settle line, still the last word" from "the corrector keeps
     /// resolving settles" without inferring it from timing. Never reset.
     nonisolated(unsafe) private static var settleSeq = 0
-    /// What armed the settle currently being resolved — `scroll|epoch|clearance|belt|retry`,
+    /// What armed the settle currently being resolved — `scroll|epoch|clearance|belt|uncover|retry`,
     /// reported as `armSrc=`. A row that keeps producing settle lines with nothing touching the
     /// remote is the BUG-87 signature, and this names which backstop is doing it.
     nonisolated(unsafe) private static var armSource = "scroll"
@@ -2526,21 +2531,93 @@ enum PinnedRowSettle {
     /// rect — the tester's "exiting a collection moves me back to the row above". Home's root gets
     /// no `onDisappear` on a push (its own doc says so), so the host's teardown cancel never runs
     /// for this case; this flag is the push-scoped equivalent. Set by HomeView from its
-    /// `NavigationPath`; read by the settle host before applying a target.
+    /// `NavigationPath` (via `setCovered`); read by `rejectCoveredSettle`, which the settle host
+    /// calls BEFORE it plans anything — not just before it applies a target (Codex rc10 P2).
     // `nonisolated(unsafe)`: mutable static, same as every other piece of shared state in this
     // enum (`armed`, `generation`, …) — read and written off the main actor's static-isolation
     // guarantees by design, per the header note on those.
     nonisolated(unsafe) static var hostCovered = false
 
+    /// One-shot latch for the covered-skip probe line, cleared on every cover transition below, so
+    /// one push writes ONE line instead of one per settle that happens to resolve while covered.
+    /// Same discipline as `stillIgnoredLogged`: the device pass needs to see that the branch fired,
+    /// not how many times.
+    nonisolated(unsafe) private static var coveredSkipLogged = false
+
+    /// Publishes the cover transition. Both directions do real work.
+    ///
+    /// **Covering** (Codex rc10 P2, Finding 2): a correction in flight when the push happens can
+    /// never be judged — whatever offset the rows hold when Home comes back is the product of
+    /// native focus restoration, not of the scroll API — and two false MISSes disarm the corrector
+    /// for the session. That is the same argument `hostDidDisappear` makes for a host that is
+    /// leaving, and a push is the case `onDisappear` never sees. So an epoch invalidation runs
+    /// here: it drops `pendingVerification`, the in-flight `nudgeDeadline`, the pull-back evidence
+    /// and the per-row latches, stales every token already scheduled, and (because focus has left
+    /// the rows) leaves nothing armed.
+    ///
+    /// **Uncovering** (Codex rc10 P2, Finding 1): the rest the user comes back to is likewise the
+    /// product of focus restoration rather than of a scroll the corrector chose, so it has to be
+    /// judged fresh. `rearm()` alone was not enough — it bumped `generation` (invalidating the
+    /// pending work item) and set `armed = true` with NOTHING scheduled to resolve the token, so a
+    /// stationary pop left the corrector permanently "armed" with no block behind it: the three
+    /// other backstops all guard on `!armed` and so declined to re-arm, and a motionless geometry
+    /// pass no longer arms at all (see `noteScroll`). Correction stalled until the user scrolled
+    /// for real. The token goes to the registered scheduler, exactly like every other backstop.
+    ///
+    /// `epochRearmPending` is cleared on the way IN deliberately: it means "a pending block should
+    /// ask for one re-check", and while covered there is nothing to re-check — the uncover above
+    /// schedules the fresh settle instead.
     nonisolated static func setCovered(_ covered: Bool) {
         guard covered != hostCovered else { return }
         hostCovered = covered
-        if !covered {
-            // The rest the user comes back to is the product of focus restoration, not of a scroll
-            // the corrector chose (see the "host is leaving" note in the settle host). Judge it
-            // fresh.
-            _ = rearm(source: "uncover")
+        coveredSkipLogged = false
+        guard !covered else {
+            invalidateEpoch(rowGainedFocus: false)
+            epochRearmPending = false
+            return
         }
+        guard let scheduler else {
+            // No pinned rows ScrollView has registered one — nothing can resolve a settle in this
+            // configuration, so leave `armed` FALSE rather than stranding a phantom (same
+            // stand-down as `invalidateEpoch`'s and `noteClearances`' no-scheduler branches).
+            armed = false
+            if HomeGeometryProbe.enabled {
+                NSLog("[HomeScrollProbe] settle %@", "uncover no-scheduler")
+            }
+            return
+        }
+        let token = rearm(source: "uncover")
+        // `MainActor.assumeIsolated` for the same reason `noteClearances` does it: this is called
+        // from HomeView's `NavigationPath` observation on the main thread, and the scheduler closure
+        // touches the settle host's `@State`.
+        MainActor.assumeIsolated { scheduler(token, settleDelay) }
+    }
+
+    /// BUG-109 / Codex rc10 P2 (Finding 2): rejects a deferred settle that has resolved while Home
+    /// is COVERED — and rejects it BEFORE `settlePlan` runs.
+    ///
+    /// The rc9 guard sat downstream of the planning call and only dropped the `targetY`. By then
+    /// `settlePlan` had already recorded `pendingVerification`, `nudgeDeadline`, this row's entry in
+    /// `correctionsFired` and `lastCorrection` for a scroll that was then never applied: the skipped
+    /// correction still spent the 8s per-row budget, and the verification it left behind was later
+    /// judged against movement that never happened — a false MISS, or a false PULLBACK, either of
+    /// which can disarm the mechanism for the session. Nothing after this point is stateful, so the
+    /// cheapest correct fix is to never plan at all.
+    ///
+    /// Identity comes from the latest measurement rather than from a plan (there is none yet), which
+    /// is the one thing the line loses; `row=` is still the token a reader of the photo starts from.
+    nonisolated static func rejectCoveredSettle() -> Bool {
+        guard hostCovered else { return false }
+        guard !coveredSkipLogged else { return true }
+        coveredSkipLogged = true
+        let row = latest?.rowKey ?? "-"
+        if PinnedRowSettleProbe.enabled {
+            PinnedRowSettleProbe.log("settle row=\(row) covered=1 skipped=1")
+        }
+        // Unguarded NSLog, like the corrector's other terminal lines: a push that would have
+        // scrolled the covered Home is exactly what the Row Settle pane device pass looks for.
+        NSLog("[HomeScrollProbe] settle covered=1 skipped=1 row=%@", row)
+        return true
     }
 
     /// How long the rows scroll view has been still, in seconds — `.greatestFiniteMagnitude` when
@@ -2745,9 +2822,19 @@ enum PinnedRowSettle {
         // focused card's picture is under the title at every margin, and a correction can only
         // trade one out-of-band rest for another (it did help — 49.5pt of real overlap down to
         // 18 — which is why it kept firing, and why the clamp then reported the result as a clean
-        // 0). Stand down instead: the belt owns an unfixable rest, and this branch cannot fire in
-        // any shipping regime once `topReachFloor(lift:)` holds the lift. Same dedup discipline as
+        // 0). Stand down instead: the belt owns an unfixable rest. Same dedup discipline as
         // `standDown`'s own log — loud, but once per row.
+        //
+        // When this can still fire, now that `topReachFloor(lift:titleHeight:)` holds the lift
+        // against the ACTIVE font's title metric (rc10 Codex P2): only where the floor hits its 88pt
+        // cap AND the title is taller than ≈44pt, i.e. `24 + 88 − 48 − titleHeight − lift < 0` with
+        // the reach already at the ceiling that keeps focus resolution working. That is accessibility
+        // text sizes, in either font family — geometry no reach can cover — so reaching this branch
+        // there is the intended handoff rather than a floor bug. It is NOT reachable from an ordinary
+        // font choice any more: Open Sans at the cap leaves 1.8pt, which is short of the belt's arm
+        // but non-negative, so the corrector keeps its rest. (The `deficit=` line below still names
+        // the reach floor, because that is the right first suspect whenever it fires at a NORMAL
+        // type size.)
         if clearance.focusedRaw < 0 {
             let firstTime = standDownRow != m.rowKey
             standDown(rowKey: m.rowKey, reason: "lift-deficit")
@@ -3243,8 +3330,9 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 // `position.scrollTo(y:)` fires against the covered scroll view and native focus
                 // restoration on the pop then resolves by geometry to whatever row now sits at the
                 // remembered rect, not the row the user actually left. `PinnedRowSettle.hostCovered`
-                // (set by HomeView from its `NavigationPath`) now gates the apply directly, in
-                // `scheduleSettle` below, for exactly this case; this `onDisappear` teardown stays
+                // (set by HomeView from its `NavigationPath`) now gates the whole evaluation, in
+                // `scheduleSettle` below — ahead of the planning call, so a skipped settle spends no
+                // correction state either (Codex rc10 P2); this `onDisappear` teardown stays
                 // as the belt-and-suspenders path for whatever DOES tear the host down.
                 .onDisappear {
                     settleWork.item?.cancel()
@@ -3279,6 +3367,25 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
     private func scheduleSettle(token: Int, after delay: TimeInterval, hops: Int) {
         settleWork.item?.cancel()
         let work = DispatchWorkItem {
+            // BUG-109: never scroll a covered Home — and never PLAN for one either. A pushed folder
+            // page (or Detail) clears focus from this row, and applying a correction while the rows
+            // scroll view is hidden behind that push moves a scroll position the user cannot see;
+            // native focus restoration on the pop then resolves by geometry to whatever row now sits
+            // at the remembered rect, which is what read as "leaving a collection moves me back to
+            // the row above".
+            //
+            // Codex rc10 P2: this check is FIRST, above `settlePlan`, because `settlePlan` is
+            // stateful — it records a verification, a nudge window, a per-row correction stamp and
+            // `lastCorrection` — and cancelling the work item afterwards undid none of that. A
+            // skipped scroll therefore spent the correction budget and left a verification to be
+            // judged against movement that never happened. `PinnedRowSettle.setCovered(false)`
+            // re-arms AND schedules a fresh settle once the pop restores focus, so nothing is lost
+            // by declining here.
+            if PinnedRowSettle.rejectCoveredSettle() {
+                settleWork.item?.cancel()
+                settleWork.item = nil
+                return
+            }
             guard let plan = PinnedRowSettle.settlePlan(token: token) else { return }
             // Control-flow plans carry no measurement and must not reach the harness oracle.
             if !plan.report.isEmpty { onSettle?(plan.report) }
@@ -3297,28 +3404,6 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
             // which is the whole diagnosis.
             if PinnedRowSettleProbe.enabled, plan.report.contains("margin=") {
                 PinnedRowSettleProbe.log("settle " + plan.report)
-            }
-            // BUG-109: never scroll a covered Home. A pushed folder page (or Detail) clears focus
-            // from this row, and applying a correction while the rows scroll view is hidden behind
-            // that push moves a scroll position the user cannot see — native focus restoration on
-            // the pop then resolves by geometry to whatever row now sits at the remembered rect,
-            // which is what read as "leaving a collection moves me back to the row above". Drop the
-            // target here and let `PinnedRowSettle.setCovered(false)` re-arm a fresh settle once the
-            // pop actually restores focus. Logged loudly (the probe line plus NSLog) because this
-            // branch firing is exactly what the Row Settle pane device pass looks for.
-            //
-            // NOTE (judgment call): there is no per-measurement `rowKey` bound in this scope — only
-            // `plan.report`, which already starts with `row=<key> margin=…` — so the row identity
-            // rides along in `plan.report` rather than a separate `row=` token.
-            if PinnedRowSettle.hostCovered, plan.targetY != nil {
-                if PinnedRowSettleProbe.enabled {
-                    PinnedRowSettleProbe.log("settle " + plan.report
-                        + " covered=1 skipped=1 target=\(Int(plan.targetY!.rounded()))")
-                }
-                NSLog("[HomeScrollProbe] settle covered=1 skipped=1 report=%@", plan.report)
-                settleWork.item?.cancel()
-                settleWork.item = nil
-                return
             }
             if let target = plan.targetY {
                 if reduceMotion {

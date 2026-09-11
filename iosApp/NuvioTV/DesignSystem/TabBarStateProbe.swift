@@ -30,13 +30,20 @@ import UIKit
 ///
 /// Line format (one per sample, newest first in the pane once paged the way
 /// `PinnedRowSettleProbe.displayPages` already does):
-///     minY=<pt> h=<pt> alpha=<0.00-1.00> hidden=<0/1> minimized=<0/1> scrolledDown=<0/1>
-///     mode=<classic|sidebar> reason=<arm|tick|down|up>
+///     minY=<pt> h=<pt> alpha=<0.00-1.00> hidden=<0/1> state=<expanded|minimized|partial|unknown>
+///     scrolledDown=<0/1> mode=<classic|sidebar> reason=<arm|tick|down|up>
 /// `t=<ms since arm>` is realized as the standard `<N>ms ` prefix `log(_:)` stamps on every line —
 /// the same convention `PinnedRowSettleProbe.log` uses (its own call sites never repeat the
-/// timestamp again inline either) — rather than a duplicated inline field. `minimized` is derived:
-/// the bar's frame (converted to window coordinates) has moved so its top edge is past half its
-/// own height above the window's bottom edge (`minY > screenH - h/2`). `scrolledDown`/`mode` are
+/// timestamp again inline either) — rather than a duplicated inline field.
+///
+/// `state` is derived against the TOP edge — this app's tab bar sits at the top of the screen, not
+/// the bottom, so "minimized" here means the bar has moved UP out of view, not down. `expanded`:
+/// the bar's frame (converted to window coordinates) is fully on screen at the top (`minY >= -1`
+/// and `maxY > 0`), visible (`alpha > 0.5`) and not hidden. `minimized`: the bar has moved up out
+/// of view or collapsed (`maxY <= h * 0.5`, or `alpha < 0.05`, or `isHidden`). `unknown`: no
+/// `UITabBar` was found for this sample (see the `NOT-FOUND` line below) or this is a sample taken
+/// before the bar has ever reported a nonzero frame. Anything else is `partial` — a bar mid
+/// transition. `scrolledDown`/`mode` are
 /// fed in by `TabBarVisibility.swift`'s `TabBarScrollAutoHide` on a real hysteresis crossing (see
 /// `noteScrollState` below) and held for every sample taken after that until the next crossing.
 /// `mode` can only distinguish `sidebar`/`classic` at that call site (`SidebarChrome.isEnabled()`)
@@ -174,16 +181,29 @@ enum TabBarStateProbe {
     static func sample(reason: String) {
         guard enabled, let window = armedWindow else { return }
         guard let bar = findTabBar(in: window) else {
-            log("NOT-FOUND mode=\(lastMode) reason=\(reason)")
+            log("NOT-FOUND state=unknown mode=\(lastMode) reason=\(reason)")
             return
         }
         let frameInWindow = bar.convert(bar.bounds, to: window)
-        let screenH = window.bounds.height
-        let minimized = frameInWindow.minY > (screenH - frameInWindow.height / 2)
+        let minY = frameInWindow.minY
+        let maxY = frameInWindow.maxY
+        let h = frameInWindow.height
+        let alpha = bar.alpha
+        let state: String
+        if h <= 0 {
+            // No nonzero frame reported yet — too early to classify.
+            state = "unknown"
+        } else if minY >= -1 && maxY > 0 && alpha > 0.5 && !bar.isHidden {
+            state = "expanded"
+        } else if maxY <= h * 0.5 || alpha < 0.05 || bar.isHidden {
+            state = "minimized"
+        } else {
+            state = "partial"
+        }
         log(
-            "minY=\(Int(frameInWindow.minY.rounded())) h=\(Int(frameInWindow.height.rounded())) "
-                + "alpha=\(String(format: "%.2f", bar.alpha)) hidden=\(bar.isHidden ? 1 : 0) "
-                + "minimized=\(minimized ? 1 : 0) scrolledDown=\(lastScrolledDown ? 1 : 0) "
+            "minY=\(Int(minY.rounded())) h=\(Int(h.rounded())) "
+                + "alpha=\(String(format: "%.2f", alpha)) hidden=\(bar.isHidden ? 1 : 0) "
+                + "state=\(state) scrolledDown=\(lastScrolledDown ? 1 : 0) "
                 + "mode=\(lastMode) reason=\(reason)"
         )
     }

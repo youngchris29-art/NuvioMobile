@@ -51,6 +51,21 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// The DEFAULT Appearance state, and the one the defect was filmed in: lift 20 ⇒ floor 86.
     private static let zoomOn = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false)
 
+    // MARK: - Title metrics
+
+    /// rc10 (Codex P2): `plan` is FONT-dependent as well as mode-dependent — the top reach's floor
+    /// reserves room for one `Theme.Font.sectionTitle` line, and its default is the ACTIVE family's
+    /// measured metric. Every call below therefore passes an EXPLICIT `titleHeight`, for the same
+    /// reason every call passes an explicit `mode`: otherwise this suite's arithmetic would follow
+    /// whatever font family the host simulator last applied.
+    ///
+    /// The SYSTEM font's number, which every expectation in this file was written against.
+    private static let systemTitle = PinnedRowGeometry.measuredTitleHeight   // 38
+    /// FEAT-31's Open Sans at the same text style, from the bundled faces' own vertical metrics:
+    /// `(ascender 2189 + |descender| 600) / 2048 upem = 1.3618 em` × the 31pt `.callout` base
+    /// ⇒ ≈42.2. All three bundled faces share those metrics, so the weight does not move it.
+    private static let openSansTitle: CGFloat = 42.2
+
     /// Every flag combination, as the app can actually produce them, in No Zoom.
     private static func crossProduct() -> [(name: String, plan: PinnedRowGeometry.Plan)] {
         var out: [(name: String, plan: PinnedRowGeometry.Plan)] = []
@@ -63,7 +78,8 @@ final class PinnedRowGeometryTests: XCTestCase {
                                                           captionVisible: captions,
                                                           showsCTA: cta,
                                                           landscapeRows: landscape,
-                                                          mode: noZoom)
+                                                          mode: noZoom,
+                                                          titleHeight: systemTitle)
                         out.append((name: label, plan: plan))
                     }
                 }
@@ -119,14 +135,17 @@ final class PinnedRowGeometryTests: XCTestCase {
                                                        captionVisible: captions,
                                                        showsCTA: cta,
                                                        landscapeRows: false,
-                                                       mode: Self.noZoom)
+                                                       mode: Self.noZoom,
+                                                       titleHeight: Self.systemTitle)
                 cases.append((name: "Oversized captions=\(captions) showsCTA=\(cta)", plan: oversized))
             }
         }
         for (label, plan) in cases {
             XCTAssertLessThanOrEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad + epsilon, label)
             XCTAssertGreaterThanOrEqual(plan.topReach,
-                                        PinnedRowGeometry.topReachFloor(lift: 0) - epsilon, label)
+                                        PinnedRowGeometry.topReachFloor(lift: 0,
+                                                                        titleHeight: Self.systemTitle)
+                                            - epsilon, label)
             XCTAssertLessThanOrEqual(plan.bottomReach, Theme.Size.heroPinnedRowBottomReach + epsilon, label)
             XCTAssertGreaterThanOrEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor - epsilon, label)
             XCTAssertGreaterThanOrEqual(plan.compression, 0, label)
@@ -188,14 +207,17 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           captionVisible: false,
                                           showsCTA: false,
                                           landscapeRows: false,
-                                          mode: Self.noZoom)
+                                          mode: Self.noZoom,
+                                          titleHeight: Self.systemTitle)
         XCTAssertTrue(plan.fits)
         XCTAssertEqual(plan.compression, 70.333, accuracy: 0.01)
         // 2pt MORE than Wave 10's own Large number, and exactly the 2pt the lift-aware floor keeps.
         XCTAssertEqual(plan.compression
                         - PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: Self.large),
                        2, accuracy: 0.01)
-        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon)
+        XCTAssertEqual(plan.topReach,
+                       PinnedRowGeometry.topReachFloor(lift: 0, titleHeight: Self.systemTitle),
+                       accuracy: epsilon)
         XCTAssertEqual(plan.topReach, 66, accuracy: epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
         XCTAssertEqual(plan.viewport, 525.333, accuracy: 0.01)
@@ -220,10 +242,12 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           captionVisible: false,
                                           showsCTA: false,
                                           landscapeRows: false,
-                                          mode: Self.zoomOn)
+                                          mode: Self.zoomOn,
+                                          titleHeight: Self.systemTitle)
         XCTAssertTrue(plan.fits)
         XCTAssertEqual(plan.topReach,
-                       PinnedRowGeometry.topReachFloor(lift: Theme.Size.heroPinnedRowFocusLiftAllowance),
+                       PinnedRowGeometry.topReachFloor(lift: Theme.Size.heroPinnedRowFocusLiftAllowance,
+                                                       titleHeight: Self.systemTitle),
                        accuracy: epsilon)
         XCTAssertEqual(plan.topReach, 86, accuracy: epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
@@ -257,7 +281,8 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           captionVisible: false,
                                           showsCTA: false,
                                           landscapeRows: false,
-                                          mode: Self.noZoom)
+                                          mode: Self.noZoom,
+                                          titleHeight: Self.systemTitle)
         // No Zoom on Focus ⇒ `focusLiftAllowance` is 0, so the focused clearance is the static one.
         let clearance = PinnedRowTitle.staticClearance(titleHeight: PinnedRowGeometry.measuredTitleHeight,
                                                        cardTopReach: plan.topReach)
@@ -292,10 +317,12 @@ final class PinnedRowGeometryTests: XCTestCase {
                                               captionVisible: false,
                                               showsCTA: false,
                                               landscapeRows: false,
-                                              mode: mode)
+                                              mode: mode,
+                                              titleHeight: Self.systemTitle)
             XCTAssertTrue(plan.fits, label)
             XCTAssertEqual(plan.topReach,
-                           PinnedRowGeometry.topReachFloor(lift: expectedLift),
+                           PinnedRowGeometry.topReachFloor(lift: expectedLift,
+                                                           titleHeight: Self.systemTitle),
                            accuracy: epsilon, label)
 
             let clearance = PinnedRowTitle.clearances(titleHeight: PinnedRowGeometry.measuredTitleHeight,
@@ -323,12 +350,14 @@ final class PinnedRowGeometryTests: XCTestCase {
 
     /// The floor's contract as a function, independent of any one Poster Size: whatever lift it is
     /// handed, the reach it returns leaves the settled title clear of the FOCUSED card's artwork by
-    /// at least the belt's arm. Skipped where the cap binds — the floor may never exceed
-    /// `heroPinnedRowTopPad`, because reach 100 kills focus resolution outright, so a lift larger
-    /// than 22 is simply not coverable and the cap is the right answer rather than a raised reach.
+    /// at least the belt's arm — at the SYSTEM font's title height, which is the height it is handed
+    /// here. Skipped where the cap binds — the floor may never exceed `heroPinnedRowTopPad`, because
+    /// reach 100 kills focus resolution outright, so a lift larger than 22 is simply not coverable
+    /// and the cap is the right answer rather than a raised reach. The same cap is what a TALLER
+    /// title runs into, with the same consequence — see the Open Sans test below.
     func testTopReachFloorNeverLeavesTheLiftUncovered() {
         for lift in [0, 10, Theme.Size.heroPinnedRowFocusLiftAllowance, 30] as [CGFloat] {
-            let reach = PinnedRowGeometry.topReachFloor(lift: lift)
+            let reach = PinnedRowGeometry.topReachFloor(lift: lift, titleHeight: Self.systemTitle)
             XCTAssertLessThanOrEqual(reach, Theme.Size.heroPinnedRowTopPad + epsilon, "lift=\(lift)")
             guard reach < Theme.Size.heroPinnedRowTopPad else { continue }
             let atRest = PinnedRowTitle.staticClearance(titleHeight: PinnedRowGeometry.measuredTitleHeight,
@@ -336,6 +365,105 @@ final class PinnedRowGeometryTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(atRest - lift,
                                         PinnedRowTitle.fadeIntrusionArm - epsilon, "lift=\(lift)")
         }
+    }
+
+    /// FEAT-31's **Open Sans**, at the shape BUG-87/89 was filmed in (Large + Hide Labels + FEAT-15
+    /// panel) and in the DEFAULT Appearance state (zoom on) — the rc10 Codex P2 case.
+    ///
+    /// Open Sans's `sectionTitle` line is ≈42.2pt against the system font's 38, and the floor used to
+    /// reserve the 38 while `PinnedRowTitle`'s clearance is measured from what is actually DRAWN. The
+    /// 4.2pt gap is more than the entire margin the floor keeps:
+    ///
+    ///     floor     48 + 42.2 − 24 + 20 + 4 = 90.2  →  CAPPED at heroPinnedRowTopPad 88
+    ///     (b) top   88 → 88                          −0   ⇒ 92.33 left for the hero
+    ///     viewport  455 + 92.33                     = 547.33
+    ///     linkFrame 88 + 403.33 + 0 + 24            = 515.33   ⇒ fits, restRange 32
+    ///     atRest    (24 + 88) − (48 + 42.2)         = 21.8
+    ///     focused   21.8 − 20                       = 1.8      ⇒ POSITIVE, so no stand-down
+    ///
+    /// Asserted in the order things broke: with the stale 38 the same shape floors at 86 and
+    /// `focusedRaw` is −0.2, which is `PinnedRowSettle`'s `LIFT-DEFICIT` stand-down — for the whole
+    /// session, on a font the app ships; with the live metric the CAP binds instead, the clearance is
+    /// non-negative, the frame still fits, and the corrector keeps its rest.
+    ///
+    /// The 1.8 is stated rather than smoothed over: it is under `fadeIntrusionArm`, so at the cap the
+    /// belt's arm margin is NOT guaranteed and the belt may fade a title that is technically clear.
+    /// Documented at `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` — the only alternative is a
+    /// reach past 88, which kills focus resolution outright.
+    func testOpenSansTitleTakesTheReachCapWithoutStandingTheCorrectorDown() {
+        let lift = Theme.Size.heroPinnedRowFocusLiftAllowance
+
+        // The defect: the system font's 38 leaves an Open Sans title a NEGATIVE focused clearance,
+        // which is exactly the geometry the derived floor exists to make impossible.
+        let staleFloor = PinnedRowGeometry.topReachFloor(lift: lift, titleHeight: Self.systemTitle)
+        XCTAssertEqual(staleFloor, 86, accuracy: epsilon)
+        let stale = PinnedRowTitle.clearances(titleHeight: Self.openSansTitle,
+                                              cardTopReach: staleFloor,
+                                              artworkHeight: Self.large,
+                                              captionVisible: false,
+                                              treatment: .cardTreatment,
+                                              mode: Self.zoomOn)
+        XCTAssertLessThan(stale.focusedRaw, 0,
+                          "the stale 38pt floor must be shown to reproduce the LIFT-DEFICIT deficit")
+
+        // The fix: the floor wants 90.2 for this title and takes the 88 cap.
+        XCTAssertEqual(PinnedRowGeometry.topReachFloor(lift: lift, titleHeight: Self.openSansTitle),
+                       Theme.Size.heroPinnedRowTopPad, accuracy: epsilon)
+        let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                          captionVisible: false,
+                                          showsCTA: false,
+                                          landscapeRows: false,
+                                          mode: Self.zoomOn,
+                                          titleHeight: Self.openSansTitle)
+        XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon)
+        XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.compression, 92.333, accuracy: 0.01)
+        XCTAssertLessThan(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: false))
+        XCTAssertEqual(plan.viewport, 547.333, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 515.333, accuracy: 0.01)
+        // The product question this test was asked to answer: the extra 2pt of compression does NOT
+        // cost the fit — the panel's give is 142 and 92.33 of it is enough.
+        XCTAssertTrue(plan.fits)
+        XCTAssertEqual(plan.restRange,
+                       Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
+
+        let clearance = PinnedRowTitle.clearances(titleHeight: Self.openSansTitle,
+                                                  cardTopReach: plan.topReach,
+                                                  artworkHeight: Self.large,
+                                                  captionVisible: false,
+                                                  treatment: .cardTreatment,
+                                                  mode: Self.zoomOn)
+        XCTAssertEqual(clearance.atRest, 21.8, accuracy: 0.01)
+        XCTAssertEqual(clearance.focusedRaw, 1.8, accuracy: 0.01)
+        // No stand-down: `settlePlan`'s LIFT-DEFICIT branch is `focusedRaw < 0`, and the clamp is
+        // inert, so nothing is hiding a deficit behind a clean 0 either.
+        XCTAssertGreaterThanOrEqual(clearance.focusedRaw, 0)
+        XCTAssertEqual(clearance.focused, clearance.focusedRaw, accuracy: epsilon)
+        // …but short of the belt's arm, which is the documented price of sitting on the cap.
+        XCTAssertLessThan(clearance.focusedRaw, PinnedRowTitle.fadeIntrusionArm)
+
+        // And the set of rests the engine may choose is still inside the corrector's band, so the
+        // `UNEXPECTED-WITH-FIT` premise holds for this font too.
+        let lockupExtent = Theme.Spacing.lg + plan.topReach + Self.large  // Hide Labels ⇒ no caption
+        let bandLow = -clearance.focused
+        let bandHigh = min(Theme.Size.heroPinnedRowTitleInset,
+                           Theme.Size.heroPinnedRowTitleInset + plan.viewport - lockupExtent
+                               - Theme.Size.heroPinnedRowsSettledCushion)
+        XCTAssertLessThanOrEqual(plan.restRange, bandHigh - bandLow)
+    }
+
+    /// The live metric the shipping floor DEFAULTS to has to describe the token it claims to. A
+    /// tolerance rather than an equality on purpose: this runs against whatever font family the test
+    /// host currently has applied (`Theme.Font.apply` is process-global — `AppFontResolverTests`
+    /// moves it), and a future tvOS could move the system `.callout` line by a point without anything
+    /// being wrong. What would be wrong is a metric far from BOTH shipping values, which means the
+    /// token mapping or the measurement drifted — and the floor would then reserve the wrong band.
+    func testTheDefaultTitleMetricIsOneOfTheShippingTitleHeights() {
+        let live = Theme.Font.sectionTitleLineHeight
+        XCTAssertGreaterThan(live, 0)
+        XCTAssertEqual(live, Self.systemTitle, accuracy: 6,
+                       "live sectionTitle metric \(live) is far from both shipping heights"
+                        + " (\(Self.systemTitle) system / \(Self.openSansTitle) Open Sans)")
     }
 
     /// The same Poster Size with the CAROUSEL hero, which has only 70pt of elastic give where the
@@ -356,13 +484,16 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           captionVisible: false,
                                           showsCTA: true,
                                           landscapeRows: false,
-                                          mode: Self.noZoom)
+                                          mode: Self.noZoom,
+                                          titleHeight: Self.systemTitle)
         XCTAssertTrue(plan.fits)
         XCTAssertEqual(plan.compression, 70, accuracy: 0.01)
         // The carousel's cap is what binds here, not the leftover demand.
         XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true), accuracy: epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
-        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon)
+        XCTAssertEqual(plan.topReach,
+                       PinnedRowGeometry.topReachFloor(lift: 0, titleHeight: Self.systemTitle),
+                       accuracy: epsilon)
         XCTAssertEqual(plan.viewport, 525, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 493.333, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, 31.667, accuracy: 0.01)
@@ -382,7 +513,8 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           captionVisible: true,
                                           showsCTA: true,
                                           landscapeRows: false,
-                                          mode: Self.noZoom)
+                                          mode: Self.noZoom,
+                                          titleHeight: Self.systemTitle)
         XCTAssertFalse(plan.fits)
         XCTAssertEqual(plan.compression,
                        PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: Self.large),
@@ -413,11 +545,14 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           captionVisible: true,
                                           showsCTA: false,
                                           landscapeRows: false,
-                                          mode: Self.noZoom)
+                                          mode: Self.noZoom,
+                                          titleHeight: Self.systemTitle)
         XCTAssertTrue(plan.fits)
         XCTAssertEqual(plan.compression, 113.833, accuracy: 0.01)
         XCTAssertLessThan(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: false))
-        XCTAssertEqual(plan.topReach, PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon)
+        XCTAssertEqual(plan.topReach,
+                       PinnedRowGeometry.topReachFloor(lift: 0, titleHeight: Self.systemTitle),
+                       accuracy: epsilon)
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
         XCTAssertEqual(plan.viewport, 568.833, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 536.833, accuracy: 0.01)
@@ -437,7 +572,9 @@ final class PinnedRowGeometryTests: XCTestCase {
         for (label, plan) in Self.crossProduct() {
             if plan.fits, plan.compression > 0 {
                 XCTAssertEqual(plan.topReach,
-                               PinnedRowGeometry.topReachFloor(lift: 0), accuracy: epsilon, label)
+                               PinnedRowGeometry.topReachFloor(lift: 0,
+                                                               titleHeight: Self.systemTitle),
+                               accuracy: epsilon, label)
                 XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon, label)
             } else {
                 XCTAssertEqual(plan.topReach, Theme.Size.heroPinnedRowTopPad, accuracy: epsilon, label)
@@ -470,7 +607,8 @@ final class PinnedRowGeometryTests: XCTestCase {
                                                captionVisible: label.contains("captions=true"),
                                                showsCTA: label.contains("showsCTA=true"),
                                                landscapeRows: label.contains("landscape=true"),
-                                               mode: Self.noZoom)
+                                               mode: Self.noZoom,
+                                               titleHeight: Self.systemTitle)
             XCTAssertEqual(plan, again, label)
         }
     }
@@ -489,13 +627,15 @@ final class PinnedRowGeometryTests: XCTestCase {
                                               captionVisible: true,
                                               showsCTA: true,
                                               landscapeRows: false,
-                                              mode: Self.noZoom).regimeKey,
+                                              mode: Self.noZoom,
+                                              titleHeight: Self.systemTitle).regimeKey,
                        "M330c1p0r0z1")
         XCTAssertEqual(PinnedRowGeometry.plan(posterHeight: Self.medium,
                                               captionVisible: true,
                                               showsCTA: true,
                                               landscapeRows: false,
-                                              mode: Self.zoomOn).regimeKey,
+                                              mode: Self.zoomOn,
+                                              titleHeight: Self.systemTitle).regimeKey,
                        "M330c1p0r0z0")
         // The ring is not part of the key, because it is not part of the plan.
         XCTAssertEqual(PinnedRowGeometry.regimeKey(posterHeight: Self.medium,

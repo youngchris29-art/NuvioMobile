@@ -5976,12 +5976,41 @@ final class NuvioTVUITests: XCTestCase {
             let probe = app.staticTexts["debug_hero"]
             return probe.exists ? probe.label : ""
         }
+
+        func namedFrames(_ identifier: String) -> [CGRect] {
+            guard let root = try? app.snapshot() else { return [] }
+            var out: [CGRect] = []
+            func walk(_ node: XCUIElementSnapshot) {
+                if node.identifier == identifier { out.append(node.frame) }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        // P2 fix (was an unconditional XCTSkip below): before this runtime is trusted to say "I
+        // cannot report transformed frames," prove that claim against an INDEPENDENT control this
+        // same walk already passes through — the poster catalog rows, which `test49RingModeRiseMatchesAllowance`
+        // shows this harness CAN measure a 20pt rise on (`poster_card`). The walk crosses catalog
+        // rows before it ever reaches the folder row, so the very first Down press still has a
+        // catalog card focused — collect `poster_artwork` there and check whether exactly one rect
+        // stands out as taller than the rest. If it does, this runtime DOES report transformed
+        // frames, and an equal-height reading at the folder row later is a real regression, not a
+        // runtime limitation — only skip when the control itself shows no transform.
+        var framesReportTransforms = false
         var folderFound = false
         var lastFocusedItem = ""
         var stalledPresses = 0
-        for _ in 1...45 {
+        for i in 1...45 {
             press(.down, times: 1)
             pause(0.5)
+            if i == 1 {
+                let posterArtworkHeights = namedFrames("poster_artwork").map { $0.height }
+                if let maxH = posterArtworkHeights.max() {
+                    let tallCount = posterArtworkHeights.filter { abs($0 - maxH) < 1 }.count
+                    framesReportTransforms = (tallCount == 1)
+                }
+            }
             let focused = probeField(liveHeroProbe(), "fitem") ?? ""
             if focused.contains("nuvio-folder://") { folderFound = true; break }
             if focused == lastFocusedItem {
@@ -5998,17 +6027,6 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         shot(app, "56a_folder_ring_zoom_on")
 
-        func namedFrames(_ identifier: String) -> [CGRect] {
-            guard let root = try? app.snapshot() else { return [] }
-            var out: [CGRect] = []
-            func walk(_ node: XCUIElementSnapshot) {
-                if node.identifier == identifier { out.append(node.frame) }
-                node.children.forEach(walk)
-            }
-            walk(root)
-            return out
-        }
-
         // BUG-108 gate. What the SIMULATOR can prove is not the hardware compositor bug (it does not
         // reproduce it — see the FEAT-14 graveyard in PosterCard.swift): it is the GEOMETRIC claim
         // underneath the fix, that the ring and the artwork are one scaled layer and the rise costs
@@ -6021,11 +6039,26 @@ final class NuvioTVUITests: XCTestCase {
         }
         let sorted = artworkRects.sorted { $0.height > $1.height }
         let focusedArt = sorted[0]
+        // Identify the focused tile by standing OUT, not merely by being tallest: the folder tiles
+        // publish no ids to match the hero probe's `fitem` against, so this is still a height
+        // ranking — but now checked, not assumed. When the poster-row control above proved this
+        // runtime reports transformed frames, exactly one folder_artwork rect should be taller than
+        // the rest; more than one (or none) means the "focused" pick above is ambiguous.
+        let maxArtHeight = focusedArt.height
+        let liftedCount = artworkRects.filter { abs($0.height - maxArtHeight) < 1 }.count
+        if framesReportTransforms {
+            XCTAssertEqual(liftedCount, 1,
+                           "expected exactly one lifted folder tile taller than the rest, found \(liftedCount) (heights: \(artworkRects.map { $0.height }))")
+        }
         let ratio = focusedArt.width / focusedArt.height
         guard let restArt = sorted.dropFirst().first(where: { abs($0.width / $0.height - ratio) < 0.02 }) else {
             throw XCTSkip("no resting folder tile of the same shape on screen to compare against")
         }
         if abs(focusedArt.height - restArt.height) < 1 {
+            if framesReportTransforms {
+                XCTFail("focused folder tile has no lift (focused \(focusedArt) vs rest \(restArt)) — the poster-row control proved this runtime DOES report transformed frames, so equal heights here means the manual lift regressed")
+                return
+            }
             throw XCTSkip("this runtime reports UNTRANSFORMED accessibility frames (focused \(focusedArt) vs rest \(restArt)) — the geometric oracle is unavailable; 56a/56b attachments are the record")
         }
         let rise = restArt.minY - focusedArt.minY

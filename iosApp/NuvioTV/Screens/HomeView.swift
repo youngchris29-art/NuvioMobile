@@ -3976,19 +3976,28 @@ struct HomeHeroForeground: View {
                 .id(presentation.identity)
                 .transition(.opacity)
             }
-
             #if DEBUG
-            // 2026-09-10 diagnostic (invisible, harness-readable): the measured-line-height inputs
-            // to `synopsisLineLimit` (BUG "1–2 lines" — see that property's doc). `synL` is the
-            // resolved line limit, `synLH` the measured `Theme.Font.bodyLineHeight` feeding it
-            // (rounded for a stable harness read), `synSlot` the synopsis slot height it applies
-            // to. No probe existed inside `HomeHeroForeground` before this — added here rather than
-            // threading these private computed properties out to `HomeView`'s `debug_env`/
-            // `debug_hero` probes, which live in a different struct and cannot see them.
-            Text("debug_hero_synopsis synL=\(synopsisLineLimit) synLH=\(Int(Theme.Font.bodyLineHeight.rounded())) synSlot=\(Int(synopsisSlotHeight.rounded()))")
-                .font(.system(size: 8))
-                .opacity(0.011)
-                .accessibilityIdentifier("debug_hero_synopsis")
+            .overlay(alignment: .topLeading) {
+                // 2026-09-10 diagnostic (invisible, harness-readable): the measured-line-height
+                // inputs to `synopsisLineLimit` (BUG "1–2 lines" — see that property's doc). `synL`
+                // is the resolved line limit, `synLH` the measured `Theme.Font.bodyLineHeight`
+                // feeding it (rounded for a stable harness read), `synSlot` the synopsis slot
+                // height it applies to. No probe existed inside `HomeHeroForeground` before this —
+                // added here rather than threading these private computed properties out to
+                // `HomeView`'s `debug_env`/`debug_hero` probes, which live in a different struct
+                // and cannot see them.
+                //
+                // P2 fix: this was previously a plain VStack child below the hero ZStack, so its
+                // own text height plus the VStack's `spacing` shifted the CTA down and grew the
+                // hero's measured content height in DEBUG builds — changing the very geometry it
+                // was added to observe. Attached as an `.overlay` on the ZStack instead, it draws
+                // on top without being sized into the VStack's layout.
+                Text("debug_hero_synopsis synL=\(synopsisLineLimit) synLH=\(Int(Theme.Font.bodyLineHeight.rounded())) synSlot=\(Int(synopsisSlotHeight.rounded()))")
+                    .font(.system(size: 8))
+                    .opacity(0.011)
+                    .accessibilityIdentifier("debug_hero_synopsis")
+                    .allowsHitTesting(false)
+            }
             #endif
 
             // The CTA sits below the description and above the page dots (which render

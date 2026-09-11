@@ -227,6 +227,7 @@ enum Theme {
             family = newFamily
             cache = buildCache(for: newFamily)
             bodyLineHeight = measuredBodyLineHeight(for: newFamily)
+            sectionTitleLineHeight = measuredSectionTitleLineHeight(for: newFamily)
         }
 
         /// The rendered line height of `Theme.Font.body`, from `UIFont` metrics of the SAME face
@@ -246,6 +247,61 @@ enum Theme {
                 let size = baseSize(for: .body)
                 return UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
                     ?? UIFont.preferredFont(forTextStyle: .body).lineHeight
+            }
+        }
+
+        /// The rendered line height of `Theme.Font.sectionTitle` — the token every pinned ROW TITLE
+        /// is drawn in — measured from `UIFont` metrics of the same text style the token resolves to,
+        /// never a constant. Same contract and same refresh point as `bodyLineHeight`.
+        ///
+        /// `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` defaults to it, and that is why it
+        /// exists (BUG-87/89, rc10 Codex P2): the reach floor has to reserve the band the title
+        /// ACTUALLY occupies, and it was reserving a hard-coded 38 — the system font's own number.
+        /// Open Sans at the same text style measures ≈42.2 (its bundled faces carry 1.3618 em of
+        /// vertical metrics against SF's ≈1.21), and the row title's clearance is computed from the
+        /// title's live MEASURED height, so the 4pt gap came straight out of
+        /// `PinnedRowTitle.Clearances.focusedRaw`: with zoom on it went NEGATIVE, which is the
+        /// corrector's `LIFT-DEFICIT` stand-down — permanently, for the session, on a shipping font.
+        ///
+        /// Known limit, stated rather than implied: like `bodyLineHeight` this is refreshed only by
+        /// `apply(_:)`, so a Larger Text change mid-session is not picked up until the next font
+        /// apply or relaunch, and the Open Sans branch measures the DEFAULT content size category
+        /// (`baseSize(for:)`) while the rendered title scales with `relativeTo:`. Both err the same
+        /// way — the metric can read SHORT of what is drawn — and the consequence is bounded and
+        /// already handled: the floor may then leave less than `fadeIntrusionArm`, and at an
+        /// accessibility size it can leave a genuine deficit, which is the documented handoff to the
+        /// visibility belt (see `topReachFloor`).
+        ///
+        /// `nonisolated(unsafe)` — the one difference from `bodyLineHeight`, and it is load-bearing:
+        /// `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` and `plan(…)` read this as a DEFAULT
+        /// ARGUMENT, and both are `nonisolated`. A nonisolated function's default value expression
+        /// may not touch main-actor state (SE-0411 — a warning in this target's Swift 5 mode, an
+        /// error in Swift 6). Same contract as `family` directly above: written only on the main
+        /// actor, inside `apply(_:)`; read from anywhere.
+        nonisolated(unsafe) static private(set) var sectionTitleLineHeight: CGFloat =
+            measuredSectionTitleLineHeight(for: family)
+
+        /// Measured against `Token.sectionTitle`'s OWN text style rather than a pasted `.callout`, so
+        /// a change to that mapping moves this with it. The Open Sans branch uses the SemiBold face
+        /// because that is the weight the token carries; all three bundled Open Sans faces share
+        /// their vertical metrics, so the Regular fallback measures the same line height rather than
+        /// a different one. The system branch takes no weight for the same reason (SF's semibold has
+        /// the regular's metrics), which is also why the historical 38pt reference still describes
+        /// the system font.
+        ///
+        /// `nonisolated` because it initializes the `nonisolated(unsafe)` property above. Nothing it
+        /// touches is main-actor state: `UIFont`, `UIFontDescriptor` and `UITraitCollection` are not
+        /// actor-isolated in the tvOS SDK, and `Token`/`family` are both declared nonisolated too.
+        nonisolated private static func measuredSectionTitleLineHeight(for family: AppFontFamily) -> CGFloat {
+            let style = Token.sectionTitle.uiTextStyle
+            switch family {
+            case .system:
+                return UIFont.preferredFont(forTextStyle: style).lineHeight
+            case .openSans:
+                let size = baseSize(for: style)
+                return UIFont(name: "OpenSans-SemiBold", size: size)?.lineHeight
+                    ?? UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
+                    ?? UIFont.preferredFont(forTextStyle: style).lineHeight
             }
         }
 
@@ -282,7 +338,12 @@ enum Theme {
         /// fixed point sizes at call sites): `.large` is the system's default content size
         /// category, so this is exactly the un-scaled size `SwiftUI.Font.system(textStyle)` starts
         /// from, and `relativeTo:`/`UIFontMetrics` above still let Larger Text scale it further.
-        static func baseSize(for textStyle: UIFont.TextStyle) -> CGFloat {
+        ///
+        /// `nonisolated`: `measuredSectionTitleLineHeight` initializes a `nonisolated(unsafe)` metric
+        /// and so has to reach this from outside the main actor. Nothing here is main-actor state —
+        /// `UIFontDescriptor` and `UITraitCollection` are not actor-isolated in the tvOS SDK — and the
+        /// MainActor callers (`build`, `uiFont`) are unaffected by the widening.
+        nonisolated static func baseSize(for textStyle: UIFont.TextStyle) -> CGFloat {
             UIFontDescriptor.preferredFontDescriptor(
                 withTextStyle: textStyle,
                 compatibleWith: UITraitCollection(preferredContentSizeCategory: .large)
