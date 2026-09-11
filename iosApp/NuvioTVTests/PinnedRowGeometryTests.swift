@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import UIKit
 @testable import NuvioTV
 
 /// BUG-87/88/89 (beta.18) — unit tests for `PinnedRowGeometry.plan`, the structural fit for the
@@ -517,10 +518,14 @@ final class PinnedRowGeometryTests: XCTestCase {
 /// asserted rather than reasoned about; the view's `synopsisSlotGive` / `logoSlotGive` are thin
 /// wrappers over it.
 ///
-/// The tester's objection was about LINES OF DESCRIPTION, and the line count is a floor division:
-/// `HomeHeroForeground.synopsisLineLimit` is `floor(slotHeight / (heroSynopsisSlotHeightPinned/2))`,
-/// i.e. 36pt per line. So the tests below assert the slot height AND the line count it implies —
-/// the second is the thing the tester actually sees.
+/// The tester's objection was about LINES OF DESCRIPTION, and the line count is a floor division.
+///
+/// 2026-09-10: `HomeHeroForeground.synopsisLineLimit` no longer assumes a 36pt line — it measures
+/// `Theme.Font.bodyLineHeight` (the actual `UIFont` line height of the resolved body face/size),
+/// with a 1pt tolerance so a slot that is short of a whole line by less than that still gets it
+/// (the text `Text` sits in a fixed-height frame, so a small overhang is clipped, never seen). The
+/// helper below mirrors that exactly. So the tests assert the slot height AND the line count it
+/// implies — the second is the thing the tester actually sees.
 final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
 
     private let epsilon: CGFloat = 0.001
@@ -532,9 +537,12 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         return slot - synopsisGive
     }
 
-    /// Mirror of `HomeHeroForeground.synopsisLineLimit`'s compact branch.
+    /// Mirror of `HomeHeroForeground.synopsisLineLimit`'s compact branch — measured, not assumed.
     private func lineLimit(slotHeight: CGFloat) -> Int {
-        max(1, Int((slotHeight / (Theme.Size.heroSynopsisSlotHeightPinned / 2)).rounded(.down)))
+        let lineHeight = Theme.Font.bodyLineHeight
+        let lineTolerance: CGFloat = 1
+        guard lineHeight > 0 else { return 1 }
+        return max(1, Int(((slotHeight + lineTolerance) / lineHeight).rounded(.down)))
     }
 
     // MARK: - The three tiers
@@ -566,6 +574,30 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         // The logo slot lands exactly on its floor, as it did in Wave 10.
         XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo,
                        Theme.Size.heroLogoSlotHeightPinnedFloor, accuracy: epsilon)
+    }
+
+    /// rc10: the No-Zoom Large panel lands at compression 70.33 (the lift-aware floor), which the
+    /// tier-3 gate turns into a 107.67 pt slot — a whole visible line short under the OLD 36 pt
+    /// assumption, three lines under the measured system line height.
+    func testPanelAtRc10NoZoomCompressionStillHasThreeLinesUnderTheSystemFont() {
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: 70.333, showsCTA: false, folderHero: false)
+        let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
+        XCTAssertEqual(slot, 107.667, accuracy: 0.01)
+        // System body line height on tvOS is ~35 pt; assert the measurement, not a literal.
+        let systemLine = UIFont.preferredFont(forTextStyle: .body).lineHeight
+        XCTAssertLessThan(systemLine, 36)
+        XCTAssertEqual(Int(((slot + 1) / systemLine).rounded(.down)), 3)
+    }
+
+    /// The tester's case: Open Sans body renders taller than the 36 pt the slot math assumed, so
+    /// the SAME 108 pt slot holds two lines, not three. This is the measurement, not a fix.
+    func testOpenSansBodyLineIsTallerThanTheAssumedSlotLine() throws {
+        let bodySize = Theme.Font.baseSize(for: .body)
+        guard let font = UIFont(name: "OpenSans-Regular", size: bodySize) else {
+            throw XCTSkip("Open Sans is not bundled in the unit-test host")
+        }
+        XCTAssertGreaterThan(font.lineHeight, 36)
+        XCTAssertEqual(Int(((108 + 1) / font.lineHeight).rounded(.down)), 2)
     }
 
     /// Tier 3 opens only past tiers 1+2 plus the frame slack, and then it is the panel's own extra.

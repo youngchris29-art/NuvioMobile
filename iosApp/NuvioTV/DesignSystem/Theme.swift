@@ -226,6 +226,27 @@ enum Theme {
             guard newFamily != family else { return }
             family = newFamily
             cache = buildCache(for: newFamily)
+            bodyLineHeight = measuredBodyLineHeight(for: newFamily)
+        }
+
+        /// The rendered line height of `Theme.Font.body`, from `UIFont` metrics of the SAME face
+        /// and size the SwiftUI token resolves to — never a constant. Home's hero derives its
+        /// synopsis line limit from this (BUG "1–2 lines", 2026-09-10): the old
+        /// `heroSynopsisSlotHeightPinned / 2` (36) assumption undercounted Open Sans (≈39.5 pt per
+        /// line → a 108 pt slot draws 2 lines while the code counted 3) and overcounted nothing;
+        /// with the rc10 Large reach the No-Zoom panel slot is 107.67, which 36 rounds down to 2
+        /// while the real ≈35 pt system line fits 3. Refreshed with the font cache on `apply(_:)`.
+        static private(set) var bodyLineHeight: CGFloat = measuredBodyLineHeight(for: family)
+
+        private static func measuredBodyLineHeight(for family: AppFontFamily) -> CGFloat {
+            switch family {
+            case .system:
+                return UIFont.preferredFont(forTextStyle: .body).lineHeight
+            case .openSans:
+                let size = baseSize(for: .body)
+                return UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
+                    ?? UIFont.preferredFont(forTextStyle: .body).lineHeight
+            }
         }
 
         private static func buildCache(for family: AppFontFamily) -> [Token: SwiftUI.Font] {

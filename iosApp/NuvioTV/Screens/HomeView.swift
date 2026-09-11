@@ -3977,6 +3977,20 @@ struct HomeHeroForeground: View {
                 .transition(.opacity)
             }
 
+            #if DEBUG
+            // 2026-09-10 diagnostic (invisible, harness-readable): the measured-line-height inputs
+            // to `synopsisLineLimit` (BUG "1–2 lines" — see that property's doc). `synL` is the
+            // resolved line limit, `synLH` the measured `Theme.Font.bodyLineHeight` feeding it
+            // (rounded for a stable harness read), `synSlot` the synopsis slot height it applies
+            // to. No probe existed inside `HomeHeroForeground` before this — added here rather than
+            // threading these private computed properties out to `HomeView`'s `debug_env`/
+            // `debug_hero` probes, which live in a different struct and cannot see them.
+            Text("debug_hero_synopsis synL=\(synopsisLineLimit) synLH=\(Int(Theme.Font.bodyLineHeight.rounded())) synSlot=\(Int(synopsisSlotHeight.rounded()))")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .accessibilityIdentifier("debug_hero_synopsis")
+            #endif
+
             // The CTA sits below the description and above the page dots (which render
             // outside the TabView). D-pad left/right still pages the carousel while this
             // button holds focus — it is the page's focus anchor.
@@ -4043,10 +4057,23 @@ struct HomeHeroForeground: View {
     /// flag produced — carousel 72 → 2, carousel compressed 36 → 1, panel 144 → 4, panel at Wave
     /// 10's Large give (108) → 3 — and keeps holding once the panel's give can take the slot below
     /// 72, where the flag would have claimed three lines in a one-line box.
+    ///
+    /// 2026-09-10: the `/ 2` above assumed a 36pt line, which is not `Theme.Font.body`'s real
+    /// rendered line height — the system face is ≈35pt and Open Sans (FEAT-31) is ≈39.5pt at the
+    /// same size. That mismatch undercounted Open Sans (a 108pt slot drew 2 lines while this
+    /// counted 3 — the tester's report) and, after this batch's Large reach change puts the
+    /// No-Zoom panel slot at 107.67, overcounts the system face too (36 rounds it down to 2 when
+    /// the real ~35pt line fits 3). Measured via `Theme.Font.bodyLineHeight` instead of assumed.
     private var synopsisLineLimit: Int {
         guard compact else { return showsCTA ? 3 : 5 }
-        let lineHeight = Theme.Size.heroSynopsisSlotHeightPinned / 2
-        return max(1, Int((synopsisSlotHeight / lineHeight).rounded(.down)))
+        // Measured, not assumed — see `Theme.Font.bodyLineHeight`. A slot that is short of a
+        // whole line by less than `lineTolerance` still gets the line: the synopsis `Text` sits in
+        // a fixed-height frame, so an overhang that small is clipped by the frame and never seen,
+        // whereas rounding it away costs a whole visible line (the 107.67-vs-108 case).
+        let lineHeight = Theme.Font.bodyLineHeight
+        let lineTolerance: CGFloat = 1
+        guard lineHeight > 0 else { return 1 }
+        return max(1, Int(((synopsisSlotHeight + lineTolerance) / lineHeight).rounded(.down)))
     }
 
     /// "movie" is the only meta type that reads as a film; series/tv both read as shows.
