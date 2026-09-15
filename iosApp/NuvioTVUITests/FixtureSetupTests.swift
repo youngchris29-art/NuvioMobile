@@ -242,8 +242,12 @@ final class FixtureSetupTests: XCTestCase {
     /// live popover the way the original four-count was (this pass owns the UI test files only,
     /// not a device/sim run) — counted directly off `AppearanceSettingsPane.body`'s literal order,
     /// which is the same method the original comment above used to derive "four".
+    /// UPDATED 2026-09-15 (rc13, FEAT-38): the "OLED True Black" toggle landed after "No Zoom on
+    /// Focus", one row above every row this file walks to, so both counts below are +1
+    /// (swatches -> Accent Focus Ring (1) -> No Zoom (2) -> OLED True Black (3) -> Settings Style (4)
+    /// -> Navigation (5) -> Typeface (6) -> Size (7)). Verified by the setters landing again on FA87.
     private func walkFromSwatchesToSizeRow(_ app: XCUIApplication) {
-        press(.down, times: 6, gap: 0.6)
+        press(.down, times: 7, gap: 0.6)
         pause(0.8)
     }
 
@@ -297,8 +301,12 @@ final class FixtureSetupTests: XCTestCase {
     /// navigation and avoid porting that walk's ~100-line row-detection machinery for one row. Every
     /// row after Hide Titles in this section (Landscape Rows, the conditional Trailer Duration
     /// picker) sits BELOW it, so neither affects this count.
+    /// UPDATED 2026-09-15 (rc13, FEAT-38): the "OLED True Black" toggle landed after "No Zoom on
+    /// Focus", one row above every row this file walks to, so both counts below are +1
+    /// (swatches -> Accent Focus Ring (1) -> No Zoom (2) -> OLED True Black (3) -> Settings Style (4)
+    /// -> Navigation (5) -> Typeface (6) -> Size (7)). Verified by the setters landing again on FA87.
     private func walkFromSwatchesToHideTitlesRow(_ app: XCUIApplication) {
-        press(.down, times: 8, gap: 0.6)
+        press(.down, times: 9, gap: 0.6)
         pause(0.8)
     }
 
