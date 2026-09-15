@@ -1889,6 +1889,17 @@ private nonisolated func probeBucket(_ value: CGFloat) -> Int {
 /// tail with an unrelated field would make "the last thing on the line" stop meaning "how this
 /// settle resolved."
 ///
+/// **Two `settle` lines on the pane are NOT this line** (rc13, BUG-112's remaining half). The
+/// About pane's Row Settle list also carries `settle row=… epochRearm=1 …` (a token superseded by
+/// a fresh epoch, re-checked a beat later) and `settle row=… hops=0 abandoned=1 …` (a re-check
+/// chain that spent its hop budget — see `abandonChain`). Both are CONTROL FLOW, not a measured
+/// rest: neither carries `margin=`, neither ever reaches `report`, and therefore neither reaches
+/// `debug_pinned` or any UI test's oracle. They exist because on a device the absence of a settle
+/// line is ambiguous — nothing armed, something armed and superseded, and something resolved
+/// clean all photograph identically — and rc12's pane showed exactly that absence on the walk up.
+/// A reader of the photo distinguishes them by the missing `margin=`, the same filter the mirror
+/// in `PinnedRowSettleRevealModifier.scheduleSettle` applies.
+///
 /// Storage is plain static rather than `@State` for the same reason `HomeScrollProbeRest`'s is:
 /// every writer is a SwiftUI geometry callback on the main thread, and a state write here would
 /// invalidate Home on every scroll frame — the corrector must not perturb the geometry it reads.
@@ -2073,6 +2084,28 @@ enum PinnedRowSettle {
         /// another one. Bounded by the caller's hop budget
         /// (`PinnedRowSettleRevealModifier.maxSettleHops`).
         var retryAfter: TimeInterval? = nil
+        /// rc13: a CONTROL-FLOW note for the photographable About pane only — never for `report`.
+        ///
+        /// A settle that resolves to "this token was superseded, re-check in a beat" measured no
+        /// rest, so it must not reach `debug_pinned`: that label is the harness oracle
+        /// (test47/test48/test58/test61/test63/test65 parse it) and a line with no `margin=`
+        /// sitting between two real ones would read as a rest that was measured and came back
+        /// empty. On a DEVICE that same non-event is the diagnosis: rc12's pane showed NOTHING
+        /// between two rows on the walk back up, and "nothing" could equally have meant no settle
+        /// was armed, one was armed and superseded, or one resolved clean. This says which.
+        ///
+        /// So it goes to `PinnedRowSettleProbe` (the pane) and nowhere else, and carries no
+        /// `margin=` by construction — which is exactly the filter the settle mirror applies to
+        /// `report` one line below where this is read.
+        var probeNote: String? = nil
+        /// rc13 review fix: `true` on exactly one plan — the SUPERSEDED/epoch-rearm branch of
+        /// `settlePlan` — the only one that returns above that function's own `armed = false`, so
+        /// it is the only chain that can still be leaving the corrector armed with nothing
+        /// scheduled by the time `abandonChain(spentPlan:)` sees it. Every other plan that sets
+        /// `retryAfter` (clearance-late, in-flight) runs AFTER `armed = false` has already executed
+        /// this settle epoch, so their `abandonChain` call has nothing left to clear — leaving this
+        /// `false` there is correct, not an oversight.
+        var leavesArmed: Bool = false
     }
 
     /// BUG-112 (Item B) — the pull-back brake, per WALK DIRECTION.
@@ -2575,6 +2608,49 @@ enum PinnedRowSettle {
         scheduler(rearm(source: "external"), settleDelay)
     }
 
+    /// rc13 (BUG-112, Steven's rc12 verdict): the Up fallback ASKED a row to take focus without
+    /// scrolling anything — rung 1 of `HomeView.beginUpFallback`'s ladder, the common case on
+    /// hardware, where the previous row is still mounted and the focus ENGINE performs the reveal.
+    ///
+    /// `noteExternalScroll` is the wrong notice for that rung and this function exists because of
+    /// exactly one line in it: `pullBack.forgetHop()`. Forgetting the hop drops the row key and
+    /// offset the NEXT settle's direction is derived from, so the first rest after a fallback-
+    /// entered hop reports `dir=` unchanged — the up-walk never flips to −1 and the direction-
+    /// scoped brake (Item B, the thing rc12 shipped) stays spent from the down-walk that preceded
+    /// it. That is right for a programmatic JUMP, which is not a walk step; it is wrong here,
+    /// because a focus hand-off to the row above IS a walk step — the same one the engine would
+    /// have made on its own had it found the candidate.
+    ///
+    /// Everything else `noteExternalScroll` drops is dropped here for its own reasons, unchanged:
+    /// an outstanding VERIFICATION would be judged against a rest the focus engine is about to
+    /// move (a false MISS, and two of those set the session-wide disarm); `lastCorrection` would
+    /// let the pull-back detector read the engine's own reveal as it fighting a correction; and
+    /// the in-flight NUDGE window belongs to a correction the hand-off has already invalidated.
+    ///
+    /// Then one fresh settle, `settleDelay` out. The engine's own reveal supersedes it per frame
+    /// through `noteScroll` (so a rest that the reveal actually moved is judged with
+    /// `armSrc=scroll`); when the reveal moves nothing at all — the row was already on screen —
+    /// the `external` token is what makes the rest evaluated and LOGGED at all. That second case
+    /// is the half of BUG-112 still open after rc12: his pane showed no `settle` line at all after
+    /// a fallback-entered rest, so the titles faded with nothing on the wire to explain it.
+    ///
+    /// `armSrc=external` is deliberately reused rather than given a new spelling — it is already a
+    /// documented value of that field (see the settle-line map above) and the probe's `upFallback`
+    /// line, emitted in the same breath by the caller, is what names the fallback.
+    ///
+    /// `@MainActor` for the same reason `noteExternalScroll` is: the only caller is a SwiftUI
+    /// handler (`HomeView.beginUpFallback`).
+    @MainActor static func noteFocusHop(reason: String) {
+        pendingVerification = nil
+        nudgeDeadline = nil
+        lastCorrection = nil
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "focus-hop reason=\(reason)")
+        }
+        guard let scheduler else { return }
+        scheduler(rearm(source: "external"), settleDelay)
+    }
+
     /// Ends the current correction epoch: a different row has focus, so neither the oscillation
     /// counter nor an outstanding verification belongs to the situation any more.
     ///
@@ -2817,6 +2893,59 @@ enum PinnedRowSettle {
         return generation
     }
 
+    /// rc13: the live token, read-only. No longer load-bearing for `abandonChain` (see that
+    /// function's header for why the generation interlock it used to back was replaced), kept
+    /// because it is a harmless, honest read of `generation` and nothing else in this enum exposes
+    /// one.
+    nonisolated static var currentGeneration: Int { generation }
+
+    /// rc13: the hop budget ran out on a chain that was still asking for a re-check — stand it
+    /// down rather than leaving it stranded. Called from `PinnedRowSettleRevealModifier
+    /// .scheduleSettle`'s exhausted branch, which is the only place that knows the budget, with the
+    /// exact `Plan` whose hops ran out.
+    ///
+    /// rc13 review fix: this used to guard the WHOLE function — including the pane log — on
+    /// `armSource == "epoch"`, on the mistaken belief (recorded in a since-deleted comment here)
+    /// that the SUPERSEDED/epoch-rearm branch of `settlePlan` was the only plan that ever reaches
+    /// this call site with `retryAfter` set. It is not: the clearance-late and in-flight branches
+    /// also set `retryAfter` and can also run out of hops, and neither of them sets
+    /// `armSource = "epoch"` — so every one of THEIR exhausted chains hit the guard, returned
+    /// immediately, and never logged `hops=0 abandoned=1` at all. The pane went silent for exactly
+    /// the chains a device reader most needs to see stand down, while the underlying state was
+    /// fine (those two branches run after `armed = false` has already executed for this epoch —
+    /// see `Plan.leavesArmed`).
+    ///
+    /// The fix separates "did this chain spend its budget" (always true here, always logged) from
+    /// "does standing it down need to clear anything" (only the epoch-rearm branch, which is the
+    /// only one that returns above `settlePlan`'s own `armed = false` and so is the only one that
+    /// can still be leaving the corrector armed with nothing scheduled — the "phantom armed" class
+    /// `setCovered`'s doc describes). `plan.leavesArmed` says which; `armSource == "epoch"` stays
+    /// as a belt on TOP of it — even a plan that claims `leavesArmed` should not clear a flag some
+    /// newer chain has since re-armed for its own reason.
+    ///
+    /// `epochRearmPending = false` goes with the clear, and the reasoning is the same one
+    /// `setCovered` makes on the way IN: the flag means "a pending block should ask for one
+    /// re-check", and there is no longer a pending block once this chain is declared spent. Left
+    /// standing, the next stale token to reach the superseded branch would consume it and request
+    /// yet another retry on behalf of a chain we have just abandoned — a budget that resets itself
+    /// is not a budget.
+    ///
+    /// The pane line carries `hops=0 abandoned=1 leavesArmed=<0|1>` and, by construction, no
+    /// `margin=` — it is control flow, exactly like `epochRearm=1`, and lands in the same
+    /// photographable place for the same reason: on a device, a corrector that gave up and a
+    /// corrector that was never armed look identical from the outside.
+    nonisolated static func abandonChain(spentPlan plan: Plan) {
+        if PinnedRowSettleProbe.enabled {
+            PinnedRowSettleProbe.log("settle row=\(latest?.rowKey ?? "-") hops=0 abandoned=1 leavesArmed=\(plan.leavesArmed ? 1 : 0) seq=\(settleSeq) armSrc=\(armSource)")
+        }
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "abandoned=1 row=\(latest?.rowKey ?? "-")")
+        }
+        guard plan.leavesArmed, armSource == "epoch" else { return }
+        armed = false
+        epochRearmPending = false
+    }
+
     /// BUG-109: whether Home is currently COVERED by a pushed screen (folder page, Detail). A
     /// correction that lands while covered scrolls a view the user cannot see, and native focus
     /// restoration on the pop then resolves by geometry to whatever row now sits at the remembered
@@ -2944,7 +3073,14 @@ enum PinnedRowSettle {
             // Empty report: this is control flow, not a measured rest. Reporting it would put a
             // line with no `margin=` into the harness oracle (`debug_pinned`) between two real
             // ones — see the caller's `report.isEmpty` skip.
-            return Plan(report: "", targetY: nil, retryAfter: settleDelay)
+            // rc13: `probeNote` (pane only, never `report`) so a device photo can tell this
+            // re-check apart from "no settle ever armed" — see `Plan.probeNote`.
+            // rc13 review fix: `leavesArmed: true` — this is the one branch that returns above
+            // this function's own `armed = false` below, so it is the one chain `abandonChain
+            // (spentPlan:)` must actually clear if it runs out of hops. See `Plan.leavesArmed`.
+            return Plan(report: "", targetY: nil, retryAfter: settleDelay,
+                        probeNote: "row=\(latest?.rowKey ?? "-") epochRearm=1 seq=\(settleSeq) armSrc=\(armSource)",
+                        leavesArmed: true)
         }
         armed = false
         settleSeq &+= 1
@@ -3810,6 +3946,13 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
             if PinnedRowSettleProbe.enabled, plan.report.contains("margin=") {
                 PinnedRowSettleProbe.log("settle " + plan.report)
             }
+            // rc13: the control-flow note, pane only. Deliberately a SEPARATE `if` from the one
+            // above rather than a fallback inside it: the two are mutually exclusive today (a plan
+            // has one or the other) but nothing in the type says so, and a future plan that
+            // carried both should log both rather than silently drop one.
+            if PinnedRowSettleProbe.enabled, let note = plan.probeNote {
+                PinnedRowSettleProbe.log("settle " + note)
+            }
             if let target = plan.targetY {
                 if reduceMotion {
                     position.scrollTo(y: target)
@@ -3820,8 +3963,25 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                 }
                 return
             }
-            if hops > 0, let retry = plan.retryAfter {
+            // rc13: a plan that ASKED for a re-check and found the hop budget spent used to fall
+            // off the end of this function silently — and one of the three re-check plans leaves
+            // the corrector ARMED when it does. `settlePlan`'s superseded branch returns without
+            // ever reaching its own `armed = false` (that statement is below the token guard), so
+            // a superseded epoch re-check that runs out of hops leaves `armed == true` with no
+            // deferred block behind it: the "phantom armed" state `setCovered`'s own doc describes,
+            // where the three other backstops all guard on `!armed` and so decline to re-arm, and a
+            // motionless geometry pass no longer arms at all (`noteScroll`). Correction then stalls
+            // until the user scrolls for real — which on the walk UP is the one thing they are
+            // trying to do and cannot.
+            //
+            // Restructured rather than extended so the `else` can only ever be reached by a plan
+            // that actually wanted a retry: `retryAfter == nil` is a chain that ENDED, not one that
+            // was cut short, and abandoning it would be a lie on the pane.
+            guard let retry = plan.retryAfter else { return }
+            if hops > 0 {
                 scheduleSettle(token: PinnedRowSettle.rearm(source: "retry"), after: retry, hops: hops - 1)
+            } else {
+                PinnedRowSettle.abandonChain(spentPlan: plan)
             }
         }
         settleWork.item = work
@@ -4176,6 +4336,9 @@ struct CatalogRowView: View {
                     .clipShape(RowLeadingEdgeClip(allowance: leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
+                // BUG-118: see `RowEdgeEffectStyleModifier` — same receiver `.scrollClipDisabled()`
+                // is already on.
+                .rowEdgeEffectStyle()
                 // Pinned: the title floats over the (transparent) reach band at the shelf's
                 // top-leading corner — visually where it always was, but INSIDE the region
                 // the focused cards' frames cover, so every reveal shows it.

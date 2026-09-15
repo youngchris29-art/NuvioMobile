@@ -35,6 +35,17 @@ struct HomeView: View {
     /// crossed its scroll hysteresis. Home's only use is the Menu-press reveal below, and it reads
     /// the model inside that closure, at press time.
     @Environment(\.sidebarChrome) private var sidebarChrome
+    /// rc13 (BUG-112 swipe): the shell's coverage signal, for `handleUpSwipe`'s "is Home even the
+    /// frontmost surface" guard — `PinnedRowSettle.hostCovered` only knows about PUSHES over Home,
+    /// and every tab stays mounted across a switch, so a swipe in Search would otherwise reach
+    /// Home's window-level recognizer with nothing to stop it.
+    ///
+    /// Held, never OBSERVED, for the same reason `sidebarChrome` above is: `@Environment` on a
+    /// custom key hands over an `ObservableObject` without subscribing to `objectWillChange`
+    /// (`HomeHeroBackdrop` subscribes explicitly with `onReceive` where it needs to), so Home does
+    /// not re-render on every tab switch. The one read happens inside a gesture callback, at swipe
+    /// time — the same discipline as the Menu-press reveal.
+    @Environment(\.tabBarVisibility) private var tabBarVisibility
 
     #if DEBUG
     /// BUG-25 audit hook (kept): exposes the depth environment Home actually renders with, as an
@@ -583,6 +594,21 @@ struct HomeView: View {
     /// probe line reads it rather than `focusedRowKey`, which can be nil for a beat while the
     /// origin row has already released its claim and the target has not yet made its own.
     @State private var activeUpFallbackOrigin: String?
+    /// rc13 — which INPUT started the live attempt: `press` (a directional button the focus engine
+    /// did not consume) or `swipe` (a touch-surface flick it did not consume, `HomeUpSwipeCatcher`).
+    ///
+    /// Carried on the attempt rather than only on its first log line, and that is a deliberate
+    /// change from this batch's own first draft. `debug_upfallback` holds the LAST line only; the
+    /// rung-1 line is overwritten the moment the hand-off lands — 30–260 ms on Steven's hardware —
+    /// so a token written there alone is unobservable to the harness and nearly unphotographable on
+    /// the pane. Every line of one attempt carries it now, which costs a `key=value` token and
+    /// makes "which input was this?" answerable wherever the reader happens to look.
+    ///
+    /// Sticky between attempts on purpose: every `logUpFallback` call that reads it belongs to a
+    /// live attempt (`beginUpFallback` sets it before its first line; the cancel guards and the
+    /// landed line only run while one is in flight), and resetting it in `endUpFallback` would
+    /// clear it out from under the landed line, which is composed by the caller and passed IN.
+    @State private var activeUpFallbackSource = "press"
     #if DEBUG
     /// Last fallback event, surfaced to the harness as `debug_upfallback`. One write per Up press
     /// the engine could not resolve, so the churn is far below `debug_pinned`'s.
@@ -648,11 +674,18 @@ struct HomeView: View {
                 // the very focus the leg then failed to find a line for). Read live off the
                 // resolver, this is the same fact with no buffer in between.
                 //
+                // rc13 (BUG-114): `sd=<0|1>` (append-only, at the END) is `isScrolledDown` — the
+                // rows shelf's own "not at the top" hysteresis. test66 needs it to tell the two
+                // halves of the fix apart: `sd=1` with the hero focused is the wedge (deep shelf,
+                // bar stranded), `sd=0` after an Up is the shelf having actually moved back. No
+                // reader is positional — every one of them matches by key or by `contains("foc=1")`
+                // — so appending here breaks nothing.
+                //
                 // FEAT-42: `plgs=<addon|tmdb|metahub|none>` (append-only, right after `plg=`) is
                 // WHERE the presented logo bitmap came from — `heroResolver.presentedLogoSource`,
                 // set in the same commit transaction as `presented` (see that property's own doc
                 // comment), so it can never disagree with what `plg=` just reported.
-                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase) pitem=\(heroResolver.presented?.identity ?? "-") pbd=\(heroResolver.presented?.backdrop != nil ? 1 : 0) plg=\(heroResolver.presented?.logo != nil ? 1 : 0) plgs=\(heroResolver.presentedLogoSource.rawValue)")
+                Text("debug_hero idx=\(heroIndex) foc=\(heroFocused ? 1 : 0) n=\(heroItems.count) src=\(focusModel.focusedItem == nil ? "c" : "f") fitem=\(focusModel.focusedItem?.id ?? "-") pin=\(heroNuvioStyle ? 1 : 0) mode=\(heroCarouselActive ? "carousel" : (focusHeroActive ? "focus" : "none")) tloc=\(heroFocusTrailerMode ? "h" : "p") hph=\(debugHeroTrailerPhase) pitem=\(heroResolver.presented?.identity ?? "-") pbd=\(heroResolver.presented?.backdrop != nil ? 1 : 0) plg=\(heroResolver.presented?.logo != nil ? 1 : 0) plgs=\(heroResolver.presentedLogoSource.rawValue) sd=\(isScrolledDown ? 1 : 0)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_hero")
@@ -767,7 +800,7 @@ struct HomeView: View {
                         if heroContainerPinned {
                             VStack(spacing: 0) {
                                 if heroHeaderVisible {
-                                    pinnedHeroHeader
+                                    pinnedHeroHeader(proxy: scrollProxy)
                                 }
                                 rowsScroll(pinned: heroHeaderVisible, settleReveal: true, proxy: scrollProxy)
                             }
@@ -929,6 +962,16 @@ struct HomeView: View {
                     // (The pinned-hero branch above is outside this banned class: it is
                     // Menu-triggered, exactly like the classic branch it sits next to, not
                     // triggered by the hero gaining focus.)
+                    //
+                    // rc13 (BUG-114, GitHub issue #3) adds a THIRD member of that exempt family,
+                    // and states the boundary explicitly rather than leaving it to the
+                    // parenthetical above: `handleHeroUp` scrolls the shelf to the top on an
+                    // unresolved Up PRESS or SWIPE from the CTA — an input the engine gave up on,
+                    // the same class as the Menu handler here and as the ladder's HERO rung — and
+                    // never on a focus change. The ban is on `.onChange(of: heroFocused)` scrolls
+                    // specifically, and that site (below) is untouched. The reporter's own patch
+                    // (scroll when the hero GAINS focus) is exactly the banned shape and was not
+                    // taken.
                     //
                     // Round 7 (2026-08-05) deliberately does NOT touch this site: instead of
                     // correcting the scroll after the fact, it removes the reason the scroll
@@ -1369,6 +1412,25 @@ struct HomeView: View {
         // A handler that early-returns is a value change, which is what this boundary is allowed
         // to be (see the `scrollClipDisabled` / `.environment` neighbours).
         .onMoveCommand { handleRowsMove($0, pinned: pinned, proxy: proxy) }
+        // rc13 (BUG-112, the half rc12 left open): the same Up, arriving as a touch-surface SWIPE.
+        // `onMoveCommand` above is fed by directional-button presses only, which is why Steven's
+        // rc12 verdict was "the fallback lands on a button press, never on a swipe" — see
+        // `HomeUpSwipeCatcher` for the full grammar and for why the recognizer has to live on the
+        // window rather than on this view.
+        //
+        // Attached UNCONDITIONALLY, exactly like the `.onMoveCommand` above and for the identical
+        // reason: `pinned` flips at the fan-out LOAD boundary, and a conditional modifier there
+        // would re-identify (and remount) the whole rows ScrollView. A callback that early-returns
+        // is a value change, which this boundary is allowed to be.
+        //
+        // Zero-size and non-hit-testing: it contributes no layout and participates in no hit
+        // testing — the recognizer reaches the window from `didMoveToWindow`, so the view's own
+        // frame is irrelevant to whether the swipe is seen.
+        .background(alignment: .topLeading) {
+            HomeUpSwipeCatcher(onUnconsumedSwipeUp: { handleUpSwipe(pinned: pinned, proxy: proxy) })
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+        }
         .modifier(forcedUpFallbackTrigger(pinned: pinned, proxy: proxy))
         // BUG-112 (Item A): the rows' half of the fallback — each row watches this for a request
         // naming its own key and writes its OWN `@FocusState`. Default `.none` matches no row.
@@ -1430,14 +1492,132 @@ struct HomeView: View {
     ///    to prevent, and native focus restoration on the pop would then resolve by geometry.
     ///  - Never on the TOPMOST row. The hero (and above it the tab bar) is what Up means there, and
     ///    the engine reaches both on its own — `previousRowTarget` returns nil and we decline.
+    ///
+    /// rc13: `source` names which input produced this — `press` (the `.onMoveCommand` above, and
+    /// the DEBUG press proxy) or `swipe` (`handleUpSwipe`). It reaches exactly one place, the
+    /// rung-1 `upFallback` line, as a trailing ` src=` token.
     private func handleRowsMove(_ direction: MoveCommandDirection,
                                 pinned: Bool,
-                                proxy: ScrollViewProxy) {
+                                proxy: ScrollViewProxy,
+                                source: String = "press") {
         guard direction == .up, pinned else { return }
         guard !PinnedRowSettle.hostCovered else { return }
         guard let rowKey = focusedRowKey,
               let target = previousRowTarget(for: rowKey) else { return }
-        beginUpFallback(from: rowKey, to: target, proxy: proxy)
+        beginUpFallback(from: rowKey, to: target, proxy: proxy, source: source)
+    }
+
+    /// rc13 (BUG-112, the half rc12 left open) — an Up SWIPE that moved no focus at all.
+    ///
+    /// Steven's rc12 verdict: the fallback lands on a button press and never on a touchpad swipe.
+    /// That is SwiftUI's move grammar, not a bug in the ladder — `onMoveCommand` is fed by
+    /// directional-button presses, while a touch-surface flick is an indirect touch sequence the
+    /// focus engine reads itself, with no unconsumed *press* to hand anywhere when it finds no
+    /// candidate. `HomeUpSwipeCatcher` (window-level recognizer) supplies the missing event; this
+    /// decides whether it means anything here.
+    ///
+    /// The recognizer is app-wide by necessity — see that file — so every guard that makes it
+    /// inert everywhere else lives right here, in order and each for its own reason:
+    ///  - PINNED only. Same contract as the press path: classic geometry is untouched, and nothing
+    ///    is ever hidden above the fold there for the engine to fail on.
+    ///  - Not while Home is COVERED by a PUSH (`PinnedRowSettle.hostCovered`, BUG-109) — a folder
+    ///    page or Detail is over the rows, and its own swipes must not reach back here.
+    ///  - Not while Home's surface is covered at the SHELL level (`homeSurfaceCovered`): another
+    ///    tab is selected, or the root deep-link cover is up. Tabs stay mounted across a switch
+    ///    (that is what `homeSurfaceCovered` exists to say), so without this a swipe in Search or
+    ///    Settings would run Home's ladder underneath them.
+    ///  - Not while the SIDEBAR chrome holds focus. The rc7 verdict stands — no Up gesture
+    ///    anywhere may surface or drive the sidebar — and a swipe while its rows have focus is
+    ///    the sidebar's own business.
+    ///  - Not while Home's own Continue-Watching COVER is up (`resume`). It presents the stream
+    ///    picker and, through it, the player: neither `hostCovered` (a `NavigationPath` push) nor
+    ///    `homeSurfaceCovered` (tab selection / push depth / the root deep-link cover) sees a
+    ///    `fullScreenCover` presented from Home's own tree. `heroTrailerSharedGatesOpen` gates on
+    ///    the same pair for the same reason, and its doc records the device pass that found it.
+    ///    The routing below would decline anyway — focus is inside the cover, so neither
+    ///    `focusedRowKey` nor `heroFocused` is set — but "would decline anyway" is an assumption
+    ///    about somebody else's focus bookkeeping, and this is the swipe that reaches the player.
+    ///  - Not while a fallback attempt is already live (`activeUpFallbackTarget`). A swipe inside
+    ///    an in-flight ladder must not restart it: the rungs are staged 0.3/0.9/1.5 s apart
+    ///    precisely so each gets its chance.
+    ///
+    /// Then the routing. With a row focused this is the press path verbatim, which is the whole
+    /// request. With the HERO focused there is no `focusedRowKey`, so the ladder has no origin and
+    /// `handleRowsMove` would decline anyway — and an unresolved Up from the hero CTA is exactly
+    /// BUG-114, whose handler is right below. Sending it there gives the swipe the same reach the
+    /// press has, from one gesture, with `handleHeroUp`'s own guards deciding whether anything
+    /// happens.
+    private func handleUpSwipe(pinned: Bool, proxy: ScrollViewProxy) {
+        guard pinned else { return }
+        guard !PinnedRowSettle.hostCovered else { return }
+        guard !tabBarVisibility.homeSurfaceCovered else { return }
+        guard !sidebarChrome.isFocusedChrome else { return }
+        guard resume == nil else { return }
+        guard activeUpFallbackTarget == nil else { return }
+        if focusedRowKey != nil {
+            handleRowsMove(.up, pinned: pinned, proxy: proxy, source: "swipe")
+        } else if heroFocused {
+            handleHeroUp(proxy: proxy, source: "swipe")
+        }
+    }
+
+    /// rc13 (BUG-114, GitHub issue #3) — an Up from the hero CTA that the focus engine could not
+    /// place scrolls the rows shelf back to the top.
+    ///
+    /// The report: walk down a few rows, then walk back up. The engine resolves the last Up from
+    /// row 1 into the CTA natively — so the rc12 ladder never runs, it is only reached by a move
+    /// the engine gave up on — but the rows shelf keeps the offset it had, and with it the system
+    /// tab bar stays minimized and unreachable. The next Up dies in the carousel's paging closure.
+    ///
+    /// **Why this is not the banned class.** The `.onExitCommand` neighbour carries a standing ban
+    /// on hero-FOCUS-triggered scrolls: rounds 5–6 completed the scroll when focus re-entered the
+    /// hero and both caused worse device regressions (wedged Down navigation, interrupted
+    /// Menu-to-top). That ban is on the `.onChange(of: heroFocused)` class, and its own
+    /// parenthetical exempts input-triggered scrolls — which is what the pinned Menu branch beside
+    /// it already is, and what the ladder's HERO rung already is. This is the third member of that
+    /// family: it runs on an unresolved Up PRESS or SWIPE and never on a focus change.
+    /// `.onChange(of: heroFocused)` is untouched. The reporter's own patch — scroll to `home_top`
+    /// when the hero GAINS focus — is precisely the banned shape and is deliberately not taken.
+    ///
+    /// **Why it must move the shelf.** `isScrolledDown` does not drive the bar: the tvOS 26 bar is
+    /// `.toolbarVisibility(.automatic)` and expands natively off the rows ScrollView's own offset
+    /// (`TabBarVisibility`'s doc records the three rounds that established this, and
+    /// `TabBarScrollAutoHide` only mirrors a hysteresis for the Menu handler and the sidebar). So
+    /// "report the bar as expanded" is not a thing that exists — the only honest fix is to put the
+    /// shelf back where the bar expands on its own, which is the top.
+    ///
+    /// Guards, each for its own reason:
+    ///  - PINNED (`heroHeaderVisible`) and the hero actually focused. Belt and braces: the only
+    ///    caller is the pinned header's own hook, and `handleUpSwipe` already checked both.
+    ///  - `isScrolledDown` — at the top there is nothing to scroll and the bar is already there;
+    ///    firing anyway would animate a no-op scroll under the user on every Up at rest.
+    ///  - NOT in sidebar mode. There is no system bar to reach: `SidebarOverlay` replaces it and
+    ///    the hidden `UITabBar` is deliberately made unfocusable (`HiddenTabBarFocusBlocker`).
+    ///    Menu is the scroll-to-top there, by the same rc7 decision that removed every Up-reveal.
+    ///  - Not while Home is COVERED (BUG-109) — the same rule every other scroll on this screen
+    ///    follows.
+    ///
+    /// No `heroFocused` write anywhere: focus is already on the CTA and is meant to STAY there, so
+    /// the user's next Up is the one that reaches the re-expanded bar. Writing it would be the
+    /// rounds 5–6 shape again. The single 0.6 s retry mirrors the Menu handler's ladder and is
+    /// gated on `isScrolledDown` for the reason stated there — the scroll landing, not focus, is
+    /// what says whether this worked.
+    private func handleHeroUp(proxy: ScrollViewProxy, source: String = "press") {
+        guard heroHeaderVisible, heroFocused, isScrolledDown else { return }
+        guard !SidebarChrome.isEnabled() else { return }
+        guard !PinnedRowSettle.hostCovered else { return }
+        logUpFallback("row=hero prev=tabbar action=top src=\(source)")
+        PinnedRowSettle.noteExternalScroll(reason: "hero-up-top")
+        withAnimation(.easeInOut(duration: 0.45)) {
+            proxy.scrollTo("home_top", anchor: .top)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            guard isScrolledDown, heroHeaderVisible, !PinnedRowSettle.hostCovered else { return }
+            PinnedRowSettle.noteExternalScroll(reason: "hero-up-top-retry")
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo("home_top", anchor: .top)
+            }
+        }
     }
 
     /// BUG-112 review fix (F3): the single writer of `focusedRowKey`, fed by every row's
@@ -1482,7 +1662,7 @@ struct HomeView: View {
                 let origin = focusedRowKey
                 focusedRowKey = rowKey
                 if rowKey == activeUpFallbackTarget {
-                    endUpFallback(reason: "row=\(activeUpFallbackOrigin ?? origin ?? "-") prev=\(rowKey) action=landed",
+                    endUpFallback(reason: "row=\(activeUpFallbackOrigin ?? origin ?? "-") prev=\(rowKey) action=landed src=\(activeUpFallbackSource)",
                                   log: true)
                 } else {
                     endUpFallback(reason: "superseded", log: false)
@@ -1572,9 +1752,19 @@ struct HomeView: View {
     /// through `endUpFallback` before this one starts, so its request and rungs cannot outlive
     /// the attempt that superseded them. `activeUpFallbackTarget` is then set to this attempt's
     /// target so `handleRowFocusOwnership` can recognise the landing when it happens.
+    ///
+    /// rc13: `source` (`press` / `swipe`) names which input started the attempt — a directional
+    /// button the focus engine did not consume, or a touch-surface flick it did not consume
+    /// (`HomeUpSwipeCatcher`). It is appended as a trailing ` src=` token to EVERY line this
+    /// attempt writes, not just the first, and it is stashed on `activeUpFallbackSource` so the
+    /// lines composed outside this function (the cancel guards, the `landed` line) can carry it
+    /// too. See that property for why: `debug_upfallback` holds only the LAST line, so a token on
+    /// the rung-1 line alone is gone by the time any reader — harness or device photo — gets to it.
+    /// `debug_upfallback` stays append-only and key-parsed, so test65 is unaffected.
     private func beginUpFallback(from rowKey: String,
                                  to target: (key: String, anchor: String),
-                                 proxy: ScrollViewProxy) {
+                                 proxy: ScrollViewProxy,
+                                 source: String = "press") {
         if activeUpFallbackTarget != nil {
             endUpFallback(reason: "restarted", log: false)
         }
@@ -1582,14 +1772,29 @@ struct HomeView: View {
         let generation = upFallbackGeneration
         activeUpFallbackTarget = target.key
         activeUpFallbackOrigin = rowKey
+        // After the `restarted` retire above, so a superseded attempt's source can never label
+        // this one's lines.
+        activeUpFallbackSource = source
         let isTopTarget = previousRowTarget(for: target.key) == nil
 
-        logUpFallback("row=\(rowKey) prev=\(target.key) action=focus anchor=\(target.anchor)")
+        logUpFallback("row=\(rowKey) prev=\(target.key) action=focus anchor=\(target.anchor) src=\(source)")
+        // rc13 (BUG-112, second half): rung 1 scrolls NOTHING — it asks the row above to take its
+        // own focus and lets the ENGINE reveal it. That is still a walk step, so the corrector is
+        // told with `noteFocusHop`, not `noteExternalScroll`: the latter also calls
+        // `pullBack.forgetHop()`, which drops the row/offset pair the next settle derives `dir=`
+        // from, so the up-walk would never flip to −1 and Item B's direction-scoped brake would
+        // stay spent from the down-walk that preceded it. Its other half matters just as much: a
+        // fallback-entered rest that the engine's reveal did not have to move produced NO settle at
+        // all in rc12 — his pane showed a gap where a line should be, and the titles faded with
+        // nothing on the wire to explain it. The armed `external` token is what makes that rest
+        // evaluated and logged. The three scrolling rungs below keep `noteExternalScroll`: those
+        // ARE programmatic jumps, and a jump is not a walk step.
+        PinnedRowSettle.noteFocusHop(reason: "upfallback-ask")
         requestRowFocus(target.key)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             guard shouldContinueUpFallback(generation: generation, rowKey: rowKey, target: target) else { return }
-            logUpFallback("row=\(rowKey) prev=\(target.key) action=scroll anchor=\(target.anchor)")
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=scroll anchor=\(target.anchor) src=\(source)")
             PinnedRowSettle.noteExternalScroll(reason: "upfallback")
             withAnimation(.easeInOut(duration: 0.3)) {
                 proxy.scrollTo(target.anchor, anchor: .top)
@@ -1599,7 +1804,7 @@ struct HomeView: View {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
             guard shouldContinueUpFallback(generation: generation, rowKey: rowKey, target: target) else { return }
-            logUpFallback("row=\(rowKey) prev=\(target.key) action=top")
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=top src=\(source)")
             PinnedRowSettle.noteExternalScroll(reason: "upfallback-top")
             withAnimation(.easeInOut(duration: 0.3)) {
                 proxy.scrollTo("home_top", anchor: .top)
@@ -1610,11 +1815,11 @@ struct HomeView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             guard shouldContinueUpFallback(generation: generation, rowKey: rowKey, target: target) else { return }
             guard isTopTarget, !heroItems.isEmpty, heroNuvioStyle else {
-                logUpFallback("row=\(rowKey) prev=\(target.key) action=giveup")
+                logUpFallback("row=\(rowKey) prev=\(target.key) action=giveup src=\(source)")
                 endUpFallback(reason: "giveup", log: false)
                 return
             }
-            logUpFallback("row=\(rowKey) prev=\(target.key) action=hero")
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=hero src=\(source)")
             // F1: the attempt is handing over to the hero rung — retire it (and drop the row
             // request with it) BEFORE flipping focus, so nothing is left behind for a later-
             // mounting row's `.onAppear` to pick back up.
@@ -1661,17 +1866,17 @@ struct HomeView: View {
                                           target: (key: String, anchor: String)) -> Bool {
         guard generation == upFallbackGeneration else { return false }
         guard !PinnedRowSettle.hostCovered else {
-            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=covered")
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=covered src=\(activeUpFallbackSource)")
             endUpFallback(reason: "cancelled", log: false)
             return false
         }
         guard heroHeaderVisible else {
-            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=unpinned")
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=unpinned src=\(activeUpFallbackSource)")
             endUpFallback(reason: "cancelled", log: false)
             return false
         }
         guard focusedRowKey == rowKey else {
-            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=refocused")
+            logUpFallback("row=\(rowKey) prev=\(target.key) action=cancelled reason=refocused src=\(activeUpFallbackSource)")
             endUpFallback(reason: "cancelled", log: false)
             return false
         }
@@ -1729,8 +1934,26 @@ struct HomeView: View {
     /// row 1 from row 2 across a fully off-screen gap). So the knob binds the identical fallback
     /// body to Play/Pause, which is free on Home's rows. `forced` is a launch-latched `static let`,
     /// constant for the process, so the conditional branch can never re-identify the rows mid-session.
+    ///
+    /// rc13: "free" only holds with inline trailers off. A focused card whose inline trailer is
+    /// currently playing claims Play/Pause for itself first — `CatalogRowView` attaches
+    /// `.onPlayPauseCommand(perform: muteToggle(for: item))` (`BrowseComponents.swift`, the card's
+    /// mute toggle, Trailer Location = Hero mode) — so this proxy is unreachable on that card while
+    /// its trailer plays. test65/test67 pin `-inline_trailers_enabled NO` for exactly this reason.
     private func forcedUpFallbackTrigger(pinned: Bool, proxy: ScrollViewProxy) -> some ViewModifier {
-        ForcedUpFallbackTriggerModifier(enabled: HomeUpFallbackKnobs.forced) {
+        ForcedUpFallbackTriggerModifier(enabled: HomeUpFallbackKnobs.forced || HomeUpFallbackKnobs.swipeForced) {
+            // rc13: with the SWIPE knob armed the proxy enters through the catcher's own door
+            // (`simulateSwipeUp`), not through the ladder — so the settle window, the
+            // did-focus-move check and the rows/hero routing all run for real and the `src=swipe`
+            // token on the rung-1 line is earned rather than asserted. Play/Pause moves no focus,
+            // which is exactly what makes the did-focus-move check pass honestly. The swipe knob
+            // wins when both are set: it exercises a strict superset of the press path.
+            #if DEBUG
+            if HomeUpFallbackKnobs.swipeForced {
+                HomeUpSwipeCatcher.simulateSwipeUp()
+                return
+            }
+            #endif
             handleRowsMove(.up, pinned: pinned, proxy: proxy)
         }
     }
@@ -1761,7 +1984,15 @@ struct HomeView: View {
     /// amount of PADDING at the call site, so nothing moves; what changes is that the padding is
     /// now inside the hero's own frame and `.focusSection()` rather than outside them. 0 (the
     /// pinned header's value) collapses the modifier entirely — pinned geometry is untouched.
-    private func heroCarousel(compact: Bool, topReach: CGFloat = 0) -> some View {
+    ///
+    /// rc13 (BUG-114, GitHub issue #3): `onUnresolvedUp` — what an Up the focus engine could not
+    /// place from the CTA should do. nil (the classic call site, and any future one) keeps the
+    /// pre-rc13 behaviour exactly: the move falls through to the paging switch's `default: return`.
+    /// The pinned header passes `handleHeroUp`, which scrolls the shelf back to the top so the
+    /// system tab bar is reachable again — see that function.
+    private func heroCarousel(compact: Bool,
+                              topReach: CGFloat = 0,
+                              onUnresolvedUp: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             // BUG-23 round 2 (device finding): the paged TabView is GONE. The sim fix caught
             // dropped D-pad presses via onMoveCommand, but the real Siri Remote pages by
@@ -1838,6 +2069,20 @@ struct HomeView: View {
                 // (`SidebarMenuRevealModifier` / Home's own `.onExitCommand` grammar below). So an
                 // Up here is exactly what it was before FEAT-30 ever touched this closure: it falls
                 // through to the paging switch's `default: return`, a no-op.
+                //
+                // rc13 (BUG-114, GitHub issue #3): that no-op is the reporter's wedge. From a deep
+                // row the engine resolves Up → CTA natively; the NEXT Up arrives here, finds
+                // nothing above the hero it can focus, and dies — while the rows shelf is still
+                // holding its scrolled-down offset and the system tab bar, which expands off that
+                // offset, stays stranded. `onUnresolvedUp` is the pinned header's answer (scroll
+                // the shelf to the top), and it runs FIRST, before the paging guard: a single-item
+                // hero returns on that guard, and a multi-item one would fall to `default: return`
+                // — either way the Up would be swallowed by the pager's own bookkeeping. Nothing
+                // changes for left/right, and a nil handler (classic) is byte-identical to before.
+                if direction == .up, let onUnresolvedUp {
+                    onUnresolvedUp()
+                    return
+                }
                 guard heroItems.count > 1 else { return }
                 let count = heroItems.count
                 let clamped = min(heroIndex, count - 1)
@@ -1903,8 +2148,12 @@ struct HomeView: View {
     /// Paddings are the COMPACTED pinned set (`heroPinnedTopPad` / `heroPinnedRowsGap`), not the
     /// in-scroll ones: pinned mode shares one screen between hero and rows, so the hero has to
     /// give the rows viewport ~450pt to fit a poster row. See the height budget on those tokens.
-    private var pinnedHeroHeader: some View {
-        heroCarousel(compact: true)
+    ///
+    /// rc13 (BUG-114): takes the shared `ScrollViewReader` proxy now, purely to hand `handleHeroUp`
+    /// to the carousel's unresolved-Up hook. The classic in-scroll call site passes no hook and is
+    /// unchanged.
+    private func pinnedHeroHeader(proxy: ScrollViewProxy) -> some View {
+        heroCarousel(compact: true, onUnresolvedUp: { handleHeroUp(proxy: proxy) })
             .padding(.top, Theme.Size.heroPinnedTopPad)
             .padding(.horizontal, Theme.Spacing.screen)
             .padding(.bottom, Theme.Size.heroPinnedRowsGap)
@@ -2721,7 +2970,9 @@ final class HomeHeroFocusModel: ObservableObject {
         guard !isCollectionHero(item) else { return }
         guard nonBlank(item.description_) == nil || nonBlank(item.banner) == nil else { return }
         let settings = TmdbSettingsRepository.shared.snapshot()
-        guard settings.enabled, settings.hasApiKey,
+        // rc13: `hasApiKey` is gone — the TMDB key is bundled at build time (`TmdbConfig.API_KEY`),
+        // so "enabled" is the whole gate now.
+        guard settings.enabled,
               settings.useArtwork || settings.useBasicInfo else { return }
         // suspend fun → Swift completion; result may arrive off the main thread, so hop back
         // (same convention as PersonDetailViewModel.start()).
@@ -3819,6 +4070,8 @@ struct ContinueWatchingRow: View {
                     }
                 }
                 .scrollClipDisabled()
+                // BUG-118: see `RowEdgeEffectStyleModifier`.
+                .rowEdgeEffectStyle()
                 .onChange(of: entries.first?.videoId) { _, newFirst in
                     // Content-driven reorder while the user is elsewhere: keep the shelf
                     // anchored to the first card instead of drifting mid-list.

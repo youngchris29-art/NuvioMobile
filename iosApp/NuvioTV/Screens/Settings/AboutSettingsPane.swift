@@ -41,6 +41,15 @@ struct AboutSettingsPane: View {
     /// same as the two Appearance focus flags they sit beside.
     @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = false
 
+    /// BUG-118 (rc13): Steven's "row edge fade is intermittent" — see `RowEdgeEffectStyleModifier`
+    /// for the root cause (there is no app-drawn fade; it's tvOS 26's system scroll-edge effect,
+    /// which only draws once a row has scrollable content past that edge) and for what each of the
+    /// four legs (0 `.hard`, 1 `.soft`, 2 `.automatic`, 3 hidden) actually renders. Live
+    /// `@AppStorage`, same reactive pattern as `scrollEdgeHard` below — no relaunch needed to A/B
+    /// it. Default 2 (`.automatic`) — today's un-set behavior, unchanged until Steven's device A/B
+    /// picks a leg.
+    @AppStorage("debug.rowEdgeFade") private var rowEdgeFade = 2
+
     /// BUG-30/66/62 (beta.14): same release-safe pattern as the hero probe above, but the readout
     /// is a live in-memory snapshot (`TabBarProbe`) rather than a persisted log — see that type's
     /// doc comment for why.
@@ -572,6 +581,28 @@ struct AboutSettingsPane: View {
                             ? String(localized: "Rows reserve the zoom-mode band; the hero-off description loses a line at Large")
                             : String(localized: "BUG-87: try if row titles fade or bounce with No Zoom on Focus"),
                         isOn: $noZoomReachHoldsLift
+                    )
+
+                    // BUG-118 (rc13): sixth child of this Group — same room this Group already had
+                    // for the No Zoom Row Reach row above; the outer `SettingsSection` and this
+                    // Group's own parent `Group` stay untouched.
+                    SettingsPickerRow(
+                        title: String(localized: "Row Edge Fade"),
+                        subtitle: String(localized: "BUG-118: which edge treatment looks right on a Home row"),
+                        selection: $rowEdgeFade,
+                        // System (2) is the default and leads the list; Off (3, the actual
+                        // `scrollEdgeEffectHidden` "no fade, ever" lever) comes next since it's
+                        // the other candidate his report is choosing between; Hard (0) and Soft
+                        // (1) trail as the two named system styles for the A/B.
+                        options: [2, 3, 0, 1],
+                        label: { leg in
+                            switch leg {
+                            case 3: return String(localized: "Off")
+                            case 0: return String(localized: "Hard")
+                            case 1: return String(localized: "Soft")
+                            default: return String(localized: "System")
+                            }
+                        }
                     )
                 }
             }

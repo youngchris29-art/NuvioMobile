@@ -85,6 +85,8 @@ struct UpcomingRow: View {
                 }
             }
             .scrollClipDisabled()
+            // BUG-118: see `RowEdgeEffectStyleModifier`.
+            .rowEdgeEffectStyle()
         }
         .focusSection()
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see

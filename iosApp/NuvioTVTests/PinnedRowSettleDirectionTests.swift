@@ -117,6 +117,48 @@ final class PinnedRowSettleDirectionTests: XCTestCase {
         XCTAssertTrue(ledger.disarmed)
     }
 
+    /// rc13 (BUG-112, second half) — WHY the Up fallback's first rung tells the corrector through
+    /// `PinnedRowSettle.noteFocusHop` rather than `noteExternalScroll`.
+    ///
+    /// The two differ by exactly one statement: `noteExternalScroll` calls `forgetHop()`. This
+    /// test is that statement's cost, made explicit. After forgetting, the ledger has no row/offset
+    /// pair to compare against, so the NEXT settle — the one the fallback's own hand-off produces —
+    /// establishes a new baseline and reports no direction change at all. The direction the walk is
+    /// actually going only reappears on the settle AFTER that, one row later. On hardware, where
+    /// the whole point of the fallback is that the engine could not make this hop on its own, that
+    /// is one full row of up-walk judged under the DOWN-walk's spent, disarmed brake.
+    ///
+    /// Rung 1 is the case this matters for (it moves no scroll at all, so there is nothing to
+    /// forget); rungs 2–4 still forget, correctly, because a programmatic jump is not a walk step.
+    func testForgettingTheHopMakesTheNextSettleDirectionless() {
+        var ledger = PinnedRowSettle.PullBackLedger()
+        _ = walkDown(&ledger, rows: ["r1", "r2", "r3"])
+        XCTAssertEqual(ledger.direction, 1, "three rows down establishes the down-walk")
+
+        // What `noteExternalScroll` does on top of everything `noteFocusHop` does.
+        ledger.forgetHop()
+
+        // The fallback lands focus on r2 — a genuine reversal, 320pt back up the page.
+        let firstAfterForget = ledger.noteSettle(rowKey: "r2", offsetY: 320)
+        XCTAssertFalse(firstAfterForget.changed,
+            "with the hop forgotten there is no previous row to compare against, so the reversal is invisible to this settle")
+        XCTAssertEqual(ledger.direction, 1,
+            "and the ledger is still reporting the DOWN-walk's direction — the up-walk's corrections stay under the down-walk's spent brake")
+
+        // Only the NEXT hop — one whole row later — recovers the direction.
+        let second = ledger.noteSettle(rowKey: "r1", offsetY: 0)
+        XCTAssertTrue(second.changed, "the direction is only recoverable a full row later")
+        XCTAssertEqual(ledger.direction, -1)
+
+        // The counterfactual: keeping the hop (what `noteFocusHop` does) flips on the very first
+        // settle after the hand-off.
+        var kept = PinnedRowSettle.PullBackLedger()
+        _ = walkDown(&kept, rows: ["r1", "r2", "r3"])
+        let immediate = kept.noteSettle(rowKey: "r2", offsetY: 320)
+        XCTAssertTrue(immediate.changed, "with the hop kept, the fallback's own hand-off IS the direction change")
+        XCTAssertEqual(kept.direction, -1)
+    }
+
     func testARegimeChangeClearsTheLedgerCompletely() {
         var ledger = PinnedRowSettle.PullBackLedger()
         _ = ledger.noteSettle(rowKey: "r1", offsetY: 0)

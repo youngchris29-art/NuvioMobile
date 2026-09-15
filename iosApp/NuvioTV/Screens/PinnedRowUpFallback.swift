@@ -136,4 +136,28 @@ enum HomeUpFallbackKnobs {
     #else
     nonisolated static let forced = false
     #endif
+
+    /// rc13 — the same proxy trigger, for the SWIPE path (`HomeUpSwipeCatcher`).
+    ///
+    /// A separate knob rather than a mode on `forced` because the two prove different things and
+    /// a test must be able to say which one it armed. `forced` enters the ladder directly, from
+    /// `HomeView.handleRowsMove`; this one enters through `HomeUpSwipeCatcher.simulateSwipeUp()`,
+    /// so the swipe path's own evaluation — the settle window, the did-focus-move check, the
+    /// routing between the rows ladder and the hero handler — all runs for real, and the
+    /// `src=swipe` token on the resulting `upFallback` line is what proves it did.
+    ///
+    /// Why a proxy at all is the same argument `forced`'s doc makes, one layer down: the FA87
+    /// simulator has no touch surface to swipe, `XCUIRemote` exposes button presses only, and the
+    /// simulator's focus engine resolves every Up regardless (test63/test64). Play/Pause moves no
+    /// focus, which is exactly what makes it an honest stand-in here — the did-focus-move check
+    /// passes because focus genuinely did not move.
+    ///
+    /// `#if DEBUG` for the reason F6 established: `UserDefaults.bool(forKey:)` reads a preference
+    /// in Release builds too, so an unguarded knob would let anyone who can write the app's
+    /// defaults domain arm a focus-moving proxy trigger in a shipped build.
+    #if DEBUG
+    nonisolated static let swipeForced = UserDefaults.standard.bool(forKey: "debug.homeUpSwipeForce")
+    #else
+    nonisolated static let swipeForced = false
+    #endif
 }
