@@ -27,6 +27,18 @@ import com.nuvio.app.features.plugins.PluginsUiState
  *   fork's `StreamsRepository.kt:192-211` BUG-74 id-remap block is untouched by this file and must
  *   stay exactly as it is (see the fork-only [StreamVideoIdRemap] used below, which upstream does
  *   not have — it did not exist yet when `972109f9` was written).
+ *
+ * **Deliberate fork deviation — the gate FAILS OPEN on a remappable id.** Upstream's predicate is
+ * a plain "does an enabled addon accept this exact id", which on this fork would disable Play for
+ * a case that demonstrably works: with only `tt`-prefix stream addons installed, a `tmdb:550`
+ * title matches nothing here, yet `StreamsRepository.load()` resolves the IMDb id and asks those
+ * very addons (BUG-74). The gate is synchronous and the remap needs a TMDB round-trip, so it
+ * cannot know whether the title HAS an IMDb id — it answers on reachability instead, via the same
+ * [StreamVideoIdRemap.wouldReachMoreAddons] predicate the repository triggers the remap on. A
+ * title whose remap then fails lands on the Streams screen's own empty state, which is upstream's
+ * pre-`972109f9` behaviour; disabling Play on a title that plays fine would be the worse bug.
+ * Ids the remap does not apply to are unaffected: a `kitsu:` id, or a `tmdb:` id with no `tt`
+ * addon to reach, still reads as unavailable.
  */
 
 /**
@@ -42,17 +54,50 @@ fun AddonManifest.supportsStream(type: String, videoId: String): Boolean =
     }
 
 /**
- * Upstream-shaped predicate, byte-identical in behaviour to `972109f9`'s free function of the same
- * name, kept so upstream's 5-case `PlaybackAvailabilityTest.kt` ports unchanged. [PlaybackAvailability]
- * itself does not call this overload — see the [PluginScraper]-list overload below, fed by the
- * fork's [PluginScraperHostProvider] seam.
+ * Fork: whether an enabled addon that cannot take [videoId] as-is WOULD be asked for it after
+ * `StreamsRepository.load()`'s BUG-74 remap — the fail-open half of the gate (see the file header).
+ *
+ * Built exactly like the repository's own trigger: the `stream` resources for [type], their
+ * declared id prefixes, addons declaring none dropped (they accept anything, so
+ * [supportsStream] already answered for them), then [StreamVideoIdRemap.wouldReachMoreAddons].
+ * That predicate is `tmdb:`-only, so every other id shape answers false here.
+ */
+private fun anyAddonReachableAfterRemap(
+    addons: List<ManagedAddon>,
+    type: String,
+    videoId: String,
+): Boolean {
+    val streamIdPrefixes = addons.mapNotNull { addon ->
+        if (!addon.enabled) return@mapNotNull null
+        addon.manifest?.resources
+            ?.filter { it.name == "stream" && it.types.contains(type) }
+            ?.flatMap { it.idPrefixes }
+            ?.takeIf { it.isNotEmpty() }
+    }
+    return StreamVideoIdRemap.wouldReachMoreAddons(videoId, streamIdPrefixes)
+}
+
+/** Fork: [supportsStream] across the enabled addons, plus the remap fail-open above. */
+private fun anyAddonCanStream(
+    addons: List<ManagedAddon>,
+    type: String,
+    videoId: String,
+): Boolean = addons.any { it.enabled && it.manifest?.supportsStream(type, videoId) == true } ||
+    anyAddonReachableAfterRemap(addons, type, videoId)
+
+/**
+ * Upstream-shaped predicate, matching `972109f9`'s free function of the same name apart from the
+ * documented remap fail-open, kept so upstream's 5-case `PlaybackAvailabilityTest.kt` ports
+ * unchanged (none of its cases uses a `tmdb:` id, so none of them changes answer).
+ * [PlaybackAvailability] itself does not call this overload — see the [PluginScraper]-list overload
+ * below, fed by the fork's [PluginScraperHostProvider] seam.
  */
 fun hasCompatiblePlaybackSource(
     addons: List<ManagedAddon>,
     plugins: PluginsUiState,
     type: String,
     videoId: String,
-): Boolean = addons.any { it.enabled && it.manifest?.supportsStream(type, videoId) == true } ||
+): Boolean = anyAddonCanStream(addons, type, videoId) ||
     (plugins.pluginsEnabled && plugins.scrapers.any { it.enabled && it.supportsType(type) })
 
 /**
@@ -66,7 +111,7 @@ fun hasCompatiblePlaybackSource(
     enabledScrapersForType: List<PluginScraper>,
     type: String,
     videoId: String,
-): Boolean = addons.any { it.enabled && it.manifest?.supportsStream(type, videoId) == true } ||
+): Boolean = anyAddonCanStream(addons, type, videoId) ||
     enabledScrapersForType.any { it.enabled && it.supportsType(type) }
 
 /**

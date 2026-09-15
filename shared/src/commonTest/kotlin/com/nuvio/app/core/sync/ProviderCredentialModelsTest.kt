@@ -129,4 +129,81 @@ class ProviderCredentialModelsTest {
 
         assertEquals("", local.mergeRemote(remote).values.single().value)
     }
+
+    // Fork: the pending-edit replay (`ProviderCredentialSync.pendingEdits`). `ProviderCredentialSync`
+    // itself is a singleton talking straight to Supabase with no injectable adapter, so these cover
+    // the pure overlay/restrict helpers the sync path composes rather than the round trip.
+    @Test
+    fun `a pending edit beats the value the pull returned`() {
+        // The regression: edit mdblist A -> B offline, the observer push fails, the next pull
+        // returns A and mergeRemote restores it. The overlay puts B back so the sync can push it.
+        val local = ProviderCredentialSnapshot(
+            profileId = 1,
+            values = listOf(
+                ProviderCredentialValue("mdblist", "api_key", "B"),
+                ProviderCredentialValue("debrid:torbox", "api_key", "torbox-local"),
+            ),
+        )
+        val remote = listOf(
+            SupabaseProviderCredential(
+                provider = "mdblist",
+                credentialJson = buildJsonObject { put("api_key", "A") },
+            ),
+            SupabaseProviderCredential(
+                provider = "debrid:torbox",
+                credentialJson = buildJsonObject { put("api_key", "torbox-remote") },
+            ),
+        )
+
+        val merged = local.mergeRemote(remote)
+        assertEquals(listOf("A", "torbox-remote"), merged.values.map { it.value })
+
+        val replayed = merged.overlayingPendingEdits(mapOf("mdblist" to "B"))
+
+        // Only the pending provider is overlaid — a provider with no local edit still takes the
+        // server's value, which is the half of upstream 1854dfc3 that must keep working.
+        assertEquals(listOf("B", "torbox-remote"), replayed.values.map { it.value })
+    }
+
+    @Test
+    fun `a pending clear is not resurrected by the pull and narrows the push payload`() {
+        val local = ProviderCredentialSnapshot(
+            profileId = 1,
+            values = listOf(
+                ProviderCredentialValue("mdblist", "api_key", ""),
+                ProviderCredentialValue("introdb", "api_key", "keep-me"),
+            ),
+        )
+        val remote = listOf(
+            SupabaseProviderCredential(
+                provider = "mdblist",
+                credentialJson = buildJsonObject { put("api_key", "stale") },
+            ),
+            SupabaseProviderCredential(
+                provider = "introdb",
+                credentialJson = buildJsonObject { put("api_key", "keep-me") },
+            ),
+        )
+
+        val replayed = local.mergeRemote(remote).overlayingPendingEdits(mapOf("mdblist" to ""))
+        assertEquals(listOf("", "keep-me"), replayed.values.map { it.value })
+
+        // The replay push carries the pending provider ONLY: upstream 1854dfc3's rule is that a
+        // reconnecting device must not rewrite rows it has no fresh opinion about.
+        val payload = replayed.restrictedTo(setOf("mdblist"))
+        assertEquals(listOf("mdblist"), payload.values.map { it.provider })
+        assertEquals(1, payload.profileId)
+    }
+
+    @Test
+    fun `an empty pending map and an unknown pending provider change nothing`() {
+        val local = ProviderCredentialSnapshot(
+            profileId = 1,
+            values = listOf(ProviderCredentialValue("mdblist", "api_key", "A")),
+        )
+
+        assertEquals(local, local.overlayingPendingEdits(emptyMap()))
+        assertEquals(local, local.overlayingPendingEdits(mapOf("debrid:torbox" to "B")))
+        assertTrue(local.restrictedTo(emptySet()).values.isEmpty())
+    }
 }

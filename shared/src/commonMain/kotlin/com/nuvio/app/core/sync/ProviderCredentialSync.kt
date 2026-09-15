@@ -69,6 +69,22 @@ object ProviderCredentialSync {
     private val baselineSnapshots = mutableMapOf<ProviderCredentialScope, ProviderCredentialSnapshot>()
 
     /**
+     * Fork: credential edits whose observer push FAILED, per scope, provider id → value ("" is a
+     * pending clear). Upstream 1854dfc3 dropped the whole-snapshot push-before-pull retry (and its
+     * `pendingScopes` arming set) because that push rewrote EVERY provider row from one possibly
+     * stale device. Dropping the retry outright regressed the other way: an edit made offline is
+     * restored to the server's old value by the next [mergeRemote] and baselined, so the edit is
+     * lost with no further local change to ride out on — and an unsuccessful CLEAR is resurrected.
+     *
+     * This keeps upstream's rule (no whole-snapshot push) while closing that hole: only providers
+     * that actually changed against the baseline are remembered, they are overlaid onto the merged
+     * snapshot on the next [syncFromRemote], and only THEY are pushed. Keyed by scope, i.e. per
+     * (user, profile): a profile switch must not lose the outgoing profile's unpushed edit, and
+     * must not apply it to the incoming profile's rows.
+     */
+    private val pendingEdits = mutableMapOf<ProviderCredentialScope, MutableMap<String, String>>()
+
+    /**
      * Legacy-blob migration stash (Codex rounds 4+7): credential values found in a pre-split
      * remote settings blob, keyed profileId → storage key. Staged by ProfileSettingsSync during
      * blob apply and consumed by [syncFromRemote], which applies a staged value ONLY where the
@@ -147,6 +163,9 @@ object ProviderCredentialSync {
         synchronized(stateLock) {
             observedSnapshots.clear()
             baselineSnapshots.clear()
+            // Fork: pending edits belong to the signed-out account's scopes — never replay them
+            // against whoever signs in next.
+            pendingEdits.clear()
             legacyBlobCredentials.clear()
         }
     }
@@ -157,6 +176,11 @@ object ProviderCredentialSync {
      * burst of "changes" that are really just the new profile's values; without this re-baseline
      * the first of them reads as a local edit and pushes the outgoing profile's snapshot over the
      * incoming one's rows. Called from the tvOS profile installer after the repositories reload.
+     *
+     * Fork: [pendingEdits] is deliberately NOT cleared here. It is keyed by scope, so the outgoing
+     * profile's unpushed edit is neither lost nor applied to the incoming profile — it is replayed
+     * the next time that profile syncs. Re-baselining the incoming scope is enough to stop the
+     * fan-out's reload burst reading as a local edit.
      */
     internal fun onProfileChanged() {
         if (observeJob?.isActive != true) return
@@ -281,19 +305,71 @@ object ProviderCredentialSync {
                     if (!fill.isNullOrBlank() && slot.value.isBlank()) slot.copy(value = fill) else slot
                 },
             )
-            val applied = mergedSnapshot != localSnapshot
+            // Fork: replay credential edits whose observer push failed (see [pendingEdits]).
+            // Overlaid AFTER the merge so the local edit beats the value the pull returned —
+            // without it `applySnapshot` below would write the server's older value back over the
+            // user's own change and the baselines would make it permanent. Never let an
+            // unsupported provider in: it has no remote row to reconcile against and its slot is
+            // already exempt from blanking.
+            // The value replayed is the one this device holds RIGHT NOW, not the one recorded at
+            // failure time: the map marks which providers have an unpushed local opinion, and a
+            // recorded value can be stale (the user edits the same provider again through a path
+            // that does not push — the observer's own apply/profile guards all return early).
+            // Reasserting the live local value keeps "the local edit wins" true without ever
+            // writing a value the user has already replaced.
+            val localByProvider = localSnapshot.values.associate { it.provider to it.value }
+            val pendingProviders = synchronized(stateLock) { pendingEdits[credentialScope]?.keys?.toSet() }
+                .orEmpty()
+                .filterNot { it in BACKEND_UNSUPPORTED_PROVIDERS }
+            val pending = pendingProviders
+                .mapNotNull { provider -> localByProvider[provider]?.let { provider to it } }
+                .toMap()
+            val finalSnapshot = mergedSnapshot.overlayingPendingEdits(pending)
+            // An entry the server already agrees with is settled, whatever made it so (our push
+            // did land and only the response was lost, or another device wrote the same value) —
+            // retire it instead of spending a round-trip on it.
+            val mergedByProvider = mergedSnapshot.values.associate { it.provider to it.value }
+            val settledPending = pending.filter { (provider, value) -> mergedByProvider[provider] == value }
+            val outstandingPending = pending - settledPending.keys
+            val applied = finalSnapshot != localSnapshot
             if (applied) {
                 isApplyingRemote = true
                 try {
-                    applySnapshot(mergedSnapshot, credentialScope)
+                    applySnapshot(finalSnapshot, credentialScope)
                 } finally {
                     isApplyingRemote = false
                 }
             }
             requireCurrentScope(credentialScope)
+            // Push ONLY the pending providers — upstream 1854dfc3's whole point is that a
+            // reconnecting device must not rewrite rows it has no fresh opinion about. A failure
+            // here is not fatal to the pull: keep the entry and retry on the next sync.
+            var pushedPending = outstandingPending.keys
+            if (outstandingPending.isNotEmpty()) {
+                try {
+                    pushSnapshot(finalSnapshot.restrictedTo(outstandingPending.keys))
+                    log.i { "Replayed ${outstandingPending.size} pending credential edit(s) for profile $profileId" }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    pushedPending = emptySet()
+                    log.e(error) { "Failed to replay pending credential edits for profile $profileId" }
+                }
+            }
+            requireCurrentScope(credentialScope)
             synchronized(stateLock) {
-                observedSnapshots[profileId] = mergedSnapshot
-                baselineSnapshots[credentialScope] = mergedSnapshot
+                observedSnapshots[profileId] = finalSnapshot
+                baselineSnapshots[credentialScope] = finalSnapshot
+                // Settled entries go whatever happened; outstanding ones only once their push
+                // landed. Nothing can have touched the map since it was read above — every writer
+                // holds `syncMutex`. Dropped entirely when empty, so a scope that never fails does
+                // not accumulate a husk. A provider filtered out as BACKEND_UNSUPPORTED is
+                // deliberately left: it should never have been recorded, and dropping it here
+                // would hide that.
+                pendingEdits[credentialScope]?.let { scoped ->
+                    (settledPending.keys + pushedPending).forEach { provider -> scoped.remove(provider) }
+                    if (scoped.isEmpty()) pendingEdits.remove(credentialScope)
+                }
                 // Migration round-trip succeeded (seed-if-missing + pull, unsupported providers
                 // applied locally above) — every staged value now lives in a provider row
                 // (whether just seeded or already present remotely) or the local store, so the
@@ -303,7 +379,10 @@ object ProviderCredentialSync {
             if (staged.isNotEmpty()) {
                 ProfileSettingsSync.rewriteLegacyBlobSanitized(profileId)
             }
-            log.d { "Synchronized ${mergedSnapshot.values.size} credentials for profile $profileId applied=$applied" }
+            log.d {
+                "Synchronized ${finalSnapshot.values.size} credentials for profile $profileId " +
+                    "applied=$applied pendingReplayed=${outstandingPending.size}"
+            }
             applied
         } catch (error: CancellationException) {
             throw error
@@ -472,21 +551,47 @@ object ProviderCredentialSync {
             val baseline = synchronized(stateLock) {
                 baselineSnapshots.getOrPut(credentialScope) { previous }
             }
-            if (baseline.syncableSubset() == snapshot.syncableSubset()) return@withLock
+            if (baseline.syncableSubset() == snapshot.syncableSubset()) {
+                // Fork: local is back at the state the server is believed to hold (a failed edit
+                // undone by hand, say), so nothing is owed — drop any held edits for this scope
+                // before they get replayed over the value the user just restored.
+                synchronized(stateLock) { pendingEdits.remove(credentialScope) }
+                return@withLock
+            }
 
             try {
                 pushSnapshot(snapshot)
                 synchronized(stateLock) {
                     baselineSnapshots[credentialScope] = snapshot
+                    // Fork: this push carried the WHOLE snapshot, so every edit remembered for
+                    // this scope is now on the server — a stale entry left here would later be
+                    // overlaid over (and pushed back on top of) a newer value.
+                    pendingEdits.remove(credentialScope)
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                // Upstream 1854dfc3: a failed push is NOT remembered for the next pull to retry.
-                // The retry vector was exactly the stale-whole-snapshot re-push this commit
-                // closes; the trade is that the edit rides the next local change instead.
+                // Upstream 1854dfc3: a failed push is NOT remembered as a whole-snapshot retry —
+                // that re-push was exactly the stale-device overwrite the commit closes.
+                // Fork: remember the CHANGED PROVIDERS only (see [pendingEdits]). Upstream's
+                // trade — the edit rides the next local change or is lost to the next pull — is
+                // a regression the fork does not take; replaying one provider is not the
+                // whole-snapshot push upstream removed.
+                val baselineByProvider = baseline.values.associate { it.provider to it.value }
+                val edits = snapshot.values
+                    .filter { it.provider !in BACKEND_UNSUPPORTED_PROVIDERS }
+                    .filter { baselineByProvider[it.provider] != it.value }
+                    .associate { it.provider to it.value }
+                if (edits.isNotEmpty()) {
+                    synchronized(stateLock) {
+                        pendingEdits.getOrPut(credentialScope) { mutableMapOf() }.putAll(edits)
+                    }
+                }
                 AuthRepository.signOutIfSessionInvalid(error, "Provider credential push")
-                log.e(error) { "Failed to push provider credentials for profile ${snapshot.profileId}" }
+                log.e(error) {
+                    "Failed to push provider credentials for profile ${snapshot.profileId} " +
+                        "— ${edits.size} edit(s) held for the next sync"
+                }
             }
         }
     }

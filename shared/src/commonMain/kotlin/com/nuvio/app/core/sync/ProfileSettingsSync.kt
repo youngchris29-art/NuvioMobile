@@ -463,10 +463,15 @@ object ProfileSettingsSync {
                     // produced this signature (a profile switch, or a remote apply that landed
                     // while it waited) — push only what is still true.
                     if (signature != currentObservedStateSignature()) return@collect
-                    if (signature == skipNextPushSignature) {
-                        skipNextPushSignature = null
-                        return@collect
-                    }
+                    // Fork: the marker expires on the very next emission that reaches this point,
+                    // matching or not. Left set on a mismatch it outlives the echo it was armed
+                    // for — reselecting the ACTIVE profile arms one for unchanged settings S, and
+                    // `distinctUntilChanged` means no echo emission ever arrives to consume it, so
+                    // a later S -> T pushes and the T -> S that follows is mistaken for the stale
+                    // echo and never pushed, leaving the server at T for good.
+                    val skipDecision = consumeSettingsSkipMarker(skipNextPushSignature, signature)
+                    skipNextPushSignature = skipDecision.remainingMarker
+                    if (skipDecision.skipPush) return@collect
                     pushCurrentProfileToRemote()
                 }
         }
@@ -931,3 +936,30 @@ internal fun settingsPushAllowed(
     settledToken: SettingsPullToken?,
     currentToken: SettingsPullToken?,
 ): Boolean = currentToken != null && settledToken == currentToken
+
+/// Outcome of testing a push emission against the echo marker: whether to suppress the push, and
+/// what the marker should be afterwards.
+internal data class SettingsSkipMarkerDecision(
+    val skipPush: Boolean,
+    val remainingMarker: String?,
+)
+
+/// Fork: the echo marker (`skipNextPushSignature`) suppresses exactly ONE emission — the echo of a
+/// remote apply or of a profile re-selection — and then expires, whether or not it matched.
+///
+/// It used to survive a mismatch, which turned it into a landmine: `onProfileChanged()` arms it
+/// with the CURRENT signature, so reselecting the active profile with unchanged settings S arms a
+/// marker no emission ever consumes (`distinctUntilChanged` never re-emits S). A later S -> T then
+/// pushes normally, and the T -> S that follows matches the stale marker, is taken for the echo,
+/// and is dropped — leaving the server on T with no further emission able to correct it.
+///
+/// Clearing on mismatch is safe for the echo case it exists for: the echo emission is the first
+/// one to reach the observer's push decision after the apply, so a mismatch there already means
+/// the state moved on and the echo is moot.
+internal fun consumeSettingsSkipMarker(
+    marker: String?,
+    signature: String,
+): SettingsSkipMarkerDecision = SettingsSkipMarkerDecision(
+    skipPush = marker != null && marker == signature,
+    remainingMarker = null,
+)

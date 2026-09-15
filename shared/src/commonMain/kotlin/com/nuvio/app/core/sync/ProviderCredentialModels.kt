@@ -64,6 +64,34 @@ internal data class ProviderCredentialSnapshot(
             },
         )
     }
+
+    /**
+     * Fork: re-applies locally-pending credential edits over a merged snapshot.
+     *
+     * Upstream 1854dfc3 removed the push-before-pull retry, which also removed the only thing that
+     * carried an edit whose observer push FAILED across the next pull: [mergeRemote] would restore
+     * the server's older value and the sync bookkeeping would baseline it, silently losing the
+     * edit (and resurrecting a credential the user had cleared offline). `ProviderCredentialSync`
+     * records those edits per provider and overlays them here, so the local edit wins over the
+     * value the pull returned and can then be pushed on its own.
+     *
+     * [pending] is provider id → value, where `""` is a pending CLEAR. Providers this snapshot
+     * does not carry are ignored. The tie-break is deliberately "local unpushed edit wins": the
+     * alternative (server wins) is exactly the data loss this exists to stop.
+     */
+    fun overlayingPendingEdits(pending: Map<String, String>): ProviderCredentialSnapshot {
+        if (pending.isEmpty()) return this
+        return copy(
+            values = values.map { local ->
+                val edit = pending[local.provider] ?: return@map local
+                if (edit == local.value) local else local.copy(value = edit)
+            },
+        )
+    }
+
+    /** Fork: the same snapshot narrowed to [providers] — the payload shape for a pending-only push. */
+    fun restrictedTo(providers: Set<String>): ProviderCredentialSnapshot =
+        copy(values = values.filter { it.provider in providers })
 }
 
 // Fork: upstream deleted this with its seed RPC; the fork's legacy-blob seed pipeline still

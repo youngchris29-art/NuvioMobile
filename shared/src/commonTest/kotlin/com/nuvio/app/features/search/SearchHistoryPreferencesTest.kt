@@ -7,6 +7,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -36,12 +37,27 @@ class SearchHistoryPreferencesTest {
 
     @Test
     fun existingHistoryRemainsEnabledWhenNoPreferenceIsSaved() {
-        SearchHistoryStorage.savePayload("[\"dune\",\"silo\"]")
+        // The premise is "no preference saved", and `SearchHistoryStorage` has no delete API to
+        // take one away — @BeforeTest's saveEnabled(true) would make this case assert the saved
+        // `true` rather than the `?: true` default it is about. So it runs against a profile id
+        // this suite never writes an enabled preference for, the same ActiveProfileProvider swap
+        // the last case uses, and asserts the key really is absent first.
+        val originalProvider = ActiveProfileProvider.provider
+        try {
+            ActiveProfileProvider.provider = ActiveProfileIdProvider { 77 }
+            assertNull(SearchHistoryStorage.loadEnabled())
+            SearchHistoryStorage.savePayload("[\"dune\",\"silo\"]")
 
-        SearchHistoryRepository.onProfileChanged()
+            SearchHistoryRepository.onProfileChanged()
 
-        assertTrue(SearchHistoryRepository.enabled.value)
-        assertEquals(listOf("dune", "silo"), SearchHistoryRepository.uiState.value)
+            assertTrue(SearchHistoryRepository.enabled.value)
+            assertEquals(listOf("dune", "silo"), SearchHistoryRepository.uiState.value)
+            // Reading the default must not have written it: a later run of this same case has to
+            // find the key absent again.
+            assertNull(SearchHistoryStorage.loadEnabled())
+        } finally {
+            ActiveProfileProvider.provider = originalProvider
+        }
     }
 
     @Test

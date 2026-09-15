@@ -75,6 +75,29 @@ class PlaybackAvailabilityTest {
         )
     }
 
+    // Fork: the BUG-74 remap fail-open (see the file header in PlaybackAvailability.kt). A
+    // `tmdb:` id that `StreamsRepository.load()` would re-ask under an IMDb id must not read as
+    // unplayable, or Play is disabled on a title that plays.
+    @Test
+    fun `a tmdb id reads as playable when a tt only stream addon would be reached after the remap`() {
+        val ttOnly = listOf(addon())
+        assertTrue(available(addons = ttOnly, videoId = "tmdb:550"))
+        assertTrue(available(addons = ttOnly, videoId = "tmdb:1399:1:5"))
+        // Same addons, same fail-open path, through the shipping overload.
+        assertTrue(hasCompatiblePlaybackSource(ttOnly, emptyList<PluginScraper>(), "movie", "tmdb:550"))
+        // Disabled or manifest-less addons are not reachable by any id.
+        assertFalse(available(addons = listOf(addon().copy(enabled = false)), videoId = "tmdb:550"))
+    }
+
+    @Test
+    fun `a tmdb id stays unplayable when no addon accepts a tt id either`() {
+        // kitsu-only: the remap resolves to `tt...`, which this addon rejects just as it rejects
+        // the tmdb id — nothing to fail open for.
+        assertFalse(available(addons = listOf(addon(prefixes = listOf("kitsu"))), videoId = "tmdb:550"))
+        // And the remap is tmdb-only, so a non-tmdb id an addon rejects stays unplayable.
+        assertFalse(available(addons = listOf(addon()), videoId = "kitsu:123"))
+    }
+
     // `MetaDetailsRepository`'s embedded-streams cache (`_uiState`) is private with no test seam
     // to plant a stream for a known id, so this only proves the unknown-id fallback is false
     // rather than exercising the embedded-stream hit itself.
