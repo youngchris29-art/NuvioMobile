@@ -84,6 +84,22 @@ final class AppFontResolverTests: XCTestCase {
         XCTAssertNotEqual(Theme.Font.hero, Theme.Font.body)
     }
 
+    /// FEAT-44 (Steven, rc12 verdict 2026-09-13): before this fix, a token with no explicit weight
+    /// (`.body`, the synopsis token) resolved through a bare `Font.custom("Open Sans", …)` with no
+    /// `.weight()` call, letting CoreText pick among the three registered faces. It must now pin to
+    /// `.regular` explicitly — and stay visually distinct from `.meta`, which keeps `.semibold`.
+    func testOpenSansModeBodyResolvesWithRegularWeightAndStaysDistinctFromMeta() {
+        Theme.Font.apply(.openSans)
+        let expectedBody = SwiftUI.Font.custom(
+            "Open Sans",
+            size: Theme.Font.baseSize(for: .body),
+            relativeTo: .body
+        ).weight(.regular)
+
+        XCTAssertEqual(Theme.Font.body, expectedBody)
+        XCTAssertNotEqual(Theme.Font.body, Theme.Font.meta)
+    }
+
     /// `uiFont(for:)` only actually returns an Open Sans face if the bundled TTFs were registered
     /// with CoreText — `AppFontRegistrar.registerIfNeeded()` does that at launch, which a unit-test
     /// host never runs. Skip rather than fail when the face isn't available, so this test asserts

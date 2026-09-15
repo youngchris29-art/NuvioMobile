@@ -67,6 +67,12 @@ struct ContentView: View {
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
     @State private var pendingDeepLinkURL: URL?
+    #if DEBUG
+    /// rc13 (test68): one-shot latch for `-debug.openDeepLink <url>` so the `.task(id: entered)`
+    /// below fires the debug link exactly once per launch, not on every later `entered` toggle
+    /// (switch-profile, sign-out/in) a long-running UI test session might produce.
+    @State private var debugDeepLinkConsumed = false
+    #endif
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -133,7 +139,7 @@ struct ContentView: View {
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
         // Selected tab, Settings category and the two focus hints above are all held ABOVE this
         // boundary, so a mode or font change costs the user nothing but the rebuild.
-        .id("\(appTheme.themeName)|\(sidebarStyle)|\(uiFont)")
+        .id("\(appTheme.paletteKey)|\(sidebarStyle)|\(uiFont)")
         .onAppear {
             auth.start()
             posterStyle.start()
@@ -194,13 +200,31 @@ struct ContentView: View {
             }
         }
         .onOpenURL { url in
-            if auth.gate == .main, entered {
-                deepLink = DeepLink.parse(url)
-            } else {
-                // Cold launch from the Top Shelf: apply once the profile gate is passed.
-                pendingDeepLinkURL = url
-            }
+            handleDeepLink(url)
         }
+        #if DEBUG
+        // rc13 (test68, BUG-117 season-poster shelf-width harness): a UI test has no way to
+        // trigger a real `onOpenURL` (there is no Top Shelf/Springboard to click through in the
+        // sim), so `-debug.openDeepLink <url>` drives the identical `handleDeepLink(_:)` path a
+        // real deep link takes. Gated on `entered` — same as `pendingDeepLinkURL`'s replay above —
+        // so it never fires ahead of the profile gate, plus a ~1 s settle so it lands after Home's
+        // initial catalog fan-out rather than racing it.
+        .task(id: entered) {
+            guard entered, !debugDeepLinkConsumed,
+                  let raw = UserDefaults.standard.string(forKey: "debug.openDeepLink"),
+                  let url = URL(string: raw)
+            else { return }
+            debugDeepLinkConsumed = true
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                // Cancelled (e.g. `entered` flipped again mid-sleep, tearing this task down) —
+                // don't fire a deep link the test/device state has already moved past.
+                return
+            }
+            handleDeepLink(url)
+        }
+        #endif
         .fullScreenCover(item: $deepLink) { link in
             switch link {
             case .resume(let type, let videoId, let title, let parentMetaId, let season, let episode):
@@ -249,6 +273,18 @@ struct ContentView: View {
         // libmpv path (see MPVSmokeTest.swift).
         .modifier(MPVSmokeModifier())
         #endif
+    }
+
+    /// Shared by `.onOpenURL` (a real Top Shelf launch) and, in DEBUG builds, the
+    /// `-debug.openDeepLink` test hook above — one code path so a UI test exercises exactly what a
+    /// device deep link does, not a parallel imitation of it.
+    private func handleDeepLink(_ url: URL) {
+        if auth.gate == .main, entered {
+            deepLink = DeepLink.parse(url)
+        } else {
+            // Cold launch from the Top Shelf: apply once the profile gate is passed.
+            pendingDeepLinkURL = url
+        }
     }
 }
 

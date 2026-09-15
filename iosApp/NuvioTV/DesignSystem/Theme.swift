@@ -11,8 +11,10 @@ enum Theme {
     // MARK: - Color
 
     enum Palette {
-        /// App background (deepest layer).
-        static let background = Color(hex: 0x0D0D0D)
+        /// App background (deepest layer). Mutable — FEAT-38 (OLED True Black) swaps it to pure
+        /// black via `applyOled(_:)` when `ThemeSettingsRepository.amoledEnabled` is on.
+        /// `nonisolated(unsafe)`: only mutated on the main actor, same contract as `accent` below.
+        nonisolated(unsafe) static var background = Color(hex: 0x0D0D0D)
         /// Elevated surface (cards, sheets, shimmer base).
         static let surface = Color(hex: 0x1A1A1A)
         /// Higher-elevation surface (chips, controls).
@@ -53,6 +55,13 @@ enum Theme {
             accentFocus = Color(hex: focusHex)
             accentFocusHex = String(format: "%06X", focusHex)
             accentText = onColor(forFillHex: accentHex)
+        }
+
+        /// FEAT-38 (OLED True Black). Swaps `background` between the app's default near-black
+        /// (0x0D0D0D) and pure black (0x000000) — `surface`/`surfaceElevated` are left untouched so
+        /// cards keep contrast against the deeper background. Same shape as `applyTheme(named:)`.
+        static func applyOled(_ enabled: Bool) {
+            background = Color(hex: enabled ? 0x000000 : 0x0D0D0D)
         }
 
         /// Picks a legible text/icon color for a solid fill, by simple relative-luminance
@@ -328,8 +337,12 @@ enum Theme {
             case .openSans:
                 let size = baseSize(for: token.uiTextStyle)
                 let base = SwiftUI.Font.custom("Open Sans", size: size, relativeTo: token.textStyle)
-                guard let weight = token.weight else { return base }
-                return base.weight(weight)
+                // FEAT-44 (Steven, rc12 verdict 2026-09-13): a bare `Font.custom("Open Sans", …)`
+                // with no `.weight()` call left CoreText to choose among the three registered faces
+                // (Regular/SemiBold/Bold) for a token with no explicit weight (`.body`, the synopsis
+                // token, among them) — it was picking a heavier face than intended. Pin the fallback
+                // to `.regular` explicitly instead of leaving `base` unweighted.
+                return base.weight(token.weight ?? .regular)
             }
         }
 

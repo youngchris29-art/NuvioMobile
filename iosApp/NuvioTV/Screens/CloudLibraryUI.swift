@@ -274,6 +274,6 @@ struct CloudFilePickerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.ignoresSafeArea())
+        .background(Theme.Palette.background.ignoresSafeArea())
     }
 }

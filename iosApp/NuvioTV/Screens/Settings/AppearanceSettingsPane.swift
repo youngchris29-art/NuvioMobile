@@ -177,6 +177,19 @@ struct AppearanceSettingsPane: View {
                 isOn: $noZoomOnFocus
             )
 
+            // FEAT-38: pure black background for OLED screens. Backed by
+            // `ThemeSettingsRepository.amoledEnabled` (profile-scoped, synced) via
+            // `SettingsViewModel.amoledEnabled`/`setAmoled(_:)`; applied to `Theme.Palette.background`
+            // by `AppThemeModel`. `surface`/`surfaceElevated` are untouched, so cards keep contrast.
+            SettingsToggleRow(
+                title: String(localized: "OLED True Black"),
+                subtitle: String(localized: "Pure black background for OLED screens"),
+                isOn: Binding(
+                    get: { model.amoledEnabled },
+                    set: { model.setAmoled($0) }
+                )
+            )
+
             // FEAT-7: Default keeps the sidebar's category icons at normal row height; Minimal
             // drops the icons and tightens row padding for a denser list. (A third "Top Bar"
             // style was scoped out.)
