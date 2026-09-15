@@ -7620,19 +7620,23 @@ final class NuvioTVUITests: XCTestCase {
             return probe.exists ? probe.label : ""
         }
 
-        func namedFrame(_ identifier: String) -> CGRect? {
+        func namedSnapshot(_ identifier: String) -> XCUIElementSnapshot? {
             guard let root = try? app.snapshot() else { return nil }
-            var out: CGRect?
+            var out: XCUIElementSnapshot?
             func walk(_ node: XCUIElementSnapshot) {
                 guard out == nil else { return }
                 if node.identifier == identifier {
-                    out = node.frame
+                    out = node
                     return
                 }
                 node.children.forEach(walk)
             }
             walk(root)
             return out
+        }
+
+        func namedFrame(_ identifier: String) -> CGRect? {
+            namedSnapshot(identifier)?.frame
         }
 
         var folderFound = false
@@ -7674,12 +7678,46 @@ final class NuvioTVUITests: XCTestCase {
         // would be flaky in either direction). `Theme.Spacing.lg + heroPinnedRowFocusLiftAllowance
         // + Theme.Spacing.sm` (`CollectionsUI.swift` `body`'s `.padding(.top, ...)`) is exactly the
         // padding that keeps this true; a regression there fails here first.
-        guard let firstTileBefore = namedFrame("folder_grid_first_tile") else {
+        //
+        // Gate (Codex P3 rc13 round 3): that "default focus lands on the first tile" premise only
+        // holds when the folder has ONE tab — `model.tabs.count > 1` renders a `TabChip` row (a
+        // `ForEach` of plain `Button`s, no accessibility identifiers of their own) ABOVE the grid,
+        // and the tvOS focus engine prefers the topmost-leftmost focusable element on first paint,
+        // which is the first chip, not the first tile. The overpaint bug this block guards is a
+        // focus-LIFT effect (`heroPinnedRowFocusLiftAllowance`) applied only to whatever tile is
+        // actually focused, so measuring an unfocused tile's frame would silently pass regardless
+        // of the fix. `TabChip` carries no identifier to count directly, so the tile's own
+        // `hasFocus` (read off the same snapshot as its frame, not a separate slow sweep) stands in
+        // for "a chip row stole initial focus": if the tile isn't focused yet, press Down once —
+        // the natural way this test already walked onto the page — to move focus off the chip row
+        // and onto the tile, then re-read the frame the assertion actually checks.
+        guard var firstTileSnapshot = namedSnapshot("folder_grid_first_tile") else {
             XCTFail("no folder_grid_first_tile element on screen — the focused first-row tile should always materialise on initial load")
             return
         }
-        XCTAssertGreaterThanOrEqual(firstTileBefore.minY, headerBefore.maxY,
-                                     "the focused first grid tile's frame overlaps the header before any scrolling — header-fade clearance regressed")
+        if !firstTileSnapshot.hasFocus {
+            press(.down, times: 1)
+            pause(0.5)
+            guard let refocused = namedSnapshot("folder_grid_first_tile") else {
+                XCTFail("folder_grid_first_tile disappeared after moving focus off the tab chip row")
+                return
+            }
+            firstTileSnapshot = refocused
+        }
+        let firstTileBefore = firstTileSnapshot.frame
+        // 24 pt is the header's own fade clearance (`CollectionsUI.swift`), 20 pt the tile's
+        // focus-lift transform on top of it — together the floor a regression must clear. Assert
+        // the GAP, not just non-overlap: `firstTileBefore.minY >= headerBefore.maxY` alone passed
+        // on the pre-fix geometry too (the lifted top sat at `maxY + 4`).
+        let gap = firstTileBefore.minY - headerBefore.maxY
+        XCTAssertGreaterThanOrEqual(gap, 36,
+                                     "first tile must clear the 24 pt header fade plus the 20 pt focus lift " +
+                                     "(measured gap \(gap); pre-fix geometry gives 4 or 24 depending on whether " +
+                                     "AX frames carry the focus transform)")
+        let gapAttachment = XCTAttachment(string: "folder_header maxY=\(headerBefore.maxY), " +
+                                           "folder_grid_first_tile minY=\(firstTileBefore.minY), gap=\(gap)")
+        gapAttachment.lifetime = .keepAlways
+        add(gapAttachment)
 
         press(.down, times: 6, gap: 0.7)
         pause(1)

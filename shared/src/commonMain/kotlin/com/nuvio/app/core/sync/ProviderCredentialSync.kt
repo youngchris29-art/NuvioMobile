@@ -333,7 +333,12 @@ object ProviderCredentialSync {
             // per-field revisions. The overlay covers BACKEND_UNSUPPORTED_PROVIDERS too (their
             // slot must keep the live local value); the push set below cannot carry them.
             requireCurrentScope(credentialScope)
-            val postPullSnapshot = currentSnapshot(profileId)
+            // Fork: runCatching — a profile switch racing the guard above can still slip past it
+            // before currentSnapshot()'s own `check` runs; surface that as a cancellation (like
+            // every other post-pull guard here) instead of letting SyncManager.runStep treat a
+            // mid-pull profile switch as a failed step.
+            val postPullSnapshot = runCatching { currentSnapshot(profileId) }
+                .getOrElse { throw CancellationException("Provider credential sync target changed") }
             val localByProvider = postPullSnapshot.values.associate { it.provider to it.value }
             val concurrentEdits = postPullSnapshot.providersDifferingFrom(localSnapshot)
             val heldProviders = synchronized(stateLock) { pendingEdits[credentialScope]?.keys?.toSet() }.orEmpty()
