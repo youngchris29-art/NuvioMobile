@@ -92,6 +92,44 @@ internal data class ProviderCredentialSnapshot(
     /** Fork: the same snapshot narrowed to [providers] — the payload shape for a pending-only push. */
     fun restrictedTo(providers: Set<String>): ProviderCredentialSnapshot =
         copy(values = values.filter { it.provider in providers })
+
+    /**
+     * Fork: provider ids whose value differs from [other]'s. A provider [other] does not carry
+     * counts as differing.
+     *
+     * `ProviderCredentialSync` uses this to spot credential edits the user made WHILE a pull was
+     * in flight: the merged snapshot is composed against the local state as it was BEFORE the
+     * pull suspended, so without this check the apply would write the server's value back over an
+     * edit that is seconds old. Deliberately a whole-value diff — no per-field revisions.
+     */
+    fun providersDifferingFrom(other: ProviderCredentialSnapshot): Set<String> {
+        val theirs = other.values.associate { it.provider to it.value }
+        return values
+            .filterNot { theirs[it.provider] == it.value }
+            .mapTo(mutableSetOf()) { it.provider }
+    }
+
+    /**
+     * Fork: this snapshot with the values for [providers] taken from [from] instead. Providers
+     * outside [providers], and providers [from] does not carry, are left alone.
+     *
+     * Used for the sync BASELINE after a replay push FAILED. The baseline is what the server is
+     * believed to hold, which stops being the locally applied state the moment a push does not
+     * land: baseline the local value there and the observer's own guard swallows the retry — a
+     * later B -> C -> B compares equal to the baseline and returns without pushing, so the server
+     * keeps its old value with nothing left to correct it.
+     */
+    fun replacingValues(from: ProviderCredentialSnapshot, providers: Set<String>): ProviderCredentialSnapshot {
+        if (providers.isEmpty()) return this
+        val source = from.values.associate { it.provider to it.value }
+        return copy(
+            values = values.map { local ->
+                if (local.provider !in providers) return@map local
+                val replacement = source[local.provider] ?: return@map local
+                if (replacement == local.value) local else local.copy(value = replacement)
+            },
+        )
+    }
 }
 
 // Fork: upstream deleted this with its seed RPC; the fork's legacy-blob seed pipeline still

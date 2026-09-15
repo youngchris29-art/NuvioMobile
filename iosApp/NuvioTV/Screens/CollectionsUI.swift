@@ -1089,6 +1089,12 @@ struct FolderDetailView: View {
                                     .cardFocusButtonStyle()
                                     .posterButtonShape()
                                     .onAppear { model.itemAppeared(at: index) }
+                                    // rc13 UI test69 (`FolderHeaderStaysPinnedWhileGridScrolls`):
+                                    // only the first tile needs an identifier — the test reads its
+                                    // frame to prove it never overlaps the pinned header above,
+                                    // which is the actual overpaint regression the header's fade
+                                    // exists to guard against.
+                                    .accessibilityIdentifier(index == 0 ? "folder_grid_first_tile" : "")
                                 }
                             }
 
@@ -1106,15 +1112,29 @@ struct FolderDetailView: View {
                     // single `.padding(Theme.Spacing.screen)` this content used to carry gave it
                     // its top inset too. Now that the header is a pinned sibling ABOVE the
                     // ScrollView (with its own `Theme.Spacing.screen` top padding, see `header`),
-                    // this content keeps `Theme.Spacing.screen` on the other three sides but only
-                    // `Theme.Spacing.lg` on top — just enough clearance that a focused first-row
-                    // tile's lift (this ScrollView is `.scrollClipDisabled()`, same as the grid
-                    // always was) has room to paint before it reaches the header's own opaque
-                    // background + higher `.zIndex` (see `header`), which is what actually keeps
-                    // scrolled cards from painting over the title/Edit Filters button.
+                    // this content keeps `Theme.Spacing.screen` on the other three sides.
+                    //
+                    // Codex P2 (rc13 round 2): a flat `Theme.Spacing.lg` top inset here was not
+                    // clearance for the header's fade — it walked the first grid row straight INTO
+                    // it. `header`'s bottom gradient (`.overlay(alignment: .bottom)` + `.offset(y:
+                    // 24)`) starts flush with the header's own bottom edge and spans 24pt downward
+                    // from there, not below a 24pt gap. With only `Theme.Spacing.lg` (24pt) of
+                    // padding, a focused first-row tile — which lifts UP by
+                    // `Theme.Size.heroPinnedRowFocusLiftAllowance` (20pt, `PosterCard.swift`'s
+                    // `cardFocusLiftRise`; every card class rises this exact amount when focused,
+                    // ring or no ring) — landed its lifted top edge at 24 − 20 = 4pt below the
+                    // header: deep inside the fade's opaque end, before the user has scrolled at
+                    // all. The padding now reserves the fade band (24pt) plus the lift (20pt) plus
+                    // `Theme.Spacing.sm` (12pt) for the card's own drop shadow blurring above its
+                    // frame (`PosterCard`'s `radius: 22, y: 10` shadow), so a lifted, shadowed
+                    // first-row tile clears the header's fade with margin to spare. test69
+                    // (`FolderHeaderStaysPinnedWhileGridScrolls`) checks this via
+                    // `folder_grid_first_tile`'s frame against the header's — this padding change
+                    // doesn't touch the header's own frame, only the grid content's inset, so the
+                    // header-frame-stability half of that test is unaffected.
                     .padding(.horizontal, Theme.Spacing.screen)
                     .padding(.bottom, Theme.Spacing.screen)
-                    .padding(.top, Theme.Spacing.lg)
+                    .padding(.top, Theme.Spacing.lg + Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollClipDisabled()
@@ -1163,6 +1183,15 @@ struct FolderDetailView: View {
     /// `liftedTileZIndex` below). The bottom-edge gradient is a cosmetic fade for cards passing
     /// underneath, not a layout element — it overlays past this view's own bottom edge and cannot
     /// change the frame `test69FolderHeaderStaysPinnedWhileGridScrolls` asserts is stable.
+    ///
+    /// Codex P2 (rc13 round 2): that fade band starts flush with this view's OWN bottom edge and
+    /// spans 24pt downward from there — not below a 24pt gap, which is what the ScrollView
+    /// content's old `Theme.Spacing.lg` top padding assumed. So a focused first-row tile's 20pt
+    /// focus lift (`Theme.Size.heroPinnedRowFocusLiftAllowance`) carried it into the fade's opaque
+    /// end before any scrolling happened at all — a static overlap, not the scroll-time paint-order
+    /// bug this `.zIndex`/background fix addresses. See the content padding's own comment in
+    /// `body` (`.padding(.top, Theme.Spacing.lg + Theme.Size.heroPinnedRowFocusLiftAllowance +
+    /// Theme.Spacing.sm)`) for the fix — it reserves fade + lift + shadow clearance instead.
     private var header: some View {
         ZStack {
             TitleLogoHeader(

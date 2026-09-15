@@ -7666,6 +7666,21 @@ final class NuvioTVUITests: XCTestCase {
             throw XCTSkip("the fixture's folder has no items — nothing to scroll for this test")
         }
 
+        // Codex P2 (rc13 round 2): default tvOS focus lands on the first grid tile the instant the
+        // page appears, so THIS is where the header-fade overpaint bug actually reproduces — before
+        // any scrolling, not after. Check it here, while the tile is guaranteed materialised (a
+        // `LazyVGrid` item scrolled 6 rows past the viewport top may already be deallocated by the
+        // time a post-scroll query runs, which is why a post-scroll version of this same check
+        // would be flaky in either direction). `Theme.Spacing.lg + heroPinnedRowFocusLiftAllowance
+        // + Theme.Spacing.sm` (`CollectionsUI.swift` `body`'s `.padding(.top, ...)`) is exactly the
+        // padding that keeps this true; a regression there fails here first.
+        guard let firstTileBefore = namedFrame("folder_grid_first_tile") else {
+            XCTFail("no folder_grid_first_tile element on screen — the focused first-row tile should always materialise on initial load")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(firstTileBefore.minY, headerBefore.maxY,
+                                     "the focused first grid tile's frame overlaps the header before any scrolling — header-fade clearance regressed")
+
         press(.down, times: 6, gap: 0.7)
         pause(1)
         shot(app, "69b_folder_page_after_scroll")
@@ -7682,12 +7697,22 @@ final class NuvioTVUITests: XCTestCase {
         // Codex P2 (rc13): the header staying at a fixed frame isn't the whole contract — before
         // the opaque-background + `.zIndex(1)` fix, a scrolled-past poster's focus lift painted
         // straight over the header while the AX frame above stayed unchanged (frame geometry
-        // doesn't know about paint order). `isHittable` after 6 Downs is the cheapest available
-        // signal that the header is still the frontmost hit-testable element at that frame, not a
-        // node buried under whatever the grid drew on top of it.
-        let header = app.otherElements["folder_header"]
-        XCTAssertTrue(header.exists, "folder_header AX element vanished after scrolling")
-        XCTAssertTrue(header.isHittable, "folder_header exists but is no longer hittable — a scrolled card may be painting over it")
+        // doesn't know about paint order).
+        //
+        // Codex P2 (rc13 round 2): the first attempt at a post-scroll signal — `app.otherElements
+        // ["folder_header"]`, checking `.exists` then `.isHittable` — failed on the FIRST run, and
+        // not on `isHittable`: `.exists` itself came back false, even though `namedFrame` above (a
+        // raw `app.snapshot()` walk matching on `node.identifier` alone, ignoring element type)
+        // found this exact identifier moments earlier for `headerAfter`. `otherElements` only
+        // matches nodes XCUITest classifies as `XCUIElementTypeOther`; this view's `.background(...
+        // ).overlay(...).zIndex(1)` chain apparently no longer bridges to that type, so the
+        // type-scoped query silently missed a node that unambiguously exists. `isHittable` was
+        // also the wrong oracle regardless — it only proves some element is frontmost at a point,
+        // not that the identified node specifically is unobscured. Rather than chase a second,
+        // possibly-flaky post-scroll tile-frame lookup (the first tile may be long unloaded 6 rows
+        // in), the frame-equality assertions just above already cover the scroll-time contract this
+        // block originally wanted: the header's frame is provably unchanged, and the pre-scroll
+        // overpaint check above already guards the fade-clearance regression class end to end.
     }
 
     // MARK: - BUG-117: Up from the last season poster must reach the top block

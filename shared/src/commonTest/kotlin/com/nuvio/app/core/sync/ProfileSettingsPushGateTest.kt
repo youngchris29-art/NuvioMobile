@@ -74,4 +74,36 @@ class ProfileSettingsPushGateTest {
         assertFalse(second.skipPush)
         assertNull(second.remainingMarker)
     }
+
+    // Fork: the deferred-push path (maybeRetryGatedPush) consumes the marker through the same
+    // helper, so a gated push that runs while the marker is armed for some other state cannot
+    // leave it behind to swallow the next genuine push.
+    @Test
+    fun `a deferred push drops a marker armed for a state the settle moved past`() {
+        // An edit before the first pull settles is held; the pull then applies a blob that leaves
+        // the state at T while the marker is still armed with the reselect's S.
+        val deferred = consumeSettingsSkipMarker(marker = "S", signature = "T")
+        assertFalse(deferred.skipPush)
+        assertNull(deferred.remainingMarker)
+
+        // The user now edits back to S. With the stale marker gone this is an ordinary emission
+        // and pushes; left armed it would have been read as the echo and dropped, stranding the
+        // server on T.
+        val restored = consumeSettingsSkipMarker(marker = deferred.remainingMarker, signature = "S")
+        assertFalse(restored.skipPush)
+        assertNull(restored.remainingMarker)
+    }
+
+    @Test
+    fun `a deferred push is suppressed when the settle left the state at the marker`() {
+        // The pull applied exactly the state the held emission wanted to push — the server has it
+        // already, so the owed push is a redundant rewrite...
+        val deferred = consumeSettingsSkipMarker(marker = "S", signature = "S")
+        assertTrue(deferred.skipPush)
+        assertNull(deferred.remainingMarker)
+
+        // ...and the marker is spent on it, so a later edit that lands on S again still pushes.
+        val later = consumeSettingsSkipMarker(marker = deferred.remainingMarker, signature = "S")
+        assertFalse(later.skipPush)
+    }
 }

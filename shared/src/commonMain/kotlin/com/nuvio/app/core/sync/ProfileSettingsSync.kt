@@ -138,13 +138,18 @@ object ProfileSettingsSync {
     private fun maybeRetryGatedPush(token: SettingsPullToken) {
         pendingGatedPushSignature ?: return
         pendingGatedPushSignature = null
-        if (currentObservedStateSignature() == skipNextPushSignature) {
-            // Consumed WITH the echo (Codex 2026-08-28 P2 round 7): left set, a later user edit
-            // that restores exactly this state would have its emission mistaken for the old echo
-            // by the observer's skip branch and never pushed.
-            skipNextPushSignature = null
-            return
-        }
+        // Fork: routed through the same [consumeSettingsSkipMarker] as the observer, so the marker
+        // expires on EITHER outcome. Clearing only on a match (Codex 2026-08-28 P2 round 7) fixed
+        // half of it — the half where a later edit restoring this exact state is mistaken for the
+        // echo — but a MISMATCH here left the marker armed past the settle it belonged to, and the
+        // observer's skip branch then swallowed a genuine push that happened to land on the old
+        // signature. The marker's whole job is one emission's worth of echo suppression; the
+        // deferred push is an emission for that purpose.
+        val skipDecision = consumeSettingsSkipMarker(skipNextPushSignature, currentObservedStateSignature())
+        skipNextPushSignature = skipDecision.remainingMarker
+        // The current state is exactly what the pull just applied — the server already holds it
+        // and the owed push would be a redundant rewrite.
+        if (skipDecision.skipPush) return
         // The launch runs after the settling pull releases syncMutex; the identity can change in
         // that gap, and pushCurrentProfileToRemote() exports whatever profile is active at push
         // time — so the push must be pinned to the settled token and revalidated under the mutex
