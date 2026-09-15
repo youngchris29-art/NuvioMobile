@@ -203,7 +203,9 @@ final class TitleLogoStore: ObservableObject {
     /// serve a stale-language logo or a permanently-latched nil from a session where the gate was
     /// off.
     private static func scopeToken(_ settings: TmdbSettings) -> String {
-        "\(settings.language)|\(settings.enabled)|\(settings.hasApiKey)|\(settings.useArtwork)"
+        // Upstream 60ee0160: the key is bundled now, so `hasApiKey` no longer exists on
+        // `TmdbSettings` — `enabled` alone tracks whether the gate can flip.
+        "\(settings.language)|\(settings.enabled)|\(settings.useArtwork)"
     }
 
     private static func scopedKey(for item: MetaPreview, scope: String) -> String {
@@ -255,7 +257,7 @@ final class TitleLogoStore: ObservableObject {
             return
         }
 
-        guard settings.enabled, settings.hasApiKey, settings.useArtwork else {
+        guard settings.enabled, settings.useArtwork else {
             // Deliberately NOT cached: writing `.resolved(nil)` here would latch a permanent "no
             // logo" for this scope even though no lookup was ever attempted. Leaving no entry
             // means the very next call under this same scope (gate still off) still short-circuits

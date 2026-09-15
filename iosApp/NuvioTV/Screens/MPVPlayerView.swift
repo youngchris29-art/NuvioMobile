@@ -1692,6 +1692,13 @@ struct MPVPlayerScreen: View {
             // hand off to the screensaver, same as the native player); playing → hold it.
             UIApplication.shared.isIdleTimerDisabled = !paused
             pauseInfoTask?.cancel()
+            // Upstream ecb69a88 ("pause overlay toggle"): synchronous read, same idiom as the
+            // `ensureLoaded()` call in the controller (L257) — this overlay struct keeps no
+            // `playerSettings` copy of its own, so there's nothing to watch.
+            guard (PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState)?.pauseOverlayEnabled != false else {
+                showPauseInfo = false
+                return
+            }
             if paused {
                 pauseInfoTask = Task {
                     try? await Task.sleep(nanoseconds: 1_500_000_000)

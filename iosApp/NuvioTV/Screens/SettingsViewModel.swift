@@ -20,9 +20,9 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var showCatalogType = true
     /// UX-8: hide the entire Discover section on the Search screen (synced; default off).
     @Published private(set) var hideDiscover = false
-    /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Gated on a user key.
+    /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Upstream 60ee0160:
+    /// the API key is now bundled at compile time (`TmdbConfig.API_KEY`) — no user-facing key entry.
     @Published private(set) var tmdbEnabled = false
-    @Published private(set) var tmdbHasKey = false
     @Published private(set) var tmdbUseReleaseDates = false
     /// Chip code for the metadata-language row: "device" while no language is stored (the shared
     /// repo derives it from the device language), else the stored code's primary subtag.
@@ -64,6 +64,16 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var librarySourceMode = "trakt"
     /// Which backend owns Continue Watching / watched history: "trakt", "simkl", or "nuvio_sync".
     @Published private(set) var watchProgressSource = "trakt"
+    /// FEAT-38: pure black background for OLED screens. Backed by
+    /// `ThemeSettingsRepository.amoledEnabled` (profile-scoped, synced); `AppearanceSettingsPane`
+    /// binds directly to this member.
+    @Published private(set) var amoledEnabled = false
+    /// Upstream 7c1c6578: on/off switch for recent-search history. `SearchViewModel` already
+    /// consumes `SearchHistoryRepository`; this mirrors its `enabled` flag for the Settings pane.
+    @Published private(set) var recentSearchesEnabled = true
+    /// Upstream ecb69a88 (mobile "pause overlay toggle"): gates the mpv player's own
+    /// "metadata card after a sustained pause" overlay. Read out of the existing `playerWatcher`.
+    @Published private(set) var pauseOverlayEnabled = true
 
     /// FEAT-10: flip one search source on/off (persists locally + updates the published mirror).
     ///
@@ -101,6 +111,8 @@ final class SettingsViewModel: ObservableObject {
     private var cardDepthWatcher: FlowWatcher?
     private var trackingSettingsWatcher: FlowWatcher?
     private var searchStateWatcher: FlowWatcher?
+    private var amoledWatcher: FlowWatcher?
+    private var recentSearchesWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -111,6 +123,13 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let theme = emitted as? AppTheme else { return }
             self.themeName = theme.name
         }
+        // FEAT-38: `amoledEnabled` is a bare `StateFlow<Boolean>` with no synchronous
+        // `currentThemeName()`-style accessor — the watch callback receives a boxed
+        // `KotlinBoolean`, same idiom as `AppThemeModel`'s `oledWatcher`.
+        amoledWatcher = FlowWatcherKt.watch(ThemeSettingsRepository.shared.amoledEnabled) { [weak self] emitted in
+            guard let self, let boxed = emitted as? KotlinBoolean else { return }
+            self.amoledEnabled = boxed.boolValue
+        }
 
         PlayerSettingsRepository.shared.ensureLoaded()
         playerWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
@@ -119,13 +138,22 @@ final class SettingsViewModel: ObservableObject {
             self.subtitleStyle = state.subtitleStyle
             self.preferredAudioLanguage = state.preferredAudioLanguage
             self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
+            self.pauseOverlayEnabled = state.pauseOverlayEnabled
         }
+
+        // Upstream 7c1c6578: mirror `SearchHistoryRepository.enabled` (a bare `StateFlow<Boolean>`,
+        // same idiom as `amoledWatcher` above) so the Settings pane's toggle stays in step even
+        // while the Search tab's own `SearchViewModel` instance is not mounted.
+        recentSearchesWatcher = FlowWatcherKt.watch(SearchHistoryRepository.shared.enabled) { [weak self] emitted in
+            guard let self, let boxed = emitted as? KotlinBoolean else { return }
+            self.recentSearchesEnabled = boxed.boolValue
+        }
+        SearchHistoryRepository.shared.ensureLoaded()
 
         TmdbSettingsRepository.shared.ensureLoaded()
         tmdbWatcher = FlowWatcherKt.watch(TmdbSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? TmdbSettings else { return }
             self.tmdbEnabled = state.enabled
-            self.tmdbHasKey = state.hasApiKey
             self.tmdbUseReleaseDates = state.useReleaseDates
             // Stored languages may carry a region ("de-DE" from the phone's field); the chip row
             // keys on the primary subtag.
@@ -221,6 +249,8 @@ final class SettingsViewModel: ObservableObject {
         cardDepthWatcher?.cancel(); cardDepthWatcher = nil
         trackingSettingsWatcher?.cancel(); trackingSettingsWatcher = nil
         searchStateWatcher?.cancel(); searchStateWatcher = nil
+        amoledWatcher?.cancel(); amoledWatcher = nil
+        recentSearchesWatcher?.cancel(); recentSearchesWatcher = nil
     }
 
     // MARK: - Actions
@@ -231,6 +261,22 @@ final class SettingsViewModel: ObservableObject {
 
     func setSkipIntro(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setSkipIntroEnabled(enabled: enabled)
+    }
+
+    /// FEAT-38: pure black background for OLED screens.
+    func setAmoled(_ enabled: Bool) {
+        ThemeSettingsRepository.shared.setAmoled(enabled: enabled)
+    }
+
+    /// Upstream 7c1c6578: on/off switch for recording new recent searches (and showing existing
+    /// ones) on the Search screen.
+    func setRecentSearchesEnabled(_ enabled: Bool) {
+        SearchHistoryRepository.shared.setEnabled(enabled: enabled)
+    }
+
+    /// Upstream ecb69a88: gates the mpv player's "metadata card after a sustained pause" overlay.
+    func setPauseOverlayEnabled(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setPauseOverlayEnabled(enabled: enabled)
     }
 
     // MARK: - Device-local player tuning (UserDefaults — hardware knobs, deliberately unsynced)
@@ -280,13 +326,8 @@ final class SettingsViewModel: ObservableObject {
     }
 
     // MARK: - TMDB
-
-    /// Save a key and turn enrichment on. Order matters: `setEnabled(true)` is a no-op while the key
-    /// is blank, so set the key first (the repo trims it and persists via NSUserDefaults).
-    func saveTmdbKey(_ key: String) {
-        TmdbSettingsRepository.shared.setApiKey(value: key)
-        TmdbSettingsRepository.shared.setEnabled(value: true)
-    }
+    // Upstream 60ee0160: the API key is bundled at compile time (`TmdbConfig.API_KEY`) — there is
+    // no user-facing key entry any more, just the enrichment on/off toggle below.
 
     // MARK: - MDBList
 
@@ -306,6 +347,7 @@ final class SettingsViewModel: ObservableObject {
         MdbListSettingsRepository.shared.setEnabled(value: false)
     }
 
+    /// Unconditional now that the key is bundled — no more no-op-while-blank gate.
     func setTmdbEnabled(_ enabled: Bool) {
         TmdbSettingsRepository.shared.setEnabled(value: enabled)
     }
@@ -341,11 +383,6 @@ final class SettingsViewModel: ObservableObject {
     /// home-catalog namespace, same channel as Show Catalog Type).
     func setHideDiscover(_ enabled: Bool) {
         HomeCatalogSettingsRepository.shared.setHideDiscover(enabled: enabled)
-    }
-
-    /// Clearing the key also disables enrichment (handled inside the repo).
-    func clearTmdbKey() {
-        TmdbSettingsRepository.shared.setApiKey(value: "")
     }
 
     // MARK: - Subtitles
@@ -555,5 +592,7 @@ final class SettingsViewModel: ObservableObject {
         cardDepthWatcher?.cancel()
         trackingSettingsWatcher?.cancel()
         searchStateWatcher?.cancel()
+        amoledWatcher?.cancel()
+        recentSearchesWatcher?.cancel()
     }
 }

@@ -3,8 +3,9 @@ import Foundation
 import SharedCore
 
 /// Loads a single cast/crew member's detail via the shared `TmdbMetadataService.fetchPersonDetail`
-/// (bio, photo, known-for, movie/TV credits). This is TMDB-backed: it returns `nil` unless a TMDB API
-/// key is configured (`TmdbSettings.enabled && hasApiKey`), so `failed` drives a friendly empty state.
+/// (bio, photo, known-for, movie/TV credits). This is TMDB-backed: it returns `nil` unless TMDB
+/// enrichment is turned on (`TmdbSettings.enabled` — the API key is bundled, upstream 60ee0160),
+/// so `failed` drives a friendly empty state.
 @MainActor
 final class PersonDetailViewModel: ObservableObject {
     @Published private(set) var person: PersonDetail?

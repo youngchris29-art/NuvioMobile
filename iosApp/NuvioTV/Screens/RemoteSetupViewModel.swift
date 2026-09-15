@@ -32,14 +32,14 @@ final class RemoteSetupViewModel: ObservableObject {
     private let server = RemoteSetupServer()
     private var addonWatcher: FlowWatcher?
     private var rowWatcher: FlowWatcher?
-    private var tmdbWatcher: FlowWatcher?
     private var mdbListWatcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
 
     // Cached snapshots (updated by the watchers, read when building state JSON + applying diffs).
     private var addons: [ManagedAddon] = []
     private var rows: [HomeCatalogSettingsItem] = []
-    private var tmdbKeySet = false
+    // Upstream 60ee0160: TMDB has no user-facing key any more (bundled at compile time), so
+    // there's nothing for the remote-setup page to report or accept here.
     private var mdbListKeySet = false
     /// Source URLs of currently imported stream badge packs (shown read-only on the web page).
     private var badgePackUrls: [String] = []
@@ -110,11 +110,6 @@ final class RemoteSetupViewModel: ObservableObject {
             self.rows = state.items
             self.pushState()
         }
-        tmdbWatcher = FlowWatcherKt.watch(TmdbSettingsRepository.shared.uiState) { [weak self] emitted in
-            guard let self, let state = emitted as? TmdbSettings else { return }
-            self.tmdbKeySet = state.hasApiKey
-            self.pushState()
-        }
         mdbListWatcher = FlowWatcherKt.watch(MdbListSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? MdbListSettings else { return }
             self.mdbListKeySet = state.hasApiKey
@@ -126,7 +121,6 @@ final class RemoteSetupViewModel: ObservableObject {
             self.pushState()
         }
         AddonRepository.shared.initialize()
-        TmdbSettingsRepository.shared.ensureLoaded()
         MdbListSettingsRepository.shared.ensureLoaded()
         StreamBadgeSettingsRepository.shared.ensureLoaded()
     }
@@ -134,12 +128,10 @@ final class RemoteSetupViewModel: ObservableObject {
     private func cancelWatchers() {
         addonWatcher?.cancel()
         rowWatcher?.cancel()
-        tmdbWatcher?.cancel()
         mdbListWatcher?.cancel()
         badgeWatcher?.cancel()
         addonWatcher = nil
         rowWatcher = nil
-        tmdbWatcher = nil
         mdbListWatcher = nil
         badgeWatcher = nil
     }
@@ -177,7 +169,6 @@ final class RemoteSetupViewModel: ObservableObject {
         let deviceName: String
         let addons: [StateAddon]
         let rows: [StateRow]
-        let tmdbKeySet: Bool
         let mdblistKeySet: Bool
         let badgePacks: [String]
     }
@@ -201,7 +192,6 @@ final class RemoteSetupViewModel: ObservableObject {
                     isCollection: $0.isCollection
                 )
             },
-            tmdbKeySet: tmdbKeySet,
             mdblistKeySet: mdbListKeySet,
             badgePacks: badgePackUrls
         )
@@ -215,10 +205,6 @@ final class RemoteSetupViewModel: ObservableObject {
     private func apply(_ proposal: RemoteSetupServer.Proposal) {
         applyAddons(proposal)
         applyRows(proposal)
-        if let key = proposal.tmdbKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
-            TmdbSettingsRepository.shared.setApiKey(value: key)
-            TmdbSettingsRepository.shared.setEnabled(value: true)
-        }
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             MdbListSettingsRepository.shared.setApiKey(value: key)
             MdbListSettingsRepository.shared.setEnabled(value: true)
@@ -327,7 +313,6 @@ final class RemoteSetupViewModel: ObservableObject {
             if orderChanged || togglesChanged { parts.append(String(localized: "Home rows updated")) }
         }
 
-        if proposal.tmdbKey?.isEmpty == false { parts.append(String(localized: "TMDB key set")) }
         if proposal.mdblistKey?.isEmpty == false { parts.append(String(localized: "MDBList key set")) }
         if let badgeCount = proposal.badgeUrls?.count, badgeCount > 0 {
             parts.append(String(localized: "\(badgeCount) badge pack\(badgeCount == 1 ? "" : "s") imported"))
@@ -352,7 +337,6 @@ final class RemoteSetupViewModel: ObservableObject {
         server.stop()
         addonWatcher?.cancel()
         rowWatcher?.cancel()
-        tmdbWatcher?.cancel()
         mdbListWatcher?.cancel()
         badgeWatcher?.cancel()
     }

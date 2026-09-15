@@ -54,20 +54,35 @@ struct PlaybackSettingsPane: View {
                     isOn: Binding(get: { model.dvP7FelMpv }, set: { model.setDvP7FelMpv($0) })
                 )
             }
-            // FEAT-11
-            SettingsToggleRow(
-                title: String(localized: "Trailer Sound by Default"),
-                subtitle: String(localized: "Trailers start with sound; play/pause mutes"),
-                isOn: Binding(
-                    get: { trailerAudioDefaultOn },
-                    set: { newValue in
-                        trailerAudioDefaultOn = newValue
-                        // Applies immediately, without relaunch — DetailView otherwise only reads
-                        // this default at app launch and after a full-screen trailer dismisses.
-                        HeroTrailerAudioState.shared.setMuted(value: !newValue)
-                    }
+            // Grouped so this pair occupies one slot in the section's own @ViewBuilder —
+            // "Playback" already sits at the 10-child ViewBuilder ceiling (see AboutSettingsPane's
+            // header comment on the same constraint) and there's no room to add the pause-overlay
+            // toggle ungrouped.
+            Group {
+                // FEAT-11
+                SettingsToggleRow(
+                    title: String(localized: "Trailer Sound by Default"),
+                    subtitle: String(localized: "Trailers start with sound; play/pause mutes"),
+                    isOn: Binding(
+                        get: { trailerAudioDefaultOn },
+                        set: { newValue in
+                            trailerAudioDefaultOn = newValue
+                            // Applies immediately, without relaunch — DetailView otherwise only
+                            // reads this default at app launch and after a full-screen trailer
+                            // dismisses.
+                            HeroTrailerAudioState.shared.setMuted(value: !newValue)
+                        }
+                    )
                 )
-            )
+                // Upstream ecb69a88 ("mobile pause overlay toggle"): gates the mpv player's own
+                // "metadata card after a sustained pause" overlay (MPVPlayerView.swift). The
+                // native AVPlayer engine doesn't have this overlay at all — subtitle notes it.
+                SettingsToggleRow(
+                    title: String(localized: "Pause Info Card"),
+                    subtitle: String(localized: "Show the title, source and time remaining after a short pause (mpv player)"),
+                    isOn: Binding(get: { model.pauseOverlayEnabled }, set: { model.setPauseOverlayEnabled($0) })
+                )
+            }
             SettingsPickerRow(
                 title: String(localized: "Streaming Buffer"),
                 selection: Binding(get: { model.bufferMB }, set: { model.setBufferMB($0) }),

@@ -122,11 +122,7 @@ enum RemoteSetupWebPage {
 
   <section>
     <h2>API Keys</h2>
-    <p class="hint">Optional. TMDB enriches titles (cast, studios, collections); MDBList adds IMDb/RT/Metacritic ratings. Keys are only sent when you enter one.</p>
-    <div class="keyrow">
-      <label>TMDB</label>
-      <input type="password" id="tmdb-key" autocapitalize="off" autocorrect="off">
-    </div>
+    <p class="hint">Optional. MDBList adds IMDb/RT/Metacritic ratings. Key is only sent when you enter one. TMDB enrichment (cast, studios, collections) needs no key &mdash; turn it on in Settings on the TV.</p>
     <div class="keyrow">
       <label>MDBList</label>
       <input type="password" id="mdblist-key" autocapitalize="off" autocorrect="off">
@@ -166,7 +162,6 @@ async function load() {
     addons = (state.addons || []).map(a => ({ ...a, isNew: false }));
     rows = state.rows || [];
     badgePacks = state.badgePacks || [];
-    if (state.tmdbKeySet) el("tmdb-key").placeholder = "Saved on TV — enter to replace";
     if (state.mdblistKeySet) el("mdblist-key").placeholder = "Saved on TV — enter to replace";
     render();
     setStatus("Connected to " + (state.deviceName || "Apple TV"), "ok");
@@ -258,9 +253,7 @@ async function apply() {
     rowOrder: rows.map(r => r.key),
     disabledRowKeys: rows.filter(r => !r.enabled).map(r => r.key)
   };
-  const tmdb = el("tmdb-key").value.trim();
   const mdbl = el("mdblist-key").value.trim();
-  if (tmdb) payload.tmdbKey = tmdb;
   if (mdbl) payload.mdblistKey = mdbl;
   if (stagedBadgeUrls.length) payload.badgeUrls = stagedBadgeUrls.slice();
 
@@ -286,7 +279,7 @@ async function poll(id, tries) {
     const { status } = await res.json();
     if (status === "confirmed") {
       setStatus("Applied on the TV ✓", "ok");
-      el("tmdb-key").value = ""; el("mdblist-key").value = "";
+      el("mdblist-key").value = "";
       stagedBadgeUrls = [];
       setTimeout(load, 1500);
       el("apply").disabled = false;

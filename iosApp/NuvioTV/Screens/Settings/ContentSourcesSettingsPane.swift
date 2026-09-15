@@ -11,53 +11,42 @@ struct ContentSourcesSettingsPane: View {
     var body: some View {
         Group {
             SettingsSection(String(localized: "Metadata (TMDB)")) {
-                Text("Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org \u{2192} Settings \u{2192} API (v3 auth). Titles you open after enabling will be enriched.")
+                Text("Enrich titles with cast profiles, studios & networks, collections, and better artwork. Titles you open after enabling will be enriched.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
 
-                if model.tmdbHasKey {
-                    SettingsToggleRow(
-                        title: String(localized: "TMDB Enrichment"),
-                        subtitle: String(localized: "API key saved"),
-                        isOn: Binding(
-                            get: { model.tmdbEnabled },
-                            set: { model.setTmdbEnabled($0) }
-                        )
+                SettingsToggleRow(
+                    title: String(localized: "TMDB Enrichment"),
+                    subtitle: String(localized: "Bundled key \u{2014} no setup needed"),
+                    isOn: Binding(
+                        get: { model.tmdbEnabled },
+                        set: { model.setTmdbEnabled($0) }
                     )
-                    SettingsToggleRow(
-                        title: String(localized: "TMDB Release Dates"),
-                        subtitle: model.tmdbUseReleaseDates
-                            ? String(localized: "TMDB air dates override add-on release dates")
-                            : String(localized: "add-on release dates are used as-is"),
-                        isOn: Binding(
-                            get: { model.tmdbUseReleaseDates },
-                            set: { model.setTmdbUseReleaseDates($0) }
-                        )
+                )
+                SettingsToggleRow(
+                    title: String(localized: "TMDB Release Dates"),
+                    subtitle: model.tmdbUseReleaseDates
+                        ? String(localized: "TMDB air dates override add-on release dates")
+                        : String(localized: "add-on release dates are used as-is"),
+                    isOn: Binding(
+                        get: { model.tmdbUseReleaseDates },
+                        set: { model.setTmdbUseReleaseDates($0) }
                     )
-                    Text("Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.")
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .frame(maxWidth: 1100, alignment: .leading)
-                    SettingsPickerRow(
-                        title: String(localized: "Metadata Language"),
-                        selection: Binding(
-                            get: { model.tmdbLanguageSelection },
-                            set: { model.setTmdbLanguage($0) }
-                        ),
-                        options: LanguageOptions.tmdbMetadata.map(\.code),
-                        label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.tmdbMetadata) }
-                    )
-                    SettingsDestructiveRow(
-                        title: String(localized: "Remove API Key"),
-                        subtitle: String(localized: "Clears the saved TMDB key and turns enrichment off."),
-                        systemImage: "trash"
-                    ) {
-                        model.clearTmdbKey()
-                    }
-                } else {
-                    TmdbKeyEntryRow { model.saveTmdbKey($0) }
-                }
+                )
+                Text("Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.")
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                SettingsPickerRow(
+                    title: String(localized: "Metadata Language"),
+                    selection: Binding(
+                        get: { model.tmdbLanguageSelection },
+                        set: { model.setTmdbLanguage($0) }
+                    ),
+                    options: LanguageOptions.tmdbMetadata.map(\.code),
+                    label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.tmdbMetadata) }
+                )
             }
 
             SettingsSection(String(localized: "Ratings (MDBList)")) {
@@ -156,6 +145,21 @@ struct ContentSourcesSettingsPane: View {
     /// (SettingsViewModel's addon watcher), the disabled set is local to this Apple TV.
     @ViewBuilder
     private var searchSourcesSection: some View {
+        // Upstream 7c1c6578: on/off switch for recording new recent searches (and showing
+        // existing ones) on the Search screen. rc13: this Apple TV only — `SearchHistoryStorage`
+        // has no sync export/import, the key is a device-local NSUserDefaults value (unlike
+        // "Hide Discover" below, which really is synced per profile).
+        SettingsToggleRow(
+            title: String(localized: "Recent Searches"),
+            subtitle: model.recentSearchesEnabled
+                ? String(localized: "Search remembers what you've searched for")
+                : String(localized: "Past searches are hidden and new ones aren't saved"),
+            isOn: Binding(
+                get: { model.recentSearchesEnabled },
+                set: { model.setRecentSearchesEnabled($0) }
+            )
+        )
+
         // UX-8 (u/mrStevenx3, restated three times, finally "completely hide the Discover
         // section"): one container-level toggle. Synced per profile — deliberately NOT under the
         // "this Apple TV only" caption below, which describes the per-catalog rows.
@@ -285,41 +289,6 @@ struct ContentSourcesSettingsPane: View {
             ) {
                 plugins.refreshAll()
             }
-        }
-    }
-}
-
-/// TMDB API key entry: a tvOS `TextField` (opens the full-screen keyboard, dismisses on commit) plus
-/// a Save button. The shared repo trims the key and enables enrichment; we only guard against empty.
-private struct TmdbKeyEntryRow: View {
-    let onSave: (String) -> Void
-    @State private var key = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(spacing: Theme.Spacing.md) {
-                Image(systemName: "key")
-                    .foregroundStyle(Theme.Palette.textSecondary)
-                TextField("TMDB API Key (v3 auth)", text: $key)
-                    .textFieldStyle(.plain)
-                    .font(Theme.Font.body)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-            }
-            .padding(Theme.Spacing.lg)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-
-            Button {
-                if !key.isEmpty { onSave(key) }
-            } label: {
-                Label("Save & Enable", systemImage: "checkmark")
-                    .font(Theme.Font.meta)
-                    .prominentAccentLabel()
-                    .padding(.horizontal, Theme.Spacing.lg)
-                    .padding(.vertical, Theme.Spacing.xxs + 2)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.Palette.accent)
-            .disabled(key.isEmpty)
         }
     }
 }
