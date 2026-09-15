@@ -21,6 +21,7 @@ struct TitleLogoHeader: View {
     let alignment: Alignment
     let textFont: Font
     let slotHeight: CGFloat
+    private let logoUrl: String?
     private let url: URL?
     @State private var image: UIImage?
 
@@ -35,6 +36,7 @@ struct TitleLogoHeader: View {
         self.alignment = alignment
         self.textFont = textFont
         self.slotHeight = slotHeight
+        self.logoUrl = logoUrl
         self.url = logoUrl.flatMap(URL.init(string:))
         // Codex round 1: seed synchronously from the cache, exactly as `HeroLogo` does — a
         // reopened screen whose logo is already in ArtworkStore must not flash its text title for
@@ -60,7 +62,11 @@ struct TitleLogoHeader: View {
         // ONE fixed-height slot, so the swap cannot resize the header and shove whatever sits below
         // it (tabs/grid, stream list, …) while focus is live. No logo configured → no slot: the
         // header keeps the caller's plain text metrics.
-        .frame(height: url == nil ? nil : slotHeight, alignment: alignment)
+        //
+        // rc13: this reserved-height decision is the same pure check `slotHeight(logoUrl:slotHeight:)`
+        // exposes for unit testing (`TitleLogoHeaderTests`) — call through it instead of
+        // re-deriving `url == nil` inline, so the tested helper is the one actually driving layout.
+        .frame(height: Self.slotHeight(logoUrl: logoUrl, slotHeight: slotHeight), alignment: alignment)
         .task(id: url) {
             guard let url else {
                 image = nil

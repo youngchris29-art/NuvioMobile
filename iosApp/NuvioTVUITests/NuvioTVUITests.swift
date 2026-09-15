@@ -7678,6 +7678,16 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertEqual(headerAfter.maxY, headerBefore.maxY, accuracy: 2, "header bottom moved while scrolling the grid")
         XCTAssertEqual(headerAfter.midX, headerBefore.midX, accuracy: 2, "header drifted horizontally while scrolling the grid")
         XCTAssertEqual(headerAfter.midX, 960, accuracy: 40, "header is not centred on the screen")
+
+        // Codex P2 (rc13): the header staying at a fixed frame isn't the whole contract — before
+        // the opaque-background + `.zIndex(1)` fix, a scrolled-past poster's focus lift painted
+        // straight over the header while the AX frame above stayed unchanged (frame geometry
+        // doesn't know about paint order). `isHittable` after 6 Downs is the cheapest available
+        // signal that the header is still the frontmost hit-testable element at that frame, not a
+        // node buried under whatever the grid drew on top of it.
+        let header = app.otherElements["folder_header"]
+        XCTAssertTrue(header.exists, "folder_header AX element vanished after scrolling")
+        XCTAssertTrue(header.isHittable, "folder_header exists but is no longer hittable — a scrolled card may be painting over it")
     }
 
     // MARK: - BUG-117: Up from the last season poster must reach the top block

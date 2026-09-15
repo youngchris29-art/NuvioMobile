@@ -609,6 +609,17 @@ struct HomeView: View {
     /// landed line only run while one is in flight), and resetting it in `endUpFallback` would
     /// clear it out from under the landed line, which is composed by the caller and passed IN.
     @State private var activeUpFallbackSource = "press"
+    /// rc13 (BUG-114) — stales `handleHeroUp`'s delayed retry, the same discipline
+    /// `upFallbackGeneration` applies to the ladder's rungs.
+    ///
+    /// Codex round 1: the retry was scheduled unconditionally 0.6 s out and only re-read
+    /// `isScrolledDown`, so anything that happened in between — focus leaving the CTA for a row,
+    /// a second unresolved Up, a tab switch, the Continue-Watching cover coming up — left it
+    /// armed and it animated the shelf out from under whatever was there. Every `handleHeroUp`
+    /// bumps this, and so does every change of `heroFocused` (in either direction: leaving the
+    /// hero and coming back inside the window must not look like nothing happened); a retry that
+    /// finds the counter moved is not the newest intent and stands down silently.
+    @State private var heroUpGeneration = 0
     #if DEBUG
     /// Last fallback event, surfaced to the harness as `debug_upfallback`. One write per Up press
     /// the engine could not resolve, so the churn is far below `debug_pinned`'s.
@@ -1027,6 +1038,12 @@ struct HomeView: View {
             // between-cards focus hop).
             .onChange(of: heroFocused) { _, focused in
                 if focused { focusModel.cancelAndRevert() }
+                // rc13 (BUG-114): stale any pending `handleHeroUp` retry. Focus moving off the CTA
+                // (or back onto it) means the scroll that retry was going to finish is no longer
+                // the newest thing the user asked for. This is a counter bump only — emphatically
+                // NOT a scroll, so the standing ban on hero-focus-triggered scrolls
+                // (`.onExitCommand`'s comment block above) is untouched.
+                heroUpGeneration &+= 1
             }
             .onChange(of: heroItems.count) { _, newCount in
                 if heroIndex >= newCount { heroIndex = 0 }
@@ -1596,23 +1613,45 @@ struct HomeView: View {
     ///    Menu is the scroll-to-top there, by the same rc7 decision that removed every Up-reveal.
     ///  - Not while Home is COVERED (BUG-109) — the same rule every other scroll on this screen
     ///    follows.
+    ///  - Not while Home's surface is covered at the SHELL level (`homeSurfaceCovered`) or by its
+    ///    own Continue-Watching cover (`resume`). `handleUpSwipe` already checks both, but the
+    ///    PRESS path does not: it arrives from `HeroCarouselInteractionModifier.onMove`, which is
+    ///    a live `.onMoveCommand` on a tab that stays mounted across a tab switch and underneath a
+    ///    `fullScreenCover`. Without these two, an Up in Search — or in the stream picker Home
+    ///    itself presented — would animate Home's shelf underneath it.
     ///
     /// No `heroFocused` write anywhere: focus is already on the CTA and is meant to STAY there, so
     /// the user's next Up is the one that reaches the re-expanded bar. Writing it would be the
-    /// rounds 5–6 shape again. The single 0.6 s retry mirrors the Menu handler's ladder and is
-    /// gated on `isScrolledDown` for the reason stated there — the scroll landing, not focus, is
-    /// what says whether this worked.
+    /// rounds 5–6 shape again.
+    ///
+    /// The single 0.6 s retry mirrors the Menu handler's ladder, and re-checks EVERY guard the
+    /// entry did rather than only `isScrolledDown` (Codex round 1). 0.6 s is a long time on this
+    /// screen: focus can leave the CTA, another Up can arrive, a tab can be switched, the cover can
+    /// come up. `heroUpGeneration` catches the cases a re-check cannot see on its own — a second
+    /// `handleHeroUp` that has already scheduled its own retry, and focus leaving the hero and
+    /// returning inside the window (where `heroFocused` reads true again but the intent is stale).
+    /// The re-checks cover the rest. Both together, and the retry is gated on `isScrolledDown` for
+    /// the reason the Menu handler states — the scroll landing, not focus, is what says whether
+    /// this worked.
     private func handleHeroUp(proxy: ScrollViewProxy, source: String = "press") {
         guard heroHeaderVisible, heroFocused, isScrolledDown else { return }
         guard !SidebarChrome.isEnabled() else { return }
         guard !PinnedRowSettle.hostCovered else { return }
+        guard !tabBarVisibility.homeSurfaceCovered else { return }
+        guard resume == nil else { return }
+        heroUpGeneration &+= 1
+        let generation = heroUpGeneration
         logUpFallback("row=hero prev=tabbar action=top src=\(source)")
         PinnedRowSettle.noteExternalScroll(reason: "hero-up-top")
         withAnimation(.easeInOut(duration: 0.45)) {
             proxy.scrollTo("home_top", anchor: .top)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            guard isScrolledDown, heroHeaderVisible, !PinnedRowSettle.hostCovered else { return }
+            guard heroUpGeneration == generation else { return }
+            guard heroHeaderVisible, heroFocused, isScrolledDown else { return }
+            guard !PinnedRowSettle.hostCovered else { return }
+            guard !tabBarVisibility.homeSurfaceCovered else { return }
+            guard resume == nil else { return }
             PinnedRowSettle.noteExternalScroll(reason: "hero-up-top-retry")
             withAnimation(.easeInOut(duration: 0.3)) {
                 proxy.scrollTo("home_top", anchor: .top)

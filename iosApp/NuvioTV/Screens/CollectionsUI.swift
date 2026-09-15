@@ -1109,8 +1109,9 @@ struct FolderDetailView: View {
                     // this content keeps `Theme.Spacing.screen` on the other three sides but only
                     // `Theme.Spacing.lg` on top — just enough clearance that a focused first-row
                     // tile's lift (this ScrollView is `.scrollClipDisabled()`, same as the grid
-                    // always was) paints over empty page background instead of bleeding under the
-                    // now-opaque header above it.
+                    // always was) has room to paint before it reaches the header's own opaque
+                    // background + higher `.zIndex` (see `header`), which is what actually keeps
+                    // scrolled cards from painting over the title/Edit Filters button.
                     .padding(.horizontal, Theme.Spacing.screen)
                     .padding(.bottom, Theme.Spacing.screen)
                     .padding(.top, Theme.Spacing.lg)
@@ -1151,6 +1152,17 @@ struct FolderDetailView: View {
     /// `Image`, neither a tvOS focus target, so Up from the tab chips below still reaches the
     /// button when it's present, and Down from the button returns to the chips — no new focus
     /// section is needed for a header this shallow.
+    ///
+    /// Codex P2 (rc13): being a preceding sibling of the `ScrollView` is not enough to stay pinned
+    /// ABOVE it — the grid keeps `.scrollClipDisabled()` (so a focused first-row tile's lift can
+    /// still bleed sideways past the grid's own bounds), and a plain VStack paints its children in
+    /// declaration order, so once the grid scrolls past the viewport top its cards (and their
+    /// focus lift) drew straight across this header. Fixed with an opaque background pinned to the
+    /// top safe-area edge plus a higher `.zIndex` than the ScrollView's default 0 — the same
+    /// zIndex-for-paint-order pattern this file already uses for lifted grid tiles (see
+    /// `liftedTileZIndex` below). The bottom-edge gradient is a cosmetic fade for cards passing
+    /// underneath, not a layout element — it overlays past this view's own bottom edge and cannot
+    /// change the frame `test69FolderHeaderStaysPinnedWhileGridScrolls` asserts is stable.
     private var header: some View {
         ZStack {
             TitleLogoHeader(
@@ -1182,6 +1194,18 @@ struct FolderDetailView: View {
         }
         .padding(.horizontal, Theme.Spacing.screen)
         .padding(.top, Theme.Spacing.screen)
+        .background(Theme.Palette.background.ignoresSafeArea(edges: .top))
+        .overlay(alignment: .bottom) {
+            LinearGradient(
+                colors: [Theme.Palette.background, Theme.Palette.background.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 24)
+            .offset(y: 24)
+            .allowsHitTesting(false)
+        }
+        .zIndex(1)
         // rc13 UI test69 (`FolderHeaderStaysPinnedWhileGridScrolls`): reads this frame before and
         // after scrolling the grid to prove the header never moves.
         .accessibilityIdentifier("folder_header")
