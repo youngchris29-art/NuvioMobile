@@ -9948,6 +9948,41 @@
         }
       }
     },
+    "Hard": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hart"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duro"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dur"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duro"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cứng"
+          }
+        }
+      }
+    },
     "Hard Top Scroll Edge (A/B)": {},
     "Hardware decode": {
       "localizations": {
@@ -17065,6 +17100,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tốc độ phát"
+          }
+        }
+      }
+    },
+    "Playback unavailable": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wiedergabe nicht verfügbar"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reproducción no disponible"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecture indisponible"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riproduzione non disponibile"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể phát"
           }
         }
       }
@@ -28656,6 +28725,346 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hàng dành sẵn dải của chế độ thu phóng; phần mô tả khi tắt hero mất một dòng ở cỡ Lớn"
+          }
+        }
+      }
+    },
+    "OLED True Black": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OLED-Echtschwarz"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Negro puro OLED"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noir profond OLED"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nero vero OLED"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đen tuyền OLED"
+          }
+        }
+      }
+    },
+    "Pure black background for OLED screens": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reines Schwarz als Hintergrund für OLED-Bildschirme"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondo negro puro para pantallas OLED"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrière-plan noir pur pour les écrans OLED"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sfondo nero puro per schermi OLED"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nền đen tuyền cho màn hình OLED"
+          }
+        }
+      }
+    },
+    "Enrich titles with cast profiles, studios & networks, collections, and better artwork. Titles you open after enabling will be enriched.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reichert Titel mit Besetzungsprofilen, Studios & Sendern, Sammlungen und besserem Bildmaterial an. Titel, die du nach der Aktivierung öffnest, werden angereichert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enriquece los títulos con perfiles de reparto, estudios y cadenas, colecciones y mejores imágenes. Los títulos que abras después de activarlo se enriquecerán."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enrichit les titres avec des profils de casting, des studios et chaînes, des collections et de meilleures images. Les titres ouverts après activation seront enrichis."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arricchisce i titoli con profili del cast, studi e reti, collezioni e immagini migliori. I titoli aperti dopo l'attivazione verranno arricchiti."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Làm phong phú các tựa phim với hồ sơ diễn viên, hãng phim & kênh truyền hình, bộ sưu tập và hình ảnh đẹp hơn. Các tựa phim bạn mở sau khi bật sẽ được làm phong phú."
+          }
+        }
+      }
+    },
+    "Bundled key — no setup needed": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Integrierter Schlüssel — keine Einrichtung nötig"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clave incluida: no requiere configuración"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clé intégrée — aucune configuration nécessaire"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chiave inclusa: nessuna configurazione necessaria"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Khóa có sẵn — không cần thiết lập"
+          }
+        }
+      }
+    },
+    "Search remembers what you've searched for": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Suche merkt sich, wonach du gesucht hast"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La búsqueda recuerda lo que has buscado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La recherche se souvient de ce que vous avez cherché"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La ricerca ricorda cosa hai cercato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tìm kiếm ghi nhớ những gì bạn đã tìm"
+          }
+        }
+      }
+    },
+    "Past searches are hidden and new ones aren't saved": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Frühere Suchen werden ausgeblendet und neue nicht gespeichert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las búsquedas anteriores se ocultan y las nuevas no se guardan"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les recherches précédentes sont masquées et les nouvelles ne sont pas enregistrées"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le ricerche precedenti sono nascoste e quelle nuove non vengono salvate"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Các tìm kiếm trước đây bị ẩn và tìm kiếm mới sẽ không được lưu"
+          }
+        }
+      }
+    },
+    "Pause Info Card": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause-Infokarte"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tarjeta de información en pausa"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fiche d'info en pause"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scheda info in pausa"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thẻ thông tin khi tạm dừng"
+          }
+        }
+      }
+    },
+    "Show the title, source and time remaining after a short pause (mpv player)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Titel, Quelle und verbleibende Zeit nach einer kurzen Pause anzeigen (mpv-Player)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra el título, la fuente y el tiempo restante tras una pausa breve (reproductor mpv)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le titre, la source et le temps restant après une courte pause (lecteur mpv)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostra titolo, fonte e tempo rimanente dopo una breve pausa (player mpv)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiển thị tiêu đề, nguồn và thời gian còn lại sau khi tạm dừng một chút (trình phát mpv)"
+          }
+        }
+      }
+    },
+    "Row Edge Fade": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zeilenrand-Verblassung"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desvanecido de borde de fila"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fondu de bord de rangée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dissolvenza bordo riga"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Làm mờ viền hàng"
+          }
+        }
+      }
+    },
+    "BUG-118: which edge treatment looks right on a Home row": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-118: welche Randbehandlung bei einer Home-Zeile richtig aussieht"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-118: qué tratamiento de borde se ve bien en una fila de Inicio"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-118 : quel traitement de bord convient le mieux à une rangée d'accueil"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-118: quale trattamento del bordo sembra corretto su una riga della Home"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-118: kiểu xử lý viền nào trông đúng trên một hàng ở Trang chủ"
           }
         }
       }

@@ -6811,13 +6811,21 @@ final class NuvioTVUITests: XCTestCase {
     /// the engine gives up. That is the device pass — Steven's Row Settle pane will show the
     /// `upFallback row=… prev=… action=…` line the same fallback writes.
     ///
-    /// Do not run this with Trailer Location = Hero and a playing hero trailer: the hero's player
-    /// owns Play/Pause in that state. The launch arguments below do not enable inline trailers.
+    /// The proxy trigger's one PREMISE: Play/Pause must be free on Home's rows. It is not free
+    /// whenever a trailer is playing for the FOCUSED card — `CatalogRowView`'s card binds
+    /// `.onPlayPauseCommand` to the mute toggle exactly then (`muteToggle`), and a handler on the
+    /// focused view wins over this screen's, so the press never reaches the trigger and the probe
+    /// stays at `-`. That is not hypothetical: it is what killed this gate on rc13, once the
+    /// bundled-TMDB-key port let this fixture's Home resolve hero trailers it had never resolved
+    /// before. `inline_trailers_enabled` is device-local `@AppStorage`, so the premise is PINNED
+    /// here in the argument domain rather than left to whatever the synced profile happens to
+    /// carry — which also takes Trailer Location out of the picture, hero or poster.
     func test65Bug112UpFallbackFocusesThePreviousRow() throws {
         let app = launchToHome(
             extraArguments: [
                 "-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES",
-                "-debug.pinnedRowSettleProbe", "YES", "-debug.homeUpFallbackForce", "YES"
+                "-debug.pinnedRowSettleProbe", "YES", "-debug.homeUpFallbackForce", "YES",
+                "-inline_trailers_enabled", "NO"
             ],
             forceFreshLaunch: true
         )
@@ -7409,5 +7417,404 @@ final class NuvioTVUITests: XCTestCase {
         shot(app, "57c_after_pop")
         let after = probeField(liveHeroProbe(), "fitem") ?? ""
         XCTAssertEqual(after, folderItem, "focus after popping the folder page landed on \(after), expected the folder tile \(folderItem)")
+    }
+
+    // MARK: - rc13: BUG-114 (hero Up reaches the tab bar) and BUG-112's swipe half
+
+    /// BUG-114 (GitHub issue #3): from a scrolled-down Home, walking back UP resolves into the
+    /// pinned hero CTA natively — the rc12 ladder never sees that move because the engine DID
+    /// consume it — and then the next Up dies in the carousel's paging closure while the rows shelf
+    /// still holds its deep offset. The tvOS 26 tab bar expands off that offset, so it stays
+    /// minimized and unreachable: the reporter's "hero regains focus, shelf keeps its offset, tab
+    /// bar stranded".
+    ///
+    /// rc13's fix is `HomeView.handleHeroUp` — an unresolved Up PRESS or SWIPE from the CTA scrolls
+    /// the shelf to `home_top`, which is what lets the bar expand on its own. The oracle is the
+    /// `sd=` field appended to `debug_hero` (`isScrolledDown`, the shelf's own not-at-the-top
+    /// hysteresis) going 1 → 0 across one Up, with focus still on the hero.
+    ///
+    /// Three honest skips, because this runtime's focus engine is not the tester's:
+    ///  - the walk never reaches the hero (`foc=1`) — the fixture is not in pinned hero mode;
+    ///  - the shelf is already at the top (`sd=0`) — there is no wedge to reproduce;
+    ///  - the engine resolves Up from the CTA straight into the tab bar — the bar was reachable all
+    ///    along here, so there is nothing for the fix to do and nothing this test can prove. That is
+    ///    the likeliest sim outcome and it is a SKIP, never a pass: BUG-114 is a device report and
+    ///    the device pass owns the verdict.
+    func test66Bug114UpFromHeroReachesTheTabBar() throws {
+        let app = launchToHome(
+            extraArguments: ["-debug.homeScrollProbe", "YES", "-debug.pinnedRowSettleProbe", "YES"],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        func aTabIsFocused() -> Bool {
+            tabNames.contains { app.buttons[$0].exists && app.buttons[$0].hasFocus }
+        }
+        func hero(_ name: String) -> String { heroSrcProbe(app, name) }
+
+        let entry = hero("66a_entry")
+        guard entry.contains("pin=1") else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — `pin=0`: this profile renders the CLASSIC in-scroll hero, and BUG-114 is about the PINNED header's CTA. Full probe: \(entry)")
+        }
+
+        // Down far enough that the shelf is genuinely scrolled and the bar has minimized.
+        press(.down, times: 3, gap: 0.9)
+        pause(2.0)
+        shot(app, "66b_deep")
+
+        // Walk back up until the hero CTA reports focus. Six is generous for three Downs; more
+        // than that means something else is eating the moves and the premise is gone.
+        var atHero = false
+        for step in 0..<6 {
+            press(.up, times: 1, gap: 0.9)
+            pause(1.2)
+            if hero("66c_up_\(step)").contains("foc=1") { atHero = true; break }
+        }
+        guard atHero else {
+            throw XCTSkip("the Up walk never landed on the hero CTA (`foc=1`) in six presses — BUG-114 starts FROM the CTA, so there is no premise to test here. Last probe: \(hero("66c_final"))")
+        }
+
+        let atCta = hero("66d_at_cta")
+        guard Self.probeToken(atCta, key: "sd") == "1" else {
+            throw XCTSkip("the shelf is already at the top (`sd=\(Self.probeToken(atCta, key: "sd") ?? "-")`) with focus on the CTA, so the tab bar is not stranded and there is no wedge to reproduce. Full probe: \(atCta)")
+        }
+
+        // The press under test: an Up the engine cannot place from the CTA.
+        press(.up, times: 1, gap: 0.9)
+        pause(0.6)
+        if aTabIsFocused() {
+            shot(app, "66e_engine_resolved_to_bar")
+            throw XCTSkip("this runtime's focus engine resolved Up from the CTA straight into the tab bar, so BUG-114's wedge does not reproduce here and `handleHeroUp` was never reached. The fix is device-verified, not sim-verified (see the rc13 device pass).")
+        }
+
+        // The shelf must animate back to the top. 0.45s animation plus the hysteresis' own
+        // publish, polled rather than slept so a fast landing is not charged two seconds.
+        var landed = false
+        for step in 0..<8 {
+            pause(0.25)
+            if Self.probeToken(hero("66f_poll_\(step)"), key: "sd") == "0" { landed = true; break }
+        }
+        shot(app, "66g_after_up")
+        let afterUp = hero("66g_after_up_probe")
+        XCTAssertTrue(landed,
+            "BUG-114: an Up the engine could not place from the hero CTA must scroll the rows shelf back to `home_top` (`sd=1` → `sd=0`), which is the only thing that lets the tvOS 26 tab bar expand again. Probe after the press: \(afterUp)")
+        XCTAssertTrue(afterUp.contains("foc=1"),
+            "the fix must not move focus — it scrolls the shelf and leaves the CTA focused so the user's NEXT Up reaches the re-expanded bar (the rounds 5-6 regression class is exactly the opposite). Probe: \(afterUp)")
+
+        // And with the shelf back at the top, the bar is reachable again.
+        var reachedBar = false
+        for _ in 0..<3 {
+            press(.up, times: 1, gap: 0.9)
+            pause(0.8)
+            if aTabIsFocused() { reachedBar = true; break }
+        }
+        shot(app, "66h_bar")
+        XCTAssertTrue(reachedBar,
+            "with the shelf scrolled back to the top the system tab bar must be reachable from the hero CTA within three Up presses — that is the whole point of the scroll. Probe: \(hero("66h_bar_probe"))")
+    }
+
+    /// BUG-112, the half rc12 left open: the fallback lands on a button press and never on a
+    /// touchpad SWIPE (Steven, 09-13). `onMoveCommand` is fed by directional-button presses only,
+    /// so a Siri Remote flick the focus engine could not resolve reached nothing at all;
+    /// `HomeUpSwipeCatcher` (a window-level `UISwipeGestureRecognizer` on indirect touches) is the
+    /// missing event source.
+    ///
+    /// The SHIPPED trigger is doubly unreachable here — the simulator has no touch surface to flick
+    /// and `XCUIRemote` exposes button presses only, and its focus engine resolves every Up anyway
+    /// (test63/test64 record exactly that). So this arms `-debug.homeUpSwipeForce YES`, which binds
+    /// Play/Pause to `HomeUpSwipeCatcher.simulateSwipeUp()` — the catcher's OWN entry point, not
+    /// the ladder's. Everything the swipe path adds therefore runs for real: the 0.15 s settle
+    /// window, the did-focus-move check (Play/Pause moves no focus, so it passes honestly), the
+    /// five situational guards, and the rows-vs-hero routing.
+    ///
+    /// Oracle: `src=swipe` on the `debug_upfallback` line. That token is on EVERY line of one
+    /// attempt (see `HomeView.activeUpFallbackSource`), so this does not race the landing the way
+    /// a rung-1-only token would — whichever line the probe is showing by the time the harness
+    /// reads it, the token is there. The rest mirrors test65: the right origin row, the right
+    /// predecessor, not a `giveup`, and the settle line's `row=` becoming the previous row's key.
+    ///
+    /// `-inline_trailers_enabled NO` for the reason test65 states at length: the proxy trigger is
+    /// Play/Pause, and a focused card whose trailer is playing binds that press to its own mute
+    /// toggle, so the trigger never fires. Pinned here in the argument domain so neither gate
+    /// depends on what the synced profile carries.
+    func test67Bug112UpSwipeFallbackFocusesThePreviousRow() throws {
+        let app = launchToHome(
+            extraArguments: [
+                "-no_zoom_on_focus", "NO", "-debug.homeScrollProbe", "YES",
+                "-debug.pinnedRowSettleProbe", "YES", "-debug.homeUpSwipeForce", "YES",
+                "-inline_trailers_enabled", "NO"
+            ],
+            forceFreshLaunch: true
+        )
+        openTab(app, named: "Home")
+        pause(1.5)
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let firstLine = readSettleLine(app, "67a_row1") else { return }
+        guard let rowOneKey = Self.probeToken(firstLine, key: "row"), rowOneKey != "-" else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the entry settle carries no row= (or row=-): this fixture is not in the PINNED (Nuvio-style) hero mode BUG-112 lives in. Full settle line: \(firstLine)")
+        }
+
+        press(.down, times: 1, gap: 0.9)
+        pause(3.5)
+        guard let secondLine = readSettleLine(app, "67b_row2") else { return }
+        guard let rowTwoKey = Self.probeToken(secondLine, key: "row"), rowTwoKey != rowOneKey else {
+            throw XCTSkip("FIXTURE ASSUMPTION UNMET — the second Down did not reach a second row (row='\(Self.probeToken(secondLine, key: "row") ?? "-")'); the fallback needs a row WITH a predecessor. Full settle line: \(secondLine)")
+        }
+
+        remote.press(.playPause)
+        // 0.15 s settle window + the ladder's first rung + the hand-off, with room to spare.
+        pause(3.0)
+
+        let fallback = app.staticTexts["debug_upfallback"]
+        guard fallback.waitForExistence(timeout: 10) else {
+            XCTFail("debug_upfallback probe missing — it is DEBUG-only (HomeView.swift); is this a Release build?")
+            return
+        }
+        let fallbackLine = fallback.label
+        let fallbackReport = XCTAttachment(string: fallbackLine)
+        fallbackReport.name = "67c_upfallback_line"
+        fallbackReport.lifetime = .keepAlways
+        add(fallbackReport)
+        shot(app, "67c_after_fallback")
+
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "src"), "swipe",
+                       "the attempt must be attributed to the SWIPE path — if this reads `press` the proxy trigger went through `handleRowsMove` instead of `HomeUpSwipeCatcher.simulateSwipeUp()`, and none of the swipe path's own checks were exercised. Full line: \(fallbackLine)")
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "row"), rowTwoKey,
+                       "the fallback fired for the wrong row — it must act for the row that HAD focus. Full line: \(fallbackLine)")
+        XCTAssertEqual(Self.probeToken(fallbackLine, key: "prev"), rowOneKey,
+                       "the fallback targeted the wrong predecessor. Full line: \(fallbackLine)")
+        XCTAssertNotEqual(Self.probeToken(fallbackLine, key: "action"), "giveup",
+                          "every rung of the hand-off ladder missed. Full line: \(fallbackLine)")
+
+        guard let landedLine = readSettleLine(app, "67d_landed") else { return }
+        XCTAssertEqual(Self.probeToken(landedLine, key: "row"), rowOneKey,
+                       "the swipe fallback did not land focus on the previous row ('\(rowOneKey)'). Fallback line: \(fallbackLine) || settle line: \(landedLine)")
+
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "dir"),
+                        "the settle line lost `dir=` — it is append-only by contract. Full line: \(landedLine)")
+        XCTAssertNotNil(Self.probeValue(landedLine, key: "rearm"),
+                        "the settle line lost `rearm=` — it is append-only by contract. Full line: \(landedLine)")
+    }
+
+    /// FEAT-40 (rc13, "official Nuvio" folder header ask): the folder page header
+    /// (`CollectionsUI.swift` `FolderDetailView.header` — the centred `TitleLogoHeader` + Edit
+    /// Filters button) moved OUTSIDE the `ScrollView` into its own pinned `VStack` slot, instead of
+    /// being the scroll content's first child the way the old inline title row was. Walks Home
+    /// exactly like test56/test57 (Down until the hero probe's `fitem` names a `nuvio-folder://`
+    /// tile), opens it, reads the header's `folder_header` AX frame, scrolls the grid, and asserts
+    /// the frame never moved.
+    func test69FolderHeaderStaysPinnedWhileGridScrolls() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+        pause(1.5)
+
+        func liveHeroProbe() -> String {
+            let probe = app.staticTexts["debug_hero"]
+            return probe.exists ? probe.label : ""
+        }
+
+        func namedFrame(_ identifier: String) -> CGRect? {
+            guard let root = try? app.snapshot() else { return nil }
+            var out: CGRect?
+            func walk(_ node: XCUIElementSnapshot) {
+                guard out == nil else { return }
+                if node.identifier == identifier {
+                    out = node.frame
+                    return
+                }
+                node.children.forEach(walk)
+            }
+            walk(root)
+            return out
+        }
+
+        var folderFound = false
+        var lastFocusedItem = ""
+        var stalledPresses = 0
+        for _ in 1...45 {
+            press(.down, times: 1)
+            pause(0.5)
+            let focused = probeField(liveHeroProbe(), "fitem") ?? ""
+            if focused.contains("nuvio-folder://") { folderFound = true; break }
+            if focused == lastFocusedItem {
+                stalledPresses += 1
+            } else {
+                stalledPresses = 0
+                lastFocusedItem = focused
+            }
+            if stalledPresses >= 5 { break }
+        }
+        guard folderFound else {
+            throw XCTSkip("no folder/collection tile focused within 45 Down presses on this profile's Home")
+        }
+        remote.press(.select)
+        pause(2)
+        shot(app, "69a_folder_page_before_scroll")
+
+        guard let headerBefore = namedFrame("folder_header") else {
+            XCTFail("no folder_header element on screen — the FA87 run confirmed this node materialises here, so its absence is a regression, not a fixture gap")
+            return
+        }
+        guard !app.staticTexts["Nothing here yet."].exists else {
+            throw XCTSkip("the fixture's folder has no items — nothing to scroll for this test")
+        }
+
+        press(.down, times: 6, gap: 0.7)
+        pause(1)
+        shot(app, "69b_folder_page_after_scroll")
+
+        guard let headerAfter = namedFrame("folder_header") else {
+            XCTFail("folder_header disappeared after scrolling the grid")
+            return
+        }
+        XCTAssertEqual(headerAfter.minY, headerBefore.minY, accuracy: 2, "header top moved while scrolling the grid")
+        XCTAssertEqual(headerAfter.maxY, headerBefore.maxY, accuracy: 2, "header bottom moved while scrolling the grid")
+        XCTAssertEqual(headerAfter.midX, headerBefore.midX, accuracy: 2, "header drifted horizontally while scrolling the grid")
+        XCTAssertEqual(headerAfter.midX, 960, accuracy: 40, "header is not centred on the screen")
+    }
+
+    // MARK: - BUG-117: Up from the last season poster must reach the top block
+
+    /// The Detail page's top block (`topBlock` in `DetailView.swift`) used to size itself to its
+    /// widest child (~1100 pt: the overview `Text`'s cap and `infoSection`'s own width), while the
+    /// season-poster shelf a few rows below can span the full ~1800 pt content width. A poster
+    /// past ~1100 pt (Season 6/7+ on a long-running series) sat outside the top block's
+    /// `.focusSection()` horizontally, so D-pad Up from those posters found no candidate above them
+    /// at all.
+    ///
+    /// rc13: the row-walk this test used to find a 6+ season series (borrowed from test33) was
+    /// unreliable — whatever the first five Home rows happen to contain on a given fixture profile
+    /// may have nothing with that many seasons, which is exactly why it skipped. The Detail page's
+    /// own `DeepLink` entry point (`ContentView.swift`'s `-debug.openDeepLink` DEBUG hook, the same
+    /// `handleDeepLink(_:)` a real Top Shelf `nuviotv://title?…` launch uses) opens The 100
+    /// (`tt2661044`) directly, which has 7 seasons — guaranteed past the old ~1100 pt band with a
+    /// margin to spare, and independent of what this profile's Home rows contain.
+    func test68Bug117UpFromLastSeasonPosterReachesTopBlock() throws {
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", "nuviotv://title?id=tt2661044&type=series&name=The%20100",
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES"
+        ], forceFreshLaunch: true)
+
+        let anyPoster = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'season_poster_'"))
+        let topBlockLabels = ["Mark Watched", "Watched", "Add to Library", "In Library"]
+
+        // The debug hook fires ~1 s after the profile gate is passed and `launchToHome` already
+        // waits out Home's own catalog fan-out, but the deep-linked Detail page still has its own
+        // network fetch (MetaDetailsRepository) before either an action-row button or the season
+        // shelf exists — poll up to 45 s rather than assume a fixed settle.
+        //
+        // Root-caused (rc13, this test's own hook diagnostic session): the hook itself was NEVER
+        // the bottleneck — an `os_log` trace confirmed `.task(id: entered)` fires within ~1 s of
+        // `entered` going true, `DeepLink.parse` resolves the URL correctly (`title(preview:
+        // name="The 100" …)`), and `handleDeepLink` assigns `deepLink` (main+entered branch)
+        // immediately after. The real bottleneck was `DetailViewModel.resolveTrailerIfNeeded`
+        // ignoring `-debug.trailerForceNoTrailer` (only `InlineTrailerCard.swift` honored it) —
+        // this test passes that flag precisely so a trailer never engages, but Detail resolved one
+        // anyway, and `scheduleAutoPlayTrailerIfNeeded()` auto-presented it full-screen ~4 s after
+        // landing with no user interaction, burying the season shelf/action row under a 1-2 minute
+        // video for far longer than any poll budget. Fixed at the source in DetailViewModel.swift;
+        // 45 s (up from 30 s) stays as a modest safety margin for the page's own network fetch, and
+        // this loop still fails fast via the single-Up-press check below if focus itself regresses.
+        var detailReached = false
+        for _ in 0..<90 {
+            if anyPoster.firstMatch.exists || topBlockLabels.contains(where: { app.buttons[$0].exists }) {
+                detailReached = true
+                break
+            }
+            pause(0.5)
+        }
+        guard detailReached else {
+            throw XCTSkip("the -debug.openDeepLink hook never produced a detail page for The 100 within 45 s — network or fixture issue, not the BUG-117 focus bug")
+        }
+        shot(app, "68a_the100_detail_via_deeplink")
+
+        // Same settle the old row-walk used before reading the shelf: give the season-poster row
+        // a moment to lay out and land focus on the selector one Up from the episode row below it.
+        press(.down, times: 3, gap: 1.0)
+        pause(1.5)
+        guard anyPoster.count >= 6 else {
+            throw XCTSkip("The 100's detail page did not show a 6+ season poster shelf (found \(anyPoster.count)) — fixture data may not match tt2661044's real season count")
+        }
+        if !moveFocus(.up, until: anyPoster.firstMatch, max: 3) { _ = moveFocus(.down, until: anyPoster.firstMatch, max: 3) }
+        pause(1)
+        let posterCount = anyPoster.count
+        let lastPoster = anyPoster.element(boundBy: posterCount - 1)
+        guard moveFocus(.right, until: lastPoster, max: posterCount + 2) else {
+            throw XCTSkip("could not walk focus to the last season poster in the shelf")
+        }
+        shot(app, "68b_last_season_poster_focused")
+
+        // A single Up press, then poll briefly (not a repeated-press moveFocus walk) — pre-fix,
+        // the focus engine found no candidate at all and Up was a no-op, so retrying the press
+        // would not distinguish "fixed" from "broken, but eventually landed somewhere else".
+        remote.press(.up)
+        var landedInTopBlock = false
+        for _ in 0..<4 {
+            pause(0.25)
+            if topBlockLabels.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) {
+                landedInTopBlock = true
+                break
+            }
+        }
+        shot(app, "68c_after_up_from_last_poster")
+        XCTAssertTrue(landedInTopBlock, "Up from the last season poster should reach the top block (Mark Watched / Add to Library) within 1 s, not stay on the shelf or go nowhere")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - BUG-118: row edge fade A/B sim spike
+
+    /// Evidence-gathering spike (rc13, W2-A): screenshots the SAME catalog row at scroll offset 0,
+    /// after 3 Rights and after 12 Rights, for each `debug.rowEdgeFade` leg (0=hard, 1=soft,
+    /// 2=automatic/today's un-set behavior — see `RowEdgeEffectStyleModifier`'s header for the
+    /// full BUG-118 argument). The screenshots turned out to be a dead end as a sim oracle — the
+    /// nine captured for this test are byte-identical leg-to-leg at each offset, confirmed by MD5
+    /// (`scrollEdgeEffectStyle` renders no visible difference on this simulator/OS build) — so the
+    /// one thing left to assert here is that the launch-arg override actually reaches the row's
+    /// own `@AppStorage`, via the hidden `row_edge_fade_probe` text `RowEdgeEffectStyleModifier`
+    /// attaches to every row it modifies.
+    func test70RowEdgeFadeSpike() throws {
+        defer {
+            let restored = launchToHome(forceFreshLaunch: true)
+            XCTAssertTrue(restored.state == .runningForeground)
+        }
+
+        let legs: [(mode: Int, name: String)] = [(0, "hard"), (1, "soft"), (2, "auto")]
+        for leg in legs {
+            let app = launchToHome(
+                extraArguments: ["-debug.rowEdgeFade", "\(leg.mode)", "-home_upcoming_row_enabled", "NO"],
+                forceFreshLaunch: true
+            )
+            openTab(app, named: "Home")
+            // Row 2 (one Down from the hero) — same "skip the hero row" convention other legs use
+            // so the hero's own focus/reveal behavior never confuses what is being screenshotted.
+            press(.down, times: 2, gap: 0.6)
+            pause(1)
+
+            // `.firstMatch`, not the bare subscript: every row this modifier attaches to mounts
+            // its own copy of this identifier (four rows can be on screen at once), and reading
+            // `.label` off an ambiguous multi-element query fails the snapshot resolution outright
+            // rather than just picking one.
+            let probe = app.staticTexts.matching(identifier: "row_edge_fade_probe").firstMatch
+            XCTAssertTrue(probe.waitForExistence(timeout: 10), "[\(leg.name)] row_edge_fade_probe missing — RowEdgeEffectStyleModifier did not mount on this row")
+            XCTAssertEqual(Self.probeValue(probe.label, key: "mode"), leg.mode, "[\(leg.name)] -debug.rowEdgeFade \(leg.mode) did not reach the row's @AppStorage (\(probe.label))")
+            shot(app, "bug118-\(leg.name)-0")
+
+            press(.right, times: 3, gap: 0.4)
+            pause(0.6)
+            shot(app, "bug118-\(leg.name)-3")
+
+            press(.right, times: 9, gap: 0.4)
+            pause(0.6)
+            shot(app, "bug118-\(leg.name)-12")
+        }
     }
 }
