@@ -334,6 +334,8 @@ struct CollectionRowView: View {
             // trailer — its only bleed past the padded edge is the native lift + ring, the exact
             // allowance that clip lets through anyway.
             .scrollClipDisabled()
+            // BUG-118: see `RowEdgeEffectStyleModifier`.
+            .rowEdgeEffectStyle()
             .overlay(alignment: .topLeading) {
                 if cardTopReach > 0 {
                     Text(collection.title)
@@ -563,6 +565,31 @@ struct FolderTile: View {
         }
     }
 
+    /// BUG-110 (rc13): whether the ZStack in `body` is about to render a photographic/GIF cover, as
+    /// opposed to the gradient+initial/emoji placeholder — mirrors the precedence chain the `body`
+    /// cover `let` computes exactly (own cover, folder backdrop, emoji [no cover — falls through],
+    /// collection backdrop, resolved fallback). Duplicated rather than hoisted out of the ZStack
+    /// closure (same tradeoff as `rendersTextCaption`/the `.task` guard elsewhere in this file):
+    /// `.nuvioCardDepth` is attached to the ZStack from OUTSIDE its own builder scope, where the
+    /// `body` `let`s aren't visible. Feeds `artworkPresent:` below so a placeholder tile's rail
+    /// clamps to the Subtle preset instead of reading as a glitch on a flat gradient.
+    private var hasArtworkCover: Bool {
+        let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let emoji = folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let folderBackdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let collectionBackdrop = collectionBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasOwnCover = !(ownCover?.isEmpty ?? true)
+        let hasFolderBackdrop = !(folderBackdrop?.isEmpty ?? true)
+        let hasCollectionBackdrop = !(collectionBackdrop?.isEmpty ?? true)
+        let hasEmoji = !(emoji?.isEmpty ?? true)
+        let cover: String? = hasOwnCover ? ownCover
+            : hasFolderBackdrop ? folderBackdrop
+            : hasEmoji ? nil
+            : hasCollectionBackdrop ? collectionBackdrop
+            : fallbackCoverUrl
+        return !(cover?.isEmpty ?? true)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ZStack {
@@ -671,7 +698,29 @@ struct FolderTile: View {
             // the rail scales with the artwork and traces the picture, not the outer tile box —
             // the same "rail hugs the INSET artwork" rule BUG-91 set for PosterCard. `.posters` is
             // the surface a collection tile reads as (the Settings toggle that governs poster rows).
-            .nuvioCardDepth(RoundedRectangle(cornerRadius: style.cornerRadius), surface: .posters)
+            //
+            // BUG-110 (rc13) re-examined this against `PosterCard`/`LandscapeCard`'s
+            // `max(0, cornerRadius - inset)` convention: those cards reserve a SMALLER inset artwork
+            // frame for the ring band (`ringInset`) and attach the rail to that inner box before
+            // re-framing back up to the card's outer size. This tile has no such inset frame — the
+            // ring band is instead reserved by uniformly `.scaleEffect`-shrinking the WHOLE already-
+            // drawn ZStack (cover + logo + GIF) below, itself, so there is no smaller artwork box to
+            // move this modifier onto. The radius therefore stays the tile's own `style.cornerRadius`
+            // unchanged (`max(0, r - 0)` would be a no-op), and the rail already traces the full,
+            // un-inset artwork exactly as intended — it rides the same `.scaleEffect` as the ring, so
+            // it shrinks concentrically with the picture once a ring band is reserved, same as BUG-91.
+            //
+            // `artworkPresent: hasArtworkCover` — the second BUG-110 finding — caps the rail to the
+            // Subtle preset on the gradient+initial/emoji placeholder branch below (every TMDB
+            // Discover genre folder with no configured cover), where a Balanced/Bold rail drawn over
+            // a flat solid reads as a stray bright line rather than an edge catching light on a
+            // picture. Photo/GIF-covered tiles are unaffected (`artworkPresent` true → the level the
+            // user picked, unclamped).
+            .nuvioCardDepth(
+                RoundedRectangle(cornerRadius: style.cornerRadius),
+                surface: .posters,
+                artworkPresent: hasArtworkCover
+            )
             // 2026-08-30 no-zoom investigation: same overpaint as TileFocusLift's ring, same fix —
             // the ring used to strokeBorder straight over this tile's own cover/logo/GIF stack.
             // That stack's internal layout (the logo overlay in particular) is pinned to this
@@ -980,102 +1029,95 @@ struct FolderDetailView: View {
         ZStack {
             Theme.Palette.background.ignoresSafeArea()
 
-            // BUG-38 round three: the folder's backdrop is NOT painted behind this page any
-            // more (it shipped that way in beta.14; the reporter found it made the page text
-            // unreadable depending on the image). The logo-as-title stays; the backdrop moved
-            // to the Home hero, which follows the focused folder tile.
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                    HStack(alignment: .center, spacing: Theme.Spacing.lg) {
-                        // H-2: the parent collection's title ("Genres", "Services de
-                        // Streaming") used to render as a caption above this logo — a
-                        // tvOS-only invention (mobile's `hideTitle` is tile-scoped, not this)
-                        // that a tester flagged 2026-08-22. Removed unconditionally; the
-                        // folder page header is logo-only now, so the wrapping VStack that
-                        // once held both is gone too.
-                        FolderHeroTitle(title: model.folderTitle, logoUrl: model.titleLogoUrl)
-                        Spacer()
-                        // On-device TMDB Discover filter editing for the selected tmdb tab
-                        // (upstream 0fc4616b's exclusion filters + the existing include fields).
-                        // Only shown for filter-consuming sources; doubles as the empty state's
-                        // focus anchor (BUG-47) when the source currently matches nothing.
-                        if let source = model.editableSource {
-                            Button {
-                                editing = source
-                            } label: {
-                                Label("Edit Filters", systemImage: "line.3.horizontal.decrease.circle")
-                                    .font(Theme.Font.meta)
-                            }
-                            .buttonStyle(.bordered)
-                            .accessibilityIdentifier("folder.editFilters")
-                        }
-                    }
+            // FEAT-40 (rc13): `header` is now a fixed sibling above the scroll, not the ScrollView
+            // content's first child — see `header`'s doc for why, and for what replaced the old
+            // inline `HStack(title, Spacer, Edit Filters)` this VStack used to open with.
+            VStack(spacing: 0) {
+                header
 
-                    if model.tabs.count > 1 {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: Theme.Spacing.md) {
-                                ForEach(Array(model.tabs.enumerated()), id: \.offset) { index, tab in
-                                    TabChip(
-                                        label: tab.label,
-                                        isSelected: index == model.selectedTabIndex
-                                    ) {
-                                        model.selectTab(index)
+                // BUG-38 round three: the folder's backdrop is NOT painted behind this page any
+                // more (it shipped that way in beta.14; the reporter found it made the page text
+                // unreadable depending on the image). The logo-as-title stays; the backdrop moved
+                // to the Home hero, which follows the focused folder tile.
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                        if model.tabs.count > 1 {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: Theme.Spacing.md) {
+                                    ForEach(Array(model.tabs.enumerated()), id: \.offset) { index, tab in
+                                        TabChip(
+                                            label: tab.label,
+                                            isSelected: index == model.selectedTabIndex
+                                        ) {
+                                            model.selectTab(index)
+                                        }
                                     }
                                 }
+                                .padding(.vertical, Theme.Spacing.sm)
                             }
-                            .padding(.vertical, Theme.Spacing.sm)
                         }
-                    }
 
-                    if model.items.isEmpty {
-                        if model.isLoading || model.tabIsLoading {
-                            HStack(spacing: Theme.Spacing.md) {
-                                ProgressView()
-                                Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                        if model.items.isEmpty {
+                            if model.isLoading || model.tabIsLoading {
+                                HStack(spacing: Theme.Spacing.md) {
+                                    ProgressView()
+                                    Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
+                                }
+                                .padding(.top, Theme.Spacing.xl)
+                            } else {
+                                VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                                    Text("Nothing here yet.")
+                                        .font(Theme.Font.body)
+                                        .foregroundStyle(Theme.Palette.textSecondary)
+                                    // BUG-47 class: a pushed screen with no focusable content strands
+                                    // focus on the ancestor tab bar, where Menu exits the app instead
+                                    // of popping. The Edit Filters button anchors focus when present;
+                                    // otherwise keep a Go Back control here (same as CatalogGridView).
+                                    if model.editableSource == nil {
+                                        Button("Go Back") { dismiss() }
+                                            .buttonStyle(.bordered)
+                                    }
+                                }
+                                .padding(.top, Theme.Spacing.xl)
                             }
-                            .padding(.top, Theme.Spacing.xl)
                         } else {
-                            VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                                Text("Nothing here yet.")
-                                    .font(Theme.Font.body)
-                                    .foregroundStyle(Theme.Palette.textSecondary)
-                                // BUG-47 class: a pushed screen with no focusable content strands
-                                // focus on the ancestor tab bar, where Menu exits the app instead
-                                // of popping. The Edit Filters button anchors focus when present;
-                                // otherwise keep a Go Back control here (same as CatalogGridView).
-                                if model.editableSource == nil {
-                                    Button("Go Back") { dismiss() }
-                                        .buttonStyle(.bordered)
+                            LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
+                                ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                                    NavigationLink(value: TitleRoute(preview: item)) {
+                                        PosterCard(title: item.name, imageURL: item.poster)
+                                    }
+                                    .cardFocusButtonStyle()
+                                    .posterButtonShape()
+                                    .onAppear { model.itemAppeared(at: index) }
                                 }
                             }
-                            .padding(.top, Theme.Spacing.xl)
-                        }
-                    } else {
-                        LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
-                            ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                                NavigationLink(value: TitleRoute(preview: item)) {
-                                    PosterCard(title: item.name, imageURL: item.poster)
-                                }
-                                .cardFocusButtonStyle()
-                                .posterButtonShape()
-                                .onAppear { model.itemAppeared(at: index) }
-                            }
-                        }
 
-                        if model.canLoadMore || model.tabIsLoading {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                Spacer()
+                            if model.canLoadMore || model.tabIsLoading {
+                                HStack {
+                                    Spacer()
+                                    ProgressView()
+                                    Spacer()
+                                }
+                                .padding(.vertical, Theme.Spacing.lg)
                             }
-                            .padding(.vertical, Theme.Spacing.lg)
                         }
                     }
+                    // FEAT-40 (rc13): the header used to be this VStack's own first child, so the
+                    // single `.padding(Theme.Spacing.screen)` this content used to carry gave it
+                    // its top inset too. Now that the header is a pinned sibling ABOVE the
+                    // ScrollView (with its own `Theme.Spacing.screen` top padding, see `header`),
+                    // this content keeps `Theme.Spacing.screen` on the other three sides but only
+                    // `Theme.Spacing.lg` on top — just enough clearance that a focused first-row
+                    // tile's lift (this ScrollView is `.scrollClipDisabled()`, same as the grid
+                    // always was) paints over empty page background instead of bleeding under the
+                    // now-opaque header above it.
+                    .padding(.horizontal, Theme.Spacing.screen)
+                    .padding(.bottom, Theme.Spacing.screen)
+                    .padding(.top, Theme.Spacing.lg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(Theme.Spacing.screen)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .scrollClipDisabled()
             }
-            .scrollClipDisabled()
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
@@ -1085,6 +1127,83 @@ struct FolderDetailView: View {
         .fullScreenCover(item: $editing, onDismiss: { model.reload() }) { source in
             TmdbFilterEditorView(target: source)
         }
+    }
+
+    /// FEAT-40 (rc13, "official Nuvio" folder header ask): pinned OUTSIDE the `ScrollView`, in its
+    /// own slot in the page's outer `VStack`, so it stays on screen for the whole grid scroll
+    /// instead of riding away with the content the way the old inline `HStack(title, Spacer, Edit
+    /// Filters)` — this page's ScrollView content's first child — used to. The title now renders
+    /// through the shared `TitleLogoHeader` (promoted from this file's own `FolderHeroTitle`; see
+    /// the comment where that struct used to sit, just above `TabChip`), CENTRED and at the larger
+    /// `Theme.Font.hero` / `Theme.Size.heroLogoSlotHeight` rather than the small pinned-hero-sized
+    /// leading title it rendered before. The Edit Filters button floats in its OWN full-width,
+    /// trailing-aligned `HStack` layered behind the centred title (not a `Spacer()` between the
+    /// two, which would have shoved the title off-center whenever the button is present) so the
+    /// title stays centred on the page regardless of whether the button shows.
+    ///
+    /// H-2: the parent collection's title ("Genres", "Services de Streaming") stays removed — a
+    /// tvOS-only invention a tester flagged 2026-08-22 — so this header is logo/title-only, same
+    /// as it was before this restructure.
+    /// BUG-38 round three: the folder's backdrop is still not painted behind this page (see the
+    /// comment on the `ScrollView` above); this pinned header carries no backdrop of its own.
+    ///
+    /// Non-focusable except the Edit Filters button: `TitleLogoHeader` only ever renders `Text` or
+    /// `Image`, neither a tvOS focus target, so Up from the tab chips below still reaches the
+    /// button when it's present, and Down from the button returns to the chips — no new focus
+    /// section is needed for a header this shallow.
+    private var header: some View {
+        ZStack {
+            TitleLogoHeader(
+                title: model.folderTitle,
+                logoUrl: model.titleLogoUrl,
+                alignment: .center,
+                textFont: Theme.Font.hero,
+                slotHeight: Theme.Size.heroLogoSlotHeight
+            )
+            .frame(maxWidth: .infinity)
+
+            // On-device TMDB Discover filter editing for the selected tmdb tab (upstream
+            // 0fc4616b's exclusion filters + the existing include fields). Only shown for
+            // filter-consuming sources; doubles as the empty state's focus anchor (BUG-47) when
+            // the source currently matches nothing.
+            if let source = model.editableSource {
+                HStack {
+                    Spacer()
+                    Button {
+                        editing = source
+                    } label: {
+                        Label("Edit Filters", systemImage: "line.3.horizontal.decrease.circle")
+                            .font(Theme.Font.meta)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("folder.editFilters")
+                }
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.screen)
+        .padding(.top, Theme.Spacing.screen)
+        // rc13 UI test69 (`FolderHeaderStaysPinnedWhileGridScrolls`): reads this frame before and
+        // after scrolling the grid to prove the header never moves.
+        .accessibilityIdentifier("folder_header")
+    }
+}
+
+// BUG-38 (folder page hero): this screen's title-logo header used to live here as a private
+// `FolderHeroTitle` — the folder's `titleLogoUrl` as the page title when it loads (the same
+// ArtworkStore path `HeroLogo` in HomeView uses for the Home hero's logo), falling back to plain
+// `screenTitle` text until then / when there is none. rc13 (FEAT-40) promoted it to
+// `DesignSystem/TitleLogoHeader.swift` — generalized with `alignment`/`textFont`/`slotHeight`
+// parameters so `FolderDetailView`'s header (centred, larger, pinned above the grid) and
+// `StreamPickerView`'s header (FEAT-42, unchanged leading/screenTitle/pinned layout) share one
+// implementation instead of two copies. See that file for the Codex round-1 fixes it carries
+// forward; `FolderDetailView.header` above is the only call site left in this file.
+
+private extension Optional where Wrapped == String {
+    /// Blank/whitespace-only payload URLs count as absent — the rule every other cover/logo
+    /// check in this file applies (the editor/import path can persist whitespace-only values).
+    var nonBlankTrimmed: String? {
+        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
     }
 }
 
@@ -1096,71 +1215,6 @@ struct FolderDetailView: View {
 /// covering that platter. `ChipButtonStyle(selected:)` already resolves fill and label for all
 /// four focus×selection states (accent at rest when selected, white platter + dark label on
 /// focus), so the chip must not override either.
-/// BUG-38 (folder page hero): the folder's `titleLogoUrl` as the page title when it loads —
-/// the same ArtworkStore path `HeroLogo` (HomeView) uses for the Home hero's logo — and the
-/// plain `screenTitle` text until then / when there is none. The logo is capped to the pinned
-/// Home hero's logo slot so a 1:1 genre badge and a wide wordmark both sit on one baseline.
-private struct FolderHeroTitle: View {
-    let title: String
-    private let url: URL?
-    @State private var image: UIImage?
-
-    init(title: String, logoUrl: String?) {
-        self.title = title
-        self.url = logoUrl.flatMap(URL.init(string:))
-        // Codex round 1: seed synchronously from the cache, exactly as `HeroLogo` does — a
-        // reopened folder whose logo is already in ArtworkStore must not flash its text title
-        // for one frame before the `.task` consults the same cache.
-        _image = State(initialValue: ArtworkStore.cached(url))
-    }
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: Theme.Size.heroLogoMaxWidth, maxHeight: Theme.Size.heroLogoSlotHeightPinned, alignment: .leading)
-                    .accessibilityLabel(title)
-            } else {
-                Text(title)
-                    .font(Theme.Font.screenTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-            }
-        }
-        // Codex round 1: when a logo is configured, text-while-loading and the loaded logo share
-        // ONE fixed-height slot, so the swap cannot resize the header and shove the tabs/grid
-        // while focus is live. No logo configured → no slot: the page keeps its old text metrics.
-        .frame(height: url == nil ? nil : Theme.Size.heroLogoSlotHeightPinned, alignment: .leading)
-        .task(id: url) {
-            guard let url else {
-                image = nil
-                return
-            }
-            if let hit = ArtworkStore.cached(url) {
-                image = hit
-                return
-            }
-            image = nil
-            let fetched = try? await ArtworkStore.fetch(url)
-            // Codex round 1: `.task(id:)` cancels this task when the URL changes, but
-            // `ArtworkStore.fetch` lets shared work run to completion — so a superseded fetch can
-            // land after its replacement. Never install a result for a URL that is no longer ours.
-            guard !Task.isCancelled, let fetched else { return }
-            withAnimation(.easeIn(duration: 0.25)) { image = fetched }
-        }
-    }
-}
-
-private extension Optional where Wrapped == String {
-    /// Blank/whitespace-only payload URLs count as absent — the rule every other cover/logo
-    /// check in this file applies (the editor/import path can persist whitespace-only values).
-    var nonBlankTrimmed: String? {
-        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-        return value
-    }
-}
-
 private struct TabChip: View {
     let label: String
     let isSelected: Bool

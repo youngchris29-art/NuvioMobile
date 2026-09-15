@@ -98,8 +98,20 @@ struct CardDepthStyle: Equatable {
     //     Subtle (28)   → 1pt,  0.35, 0pt,  —
     //     Balanced (42) → 2pt,  0.60, 8pt,  0.108
     //     Bold (56)     → 3pt,  0.90, 13pt, 0.162
+    //     Placeholder tiles (rc13, any level) → clamped to Subtle (28) → 1pt, 0.35, 0pt, —
     //
     // (halo width = `railWidth` + 2 × `railHaloSpread`; halo α = `railTopAlpha` × 0.18.)
+    //
+    // BUG-110 (rc13, u/mrStevenx3: "depth rail reads as a glitch on solid Genres tiles"): the table
+    // above assumed every rail traces a picture. A tile with no artwork cover — the gradient +
+    // initial/emoji placeholder every TMDB Discover genre folder falls back to (`FolderTile`'s
+    // `else` branch) — draws the SAME rail over a flat solid fill, where Balanced/Bold's brighter
+    // top stop and halo read as a stray bright line rather than "an edge catching light on a
+    // picture". `effectiveEdgeStrength(_:artworkPresent:)` below clamps the strength actually fed
+    // to `railWidth`/`railTopAlpha`/`railHaloSpread` to the Subtle ceiling whenever the caller says
+    // there is no artwork, regardless of the user's chosen level. Tiles that DO have artwork are
+    // completely unaffected — `artworkPresent` defaults to `true`, so every existing call site
+    // (`PosterCard`, `LandscapeCard`, `SagaCard`, `CastCard`) renders exactly as before.
 
     /// How wide the crisp rail draws, in points, at every coverage (Top/Half/Full alike) — replaces
     /// `partialCoverageRailWidth`, which only ever fired in the partial-coverage branch and left Full
@@ -176,6 +188,18 @@ struct CardDepthStyle: Equatable {
     /// number is inert there.
     static func railHaloAlpha(edge: Double) -> Double {
         railTopAlpha(edge: edge) * 0.18
+    }
+
+    /// BUG-110 (rc13): the edge strength actually rendered — clamped to the Subtle ceiling (28)
+    /// whenever `artworkPresent` is `false`, unchanged otherwise. Pure and static, like every other
+    /// function in this section, so the clamp is unit-testable without mounting a live
+    /// `CardDepthOverlay`. Every reader of `style.edgeStrength` inside `CardDepthOverlay` goes
+    /// through this first — `railWidth`, `railTopAlpha` (via `railStops`), and `railHaloSpread` all
+    /// end up clamped together, so a placeholder tile can never end up with (say) a Bold width but a
+    /// Subtle alpha.
+    static func effectiveEdgeStrength(_ edgeStrength: Int, artworkPresent: Bool) -> Int {
+        guard !artworkPresent else { return edgeStrength }
+        return min(edgeStrength, 28)
     }
 
     /// Whether the halo should be withheld this frame. On a FOCUSED card in either mode that reserves
@@ -305,14 +329,21 @@ extension View {
     /// BUG-110: the halo layer added below reads `\.isFocused` and both ring `@AppStorage` flags so
     /// it can withhold itself on a focused, ring-band-reserving card (`CardDepthStyle.haloSuppressed`)
     /// — the crisp rail this doc has always described is unaffected by focus state.
-    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface) -> some View {
-        modifier(CardDepthModifier(shape: shape, surface: surface))
+    ///
+    /// BUG-110 (rc13): `artworkPresent` defaults to `true` — pass `false` from a tile that is about
+    /// to draw its no-cover gradient+initial/emoji placeholder instead of a picture, so the rendered
+    /// rail clamps to the Subtle preset (`CardDepthStyle.effectiveEdgeStrength`) regardless of the
+    /// user's chosen level. Every existing call site is byte-identical (the default keeps it on).
+    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true) -> some View {
+        modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent))
     }
 }
 
 private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
     let shape: S
     let surface: CardDepthSurface
+    /// BUG-110 (rc13): see `nuvioCardDepth`'s doc — forwarded to `CardDepthOverlay` unchanged.
+    var artworkPresent: Bool = true
     @Environment(\.cardDepthStyle) private var style
     /// BUG-110: reflects the nearest focusable ancestor's focus state (the same pattern `PosterCard`,
     /// `SagaCard` and others already use to read a Button's focus from a nested modifier) — needed
@@ -325,7 +356,7 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
         if style.isEnabled(for: surface) {
             let ringBandReserved = PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
             let haloSuppressed = CardDepthStyle.haloSuppressed(focused: isFocused, ringBandReserved: ringBandReserved)
-            content.overlay { CardDepthOverlay(shape: shape, style: style, haloSuppressed: haloSuppressed) }
+            content.overlay { CardDepthOverlay(shape: shape, style: style, haloSuppressed: haloSuppressed, artworkPresent: artworkPresent) }
         } else {
             content
         }
@@ -342,9 +373,14 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// BUG-110: true when a focused card's own ring/still-stroke would collide with the halo. Never
     /// affects the crisp rail — only whether `edgeHighlight` draws the soft halo layer under it.
     let haloSuppressed: Bool
+    /// BUG-110 (rc13): `false` on a tile currently drawing its no-cover gradient+initial/emoji
+    /// placeholder. Only the RAIL clamps on this — the sheen above (a flat top-of-card gradient)
+    /// reads fine over a placeholder and is left alone.
+    var artworkPresent: Bool = true
 
     var body: some View {
-        let edge = unit(style.edgeStrength)
+        let effectiveEdgeStrength = CardDepthStyle.effectiveEdgeStrength(style.edgeStrength, artworkPresent: artworkPresent)
+        let edge = unit(effectiveEdgeStrength)
         let sheen = unit(style.sheenStrength)
         let coverage = unit(style.edgeCoverage)
 
@@ -362,7 +398,7 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
                 .clipShape(shape)
             }
             if edge > 0 {
-                edgeHighlight(edge: edge, coverage: coverage)
+                edgeHighlight(edge: edge, coverage: coverage, effectiveEdgeStrength: effectiveEdgeStrength)
             }
         }
         .allowsHitTesting(false)
@@ -403,10 +439,10 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// outside `shape` — no `shadow`/`blur` is used here (the FEAT-14 graveyard: outside paint clips
     /// against the artwork frame and lands as a stray sliver in the ring band).
     @ViewBuilder
-    private func edgeHighlight(edge: Double, coverage: Double) -> some View {
-        let width = CardDepthStyle.railWidth(edgeStrength: style.edgeStrength)
+    private func edgeHighlight(edge: Double, coverage: Double, effectiveEdgeStrength: Int) -> some View {
+        let width = CardDepthStyle.railWidth(edgeStrength: effectiveEdgeStrength)
         let stops = CardDepthStyle.railStops(edge: edge, coverage: coverage)
-        let haloSpread = haloSuppressed ? 0 : CardDepthStyle.railHaloSpread(edgeStrength: style.edgeStrength)
+        let haloSpread = haloSuppressed ? 0 : CardDepthStyle.railHaloSpread(edgeStrength: effectiveEdgeStrength)
 
         let rail = ZStack {
             if haloSpread > 0 {

@@ -43,6 +43,10 @@ struct StreamPickerView: View {
     let synopsis: String?
     /// Title-level facts for the player's Info tab chips (nil when the caller has no meta).
     let meta: PlaybackMeta?
+    /// FEAT-42: the title's configured logo (series/movie `MetaDetails.logo`), shown in place of
+    /// the plain text heading when it loads — mobile parity for the stream picker screen. `nil`
+    /// on launch paths with no meta at hand (Home continue-watching, Top Shelf).
+    let logoUrl: String?
 
     @StateObject private var model: StreamsViewModel
     @State private var selected: PlaybackContext?
@@ -87,9 +91,11 @@ struct StreamPickerView: View {
         poster: String? = nil,
         episodeStill: String? = nil,
         synopsis: String? = nil,
-        meta: PlaybackMeta? = nil
+        meta: PlaybackMeta? = nil,
+        logoUrl: String? = nil
     ) {
         self.meta = meta
+        self.logoUrl = logoUrl
         self.poster = poster
         self.episodeStill = episodeStill
         self.synopsis = synopsis
@@ -155,9 +161,9 @@ struct StreamPickerView: View {
                 // still streaming in) are never built at all — this was the lag source (BUG-5):
                 // a non-lazy VStack built every row of every addon up front.
                 LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
-                    Text(title)
-                        .font(Theme.Font.screenTitle)
-                        .foregroundStyle(Theme.Palette.textPrimary)
+                    // FEAT-42: one heading — the title's logo when it loads, else the plain text
+                    // title (mobile shows the series/movie logo on its stream-list screen too).
+                    TitleLogoHeader(title: title, logoUrl: logoUrl)
 
                     // BUG-21 follow-up: the active debrid credential failed auth on a recent
                     // call — without this banner the only symptom is every resolve failing

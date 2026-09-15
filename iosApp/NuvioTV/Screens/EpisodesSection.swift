@@ -133,7 +133,8 @@ struct EpisodesSection: View {
                 poster: route.meta.poster,
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
-                meta: PlaybackMeta(details: route.meta)
+                meta: PlaybackMeta(details: route.meta),
+                logoUrl: route.meta.logo
             )
         }
     }

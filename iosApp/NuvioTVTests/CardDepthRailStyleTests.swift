@@ -152,6 +152,34 @@ final class CardDepthRailStyleTests: XCTestCase {
         XCTAssertEqual(CardDepthStyle.railHaloAlpha(edge: 0.56), 0.162, accuracy: 0.0005)
     }
 
+    // MARK: - effectiveEdgeStrength(_:artworkPresent:) — BUG-110 (rc13) placeholder clamp
+
+    /// A placeholder tile (no artwork cover) at Bold must render with exactly the same width,
+    /// top-stop alpha and halo as an artwork tile explicitly set to Subtle — the rail clamps down
+    /// to the Subtle ceiling (28) regardless of the user's chosen level.
+    func testPlaceholderClampsBoldDownToSubtleWidthAlphaAndHalo() {
+        let clamped = CardDepthStyle.effectiveEdgeStrength(56, artworkPresent: false)
+        XCTAssertEqual(clamped, 28)
+        XCTAssertEqual(
+            CardDepthStyle.railWidth(edgeStrength: clamped),
+            CardDepthStyle.railWidth(edgeStrength: 28)
+        )
+        XCTAssertEqual(
+            CardDepthStyle.railTopAlpha(edge: Double(clamped) / 100),
+            CardDepthStyle.railTopAlpha(edge: 0.28),
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(CardDepthStyle.railHaloSpread(edgeStrength: clamped), 0)
+    }
+
+    /// A tile WITH artwork must never be clamped — every level, including Bold, renders exactly as
+    /// the user configured it. This is the negative control for the placeholder-only clamp above.
+    func testArtworkPresentLeavesEveryLevelUnclamped() {
+        for level in [0, 1, 28, 42, 56, 100] {
+            XCTAssertEqual(CardDepthStyle.effectiveEdgeStrength(level, artworkPresent: true), level)
+        }
+    }
+
     // MARK: - haloSuppressed(focused:ringBandReserved:)
 
     func testHaloSuppressionTruthTable() {

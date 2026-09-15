@@ -893,7 +893,8 @@ struct DetailView: View {
         }
         .fullScreenCover(isPresented: $showStreams) {
             StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
-                             poster: posterUrl, synopsis: overview, meta: playbackMeta)
+                             poster: posterUrl, synopsis: overview, meta: playbackMeta,
+                             logoUrl: logoUrl)
         }
         .fullScreenCover(item: $seriesPlay) { route in
             StreamPickerView(
@@ -907,7 +908,8 @@ struct DetailView: View {
                 poster: route.meta.poster,
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
-                meta: playbackMeta
+                meta: playbackMeta,
+                logoUrl: logoUrl
             )
         }
         // FEAT-32: presented from `presentedTrailer`, which `beginTrailerBridge` sets after the
@@ -1280,6 +1282,13 @@ struct DetailView: View {
             }
             infoSection
         }
+        // BUG-117: this VStack used to hug its widest child (≈1100 pt — the overview `Text`'s
+        // `maxWidth: 1100` and `infoSection`'s own cap), while the season-poster shelf a few rows
+        // down spans the full ≈1800 pt content width. A season poster past ≈1100 pt (Season 6/7 on
+        // a long-running series) had no view directly above it inside this `.focusSection()`, so
+        // D-pad Up from those posters found no candidate at all. Stretching the section to the full
+        // content width gives the engine something to land on from anywhere along the shelf.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
     }
 
@@ -1439,14 +1448,20 @@ struct DetailView: View {
                         // BUG-4) covers both states: accent-contrasting text unfocused, dark text
                         // on the near-white focus lift.
                         actionButtonPadding(
-                            actionLabel("Play", systemImage: "play.fill")
-                                .font(Theme.Font.meta)
-                                .prominentAccentLabel(),
+                            actionLabel(
+                                model.isPlayEnabled ? "Play" : String(localized: "Playback unavailable"),
+                                systemImage: "play.fill"
+                            )
+                            .font(Theme.Font.meta)
+                            .prominentAccentLabel(),
                             horizontal: Theme.Spacing.lg
                         )
                     }
                 )
                 .tint(Theme.Palette.accent)
+                // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
+                // Streams screen when no addon/plugin/embedded/download source can serve this title.
+                .disabled(!model.isPlayEnabled)
             } else if let action = model.seriesAction, let meta = model.meta {
                 prominentActionButtonStyle(
                     Button {
@@ -1454,14 +1469,19 @@ struct DetailView: View {
                     } label: {
                         // BUG-14: see the non-series Play button above.
                         actionButtonPadding(
-                            actionLabel(action.label, systemImage: "play.fill")
-                                .font(Theme.Font.meta)
-                                .prominentAccentLabel(),
+                            actionLabel(
+                                model.isPlayEnabled ? action.label : String(localized: "Playback unavailable"),
+                                systemImage: "play.fill"
+                            )
+                            .font(Theme.Font.meta)
+                            .prominentAccentLabel(),
                             horizontal: Theme.Spacing.lg
                         )
                     }
                 )
                 .tint(Theme.Palette.accent)
+                // C (upstream `972109f9`): same gate as the movie Play button above.
+                .disabled(!model.isPlayEnabled)
             }
 
             if model.trailerVideoURL != nil {

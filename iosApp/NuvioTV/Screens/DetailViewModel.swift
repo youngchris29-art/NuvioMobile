@@ -33,6 +33,11 @@ final class DetailViewModel: ObservableObject {
     /// Series-level primary play action (Resume SxEy / Play SxEy, honoring behaviorHints
     /// defaultVideoId) from the shared resolver; nil for movies or while meta loads.
     @Published private(set) var seriesAction: SeriesPrimaryAction?
+    /// C (upstream `972109f9`): whether the Play button should be enabled — false only once
+    /// `meta` has resolved and no addon/plugin/embedded/download source can serve this title (or,
+    /// for a series, there's no primary action to play at all). True while `meta` is still
+    /// loading so the button never flashes disabled for a frame. See `computeIsPlayEnabled()`.
+    @Published private(set) var isPlayEnabled = true
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
     /// Resolved full-screen trailer (from the Trailers row); drives a player cover with sound.
@@ -52,6 +57,10 @@ final class DetailViewModel: ObservableObject {
     private var libraryWatcher: FlowWatcher?
     private var progressWatcher: FlowWatcher?
     private var cwPrefsWatcher: FlowWatcher?
+    /// C (upstream `972109f9`): re-evaluates `isPlayEnabled` when the installed-addon set changes,
+    /// so enabling an addon (or a plugin scraper elsewhere) re-enables Play without the user
+    /// having to leave and re-enter the page.
+    private var addonWatcher: FlowWatcher?
     // Latest shared-state emissions (the exported StateFlow interface has no `value` accessor,
     // so the watchers below capture what the series primary action needs).
     private var latestProgressEntries: [WatchProgressEntry] = []
@@ -142,6 +151,10 @@ final class DetailViewModel: ObservableObject {
             if let state = emitted as? ContinueWatchingPreferencesUiState { self.latestCwPrefs = state }
             self.refreshFlags()
         }
+        // C: an addon install/removal/toggle changes what `computeIsPlayEnabled()` sees.
+        addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] _ in
+            self?.refreshFlags()
+        }
         refreshFlags()
 
         MetaDetailsRepository.shared.load(type: type, id: id)
@@ -153,6 +166,7 @@ final class DetailViewModel: ObservableObject {
         libraryWatcher?.cancel(); libraryWatcher = nil
         progressWatcher?.cancel(); progressWatcher = nil
         cwPrefsWatcher?.cancel(); cwPrefsWatcher = nil
+        addonWatcher?.cancel(); addonWatcher = nil
         trailerVideoURL = nil
         trailerVideoId = nil
         didRequestTrailer = false
@@ -176,7 +190,17 @@ final class DetailViewModel: ObservableObject {
     /// `trailerVideoURL` stays nil and Detail keeps the static backdrop.
     private func resolveTrailerIfNeeded(_ meta: MetaDetails) {
         guard !didRequestTrailer else { return }
-        let trailers = meta.trailers
+        // rc13 (test68/BUG-117): P-1d's debug.trailerForceNoTrailer was only wired into
+        // `InlineTrailerCard.swift`'s Home-row trailers (`let trailers = TrailerProbe.forceNoTrailer
+        // ? [] : meta.trailers`) — Detail's own hero trailer read `meta.trailers` unconditionally,
+        // so a UI test navigating straight into a title via the `-debug.openDeepLink` hook still
+        // got a resolved `trailerVideoURL` here, and 4s later `scheduleAutoPlayTrailerIfNeeded()`
+        // (below) auto-presented a full-screen trailer cover with no way for the test to have
+        // suppressed it — burying the season-poster shelf and action row under a 1-2 minute video
+        // regardless of how long the test's poll budget is. Same knob, same gating rule (honored
+        // only with `debug.trailerProbe` also on), mirrored here so `-debug.trailerForceNoTrailer`
+        // actually means "no trailer" everywhere a title can show one, not just on Home.
+        let trailers = TrailerProbe.forceNoTrailer ? [] : meta.trailers
         guard !trailers.isEmpty else { return }
         // BUG-101 (War Machine, 2026-09-08): the FULL ranking, not just the head — a dead/blocked
         // top candidate (e.g. a TMDB-listed French trailer whose YouTube id no longer resolves)
@@ -419,6 +443,28 @@ final class DetailViewModel: ObservableObject {
         isSaved = LibraryRepository.shared.isSaved(id: id, type: type)
         watchedEpisodeKeys = computeWatchedEpisodeKeys()
         seriesAction = computeSeriesAction()
+        isPlayEnabled = computeIsPlayEnabled()
+    }
+
+    /// C (upstream `972109f9`): mirrors the shared `PlaybackAvailability` gate mobile's Compose
+    /// screens already apply. Stays `true` while `meta` hasn't resolved yet (no verdict to give);
+    /// a movie checks `id`/`type` directly, a series checks the shared resolver's primary action
+    /// (its `videoId`/season/episode — the exact episode Play/Resume would launch) and disables
+    /// outright when there's no action at all (nothing left to play, e.g. an unaired-only series).
+    private func computeIsPlayEnabled() -> Bool {
+        guard let meta else { return true }
+        let availability = PlaybackAvailability.companion.current(type: type)
+        if EpisodesSection.isSeriesLike(meta) {
+            guard let action = seriesAction else { return false }
+            return availability.canPlay(
+                type: type,
+                videoId: action.videoId,
+                parentMetaId: id,
+                seasonNumber: action.seasonNumber,
+                episodeNumber: action.episodeNumber
+            )
+        }
+        return availability.canPlay(type: type, videoId: id, parentMetaId: id, seasonNumber: nil, episodeNumber: nil)
     }
 
     /// Mirrors mobile's Detail screen: shared `seriesPrimaryAction` over the full progress +
@@ -462,6 +508,7 @@ final class DetailViewModel: ObservableObject {
         libraryWatcher?.cancel()
         progressWatcher?.cancel()
         cwPrefsWatcher?.cancel()
+        addonWatcher?.cancel()
     }
 }
 
