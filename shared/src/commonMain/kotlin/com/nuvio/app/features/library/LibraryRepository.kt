@@ -237,6 +237,16 @@ object LibraryRepository {
         // freshly-pulled snapshot straight back meant an automatic sync re-uploaded items the
         // user had deleted on another device. Real local edits still push through the ordinary
         // mutation paths.
+        //
+        // Fork: upstream 1854dfc3 removed the unconditional post-pull push (it re-uploaded the
+        // whole pulled snapshot); this re-push runs only when local mutations are still pending,
+        // so a failed push retries on the next pull instead of waiting for the next edit.
+        if (isActiveOperation(operationToken)) {
+            val current = localState.snapshot()
+            if (current.hasPendingPush) {
+                pushToServer(current, delayMs = 0L)
+            }
+        }
     }
 
     private suspend fun pullLibraryDelta(

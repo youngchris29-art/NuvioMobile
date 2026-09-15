@@ -225,7 +225,10 @@ object AccountDataStores {
         AccountDataStore(
             name = "SearchHistoryStorage",
             androidPreferences = "nuvio_search_history",
-            appleKeys = listOf(AppleKeySpec.ProfileScoped("search_history_payload")),
+            appleKeys = listOf(
+                AppleKeySpec.ProfileScoped("search_history_payload"),
+                AppleKeySpec.ProfileScoped("recent_searches_enabled"),
+            ),
         ),
         AccountDataStore(
             name = "DiscoverSelectionStorage",
@@ -340,6 +343,7 @@ object AccountDataStores {
             androidPreferences = "nuvio_player_settings",
             appleKeys = listOf(
                 AppleKeySpec.ProfileScoped("show_loading_overlay"),
+                AppleKeySpec.ProfileScoped("pause_overlay_enabled"),
                 AppleKeySpec.ProfileScoped("show_parental_guide"),
                 AppleKeySpec.ProfileScoped("resize_mode"),
                 AppleKeySpec.ProfileScoped("hold_to_speed_enabled"),

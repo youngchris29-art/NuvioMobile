@@ -61,6 +61,40 @@ class PlaybackAvailabilityTest {
         ))
     }
 
+    // Fork: the 5 cases above all exercise the upstream-shaped `PluginsUiState` overload, which
+    // `PlaybackAvailability` itself never calls (see the class doc) — it calls the
+    // `List<PluginScraper>` overload below instead, fed by `PluginScraperHostProvider`. These
+    // three cover the actual shipping path.
+    @Test
+    fun `the List of PluginScraper overload matches an enabled scraper supporting the type`() {
+        val scrapers = listOf(scraper())
+        assertTrue(hasCompatiblePlaybackSource(emptyList(), scrapers, "movie", "tt123"))
+        assertFalse(hasCompatiblePlaybackSource(emptyList(), scrapers, "channel", "tt123"))
+        assertFalse(
+            hasCompatiblePlaybackSource(emptyList(), listOf(scraper().copy(enabled = false)), "movie", "tt123"),
+        )
+    }
+
+    // `MetaDetailsRepository`'s embedded-streams cache (`_uiState`) is private with no test seam
+    // to plant a stream for a known id, so this only proves the unknown-id fallback is false
+    // rather than exercising the embedded-stream hit itself.
+    @Test
+    fun `canStream falls back to false when no embedded stream is seeded for an unknown id`() {
+        val availability = PlaybackAvailability(addons = emptyList(), enabledScrapersForType = emptyList())
+        assertFalse(availability.canStream(type = "movie", videoId = "unknown-video-id"))
+    }
+
+    // `DownloadsRepository`'s item list (`_uiState`) is private with no test seam to plant a
+    // download for a known id, so this only proves the unknown-id fallback is false rather than
+    // exercising the downloaded-file hit itself.
+    @Test
+    fun `canPlay falls back to false when no download is seeded for an unknown id`() {
+        val availability = PlaybackAvailability(addons = emptyList(), enabledScrapersForType = emptyList())
+        assertFalse(
+            availability.canPlay(type = "movie", videoId = "unknown-video-id", parentMetaId = "unknown-parent"),
+        )
+    }
+
     private fun available(
         addons: List<ManagedAddon> = emptyList(),
         plugins: PluginsUiState = PluginsUiState(),
