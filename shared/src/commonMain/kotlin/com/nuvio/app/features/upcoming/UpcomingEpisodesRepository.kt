@@ -144,9 +144,6 @@ object UpcomingEpisodesRepository {
     private fun tmdbSignature(settings: TmdbSettings): String =
         "tmdb:" + listOf(
             settings.enabled,
-            // Key identity, not the key: a replaced (e.g. revoked→valid) key must re-sweep, but
-            // the secret itself never sits in a signature that could end up in a log.
-            settings.apiKey.trim().hashCode(),
             settings.language,
             settings.useReleaseDates,
             settings.useEpisodes,

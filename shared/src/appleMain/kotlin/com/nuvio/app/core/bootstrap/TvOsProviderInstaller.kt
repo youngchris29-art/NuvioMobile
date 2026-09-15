@@ -421,6 +421,12 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         // out of its adapter) — without this a guest profile switch (no cloud pull) would keep
         // the previous profile's keys in memory.
         step("debridSettings") { DebridSettingsRepository.onProfileChanged() }
+        // Upstream 1854dfc3 (upstream fans this out from ProfileRepository; tvOS owns its fan-out
+        // here). MUST be last: it re-baselines the settings/credential observers from the
+        // repositories every step above just reloaded, so an incoming profile's values are not
+        // read as a local edit and pushed over the account blob for a profile this device has not
+        // pulled yet.
+        step("profileSettingsSync") { ProfileSettingsSync.onProfileChanged() }
         log.i { "Profile-select fan-out complete for profile $profileIndex" }
     }
 

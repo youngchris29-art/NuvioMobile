@@ -13,11 +13,14 @@ import java.util.Properties
 // app (composeApp) and the tvOS app (SharedCore framework) consume — single source of truth.
 // Targets mirror composeApp (android + iOS) plus tvOS. No Compose / coil / navigation here.
 
-// Generates the runtime-config classes that the migrated data layer needs, in :shared only,
-// so the FQNs (com.nuvio.app.core.network.SupabaseConfig and
-// com.nuvio.app.core.build.AppVersionConfig / AppBuildConfig) are produced in exactly one
-// module. composeApp consumes them transitively via implementation(projects.shared). The
-// remaining feature configs (trakt/debrid/tmdb/community/intro-db/imdb) stay in composeApp.
+// Generates the runtime-config classes that the migrated data layer needs, in :shared only, so
+// each FQN is produced in exactly one module; composeApp consumes them transitively via
+// implementation(projects.shared) and DELETES any stale copy of its own (see
+// composeApp/build.gradle.kts). Generated here: core.network.SupabaseConfig,
+// core.build.AppVersionConfig / AppBuildConfig, features.trakt.TraktConfig,
+// features.simkl.SimklConfig, features.debrid.PremiumizeConfig,
+// features.player.skip.IntroDbConfig, features.details.ImdbEpisodeRatingsConfig and
+// features.tmdb.TmdbConfig. The remaining feature configs (community) stay in composeApp.
 abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
@@ -67,9 +70,18 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
     @get:Input
     abstract val imdbTapframeBaseUrl: Property<String>
 
+    @get:Input
+    abstract val tmdbApiKey: Property<String>
+
     @TaskAction
     fun generate() {
         val outDir = outputDir.get().asFile
+        if (tmdbApiKey.get().isBlank()) {
+            logger.warn(
+                "TMDB_API_KEY is blank — TmdbConfig.API_KEY will be empty and every TMDB call " +
+                    "will fail. Set TMDB_API_KEY in local.properties (or the environment)."
+            )
+        }
         outDir.resolve("com/nuvio/app/core/network").apply {
             mkdirs()
             resolve("SupabaseConfig.kt").writeText(
@@ -116,6 +128,21 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
                 |    const val CLIENT_ID = "${traktClientId.get()}"
                 |    const val CLIENT_SECRET = "${traktClientSecret.get()}"
                 |    const val REDIRECT_URI = "${traktRedirectUri.get()}"
+                |}
+                """.trimMargin()
+            )
+        }
+        // Upstream 60ee0160: the TMDB key is bundled at build time instead of typed in by the
+        // user. Generated in :shared (not composeApp, which deletes its stale copy) because the
+        // whole features/tmdb package lives here.
+        outDir.resolve("com/nuvio/app/features/tmdb").apply {
+            mkdirs()
+            resolve("TmdbConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.tmdb
+                |
+                |object TmdbConfig {
+                |    const val API_KEY = "${tmdbApiKey.get()}"
                 |}
                 """.trimMargin()
             )
@@ -263,6 +290,7 @@ val generateSharedRuntimeConfigs = tasks.register<GenerateSharedRuntimeConfigsTa
     introDbUrl.set(sharedRuntimeConfigValue("INTRODB_API_URL"))
     imdbRatingsBaseUrl.set(sharedRuntimeConfigValue("IMDB_RATINGS_API_BASE_URL"))
     imdbTapframeBaseUrl.set(sharedRuntimeConfigValue("IMDB_TAPFRAME_API_BASE_URL"))
+    tmdbApiKey.set(sharedRuntimeConfigValue("TMDB_API_KEY"))
 }
 
 tasks.withType<KotlinCompilationTask<*>>().configureEach {

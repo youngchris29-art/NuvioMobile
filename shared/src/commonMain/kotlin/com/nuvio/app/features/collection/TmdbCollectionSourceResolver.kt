@@ -5,6 +5,7 @@ import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.catalog.CatalogPage
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
+import com.nuvio.app.features.tmdb.TmdbConfig
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.tmdb.buildTmdbUrl
 import com.nuvio.app.features.tmdb.normalizeTmdbLanguage
@@ -23,8 +24,7 @@ object TmdbCollectionSourceResolver {
 
     suspend fun resolve(source: CollectionSource, page: Int = 1): CatalogPage = withContext(Dispatchers.Default) {
         val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbConfig.API_KEY
         val language = normalizeTmdbLanguage(settings.language)
         val sourceType = source.tmdbType()
 
@@ -42,8 +42,7 @@ object TmdbCollectionSourceResolver {
     suspend fun importMetadata(sourceType: TmdbCollectionSourceType, id: Int): TmdbSourceImportMetadata =
         withContext(Dispatchers.Default) {
             val settings = TmdbSettingsRepository.snapshot()
-            val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-                ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+            val apiKey = TmdbConfig.API_KEY
             val language = normalizeTmdbLanguage(settings.language)
             when (sourceType) {
                 TmdbCollectionSourceType.LIST -> {
@@ -109,9 +108,7 @@ object TmdbCollectionSourceResolver {
     suspend fun searchCompanies(query: String): List<TmdbCompanySearchResult> = withContext(Dispatchers.Default) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyList()
-        val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbConfig.API_KEY
         fetch<TmdbCompanySearchResponse>(
             endpoint = "search/company",
             apiKey = apiKey,
@@ -123,8 +120,7 @@ object TmdbCollectionSourceResolver {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyList()
         val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbConfig.API_KEY
         val language = normalizeTmdbLanguage(settings.language)
         fetch<TmdbCollectionSearchResponse>(
             endpoint = "search/collection",
@@ -136,9 +132,7 @@ object TmdbCollectionSourceResolver {
     suspend fun searchKeywords(query: String): Map<Int, String> = withContext(Dispatchers.Default) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyMap()
-        val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbConfig.API_KEY
         fetch<TmdbKeywordSearchResponse>(
             endpoint = "search/keyword",
             apiKey = apiKey,
@@ -153,8 +147,7 @@ object TmdbCollectionSourceResolver {
 
     suspend fun genres(mediaType: TmdbCollectionMediaType): Map<Int, String> = withContext(Dispatchers.Default) {
         val settings = TmdbSettingsRepository.snapshot()
-        val apiKey = settings.apiKey.trim().takeIf { it.isNotBlank() }
-            ?: error(resourceString("Add a TMDB API key in Settings to use TMDB sources.", StringKey.collections_tmdb_api_key_required))
+        val apiKey = TmdbConfig.API_KEY
         val language = normalizeTmdbLanguage(settings.language)
         val endpoint = when (mediaType) {
             TmdbCollectionMediaType.MOVIE -> "genre/movie/list"

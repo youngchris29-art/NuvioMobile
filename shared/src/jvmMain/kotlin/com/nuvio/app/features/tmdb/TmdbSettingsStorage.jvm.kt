@@ -19,6 +19,10 @@ import kotlinx.serialization.json.put
 actual object TmdbSettingsStorage {
     private const val preferencesName = "nuvio_tmdb_settings"
     private const val enabledKey = "tmdb_enabled"
+    // Fork: removed setting (upstream 60ee0160 bundles the TMDB key) — the const and its
+    // syncKeys entry are KEPT so replaceFromSyncPayload's delete pass purges the orphaned pref on
+    // the next settings sync. Precedent: PlayerSettingsStorage.apple.kt's
+    // legacyAddonSubtitleStartupModeKey. Upstream deletes both and leaves the orphan behind.
     private const val apiKeyKey = "tmdb_api_key"
     private const val languageKey = "tmdb_language"
     private const val useTrailersKey = "tmdb_use_trailers"
@@ -57,16 +61,6 @@ actual object TmdbSettingsStorage {
 
     actual fun saveEnabled(enabled: Boolean) {
         saveBoolean(enabledKey, enabled)
-    }
-
-    actual fun loadApiKey(): String? =
-        preferences?.getString(ProfileScopedKey.of(apiKeyKey), null)
-
-    actual fun saveApiKey(apiKey: String) {
-        preferences
-            ?.edit()
-            ?.putString(ProfileScopedKey.of(apiKeyKey), apiKey)
-            ?.apply()
     }
 
     actual fun loadLanguage(): String? =
@@ -177,7 +171,6 @@ actual object TmdbSettingsStorage {
 
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadEnabled()?.let { put(enabledKey, encodeSyncBoolean(it)) }
-        loadApiKey()?.let { put(apiKeyKey, encodeSyncString(it)) }
         loadLanguage()?.let { put(languageKey, encodeSyncString(it)) }
         loadUseTrailers()?.let { put(useTrailersKey, encodeSyncBoolean(it)) }
         loadUseArtwork()?.let { put(useArtworkKey, encodeSyncBoolean(it)) }
@@ -199,7 +192,6 @@ actual object TmdbSettingsStorage {
         }?.apply()
 
         payload.decodeSyncBoolean(enabledKey)?.let(::saveEnabled)
-        payload.decodeSyncString(apiKeyKey)?.let(::saveApiKey)
         payload.decodeSyncString(languageKey)?.let(::saveLanguage)
         payload.decodeSyncBoolean(useTrailersKey)?.let(::saveUseTrailers)
         payload.decodeSyncBoolean(useArtworkKey)?.let(::saveUseArtwork)

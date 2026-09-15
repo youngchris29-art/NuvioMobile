@@ -5,6 +5,9 @@ internal object JsBindings {
         return """
             globalThis.SCRAPER_ID = $scraperIdJson;
             globalThis.SCRAPER_SETTINGS = $settingsJson;
+            if (typeof TMDB_API_KEY === 'undefined') {
+                globalThis.TMDB_API_KEY = __get_tmdb_api_key();
+            }
             if (typeof globalThis.global === 'undefined') globalThis.global = globalThis;
             if (typeof globalThis.window === 'undefined') globalThis.window = globalThis;
             if (typeof globalThis.self === 'undefined') globalThis.self = globalThis;

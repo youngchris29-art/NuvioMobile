@@ -13,8 +13,6 @@ import com.nuvio.app.features.mdblist.MdbListSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsUiState
 import com.nuvio.app.features.profiles.ProfileRepository
-import com.nuvio.app.features.tmdb.TmdbSettings
-import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlin.concurrent.Volatile
@@ -45,7 +43,7 @@ private data class ProviderCredentialScope(
 )
 
 /**
- * Cross-client sync for provider API-key credentials (TMDB, MDBList, every debrid provider,
+ * Cross-client sync for provider API-key credentials (MDBList, every debrid provider,
  * AnimeSkip client id, IntroDB API key).
  *
  * These used to ride the general [ProfileSettingsSync] blob, which does a whole-blob
@@ -69,7 +67,6 @@ object ProviderCredentialSync {
     private val stateLock = SynchronizedObject()
     private val observedSnapshots = mutableMapOf<Int, ProviderCredentialSnapshot>()
     private val baselineSnapshots = mutableMapOf<ProviderCredentialScope, ProviderCredentialSnapshot>()
-    private val pendingScopes = mutableSetOf<ProviderCredentialScope>()
 
     /**
      * Legacy-blob migration stash (Codex rounds 4+7): credential values found in a pre-split
@@ -96,14 +93,20 @@ object ProviderCredentialSync {
      * provider (FEAT-6); until the backend learns it, its credential stays device-local. Filtered
      * at the serialization boundary only: local snapshots still carry it, so change detection and
      * `applySnapshot` are untouched (a remote snapshot can never contain it, and apply only writes
-     * providers present in the payload, so the local key is never blanked).
+     * providers present in the payload, so the local key is never blanked). Since upstream
+     * 1854dfc3 a provider missing from a pull is BLANKED, so this set is also the
+     * `clearWhenAbsent` exemption passed to [ProviderCredentialSnapshot.mergeRemote] — an
+     * AllDebrid row can never exist remotely, and blanking on every pull would wipe the key.
      */
     private val BACKEND_UNSUPPORTED_PROVIDERS = setOf(
         ProviderCredentialIds.debrid(DebridProviders.ALLDEBRID_ID),
     )
 
     private val legacyStorageKeyToProvider = mapOf(
-        "tmdb_api_key" to ProviderCredentialIds.TMDB,
+        // Fork: no "tmdb_api_key" entry — upstream 60ee0160 bundles the TMDB key at compile
+        // time, so a legacy blob's personal TMDB key has nowhere to migrate to. It is still
+        // EXTRACTED by ProfileSettingsSync, which keeps `rewriteLegacyBlobSanitized` firing so
+        // the dead key is stripped from the remote blob.
         "mdblist_api_key" to ProviderCredentialIds.MDBLIST,
         "animeskip_client_id" to ProviderCredentialIds.ANIMESKIP,
         "introdb_api_key" to ProviderCredentialIds.INTRODB,
@@ -144,8 +147,28 @@ object ProviderCredentialSync {
         synchronized(stateLock) {
             observedSnapshots.clear()
             baselineSnapshots.clear()
-            pendingScopes.clear()
             legacyBlobCredentials.clear()
+        }
+    }
+
+    /**
+     * Re-baselines the observer against the profile that is active RIGHT NOW (upstream
+     * 1854dfc3). The profile fan-out reloads every credential repository, so the observer sees a
+     * burst of "changes" that are really just the new profile's values; without this re-baseline
+     * the first of them reads as a local edit and pushes the outgoing profile's snapshot over the
+     * incoming one's rows. Called from the tvOS profile installer after the repositories reload.
+     */
+    internal fun onProfileChanged() {
+        if (observeJob?.isActive != true) return
+        ensureRepositoriesLoaded()
+        val profileId = ProfileRepository.activeProfileId
+        val snapshot = currentSnapshot(profileId)
+        val credentialScope = currentScope(profileId)
+        synchronized(stateLock) {
+            observedSnapshots[profileId] = snapshot
+            if (credentialScope != null) {
+                baselineSnapshots[credentialScope] = snapshot
+            }
         }
     }
 
@@ -154,37 +177,30 @@ object ProviderCredentialSync {
         val credentialScope = currentScope(profileId) ?: return@withLock false
         try {
             val localSnapshot = currentSnapshot(profileId)
-            val shouldPush = synchronized(stateLock) {
-                val baseline = baselineSnapshots.getOrPut(credentialScope) {
-                    observedSnapshots[profileId] ?: localSnapshot
-                }
-                // Syncable subset only (Codex round 3, 2026-08-08): a device-local-only edit
-                // (BACKEND_UNSUPPORTED_PROVIDERS) must not read as dirty here either, or this
-                // foreground path fires the very whole-snapshot push the handleLocalSnapshot
-                // guard suppressed.
-                credentialScope in pendingScopes ||
-                    baseline.syncableSubset() != localSnapshot.syncableSubset()
-            }
-            if (shouldPush) {
-                // Upstream-faithful (24971f4a) and knowingly imperfect: the push serializes EVERY
-                // provider and runs BEFORE the pull, and pushed rows carry no client timestamp the
-                // server could arbitrate with — so a device reconnecting with one pending edit
-                // rewrites all provider rows with its possibly-stale values (Codex 2026-08-06).
-                // Deliberately NOT fixed fork-side: dirty-only pushes would diverge this client's
-                // distributed sync semantics from upstream's official apps on the same account.
-                // Upstream-report candidate; tracked in the beta tracker.
-                pushSnapshot(localSnapshot)
-                synchronized(stateLock) {
-                    baselineSnapshots[credentialScope] = localSnapshot
-                    pendingScopes.remove(credentialScope)
-                }
-            }
+            // Upstream 1854dfc3 removed the push-before-pull retry that used to run here (and the
+            // `pendingScopes` set that armed it): the push serialized EVERY provider with no
+            // client timestamp for the server to arbitrate on, so a device reconnecting with one
+            // pending edit rewrote all provider rows with its possibly-stale values — the exact
+            // "automatic sync restores deleted data" vector. The fork's own note here declined to
+            // fix it unilaterally to keep upstream's distributed-sync semantics; upstream has now
+            // made the call. Trade: a push that failed in the observer is retried on the next
+            // local edit, not on the next foreground sync.
 
             // Perf (upstream 67b865a7, "seed only missing provider credentials"): pull FIRST, so
             // the seed below can be skipped entirely when nothing is missing remotely — the
             // seed RPC is insert-if-absent, so calling it when every seedable provider already
             // has a remote row is a wasted round-trip.
             val rows = pullRows(profileId)
+
+            // Fork: the legacy-blob seed below is RETAINED (upstream 1854dfc3 deleted its seed
+            // RPC outright). Consequence to know about: for a credential this device still holds
+            // locally, upstream's new absent-provider blanking is inert here — pull returns no
+            // row, the seed re-creates one from the staged legacy value, and `voidFill`/the next
+            // merge refills the slot. The real protection against a stale device resurrecting
+            // deleted data is [onProfileChanged] plus the two `handleLocalSnapshot` guards, not
+            // the blanking. Follow-up (product call, NOT this batch): narrow the seed to
+            // `stagedByProvider` only, so a plain local value never re-seeds a row the user
+            // deleted elsewhere.
 
             // Legacy-blob migration (see [legacyBlobCredentials]): fill only true voids. The
             // staged values ride the SEED, whose RPC is insert-if-absent (it must be — it runs
@@ -193,8 +209,9 @@ object ProviderCredentialSync {
             // already has a row — including a blank clear-tombstone — is untouched, while a
             // provider with no row gets created carrying the legacy value; mergeRemote below
             // applies it locally like any other remote credential once a later sync pulls it.
-            // Never merged into localSnapshot itself: shouldPush above was computed from the real
-            // local state, so a staged value can't masquerade as a local edit (Codex rounds 7–9).
+            // Fork: never merged into localSnapshot itself — the observer's push path compares
+            // against the REAL local state (handleLocalSnapshot), so a staged value must not
+            // appear there or it would read as a local edit and be pushed (Codex rounds 7–9).
             // Stash keys are STORAGE keys ("debrid_torbox_api_key"), snapshot providers are ids
             // ("debrid:torbox") — translated via [legacyStorageKeyToProvider].
             // PEEK, don't consume: the stash may be these credentials' only surviving copy (the
@@ -240,7 +257,11 @@ object ProviderCredentialSync {
                     .associate { it.provider to it.value }
             }
             requireCurrentScope(credentialScope)
-            val remoteSnapshot = localSnapshot.mergeRemote(rows)
+            // Fork: the clear-when-absent predicate exempts BACKEND_UNSUPPORTED_PROVIDERS.
+            // Upstream 1854dfc3 blanks any provider the server did not return; AllDebrid is
+            // filtered out of every outbound payload (see [credentialParams]), so it can NEVER
+            // have a remote row and upstream's rule would erase the key on every single pull.
+            val remoteSnapshot = localSnapshot.mergeRemote(rows) { it !in BACKEND_UNSUPPORTED_PROVIDERS }
             // Staged credentials for BACKEND_UNSUPPORTED_PROVIDERS never ride the seed (filtered
             // from every outbound payload), so no provider row exists for the pull to return —
             // yet the success bookkeeping below consumes the stash and sanitizes the legacy blob,
@@ -273,7 +294,6 @@ object ProviderCredentialSync {
             synchronized(stateLock) {
                 observedSnapshots[profileId] = mergedSnapshot
                 baselineSnapshots[credentialScope] = mergedSnapshot
-                pendingScopes.remove(credentialScope)
                 // Migration round-trip succeeded (seed-if-missing + pull, unsupported providers
                 // applied locally above) — every staged value now lives in a provider row
                 // (whether just seeded or already present remotely) or the local store, so the
@@ -335,14 +355,12 @@ object ProviderCredentialSync {
     private fun observeCredentialSnapshots() = combine(
         ProfileRepository.state,
         DebridSettingsRepository.uiState,
-        TmdbSettingsRepository.uiState,
         MdbListSettingsRepository.uiState,
         PlayerSettingsRepository.uiState,
-    ) { _, debrid, tmdb, mdbList, player ->
+    ) { _, debrid, mdbList, player ->
         buildSnapshot(
             profileId = ProfileRepository.activeProfileId,
             debrid = debrid,
-            tmdb = tmdb,
             mdbList = mdbList,
             player = player,
         )
@@ -353,7 +371,6 @@ object ProviderCredentialSync {
         val snapshot = buildSnapshot(
             profileId = profileId,
             debrid = DebridSettingsRepository.snapshot(),
-            tmdb = TmdbSettingsRepository.snapshot(),
             mdbList = MdbListSettingsRepository.snapshot(),
             player = PlayerSettingsRepository.uiState.value,
         )
@@ -364,7 +381,6 @@ object ProviderCredentialSync {
     private fun buildSnapshot(
         profileId: Int,
         debrid: DebridSettings,
-        tmdb: TmdbSettings,
         mdbList: MdbListSettings,
         player: PlayerSettingsUiState,
     ): ProviderCredentialSnapshot = ProviderCredentialSnapshot(
@@ -379,7 +395,6 @@ object ProviderCredentialSync {
                     ),
                 )
             }
-            add(ProviderCredentialValue(ProviderCredentialIds.TMDB, PROVIDER_API_KEY_FIELD, tmdb.apiKey.trim()))
             add(ProviderCredentialValue(ProviderCredentialIds.MDBLIST, PROVIDER_API_KEY_FIELD, mdbList.apiKey.trim()))
             add(
                 ProviderCredentialValue(
@@ -411,9 +426,6 @@ object ProviderCredentialSync {
                         credential.value,
                     )
                 }
-                credential.provider == ProviderCredentialIds.TMDB -> {
-                    TmdbSettingsRepository.setApiKey(credential.value)
-                }
                 credential.provider == ProviderCredentialIds.MDBLIST -> {
                     MdbListSettingsRepository.setApiKey(credential.value)
                 }
@@ -430,6 +442,15 @@ object ProviderCredentialSync {
     private suspend fun handleLocalSnapshot(snapshot: ProviderCredentialSnapshot) {
         if (isApplyingRemote) return
         syncMutex.withLock {
+            // Upstream 1854dfc3: the debounced emission may have been produced under a profile
+            // that is no longer active, or superseded by a newer local state while it waited on
+            // this mutex — pushing either would write stale values over good remote rows.
+            if (ProfileRepository.activeProfileId != snapshot.profileId) return@withLock
+            // Fork: runCatching — currentSnapshot() `check`s the active profile, and a switch
+            // racing the line above would otherwise throw out of the collector and kill
+            // observeJob for the rest of the session (upstream lets it throw).
+            val current = runCatching { currentSnapshot(snapshot.profileId) }.getOrNull() ?: return@withLock
+            if (snapshot != current) return@withLock
             val previous = synchronized(stateLock) {
                 observedSnapshots.put(snapshot.profileId, snapshot)
             }
@@ -457,14 +478,13 @@ object ProviderCredentialSync {
                 pushSnapshot(snapshot)
                 synchronized(stateLock) {
                     baselineSnapshots[credentialScope] = snapshot
-                    pendingScopes.remove(credentialScope)
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                synchronized(stateLock) {
-                    pendingScopes.add(credentialScope)
-                }
+                // Upstream 1854dfc3: a failed push is NOT remembered for the next pull to retry.
+                // The retry vector was exactly the stale-whole-snapshot re-push this commit
+                // closes; the trade is that the edit rides the next local change instead.
                 AuthRepository.signOutIfSessionInvalid(error, "Provider credential push")
                 log.e(error) { "Failed to push provider credentials for profile ${snapshot.profileId}" }
             }
@@ -494,7 +514,6 @@ object ProviderCredentialSync {
 
     private fun ensureRepositoriesLoaded() {
         DebridSettingsRepository.ensureLoaded()
-        TmdbSettingsRepository.ensureLoaded()
         MdbListSettingsRepository.ensureLoaded()
         PlayerSettingsRepository.ensureLoaded()
     }

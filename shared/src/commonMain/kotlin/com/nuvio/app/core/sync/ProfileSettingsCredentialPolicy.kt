@@ -47,6 +47,10 @@ internal fun preservingLocalProfileCredentials(
     remotePayload: JsonObject,
     localPayload: JsonObject,
 ): JsonObject {
+    // Upstream 60ee0160: the TMDB key is bundled at compile time, so there is no local credential
+    // worth preserving — just strip the dead `tmdb_api_key` out of the applied payload. The
+    // key stays registered above so `withoutProfileCredentials` keeps it off the push side too.
+    if (feature == PROFILE_TMDB_SETTINGS_FEATURE) return withoutProfileCredentials(feature, remotePayload)
     val keys = profileCredentialKeys[feature].orEmpty()
     if (keys.isEmpty()) return remotePayload
     val merged = remotePayload.toMutableMap()

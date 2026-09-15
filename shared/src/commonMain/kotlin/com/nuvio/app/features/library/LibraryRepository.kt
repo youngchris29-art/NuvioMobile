@@ -189,7 +189,6 @@ object LibraryRepository {
             log.d { "Skipping library pull for inactive profile $profileId" }
             return
         }
-        var serializedOperationToken: LibraryProfileToken? = null
 
         activeLibraryProvider()?.let { provider ->
             refreshLibraryProvider(
@@ -204,7 +203,6 @@ object LibraryRepository {
 
         nuvioSyncMutex.withLock {
             val serializedToken = activeOperationToken(profileId) ?: return@withLock
-            serializedOperationToken = serializedToken
             val pullSnapshot = localState.markPullStarted(serializedToken) ?: return@withLock
 
             try {
@@ -235,11 +233,10 @@ object LibraryRepository {
                 log.e(error) { "Failed to pull library from server" }
             }
         }
-        val completedToken = serializedOperationToken ?: operationToken
-        val pendingSnapshot = localState.snapshot()
-        if (pendingSnapshot.token == completedToken && isActiveOperation(completedToken)) {
-            pushToServer(pendingSnapshot, delayMs = 0L)
-        }
+        // Upstream 1854dfc3 removed the push that used to run here. A pull is a READ: pushing the
+        // freshly-pulled snapshot straight back meant an automatic sync re-uploaded items the
+        // user had deleted on another device. Real local edits still push through the ordinary
+        // mutation paths.
     }
 
     private suspend fun pullLibraryDelta(

@@ -16,7 +16,6 @@ object TmdbSettingsRepository {
     private var hasLoaded = false
 
     private var enabled = false
-    private var apiKey = ""
     private var language = "en"
     private var useTrailers = true
     private var useArtwork = true
@@ -47,25 +46,10 @@ object TmdbSettingsRepository {
 
     fun setEnabled(value: Boolean) {
         ensureLoaded()
-        if (value && apiKey.isBlank()) return
         if (enabled == value) return
         enabled = value
         publish()
         TmdbSettingsStorage.saveEnabled(value)
-        invalidateHeroEnrichment()
-    }
-
-    fun setApiKey(value: String) {
-        ensureLoaded()
-        val normalized = value.trim()
-        if (apiKey == normalized) return
-        apiKey = normalized
-        if (apiKey.isBlank()) {
-            enabled = false
-            TmdbSettingsStorage.saveEnabled(false)
-        }
-        publish()
-        TmdbSettingsStorage.saveApiKey(normalized)
         invalidateHeroEnrichment()
     }
 
@@ -208,12 +192,12 @@ object TmdbSettingsRepository {
     private fun loadFromDisk() {
         val wasLoaded = hasLoaded
         val previousEnabled = enabled
-        val previousApiKey = apiKey
         val previousLanguage = language
         val previousUseReleaseDates = useReleaseDates
         hasLoaded = true
-        apiKey = TmdbSettingsStorage.loadApiKey()?.trim().orEmpty()
-        enabled = (TmdbSettingsStorage.loadEnabled() ?: false) && apiKey.isNotBlank()
+        // Upstream 60ee0160: no `&& apiKey.isNotBlank()` gate any more — the key is bundled, so
+        // a stored/synced `tmdb_enabled=true` now takes effect on its own. Default stays opt-in.
+        enabled = TmdbSettingsStorage.loadEnabled() ?: false
         val storedLanguage = TmdbSettingsStorage.loadLanguage()
         language = if (storedLanguage == null) {
             normalizeLanguage(DeviceLanguagePreferences.preferredLanguageCodes().firstOrNull() ?: "en")
@@ -236,7 +220,7 @@ object TmdbSettingsRepository {
         if (wasLoaded && previousUseReleaseDates != useReleaseDates) {
             invalidateReleaseDateMetadata()
         }
-        if (wasLoaded && (previousEnabled != enabled || previousApiKey != apiKey || previousLanguage != language)) {
+        if (wasLoaded && (previousEnabled != enabled || previousLanguage != language)) {
             invalidateHeroEnrichment()
         }
         // BUG-63: a profile switch can change the language through this path (not the setters);
@@ -249,7 +233,6 @@ object TmdbSettingsRepository {
     private fun publish() {
         _uiState.value = TmdbSettings(
             enabled = enabled,
-            apiKey = apiKey,
             language = language,
             useTrailers = useTrailers,
             useArtwork = useArtwork,

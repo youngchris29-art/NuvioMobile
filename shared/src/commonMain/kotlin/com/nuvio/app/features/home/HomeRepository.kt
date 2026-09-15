@@ -906,8 +906,6 @@ object HomeRepository {
             append("|tmdb=")
             append(tmdb.enabled)
             append(':')
-            append(tmdb.hasApiKey)
-            append(':')
             append(tmdb.language)
             append(':')
             append(tmdb.useBasicInfo)
@@ -921,7 +919,7 @@ object HomeRepository {
     }
 
     /**
-     * Called when TMDB settings (enabled/apiKey/language) change so the hero overlay is rebuilt
+     * Called when TMDB settings (enabled/language) change so the hero overlay is rebuilt
      * under the new settings instead of continuing to show enrichment fetched under the old ones.
      */
     fun onTmdbSettingsChanged() {
@@ -1372,7 +1370,7 @@ object HomeRepository {
      * so text cannot swap under the user the way BUG-86 described.
      */
     private fun MetaPreview.withCommittedGapFill(settings: TmdbSettings): MetaPreview {
-        if (!settings.enabled || !settings.hasApiKey || !settings.useBasicInfo) return this
+        if (!settings.enabled || !settings.useBasicInfo) return this
         if (!description.isNullOrBlank() && genres.isNotEmpty()) return this
         val enrichment = heroEnrichmentOverlay[heroEnrichmentKey(settings)] ?: return this
         var updated = this
@@ -1402,7 +1400,7 @@ object HomeRepository {
      * resident overlay entries passes through untouched.
      */
     private fun HomeCatalogSection.withTmdbEnrichment(settings: TmdbSettings): HomeCatalogSection {
-        if (!settings.enabled || !settings.hasApiKey || heroEnrichmentOverlay.isEmpty()) return this
+        if (!settings.enabled || heroEnrichmentOverlay.isEmpty()) return this
         if (items.none { item -> item.heroEnrichmentKey(settings) in heroEnrichmentOverlay }) return this
         return copy(items = items.map { item -> item.withTmdbEnrichment(settings) })
     }
@@ -1413,7 +1411,7 @@ object HomeRepository {
      * those identify and route the card.
      */
     private fun MetaPreview.withTmdbEnrichment(settings: TmdbSettings): MetaPreview {
-        if (!settings.enabled || !settings.hasApiKey) return this
+        if (!settings.enabled) return this
         val enrichment = heroEnrichmentOverlay[heroEnrichmentKey(settings)] ?: return this
 
         var updated = this
@@ -1443,7 +1441,7 @@ object HomeRepository {
         items: List<MetaPreview>,
         settings: TmdbSettings,
     ): List<MetaPreview> {
-        if (!settings.enabled || !settings.hasApiKey) return emptyList()
+        if (!settings.enabled) return emptyList()
         if (!settings.useBasicInfo && !settings.useArtwork) return emptyList()
         return items.filter { item ->
             val key = item.heroEnrichmentKey(settings)
@@ -1510,7 +1508,7 @@ object HomeRepository {
      */
     fun requestRowEnrichment(sectionKey: String) {
         val settings = TmdbSettingsRepository.snapshot()
-        if (!settings.enabled || !settings.hasApiKey) return
+        if (!settings.enabled) return
         // Same gate the hero path applies (heroItemsAwaitingEnrichment): with both output
         // categories off, a fetch could not change a single rendered field — don't spend it.
         if (!settings.useBasicInfo && !settings.useArtwork) return

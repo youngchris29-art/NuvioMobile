@@ -193,6 +193,24 @@ object ProfileSettingsSync {
         HomeCatalogSettingsSyncService.clearAccountState()
     }
 
+    /**
+     * Re-baselines both settings observers against the profile that is active RIGHT NOW
+     * (upstream 1854dfc3). The profile fan-out reloads every settings repository, so the observer
+     * would otherwise read the incoming profile's values as a local EDIT and push them — over the
+     * account blob it has not pulled for this profile yet.
+     *
+     * Fork: `pull()` resets `skipNextPushSignature` when `lastPullToken` changes (it must — a
+     * stale skip could swallow another profile's deferred push), which drops the signature this
+     * sets if a pull for the new profile starts first. That window is already covered by the
+     * fork-only initial-pull gate in [observeLocalChangesAndPush], which defers any push until
+     * this (user, profile) has settled a pull.
+     */
+    fun onProfileChanged() {
+        if (observeJob?.isActive != true) return
+        skipNextPushSignature = currentObservedStateSignature()
+        ProviderCredentialSync.onProfileChanged()
+    }
+
     suspend fun pull(profileId: Int): Boolean {
         ensureRepositoriesLoaded()
         return syncMutex.withLock {
@@ -335,7 +353,10 @@ object ProfileSettingsSync {
                 features = export.features.copy(
                     playerSettings = restoringLegacyCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, export.features.playerSettings, legacyBlob.features.playerSettings),
                     debridSettings = restoringLegacyCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, export.features.debridSettings, legacyBlob.features.debridSettings),
-                    tmdbSettings = restoringLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, export.features.tmdbSettings, legacyBlob.features.tmdbSettings),
+                    // Fork: no restoringLegacyCredentials for TMDB — upstream 60ee0160 bundles
+                    // the key at compile time, so there is no TMDB credential left to carry
+                    // forward and re-seeding one would only resurrect a dead `tmdb_api_key`.
+                    tmdbSettings = export.features.tmdbSettings,
                     mdbListSettings = restoringLegacyCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, export.features.mdbListSettings, legacyBlob.features.mdbListSettings),
                 ),
             )
@@ -403,8 +424,12 @@ object ProfileSettingsSync {
 
         observeJob = scope.launch {
             combine(signatureFlows) { currentObservedStateSignature() }
-                .drop(1)
+                // Upstream 1854dfc3 reordered these: dropping BEFORE the distinct filter threw
+                // away the first DISTINCT signature rather than the first emission, so a real
+                // first edit could be swallowed. Safe for the fork's gate below, which only
+                // relies on `distinctUntilChanged` never re-emitting an equal signature.
                 .distinctUntilChanged()
+                .drop(1)
                 .debounce(PUSH_DEBOUNCE_MS)
                 .collect { signature ->
                     val authState = AuthRepository.state.value
@@ -434,6 +459,10 @@ object ProfileSettingsSync {
                         return@collect
                     }
                     if (isApplyingRemoteBlob || isServerSyncInFlight) return@collect
+                    // Upstream 1854dfc3: the debounce window may have outlived the state that
+                    // produced this signature (a profile switch, or a remote apply that landed
+                    // while it waited) — push only what is still true.
+                    if (signature != currentObservedStateSignature()) return@collect
                     if (signature == skipNextPushSignature) {
                         skipNextPushSignature = null
                         return@collect

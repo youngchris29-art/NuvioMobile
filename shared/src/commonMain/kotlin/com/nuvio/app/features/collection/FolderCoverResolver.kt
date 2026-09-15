@@ -84,7 +84,7 @@ object FolderCoverResolver {
             }
         }
         val tmdb = TmdbSettingsRepository.snapshot()
-        val tmdbBit = "${tmdb.language}:${tmdb.apiKey.isNotBlank()}"
+        val tmdbBit = tmdb.language
         return "${ProfileRepository.activeProfileId}::${folder.id}::$signature::$tmdbBit"
     }
 
