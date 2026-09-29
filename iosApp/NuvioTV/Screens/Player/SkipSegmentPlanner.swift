@@ -163,7 +163,17 @@ struct SkipSegmentPlanner {
                 landing = nil
             }
         }
-        if landing != nil, landingTicks >= Self.maxLandingTicks { landing = nil }
+        if landing != nil, landingTicks >= Self.maxLandingTicks {
+            // Timed out. If the playhead is still NOT at a known target, the position is stale (a
+            // slow seek): whatever interval it sits in must neither auto-skip nor flash the chip.
+            // Other intervals stay armed, so an intro at the real start still auto-skips later.
+            if case .at(let target) = pending, abs(positionSec - target) > Self.landingTolerance,
+               let index = intervals.firstIndex(where: { positionSec >= $0.startTime && positionSec < $0.endTime }) {
+                consumed.insert(index)
+                chipSuppressedIndex = index
+            }
+            landing = nil
+        }
     }
 
     private mutating func markDeliberate(fromMs: Int64, toMs: Int64) {

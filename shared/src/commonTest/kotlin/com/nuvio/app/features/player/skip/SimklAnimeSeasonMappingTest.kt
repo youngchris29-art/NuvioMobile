@@ -125,4 +125,33 @@ class SimklAnimeSeasonMappingTest {
         assertEquals(false, SimklIdResolver.shouldLookForSibling("anime", 1, 1, emptyList(), 20))
         assertEquals(false, SimklIdResolver.shouldLookForSibling("tv", 1, 1, m, 20))
     }
+
+    @Test
+    fun sameSeasonBaseStaysWhenEpisodeUnmappedInEveryCandidate() {
+        val c1 = AnimeSeasonEntry(2001, 3) to (1..12).map { EpisodeMapping(it, 3, it) }
+        val c2 = AnimeSeasonEntry(2002, 3) to (13..20).map { EpisodeMapping(it - 12, 3, it) }
+        assertEquals(2002L, SimklIdResolver.selectSiblingByEpisode(listOf(c1, c2), 3, 21, keepSimklId = 2002L))
+    }
+
+    @Test
+    fun sameSeasonBaseStaysWhenACandidateMappingFetchFailed() {
+        val c1 = AnimeSeasonEntry(2001, 3) to emptyList<EpisodeMapping>()
+        val c2 = AnimeSeasonEntry(2002, 3) to (13..20).map { EpisodeMapping(it - 12, 3, it) }
+        assertEquals(2002L, SimklIdResolver.selectSiblingByEpisode(listOf(c1, c2), 3, 21, keepSimklId = 2002L))
+    }
+
+    @Test
+    fun seasonMismatchBaseStillFallsBackToFirstCandidate() {
+        val c1 = AnimeSeasonEntry(2001, 3) to (1..12).map { EpisodeMapping(it, 3, it) }
+        val c2 = AnimeSeasonEntry(2002, 3) to (13..20).map { EpisodeMapping(it - 12, 3, it) }
+        assertEquals(2001L, SimklIdResolver.selectSiblingByEpisode(listOf(c1, c2), 3, 21, keepSimklId = null))
+    }
+
+    @Test
+    fun positiveHitOnNonBaseCandidateSwitches() {
+        val c1 = AnimeSeasonEntry(2001, 3) to (1..12).map { EpisodeMapping(it, 3, it) }
+        val c2 = AnimeSeasonEntry(2002, 3) to (13..24).map { EpisodeMapping(it - 12, 3, it) }
+        // base is cour 1 (2001) but the episode is only mapped by cour 2
+        assertEquals(2002L, SimklIdResolver.selectSiblingByEpisode(listOf(c1, c2), 3, 20, keepSimklId = 2001L))
+    }
 }

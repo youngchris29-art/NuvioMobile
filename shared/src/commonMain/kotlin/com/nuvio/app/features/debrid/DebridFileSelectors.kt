@@ -140,7 +140,9 @@ class AllDebridFileSelector {
  *   dropped and the result is used only if exactly one file remains, otherwise null.
  * - When the episode pattern matches nothing, no filename hint was given and the provider has a
  *   stable index, the file at `fileIdx` is chosen only if it is playable, carries no explicit
- *   SxxEyy/NxM marker, and names the requested episode number as a standalone token.
+ *   SxxEyy/NxM marker, names the requested episode in an anchored position (after ` - `, or after
+ *   e / ep / episode / #, optional leading zeros and `v2` suffix), and is the only playable file
+ *   in the list that does.
  * - `hasStableFileIndex` = false (AllDebrid) skips that fallback and step 4's index lookup, and
  *   lets a filename miss with no episode request fall through to the largest playable video.
  */
@@ -176,19 +178,24 @@ private fun <T> selectDebridFile(
         if (matches.isNotEmpty()) return matches.singleOrDropSamples(path)
         // Fork: anime / absolute-numbered packs (`Show - 05.mkv`) have no SxxEyy names, so the
         // pattern finds nothing. With no filename hint, trust the add-on's fileIdx only as a
-        // POSITIVE match: the file must exist, be playable, carry no explicit SxxEyy/NxM marker,
-        // and name the requested episode number as a standalone token (resolution, codec, bit
-        // depth, channels, year, CRC and version tags ignored). fileIdx is not guaranteed to be a
-        // position in this provider's list, so a file naming another episode is never accepted.
-        // Limit: in season > 1 an absolute-numbered name rarely equals the per-season episode
-        // number, so that case returns null rather than guessing.
+        // POSITIVE, UNIQUE match: the file at fileIdx must exist, be playable, carry no explicit
+        // SxxEyy/NxM marker, and name the requested episode in an anchored position (after ` - `,
+        // or after e / ep / episode / #; see [buildAnchoredEpisodePattern]), and it must be the ONLY
+        // playable file in the list that does. fileIdx is not guaranteed to be a position in this
+        // provider's list, so anything looser could play another episode (title numbers, season
+        // markers, resolutions, dates). Limit: in season > 1 an absolute-numbered name rarely
+        // equals the per-season episode number, so that case returns null rather than guessing.
         if (hasStableFileIndex && names.isEmpty()) {
             val wantedEpisode = episode ?: resolve.episode
             resolve.fileIdx?.let { index ->
                 val candidate = files.getOrNull(index)
                 if (candidate != null && wantedEpisode != null && isPlayable(candidate)) {
-                    val base = path(candidate).normalizedPath().substringAfterLast('/')
-                    if (!explicitEpisodeMarker.containsMatchIn(base) && base.namesEpisodeNumber(wantedEpisode)) {
+                    val anchored = buildAnchoredEpisodePattern(wantedEpisode)
+                    fun basename(file: T) = path(file).normalizedPath().substringAfterLast('/')
+                    val matching = playable.filter { anchored.containsMatchIn(basename(it)) }
+                    if (!explicitEpisodeMarker.containsMatchIn(basename(candidate)) &&
+                        matching.size == 1 && matching.single() === candidate
+                    ) {
                         return candidate
                     }
                 }
@@ -215,23 +222,13 @@ private fun <T> List<T>.singleOrDropSamples(path: (T) -> String): T? {
         .singleOrNull()
 }
 
-private val episodeNoise = listOf(
-    Regex("[\\[(][0-9a-f]{8}[\\])]", RegexOption.IGNORE_CASE),
-    Regex("(?<![a-z0-9])\\d{3,4}x\\d{3,4}(?![0-9])", RegexOption.IGNORE_CASE),
-    Regex("(?<![a-z0-9])\\d{3,4}[pi](?![a-z0-9])", RegexOption.IGNORE_CASE),
-    Regex("(?<![a-z0-9])[xh]\\.?26[45](?![0-9])", RegexOption.IGNORE_CASE),
-    Regex("(?<![0-9])\\d{1,2}[ _-]?bit", RegexOption.IGNORE_CASE),
-    Regex("(?<![0-9])\\d\\.\\d(?![0-9])"),
-    Regex("(?<![0-9])(?:19|20)\\d{2}(?![0-9])"),
-    Regex("(?<![a-z])v\\d+(?![0-9])", RegexOption.IGNORE_CASE),
+// Fork: an episode number counts only in an explicit position: after ` - ` / ` -` (anime
+// convention), or after e / ep / episode / # that is not part of a longer word. Leading zeros and
+// a `v2` version suffix are allowed. Every lookbehind is fixed-width (Kotlin/Native).
+private fun buildAnchoredEpisodePattern(episode: Int): Regex = Regex(
+    "(?:(?<=\\s-\\s)|(?<=\\s-)|(?<![a-z0-9])(?:episode|ep|e|#)[\\s._]{0,2})0*$episode(?:v\\d+)?(?![0-9])",
+    RegexOption.IGNORE_CASE,
 )
-
-// Fork: does the basename contain [episode] as a standalone number once non-episode numbers are removed?
-private fun String.namesEpisodeNumber(episode: Int): Boolean {
-    var text = substringBeforeLast('.', this)
-    episodeNoise.forEach { text = it.replace(text, " ") }
-    return Regex("(?<![0-9])0*$episode(?![0-9])").containsMatchIn(text)
-}
 
 private val sampleSegment = Regex("(?<![a-z0-9])sample(?![a-z0-9])", RegexOption.IGNORE_CASE)
 

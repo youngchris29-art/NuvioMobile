@@ -126,17 +126,69 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertEqual(p.evaluate(positionSec: 1, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro]).autoSkipTargetSec, 90)
     }
 
+    /// Mirrors the coordinator's per-tick wiring: filter -> `noteUserSeek` -> `evaluate`.
+    private struct TickHarness {
+        var planner: SkipSegmentPlanner
+        var filter = ProgrammaticSeekFilter()
+        var last: Double = 0
+        let duration: Double
+        let types: [AutoSkipSegmentType]
+
+        mutating func tick(_ pos: Double) -> SkipSegmentPlanner.Decision {
+            if filter.isUserSeek(last: last, new: pos) { planner.noteUserSeek(fromSec: last, toSec: pos) }
+            let decision = planner.evaluate(positionSec: pos, durationSec: duration, isPlaying: true, autoSkipTypes: types)
+            last = pos
+            return decision
+        }
+    }
+
+    private func recapIntroHarness() -> TickHarness {
+        TickHarness(planner: planner([interval(0, 60, "recap"), interval(60, 150, "op")]),
+                    duration: episodeDuration, types: [.recap, .intro])
+    }
+
     func testIntroFollowingRecapAutoSkipsAfterOwnSeekThroughTheFilter() {
-        var p = planner([interval(0, 60, "recap"), interval(60, 150, "op")])
-        var f = ProgrammaticSeekFilter()
-        let types: [AutoSkipSegmentType] = [.recap, .intro]
-        XCTAssertEqual(p.evaluate(positionSec: 3, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types).autoSkipTargetSec, 60)
-        f.noteProgrammaticSeek(from: 3, to: 60)
-        // Stale pre-seek tick, then the landing tick after a keyframe: neither is a user seek.
-        XCTAssertFalse(f.isUserSeek(last: 3, new: 4))
-        XCTAssertFalse(f.isUserSeek(last: 4, new: 66))
-        // No noteUserSeek was issued, so the intro the seek landed at is still armed.
-        XCTAssertEqual(p.evaluate(positionSec: 66, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types).autoSkipTargetSec, 150)
+        var h = recapIntroHarness()
+        XCTAssertEqual(h.tick(3).autoSkipTargetSec, 60)
+        h.filter.noteProgrammaticSeek(from: 3, to: 60)
+        XCTAssertNil(h.tick(4).autoSkipTargetSec)          // stale pre-seek tick
+        XCTAssertEqual(h.tick(66).autoSkipTargetSec, 150)  // landing after a keyframe: not a user seek
+    }
+
+    func testWithoutTheFilterTheOwnSeekConsumesTheFollowingIntro() {
+        var h = recapIntroHarness()
+        XCTAssertEqual(h.tick(3).autoSkipTargetSec, 60)
+        // No noteProgrammaticSeek: the 3 -> 66 jump is forwarded as a user seek and consumes the intro.
+        XCTAssertNil(h.tick(66).autoSkipTargetSec)
+    }
+
+    func testReplayLandingTimeoutWithStalePositionNeverAutoSkipsThenIntroStillDoes() {
+        var p = planner([interval(0, 90, "op"), interval(1400, .greatestFiniteMagnitude, "ed")])
+        p.resetForReplay()
+        let types: [AutoSkipSegmentType] = [.intro, .outro]
+        for tick in 1...25 {
+            let d = p.evaluate(positionSec: episodeDuration - 0.5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types)
+            XCTAssertNil(d.autoSkipTargetSec, "tick \(tick)")
+            XCTAssertNil(d.prompt, "tick \(tick)")
+        }
+        XCTAssertEqual(p.evaluate(positionSec: 1, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types).autoSkipTargetSec, 90)
+    }
+
+    func testNormalResumeLandingShowsChipAndKeepsLaterIntervalsArmed() {
+        let intervals = [interval(0, 90, "op"), interval(1400, 1440, "ed")]
+        // Chip: resume lands inside the outro after two stale ticks.
+        var chip = planner(intervals)
+        chip.noteResumeSeek(toSec: 1410)
+        for _ in 0..<2 {
+            let d = chip.evaluate(positionSec: 0.2, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: nil)
+            XCTAssertNil(d.prompt)
+        }
+        XCTAssertNotNil(chip.evaluate(positionSec: 1410, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: nil).prompt)
+        // Later interval: resume lands between segments, the outro still auto-skips.
+        var later = planner(intervals)
+        later.noteResumeSeek(toSec: 600)
+        _ = later.evaluate(positionSec: 600, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.outro])
+        XCTAssertEqual(later.evaluate(positionSec: 1401, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.outro]).autoSkipTargetSec, 1440)
     }
 
     func testResetForReplayHoldsAutoSkipUntilPlayheadReturnsToStart() {

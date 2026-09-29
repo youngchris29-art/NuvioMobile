@@ -112,4 +112,43 @@ class DebridFileSelectorForkFallbackTest {
             }
         }
     }
+
+    private fun idxZero(name: String, episode: Int) =
+        TorboxFileSelector().selectFile(torbox(listOf(name)), resolve(0), 1, episode)
+
+    @Test
+    fun `unanchored numbers never satisfy the fileIdx fallback`() {
+        assertNull(idxZero("[SubsPlease] Kaiju No. 8 - 03 (1080p) [A1B2C3D4].mkv", 8))
+        assertNull(idxZero("[Group] Show S2 - 05 [1080p].mkv", 2))
+        assertNull(idxZero("[Group] Show S01 - 07 [1080p].mkv", 1))
+        assertNull(idxZero("Show - 07 [1080p][EAC3].mkv", 3))
+        assertNull(idxZero("Show - 07 [1080p][AC3].mkv", 3))
+        assertNull(idxZero("Show - 07 [1080p][E-AC-3].mkv", 3))
+        assertNull(idxZero("Show - 07 [AV1].mkv", 1))
+        assertNull(idxZero("Show - 07 [HDR10].mkv", 10))
+        assertNull(idxZero("Show - 07 [Hi10P].mkv", 10))
+        assertNull(idxZero("Show - 07 [4K].mkv", 4))
+        assertNull(idxZero("Re Zero 2nd Season - 05.mkv", 2))
+        assertNull(idxZero("Show Season 3 - 05.mkv", 3))
+        assertNull(idxZero("Show Part 2 - 05.mkv", 2))
+        assertNull(idxZero("Show 2024.05.12.mkv", 5))
+        assertNull(idxZero("Show 2024.05.12.mkv", 12))
+    }
+
+    @Test
+    fun `multi season pack with the same absolute number is ambiguous`() {
+        val names = listOf("Show S1 - 05.mkv", "Show S2 - 05.mkv")
+        assertNull(TorboxFileSelector().selectFile(torbox(names), resolve(0), 1, 5))
+        assertNull(TorboxFileSelector().selectFile(torbox(names), resolve(1), 1, 5))
+    }
+
+    @Test
+    fun `anchored episode positions are selected`() {
+        assertEquals(100, idxZero("[Group] Show - 05 (1080p) [A1B2C3D4].mkv", 5)?.id)
+        assertEquals(100, idxZero("Show - 05v2 [1080p].mkv", 5)?.id)
+        assertEquals(100, idxZero("Show Episode 05.mkv", 5)?.id)
+        assertEquals(100, idxZero("Show EP05.mkv", 5)?.id)
+        assertEquals(100, idxZero("Show E05.mkv", 5)?.id)
+        assertEquals(100, idxZero("Kaiju No. 8 - 08 (1080p).mkv", 8)?.id)
+    }
 }

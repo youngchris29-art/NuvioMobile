@@ -181,7 +181,10 @@ internal object SimklIdResolver {
             !shouldLookForSibling(base.type, base.tvdbSeason, season, getEpisodeMapping(base.simklId, base.type), episode)
         ) return base
 
-        val siblingSimklId = resolveSeasonSimklId(base.simklId, base.type, season, episode)
+        // Same-season base (possibly the wrong split-cour half): switch only on a positive mapping hit.
+        // Season-mismatch base is known wrong: the first sibling for the season is the best guess.
+        val keepSimklId = base.simklId.takeIf { base.tvdbSeason == season }
+        val siblingSimklId = resolveSeasonSimklId(base.simklId, base.type, season, episode, keepSimklId)
         if (siblingSimklId == null || siblingSimklId == base.simklId) return base
         return try {
             resolveDetails(siblingSimklId, base.type)
@@ -197,8 +200,9 @@ internal object SimklIdResolver {
         type: String,
         tvdbSeason: Int,
         episode: Int,
+        keepSimklId: Long?,
     ): Long? {
-        animeSeasonCache[parentSimklId]?.let { return pickSibling(it, type, tvdbSeason, episode) }
+        animeSeasonCache[parentSimklId]?.let { return pickSibling(it, type, tvdbSeason, episode, keepSimklId) }
         if (SimklConfig.CLIENT_ID.isBlank()) return null
 
         return try {
@@ -208,7 +212,7 @@ internal object SimklIdResolver {
             val details = json.parseToJsonElement(text) as? JsonObject ?: return null
             val seasons = parseAnimeSeasonEntries(details)
             animeSeasonCache[parentSimklId] = seasons
-            pickSibling(seasons, type, tvdbSeason, episode)
+            pickSibling(seasons, type, tvdbSeason, episode, keepSimklId)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -223,23 +227,30 @@ internal object SimklIdResolver {
         type: String,
         tvdbSeason: Int,
         episode: Int,
+        keepSimklId: Long?,
     ): Long? {
         val candidates = seasons.filter { it.tvdbSeason == tvdbSeason }
-        if (candidates.size <= 1) return candidates.firstOrNull()?.simklId
+        if (keepSimklId == null && candidates.size <= 1) return candidates.firstOrNull()?.simklId
         val withMappings = candidates.map { it to getEpisodeMapping(it.simklId, type) }
-        return selectSiblingByEpisode(withMappings, tvdbSeason, episode)
+        return selectSiblingByEpisode(withMappings, tvdbSeason, episode, keepSimklId)
     }
 
     /// Pure: among sibling candidates for one TVDB season, the first whose episode mapping contains
-    /// ([tvdbSeason], [episode]); the first candidate when none does; null when there are none.
+    /// ([tvdbSeason], [episode]). With no hit: [keepSimklId] when given (the first-pass entry already
+    /// has the right season, so never swap it without positive evidence), else the first candidate;
+    /// null when there are none and nothing to keep.
     internal fun selectSiblingByEpisode(
         candidates: List<Pair<AnimeSeasonEntry, List<EpisodeMapping>>>,
         tvdbSeason: Int,
         episode: Int,
-    ): Long? =
-        (candidates.firstOrNull { (_, mapping) ->
+        keepSimklId: Long? = null,
+    ): Long? {
+        val hit = candidates.firstOrNull { (_, mapping) ->
             mapping.any { it.tvdbSeason == tvdbSeason && it.tvdbEpisode == episode }
-        } ?: candidates.firstOrNull())?.first?.simklId
+        }
+        if (hit != null) return hit.first.simklId
+        return keepSimklId ?: candidates.firstOrNull()?.first?.simklId
+    }
 
     internal data class AnimeSeasonEntry(val simklId: Long, val tvdbSeason: Int)
 
