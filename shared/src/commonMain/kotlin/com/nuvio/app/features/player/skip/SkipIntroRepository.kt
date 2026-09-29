@@ -31,15 +31,30 @@ object SkipIntroRepository {
         }
         // Season-aware (Codex r2): an IMDb series spanning several anime seasons resolves to the
         // Simkl entry for THIS season, so AniSkip/Anime-Skip get the right MAL/AniList ids.
-        val simklIdsDeferred = async { SimklIdResolver.resolveIds("imdb", imdbId, season) }
+        // Upstream aa748fa8 adds a second pass on top of the fork's candidate scan: when the chosen
+        // anime entry maps to another TVDB season, follow the entry's `full_anime_seasons` siblings.
+        val simklIdsDeferred = async { SimklIdResolver.resolveIdsForImdbEpisode(imdbId, season, episode) }
         val simklIds = simklIdsDeferred.await()
         val malId = simklIds?.mal
         val anilistId = simklIds?.anilist
+
+        // Upstream aa748fa8: AniSkip/Anime-Skip number episodes per anime entry, not per TVDB
+        // season, so remap TVDB S/E → the entry's own episode (TVDB episode when unmapped).
+        // Fork: only fetch the episode map when an anime provider will actually be queried —
+        // upstream fetched it for every Simkl-resolved IMDB title, anime or not.
+        val animeEpisode = if (simklIds != null && (malId != null || anilistId != null)) {
+            SimklIdResolver.animeEpisodeFor(
+                SimklIdResolver.getEpisodeMapping(simklIds.simklId, simklIds.type),
+                season,
+                episode,
+            )
+        } else episode
+
         val aniSkipDeferred = async {
-            if (malId != null) fetchFromAniSkip(malId, episode) else emptyList()
+            if (malId != null) fetchFromAniSkip(malId, animeEpisode) else emptyList()
         }
         val animeSkipDeferred = async {
-            if (anilistId != null) fetchFromAnimeSkip(anilistId, episode, season = null) else emptyList()
+            if (anilistId != null) fetchFromAnimeSkip(anilistId, animeEpisode, season = null) else emptyList()
         }
 
         return@coroutineScope mergeByPriority(

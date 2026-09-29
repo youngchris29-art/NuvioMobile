@@ -4,12 +4,16 @@ import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.simkl.buildSimklApiUrl
 import com.nuvio.app.features.simkl.SimklConfig
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 
 internal object SimklIdResolver {
 
@@ -34,6 +38,8 @@ internal object SimklIdResolver {
     private val idsCache = HashMap<String, ResolvedIds?>()
     private val detailsCache = HashMap<Long, ResolvedIds>()
     private val episodeCache = HashMap<Long, List<EpisodeMapping>>()
+    /// Parent Simkl id → its `mapped_tvdb_seasons` siblings (upstream aa748fa8).
+    private val animeSeasonCache = HashMap<Long, List<AnimeSeasonEntry>>()
 
     // Codex r3: upstream hand-rolled "client_id=…&app-name=…&app-version=1.0"; the fork's existing
     // buildSimklApiUrl URL-encodes every parameter and supplies the real app version instead.
@@ -83,6 +89,16 @@ internal object SimklIdResolver {
             else -> "anime"
         }
 
+        return resolveDetails(simklId, mediaType)
+    }
+
+    /// Simkl id + API media type ("anime"/"tv"/"movies") → full ids. Shares [detailsCache] with the
+    /// search-result overload, so a sibling season found via [resolveIdsForImdbEpisode] that was
+    /// already fetched as a `/search/id` candidate costs no extra request. Upstream aa748fa8's
+    /// `resolveIdsBySimklId` is folded in here instead of adding `"simkl:$id"` keys to [idsCache].
+    private suspend fun resolveDetails(simklId: Long, mediaType: String): ResolvedIds {
+        detailsCache[simklId]?.let { return it }
+
         val detailsText = httpGetText(buildSimklApiUrl("/$mediaType/$simklId", mapOf("extended" to "full")))
         val details = json.parseToJsonElement(detailsText).jsonObject
         val ids = details["ids"]?.jsonObject
@@ -128,9 +144,81 @@ internal object SimklIdResolver {
         return entry?.let { it.tvdbSeason to it.tvdbEpisode }
     }
 
+    /**
+     * Upstream aa748fa8: given an IMDB id and a TVDB-space season/episode, resolve the anime ids
+     * (MAL/AniList/Kitsu) of the Simkl entry that owns THAT season.
+     *
+     * First pass is the fork's season-aware [resolveIds] (scans `/search/id` candidates for a
+     * `season` match). Simkl's IMDB search commonly returns only the one canonical entry, though,
+     * so when the chosen anime entry still maps to a different TVDB season this asks the entry for
+     * `extended=full_anime_seasons` and follows `mapped_tvdb_seasons` to the sibling entry. Any
+     * failure, or no sibling for [season], falls back to the first-pass result.
+     *
+     * [episode] is unused here (kept for upstream parity); the episode remap happens in
+     * [SkipIntroRepository] via [getEpisodeMapping] / [animeEpisodeFor] on the returned entry.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    suspend fun resolveIdsForImdbEpisode(
+        imdbId: String,
+        season: Int?,
+        episode: Int,
+    ): ResolvedIds? {
+        val base = resolveIds("imdb", imdbId, season) ?: return null
+        if (season == null || base.type != "anime") return base
+        if (base.tvdbSeason == season) return base
+
+        val siblingSimklId = resolveSeasonSimklId(base.simklId, base.type, season)
+        if (siblingSimklId == null || siblingSimklId == base.simklId) return base
+        return runCatching { resolveDetails(siblingSimklId, base.type) }.getOrNull() ?: base
+    }
+
+    private suspend fun resolveSeasonSimklId(parentSimklId: Long, type: String, tvdbSeason: Int): Long? {
+        animeSeasonCache[parentSimklId]?.let { return selectSiblingSimklId(it, tvdbSeason) }
+        if (SimklConfig.CLIENT_ID.isBlank()) return null
+
+        return try {
+            val text = httpGetText(
+                buildSimklApiUrl("/$type/$parentSimklId", mapOf("extended" to "full_anime_seasons"))
+            )
+            val details = json.parseToJsonElement(text) as? JsonObject ?: return null
+            val seasons = parseAnimeSeasonEntries(details)
+            animeSeasonCache[parentSimklId] = seasons
+            selectSiblingSimklId(seasons, tvdbSeason)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal data class AnimeSeasonEntry(val simklId: Long, val tvdbSeason: Int)
+
+    /// Pure: `mapped_tvdb_seasons` of a `full_anime_seasons` details response → (simklId, tvdbSeason)
+    /// pairs. Malformed entries are skipped individually rather than failing the whole list.
+    internal fun parseAnimeSeasonEntries(details: JsonObject): List<AnimeSeasonEntry> {
+        val seasonsArray = details["mapped_tvdb_seasons"] as? JsonArray ?: return emptyList()
+        return seasonsArray.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val simklId = (obj["simkl_id"] as? JsonPrimitive)?.longOrNull?.takeIf { it > 0 }
+                ?: return@mapNotNull null
+            val mappedSeason = (obj["tvdb_season"] as? JsonPrimitive)?.intOrNull?.takeIf { it > 0 }
+                ?: return@mapNotNull null
+            AnimeSeasonEntry(simklId, mappedSeason)
+        }
+    }
+
+    /// Pure: the sibling entry that owns [tvdbSeason], or null.
+    internal fun selectSiblingSimklId(seasons: List<AnimeSeasonEntry>, tvdbSeason: Int): Long? =
+        seasons.firstOrNull { it.tvdbSeason == tvdbSeason }?.simklId
+
+    /// Pure: TVDB season/episode → the anime entry's own episode number; the TVDB [episode] when
+    /// the entry has no mapping for it (upstream aa748fa8's fallback).
+    internal fun animeEpisodeFor(mapping: List<EpisodeMapping>, season: Int, episode: Int): Int =
+        mapping.firstOrNull { it.tvdbSeason == season && it.tvdbEpisode == episode }?.animeEpisode
+            ?: episode
+
     fun clearCache() {
         idsCache.clear()
         detailsCache.clear()
         episodeCache.clear()
+        animeSeasonCache.clear()
     }
 }
