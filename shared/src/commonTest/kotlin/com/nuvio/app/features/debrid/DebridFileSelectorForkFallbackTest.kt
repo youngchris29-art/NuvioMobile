@@ -4,6 +4,7 @@ import com.nuvio.app.features.streams.StreamClientResolve
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** Fork-only: fileIdx fallback for absolute-numbered packs and sample-clip disambiguation. */
 class DebridFileSelectorForkFallbackTest {
@@ -105,9 +106,9 @@ class DebridFileSelectorForkFallbackTest {
         for (names in listOf(animeNames, animeNames.reversed())) {
             for (idx in 0..3) {
                 val selected = TorboxFileSelector().selectFile(torbox(names), resolve(idx), 1, 5)
-                assert(selected == null || selected.name?.contains(" - 05 ") == true) { "idx=$idx -> ${selected?.name}" }
+                assertTrue(selected == null || selected.name?.contains(" - 05 ") == true, "idx=$idx -> ${selected?.name}")
                 val rd = RealDebridFileSelector().selectFile(realDebrid(names), resolve(idx), 1, 5)
-                assert(rd == null || rd.path?.contains(" - 05 ") == true) { "idx=$idx -> ${rd?.path}" }
+                assertTrue(rd == null || rd.path?.contains(" - 05 ") == true, "idx=$idx -> ${rd?.path}")
             }
         }
     }
