@@ -4135,7 +4135,8 @@ struct ContinueWatchingRow: View {
     }
 
     private func fraction(_ entry: WatchProgressEntry) -> Double? {
-        entry.durationMs > 0 ? Double(entry.lastPositionMs) / Double(entry.durationMs) : nil
+        // progressFraction covers percentage-only rows (Simkl/Trakt: durationMs == 0).
+        entry.progressFraction > 0 ? Double(entry.progressFraction) : nil
     }
 
     private func imageURL(_ entry: WatchProgressEntry) -> String? {

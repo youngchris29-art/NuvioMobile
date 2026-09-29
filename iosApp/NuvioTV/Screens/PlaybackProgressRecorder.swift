@@ -13,15 +13,34 @@ final class PlaybackProgressRecorder {
 
     // MARK: - Resume
 
+    /// Saved percentage (0-100) for a percentage-only entry (no stored position), else nil.
+    /// Used when the item duration is not yet finite at `readyToPlay`.
+    func pendingResumePercent() -> Double? {
+        guard let entry = savedEntry(), !entry.isCompleted, entry.lastPositionMs <= 0,
+              entry.progressFraction > 0 else { return nil }
+        return Double(entry.progressFraction) * 100
+    }
+
+    private func savedEntry() -> WatchProgressEntry? {
+        WatchProgressRepository.shared.progressForVideo(
+            videoId: context.videoId,
+            parentMetaId: context.parentMetaId,
+            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) }
+        )
+    }
+
     /// Saved resume position in seconds — only if >10s in and not completed (mirrors MPV's gate).
-    func resumePositionSec() -> Double? {
+    /// `actualDurationSec` (item duration, when finite) lets percentage-only rows resolve.
+    func resumePositionSec(actualDurationSec: Double = 0) -> Double? {
         guard let entry = WatchProgressRepository.shared.progressForVideo(
             videoId: context.videoId,
             parentMetaId: context.parentMetaId,
             seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
             episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) }
         ), !entry.isCompleted else { return nil }
-        let seconds = Double(entry.lastPositionMs) / 1000.0
+        let durationMs = actualDurationSec.isFinite && actualDurationSec > 0 ? Int64(actualDurationSec * 1000) : 0
+        let seconds = Double(entry.resolveResumePosition(actualDurationMs: durationMs)) / 1000.0
         return seconds > 10 ? seconds : nil
     }
 

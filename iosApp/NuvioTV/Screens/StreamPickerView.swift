@@ -675,6 +675,8 @@ struct StreamPickerView: View {
             seasonNumber: season.map { KotlinInt(int: Int32($0)) },
             episodeNumber: episode.map { KotlinInt(int: Int32($0)) }
         )
+        // Percentage-only rows (Simkl/Trakt) stay 0 here: the real duration is unknown before the
+        // file opens, and scaling by the show runtime is the bug being avoided.
         let resumeMs: Int64 = {
             guard let progress, !progress.isCompleted, progress.lastPositionMs > 10_000 else { return 0 }
             return progress.lastPositionMs

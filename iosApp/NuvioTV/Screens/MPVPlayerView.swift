@@ -98,6 +98,11 @@ final class MPVTVPlayerViewController: UIViewController {
     private var hideWork: DispatchWorkItem?
     private var lastSaveUptime: TimeInterval = 0
     private var pendingResumeSec: Double?
+    /// True once the resume seek has been issued (see `applyPendingResume`).
+    private(set) var didResumeSeek = false
+    /// Percentage-only entry (Simkl/Trakt rows: no stored position/duration). Resolved against
+    /// mpv's real duration at file-load in `applyPendingResume`; never the show runtime.
+    private var pendingResumeEntry: WatchProgressEntry?
     private var seekTimer: Timer?
     private var seekDirection: Double = 0
     private var seekHoldCount = 0
@@ -1066,8 +1071,12 @@ final class MPVTVPlayerViewController: UIViewController {
             seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
             episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) }
         ), !entry.isCompleted else { return }
-        let seconds = Double(entry.lastPositionMs) / 1000.0
-        if seconds > 10 { pendingResumeSec = seconds }
+        if entry.lastPositionMs > 0 {
+            let seconds = Double(entry.lastPositionMs) / 1000.0
+            if seconds > 10 { pendingResumeSec = seconds }
+        } else if entry.progressFraction > 0 {
+            pendingResumeEntry = entry
+        }
     }
 
     private lazy var session = WatchProgressPlaybackSession(
@@ -1379,8 +1388,10 @@ final class MPVTVPlayerViewController: UIViewController {
                 if id == MPV_EVENT_FILE_LOADED {
                     self.fileLoadedUptime = ProcessInfo.processInfo.systemUptime
                     self.alangTrace("file-loaded alang=\(self.getString("alang") ?? "-") aid=\(self.getString("aid") ?? "-")")
+                    // Read on eventQueue (never the main thread — see the property-cache note).
+                    let loadedDuration = self.getDouble("duration")
                     DispatchQueue.main.async {
-                        self.applyPendingResume()
+                        self.applyPendingResume(actualDurationSec: loadedDuration)
                         self.onFileLoaded()
                     }
                     self.refreshTracksAsync()
@@ -1451,10 +1462,29 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
-    private func applyPendingResume() {
-        guard let seconds = pendingResumeSec else { return }
-        pendingResumeSec = nil
-        command("seek", args: [String(format: "%.3f", seconds), "absolute"])
+    /// THE resume seek (user-initiated for skip logic: an intro interval this lands inside must
+    /// not be auto-skipped). Sets `didResumeSeek` so later code can identify it.
+    private func applyPendingResume(actualDurationSec: Double) {
+        if let seconds = pendingResumeSec {
+            pendingResumeSec = nil
+            didResumeSeek = true
+            command("seek", args: [String(format: "%.3f", seconds), "absolute"])
+            return
+        }
+        guard let entry = pendingResumeEntry else { return }
+        pendingResumeEntry = nil
+        if actualDurationSec > 0 {
+            let seconds = Double(entry.resolveResumePosition(actualDurationMs: Int64(actualDurationSec * 1000))) / 1000.0
+            guard seconds > 10 else { return }
+            didResumeSeek = true
+            command("seek", args: [String(format: "%.3f", seconds), "absolute"])
+        } else {
+            // Duration unknown (some HLS): let mpv resolve the percentage itself.
+            let pct = Double(entry.progressFraction) * 100
+            guard pct > 0 else { return }
+            didResumeSeek = true
+            command("seek", args: [String(format: "%.3f", pct), "absolute-percent"])
+        }
     }
 
     // MARK: - libmpv C-interop helpers

@@ -614,6 +614,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             var waitingTicks = 0
             var notReadyTicks = 0
             var lastProducingSeg = 0
+            var pendingResumePercent: Double?
             while !Task.isCancelled {
                 guard let self, self.player === player else { return }
 
@@ -621,8 +622,13 @@ final class NativePlaybackCoordinator: ObservableObject {
                     readied = true
                     print("[NativePlayer] item readyToPlay")
                     let duration = CMTimeGetSeconds(item.duration)
-                    let resume = self.recorder.resumePositionSec()
+                    let resume = self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0)
+                    // Percentage-only row and no finite duration yet: apply on the first tick that has one.
+                    if resume == nil, !(duration.isFinite && duration > 0) {
+                        pendingResumePercent = self.recorder.pendingResumePercent()
+                    }
                     if let resume {
+                        // The resume seek (user-initiated for skip logic).
                         await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
                         self.lastPositionSec = resume
                     }
@@ -665,6 +671,17 @@ final class NativePlaybackCoordinator: ObservableObject {
                     // (each costing a ~10s reposition) can't accumulate into a false mpv fallback.
                     if pos.isFinite, abs(pos - self.lastPositionSec) > 10 {
                         waitingTicks = 0
+                    }
+                    if let pct = pendingResumePercent, pos.isFinite, dur.isFinite, dur > 0 {
+                        pendingResumePercent = nil
+                        // Only while still near the start, so a user scrub is never overridden.
+                        if pos < 30 {
+                            let target = dur * pct / 100
+                            if target > 10 {
+                                await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+                                self.lastPositionSec = target
+                            }
+                        }
                     }
                     if pos.isFinite, dur.isFinite, dur > 0 {
                         let paused = player.timeControlStatus != .playing
