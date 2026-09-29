@@ -135,8 +135,14 @@ class AllDebridFileSelector {
  * 4. With neither, `fileIdx` indexes the provider's file list; with no index, the largest
  *    playable video wins.
  *
- * Fork: [hasStableFileIndex] = false (AllDebrid) skips step 4's index lookup and lets a
- * filename miss with no episode request fall through to the largest playable video.
+ * Fork additions:
+ * - In steps 1 and 2, when several files match, basenames with a standalone `sample` token are
+ *   dropped and the result is used only if exactly one file remains, otherwise null.
+ * - When the episode pattern matches nothing, no filename hint was given and the provider has a
+ *   stable index, the file at `fileIdx` is chosen only if it is playable, carries no explicit
+ *   SxxEyy/NxM marker, and names the requested episode number as a standalone token.
+ * - `hasStableFileIndex` = false (AllDebrid) skips that fallback and step 4's index lookup, and
+ *   lets a filename miss with no episode request fall through to the largest playable video.
  */
 private fun <T> selectDebridFile(
     files: List<T>,
@@ -157,7 +163,8 @@ private fun <T> selectDebridFile(
         .distinct()
     for (name in names) {
         val matches = playable.matchingFiles(name, path)
-        if (matches.isNotEmpty()) return matches.singleOrNull()
+        // Fork: drop `sample` clips when a filename matches several files.
+        if (matches.isNotEmpty()) return matches.singleOrDropSamples(path)
     }
 
     val episodePattern = buildEpisodePattern(season ?: resolve.season, episode ?: resolve.episode)
@@ -165,7 +172,28 @@ private fun <T> selectDebridFile(
         val matches = playable.filter {
             episodePattern.containsMatchIn(path(it).normalizedPath().substringAfterLast('/'))
         }
-        if (matches.isNotEmpty()) return matches.singleOrNull()
+        // Fork: `Show.S01E05.mkv` next to `Show.S01E05.sample.mkv` is not ambiguous; ignore samples.
+        if (matches.isNotEmpty()) return matches.singleOrDropSamples(path)
+        // Fork: anime / absolute-numbered packs (`Show - 05.mkv`) have no SxxEyy names, so the
+        // pattern finds nothing. With no filename hint, trust the add-on's fileIdx only as a
+        // POSITIVE match: the file must exist, be playable, carry no explicit SxxEyy/NxM marker,
+        // and name the requested episode number as a standalone token (resolution, codec, bit
+        // depth, channels, year, CRC and version tags ignored). fileIdx is not guaranteed to be a
+        // position in this provider's list, so a file naming another episode is never accepted.
+        // Limit: in season > 1 an absolute-numbered name rarely equals the per-season episode
+        // number, so that case returns null rather than guessing.
+        if (hasStableFileIndex && names.isEmpty()) {
+            val wantedEpisode = episode ?: resolve.episode
+            resolve.fileIdx?.let { index ->
+                val candidate = files.getOrNull(index)
+                if (candidate != null && wantedEpisode != null && isPlayable(candidate)) {
+                    val base = path(candidate).normalizedPath().substringAfterLast('/')
+                    if (!explicitEpisodeMarker.containsMatchIn(base) && base.namesEpisodeNumber(wantedEpisode)) {
+                        return candidate
+                    }
+                }
+            }
+        }
         return null
     }
 
@@ -178,6 +206,40 @@ private fun <T> selectDebridFile(
 
     return playable.maxByOrNull(size)
 }
+
+// Fork: several matches -> ignore files whose basename has a standalone `sample` segment; keep
+// the result only if exactly one file remains ("Sampler" or "Resampled" are not samples).
+private fun <T> List<T>.singleOrDropSamples(path: (T) -> String): T? {
+    singleOrNull()?.let { return it }
+    return filterNot { sampleSegment.containsMatchIn(path(it).normalizedPath().substringAfterLast('/')) }
+        .singleOrNull()
+}
+
+private val episodeNoise = listOf(
+    Regex("[\\[(][0-9a-f]{8}[\\])]", RegexOption.IGNORE_CASE),
+    Regex("(?<![a-z0-9])\\d{3,4}x\\d{3,4}(?![0-9])", RegexOption.IGNORE_CASE),
+    Regex("(?<![a-z0-9])\\d{3,4}[pi](?![a-z0-9])", RegexOption.IGNORE_CASE),
+    Regex("(?<![a-z0-9])[xh]\\.?26[45](?![0-9])", RegexOption.IGNORE_CASE),
+    Regex("(?<![0-9])\\d{1,2}[ _-]?bit", RegexOption.IGNORE_CASE),
+    Regex("(?<![0-9])\\d\\.\\d(?![0-9])"),
+    Regex("(?<![0-9])(?:19|20)\\d{2}(?![0-9])"),
+    Regex("(?<![a-z])v\\d+(?![0-9])", RegexOption.IGNORE_CASE),
+)
+
+// Fork: does the basename contain [episode] as a standalone number once non-episode numbers are removed?
+private fun String.namesEpisodeNumber(episode: Int): Boolean {
+    var text = substringBeforeLast('.', this)
+    episodeNoise.forEach { text = it.replace(text, " ") }
+    return Regex("(?<![0-9])0*$episode(?![0-9])").containsMatchIn(text)
+}
+
+private val sampleSegment = Regex("(?<![a-z0-9])sample(?![a-z0-9])", RegexOption.IGNORE_CASE)
+
+// Fork: a basename carrying its own SxxEyy / NxM marker names a specific episode.
+private val explicitEpisodeMarker = Regex(
+    "(?<![a-z0-9])(?:s\\d+e\\d+|\\d{1,2}x\\d{1,3})(?![0-9])",
+    RegexOption.IGNORE_CASE,
+)
 
 private fun String.normalizedPath(): String = trim().replace('\\', '/').removePrefix("/")
 
