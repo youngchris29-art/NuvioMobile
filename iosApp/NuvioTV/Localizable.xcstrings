@@ -27465,40 +27465,6 @@
         }
       }
     },
-    "Which external ID identifies anime entries. MyAnimeList or Kitsu give each season its own entry; IMDB groups the seasons of a franchise under one ID.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Welche externe ID Anime-Einträge identifiziert. MyAnimeList oder Kitsu geben jeder Staffel einen eigenen Eintrag; IMDB fasst die Staffeln einer Franchise unter einer ID zusammen."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Qué ID externo identifica las entradas de anime. MyAnimeList o Kitsu dan a cada temporada su propia entrada; IMDB agrupa las temporadas de una franquicia bajo un solo ID."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quel identifiant externe identifie les entrées anime. MyAnimeList ou Kitsu donnent à chaque saison sa propre entrée ; IMDB regroupe les saisons d'une franchise sous un seul ID."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Quale ID esterno identifica le voci anime. MyAnimeList o Kitsu danno a ogni stagione una voce propria; IMDB raggruppa le stagioni di una saga sotto un solo ID."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ID ngoài nào xác định mục anime. MyAnimeList hoặc Kitsu cho mỗi mùa một mục riêng; IMDB gộp các mùa của một loạt phim vào một ID."
-          }
-        }
-      }
-    },
     "White": {
       "localizations": {
         "de": {
@@ -29065,6 +29031,618 @@
           "stringUnit": {
             "state": "translated",
             "value": "BUG-118: kiểu xử lý viền nào trông đúng trên một hàng ở Trang chủ"
+          }
+        }
+      }
+    },
+    "Prefer TVDB": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TVDB bevorzugen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preferir TVDB"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Préférer TVDB"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preferisci TVDB"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ưu tiên TVDB"
+          }
+        }
+      }
+    },
+    "TMDB": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TMDB"
+          }
+        }
+      }
+    },
+    "Falls back to TMDB when the selected account isn't connected.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wechselt zu TMDB, wenn das ausgewählte Konto nicht verbunden ist."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recurre a TMDB cuando la cuenta seleccionada no está conectada."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bascule sur TMDB lorsque le compte sélectionné n'est pas connecté."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ripiega su TMDB quando l'account selezionato non è connesso."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dùng TMDB khi tài khoản đã chọn chưa được kết nối."
+          }
+        }
+      }
+    },
+    "Remove Personal API Key": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Persönlichen API-Schlüssel entfernen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eliminar clave API personal"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Supprimer la clé API personnelle"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rimuovi chiave API personale"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa API key cá nhân"
+          }
+        }
+      }
+    },
+    "Personal key saved. Removing it goes back to the built-in key.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Persönlicher Schlüssel gespeichert. Beim Entfernen wird wieder der integrierte Schlüssel verwendet."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clave personal guardada. Al eliminarla se vuelve a la clave incluida."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clé personnelle enregistrée. La supprimer rétablit la clé intégrée."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chiave personale salvata. Rimuovendola si torna alla chiave inclusa."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã lưu key cá nhân. Xóa key này sẽ quay lại dùng key có sẵn."
+          }
+        }
+      }
+    },
+    "Personal API Key (Optional)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Persönlicher API-Schlüssel (optional)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clave API personal (opcional)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clé API personnelle (facultatif)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chiave API personale (facoltativa)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API key cá nhân (không bắt buộc)"
+          }
+        }
+      }
+    },
+    "Leave empty to use the built-in key.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leer lassen, um den integrierten Schlüssel zu verwenden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déjalo vacío para usar la clave incluida."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Laissez vide pour utiliser la clé intégrée."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lascia vuoto per usare la chiave inclusa."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Để trống để dùng key có sẵn."
+          }
+        }
+      }
+    },
+    "Which external ID identifies anime entries. MyAnimeList and Kitsu keep each season separate; IMDB and TVDB group the seasons.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Welche externe ID Anime-Einträge identifiziert. MyAnimeList und Kitsu führen jede Staffel getrennt; IMDB und TVDB fassen die Staffeln zusammen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qué ID externo identifica las entradas de anime. MyAnimeList y Kitsu mantienen cada temporada por separado; IMDB y TVDB agrupan las temporadas."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quel identifiant externe identifie les entrées anime. MyAnimeList et Kitsu séparent chaque saison ; IMDB et TVDB regroupent les saisons."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quale ID esterno identifica le voci anime. MyAnimeList e Kitsu tengono separata ogni stagione; IMDB e TVDB raggruppano le stagioni."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID ngoài nào xác định mục anime. MyAnimeList và Kitsu tách riêng từng mùa; IMDB và TVDB gộp các mùa lại."
+          }
+        }
+      }
+    },
+    "Skip Credits": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abspann überspringen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar créditos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer le générique"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta titoli di coda"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bỏ qua credit"
+          }
+        }
+      }
+    },
+    "Skip to Post-Credits": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zur Szene nach dem Abspann"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ir a escena poscréditos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aller à la scène post-générique"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vai alla scena post-titoli"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đến cảnh sau credit"
+          }
+        }
+      }
+    },
+    "Auto-Skip Intros": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intros automatisch überspringen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar intros automáticamente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer les intros automatiquement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta intro automaticamente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động bỏ qua đoạn mở đầu"
+          }
+        }
+      }
+    },
+    "Auto-Skip Recaps": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rückblicke automatisch überspringen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar resúmenes automáticamente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer les récaps automatiquement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta riassunti automaticamente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động bỏ qua tóm tắt"
+          }
+        }
+      }
+    },
+    "Auto-Skip Outros": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outros automatisch überspringen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar outros automáticamente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer les outros automatiquement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta outro automaticamente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động bỏ qua đoạn kết thúc"
+          }
+        }
+      }
+    },
+    "Auto-Skip Movie Credits": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filmabspann automatisch überspringen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar créditos de películas automáticamente"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passer le générique des films automatiquement"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta titoli di coda dei film automaticamente"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động bỏ qua credit phim"
+          }
+        }
+      }
+    },
+    "Skip intros and anime openings automatically.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überspringt Intros und Anime-Openings automatisch."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta intros y openings de anime automáticamente."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passe automatiquement les intros et les génériques d'ouverture d'anime."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta automaticamente intro e sigle di apertura degli anime."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động bỏ qua đoạn mở đầu và opening anime."
+          }
+        }
+      }
+    },
+    "Skip recap segments automatically.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überspringt Rückblicke automatisch."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta los resúmenes automáticamente."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passe automatiquement les récaps."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta automaticamente i riassunti."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động bỏ qua các đoạn tóm tắt."
+          }
+        }
+      }
+    },
+    "Skip outros and anime endings automatically.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überspringt Outros und Anime-Endings automatisch."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta outros y endings de anime automáticamente."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passe automatiquement les outros et les génériques de fin d'anime."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta automaticamente outro e sigle di chiusura degli anime."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tự động bỏ qua đoạn kết thúc và ending anime."
+          }
+        }
+      }
+    },
+    "Skip movie credits, keeping post-credits scenes.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Überspringt den Abspann von Filmen, Szenen nach dem Abspann bleiben erhalten."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta los créditos de las películas y conserva las escenas poscréditos."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passe le générique des films en conservant les scènes post-générique."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salta i titoli di coda dei film, mantenendo le scene dopo i titoli di coda."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bỏ qua credit phim, vẫn giữ cảnh sau credit."
           }
         }
       }

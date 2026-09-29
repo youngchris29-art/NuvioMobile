@@ -209,7 +209,7 @@ struct AccountServicesSettingsPane: View {
 
             SettingsPickerRow(
                 title: String(localized: "Anime ID Preference"),
-                subtitle: String(localized: "Which external ID identifies anime entries. TVDB IDs stay stable across seasons, MyAnimeList and Kitsu keep each season separate, and IMDB groups a franchise under one ID."),
+                subtitle: String(localized: "Which external ID identifies anime entries. MyAnimeList and Kitsu keep each season separate; IMDB and TVDB group the seasons."),
                 selection: Binding(
                     get: { simkl.animeIdPreference },
                     set: { simkl.setAnimeIdPreference($0) }
