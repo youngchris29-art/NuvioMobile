@@ -16,9 +16,11 @@ import nuvio.composeapp.generated.resources.lang_polish
 import nuvio.composeapp.generated.resources.lang_portuguese_brazil
 import nuvio.composeapp.generated.resources.lang_portuguese_portugal
 import nuvio.composeapp.generated.resources.lang_romanian
+import nuvio.composeapp.generated.resources.lang_russian
 import nuvio.composeapp.generated.resources.lang_slovak
 import nuvio.composeapp.generated.resources.lang_spanish
 import nuvio.composeapp.generated.resources.lang_turkish
+import nuvio.composeapp.generated.resources.lang_urdu
 import nuvio.composeapp.generated.resources.lang_norwegian
 import nuvio.composeapp.generated.resources.lang_dutch
 import nuvio.composeapp.generated.resources.lang_japanese
@@ -44,9 +46,11 @@ val AppLanguage.labelRes: StringResource
         AppLanguage.PORTUGUESE_BRAZIL -> Res.string.lang_portuguese_brazil
         AppLanguage.PORTUGUESE -> Res.string.lang_portuguese_portugal
         AppLanguage.ROMANIAN -> Res.string.lang_romanian
+        AppLanguage.RUSSIAN -> Res.string.lang_russian
         AppLanguage.SLOVAK -> Res.string.lang_slovak
         AppLanguage.SPANISH -> Res.string.lang_spanish
         AppLanguage.TURKISH -> Res.string.lang_turkish
+        AppLanguage.URDU -> Res.string.lang_urdu
         AppLanguage.NORWEGIAN -> Res.string.lang_norwegian
         AppLanguage.DUTCH -> Res.string.lang_dutch
         AppLanguage.JAPANESE -> Res.string.lang_japanese

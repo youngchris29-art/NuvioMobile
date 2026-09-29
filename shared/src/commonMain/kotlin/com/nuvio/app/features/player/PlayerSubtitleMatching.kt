@@ -16,6 +16,9 @@ object SubtitleLanguageMatching {
     val CASTILIAN_TAGS = listOf(
         "es-es", "es_es", "castilian", "castellano", "spain", "españa", "espana", "iberian",
     )
+    val INDONESIAN_TAGS = listOf(
+        "indonesia", "indonesian", "bahasa indonesia",
+    )
 
     private val LANGUAGE_OVERRIDES = mapOf(
         "pt" to "pt",
@@ -263,6 +266,13 @@ object SubtitleLanguageMatching {
             }
         }
 
+        if (containsAny("bahasa indonesia", "indonesian", "indonesia")) {
+            return "id"
+        }
+        if (containsAny("bahasa malaysia", "bahasa melayu", "malaysian")) {
+            return "ms"
+        }
+
         return LANGUAGE_OVERRIDES[code] ?: normalizedCode
     }
 
@@ -320,6 +330,12 @@ object SubtitleLanguageMatching {
             val hasCastilian = CASTILIAN_TAGS.any { haystack.contains(it) }
             if (hasLatino && !hasCastilian) return "es-419"
             if (hasCastilian && !hasLatino) return "es"
+            return baseLang
+        }
+
+        if (baseLang == "ms" || baseLang == "msa" || baseLang == "may") {
+            val hasIndonesian = INDONESIAN_TAGS.any { haystack.contains(it) }
+            if (hasIndonesian) return "id"
             return baseLang
         }
 
