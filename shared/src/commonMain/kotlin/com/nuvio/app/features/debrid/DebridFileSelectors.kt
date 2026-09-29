@@ -135,16 +135,14 @@ class AllDebridFileSelector {
  * 4. With neither, `fileIdx` indexes the provider's file list; with no index, the largest
  *    playable video wins.
  *
- * Fork additions:
+ * Fork deviations:
  * - In steps 1 and 2, when several files match, basenames with a standalone `sample` token are
  *   dropped and the result is used only if exactly one file remains, otherwise null.
- * - When the episode pattern matches nothing, no filename hint was given and the provider has a
- *   stable index, the file at `fileIdx` is chosen only if it is playable, carries no explicit
- *   SxxEyy/NxM marker, names the requested episode in an anchored position (after ` - `, or after
- *   e / ep / episode / #, optional leading zeros and `v2` suffix), and is the only playable file
- *   in the list that does.
- * - `hasStableFileIndex` = false (AllDebrid) skips that fallback and step 4's index lookup, and
- *   lets a filename miss with no episode request fall through to the largest playable video.
+ * - There is deliberately no `fileIdx` fallback when an episode was requested and nothing
+ *   matched: a file index cannot be trusted to line up with the provider's file list, so packs
+ *   whose file names do not carry the requested SxxEyy / NxM episode do not resolve.
+ * - `hasStableFileIndex` = false (AllDebrid) skips step 4's index lookup and lets a filename miss
+ *   with no episode request fall through to the largest playable video.
  */
 private fun <T> selectDebridFile(
     files: List<T>,
@@ -176,31 +174,8 @@ private fun <T> selectDebridFile(
         }
         // Fork: `Show.S01E05.mkv` next to `Show.S01E05.sample.mkv` is not ambiguous; ignore samples.
         if (matches.isNotEmpty()) return matches.singleOrDropSamples(path)
-        // Fork: anime / absolute-numbered packs (`Show - 05.mkv`) have no SxxEyy names, so the
-        // pattern finds nothing. With no filename hint, trust the add-on's fileIdx only as a
-        // POSITIVE, UNIQUE match: the file at fileIdx must exist, be playable, carry no explicit
-        // SxxEyy/NxM marker, and name the requested episode in an anchored position (after ` - `,
-        // or after e / ep / episode / #; see [buildAnchoredEpisodePattern]), and it must be the ONLY
-        // playable file in the list that does. fileIdx is not guaranteed to be a position in this
-        // provider's list, so anything looser could play another episode (title numbers, season
-        // markers, resolutions, dates). Limit: in season > 1 an absolute-numbered name rarely
-        // equals the per-season episode number, so that case returns null rather than guessing.
-        if (hasStableFileIndex && names.isEmpty()) {
-            val wantedEpisode = episode ?: resolve.episode
-            resolve.fileIdx?.let { index ->
-                val candidate = files.getOrNull(index)
-                if (candidate != null && wantedEpisode != null && isPlayable(candidate)) {
-                    val anchored = buildAnchoredEpisodePattern(wantedEpisode)
-                    fun basename(file: T) = path(file).normalizedPath().substringAfterLast('/')
-                    val matching = playable.filter { anchored.containsMatchIn(basename(it)) }
-                    if (!explicitEpisodeMarker.containsMatchIn(basename(candidate)) &&
-                        matching.size == 1 && matching.single() === candidate
-                    ) {
-                        return candidate
-                    }
-                }
-            }
-        }
+        // Fork: no fileIdx fallback here. A file index cannot be trusted to line up with the
+        // provider's file list, so a miss returns null (upstream's rule).
         return null
     }
 
@@ -222,21 +197,7 @@ private fun <T> List<T>.singleOrDropSamples(path: (T) -> String): T? {
         .singleOrNull()
 }
 
-// Fork: an episode number counts only in an explicit position: after ` - ` / ` -` (anime
-// convention), or after e / ep / episode / # that is not part of a longer word. Leading zeros and
-// a `v2` version suffix are allowed. Every lookbehind is fixed-width (Kotlin/Native).
-private fun buildAnchoredEpisodePattern(episode: Int): Regex = Regex(
-    "(?:(?<=\\s-\\s)|(?<=\\s-)|(?<![a-z0-9])(?:episode|ep|e|#)[\\s._]{0,2})0*$episode(?:v\\d+)?(?![0-9])",
-    RegexOption.IGNORE_CASE,
-)
-
 private val sampleSegment = Regex("(?<![a-z0-9])sample(?![a-z0-9])", RegexOption.IGNORE_CASE)
-
-// Fork: a basename carrying its own SxxEyy / NxM marker names a specific episode.
-private val explicitEpisodeMarker = Regex(
-    "(?<![a-z0-9])(?:s\\d+e\\d+|\\d{1,2}x\\d{1,3})(?![0-9])",
-    RegexOption.IGNORE_CASE,
-)
 
 private fun String.normalizedPath(): String = trim().replace('\\', '/').removePrefix("/")
 
