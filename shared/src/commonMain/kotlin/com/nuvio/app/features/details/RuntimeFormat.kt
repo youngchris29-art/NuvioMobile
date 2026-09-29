@@ -27,7 +27,8 @@ fun formatRuntimeFromMinutes(totalMinutes: Int): String {
     }
 }
 
-private fun parseRuntimeMinutes(value: String): Int? {
+internal fun parseRuntimeMinutes(rawRuntime: String?): Int? {
+    val value = rawRuntime?.trim()?.takeIf(String::isNotBlank) ?: return null
     hourMinuteColonRegex.matchEntire(value)?.let { match ->
         val hours = match.groupValues[1].toIntOrNull() ?: return null
         val minutes = match.groupValues[2].toIntOrNull() ?: return null

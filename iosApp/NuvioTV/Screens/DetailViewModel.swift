@@ -367,6 +367,7 @@ final class DetailViewModel: ObservableObject {
         guard !didRequestRatings, EpisodesSection.isSeriesLike(meta) else { return }
         let imdbId = ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: meta.id)
             ?? ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: id)
+            ?? ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: meta.imdbId)
         let tmdbId = ParentalGuideRepositoryKt.extractParentalGuideTmdbId(value: meta.id)
             ?? ParentalGuideRepositoryKt.extractParentalGuideTmdbId(value: id)
         guard imdbId != nil || tmdbId != nil else { return }
@@ -395,7 +396,8 @@ final class DetailViewModel: ObservableObject {
     private func fetchParentalGuideIfNeeded(_ meta: MetaDetails) {
         guard !didRequestGuide else { return }
         guard let imdbId = ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: meta.id)
-            ?? ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: id) else { return }
+            ?? ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: id)
+            ?? ParentalGuideRepositoryKt.extractParentalGuideImdbId(value: meta.imdbId) else { return }
         didRequestGuide = true
 
         ParentalGuideRepository.shared.getParentalGuide(imdbId: imdbId) { [weak self] result, _ in

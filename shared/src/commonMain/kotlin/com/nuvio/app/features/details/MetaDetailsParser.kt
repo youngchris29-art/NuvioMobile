@@ -33,6 +33,7 @@ object MetaDetailsParser {
             id = meta.requiredString("id"),
             type = meta.requiredString("type"),
             name = meta.requiredString("name"),
+            imdbId = meta.string("imdb_id"),
             poster = meta.string("poster"),
             background = meta.string("background"),
             logo = meta.string("logo"),
@@ -249,7 +250,7 @@ object MetaDetailsParser {
                 season = video.int("season"),
                 episode = video.int("episode"),
                 overview = video.string("overview") ?: video.string("description"),
-                runtime = video.int("runtime"),
+                runtime = parseRuntimeMinutes((video["runtime"] as? JsonPrimitive)?.contentOrNull),
                 rating = video.string("rating")?.trim()?.toDoubleOrNull()?.takeIf { it > 0.0 },
                 streams = video.embeddedStreams(),
             )
@@ -261,6 +262,10 @@ object MetaDetailsParser {
     // the addon omitted a specials poster, and to positional numbering when nothing lines up.
     private fun JsonObject.seasonPosters(videos: List<MetaVideo>): Map<Int, String> {
         val appExtras = this["app_extras"] as? JsonObject ?: return emptyMap()
+        val keyed = parseKeyedSeasonPosters(appExtras["seasonPosters"])
+            .ifEmpty { parseKeyedSeasonPosters(appExtras["seasonPosterByNumber"]) }
+        if (keyed.isNotEmpty()) return keyed
+
         val posters = appExtras["seasonPosters"] as? JsonArray ?: return emptyMap()
         val seasons = videos
             .mapNotNull(MetaVideo::season)
@@ -281,6 +286,18 @@ object MetaDetailsParser {
                 ?.trim()
                 ?.takeIf(String::isNotBlank)
                 ?.let { posterSeasons[index] to it }
+        }.toMap()
+    }
+
+    // Upstream 09c80301: season-number-keyed poster maps ({"1": url, ...}).
+    private fun parseKeyedSeasonPosters(element: JsonElement?): Map<Int, String> {
+        val posters = element as? JsonObject ?: return emptyMap()
+        return posters.entries.mapNotNull { (key, value) ->
+            val season = key.toIntOrNull() ?: return@mapNotNull null
+            (value as? JsonPrimitive)?.contentOrNull
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+                ?.let { season to it }
         }.toMap()
     }
 

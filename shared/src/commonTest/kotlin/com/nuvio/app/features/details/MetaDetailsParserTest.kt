@@ -9,7 +9,16 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class MetaDetailsParserTest {
 
@@ -243,5 +252,84 @@ class MetaDetailsParserTest {
         )
 
         assertEquals("PG-13", result.ageRating)
+    }
+
+    @Test
+    fun `parse converts addon episode runtimes to minutes`() {
+        val runtimes = listOf(
+            JsonPrimitive(45) to 45,
+            JsonPrimitive("45") to 45,
+            JsonPrimitive(" 45 min ") to 45,
+            JsonPrimitive("45 minutes") to 45,
+            JsonPrimitive("2h 5m") to 125,
+            JsonPrimitive("1 hr 30 min") to 90,
+            JsonPrimitive("1 hour 30 minutes") to 90,
+            JsonPrimitive("2 HOURS") to 120,
+            JsonPrimitive("1:30") to 90,
+        )
+
+        runtimes.forEach { (runtime, expected) ->
+            assertEquals(expected, parseEpisode(runtime).runtime, "Runtime: $runtime")
+        }
+    }
+
+    @Test
+    fun `parse keeps episodes with missing or invalid runtimes`() {
+        val runtimes = listOf(
+            null,
+            JsonNull,
+            JsonPrimitive(""),
+            JsonPrimitive(" "),
+            JsonPrimitive("unknown"),
+            JsonPrimitive(true),
+            JsonObject(emptyMap()),
+            JsonArray(emptyList()),
+        )
+
+        runtimes.forEach { runtime ->
+            val video = parseEpisode(runtime)
+
+            assertEquals("show:1:1", video.id)
+            assertNull(video.runtime, "Runtime: $runtime")
+        }
+    }
+
+    @Test
+    fun `parse reads addon imdb_id`() {
+        val withId = MetaDetailsParser.parse(
+            """{"meta":{"id":"kitsu:1","type":"series","name":"S","imdb_id":"tt1234567"}}""",
+        )
+        assertEquals("tt1234567", withId.imdbId)
+        val without = MetaDetailsParser.parse("""{"meta":{"id":"x","type":"movie","name":"M"}}""")
+        assertNull(without.imdbId)
+    }
+
+    @Test
+    fun `parse reads season-number keyed season posters`() {
+        val result = MetaDetailsParser.parse(
+            """{"meta":{"id":"s","type":"series","name":"S","app_extras":{"seasonPosters":{"1":"a","2":" b ","x":"c","3":""}}}}""",
+        )
+        assertEquals(mapOf(1 to "a", 2 to "b"), result.seasonPosters)
+
+        val alt = MetaDetailsParser.parse(
+            """{"meta":{"id":"s","type":"series","name":"S","app_extras":{"seasonPosterByNumber":{"0":"sp","1":"a"}}}}""",
+        )
+        assertEquals(mapOf(0 to "sp", 1 to "a"), alt.seasonPosters)
+    }
+
+    private fun parseEpisode(runtime: JsonElement?): MetaVideo {
+        val payload = buildJsonObject {
+            put("id", "show")
+            put("type", "series")
+            put("name", "Show")
+            put("videos", buildJsonArray {
+                add(buildJsonObject {
+                    put("id", "show:1:1")
+                    put("title", "Episode 1")
+                    if (runtime != null) put("runtime", runtime)
+                })
+            })
+        }
+        return MetaDetailsParser.parse(payload.toString()).videos.single()
     }
 }
