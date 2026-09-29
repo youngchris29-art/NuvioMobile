@@ -21,9 +21,11 @@ final class SettingsViewModel: ObservableObject {
     /// UX-8: hide the entire Discover section on the Search screen (synced; default off).
     @Published private(set) var hideDiscover = false
     /// TMDB enrichment (cast profiles, studios/networks, collections, artwork). Upstream 60ee0160:
-    /// the API key is now bundled at compile time (`TmdbConfig.API_KEY`) — no user-facing key entry.
+    /// a bundled key (`TmdbConfig.API_KEY`) is the default; an optional personal key overrides it.
     @Published private(set) var tmdbEnabled = false
     @Published private(set) var tmdbUseReleaseDates = false
+    /// Whether a personal TMDB key override is stored (blank = the bundled key is in use).
+    @Published private(set) var tmdbHasPersonalKey = false
     /// Chip code for the metadata-language row: "device" while no language is stored (the shared
     /// repo derives it from the device language), else the stored code's primary subtag.
     @Published private(set) var tmdbLanguageSelection = "device"
@@ -155,6 +157,7 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? TmdbSettings else { return }
             self.tmdbEnabled = state.enabled
             self.tmdbUseReleaseDates = state.useReleaseDates
+            self.tmdbHasPersonalKey = !state.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             // Stored languages may carry a region ("de-DE" from the phone's field); the chip row
             // keys on the primary subtag.
             self.tmdbLanguageSelection = TmdbSettingsRepository.shared.hasExplicitLanguage()
@@ -326,8 +329,18 @@ final class SettingsViewModel: ObservableObject {
     }
 
     // MARK: - TMDB
-    // Upstream 60ee0160: the API key is bundled at compile time (`TmdbConfig.API_KEY`) — there is
-    // no user-facing key entry any more, just the enrichment on/off toggle below.
+    // Upstream 60ee0160 + df589078: a bundled key is the default; the optional personal key below
+    // overrides it (synced cross-device). Neither gates the enrichment toggle.
+
+    /// Store a personal key override; the shared repo's effective key switches over immediately.
+    func saveTmdbKey(_ key: String) {
+        TmdbSettingsRepository.shared.setApiKey(value: key.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Blank clears the override and the bundled key is used again.
+    func clearTmdbKey() {
+        TmdbSettingsRepository.shared.setApiKey(value: "")
+    }
 
     // MARK: - MDBList
 

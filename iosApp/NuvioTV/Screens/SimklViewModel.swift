@@ -37,6 +37,9 @@ final class SimklViewModel: ObservableObject {
     /// than the bridged Kotlin enum, matching `SettingsViewModel.librarySourceMode`'s pattern, so
     /// the view never has to switch over a Kotlin enum entry.
     @Published private(set) var animeIdPreference = "imdb"
+    /// "More Like This" source chip key ("trakt" / "simkl" / "tmdb"); lives here because this view
+    /// model already observes `TrackingSettingsRepository` for the Account Services pane.
+    @Published private(set) var moreLikeThisSource = "trakt"
 
     private var watcher: FlowWatcher?
     private var syncWatcher: FlowWatcher?
@@ -91,6 +94,7 @@ final class SimklViewModel: ObservableObject {
         trackingSettingsWatcher = FlowWatcherKt.watch(TrackingSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? TraktSettingsUiState else { return }
             self.animeIdPreference = Self.animeIdKey(state.simklAnimeIdPreference)
+            self.moreLikeThisSource = Self.moreLikeThisKey(state.moreLikeThisSource)
         }
     }
 
@@ -223,6 +227,7 @@ final class SimklViewModel: ObservableObject {
         switch key {
         case "mal": preference = .mal
         case "kitsu": preference = .kitsu
+        case "tvdb": preference = .tvdb
         default: preference = .imdb
         }
         TrackingSettingsRepository.shared.setSimklAnimeIdPreference(preference: preference)
@@ -234,6 +239,23 @@ final class SimklViewModel: ObservableObject {
     private static func animeIdKey(_ preference: SimklAnimeIdPreference) -> String {
         if preference == .mal { return "mal" }
         if preference == .kitsu { return "kitsu" }
+        if preference == .tvdb { return "tvdb" }
         return "imdb"
+    }
+
+    func setMoreLikeThisSource(_ key: String) {
+        let source: MoreLikeThisSourcePreference
+        switch key {
+        case "simkl": source = .simkl
+        case "tmdb": source = .tmdb
+        default: source = .trakt
+        }
+        TrackingSettingsRepository.shared.setMoreLikeThisSource(source: source)
+    }
+
+    private static func moreLikeThisKey(_ source: MoreLikeThisSourcePreference) -> String {
+        if source == .simkl { return "simkl" }
+        if source == .tmdb { return "tmdb" }
+        return "trakt"
     }
 }

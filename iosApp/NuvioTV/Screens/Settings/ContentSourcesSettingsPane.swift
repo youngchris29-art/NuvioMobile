@@ -24,6 +24,23 @@ struct ContentSourcesSettingsPane: View {
                         set: { model.setTmdbEnabled($0) }
                     )
                 )
+                if model.tmdbHasPersonalKey {
+                    SettingsDestructiveRow(
+                        title: String(localized: "Remove Personal API Key"),
+                        subtitle: String(localized: "Personal key saved. Removing it goes back to the built-in key."),
+                        systemImage: "trash"
+                    ) {
+                        model.clearTmdbKey()
+                    }
+                } else {
+                    DebridKeyEntryRow(providerName: "TMDB", placeholder: String(localized: "Personal API Key (Optional)")) {
+                        model.saveTmdbKey($0)
+                    }
+                    Text("Leave empty to use the built-in key.")
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .frame(maxWidth: 1100, alignment: .leading)
+                }
                 SettingsToggleRow(
                     title: String(localized: "TMDB Release Dates"),
                     subtitle: model.tmdbUseReleaseDates

@@ -58,6 +58,25 @@ struct AccountServicesSettingsPane: View {
                 simklSection
             }
 
+            SettingsSection(String(localized: "More Like This")) {
+                SettingsPickerRow(
+                    title: String(localized: "Source"),
+                    subtitle: String(localized: "Falls back to TMDB when the selected account isn't connected."),
+                    selection: Binding(
+                        get: { simkl.moreLikeThisSource },
+                        set: { simkl.setMoreLikeThisSource($0) }
+                    ),
+                    options: ["trakt", "simkl", "tmdb"],
+                    label: { key in
+                        switch key {
+                        case "simkl": return String(localized: "Simkl")
+                        case "tmdb": return String(localized: "TMDB")
+                        default: return String(localized: "Trakt")
+                        }
+                    }
+                )
+            }
+
             SettingsSection(String(localized: "Debrid")) {
                 debridSection
             }
@@ -190,7 +209,7 @@ struct AccountServicesSettingsPane: View {
 
             SettingsPickerRow(
                 title: String(localized: "Anime ID Preference"),
-                subtitle: String(localized: "Which external ID identifies anime entries. MyAnimeList or Kitsu give each season its own entry; IMDB groups the seasons of a franchise under one ID."),
+                subtitle: String(localized: "Which external ID identifies anime entries. TVDB IDs stay stable across seasons, MyAnimeList and Kitsu keep each season separate, and IMDB groups a franchise under one ID."),
                 selection: Binding(
                     get: { simkl.animeIdPreference },
                     set: { simkl.setAnimeIdPreference($0) }
@@ -442,12 +461,13 @@ private struct SimklSyncInfoRow: View {
 /// one ID (the trade-off folded into the picker row's subtitle since a tvOS `Menu` item can't
 /// carry upstream's per-option descriptions).
 private enum SimklAnimeIdOptions {
-    static let keys = ["imdb", "mal", "kitsu"]
+    static let keys = ["imdb", "mal", "kitsu", "tvdb"]
 
     private static let names: [String: String] = [
         "imdb": String(localized: "Prefer IMDB"),
         "mal": String(localized: "Prefer MyAnimeList"),
-        "kitsu": String(localized: "Prefer Kitsu")
+        "kitsu": String(localized: "Prefer Kitsu"),
+        "tvdb": String(localized: "Prefer TVDB")
     ]
 
     static func name(forKey key: String) -> String {
