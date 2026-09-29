@@ -36,6 +36,15 @@ struct SkipSegmentPlanner {
     /// a stale position of 0 inside an intro would auto-skip and override the resume.
     private var landing: Landing?
     private var landingTicks = 0
+    /// Position reported on the first tick of the current landing window (to tell a stuck, stale
+    /// position from real playback when the window times out).
+    private var landingFirstPosition: Double?
+    /// Set when a landing times out with the position stuck away from its target: the reported
+    /// position is a leftover of a seek that has not landed. A POSITION (not an interval index), so
+    /// it needs no interval predicate and survives `setIntervals`. While the reported position stays
+    /// within `staleMarkerTolerance` of it, no chip and no auto-skip; the first tick that differs
+    /// clears it and everything is armed normally.
+    private var stalePositionSec: Double?
     /// The interval just auto-skipped: no chip for it until the playhead has left it once, so the
     /// engine's pre-seek position doesn't flash the chip (upstream dismisses it after an auto-skip).
     private var chipSuppressedIndex: Int?
@@ -49,6 +58,9 @@ struct SkipSegmentPlanner {
     static let landingTolerance: Double = 5
     /// Give up waiting for a landing that never shows (failed seek) after this many ticks.
     static let maxLandingTicks = 20
+    /// Movement across a landing window at or below this = the position is stuck (stale).
+    static let stuckPositionTolerance: Double = 1
+    static let staleMarkerTolerance: Double = 1
 
     // MARK: - Inputs
 
@@ -68,6 +80,8 @@ struct SkipSegmentPlanner {
     /// The resume seek. `toSec` nil = target unknown (mpv `absolute-percent` resume).
     mutating func noteResumeSeek(toSec: Double?) {
         landingTicks = 0
+        landingFirstPosition = nil
+        stalePositionSec = nil
         if let toSec {
             noteUserSeek(fromSec: toSec, toSec: toSec)
             landing = .at(toSec)
@@ -87,6 +101,8 @@ struct SkipSegmentPlanner {
         // `noteResumeSeek(0)`: that would record a deliberate 0 -> 0 seek and consume an intro at 0.
         landing = .at(0)
         landingTicks = 0
+        landingFirstPosition = nil
+        stalePositionSec = nil
     }
 
     // MARK: - Evaluation
@@ -95,6 +111,10 @@ struct SkipSegmentPlanner {
     mutating func evaluate(positionSec: Double, durationSec: Double, isPlaying: Bool,
                            autoSkipTypes: [AutoSkipSegmentType]?) -> Decision {
         updateLanding(positionSec: positionSec)
+        if let stale = stalePositionSec {
+            if abs(positionSec - stale) > Self.staleMarkerTolerance { stalePositionSec = nil }
+            else { return Decision() }
+        }
         let durationMs = durationSec > 0 ? Self.ms(durationSec) : 0
         guard let index = intervals.firstIndex(where: { interval in
             positionSec >= interval.startTime && positionSec < interval.endTime &&
@@ -154,6 +174,7 @@ struct SkipSegmentPlanner {
     private mutating func updateLanding(positionSec: Double) {
         guard let pending = landing else { return }
         landingTicks += 1
+        if landingTicks == 1 { landingFirstPosition = positionSec }
         switch pending {
         case .at(let target):
             if abs(positionSec - target) <= Self.landingTolerance { landing = nil }
@@ -164,13 +185,13 @@ struct SkipSegmentPlanner {
             }
         }
         if landing != nil, landingTicks >= Self.maxLandingTicks {
-            // Timed out. If the playhead is still NOT at a known target, the position is stale (a
-            // slow seek): whatever interval it sits in must neither auto-skip nor flash the chip.
-            // Other intervals stay armed, so an intro at the real start still auto-skips later.
+            // Timed out. Stuck away from a known target = the seek has not landed and the position
+            // is a leftover: mark it stale. Otherwise the position advanced like real playback (the
+            // seek failed or was abandoned): just stop waiting, chip and auto-skip are available.
             if case .at(let target) = pending, abs(positionSec - target) > Self.landingTolerance,
-               let index = intervals.firstIndex(where: { positionSec >= $0.startTime && positionSec < $0.endTime }) {
-                consumed.insert(index)
-                chipSuppressedIndex = index
+               let first = landingFirstPosition,
+               abs(positionSec - first) <= Self.stuckPositionTolerance {
+                stalePositionSec = positionSec
             }
             landing = nil
         }

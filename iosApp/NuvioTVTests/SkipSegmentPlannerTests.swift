@@ -162,7 +162,7 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertNil(h.tick(66).autoSkipTargetSec)
     }
 
-    func testReplayLandingTimeoutWithStalePositionNeverAutoSkipsThenIntroStillDoes() {
+    func testSlowReplayNeverAutoSkipsOnStalePositionAndOutroStillArmsForSecondViewing() {
         var p = planner([interval(0, 90, "op"), interval(1400, .greatestFiniteMagnitude, "ed")])
         p.resetForReplay()
         let types: [AutoSkipSegmentType] = [.intro, .outro]
@@ -172,6 +172,51 @@ final class SkipSegmentPlannerTests: XCTestCase {
             XCTAssertNil(d.prompt, "tick \(tick)")
         }
         XCTAssertEqual(p.evaluate(positionSec: 1, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types).autoSkipTargetSec, 90)
+        // Second viewing: the playhead reaches the outro naturally and it still auto-skips.
+        XCTAssertNotNil(p.evaluate(positionSec: 1401, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types).autoSkipTargetSec)
+    }
+
+    func testFailedResumeSeekWithRealPlaybackRestoresChipAndAutoSkipAfterTimeout() {
+        let intervals = [interval(0, 90, "op"), interval(1400, .greatestFiniteMagnitude, "ed")]
+        // Resume to 1200 never happens; the stream plays from 0 (0.5 s per tick).
+        var auto = planner(intervals)
+        auto.noteResumeSeek(toSec: 1200)
+        for tick in 1..<20 {
+            let d = auto.evaluate(positionSec: Double(tick) * 0.5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro])
+            XCTAssertNil(d.autoSkipTargetSec, "tick \(tick)")
+            XCTAssertNil(d.prompt, "tick \(tick)")
+        }
+        XCTAssertEqual(auto.evaluate(positionSec: 10, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro]).autoSkipTargetSec, 90)
+
+        var chip = planner(intervals)
+        chip.noteResumeSeek(toSec: 1200)
+        for tick in 1..<20 { _ = chip.evaluate(positionSec: Double(tick) * 0.5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: nil) }
+        XCTAssertEqual(chip.evaluate(positionSec: 10, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: nil).prompt?.label,
+                       String(localized: "Skip Intro"))
+    }
+
+    func testStalePositionWithActionlessIntervalListedFirstNeverAutoSkips() {
+        // `post-credits` has no skip action; evaluate skips it, and the marker is position-based.
+        var p = planner([interval(1450, 1500, "post-credits"), interval(1400, .greatestFiniteMagnitude, "ed")])
+        p.resetForReplay()
+        for tick in 1...25 {
+            let d = p.evaluate(positionSec: episodeDuration - 0.5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.outro])
+            XCTAssertNil(d.autoSkipTargetSec, "tick \(tick)")
+        }
+    }
+
+    func testIntervalsArrivingAfterTheTimeoutStillHonourTheStaleMarker() {
+        var p = SkipSegmentPlanner()
+        p.resetForReplay()
+        for _ in 1...25 {
+            _ = p.evaluate(positionSec: episodeDuration - 0.5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.outro])
+        }
+        p.setIntervals([interval(1400, .greatestFiniteMagnitude, "ed")])
+        let stale = p.evaluate(positionSec: episodeDuration - 0.5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.outro])
+        XCTAssertNil(stale.autoSkipTargetSec)
+        XCTAssertNil(stale.prompt)
+        // Position moves: normal behaviour.
+        XCTAssertNotNil(p.evaluate(positionSec: 1401, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.outro]).autoSkipTargetSec)
     }
 
     func testNormalResumeLandingShowsChipAndKeepsLaterIntervalsArmed() {
