@@ -89,4 +89,40 @@ class SimklAnimeSeasonMappingTest {
         assertEquals(7, SimklIdResolver.animeEpisodeFor(mapping, season = 2, episode = 7))
         assertEquals(3, SimklIdResolver.animeEpisodeFor(emptyList(), season = 2, episode = 3))
     }
+
+    @Test
+    fun splitCourPicksTheCandidateWhoseMappingContainsTheEpisode() {
+        val cour1 = AnimeSeasonEntry(2001, 3)
+        val cour2 = AnimeSeasonEntry(2002, 3)
+        val m1 = (1..12).map { EpisodeMapping(it, 3, it) }
+        val m2 = (1..12).map { EpisodeMapping(it, 3, it + 12) }
+        val candidates = listOf(cour1 to m1, cour2 to m2)
+        assertEquals(2002L, SimklIdResolver.selectSiblingByEpisode(candidates, 3, 15))
+        assertEquals(2001L, SimklIdResolver.selectSiblingByEpisode(candidates, 3, 5))
+    }
+
+    @Test
+    fun splitCourFallsBackToFirstWhenNoCandidateMapsTheEpisode() {
+        val candidates = listOf(
+            AnimeSeasonEntry(2001, 3) to listOf(EpisodeMapping(1, 3, 1)),
+            AnimeSeasonEntry(2002, 3) to emptyList(),
+        )
+        assertEquals(2001L, SimklIdResolver.selectSiblingByEpisode(candidates, 3, 99))
+    }
+
+    @Test
+    fun singleCandidateIsUnchangedAndEmptyIsNull() {
+        val only = listOf(AnimeSeasonEntry(2001, 3) to emptyList<EpisodeMapping>())
+        assertEquals(2001L, SimklIdResolver.selectSiblingByEpisode(only, 3, 15))
+        assertNull(SimklIdResolver.selectSiblingByEpisode(emptyList(), 3, 15))
+    }
+
+    @Test
+    fun shouldLookForSiblingDecisions() {
+        val m = (1..12).map { EpisodeMapping(it, 1, it) }
+        assertEquals(false, SimklIdResolver.shouldLookForSibling("anime", 1, 1, m, 5))
+        assertEquals(true, SimklIdResolver.shouldLookForSibling("anime", 1, 1, m, 20))
+        assertEquals(false, SimklIdResolver.shouldLookForSibling("anime", 1, 1, emptyList(), 20))
+        assertEquals(false, SimklIdResolver.shouldLookForSibling("tv", 1, 1, m, 20))
+    }
 }

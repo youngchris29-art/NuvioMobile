@@ -3,6 +3,7 @@ package com.nuvio.app.features.player.skip
 import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.simkl.buildSimklApiUrl
 import com.nuvio.app.features.simkl.SimklConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -65,12 +66,20 @@ internal object SimklIdResolver {
             var first: ResolvedIds? = null
             var chosen: ResolvedIds? = null
             for (candidate in candidates) {
-                val resolved = runCatching { resolveDetails(candidate) }.getOrNull() ?: continue
+                val resolved = try {
+                    resolveDetails(candidate)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                } ?: continue
                 if (first == null) first = resolved
                 if (!scanForSeason) break
                 if (resolved.tvdbSeason == season) { chosen = resolved; break }
             }
             (chosen ?: first)?.also { idsCache[cacheKey] = it }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -133,6 +142,8 @@ internal object SimklIdResolver {
                 }
             }
             mapping.also { episodeCache[simklId] = it }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             emptyList()
         }
@@ -154,10 +165,11 @@ internal object SimklIdResolver {
      * `extended=full_anime_seasons` and follows `mapped_tvdb_seasons` to the sibling entry. Any
      * failure, or no sibling for [season], falls back to the first-pass result.
      *
-     * [episode] is unused here (kept for upstream parity); the episode remap happens in
-     * [SkipIntroRepository] via [getEpisodeMapping] / [animeEpisodeFor] on the returned entry.
+     * Fork deviation: a TVDB season split across several anime entries (split-cour) yields more
+     * than one sibling for [season]; each candidate's (cached) episode mapping is consulted and the
+     * one containing ([season], [episode]) wins, else the first sibling. The final episode remap
+     * still happens in [SkipIntroRepository] via [getEpisodeMapping] / [animeEpisodeFor].
      */
-    @Suppress("UNUSED_PARAMETER")
     suspend fun resolveIdsForImdbEpisode(
         imdbId: String,
         season: Int?,
@@ -165,15 +177,28 @@ internal object SimklIdResolver {
     ): ResolvedIds? {
         val base = resolveIds("imdb", imdbId, season) ?: return null
         if (season == null || base.type != "anime") return base
-        if (base.tvdbSeason == season) return base
+        if (base.tvdbSeason == season &&
+            !shouldLookForSibling(base.type, base.tvdbSeason, season, getEpisodeMapping(base.simklId, base.type), episode)
+        ) return base
 
-        val siblingSimklId = resolveSeasonSimklId(base.simklId, base.type, season)
+        val siblingSimklId = resolveSeasonSimklId(base.simklId, base.type, season, episode)
         if (siblingSimklId == null || siblingSimklId == base.simklId) return base
-        return runCatching { resolveDetails(siblingSimklId, base.type) }.getOrNull() ?: base
+        return try {
+            resolveDetails(siblingSimklId, base.type)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            base
+        }
     }
 
-    private suspend fun resolveSeasonSimklId(parentSimklId: Long, type: String, tvdbSeason: Int): Long? {
-        animeSeasonCache[parentSimklId]?.let { return selectSiblingSimklId(it, tvdbSeason) }
+    private suspend fun resolveSeasonSimklId(
+        parentSimklId: Long,
+        type: String,
+        tvdbSeason: Int,
+        episode: Int,
+    ): Long? {
+        animeSeasonCache[parentSimklId]?.let { return pickSibling(it, type, tvdbSeason, episode) }
         if (SimklConfig.CLIENT_ID.isBlank()) return null
 
         return try {
@@ -183,11 +208,38 @@ internal object SimklIdResolver {
             val details = json.parseToJsonElement(text) as? JsonObject ?: return null
             val seasons = parseAnimeSeasonEntries(details)
             animeSeasonCache[parentSimklId] = seasons
-            selectSiblingSimklId(seasons, tvdbSeason)
+            pickSibling(seasons, type, tvdbSeason, episode)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
     }
+
+    /// Single candidate: no extra request. Several (split-cour): fetch each candidate's episode
+    /// mapping (cached) and let [selectSiblingByEpisode] choose.
+    private suspend fun pickSibling(
+        seasons: List<AnimeSeasonEntry>,
+        type: String,
+        tvdbSeason: Int,
+        episode: Int,
+    ): Long? {
+        val candidates = seasons.filter { it.tvdbSeason == tvdbSeason }
+        if (candidates.size <= 1) return candidates.firstOrNull()?.simklId
+        val withMappings = candidates.map { it to getEpisodeMapping(it.simklId, type) }
+        return selectSiblingByEpisode(withMappings, tvdbSeason, episode)
+    }
+
+    /// Pure: among sibling candidates for one TVDB season, the first whose episode mapping contains
+    /// ([tvdbSeason], [episode]); the first candidate when none does; null when there are none.
+    internal fun selectSiblingByEpisode(
+        candidates: List<Pair<AnimeSeasonEntry, List<EpisodeMapping>>>,
+        tvdbSeason: Int,
+        episode: Int,
+    ): Long? =
+        (candidates.firstOrNull { (_, mapping) ->
+            mapping.any { it.tvdbSeason == tvdbSeason && it.tvdbEpisode == episode }
+        } ?: candidates.firstOrNull())?.first?.simklId
 
     internal data class AnimeSeasonEntry(val simklId: Long, val tvdbSeason: Int)
 
@@ -203,6 +255,21 @@ internal object SimklIdResolver {
                 ?: return@mapNotNull null
             AnimeSeasonEntry(simklId, mappedSeason)
         }
+    }
+
+    /// Pure: whether the first-pass entry may be the wrong split-cour half. Only anime entries whose
+    /// TVDB season matches the request AND whose non-empty episode mapping lacks ([season], [episode])
+    /// warrant a sibling lookup; an empty/unavailable mapping or non-anime type stays put.
+    internal fun shouldLookForSibling(
+        type: String,
+        baseTvdbSeason: Int?,
+        season: Int,
+        mapping: List<EpisodeMapping>,
+        episode: Int,
+    ): Boolean {
+        if (type != "anime" || baseTvdbSeason != season) return false
+        if (mapping.isEmpty()) return false
+        return mapping.none { it.tvdbSeason == season && it.tvdbEpisode == episode }
     }
 
     /// Pure: the sibling entry that owns [tvdbSeason], or null.

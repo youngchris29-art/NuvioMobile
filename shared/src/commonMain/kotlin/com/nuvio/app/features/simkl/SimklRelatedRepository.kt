@@ -77,7 +77,8 @@ object SimklRelatedRepository {
             ?: return emptyList()
 
         val resolved = SimklIdResolver.resolveIds(source, id) ?: return emptyList()
-        val cacheKey = "${resolved.type}|${resolved.simklId}"
+        val animeIdPreference = TraktSettingsRepository.uiState.value.simklAnimeIdPreference
+        val cacheKey = relatedCacheKey(resolved.type, resolved.simklId, animeIdPreference)
 
         cacheMutex.withLock {
             if (forceRefresh) {
@@ -92,7 +93,7 @@ object SimklRelatedRepository {
         val detail = fetchDetail(resolved.type, resolved.simklId) ?: return emptyList()
         val items = buildRelatedPreviews(
             detail = detail,
-            animeIdPreference = TraktSettingsRepository.uiState.value.simklAnimeIdPreference,
+            animeIdPreference = animeIdPreference,
         )
         cacheMutex.withLock { cache[cacheKey] = TimedCache(items, currentTimeMs()) }
         return items
@@ -132,6 +133,10 @@ object SimklRelatedRepository {
     private data class TimedCache(val items: List<MetaPreview>, val updatedAtMs: Long)
     private fun currentTimeMs(): Long = TraktPlatformClock.nowEpochMs()
 }
+
+/** Cache key for related tiles: item ids depend on the anime-ID preference, so it is part of the key. */
+internal fun relatedCacheKey(type: String, simklId: Long, animeIdPreference: SimklAnimeIdPreference): String =
+    "$type|$simklId|${animeIdPreference.name}"
 
 /** Pure mapping half of [SimklRelatedRepository.getRelated]: users' recommendations first, then
  *  "similar" entries not already present (by Simkl id), capped at [RELATED_LIMIT]. */

@@ -97,4 +97,12 @@ class SimklRelatedRepositoryTest {
         assertEquals(MoreLikeThisSourcePreference.SIMKL, MoreLikeThisSourcePreference.fromStorage("SIMKL"))
         assertEquals(MoreLikeThisSourcePreference.TRAKT, MoreLikeThisSourcePreference.fromStorage("bogus"))
     }
+
+    @Test
+    fun relatedCacheKeyVariesWithAnimeIdPreference() {
+        val imdb = relatedCacheKey("anime", 42L, SimklAnimeIdPreference.IMDB)
+        val mal = relatedCacheKey("anime", 42L, SimklAnimeIdPreference.MAL)
+        assertTrue(imdb != mal)
+        assertEquals(imdb, relatedCacheKey("anime", 42L, SimklAnimeIdPreference.IMDB))
+    }
 }

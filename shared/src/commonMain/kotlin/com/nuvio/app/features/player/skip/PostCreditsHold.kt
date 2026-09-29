@@ -5,8 +5,6 @@ import com.nuvio.app.features.watching.domain.isShortPlaceholderDuration
 /** Skip-interval types that mean "end credits" for episodes (upstream `PlayerNextEpisodeRules`). */
 internal val OUTRO_SEGMENT_TYPES = setOf("outro", "ed", "mixed-ed")
 
-private const val POST_CREDITS_GAP_MS = 5_000L
-
 /**
  * Fork-local, pure extraction of upstream `77ce8a73`'s "Delay next-episode card until post-credits
  * scene ends" rule (`PlayerNextEpisodeRules.shouldShowNextEpisodeCard` / `findFollowingPostCreditsScene`).
@@ -46,18 +44,12 @@ private fun SkipInterval.findFollowingPostCreditsScene(
             (durationMs <= 0L || it.startTime * 1000.0 < durationMs)
     }.minByOrNull { it.startTime }
     if (explicit != null) return explicit
-    if (durationMs > 0L) {
-        val creditsEndMs = (endTime * 1000.0).toLong()
-        val gapMs = durationMs - creditsEndMs
-        if (gapMs > POST_CREDITS_GAP_MS) {
-            return SkipInterval(
-                startTime = endTime,
-                endTime = durationMs / 1000.0,
-                type = "post-credits",
-                provider = "heuristic",
-            )
-        }
-    }
+    // Fork: upstream 77ce8a73 also invents a "post-credits" scene from the outro end to the end of
+    // the video when more than ~5 s remain. On tvOS that made the hold the full duration for nearly
+    // every anime episode (ending theme + next-episode preview), so the up-next countdown only
+    // started at the very end and the user's threshold setting was ignored. The hold now applies
+    // only to an explicit provider-reported `post-credits` interval; skip targets
+    // (InternalSkipAction.kt) keep upstream's behaviour.
     return null
 }
 

@@ -192,12 +192,25 @@ class IntroDbMovieSegmentsTest {
     }
 
     @Test
-    fun heuristicTailTriggersAHoldAndNoSceneMeansNoHold() {
+    fun noExplicitPostCreditsSceneMeansNoHold() {
         val outro = interval(1300.0, 1380.0, "ed")
-        val tail = nextEpisodeHoldUntilMs(listOf(outro), 1_500_000, NextEpisodeThresholdMode.PERCENTAGE, 99f, 2f)
-        assertEquals(1_500_000L, tail) // heuristic scene runs to the end
+        // Fork: upstream's heuristic tail scene is not used for the hold; 120 s of video after the
+        // outro with no explicit post-credits interval leaves the normal threshold in charge.
+        assertNull(nextEpisodeHoldUntilMs(listOf(outro), 1_500_000, NextEpisodeThresholdMode.PERCENTAGE, 99f, 2f))
+        val outroThenSixtySeconds = interval(1300.0, 1440.0, "outro")
+        assertNull(nextEpisodeHoldUntilMs(listOf(outroThenSixtySeconds), 1_500_000, NextEpisodeThresholdMode.PERCENTAGE, 99f, 2f))
         assertNull(nextEpisodeHoldUntilMs(listOf(outro), 1_382_000, NextEpisodeThresholdMode.PERCENTAGE, 99f, 2f))
         assertNull(nextEpisodeHoldUntilMs(emptyList(), 1_500_000, NextEpisodeThresholdMode.PERCENTAGE, 99f, 2f))
         assertNull(nextEpisodeHoldUntilMs(listOf(outro), 0L, NextEpisodeThresholdMode.PERCENTAGE, 99f, 2f))
+    }
+
+    @Test
+    fun explicitPostCreditsIntervalStillHoldsUntilSceneEnd() {
+        val outro = interval(1300.0, 1380.0, "outro")
+        val scene = interval(1400.0, 1440.0, "post-credits")
+        assertEquals(
+            1_440_000L,
+            nextEpisodeHoldUntilMs(listOf(outro, scene), 1_450_000, NextEpisodeThresholdMode.PERCENTAGE, 99f, 2f),
+        )
     }
 }

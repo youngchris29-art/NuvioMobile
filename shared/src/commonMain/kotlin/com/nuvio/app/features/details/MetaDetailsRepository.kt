@@ -608,7 +608,11 @@ object MetaDetailsRepository {
         return buildString {
             append("${settings.enabled}:${settings.apiKey.trim()}:$providers")
             append("|more_like=${traktSettings.moreLikeThisSource}:$traktAuthMode")
-            append(":simkl=${isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource)}")
+            val simklActive = isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource)
+            append(":simkl=$simklActive")
+            // Simkl tiles carry ids in the anime-ID preference's scheme, so a preference flip must
+            // invalidate cached meta-screen entries while Simkl More Like This is the active source.
+            if (simklActive) append(":animeId=${traktSettings.simklAnimeIdPreference.name}")
             append("|tmdb=${tmdbSettings.enabled}:${tmdbSettings.useMoreLikeThis}:${tmdbSettings.language}")
         }
     }
