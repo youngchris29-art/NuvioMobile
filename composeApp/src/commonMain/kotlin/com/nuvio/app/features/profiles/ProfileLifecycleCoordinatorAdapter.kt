@@ -20,6 +20,7 @@ import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.search.SearchHistoryRepository
 import com.nuvio.app.features.search.SearchRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
+import com.nuvio.app.features.shuffle.EpisodeShuffleRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
@@ -55,6 +56,7 @@ object ProfileLifecycleCoordinatorAdapter : ProfileLifecycleCoordinator {
         HomeCatalogSettingsRepository.onProfileChanged()
         HomeRepository.clear()
         MetaScreenSettingsRepository.onProfileChanged()
+        EpisodeShuffleRepository.onProfileChanged()
         ContinueWatchingPreferencesRepository.onProfileChanged()
         ContinueWatchingEnrichmentCache.onProfileChanged()
         EpisodeReleaseNotificationsRepository.onProfileChanged()

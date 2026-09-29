@@ -220,6 +220,8 @@ data class ContinueWatchingItem(
     val progressFraction: Float,
     val isReleaseAlert: Boolean = false,
     val isNewSeasonRelease: Boolean = false,
+    val shufflePlayback: Boolean = false,
+    val isWatched: Boolean = false,
 )
 
 data class ContinueWatchingPreferencesUiState(

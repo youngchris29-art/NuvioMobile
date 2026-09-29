@@ -248,6 +248,11 @@ object AccountDataStores {
             appleKeys = listOf(AppleKeySpec.ProfileScoped("meta_screen_settings_payload")),
         ),
         AccountDataStore(
+            name = "EpisodeShuffleStorage",
+            androidPreferences = "episode_shuffle",
+            appleKeys = listOf(AppleKeySpec.ProfileScoped("episode_shuffle")),
+        ),
+        AccountDataStore(
             name = "SeasonViewModeStorage",
             androidPreferences = "nuvio_season_view_mode",
             appleKeys = listOf(AppleKeySpec.ProfileScoped("season_view_mode")),

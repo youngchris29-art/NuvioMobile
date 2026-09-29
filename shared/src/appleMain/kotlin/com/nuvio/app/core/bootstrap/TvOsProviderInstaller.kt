@@ -47,6 +47,7 @@ import com.nuvio.app.features.search.SearchRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
 import com.nuvio.app.features.settings.ThemeSettingsStoreProvider
 import com.nuvio.app.features.settings.TvOsThemeSettingsStore
+import com.nuvio.app.features.shuffle.EpisodeShuffleRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamContextStore
 import com.nuvio.app.features.streams.StreamLaunchStore
@@ -227,6 +228,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         HomeRepository.clear()
         HomeCatalogSettingsRepository.clearLocalState()
         MetaScreenSettingsRepository.clearLocalState()
+        EpisodeShuffleRepository.clearLocalState()
         LibraryRepository.clearLocalState()
         LibraryDisplaySettingsRepository.clearLocalState()
         WatchProgressRepository.clearLocalState()
@@ -400,6 +402,7 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         // items (Codex round 3).
         step("catalog") { CatalogRepository.clear() }
         step("metaScreenSettings") { MetaScreenSettingsRepository.onProfileChanged() }
+        step("episodeShuffle") { EpisodeShuffleRepository.onProfileChanged() }
         step("continueWatchingPreferences") { ContinueWatchingPreferencesRepository.onProfileChanged() }
         step("continueWatchingEnrichment") { ContinueWatchingEnrichmentCache.onProfileChanged() }
         step("episodeReleaseAlerts") { EpisodeReleaseNotificationsRepository.onProfileChanged() }
