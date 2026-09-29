@@ -94,6 +94,7 @@ import nuvio.composeapp.generated.resources.trakt_more_like_this_source_subtitle
 import nuvio.composeapp.generated.resources.trakt_more_like_this_source_title
 import nuvio.composeapp.generated.resources.trakt_more_like_this_source_tmdb
 import nuvio.composeapp.generated.resources.trakt_more_like_this_source_trakt
+import nuvio.composeapp.generated.resources.trakt_more_like_this_source_simkl
 import nuvio.composeapp.generated.resources.trakt_watch_progress_dialog_subtitle
 import nuvio.composeapp.generated.resources.trakt_watch_progress_dialog_title
 import nuvio.composeapp.generated.resources.trakt_watch_progress_nuvio_selected
@@ -372,6 +373,7 @@ private fun moreLikeThisSourceLabel(source: MoreLikeThisSourcePreference): Strin
     when (source) {
         MoreLikeThisSourcePreference.TRAKT -> stringResource(Res.string.trakt_more_like_this_source_trakt)
         MoreLikeThisSourcePreference.TMDB -> stringResource(Res.string.trakt_more_like_this_source_tmdb)
+        MoreLikeThisSourcePreference.SIMKL -> stringResource(Res.string.trakt_more_like_this_source_simkl)
     }
 
 @Composable
@@ -579,7 +581,7 @@ private fun MoreLikeThisSourceDialog(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    listOf(MoreLikeThisSourcePreference.TRAKT, MoreLikeThisSourcePreference.TMDB).forEach { source ->
+                    listOf(MoreLikeThisSourcePreference.TRAKT, MoreLikeThisSourcePreference.TMDB, MoreLikeThisSourcePreference.SIMKL).forEach { source ->
                         TraktDialogOption(
                             label = moreLikeThisSourceLabel(source),
                             selected = source == selectedSource,

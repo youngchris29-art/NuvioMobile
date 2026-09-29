@@ -16,6 +16,10 @@ import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktConnectionMode
+import com.nuvio.app.features.simkl.SimklAuthRepository
+import com.nuvio.app.features.simkl.SimklRelatedRepository
+import com.nuvio.app.features.simkl.shouldUseSimklMoreLikeThis
+import com.nuvio.app.features.trakt.MoreLikeThisSourcePreference
 import com.nuvio.app.features.trakt.TraktRelatedRepository
 import com.nuvio.app.features.trakt.TraktSettingsRepository
 import com.nuvio.app.features.trakt.shouldUseTraktMoreLikeThis
@@ -496,6 +500,31 @@ object MetaDetailsRepository {
         TmdbSettingsRepository.ensureLoaded()
 
         val traktSettings = TraktSettingsRepository.uiState.value
+
+        // Simkl source (upstream af1298eb + 1b2f7a99). Checked before Trakt; when SIMKL is preferred
+        // but Simkl is not connected the gate is false and the Trakt/TMDB chain below runs as before.
+        if (isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource) &&
+            supportsMoreLikeThis(meta, fallbackItemType)
+        ) {
+            val items = runCatching {
+                // Bound the related-titles call so a slow Simkl response can't stall enrichment.
+                withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+                    SimklRelatedRepository.getRelated(
+                        meta = meta,
+                        fallbackItemId = fallbackItemId,
+                        fallbackItemType = fallbackItemType,
+                    )
+                } ?: emptyList()
+            }.onFailure { error ->
+                log.w { "Failed to load Simkl related titles for ${meta.id}: ${error.message}" }
+            }.getOrDefault(emptyList())
+
+            return meta.copy(
+                moreLikeThis = items,
+                moreLikeThisSource = MoreLikeThisSource.SIMKL.takeIf { items.isNotEmpty() },
+            )
+        }
+
         val isTraktAuthenticated = TraktAuthRepository.uiState.value.mode == TraktConnectionMode.CONNECTED
         val shouldUseTrakt = shouldUseTraktMoreLikeThis(
             isAuthenticated = isTraktAuthenticated,
@@ -562,7 +591,8 @@ object MetaDetailsRepository {
         return shouldUseTraktMoreLikeThis(
             isAuthenticated = isTraktAuthenticated,
             source = traktSettings.moreLikeThisSource,
-        ) || !tmdbSettings.enabled || !tmdbSettings.useMoreLikeThis || meta.moreLikeThisSource == null && meta.moreLikeThis.isNotEmpty()
+        ) || isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource) ||
+            !tmdbSettings.enabled || !tmdbSettings.useMoreLikeThis || meta.moreLikeThisSource == null && meta.moreLikeThis.isNotEmpty()
     }
 
     private fun buildMetaScreenSettingsFingerprint(
@@ -578,8 +608,17 @@ object MetaDetailsRepository {
         return buildString {
             append("${settings.enabled}:${settings.apiKey.trim()}:$providers")
             append("|more_like=${traktSettings.moreLikeThisSource}:$traktAuthMode")
+            append(":simkl=${isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource)}")
             append("|tmdb=${tmdbSettings.enabled}:${tmdbSettings.useMoreLikeThis}:${tmdbSettings.language}")
         }
+    }
+
+    private fun isSimklMoreLikeThisActive(source: MoreLikeThisSourcePreference): Boolean {
+        SimklAuthRepository.ensureLoaded()
+        return shouldUseSimklMoreLikeThis(
+            isAuthenticated = SimklAuthRepository.isAuthenticated.value,
+            source = source,
+        )
     }
 
     private fun supportsMoreLikeThis(meta: MetaDetails, fallbackItemType: String): Boolean =
