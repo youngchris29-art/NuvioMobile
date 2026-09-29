@@ -144,6 +144,7 @@ fun MetaDetails.seriesPrimaryAction(
     todayIsoDate: String,
     preferFurthestEpisode: Boolean = true,
     showUnairedNextUp: Boolean = false,
+    allowRewatch: Boolean = false,
 ): SeriesPrimaryAction? =
     seriesPrimaryAction(
         content = WatchingContentRef(type = type, id = id),
@@ -152,6 +153,7 @@ fun MetaDetails.seriesPrimaryAction(
         todayIsoDate = todayIsoDate,
         preferFurthestEpisode = preferFurthestEpisode,
         showUnairedNextUp = showUnairedNextUp,
+        allowRewatch = allowRewatch,
     )
 
 fun MetaDetails.seriesPrimaryAction(
@@ -161,6 +163,7 @@ fun MetaDetails.seriesPrimaryAction(
     todayIsoDate: String,
     preferFurthestEpisode: Boolean = true,
     showUnairedNextUp: Boolean = false,
+    allowRewatch: Boolean = false,
 ): SeriesPrimaryAction? =
     decideSeriesPrimaryAction(
         content = content,
@@ -171,6 +174,7 @@ fun MetaDetails.seriesPrimaryAction(
         preferFurthestEpisode = preferFurthestEpisode,
         showUnairedNextUp = showUnairedNextUp,
         defaultVideoId = defaultVideoId,
+        allowRewatch = allowRewatch,
     )?.toLegacySeriesPrimaryAction()
 
 fun MetaVideo.playLabel(): String =

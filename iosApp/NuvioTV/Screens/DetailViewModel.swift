@@ -479,7 +479,8 @@ final class DetailViewModel: ObservableObject {
             watchedItems: latestWatchedItems,
             todayIsoDate: CurrentDateProvider.shared.todayIsoDate(),
             preferFurthestEpisode: latestCwPrefs?.upNextFromFurthestEpisode ?? true,
-            showUnairedNextUp: latestCwPrefs?.showUnairedNextUp ?? false
+            showUnairedNextUp: latestCwPrefs?.showUnairedNextUp ?? false,
+            allowRewatch: true
         )
     }
 
