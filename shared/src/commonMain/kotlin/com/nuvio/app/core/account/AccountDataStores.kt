@@ -332,6 +332,7 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("show_file_size_badges"),
                 AppleKeySpec.ProfileScoped("show_addon_logo"),
                 AppleKeySpec.ProfileScoped("stream_badge_placement"),
+                AppleKeySpec.ProfileScoped("stream_background_mode"),
                 // Legacy key this store still reads for migration.
                 AppleKeySpec.ProfileScoped("debrid_stream_badge_rules"),
             ),
@@ -385,6 +386,7 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("stream_auto_play_regex"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_timeout_seconds"),
                 AppleKeySpec.ProfileScoped("skip_intro_enabled"),
+                AppleKeySpec.ProfileScoped("auto_skip_segment_types"),
                 AppleKeySpec.ProfileScoped("animeskip_enabled"),
                 AppleKeySpec.ProfileScoped("animeskip_client_id"),
                 AppleKeySpec.ProfileScoped("introdb_api_key"),

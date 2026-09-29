@@ -87,6 +87,8 @@ expect object PlayerSettingsStorage {
     fun saveStreamAutoPlayTimeoutSeconds(seconds: Int)
     fun loadSkipIntroEnabled(): Boolean?
     fun saveSkipIntroEnabled(enabled: Boolean)
+    fun loadAutoSkipSegmentTypes(): Set<String>?
+    fun saveAutoSkipSegmentTypes(types: Set<String>)
     fun loadAnimeSkipEnabled(): Boolean?
     fun saveAnimeSkipEnabled(enabled: Boolean)
     fun loadAnimeSkipClientId(): String?
