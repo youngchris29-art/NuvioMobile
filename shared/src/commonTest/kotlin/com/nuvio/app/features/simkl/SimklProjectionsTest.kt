@@ -424,8 +424,11 @@ class SimklProjectionsTest {
         assertEquals(1, entry.seasonNumber)
         assertEquals(3, entry.episodeNumber)
         assertEquals(42.2f, entry.progressPercent)
-        assertEquals(3_000_000L, entry.durationMs)
-        assertEquals(1_266_000L, entry.lastPositionMs)
+        // No duration is invented from the show runtime, so the resume goes through the percentage:
+        // the player scales it by the duration of the episode it really opened.
+        assertEquals(0L, entry.durationMs)
+        assertEquals(0L, entry.lastPositionMs)
+        assertEquals(0.422f, entry.progressFraction, 0.0005f)
         assertEquals("simkl-playback:12345", entry.progressKey)
         assertEquals(WatchProgressSourceSimklPlayback, entry.source)
         assertEquals("simkl", entry.trackingProviderId)
@@ -559,6 +562,36 @@ class SimklProjectionsTest {
         assertNull(parseSimklUtcEpochMs("2023-02-29T00:00:00Z"))
         assertNull(parseSimklUtcEpochMs("2024-01-01T00:00:00+01:00"))
     }
+
+    @Test
+    fun `tvdb preference picks tvdb id for anime entries`() {
+        val media = idsMedia("imdb" to "tt2560140", "tvdb" to "267440", "mal" to "16498")
+
+        assertEquals("tvdb:267440", media.canonicalContentId(SimklAnimeIdPreference.TVDB))
+        assertEquals("mal:16498", media.canonicalContentId(SimklAnimeIdPreference.MAL))
+        assertEquals("tt2560140", media.canonicalContentId(SimklAnimeIdPreference.IMDB))
+    }
+
+    @Test
+    fun `tvdb preference does not pull a non-anime entry into the anime chain`() {
+        val media = idsMedia("imdb" to "tt4574334", "tmdb" to "66732", "tvdb" to "305288")
+
+        assertEquals("tt4574334", media.canonicalContentId(SimklAnimeIdPreference.TVDB))
+        assertEquals("tt4574334", media.canonicalContentId(SimklAnimeIdPreference.MAL))
+        assertEquals("tt4574334", media.canonicalContentId(SimklAnimeIdPreference.KITSU))
+    }
+
+    @Test
+    fun `standard chain falls back to kitsu before mal`() {
+        val media = idsMedia("kitsu" to "7442", "mal" to "16498")
+
+        assertEquals("kitsu:7442", media.canonicalContentId(SimklAnimeIdPreference.IMDB))
+    }
+
+    private fun idsMedia(vararg pairs: Pair<String, String>): SimklMedia = SimklMedia(
+        title = "Ids",
+        ids = buildJsonObject { pairs.forEach { (key, value) -> put(key, value) } },
+    )
 
     private fun entry(
         type: SimklMediaType,
