@@ -32,7 +32,8 @@ struct NativePlayerScreen: View {
     @StateObject private var upNext: NextEpisodeEngine
     @StateObject private var panelModel: PlayerTopPanelModel
     @State private var panelAdapter: NativePlayerPanelAdapter?
-    @State private var skipSegments: [SkipSegment] = []
+    /// Skip chip + auto-skip policy shared with the mpv screen.
+    @State private var skipPlanner = SkipSegmentPlanner()
     @State private var skipPrompt: SkipPrompt?
     /// "Swipe down for info" hint (start + after a pause); hidden while the panel is open.
     @State private var showSwipeHint = false
@@ -130,9 +131,12 @@ struct NativePlayerScreen: View {
             panelAdapter = adapter
             coordinator.onTick = { [weak upNext, weak adapter] position, duration in
                 upNext?.onProgress(positionSec: position, durationSec: duration)
-                updateSkipPrompt(position: position)
+                updateSkipPrompt(position: position, duration: duration)
                 adapter?.onTick()
             }
+            // Deliberate entries (resume + transport scrubs) are never auto-skipped.
+            coordinator.onUserSeek = { from, to in skipPlanner.noteUserSeek(fromSec: from, toSec: to) }
+            coordinator.onResumeSeek = { target in skipPlanner.noteResumeSeek(toSec: target) }
             coordinator.start()
             // Only orchestrate up-next when a presenter can swap contexts (series autoplay).
             if onPlayNext != nil { upNext.startNative() }
@@ -181,39 +185,54 @@ struct NativePlayerScreen: View {
 
     // MARK: - Skip intro/outro segments (shared repository, same rules as the mpv screen)
 
-    /// Fetch intro/recap/outro segments for a series episode (no-op for movies / missing episode
-    /// numbers). Respects the Settings > Playback "Skip Intro" toggle.
+    /// Fetch intro/recap/outro segments for a series episode, or IntroDB credits/post-credits
+    /// segments for a movie (upstream cbe4dc0a). Respects the Settings > Playback "Skip Intro"
+    /// toggle. The full list (post-credits included) also feeds the up-next post-credits hold.
     private func fetchSkipSegments() {
-        guard let season = context.season, let episode = context.episode else { return }
-        SkipIntroRepository.shared.getSkipIntervalsForContentId(
-            // Routes kitsu:/mal: anime ids to the anime providers (same rules as the mpv screen).
-            contentId: context.parentMetaId,
-            season: Int32(season),
-            episode: Int32(episode),
-            requireSkipIntroEnabled: true
-        ) { intervals, _ in
-            let segments = (intervals ?? []).map { SkipSegment(start: $0.startTime, end: $0.endTime, type: $0.type) }
-            print("[NativePlayer] skip segments: \(segments.count)"
-                  + (segments.isEmpty ? " (none in intro DB for this episode)" : ""))
-            guard !segments.isEmpty else { return }
-            DispatchQueue.main.async { self.skipSegments = segments }
+        if let season = context.season, let episode = context.episode {
+            SkipIntroRepository.shared.getSkipIntervalsForContentId(
+                // Routes kitsu:/mal: anime ids to the anime providers (same rules as the mpv screen).
+                contentId: context.parentMetaId,
+                season: Int32(season),
+                episode: Int32(episode),
+                requireSkipIntroEnabled: true
+            ) { intervals, _ in
+                let list = intervals ?? []
+                DispatchQueue.main.async { applySkipIntervals(list) }
+            }
+        } else if context.contentType.lowercased() == "movie" {
+            SkipIntroRepository.shared.getMovieSkipIntervals(
+                contentId: context.parentMetaId,
+                videoId: context.videoId,
+                requireSkipIntroEnabled: true
+            ) { intervals, _ in
+                let list = intervals ?? []
+                DispatchQueue.main.async { applySkipIntervals(list) }
+            }
         }
     }
 
-    /// Offer the skip while inside a segment; the last second is excluded so the action
-    /// disappears cleanly at the end (same rule as the mpv screen).
-    private func updateSkipPrompt(position: Double) {
-        let active = skipSegments.first { position >= $0.start && position < $0.end - PlayerChipStyle.lastSecondExclusion }
-        let prompt = active.map { SkipPrompt(label: Self.skipLabel(for: $0.type), targetSec: $0.end) }
-        if prompt != skipPrompt { skipPrompt = prompt }
+    private func applySkipIntervals(_ intervals: [SkipInterval]) {
+        print("[NativePlayer] skip segments: \(intervals.count)"
+              + (intervals.isEmpty ? " (none in intro DB for this title)" : ""))
+        guard !intervals.isEmpty else { return }
+        skipPlanner.setIntervals(intervals)
+        upNext.skipIntervals = intervals
     }
 
-    private static func skipLabel(for type: String) -> String {
-        switch type.lowercased() {
-        case "outro", "ed", "credits": return String(localized: "Skip Outro")
-        case "recap": return String(localized: "Skip Recap")
-        default: return String(localized: "Skip Intro")
+    /// Offer the skip while inside a segment (the last second is excluded so the action
+    /// disappears cleanly at the end) and auto-skip the segment types chosen in Settings — same
+    /// `SkipSegmentPlanner` rules as the mpv screen.
+    private func updateSkipPrompt(position: Double, duration: Double) {
+        // Synchronous read (ticks are ~3 s apart); auto-skip also requires Skip Intro.
+        let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+        let autoSkipTypes: [AutoSkipSegmentType]? = settings.flatMap { $0.skipIntroEnabled ? Array($0.autoSkipSegmentTypes) : nil }
+        let decision = skipPlanner.evaluate(positionSec: position, durationSec: duration,
+                                            isPlaying: !coordinator.isPaused, autoSkipTypes: autoSkipTypes)
+        if let target = decision.autoSkipTargetSec {
+            coordinator.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         }
+        if decision.prompt != skipPrompt { skipPrompt = decision.prompt }
     }
 }
 

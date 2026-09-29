@@ -42,6 +42,9 @@ final class MPVPlaybackState: ObservableObject {
 
     /// Active skip prompt ("Skip Intro"/"Skip Outro") when playback is inside a known segment.
     @Published var skipPrompt: SkipPrompt?
+    /// The fetched skip intervals (post-credits included) — the screen hands them to the up-next
+    /// engine for its post-credits hold. Read on position ticks, so not published.
+    var skipIntervals: [SkipInterval] = []
 
     /// Playback-settings panel state (speed, subtitle/audio delay, diagnostics).
     @Published var playbackSpeed: Double = 1.0
@@ -130,7 +133,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// out before it returns, the late completion must not start a scrobble that nothing will ever
     /// stop (ME-004).
     private var traktSessionClosed = false
-    private var skipSegments: [SkipSegment] = []
+    /// Skip chip + auto-skip policy shared with the native engine (`SkipSegmentPlanner`).
+    private var skipPlanner = SkipSegmentPlanner()
     /// Last raw eof-reached value (edge detection for the post-play cover).
     private var lastEofFlag = false
 
@@ -907,24 +911,40 @@ final class MPVTVPlayerViewController: UIViewController {
         mpv_set_property(mpv, name, MPV_FORMAT_INT64, &v)
     }
 
-    /// Fetch intro/recap/outro segments for a series episode (no-op for movies / missing episode
-    /// numbers). Works for anime out of the box (AniSkip/AnimeSkip); other content needs an
-    /// `INTRO_DB_URL` configured. `requireSkipIntroEnabled: false` bypasses the mobile settings gate.
+    /// Fetch intro/recap/outro segments for a series episode, or IntroDB credits/post-credits
+    /// segments for a movie (upstream cbe4dc0a). Works for anime out of the box (AniSkip/AnimeSkip);
+    /// other content needs an `INTRO_DB_URL` configured. `requireSkipIntroEnabled: false` bypasses
+    /// the mobile settings gate. The full list is kept — `post-credits` intervals never get a chip
+    /// but are skip targets and drive the up-next hold.
     private func fetchSkipSegments() {
-        guard let season = context.season, let episode = context.episode else { return }
-        SkipIntroRepository.shared.getSkipIntervalsForContentId(
-            // Routes kitsu:/mal: anime ids to the anime providers; everything else keeps the
-            // IMDB path. parentMetaId carries the prefix for addon-sourced anime.
-            contentId: context.parentMetaId,
-            season: Int32(season),
-            episode: Int32(episode),
-            // Respect the Settings > Playback "Skip Intro" toggle (skipIntroEnabled).
-            requireSkipIntroEnabled: true
-        ) { [weak self] intervals, _ in
-            guard let intervals else { return }
-            let segments = intervals.map { SkipSegment(start: $0.startTime, end: $0.endTime, type: $0.type) }
-            DispatchQueue.main.async { self?.skipSegments = segments }
+        if let season = context.season, let episode = context.episode {
+            SkipIntroRepository.shared.getSkipIntervalsForContentId(
+                // Routes kitsu:/mal: anime ids to the anime providers; everything else keeps the
+                // IMDB path. parentMetaId carries the prefix for addon-sourced anime.
+                contentId: context.parentMetaId,
+                season: Int32(season),
+                episode: Int32(episode),
+                // Respect the Settings > Playback "Skip Intro" toggle (skipIntroEnabled).
+                requireSkipIntroEnabled: true
+            ) { [weak self] intervals, _ in
+                guard let intervals else { return }
+                DispatchQueue.main.async { self?.applySkipIntervals(intervals) }
+            }
+        } else if context.contentType.lowercased() == "movie" {
+            SkipIntroRepository.shared.getMovieSkipIntervals(
+                contentId: context.parentMetaId,
+                videoId: context.videoId,
+                requireSkipIntroEnabled: true
+            ) { [weak self] intervals, _ in
+                guard let intervals else { return }
+                DispatchQueue.main.async { self?.applySkipIntervals(intervals) }
+            }
         }
+    }
+
+    private func applySkipIntervals(_ intervals: [SkipInterval]) {
+        skipPlanner.setIntervals(intervals)
+        state.skipIntervals = intervals
     }
 
     private func addAddonSubtitles(_ subs: [AddonSubtitle]) {
@@ -1165,7 +1185,7 @@ final class MPVTVPlayerViewController: UIViewController {
             logStartupStatsIfNeeded()
         }
 
-        updateSkipPrompt(position: snap.position)
+        updateSkipPrompt(position: snap.position, duration: snap.duration, paused: snap.paused)
     }
 
     /// First-90s diagnostics for the beta "laggy at first" report: one `[MPVStats]` line per
@@ -1203,19 +1223,15 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     /// Show a skip prompt while the playhead is inside a segment (leaving a 1s tail so the button
-    /// disappears cleanly at the end).
-    private func updateSkipPrompt(position: Double) {
-        let active = skipSegments.first { position >= $0.start && position < $0.end - PlayerChipStyle.lastSecondExclusion }
-        let prompt = active.map { SkipPrompt(label: skipLabel(for: $0.type), targetSec: $0.end) }
-        if prompt != state.skipPrompt { state.skipPrompt = prompt }
-    }
-
-    private func skipLabel(for type: String) -> String {
-        switch type.lowercased() {
-        case "outro", "ed", "credits": return String(localized: "Skip Outro")
-        case "recap": return String(localized: "Skip Recap")
-        default: return String(localized: "Skip Intro")
-        }
+    /// disappears cleanly at the end), and auto-skip the segment types chosen in Settings. Cached
+    /// values only (called from `refreshState`).
+    private func updateSkipPrompt(position: Double, duration: Double, paused: Bool) {
+        // Auto-skip also requires Skip Intro (the fetch already returns nothing without it).
+        let autoSkipTypes: [AutoSkipSegmentType]? = playerSettings.flatMap { $0.skipIntroEnabled ? Array($0.autoSkipSegmentTypes) : nil }
+        let decision = skipPlanner.evaluate(positionSec: position, durationSec: duration,
+                                            isPlaying: fileLoaded && !paused, autoSkipTypes: autoSkipTypes)
+        if let target = decision.autoSkipTargetSec { seekAbsolute(target) }
+        if decision.prompt != state.skipPrompt { state.skipPrompt = decision.prompt }
     }
 
     // MARK: - Siri-remote transport
@@ -1234,12 +1250,9 @@ final class MPVTVPlayerViewController: UIViewController {
                 if state.upNextPlayNow?() == true {
                     handled = true
                 } else if let prompt = state.skipPrompt {
-                    // Clamp against duration: a skip-outro target past EOF wedges mpv.
-                    // durationSec is still 0 before the first duration event — seek unclamped then.
-                    let target = state.durationSec > 0
-                        ? min(prompt.targetSec, state.durationSec - 0.5)
-                        : prompt.targetSec
-                    seekAbsolute(target)
+                    // Already clamped against duration by `SkipSegmentPlanner` (a target past EOF
+                    // wedges mpv; unclamped while the duration is still unknown).
+                    seekAbsolute(prompt.targetSec)
                     state.skipPrompt = nil
                     flashControls()
                     handled = true
@@ -1330,6 +1343,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func seekBy(_ seconds: Double) {
         guard mpv != nil else { return }
+        // Arrow seeks are deliberate: a segment they start or land in is never auto-skipped.
+        let from = cachedProps().position
+        skipPlanner.noteUserSeek(fromSec: from, toSec: from + seconds)
         // Seeks issued from held-arrow timers must not park the main thread on the core lock.
         eventQueue.async { [weak self] in
             self?.command("seek", args: [String(format: "%.3f", seconds), "relative"])
@@ -1468,6 +1484,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if let seconds = pendingResumeSec {
             pendingResumeSec = nil
             didResumeSeek = true
+            skipPlanner.noteResumeSeek(toSec: seconds)
             command("seek", args: [String(format: "%.3f", seconds), "absolute"])
             return
         }
@@ -1477,12 +1494,14 @@ final class MPVTVPlayerViewController: UIViewController {
             let seconds = Double(entry.resolveResumePosition(actualDurationMs: Int64(actualDurationSec * 1000))) / 1000.0
             guard seconds > 10 else { return }
             didResumeSeek = true
+            skipPlanner.noteResumeSeek(toSec: seconds)
             command("seek", args: [String(format: "%.3f", seconds), "absolute"])
         } else {
             // Duration unknown (some HLS): let mpv resolve the percentage itself.
             let pct = Double(entry.progressFraction) * 100
             guard pct > 0 else { return }
             didResumeSeek = true
+            skipPlanner.noteResumeSeek(toSec: nil)
             command("seek", args: [String(format: "%.3f", pct), "absolute-percent"])
         }
     }
@@ -1715,6 +1734,7 @@ struct MPVPlayerScreen: View {
             UIApplication.shared.isIdleTimerDisabled = false
         }
         .onChange(of: state.positionSec) { _, position in
+            upNext.skipIntervals = state.skipIntervals
             upNext.onProgress(positionSec: position, durationSec: state.durationSec)
         }
         .onChange(of: state.isPaused) { _, paused in

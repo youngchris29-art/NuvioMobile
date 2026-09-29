@@ -27,11 +27,26 @@ struct PlaybackSettingsPane: View {
             // Hidden entirely unless an external player (Infuse) is installed —
             // see DefaultPlayerRow.
             DefaultPlayerRow()
-            SettingsToggleRow(
-                title: String(localized: "Skip Intro"),
-                subtitle: String(localized: "Show a Skip button during intros and outros"),
-                isOn: Binding(get: { model.skipIntroEnabled }, set: { model.setSkipIntro($0) })
-            )
+            // Grouped: one slot in the section's 10-child @ViewBuilder (see the note further down).
+            Group {
+                SettingsToggleRow(
+                    title: String(localized: "Skip Intro"),
+                    subtitle: String(localized: "Show a Skip button during intros and outros"),
+                    isOn: Binding(get: { model.skipIntroEnabled }, set: { model.setSkipIntro($0) })
+                )
+                // Upstream 199c5882: per-segment-type auto-skip. Dependent on Skip Intro (no segments
+                // are fetched without it), so hidden while it is off — same as the Profile 7 row.
+                if model.skipIntroEnabled {
+                    autoSkipRow(.intro, title: String(localized: "Auto-Skip Intros"),
+                                subtitle: String(localized: "Skip intros and anime openings automatically."))
+                    autoSkipRow(.recap, title: String(localized: "Auto-Skip Recaps"),
+                                subtitle: String(localized: "Skip recap segments automatically."))
+                    autoSkipRow(.outro, title: String(localized: "Auto-Skip Outros"),
+                                subtitle: String(localized: "Skip outros and anime endings automatically."))
+                    autoSkipRow(.movieCredits, title: String(localized: "Auto-Skip Movie Credits"),
+                                subtitle: String(localized: "Skip movie credits, keeping post-credits scenes."))
+                }
+            }
             SettingsToggleRow(
                 title: String(localized: "Match Content Frame Rate"),
                 subtitle: String(localized: "Switch the display mode to the video's native frame rate and dynamic range. Also enable Match Content in tvOS Settings \u{2192} Video and Audio."),
@@ -137,6 +152,15 @@ struct PlaybackSettingsPane: View {
                 label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.subtitle) }
             )
         }
+    }
+
+    /// One auto-skip segment-type toggle (upstream 199c5882's selection dialog, as plain rows).
+    private func autoSkipRow(_ type: AutoSkipSegmentType, title: String, subtitle: String) -> some View {
+        SettingsToggleRow(
+            title: title,
+            subtitle: subtitle,
+            isOn: Binding(get: { model.isAutoSkipEnabled(type) }, set: { model.setAutoSkip(type, enabled: $0) })
+        )
     }
 
     private static func bufferLabel(_ value: Int) -> String {

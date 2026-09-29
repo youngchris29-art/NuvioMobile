@@ -10,6 +10,9 @@ import SharedCore
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published private(set) var skipIntroEnabled = true
+    /// Upstream 199c5882: segment types the player skips automatically, as `AutoSkipSegmentType`
+    /// stored values (empty by default — nothing auto-skips until the user opts in).
+    @Published private(set) var autoSkipSegmentTypes: Set<String> = []
     /// The selected app theme's enum name ("CRIMSON", "OCEAN", ...). Persisted profile-scoped via
     /// the tvOS ThemeSettingsStore adapter; the root AppThemeModel applies it to the palette.
     @Published private(set) var themeName = "CRIMSON"
@@ -137,6 +140,7 @@ final class SettingsViewModel: ObservableObject {
         playerWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let state = emitted as? PlayerSettingsUiState else { return }
             self.skipIntroEnabled = state.skipIntroEnabled
+            self.autoSkipSegmentTypes = Set(state.autoSkipSegmentTypes.map { $0.storedValue })
             self.subtitleStyle = state.subtitleStyle
             self.preferredAudioLanguage = state.preferredAudioLanguage
             self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
@@ -264,6 +268,15 @@ final class SettingsViewModel: ObservableObject {
 
     func setSkipIntro(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setSkipIntroEnabled(enabled: enabled)
+    }
+
+    /// Upstream 199c5882: whether the player auto-skips `type` segments.
+    func isAutoSkipEnabled(_ type: AutoSkipSegmentType) -> Bool {
+        autoSkipSegmentTypes.contains(type.storedValue)
+    }
+
+    func setAutoSkip(_ type: AutoSkipSegmentType, enabled: Bool) {
+        PlayerSettingsRepository.shared.setAutoSkipSegmentType(type: type, enabled: enabled)
     }
 
     /// FEAT-38: pure black background for OLED screens.

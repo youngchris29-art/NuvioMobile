@@ -15,7 +15,8 @@ import SharedCore
 /// Mobile parity notes: the default settings (MANUAL mode + prefer-binge-group) auto-select the
 /// first stream, preferring the current stream's binge group — same as the phone. Downloads are
 /// skipped (not functional on tvOS) and outro-segment timing is simplified to the settings
-/// threshold.
+/// threshold, except that a post-credits scene after the last outro holds the trigger until the
+/// scene ends (shared `nextEpisodeHoldUntilMs`, upstream 77ce8a73).
 @MainActor
 final class NextEpisodeEngine: ObservableObject {
     enum Phase: Equatable {
@@ -77,6 +78,9 @@ final class NextEpisodeEngine: ObservableObject {
     private var resolvingNext = false
     /// Latest emission from `episodeStreamsState` (the exported StateFlow has no sync `.value`).
     private var latestStreamsState: StreamsUiState?
+    /// The playing title's skip intervals (post-credits included), handed in by both player
+    /// screens once fetched. Drives the post-credits hold in `onProgress` (upstream 77ce8a73).
+    var skipIntervals: [SkipInterval] = []
 
     init(context: PlaybackContext, onPlayNext: @escaping (PlaybackContext) -> Void) {
         self.context = context
@@ -262,7 +266,7 @@ final class NextEpisodeEngine: ObservableObject {
         guard !triggered, !cancelled, nextVideo != nil, durationSec > 0 else { return }
         guard let settings else { return }
 
-        let shouldTrigger: Bool
+        var shouldTrigger: Bool
         if settings.nextEpisodeThresholdMode == NextEpisodeThresholdMode.percentage {
             let percent = min(max(Double(settings.nextEpisodeThresholdPercent), 97), 100)
             shouldTrigger = positionSec / durationSec >= percent / 100.0
@@ -271,11 +275,30 @@ final class NextEpisodeEngine: ObservableObject {
             shouldTrigger = (durationSec - positionSec) <= minutes * 60.0
         }
 
+        // Upstream 77ce8a73: never over a post-credits scene. When the last outro is followed by
+        // one (explicit, or a > 5 s tail), the shared hold REPLACES the threshold above — it is
+        // already max(scene end, user threshold). Within `endOfFileSlack` of the end counts as
+        // reached (upstream's `isEnded ||`): the reported position at EOF can sit a frame short of
+        // the duration, and a hold that never fires would leave the post-play cover instead.
+        if let hold = PostCreditsHoldKt.nextEpisodeHoldUntilMs(
+            intervals: skipIntervals,
+            durationMs: Int64(durationSec * 1000),
+            thresholdMode: settings.nextEpisodeThresholdMode,
+            thresholdPercent: settings.nextEpisodeThresholdPercent,
+            thresholdMinutesBeforeEnd: settings.nextEpisodeThresholdMinutesBeforeEnd
+        ) {
+            shouldTrigger = Int64(positionSec * 1000) >= hold.int64Value
+                || positionSec >= durationSec - Self.endOfFileSlack
+        }
+
         if shouldTrigger {
             triggered = true
             beginSearch()
         }
     }
+
+    /// See the post-credits hold in `onProgress`.
+    private static let endOfFileSlack: Double = 1.5
 
     // MARK: - User actions (wired into the Siri-remote handler via MPVPlaybackState)
 
