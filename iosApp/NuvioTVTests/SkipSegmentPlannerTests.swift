@@ -64,6 +64,14 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertEqual(d.prompt?.targetSec, episodeDuration - 0.5)
     }
 
+    func testOutroWithTailButNoExplicitPostCreditsSaysSkipOutro() {
+        // Fork rule: the shared heuristic flags skipsToPostCredits for any >5 s tail (here 60 s of
+        // next-episode preview); without an explicit post-credits interval the label stays "Skip Outro".
+        var p = planner([interval(1380, 1440, "ed")])
+        let d = p.evaluate(positionSec: 1400, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: nil)
+        XCTAssertEqual(d.prompt, SkipPrompt(label: String(localized: "Skip Outro"), targetSec: 1440))
+    }
+
     func testLabels() {
         XCTAssertEqual(SkipSegmentPlanner.label(for: "mixed-ed", skipsToPostCredits: false), String(localized: "Skip Outro"))
         XCTAssertEqual(SkipSegmentPlanner.label(for: "recap", skipsToPostCredits: false), String(localized: "Skip Recap"))
@@ -106,6 +114,94 @@ final class SkipSegmentPlannerTests: XCTestCase {
         // The scene itself is never auto-skipped, whatever is selected.
         XCTAssertNil(p.evaluate(positionSec: 6401, durationSec: movieDuration, isPlaying: true,
                                 autoSkipTypes: AutoSkipSegmentType.entries).autoSkipTargetSec)
+    }
+
+    func testResetForReplayRearmsConsumedInterval() {
+        var p = planner([interval(0, 90, "op")])
+        XCTAssertEqual(p.evaluate(positionSec: 5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro]).autoSkipTargetSec, 90)
+        _ = p.evaluate(positionSec: 100, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro])
+        p.noteUserSeek(fromSec: 1400, toSec: 20)
+        XCTAssertNil(p.evaluate(positionSec: 21, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro]).autoSkipTargetSec)
+        p.resetForReplay()
+        XCTAssertEqual(p.evaluate(positionSec: 1, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro]).autoSkipTargetSec, 90)
+    }
+
+    func testIntroFollowingRecapAutoSkipsAfterOwnSeekThroughTheFilter() {
+        var p = planner([interval(0, 60, "recap"), interval(60, 150, "op")])
+        var f = ProgrammaticSeekFilter()
+        let types: [AutoSkipSegmentType] = [.recap, .intro]
+        XCTAssertEqual(p.evaluate(positionSec: 3, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types).autoSkipTargetSec, 60)
+        f.noteProgrammaticSeek(from: 3, to: 60)
+        // Stale pre-seek tick, then the landing tick after a keyframe: neither is a user seek.
+        XCTAssertFalse(f.isUserSeek(last: 3, new: 4))
+        XCTAssertFalse(f.isUserSeek(last: 4, new: 66))
+        // No noteUserSeek was issued, so the intro the seek landed at is still armed.
+        XCTAssertEqual(p.evaluate(positionSec: 66, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: types).autoSkipTargetSec, 150)
+    }
+
+    func testResetForReplayHoldsAutoSkipUntilPlayheadReturnsToStart() {
+        var p = planner([interval(0, 90, "op"), interval(1400, .greatestFiniteMagnitude, "ed")])
+        p.resetForReplay()
+        // Stale end-of-file position inside the open-ended outro: no auto-skip, no chip.
+        let stale = p.evaluate(positionSec: episodeDuration - 0.5, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro, .outro])
+        XCTAssertNil(stale.autoSkipTargetSec)
+        XCTAssertNil(stale.prompt)
+        // Playhead back at the start: the intro (not consumed by the reset) auto-skips.
+        XCTAssertEqual(p.evaluate(positionSec: 1, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: [.intro, .outro]).autoSkipTargetSec, 90)
+    }
+
+    func testMalformedPostCreditsEntryDoesNotEarnPostCreditsLabel() {
+        // Tail after the outro exists (heuristic flag), but the only post-credits entry is invalid
+        // (end <= start) or starts past the duration: the normal label is used.
+        for bad in [interval(1450, 1450, "post-credits"), interval(1600, 1650, "post-credits")] {
+            var p = planner([interval(1380, 1440, "ed"), bad])
+            let d = p.evaluate(positionSec: 1400, durationSec: episodeDuration, isPlaying: true, autoSkipTypes: nil)
+            XCTAssertEqual(d.prompt?.label, String(localized: "Skip Outro"))
+        }
+    }
+
+    // MARK: - Programmatic seek filter
+
+    func testProgrammaticSeekIsNotAUserSeekEvenWithAStaleTick() {
+        var f = ProgrammaticSeekFilter()
+        f.noteProgrammaticSeek(from: 3, to: 63)
+        XCTAssertFalse(f.isUserSeek(last: 3, new: 4))     // stale pre-seek tick
+        XCTAssertFalse(f.isUserSeek(last: 4, new: 64))    // landing
+        XCTAssertFalse(f.isUserSeek(last: 64, new: 67))   // normal playback
+    }
+
+    func testLandingAfterKeyframeAndOneTickIsNotAUserSeek() {
+        var f = ProgrammaticSeekFilter()
+        f.noteProgrammaticSeek(from: 3, to: 60)
+        XCTAssertFalse(f.isUserSeek(last: 3, new: 66))   // target + 6 after one tick
+    }
+
+    // A back-scrub outside the stale window clears the pending seek and is judged by the plain 10 s jump rule.
+    func testBackScrubWhilePendingIsJudgedByTheNormalJumpRule() {
+        var f = ProgrammaticSeekFilter()
+        f.noteProgrammaticSeek(from: 100, to: 160)
+        XCTAssertTrue(f.isUserSeek(last: 100, new: 85))    // 15 s back: exceeds the jump threshold
+
+        var g = ProgrammaticSeekFilter()
+        g.noteProgrammaticSeek(from: 100, to: 160)
+        XCTAssertFalse(g.isUserSeek(last: 100, new: 92))   // 8 s back: under the threshold
+        XCTAssertTrue(g.isUserSeek(last: 92, new: 160))    // pending was cleared: judged normally, not a landing
+    }
+
+    func testUserScrubAfterProgrammaticSeekIsStillDetected() {
+        var f = ProgrammaticSeekFilter()
+        f.noteProgrammaticSeek(from: 3, to: 63)
+        XCTAssertFalse(f.isUserSeek(last: 3, new: 64))
+        XCTAssertTrue(f.isUserSeek(last: 64, new: 400))
+        // A scrub before the landing tick is detected too.
+        f.noteProgrammaticSeek(from: 100, to: 160)
+        XCTAssertTrue(f.isUserSeek(last: 100, new: 900))
+    }
+
+    func testPlainJumpDetectionWithoutPendingSeek() {
+        var f = ProgrammaticSeekFilter()
+        XCTAssertFalse(f.isUserSeek(last: 10, new: 13))
+        XCTAssertTrue(f.isUserSeek(last: 10, new: 40))
     }
 
     // MARK: - Deliberate entry

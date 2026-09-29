@@ -62,6 +62,14 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Last observed position/duration, used when falling back to mpv.
     private(set) var lastPositionSec: Double = 0
+    /// Keeps the app's own skip seeks out of the "position jumped" user-seek detector.
+    private var seekFilter = ProgrammaticSeekFilter()
+
+    /// Call right before the app seeks on its own (auto-skip, skip chip) so the next tick's jump is
+    /// not reported through `onUserSeek`.
+    func noteProgrammaticSeek(to targetSec: Double) {
+        seekFilter.noteProgrammaticSeek(from: lastPositionSec, to: targetSec)
+    }
     private var lastDurationSec: Double = 0
 
     private let context: PlaybackContext
@@ -680,7 +688,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     let dur = CMTimeGetSeconds(item.duration)
                     // A position jump = a user seek. Reset the stall budget so back-to-back scrubs
                     // (each costing a ~10s reposition) can't accumulate into a false mpv fallback.
-                    if pos.isFinite, abs(pos - self.lastPositionSec) > 10 {
+                    if pos.isFinite, self.seekFilter.isUserSeek(last: self.lastPositionSec, new: pos) {
                         waitingTicks = 0
                         self.onUserSeek?(self.lastPositionSec, pos)
                     }

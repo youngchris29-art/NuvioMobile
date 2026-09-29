@@ -78,7 +78,9 @@ struct NativePlayerScreen: View {
                             ? coordinator.languagePlan.subtitleFilterLanguages : nil,
                         panelModel: panelModel,
                         onSkip: { [weak coordinator] target in
-                            coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+                            coordinator?.noteProgrammaticSeek(to: target)
+                            coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                                                      toleranceBefore: .zero, toleranceAfter: .zero)
                         },
                         onPlayNow: { [weak upNext] in _ = upNext?.playNow() },
                         onDismissUpNext: { [weak upNext] in upNext?.dismissIfVisible() ?? false },
@@ -230,7 +232,9 @@ struct NativePlayerScreen: View {
         let decision = skipPlanner.evaluate(positionSec: position, durationSec: duration,
                                             isPlaying: !coordinator.isPaused, autoSkipTypes: autoSkipTypes)
         if let target = decision.autoSkipTargetSec {
-            coordinator.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+            coordinator.noteProgrammaticSeek(to: target)
+            coordinator.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                                     toleranceBefore: .zero, toleranceAfter: .zero)
         }
         if decision.prompt != skipPrompt { skipPrompt = decision.prompt }
     }

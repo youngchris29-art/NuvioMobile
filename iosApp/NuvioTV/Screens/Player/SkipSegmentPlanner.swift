@@ -76,6 +76,19 @@ struct SkipSegmentPlanner {
         }
     }
 
+    /// "Play Again": the playhead returns to 0, so every interval must be armed again — auto-skipped
+    /// or deliberately entered earlier must not keep the replay from skipping. Keeps the intervals.
+    mutating func resetForReplay() {
+        consumed = []
+        deliberateSeeks = []
+        chipSuppressedIndex = nil
+        // Hold auto-skip and the chip until the playhead is back near 0: the seek is async and the
+        // cached position may still be the end-of-file one, inside a re-armed outro. Not
+        // `noteResumeSeek(0)`: that would record a deliberate 0 -> 0 seek and consume an intro at 0.
+        landing = .at(0)
+        landingTicks = 0
+    }
+
     // MARK: - Evaluation
 
     /// Call on every position tick. `autoSkipTypes` nil = auto-skip off (Skip Intro disabled).
@@ -103,9 +116,22 @@ struct SkipSegmentPlanner {
             return Decision(prompt: nil, autoSkipTargetSec: target)
         }
 
-        guard chipSuppressedIndex != index,
+        guard chipSuppressedIndex != index, landing == nil,
               positionSec < interval.endTime - PlayerChipStyle.lastSecondExclusion else { return Decision() }
-        let label = Self.label(for: interval.type, skipsToPostCredits: action.skipsToPostCredits)
+        // Fork deviation from upstream's label rule: upstream says "Skip to Post-Credits" whenever
+        // `skipsToPostCredits` is set, which the shared heuristic also raises for any >5 s tail after
+        // an outro (e.g. a next-episode preview). Only an EXPLICIT post-credits interval after this
+        // one earns the label; the seek target still comes from `internalSkipAction`.
+        // Mirrors the shared scene filter in `InternalSkipAction.kt`: valid times, after this
+        // interval, and (duration known) starting before the end of the video.
+        let explicitPostCredits = action.skipsToPostCredits && intervals.contains {
+            $0.type.trimmingCharacters(in: .whitespaces).lowercased() == "post-credits" &&
+                $0.startTime.isFinite && $0.endTime.isFinite && $0.startTime >= 0 &&
+                $0.endTime > $0.startTime && $0.endTime * 1000.0 < 9.2e18 &&
+                $0.startTime >= interval.endTime &&
+                (durationSec <= 0 || $0.startTime < durationSec)
+        }
+        let label = Self.label(for: interval.type, skipsToPostCredits: explicitPostCredits)
         return Decision(prompt: SkipPrompt(label: label, targetSec: target), autoSkipTargetSec: nil)
     }
 
@@ -158,5 +184,46 @@ struct SkipSegmentPlanner {
         let value = max(0, seconds) * 1000   // NaN → 0; an open-ended end (Double.MAX) → inf
         guard value < 9.2e18 else { return Int64.max }
         return Int64(value)
+    }
+}
+
+/// Tells the AVPlayer tick loop's "position jumped" detector which jumps are the app's own skip
+/// seeks, so only genuine user scrubs reach `SkipSegmentPlanner.noteUserSeek`. Ticks are ~3 s apart
+/// and the tick right after a seek may still report the pre-seek position. While a programmatic
+/// seek is pending: a tick in `[target - 5, target + 5 + 3.5 * ticksWaited]` is the landing (playback
+/// only moves forward from the target, ~one tick per wait); a tick in `[from - 0.5, from + 4]` is a
+/// stale pre-seek reading (max `maxPendingTicks` ticks). Anything else is judged by the normal jump rule.
+struct ProgrammaticSeekFilter {
+    static let jumpThresholdSec: Double = 10
+    static let landingToleranceSec: Double = 5
+    static let tickAllowanceSec: Double = 3.5
+    static let staleForwardSec: Double = 4
+    static let staleBackSec: Double = 0.5
+    static let maxPendingTicks = 4
+
+    private var pending: (from: Double, target: Double, ticks: Int)?
+
+    /// The app is about to seek from `fromSec` to `targetSec`.
+    mutating func noteProgrammaticSeek(from fromSec: Double, to targetSec: Double) {
+        pending = (fromSec, targetSec, 0)
+    }
+
+    /// True when the move from `last` to `new` is a user seek.
+    mutating func isUserSeek(last: Double, new: Double) -> Bool {
+        if var p = pending {
+            p.ticks += 1
+            let upper = p.target + Self.landingToleranceSec + Self.tickAllowanceSec * Double(p.ticks)
+            if new >= p.target - Self.landingToleranceSec, new <= upper {
+                pending = nil
+                return false
+            }
+            if new >= p.from - Self.staleBackSec, new <= p.from + Self.staleForwardSec,
+               p.ticks < Self.maxPendingTicks {
+                pending = p   // stale pre-seek tick: keep waiting for the landing
+                return false
+            }
+            pending = nil
+        }
+        return new.isFinite && abs(new - last) > Self.jumpThresholdSec
     }
 }

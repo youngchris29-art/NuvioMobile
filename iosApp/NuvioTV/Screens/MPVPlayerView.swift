@@ -1334,6 +1334,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Post-play "Play Again": back to the start and resume playing.
     private func replay() {
         guard mpv != nil else { return }
+        skipPlanner.resetForReplay()   // intro/outro auto-skip arms again for the second viewing
         seekAbsolute(0)
         setFlag("pause", false)
         state.isEnded = false

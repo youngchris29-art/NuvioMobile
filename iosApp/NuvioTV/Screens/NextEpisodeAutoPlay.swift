@@ -276,7 +276,7 @@ final class NextEpisodeEngine: ObservableObject {
         }
 
         // Upstream 77ce8a73: never over a post-credits scene. When the last outro is followed by
-        // one (explicit, or a > 5 s tail), the shared hold REPLACES the threshold above — it is
+        // one (only when the provider reports an explicit post-credits segment), the shared hold REPLACES the threshold above — it is
         // already max(scene end, user threshold). Within `endOfFileSlack` of the end counts as
         // reached (upstream's `isEnded ||`): the reported position at EOF can sit a frame short of
         // the duration, and a hold that never fires would leave the post-play cover instead.
