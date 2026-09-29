@@ -16,6 +16,7 @@ object TmdbSettingsRepository {
     private var hasLoaded = false
 
     private var enabled = false
+    private var apiKey = ""
     private var language = "en"
     private var useTrailers = true
     private var useArtwork = true
@@ -42,6 +43,31 @@ object TmdbSettingsRepository {
     fun snapshot(): TmdbSettings {
         ensureLoaded()
         return _uiState.value
+    }
+
+    /**
+     * The key every TMDB request should use: the profile's personal override when one is set,
+     * otherwise the bundled build-time key (upstream df589078). Safe from non-suspend callers
+     * (the plugin host function); loads the repository on first use.
+     */
+    fun effectiveApiKey(): String = snapshot().apiKey.ifBlank { TmdbConfig.API_KEY }
+
+    /**
+     * Sets (or, with a blank value, clears) the personal TMDB key override. Clearing falls back to
+     * the bundled key and deliberately leaves [TmdbSettings.enabled] alone. Synced across devices
+     * by `ProviderCredentialSync` as the "tmdb" provider — never by the settings blob.
+     */
+    fun setApiKey(value: String) {
+        ensureLoaded()
+        val normalized = value.trim()
+        if (apiKey == normalized) return
+        apiKey = normalized
+        publish()
+        TmdbSettingsStorage.saveApiKey(normalized)
+        // Everything TMDB-enriched was fetched with the previous key (a different account can
+        // see different results, and a bad key yields none), so drop it.
+        invalidateReleaseDateMetadata()
+        invalidateHeroEnrichment()
     }
 
     fun setEnabled(value: Boolean) {
@@ -192,12 +218,15 @@ object TmdbSettingsRepository {
     private fun loadFromDisk() {
         val wasLoaded = hasLoaded
         val previousEnabled = enabled
+        val previousApiKey = apiKey
         val previousLanguage = language
         val previousUseReleaseDates = useReleaseDates
         hasLoaded = true
         // Upstream 60ee0160: no `&& apiKey.isNotBlank()` gate any more — the key is bundled, so
         // a stored/synced `tmdb_enabled=true` now takes effect on its own. Default stays opt-in.
         enabled = TmdbSettingsStorage.loadEnabled() ?: false
+        // Upstream df589078: the personal key is back as an optional override of the bundled one.
+        apiKey = TmdbSettingsStorage.loadApiKey()?.trim().orEmpty()
         val storedLanguage = TmdbSettingsStorage.loadLanguage()
         language = if (storedLanguage == null) {
             normalizeLanguage(DeviceLanguagePreferences.preferredLanguageCodes().firstOrNull() ?: "en")
@@ -217,10 +246,10 @@ object TmdbSettingsRepository {
         useMoreLikeThis = TmdbSettingsStorage.loadUseMoreLikeThis() ?: true
         useCollections = TmdbSettingsStorage.loadUseCollections() ?: true
         publish()
-        if (wasLoaded && previousUseReleaseDates != useReleaseDates) {
+        if (wasLoaded && (previousApiKey != apiKey || previousUseReleaseDates != useReleaseDates)) {
             invalidateReleaseDateMetadata()
         }
-        if (wasLoaded && (previousEnabled != enabled || previousLanguage != language)) {
+        if (wasLoaded && (previousEnabled != enabled || previousLanguage != language || previousApiKey != apiKey)) {
             invalidateHeroEnrichment()
         }
         // BUG-63: a profile switch can change the language through this path (not the setters);
@@ -233,6 +262,7 @@ object TmdbSettingsRepository {
     private fun publish() {
         _uiState.value = TmdbSettings(
             enabled = enabled,
+            apiKey = apiKey,
             language = language,
             useTrailers = useTrailers,
             useArtwork = useArtwork,
@@ -249,6 +279,8 @@ object TmdbSettingsRepository {
         )
     }
 
+    // Upstream df589078 renames this `invalidateMetadata` (it now also runs on a key change);
+    // the fork keeps the old name to keep the diff small.
     private fun invalidateReleaseDateMetadata() {
         MetaDetailsRepository.clear()
         ContinueWatchingEnrichmentCache.clearAll(ProfileRepository.activeProfileId)

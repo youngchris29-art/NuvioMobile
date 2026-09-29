@@ -1,27 +1,38 @@
 package com.nuvio.app.features.tmdb
 
+import com.nuvio.app.core.sync.PROFILE_TMDB_SETTINGS_FEATURE
 import com.nuvio.app.core.sync.encodeSyncBoolean
 import com.nuvio.app.core.sync.encodeSyncString
+import com.nuvio.app.core.sync.extractLegacyCredentials
+import com.nuvio.app.core.sync.preservingLocalProfileCredentials
+import com.nuvio.app.core.sync.withoutProfileCredentials
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Ported from upstream `60ee0160` (`TmdbSettingsRepositoryTest.kt`, originally a Robolectric
- * `androidHostTest`). Upstream's cases 1 and 3 are kept; case 2 ("legacy personal keys are
- * ignored") wrote a raw `tmdb_api_key` pref through the Android `SharedPreferences` handle, which
- * `commonTest` has no seam for — case 3 covers the same invariant through the sync payload, which
- * is the path a legacy key actually arrives on.
+ * Ported from upstream `60ee0160` and `df589078` (`TmdbSettingsRepositoryTest.kt`, originally a
+ * Robolectric `androidHostTest`).
+ *
+ * Fork differences:
+ * - Upstream's legacy-key case wrote a raw `tmdb_api_key` pref through the Android
+ *   `SharedPreferences` handle; `commonTest` has no seam for that, so it writes the same pref
+ *   through `TmdbSettingsStorage.saveApiKey`.
+ * - The fork keeps the personal key in `TmdbSettingsStorage`'s export/import (the MDBList
+ *   convention) and strips it at the settings-sync layer instead, so "never rides the settings
+ *   blob" is asserted on [pushedSettings] (what `ProfileSettingsSync.exportSettingsBlob` pushes),
+ *   and a settings pull is modelled with [applyRemoteSettings] (what `applyRemoteBlob` runs).
  *
  * Reset uses `TmdbSettingsStorage.replaceFromSyncPayload({})` (clears every synced key for the
- * current profile, the same effect as clearing the backing store) — the pattern
- * `PauseOverlaySettingsTest` uses. Note `setEnabled` fans out to
- * `HomeRepository.onTmdbSettingsChanged()`; that is deliberate coverage of the real call path, and
- * the fan-out only resets in-memory hero enrichment.
+ * current profile, the personal key included) — the pattern `PauseOverlaySettingsTest` uses.
+ * `setEnabled`/`setApiKey` fan out to `HomeRepository.onTmdbSettingsChanged()` and
+ * `MetaDetailsRepository.clear()`; that is deliberate coverage of the real call path.
  */
 class TmdbSettingsRepositoryTest {
     @BeforeTest
@@ -45,28 +56,106 @@ class TmdbSettingsRepositoryTest {
         TmdbSettingsRepository.setEnabled(true)
         TmdbSettingsRepository.onProfileChanged()
 
-        assertTrue(TmdbSettingsRepository.snapshot().enabled)
-        assertNull(TmdbSettingsStorage.exportToSyncPayload()["tmdb_api_key"])
+        val settings = TmdbSettingsRepository.snapshot()
+        assertTrue(settings.enabled)
+        assertEquals("", settings.apiKey)
+        assertEquals(TmdbConfig.API_KEY, TmdbSettingsRepository.effectiveApiKey())
+        assertNull(pushedSettings()["tmdb_api_key"])
     }
 
     @Test
-    fun syncedSettingsIgnoreLegacyPersonalKeys() {
-        TmdbSettingsStorage.replaceFromSyncPayload(
-            buildJsonObject {
-                put("tmdb_enabled", encodeSyncBoolean(true))
-                put("tmdb_api_key", encodeSyncString("remote-personal-key"))
-            },
-        )
+    fun savedPersonalKeyOverridesBundledKeyAndSurvivesReload() {
+        TmdbSettingsRepository.setApiKey("  personal-key  ")
+        TmdbSettingsRepository.onProfileChanged()
+
+        assertEquals("personal-key", TmdbSettingsRepository.snapshot().apiKey)
+        assertEquals("personal-key", TmdbSettingsRepository.effectiveApiKey())
+        // A personal key does not switch enrichment on by itself.
+        assertFalse(TmdbSettingsRepository.snapshot().enabled)
+        assertNull(pushedSettings()["tmdb_api_key"])
+    }
+
+    @Test
+    fun clearingPersonalKeyRestoresBundledKeyWithoutDisablingEnrichment() {
+        TmdbSettingsRepository.setEnabled(true)
+        TmdbSettingsRepository.setApiKey("personal-key")
+        TmdbSettingsRepository.setApiKey("  ")
+        TmdbSettingsRepository.onProfileChanged()
+
+        assertEquals("", TmdbSettingsRepository.snapshot().apiKey)
+        assertEquals(TmdbConfig.API_KEY, TmdbSettingsRepository.effectiveApiKey())
+        assertTrue(TmdbSettingsRepository.snapshot().enabled)
+    }
+
+    @Test
+    fun legacyPersonalKeysAreRestoredAndExcludedFromSync() {
+        // rc13 purged this pref on the next settings pull; with df589078 a key left on disk is
+        // simply the personal override again.
+        TmdbSettingsStorage.saveEnabled(true)
+        TmdbSettingsStorage.saveApiKey("legacy-personal-key")
         TmdbSettingsRepository.onProfileChanged()
 
         assertTrue(TmdbSettingsRepository.snapshot().enabled)
-        // `apiKeyKey` is still registered in `syncKeys`, so the apply's delete pass purges any
-        // orphaned local pref; nothing writes it back, so it never re-enters an export.
-        assertNull(TmdbSettingsStorage.exportToSyncPayload()["tmdb_api_key"])
+        assertEquals("legacy-personal-key", TmdbSettingsRepository.effectiveApiKey())
+        assertNull(pushedSettings()["tmdb_api_key"])
+    }
 
-        TmdbSettingsRepository.setEnabled(false)
+    /**
+     * Inverts rc13's `syncedSettingsIgnoreLegacyPersonalKeys` (which asserted the purge): a
+     * remote settings blob never writes a personal key locally, a local key survives the apply's
+     * delete pass, and the push still strips it.
+     */
+    @Test
+    fun settingsSyncPreservesLocalOverride() {
+        TmdbSettingsRepository.setApiKey("local-key")
+
+        applyRemoteSettings(
+            buildJsonObject {
+                put("tmdb_enabled", encodeSyncBoolean(true))
+                put("tmdb_api_key", encodeSyncString("remote-key"))
+            },
+        )
+
+        assertEquals("local-key", TmdbSettingsRepository.effectiveApiKey())
+        assertTrue(TmdbSettingsRepository.snapshot().enabled)
+        assertNull(pushedSettings()["tmdb_api_key"])
+
+        // A blob with no key at all (every current client pushes one like this) keeps it too.
+        applyRemoteSettings(buildJsonObject {})
+
+        assertEquals("local-key", TmdbSettingsRepository.effectiveApiKey())
+    }
+
+    @Test
+    fun remoteOnlyPersonalKeyIsStagedNotAppliedBySettingsSync() {
+        val remote = buildJsonObject {
+            put("tmdb_enabled", encodeSyncBoolean(true))
+            put("tmdb_api_key", encodeSyncString("remote-key"))
+        }
+
+        applyRemoteSettings(remote)
+
+        // No local key: the blob's key is NOT written here (it would read as a local edit and be
+        // pushed over the provider row) — it is extracted for ProviderCredentialSync to stage.
+        assertEquals("", TmdbSettingsRepository.snapshot().apiKey)
+        assertEquals(TmdbConfig.API_KEY, TmdbSettingsRepository.effectiveApiKey())
+        assertTrue(TmdbSettingsRepository.snapshot().enabled)
+        assertEquals(
+            mapOf("tmdb_api_key" to "remote-key"),
+            extractLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote),
+        )
+    }
+
+    /** What `ProfileSettingsSync.exportSettingsBlob` pushes for this feature. */
+    private fun pushedSettings(): JsonObject =
+        withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, TmdbSettingsStorage.exportToSyncPayload())
+
+    /** What `ProfileSettingsSync.applyRemoteBlob` does with an incoming `tmdb_settings` block. */
+    private fun applyRemoteSettings(remote: JsonObject) {
+        val local = TmdbSettingsStorage.exportToSyncPayload()
+        TmdbSettingsStorage.replaceFromSyncPayload(
+            preservingLocalProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote, local),
+        )
         TmdbSettingsRepository.onProfileChanged()
-
-        assertFalse(TmdbSettingsRepository.snapshot().enabled)
     }
 }

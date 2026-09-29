@@ -4,7 +4,7 @@ import co.touchlab.kermit.Logger
 import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.binding.define
 import com.dokar.quickjs.binding.function
-import com.nuvio.app.features.tmdb.TmdbConfig
+import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 
 internal class HostFunctions(
     private val scraperId: String,
@@ -36,11 +36,12 @@ internal class HostFunctions(
             }
         }
 
-        // Upstream 60ee0160: scrapers read the bundled TMDB key through this host function
-        // instead of the user's personal one. Fork: the tvOS runtime has no __get_scraper_id /
-        // __get_scraper_settings host functions (the polyfill inlines those values), so this is
-        // the only one of upstream's three additions that applies here.
-        runtime.function("__get_tmdb_api_key") { TmdbConfig.API_KEY }
+        // Upstream 60ee0160 + df589078: scrapers read the effective TMDB key through this host
+        // function — the profile's personal override when set, otherwise the bundled key. Fork:
+        // the tvOS runtime has no __get_scraper_id / __get_scraper_settings host functions (the
+        // polyfill inlines those values), so this is the only one of upstream's three additions
+        // that applies here.
+        runtime.function("__get_tmdb_api_key") { TmdbSettingsRepository.effectiveApiKey() }
         runtime.function("__capture_result") { args ->
             onResult(args.getOrNull(0)?.toString() ?: "[]")
             null

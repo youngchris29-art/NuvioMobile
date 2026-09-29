@@ -13,6 +13,8 @@ import com.nuvio.app.features.mdblist.MdbListSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.PlayerSettingsUiState
 import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.tmdb.TmdbSettings
+import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlin.concurrent.Volatile
@@ -43,8 +45,8 @@ private data class ProviderCredentialScope(
 )
 
 /**
- * Cross-client sync for provider API-key credentials (MDBList, every debrid provider,
- * AnimeSkip client id, IntroDB API key).
+ * Cross-client sync for provider API-key credentials (the personal TMDB key override, MDBList,
+ * every debrid provider, AnimeSkip client id, IntroDB API key).
  *
  * These used to ride the general [ProfileSettingsSync] blob, which does a whole-blob
  * signature diff: a device with an empty key set could blank a good key set on another device.
@@ -122,11 +124,13 @@ object ProviderCredentialSync {
         ProviderCredentialIds.debrid(DebridProviders.ALLDEBRID_ID),
     )
 
-    private val legacyStorageKeyToProvider = mapOf(
-        // Fork: no "tmdb_api_key" entry — upstream 60ee0160 bundles the TMDB key at compile
-        // time, so a legacy blob's personal TMDB key has nowhere to migrate to. It is still
-        // EXTRACTED by ProfileSettingsSync, which keeps `rewriteLegacyBlobSanitized` firing so
-        // the dead key is stripped from the remote blob.
+    // internal for ProviderCredentialModelsTest (the TMDB legacy-staging case).
+    internal val legacyStorageKeyToProvider = mapOf(
+        // Upstream df589078: the personal TMDB key is an optional override again, synced as the
+        // "tmdb" provider, so a legacy blob's key migrates like the others. (rc13 left this entry
+        // out while the key was bundled-only; the staged value was then only used to trigger
+        // `rewriteLegacyBlobSanitized`.)
+        "tmdb_api_key" to ProviderCredentialIds.TMDB,
         "mdblist_api_key" to ProviderCredentialIds.MDBLIST,
         "animeskip_client_id" to ProviderCredentialIds.ANIMESKIP,
         "introdb_api_key" to ProviderCredentialIds.INTRODB,
@@ -477,12 +481,14 @@ object ProviderCredentialSync {
     private fun observeCredentialSnapshots() = combine(
         ProfileRepository.state,
         DebridSettingsRepository.uiState,
+        TmdbSettingsRepository.uiState,
         MdbListSettingsRepository.uiState,
         PlayerSettingsRepository.uiState,
-    ) { _, debrid, mdbList, player ->
+    ) { _, debrid, tmdb, mdbList, player ->
         buildSnapshot(
             profileId = ProfileRepository.activeProfileId,
             debrid = debrid,
+            tmdb = tmdb,
             mdbList = mdbList,
             player = player,
         )
@@ -493,6 +499,7 @@ object ProviderCredentialSync {
         val snapshot = buildSnapshot(
             profileId = profileId,
             debrid = DebridSettingsRepository.snapshot(),
+            tmdb = TmdbSettingsRepository.snapshot(),
             mdbList = MdbListSettingsRepository.snapshot(),
             player = PlayerSettingsRepository.uiState.value,
         )
@@ -500,9 +507,10 @@ object ProviderCredentialSync {
         return snapshot
     }
 
-    private fun buildSnapshot(
+    internal fun buildSnapshot(
         profileId: Int,
         debrid: DebridSettings,
+        tmdb: TmdbSettings,
         mdbList: MdbListSettings,
         player: PlayerSettingsUiState,
     ): ProviderCredentialSnapshot = ProviderCredentialSnapshot(
@@ -517,6 +525,9 @@ object ProviderCredentialSync {
                     ),
                 )
             }
+            // The personal override only — a blank slot means "use the bundled key" and syncs as
+            // a clear tombstone, never as the bundled key itself.
+            add(ProviderCredentialValue(ProviderCredentialIds.TMDB, PROVIDER_API_KEY_FIELD, tmdb.apiKey.trim()))
             add(ProviderCredentialValue(ProviderCredentialIds.MDBLIST, PROVIDER_API_KEY_FIELD, mdbList.apiKey.trim()))
             add(
                 ProviderCredentialValue(
@@ -547,6 +558,9 @@ object ProviderCredentialSync {
                         credential.provider.substringAfter("debrid:"),
                         credential.value,
                     )
+                }
+                credential.provider == ProviderCredentialIds.TMDB -> {
+                    TmdbSettingsRepository.setApiKey(credential.value)
                 }
                 credential.provider == ProviderCredentialIds.MDBLIST -> {
                     MdbListSettingsRepository.setApiKey(credential.value)
@@ -662,6 +676,7 @@ object ProviderCredentialSync {
 
     private fun ensureRepositoriesLoaded() {
         DebridSettingsRepository.ensureLoaded()
+        TmdbSettingsRepository.ensureLoaded()
         MdbListSettingsRepository.ensureLoaded()
         PlayerSettingsRepository.ensureLoaded()
     }

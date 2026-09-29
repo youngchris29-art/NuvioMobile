@@ -1,5 +1,9 @@
 package com.nuvio.app.core.sync
 
+import com.nuvio.app.features.debrid.DebridSettings
+import com.nuvio.app.features.mdblist.MdbListSettings
+import com.nuvio.app.features.player.PlayerSettingsUiState
+import com.nuvio.app.features.tmdb.TmdbSettings
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -8,6 +12,100 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 class ProviderCredentialModelsTest {
+    // Upstream df589078 (ported from composeApp's ProviderCredentialModelsTest).
+    @Test
+    fun `TMDB credential snapshot contains the personal override`() {
+        val snapshot = credentialSnapshot(TmdbSettings(apiKey = " personal-key "))
+        val credential = snapshot.values.single { it.provider == ProviderCredentialIds.TMDB }
+
+        assertEquals(1, snapshot.profileId)
+        assertEquals(buildJsonObject { put("api_key", "personal-key") }, credential.credentialJson())
+    }
+
+    @Test
+    fun `empty TMDB override syncs a clear tombstone instead of the bundled key`() {
+        val snapshot = credentialSnapshot(TmdbSettings())
+        val credential = snapshot.values.single { it.provider == ProviderCredentialIds.TMDB }
+
+        assertEquals(buildJsonObject { put("api_key", "") }, credential.credentialJson())
+    }
+
+    @Test
+    fun `remote TMDB override can be replaced and cleared`() {
+        val local = credentialSnapshot(TmdbSettings(apiKey = "local-key"))
+        val remote = listOf(
+            SupabaseProviderCredential("tmdb", buildJsonObject { put("api_key", "remote-key") }),
+        )
+        val merged = local.mergeRemote(remote)
+
+        assertEquals("remote-key", merged.values.single { it.provider == ProviderCredentialIds.TMDB }.value)
+        assertEquals("", merged.mergeRemote(emptyList()).values.single { it.provider == ProviderCredentialIds.TMDB }.value)
+    }
+
+    /**
+     * Fork: a TMDB key held locally with NO remote row (the first sync after upgrading, or a key
+     * set on a build that predates the "tmdb" provider) must be pushed, not blanked by
+     * upstream 1854dfc3's clear-when-absent rule. `syncFromRemote` does this through the
+     * insert-if-absent SEED plus the `voidFill` refill; this composes the same pure steps
+     * (the singleton talks straight to Supabase, so the round trip itself is not unit-testable —
+     * see the pending-edit tests below for the same approach).
+     */
+    @Test
+    fun `a local TMDB key with no remote row is seeded and survives the pull`() {
+        val local = credentialSnapshot(TmdbSettings(apiKey = "local-key"))
+        val rows = listOf(
+            SupabaseProviderCredential("mdblist", buildJsonObject { put("api_key", "") }),
+        )
+
+        // Seed payload = non-blank local values; it is sent because a provider is missing.
+        val seedPayload = local.copy(values = local.values.filter { it.value.isNotBlank() })
+        assertTrue(shouldSeedProviderCredentials(seedPayload, rows))
+        assertEquals(
+            listOf(ProviderCredentialIds.TMDB),
+            seedPayload.values.map { it.provider },
+        )
+        val remoteProviders = rows.mapTo(mutableSetOf()) { it.provider.lowercase() }
+        val seeded = seedPayload.values
+            .filter { it.provider.lowercase() !in remoteProviders }
+            .associate { it.provider to it.value }
+
+        // The merge alone blanks it (no row) ...
+        val merged = local.mergeRemote(rows)
+        assertEquals("", merged.values.single { it.provider == ProviderCredentialIds.TMDB }.value)
+        // ... and the seeded void-fill puts it back, so nothing is applied over the local key.
+        val final = merged.copy(
+            values = merged.values.map { slot ->
+                val fill = seeded[slot.provider]
+                if (!fill.isNullOrBlank() && slot.value.isBlank()) slot.copy(value = fill) else slot
+            },
+        )
+        assertEquals("local-key", final.values.single { it.provider == ProviderCredentialIds.TMDB }.value)
+        assertEquals(local, final)
+    }
+
+    /**
+     * Fork: a `tmdb_api_key` still riding a legacy settings blob is extracted by the policy and
+     * staged to the "tmdb" provider (rc13 had no mapping, so it was dropped on the floor).
+     */
+    @Test
+    fun `a legacy TMDB key in a settings blob is staged to the TMDB provider`() {
+        val blob = buildJsonObject {
+            put("tmdb_enabled", encodeSyncBoolean(true))
+            put("tmdb_api_key", encodeSyncString("legacy-key"))
+        }
+
+        val extracted = extractLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, blob)
+        val staged = extracted.entries.mapNotNull { (storageKey, value) ->
+            ProviderCredentialSync.legacyStorageKeyToProvider[storageKey]?.let { it to value }
+        }.toMap()
+
+        assertEquals(mapOf(ProviderCredentialIds.TMDB to "legacy-key"), staged)
+        // Every provider a legacy key can stage into is a slot the snapshot actually carries, or
+        // the staged value would have nowhere to land.
+        val slots = credentialSnapshot(TmdbSettings()).values.mapTo(mutableSetOf()) { it.provider }
+        assertTrue(ProviderCredentialSync.legacyStorageKeyToProvider.values.all { it in slots })
+    }
+
     @Test
     fun `complete remote snapshot does not require seeding`() {
         val snapshot = ProviderCredentialSnapshot(
@@ -303,4 +401,12 @@ class ProviderCredentialModelsTest {
         assertEquals(local, local.overlayingPendingEdits(mapOf("debrid:torbox" to "B")))
         assertTrue(local.restrictedTo(emptySet()).values.isEmpty())
     }
+
+    private fun credentialSnapshot(tmdb: TmdbSettings) = ProviderCredentialSync.buildSnapshot(
+        profileId = 1,
+        debrid = DebridSettings(),
+        tmdb = tmdb,
+        mdbList = MdbListSettings(),
+        player = PlayerSettingsUiState(),
+    )
 }

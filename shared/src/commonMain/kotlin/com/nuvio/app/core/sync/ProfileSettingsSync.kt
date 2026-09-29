@@ -352,10 +352,9 @@ object ProfileSettingsSync {
                 features = export.features.copy(
                     playerSettings = restoringLegacyCredentials(PROFILE_PLAYER_SETTINGS_FEATURE, export.features.playerSettings, legacyBlob.features.playerSettings),
                     debridSettings = restoringLegacyCredentials(PROFILE_DEBRID_SETTINGS_FEATURE, export.features.debridSettings, legacyBlob.features.debridSettings),
-                    // Fork: no restoringLegacyCredentials for TMDB — upstream 60ee0160 bundles
-                    // the key at compile time, so there is no TMDB credential left to carry
-                    // forward and re-seeding one would only resurrect a dead `tmdb_api_key`.
-                    tmdbSettings = export.features.tmdbSettings,
+                    // Upstream df589078: the personal TMDB key is a real (optional) credential
+                    // again, so it is carried forward like the others.
+                    tmdbSettings = restoringLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, export.features.tmdbSettings, legacyBlob.features.tmdbSettings),
                     mdbListSettings = restoringLegacyCredentials(PROFILE_MDBLIST_SETTINGS_FEATURE, export.features.mdbListSettings, legacyBlob.features.mdbListSettings),
                 ),
             )

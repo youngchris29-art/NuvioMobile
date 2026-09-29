@@ -48,9 +48,6 @@ class ProfileSettingsCredentialPolicyTest {
         // Uses the REAL wire shape (`encodeSyncString`'s typed wrapper): the blank-detection has
         // to unwrap it, or every present local credential reads as blank and remote wins —
         // exactly the inversion Codex round 5 caught.
-        // Fork: mdblist, not tmdb — upstream 60ee0160 made TMDB's key a build-time constant,
-        // so PROFILE_TMDB_SETTINGS_FEATURE no longer has a local credential to preserve and this
-        // invariant needs a feature that still stages one.
         val remote = buildJsonObject {
             put("mdblist_enabled", JsonPrimitive(true))
             put("mdblist_api_key", encodeSyncString("remote"))
@@ -66,12 +63,12 @@ class ProfileSettingsCredentialPolicyTest {
     }
 
     /**
-     * Upstream 60ee0160: a legacy personal TMDB key is dropped on BOTH sides — it is never
-     * applied from a remote blob and never re-exported into one. The storage key stays registered
-     * in the policy precisely so this holds.
+     * Upstream df589078: the personal TMDB key is an optional credential again, so it follows the
+     * MDBList rules — a local key survives a remote blob apply, a remote-only key is stripped and
+     * extracted for staging, and the push side never carries it. (rc13 dropped it on both sides.)
      */
     @Test
-    fun `legacy TMDB credentials are discarded from local and remote settings`() {
+    fun `TMDB personal key follows the provider credential rules`() {
         val remote = buildJsonObject {
             put("tmdb_enabled", JsonPrimitive(true))
             put("tmdb_api_key", encodeSyncString("remote"))
@@ -81,11 +78,17 @@ class ProfileSettingsCredentialPolicyTest {
         }
 
         val merged = preservingLocalProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote, local)
+        val remoteOnly = preservingLocalProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote, buildJsonObject { })
         val sanitized = withoutProfileCredentials(PROFILE_TMDB_SETTINGS_FEATURE, local)
 
-        assertFalse("tmdb_api_key" in merged)
-        assertFalse("tmdb_api_key" in sanitized)
+        assertEquals(encodeSyncString("local"), merged["tmdb_api_key"])
         assertEquals(JsonPrimitive(true), merged["tmdb_enabled"])
+        assertFalse("tmdb_api_key" in remoteOnly)
+        assertFalse("tmdb_api_key" in sanitized)
+        assertEquals(
+            mapOf("tmdb_api_key" to "remote"),
+            extractLegacyCredentials(PROFILE_TMDB_SETTINGS_FEATURE, remote),
+        )
     }
 
     /**

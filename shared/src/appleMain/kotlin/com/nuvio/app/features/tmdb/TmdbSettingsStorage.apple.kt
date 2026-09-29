@@ -12,10 +12,13 @@ import platform.Foundation.NSUserDefaults
 
 actual object TmdbSettingsStorage {
     private const val enabledKey = "tmdb_enabled"
-    // Fork: removed setting (upstream 60ee0160 bundles the TMDB key) — the const and its
-    // syncKeys entry are KEPT so replaceFromSyncPayload's delete pass purges the orphaned pref on
-    // the next settings sync. Precedent: PlayerSettingsStorage.apple.kt's
-    // legacyAddonSubtitleStartupModeKey. Upstream deletes both and leaves the orphan behind.
+    // Optional personal TMDB key (upstream df589078) that overrides the bundled
+    // `TmdbConfig.API_KEY`. Stored, exported and re-imported exactly like MDBList's key: the
+    // settings-blob push strips it (ProfileSettingsCredentialPolicy.withoutProfileCredentials),
+    // the blob apply re-asserts the LOCAL value over the remote payload
+    // (preservingLocalProfileCredentials), and ProviderCredentialSync owns cross-device sync as
+    // the "tmdb" provider. Fork: upstream leaves it out of the export/import, which is why
+    // upstream's own apply needs no credential policy for it.
     private const val apiKeyKey = "tmdb_api_key"
     private const val languageKey = "tmdb_language"
     private const val useTrailersKey = "tmdb_use_trailers"
@@ -52,6 +55,13 @@ actual object TmdbSettingsStorage {
 
     actual fun saveEnabled(enabled: Boolean) {
         saveBoolean(enabledKey, enabled)
+    }
+
+    actual fun loadApiKey(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of(apiKeyKey))
+
+    actual fun saveApiKey(apiKey: String) {
+        NSUserDefaults.standardUserDefaults.setObject(apiKey, forKey = ProfileScopedKey.of(apiKeyKey))
     }
 
     actual fun loadLanguage(): String? =
@@ -153,6 +163,7 @@ actual object TmdbSettingsStorage {
 
     actual fun exportToSyncPayload(): JsonObject = buildJsonObject {
         loadEnabled()?.let { put(enabledKey, encodeSyncBoolean(it)) }
+        loadApiKey()?.let { put(apiKeyKey, encodeSyncString(it)) }
         loadLanguage()?.let { put(languageKey, encodeSyncString(it)) }
         loadUseTrailers()?.let { put(useTrailersKey, encodeSyncBoolean(it)) }
         loadUseArtwork()?.let { put(useArtworkKey, encodeSyncBoolean(it)) }
@@ -174,6 +185,7 @@ actual object TmdbSettingsStorage {
         }
 
         payload.decodeSyncBoolean(enabledKey)?.let(::saveEnabled)
+        payload.decodeSyncString(apiKeyKey)?.let(::saveApiKey)
         payload.decodeSyncString(languageKey)?.let(::saveLanguage)
         payload.decodeSyncBoolean(useTrailersKey)?.let(::saveUseTrailers)
         payload.decodeSyncBoolean(useArtworkKey)?.let(::saveUseArtwork)
