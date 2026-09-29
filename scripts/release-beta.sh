@@ -47,7 +47,7 @@ Options:
   --changelog <file>   Markdown file with hand-written highlights for the notes
   --reddit-changelog <file>
                        After publishing, swap the "Latest build" block in the
-                       r/Nuvio beta thread's post body for this file's contents,
+                       r/NuvioForks beta thread's post body for this file's contents,
                        so the post always describes what releases/latest serves.
                        Shows a diff and asks before touching the live post; pass
                        --yes to skip the prompt. Needs REDDIT_CLIENT_ID and
@@ -453,7 +453,7 @@ fi
 # fail the release that already succeeded. It exits non-zero on its own if the post
 # is not in the shape it knows how to edit, rather than mangling it.
 if [[ -n "$REDDIT_CHANGELOG_FILE" ]]; then
-  echo "==> Updating the r/Nuvio beta thread's post body"
+  echo "==> Updating the r/NuvioForks beta thread's post body"
   reddit_args=(--changelog "$REDDIT_CHANGELOG_FILE")
   [[ -n "$REDDIT_POST_ID" ]] && reddit_args+=(--post-id "$REDDIT_POST_ID")
   [[ "$ASSUME_YES" -eq 1 ]] && reddit_args+=(--yes)

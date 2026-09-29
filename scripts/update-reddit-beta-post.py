@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Update the "Latest build" changelog block in the r/Nuvio beta thread's post body.
+"""Update the "Latest build" changelog block in the r/NuvioForks beta thread's post body.
 
-The beta thread (https://www.reddit.com/r/Nuvio/comments/1v26ebw/) carries a
+The beta thread (https://www.reddit.com/r/NuvioForks/comments/1wtmutc/; it replaced
+r/Nuvio post 1v26ebw, which that sub removed on 2026-09-27) carries a
 "Latest build: beta N (build M)" section right under the download link, so the
 post body always describes what releases/latest actually serves. This script
 swaps that block for a new one at release time.
@@ -32,7 +33,7 @@ One-time setup:
      this is done once.
 
 Usage:
-    update-reddit-beta-post.py --changelog notes.md [--post-id 1v26ebw]
+    update-reddit-beta-post.py --changelog notes.md [--post-id 1wtmutc]
                                [--dry-run] [--yes]
     update-reddit-beta-post.py --authorize [--redirect-uri URI]
     update-reddit-beta-post.py --self-test
@@ -57,7 +58,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_POST_ID = "1v26ebw"
+DEFAULT_POST_ID = "1wtmutc"
 USER_AGENT = "nuviotv-release/1.0 (beta thread changelog updater)"
 
 # The block runs from the "Latest build:" heading through the build-number line
@@ -342,6 +343,14 @@ def self_test() -> int:
     check("replace keeps outro", replaced.rstrip().endswith("Stuff."))
     check("replace is idempotent", replace_block(replaced, block11)[0] == replaced)
     check("no unbounded growth", len(replaced) - len(inserted) < 40)
+
+    # The r/NuvioForks post ends with its inline screenshots, which Reddit stores
+    # as bare preview.redd.it lines. A block swap must leave them where they are.
+    images = ("\n\nhttps://preview.redd.it/aaa.png?width=1920&format=png&auto=webp&s=1"
+              "\n\nhttps://preview.redd.it/bbb.png?width=3840&format=png&auto=webp&s=2\n")
+    with_images, _ = replace_block(inserted + images, block11)
+    check("image lines survive a block swap", with_images.endswith(images))
+    check("image lines are not duplicated", with_images.count("preview.redd.it") == 2)
 
     for name, body in (
         ("two headings rejected", inserted + "\n" + block10),
