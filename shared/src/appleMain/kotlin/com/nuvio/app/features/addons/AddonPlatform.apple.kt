@@ -172,6 +172,7 @@ actual suspend fun httpRequestRaw(
     body: String,
     followRedirects: Boolean,
     maxResponseBodyBytes: Int,
+    bodyBytes: ByteArray?,
 ): RawHttpResponse =
     addonHttpClient
         .prepareRequest {
@@ -181,15 +182,19 @@ actual suspend fun httpRequestRaw(
                 header(key, value)
             }
             if (this.method == HttpMethod.Post || this.method == HttpMethod.Put || this.method == HttpMethod.Patch) {
-                setBody(body)
+                // Upstream 12621c65: a binary body (plugin fetch with an ArrayBuffer/typed array)
+                // goes out verbatim instead of through a String.
+                if (bodyBytes != null) setBody(bodyBytes) else setBody(body)
             }
         }
         .execute { response ->
+            val limited = readResponseBodyLimited(response.bodyAsChannel(), maxResponseBodyBytes)
             RawHttpResponse(
                 status = response.status.value,
                 statusText = response.status.description,
                 url = response.call.request.url.toString(),
-                body = readResponseBodyLimited(response.bodyAsChannel(), maxResponseBodyBytes),
+                body = limited.text,
+                bodyBytes = limited.bytes,
                 headers = response.headers.entries().associate { (name, values) ->
                     name.lowercase() to values.joinToString(",")
                 },
@@ -199,11 +204,17 @@ actual suspend fun httpRequestRaw(
 // Mirrors the Android actual's readResponseBodyLimited: stream at most maxBytes and mark
 // truncation, so an untrusted endpoint (server discovery runs pre-trust) cannot make the client
 // buffer an unbounded body. prepareRequest/execute keeps Ktor from saving the full body; UTF-8
-// decode (every caller consumes JSON/text).
-private suspend fun readResponseBodyLimited(channel: ByteReadChannel, maxBytes: Int): String {
+// decode for `text` (every text caller consumes JSON/text); `bytes` is the undecoded (possibly
+// truncated) body for binary consumers (upstream 12621c65, plugin Response.arrayBuffer()).
+private class LimitedResponseBody(val bytes: ByteArray, val text: String)
+
+private suspend fun readResponseBodyLimited(channel: ByteReadChannel, maxBytes: Int): LimitedResponseBody {
     val bytes = channel.readRemaining(maxBytes.coerceAtLeast(0).toLong()).readByteArray()
     val truncated = !channel.exhausted()
     if (truncated) channel.cancel(null)
     val decoded = bytes.decodeToString()
-    return if (truncated) "$decoded\n...[truncated]" else decoded
+    return LimitedResponseBody(
+        bytes = bytes,
+        text = if (truncated) "$decoded\n...[truncated]" else decoded,
+    )
 }

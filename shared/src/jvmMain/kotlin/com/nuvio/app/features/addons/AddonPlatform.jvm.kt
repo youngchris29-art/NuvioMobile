@@ -105,6 +105,7 @@ private fun openConnection(
     headers: Map<String, String>,
     body: String,
     followRedirects: Boolean,
+    bodyBytes: ByteArray? = null,
 ): HttpURLConnection {
     val normalizedMethod = method.uppercase()
     val sanitizedHeaders = headers.withoutAcceptEncoding()
@@ -120,7 +121,7 @@ private fun openConnection(
             ?: if (normalizedMethod == "POST") "application/x-www-form-urlencoded" else "application/json"
         connection.setRequestProperty("Content-Type", contentType)
         connection.doOutput = true
-        val bytes = body.toByteArray(Charsets.UTF_8)
+        val bytes = bodyBytes ?: body.toByteArray(Charsets.UTF_8)
         connection.setFixedLengthStreamingMode(bytes.size)
         connection.outputStream.use { output: OutputStream -> output.write(bytes) }
     }
@@ -186,8 +187,9 @@ actual suspend fun httpRequestRaw(
     body: String,
     followRedirects: Boolean,
     maxResponseBodyBytes: Int,
+    bodyBytes: ByteArray?,
 ): RawHttpResponse = withContext(Dispatchers.IO) {
-    val connection = openConnection(method, url, headers, body, followRedirects)
+    val connection = openConnection(method, url, headers, body, followRedirects, bodyBytes)
     try {
         val status = connection.responseCode
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
@@ -198,6 +200,7 @@ actual suspend fun httpRequestRaw(
             statusText = connection.responseMessage.orEmpty(),
             url = connection.url.toString(),
             body = if (truncated) "$text\n...[truncated]" else text,
+            bodyBytes = bytes,
             headers = connection.headerFields
                 .filterKeys { it != null }
                 .mapKeys { (name, _) -> name!!.lowercase() }

@@ -13,6 +13,8 @@ data class RawHttpResponse(
     val url: String,
     val body: String,
     val headers: Map<String, String>,
+    /** The response body before charset decoding (upstream 12621c65). */
+    val bodyBytes: ByteArray = body.encodeToByteArray(),
 )
 
 /** Default safety limit for generic and plugin-provided HTTP responses. */
@@ -40,4 +42,6 @@ expect suspend fun httpRequestRaw(
     body: String,
     followRedirects: Boolean = true,
     maxResponseBodyBytes: Int = DefaultRawHttpResponseMaxBytes,
+    /** When present, sends these bytes verbatim instead of UTF-8 encoding [body] (upstream 12621c65). */
+    bodyBytes: ByteArray? = null,
 ): RawHttpResponse

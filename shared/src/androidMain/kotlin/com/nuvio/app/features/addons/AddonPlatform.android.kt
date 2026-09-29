@@ -5,7 +5,9 @@ import android.content.SharedPreferences
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import com.nuvio.app.core.network.IPv4FirstDns
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import okhttp3.Cache
 import okhttp3.ResponseBody
@@ -16,6 +18,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.Proxy
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import kotlin.text.Charsets
 import java.util.concurrent.TimeUnit
@@ -262,6 +265,7 @@ actual suspend fun httpRequestRaw(
     body: String,
     followRedirects: Boolean,
     maxResponseBodyBytes: Int,
+    bodyBytes: ByteArray?,
 ): RawHttpResponse =
     withContext(Dispatchers.IO) {
         val normalizedMethod = method.uppercase()
@@ -274,7 +278,9 @@ actual suspend fun httpRequestRaw(
         val request = if (requestAllowsBody(normalizedMethod)) {
             val contentType = sanitizedHeaders.getHeaderIgnoreCase("Content-Type")
                 ?: if (normalizedMethod == "POST") "application/x-www-form-urlencoded" else "application/json"
-            val requestBody = body.toByteArray(Charsets.UTF_8).toRequestBody(contentType.toMediaType())
+            // Upstream 12621c65: a binary body goes out verbatim.
+            val requestBody = (bodyBytes ?: body.toByteArray(Charsets.UTF_8))
+                .toRequestBody(contentType.toMediaType())
             builder.method(normalizedMethod, requestBody)
         } else {
             builder.method(normalizedMethod, null)
@@ -289,17 +295,41 @@ actual suspend fun httpRequestRaw(
                 .build()
         }
 
-        client.newCall(request).execute().use { response ->
-            RawHttpResponse(
-                status = response.code,
-                statusText = response.message,
-                url = response.request.url.toString(),
-                body = readResponseBodyLimited(response.body, maxResponseBodyBytes),
-                headers = response.headers.toMultimap().mapValues { (_, values) ->
-                    values.joinToString(",")
-                }.mapKeys { (name, _) ->
-                    name.lowercase()
-                },
-            )
+        // Upstream 2e244028: cancel the OkHttp call when the calling coroutine is cancelled
+        // (plugin timeout / screen exit) instead of letting a blocking execute() run to the end.
+        val call = client.newCall(request)
+        val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                call.cancel()
+            }
+        }
+        try {
+            call.execute().use { response ->
+                // Upstream 12621c65: keep the undecoded bytes alongside the decoded text.
+                val contentType = response.body?.contentType()
+                val readResult = response.body?.byteStream()?.use { stream ->
+                    readAtMostBytes(stream, maxResponseBodyBytes.coerceAtLeast(0))
+                } ?: LimitedReadResult(ByteArray(0), truncated = false)
+                val charset = contentType?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+                val decoded = runCatching { String(readResult.bytes, charset) }
+                    .getOrElse { String(readResult.bytes, Charsets.UTF_8) }
+                RawHttpResponse(
+                    status = response.code,
+                    statusText = response.message,
+                    url = response.request.url.toString(),
+                    body = if (readResult.truncated) "$decoded\n...[truncated]" else decoded,
+                    bodyBytes = readResult.bytes,
+                    headers = response.headers.toMultimap().mapValues { (_, values) ->
+                        values.joinToString(",")
+                    }.mapKeys { (name, _) ->
+                        name.lowercase()
+                    },
+                )
+            }
+        } catch (error: IOException) {
+            if (call.isCanceled()) throw CancellationException("Cancelled HTTP request", error)
+            throw error
+        } finally {
+            cancelHandle?.dispose()
         }
     }

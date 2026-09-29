@@ -8,7 +8,9 @@ import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 
 internal class HostFunctions(
     private val scraperId: String,
-    private val onResult: (String) -> Unit
+    private val scraperSettingsJson: String,
+    private val callArgsJson: String = "{}",
+    private val onResult: (String) -> Unit,
 ) : HostModule {
     private val log = Logger.withTag("PluginRuntime")
 
@@ -36,12 +38,14 @@ internal class HostFunctions(
             }
         }
 
+        // Upstream 2e244028: the polyfill is now static (compiled once to bytecode), so the
+        // per-run values it used to inline come from these host functions instead.
+        runtime.function("__get_scraper_id") { scraperId }
+        runtime.function("__get_scraper_settings") { scraperSettingsJson }
         // Upstream 60ee0160 + df589078: scrapers read the effective TMDB key through this host
-        // function — the profile's personal override when set, otherwise the bundled key. Fork:
-        // the tvOS runtime has no __get_scraper_id / __get_scraper_settings host functions (the
-        // polyfill inlines those values), so this is the only one of upstream's three additions
-        // that applies here.
+        // function — the profile's personal override when set, otherwise the bundled key.
         runtime.function("__get_tmdb_api_key") { TmdbSettingsRepository.effectiveApiKey() }
+        runtime.function("__get_call_args") { callArgsJson }
         runtime.function("__capture_result") { args ->
             onResult(args.getOrNull(0)?.toString() ?: "[]")
             null
