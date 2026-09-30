@@ -5420,7 +5420,7 @@ final class NuvioTVUITests: XCTestCase {
         let app = launchToHome(
             extraArguments: ["-no_zoom_on_focus", "YES",
                              // The reach hold became default ON 2026-09-30; this gate's premise is OFF.
-                             "-debug.pinnedNoZoomReachHoldsLift", "NO",
+                             "-debug.pinnedNoZoomReachHoldsLift", "NO", "-debug.pinnedZoomReachHold", "NO",
                              // Restores the pre-Wave-10 shortfall (vh 524 → ~455) so a deep park
                              // clips again, and turns the corrector off so it stays clipped. See
                              // the header for why both are needed.
@@ -5527,7 +5527,7 @@ final class NuvioTVUITests: XCTestCase {
         // present.
         let healthyApp = launchToHome(
             extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES",
-                             "-debug.pinnedNoZoomReachHoldsLift", "NO"],
+                             "-debug.pinnedNoZoomReachHoldsLift", "NO", "-debug.pinnedZoomReachHold", "NO"],
             forceFreshLaunch: true
         )
         openTab(healthyApp, named: "Home")
