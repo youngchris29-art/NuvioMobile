@@ -302,6 +302,11 @@ struct DetailView: View {
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
     @State private var seriesPlay: SeriesPlayRoute?
+    /// Episode shuffle sheet (upstream `23b048c3`), opened from the action row's Shuffle button.
+    @State private var showShuffleSheet = false
+    /// The shuffle pick the sheet asked to play; presented as `seriesPlay` once the sheet is gone
+    /// (a full-screen cover can't present while the sheet is still dismissing).
+    @State private var pendingShuffleRoute: SeriesPlayRoute?
     /// Trakt comment ids the user has expanded (reveals spoilers / full text).
     @State private var expandedComments: Set<Int64> = []
 
@@ -891,6 +896,19 @@ struct DetailView: View {
         .onChange(of: userInteracted) { _, interacted in
             if interacted { cancelAutoPlayTrailer() }
         }
+        .sheet(isPresented: $showShuffleSheet, onDismiss: {
+            if let route = pendingShuffleRoute {
+                pendingShuffleRoute = nil
+                seriesPlay = route
+            }
+        }) {
+            EpisodeShuffleSheet(model: model, title: title) { action in
+                guard let meta = model.meta else { return }
+                model.noteSeriesPlayStarted(action)
+                pendingShuffleRoute = SeriesPlayRoute(meta: meta, action: action)
+                showShuffleSheet = false
+            }
+        }
         .fullScreenCover(isPresented: $showStreams) {
             StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
                              poster: posterUrl, synopsis: overview, meta: playbackMeta,
@@ -1465,6 +1483,7 @@ struct DetailView: View {
             } else if let action = model.seriesAction, let meta = model.meta {
                 prominentActionButtonStyle(
                     Button {
+                        model.noteSeriesPlayStarted(action)
                         seriesPlay = SeriesPlayRoute(meta: meta, action: action)
                     } label: {
                         // BUG-14: see the non-series Play button above.
@@ -1545,6 +1564,33 @@ struct DetailView: View {
                 }
             )
             .tint(model.isSaved ? Theme.Palette.accent : nil)
+
+            // Episode shuffle: series only, and only while the global switch is on. Last in the
+            // row so the existing buttons keep their positions. Accent tint = on for this show,
+            // the same active treatment as Watched / In Library.
+            if model.shuffleOffered {
+                compactActionButtonStyle(
+                    Button {
+                        // Opening the sheet counts as interacting: no auto-play trailer over it,
+                        // and a trailer bridge still leaving is withdrawn rather than stacked.
+                        userInteracted = true
+                        withdrawTrailerBridgeIfLeaving()
+                        showShuffleSheet = true
+                    } label: {
+                        actionButtonPadding(
+                            actionLabel(
+                                model.shuffleSettings.enabled
+                                    ? String(localized: "Shuffle On")
+                                    : String(localized: "Shuffle"),
+                                systemImage: "shuffle"
+                            )
+                            .font(Theme.Font.meta),
+                            horizontal: Theme.Spacing.md
+                        )
+                    }
+                )
+                .tint(model.shuffleSettings.enabled ? Theme.Palette.accent : nil)
+            }
         }
     }
 

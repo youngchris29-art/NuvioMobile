@@ -10,6 +10,7 @@ import SharedCore
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published private(set) var skipIntroEnabled = true
+    @Published private(set) var episodeShuffleAvailable = false
     /// Upstream 199c5882: segment types the player skips automatically, as `AutoSkipSegmentType`
     /// stored values (empty by default — nothing auto-skips until the user opts in).
     @Published private(set) var autoSkipSegmentTypes: Set<String> = []
@@ -118,6 +119,7 @@ final class SettingsViewModel: ObservableObject {
     private var searchStateWatcher: FlowWatcher?
     private var amoledWatcher: FlowWatcher?
     private var recentSearchesWatcher: FlowWatcher?
+    private var episodeShuffleWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -145,6 +147,12 @@ final class SettingsViewModel: ObservableObject {
             self.preferredAudioLanguage = state.preferredAudioLanguage
             self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
             self.pauseOverlayEnabled = state.pauseOverlayEnabled
+        }
+
+        EpisodeShuffleRepository.shared.ensureLoaded()
+        episodeShuffleWatcher = FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let profile = emitted as? EpisodeShuffleProfile else { return }
+            self.episodeShuffleAvailable = profile.available
         }
 
         // Upstream 7c1c6578: mirror `SearchHistoryRepository.enabled` (a bare `StateFlow<Boolean>`,
@@ -258,12 +266,21 @@ final class SettingsViewModel: ObservableObject {
         searchStateWatcher?.cancel(); searchStateWatcher = nil
         amoledWatcher?.cancel(); amoledWatcher = nil
         recentSearchesWatcher?.cancel(); recentSearchesWatcher = nil
+        episodeShuffleWatcher?.cancel(); episodeShuffleWatcher = nil
     }
 
     // MARK: - Actions
 
     func setTheme(_ theme: AppTheme) {
         ThemeSettingsRepository.shared.setTheme(theme: theme)
+    }
+
+    /// Persists the Episode Shuffle master switch; a refused write (returns false) leaves the
+    /// published value untouched so the toggle snaps back to its stored state.
+    func setEpisodeShuffleAvailable(_ available: Bool) {
+        if !EpisodeShuffleRepository.shared.setAvailable(available: available) {
+            objectWillChange.send()
+        }
     }
 
     func setSkipIntro(_ enabled: Bool) {

@@ -40,6 +40,20 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var isPlayEnabled = true
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
+    /// Episode shuffle (upstream `23b048c3`/`da92f36c`): whether Detail offers the Shuffle button
+    /// at all — the global switch is on, the title is a series, and it has at least one numbered
+    /// episode (or shuffle is already on for it, so the user can always turn it off again).
+    @Published private(set) var shuffleOffered = false
+    /// Effective per-show settings (`EpisodeShuffleProfile.settings`: `enabled` is already false
+    /// when the global switch is off or the title isn't a series).
+    @Published private(set) var shuffleSettings = EpisodeShuffleSettings(enabled: false, includeWatched: false)
+    /// The episode shuffle picked for this show (nil while shuffle is off or nothing is left to
+    /// pick). Stable across Detail visits: see `refreshShuffle()`.
+    @Published private(set) var shufflePick: MetaVideo?
+    /// Whether `shufflePick` has a playback source (the same `PlaybackAvailability` gate as Play).
+    @Published private(set) var shufflePickPlayable = true
+    /// Shuffle is on in Unwatched mode but every episode is watched (the "caught up" state).
+    @Published private(set) var shuffleCaughtUp = false
     /// Resolved full-screen trailer (from the Trailers row); drives a player cover with sound.
     @Published var trailerPlayback: TrailerPlaybackItem?
     /// Trailer currently resolving (spinner on its row card).
@@ -61,11 +75,17 @@ final class DetailViewModel: ObservableObject {
     /// so enabling an addon (or a plugin scraper elsewhere) re-enables Play without the user
     /// having to leave and re-enter the page.
     private var addonWatcher: FlowWatcher?
+    private var shuffleWatcher: FlowWatcher?
     // Latest shared-state emissions (the exported StateFlow interface has no `value` accessor,
     // so the watchers below capture what the series primary action needs).
     private var latestProgressEntries: [WatchProgressEntry] = []
     private var latestWatchedItems: [WatchedItem] = []
+    private var latestWatchedKeys: Set<String> = []
     private var latestCwPrefs: ContinueWatchingPreferencesUiState?
+    private var latestShuffleProfile: EpisodeShuffleProfile?
+    /// The shuffle pick the user just started playing, and when (epoch ms). Once watch progress
+    /// for it lands after that moment, the pick counts as played and the next one is rolled.
+    private var pendingShufflePlay: (videoId: String, season: Int?, episode: Int?, sinceMs: Int64)?
     private var didRequestTrailer = false
     private var didRequestComments = false
     private var didRequestRatings = false
@@ -134,7 +154,10 @@ final class DetailViewModel: ObservableObject {
         WatchProgressRepository.shared.refreshEpisodeProgress(contentId: id, forceRefresh: false)
         watchedWatcher = FlowWatcherKt.watch(WatchedRepository.shared.uiState) { [weak self] emitted in
             guard let self else { return }
-            if let state = emitted as? WatchedUiState { self.latestWatchedItems = state.items }
+            if let state = emitted as? WatchedUiState {
+                self.latestWatchedItems = state.items
+                self.latestWatchedKeys = state.watchedKeys
+            }
             self.refreshFlags()
         }
         libraryWatcher = FlowWatcherKt.watch(LibraryRepository.shared.uiState) { [weak self] _ in
@@ -155,6 +178,13 @@ final class DetailViewModel: ObservableObject {
         addonWatcher = FlowWatcherKt.watch(AddonRepository.shared.uiState) { [weak self] _ in
             self?.refreshFlags()
         }
+        // Episode shuffle: the per-profile settings (global switch + per-show enable/mode).
+        EpisodeShuffleRepository.shared.ensureLoaded()
+        shuffleWatcher = FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] emitted in
+            guard let self else { return }
+            if let profile = emitted as? EpisodeShuffleProfile { self.latestShuffleProfile = profile }
+            self.refreshFlags()
+        }
         refreshFlags()
 
         MetaDetailsRepository.shared.load(type: type, id: id)
@@ -167,6 +197,7 @@ final class DetailViewModel: ObservableObject {
         progressWatcher?.cancel(); progressWatcher = nil
         cwPrefsWatcher?.cancel(); cwPrefsWatcher = nil
         addonWatcher?.cancel(); addonWatcher = nil
+        shuffleWatcher?.cancel(); shuffleWatcher = nil
         trailerVideoURL = nil
         trailerVideoId = nil
         didRequestTrailer = false
@@ -444,8 +475,162 @@ final class DetailViewModel: ObservableObject {
         isWatched = WatchedRepository.shared.isWatched(id: id, type: type, season: nil, episode: nil)
         isSaved = LibraryRepository.shared.isSaved(id: id, type: type)
         watchedEpisodeKeys = computeWatchedEpisodeKeys()
+        refreshShuffle()
         seriesAction = computeSeriesAction()
         isPlayEnabled = computeIsPlayEnabled()
+    }
+
+    // MARK: - Episode shuffle
+
+    /// Title types the shared `EpisodeShuffleProfile.settings` accepts (upstream's set).
+    private static let shuffleContentTypes: Set<String> = ["series", "tv", "show", "tvshow"]
+
+    /// Upstream bumps its `visit` counter every time the Detail screen becomes active again, which
+    /// re-rolls the pick on every return. tvOS keeps ONE visit per show instead, so the shared
+    /// `EpisodeShuffle` session (a process-wide singleton keyed by profile/show/surface/mode) hands
+    /// back the same pick on every Detail visit until it is re-rolled (`reshuffle()`), played
+    /// (`pendingShufflePlay`), watched in Unwatched mode, or the settings change (`save` clears it).
+    private static let shuffleVisit: Int64 = 0
+
+    /// Recomputes every `shuffle*` published value. Called from `refreshFlags()` before
+    /// `computeSeriesAction()`, which reads the same shared session.
+    private func refreshShuffle() {
+        guard let meta, EpisodesSection.isSeriesLike(meta), let profile = latestShuffleProfile else {
+            shuffleOffered = false
+            shuffleSettings = EpisodeShuffleSettings(enabled: false, includeWatched: false)
+            clearShufflePick()
+            return
+        }
+        let settings = profile.settings(contentId: meta.id, contentType: meta.type)
+        let hasEpisodes = meta.videos.contains {
+            ($0.season?.intValue ?? 0) > 0 && ($0.episode?.intValue ?? 0) > 0
+        }
+        shuffleOffered = profile.available
+            && Self.shuffleContentTypes.contains(meta.type.lowercased())
+            && (settings.enabled || hasEpisodes)
+        shuffleSettings = settings
+
+        let profileId = ProfileRepository.shared.activeProfileId
+        let shuffle = EpisodeShuffleRepository.shared.shuffle
+        guard settings.enabled else {
+            // Upstream: with shuffle off the Detail pick is forgotten, so turning it back on rolls anew.
+            shuffle.clearSelection(profileId: profileId, contentId: meta.id, surface: .detail)
+            pendingShufflePlay = nil
+            clearShufflePick()
+            return
+        }
+        consumePlayedShufflePick(meta: meta, profileId: profileId)
+
+        let watched = ShuffleEpisodeStateKt.watchedShuffleEpisodes(
+            contentId: meta.id, contentType: meta.type, videos: meta.videos, watchedKeys: latestWatchedKeys
+        )
+        let progress = ShuffleEpisodeStateKt.shuffleEpisodeProgress(contentId: meta.id, entries: latestProgressEntries)
+        // Same arguments `shufflePrimaryAction` passes, so both read the same session selection.
+        let pick = shuffle.select(
+            profileId: profileId, contentId: meta.id, videos: meta.videos,
+            includeWatched: settings.includeWatched, watched: watched, progress: progress,
+            surface: .detail, current: nil, visit: Self.shuffleVisit, preferredVideoId: nil
+        )
+        shufflePick = pick
+        if let pick {
+            shufflePickPlayable = PlaybackAvailability.companion.current(type: type).canPlay(
+                type: type, videoId: pick.id, parentMetaId: id,
+                seasonNumber: pick.season, episodeNumber: pick.episode
+            )
+            shuffleCaughtUp = false
+        } else {
+            shufflePickPlayable = false
+            // Caught up vs nothing to shuffle at all: probe the All pool on a THROWAWAY session so
+            // the shared one's history and selections stay untouched.
+            shuffleCaughtUp = !settings.includeWatched && EpisodeShuffle().select(
+                profileId: profileId, contentId: meta.id, videos: meta.videos,
+                includeWatched: true, watched: watched, progress: progress,
+                surface: .detail, current: nil, visit: Self.shuffleVisit, preferredVideoId: nil
+            ) != nil
+        }
+    }
+
+    private func clearShufflePick() {
+        shufflePick = nil
+        shufflePickPlayable = true
+        shuffleCaughtUp = false
+    }
+
+    /// Once watch progress for the pick the user started lands (written after the play began),
+    /// that pick is spent: drop the selection so the next `select` rolls a new episode.
+    private func consumePlayedShufflePick(meta: MetaDetails, profileId: Int32) {
+        guard let pending = pendingShufflePlay else { return }
+        // Progress may be keyed by a playback id rather than the addon video id, so a matching
+        // season/episode under this show counts too.
+        let played = latestProgressEntries.contains { entry in
+            guard entry.lastUpdatedEpochMs >= pending.sinceMs else { return false }
+            if entry.videoId == pending.videoId { return true }
+            guard entry.parentMetaId == meta.id || entry.parentMetaId == id,
+                  let season = pending.season, let episode = pending.episode else { return false }
+            return entry.seasonNumber?.intValue == season && entry.episodeNumber?.intValue == episode
+        }
+        guard played else { return }
+        pendingShufflePlay = nil
+        EpisodeShuffleRepository.shared.shuffle.clearSelection(profileId: profileId, contentId: meta.id, surface: .detail)
+    }
+
+    /// Detail is launching `action` (the Play button or the shuffle sheet). If it is the current
+    /// shuffle pick, remember it so the pick re-rolls once it has actually been played.
+    func noteSeriesPlayStarted(_ action: SeriesPrimaryAction) {
+        guard shuffleSettings.enabled, let pick = shufflePick,
+              pick.id == action.videoId
+                || (pick.season?.intValue == action.seasonNumber?.intValue
+                    && pick.episode?.intValue == action.episodeNumber?.intValue) else { return }
+        pendingShufflePlay = (
+            action.videoId, pick.season?.intValue, pick.episode?.intValue,
+            Int64(Date().timeIntervalSince1970 * 1000)
+        )
+    }
+
+    /// The pick as a playable series action — exactly what `shufflePrimaryAction` builds for it.
+    func shufflePickAction() -> SeriesPrimaryAction? {
+        guard let pick = shufflePick else { return nil }
+        return SeriesPrimaryAction(
+            label: pick.playLabel(), videoId: pick.id,
+            seasonNumber: pick.season, episodeNumber: pick.episode,
+            episodeTitle: pick.title, episodeThumbnail: pick.thumbnail,
+            resumePositionMs: nil
+        )
+    }
+
+    /// "Shuffle Again": forget the current pick; the session keeps its history, so the picker
+    /// avoids the episode just shown.
+    func reshuffle() {
+        guard let meta else { return }
+        EpisodeShuffleRepository.shared.shuffle.clearSelection(
+            profileId: ProfileRepository.shared.activeProfileId, contentId: meta.id, surface: .detail
+        )
+        pendingShufflePlay = nil
+        refreshFlags()
+    }
+
+    func setShuffleEnabled(_ enabled: Bool) {
+        saveShuffle(EpisodeShuffleSettings(enabled: enabled, includeWatched: shuffleSettings.includeWatched))
+    }
+
+    func setShuffleIncludeWatched(_ includeWatched: Bool) {
+        saveShuffle(EpisodeShuffleSettings(enabled: shuffleSettings.enabled, includeWatched: includeWatched))
+    }
+
+    /// Writes through the shared repository. A failed write changes nothing: the published
+    /// settings still reflect storage, so any control bound to them snaps back.
+    @discardableResult
+    func saveShuffle(_ settings: EpisodeShuffleSettings) -> Bool {
+        guard let meta else { return false }
+        let profileId = ProfileRepository.shared.activeProfileId
+        guard EpisodeShuffleRepository.shared.save(contentId: meta.id, settings: settings, profileId: profileId) else {
+            return false
+        }
+        // The uiState emission arrives on the next main-queue turn; read the saved profile now so
+        // the sheet's controls don't flicker back for a frame.
+        latestShuffleProfile = EpisodeShuffleRepository.shared.readProfile(profileId: profileId)
+        refreshFlags()
+        return true
     }
 
     /// C (upstream `972109f9`): mirrors the shared `PlaybackAvailability` gate mobile's Compose
@@ -472,8 +657,23 @@ final class DetailViewModel: ObservableObject {
     /// Mirrors mobile's Detail screen: shared `seriesPrimaryAction` over the full progress +
     /// watched state (resume beats next-up; first released episode — or the addon's
     /// behaviorHints.defaultVideoId — for a fresh series).
+    ///
+    /// Episode shuffle on for this show: the shared `shufflePrimaryAction` instead (an in-progress
+    /// episode still resumes first; otherwise the shuffle pick, or nil when nothing is left to pick
+    /// — no sequential fallback, matching upstream).
     private func computeSeriesAction() -> SeriesPrimaryAction? {
         guard let meta, EpisodesSection.isSeriesLike(meta) else { return nil }
+        if shuffleSettings.enabled {
+            return meta.shufflePrimaryAction(
+                profileId: ProfileRepository.shared.activeProfileId,
+                settings: shuffleSettings,
+                entries: latestProgressEntries,
+                watchedKeys: latestWatchedKeys,
+                visit: Self.shuffleVisit,
+                shuffle: EpisodeShuffleRepository.shared.shuffle,
+                surface: .detail
+            )
+        }
         return meta.seriesPrimaryAction(
             entries: latestProgressEntries,
             watchedItems: latestWatchedItems,
@@ -512,6 +712,7 @@ final class DetailViewModel: ObservableObject {
         progressWatcher?.cancel()
         cwPrefsWatcher?.cancel()
         addonWatcher?.cancel()
+        shuffleWatcher?.cancel()
     }
 }
 

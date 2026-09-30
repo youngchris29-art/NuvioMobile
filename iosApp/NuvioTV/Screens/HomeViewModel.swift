@@ -167,6 +167,9 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var sections: [HomeCatalogSection] = []
     @Published private(set) var rows: [HomeRow] = []
     @Published private(set) var continueWatching: [WatchProgressEntry] = []
+    /// Parent ids of Continue Watching series whose show has Episode Shuffle on (drives the card's
+    /// shuffle badge). Recomputed with the row and whenever the shuffle profile changes.
+    @Published private(set) var shuffleParentIds: Set<String> = []
     /// Home "Upcoming" row: next airing episode per followed show (shared
     /// `UpcomingEpisodesRepository`). Empty while the row is disabled or nothing is airing.
     @Published private(set) var upcoming: [UpcomingEpisodeItem] = []
@@ -214,6 +217,7 @@ final class HomeViewModel: ObservableObject {
     private var noSourcesWaitGeneration = 0
     private var progressWatcher: FlowWatcher?
     private var progressSourceWatcher: FlowWatcher?
+    private var episodeShuffleWatcher: FlowWatcher?
     private var traktSettingsWatcher: FlowWatcher?
     /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
     /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
@@ -751,6 +755,14 @@ final class HomeViewModel: ObservableObject {
             self.refreshContinueWatching()
         }
 
+        // Episode Shuffle: the master switch or a show's toggle changes the badge without touching
+        // any progress entry.
+        EpisodeShuffleRepository.shared.ensureLoaded()
+        episodeShuffleWatcher = FlowWatcherKt.watch(EpisodeShuffleRepository.shared.uiState) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.refreshShuffleParentIds()
+        }
+
         // BUG-75: the row's two gates (the active provider's dropped-show filter and its recency
         // window) live OUTSIDE `uiState` — switching progress source or changing the Trakt
         // continue-watching days cap changes what the row should contain without touching a single
@@ -839,6 +851,17 @@ final class HomeViewModel: ObservableObject {
         continueWatching = WatchProgressRepository.shared.continueWatchingRow(
             limit: ContinueWatchingRowKt.ContinueWatchingRowScanLimit
         )
+        refreshShuffleParentIds()
+    }
+
+    /// Assigned only on change so an unrelated emission does not re-render (and disturb focus in)
+    /// the Continue Watching shelf.
+    private func refreshShuffleParentIds() {
+        let ids = Set(continueWatching.compactMap { entry -> String? in
+            ShuffleNextEpisode.shared.isEnabled(contentId: entry.parentMetaId, contentType: entry.parentMetaType)
+                && entry.parentMetaType != "movie" ? entry.parentMetaId : nil
+        })
+        if ids != shuffleParentIds { shuffleParentIds = ids }
     }
 
     /// The real teardown. Idempotent (`started` gates it) so a hard `stop()` on an already-stopped
@@ -859,6 +882,7 @@ final class HomeViewModel: ObservableObject {
         noSourcesSyncWatcher?.cancel()
         progressWatcher?.cancel()
         progressSourceWatcher?.cancel()
+        episodeShuffleWatcher?.cancel()
         traktSettingsWatcher?.cancel()
         collectionsWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
@@ -868,6 +892,7 @@ final class HomeViewModel: ObservableObject {
         noSourcesSyncWatcher = nil
         progressWatcher = nil
         progressSourceWatcher = nil
+        episodeShuffleWatcher = nil
         traktSettingsWatcher = nil
         lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil

@@ -1253,6 +1253,7 @@ struct HomeView: View {
                         entries: model.continueWatching,
                         onSelect: { resume = ResumeTarget(entry: $0) },
                         onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
+                        shuffleParentIds: model.shuffleParentIds,
                         // UX-7 (see reportRowFocus for the gating rationale).
                         onItemFocusChange: { entry in
                             reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
@@ -4022,6 +4023,8 @@ struct ContinueWatchingRow: View {
     let entries: [WatchProgressEntry]
     let onSelect: (WatchProgressEntry) -> Void
     let onRemove: (WatchProgressEntry) -> Void
+    /// Parent ids of series with Episode Shuffle on — those cards get a small shuffle badge.
+    var shuffleParentIds: Set<String> = []
     /// UX-7: reports the focused card's entry (or nil) so Home can drive the hero from it.
     /// Defaulted — nil is a plain no-op. Gating and backdrop prefetch live in the callback
     /// (HomeView.reportRowFocus), not here.
@@ -4061,6 +4064,20 @@ struct ContinueWatchingRow: View {
                                     progress: fraction(entry),
                                     overlayLeading: episodeCode(entry)
                                 )
+                                // Drawn over the artwork's top-right corner: an overlay never
+                                // affects the card's layout size or focus behaviour.
+                                .overlay(alignment: .topTrailing) {
+                                    if shuffleParentIds.contains(entry.parentMetaId) {
+                                        Image(systemName: "shuffle")
+                                            .font(Theme.Font.caption.weight(.semibold))
+                                            .foregroundStyle(Color.white.opacity(0.92))
+                                            .padding(.horizontal, Theme.Spacing.xs)
+                                            .padding(.vertical, Theme.Spacing.xxs)
+                                            .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.Radius.chip))
+                                            .padding(Theme.Spacing.sm)
+                                            .allowsHitTesting(false)
+                                    }
+                                }
                                 .padding(.top, cardTopReach)
                                 .padding(.bottom, cardBottomReach)
                                 // BUG-87/89 (rc11): transparent floor on the REVEALED frame — 0 for

@@ -109,11 +109,23 @@ final class NextEpisodeEngine: ObservableObject {
             self.settings = value
         }
 
-        nextVideo = Self.resolveNextAiredEpisode(
-            episodes: context.episodes,
-            currentSeason: context.season,
-            currentEpisode: context.episode
-        )
+        if ShuffleNextEpisode.shared.isEnabled(contentId: context.parentMetaId, contentType: context.contentType) {
+            // Shuffle is on for this show: a nil pick means nothing is left, NOT "play the next
+            // one in order" (upstream keeps no sequential fallback), so up-next stays hidden.
+            nextVideo = ShuffleNextEpisode.shared.nextPlaybackEpisode(
+                contentId: context.parentMetaId,
+                contentType: context.contentType,
+                videos: context.episodes,
+                currentSeason: context.season.map { KotlinInt(int: Int32($0)) },
+                currentEpisode: context.episode.map { KotlinInt(int: Int32($0)) }
+            )
+        } else {
+            nextVideo = Self.resolveNextAiredEpisode(
+                episodes: context.episodes,
+                currentSeason: context.season,
+                currentEpisode: context.episode
+            )
+        }
         if let next = nextVideo {
             nextEpisodeTitle = Self.episodeTitle(next)
         }

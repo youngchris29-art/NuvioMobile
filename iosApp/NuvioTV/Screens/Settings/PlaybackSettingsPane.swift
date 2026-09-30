@@ -46,6 +46,11 @@ struct PlaybackSettingsPane: View {
                     autoSkipRow(.movieCredits, title: String(localized: "Auto-Skip Movie Credits"),
                                 subtitle: String(localized: "Skip movie credits, keeping post-credits scenes."))
                 }
+                SettingsToggleRow(
+                    title: String(localized: "Episode Shuffle"),
+                    subtitle: String(localized: "Show a Shuffle button on series pages."),
+                    isOn: Binding(get: { model.episodeShuffleAvailable }, set: { model.setEpisodeShuffleAvailable($0) })
+                )
             }
             SettingsToggleRow(
                 title: String(localized: "Match Content Frame Rate"),
