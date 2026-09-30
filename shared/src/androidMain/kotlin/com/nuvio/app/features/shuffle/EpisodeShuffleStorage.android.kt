@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.nuvio.app.core.storage.ProfileScopedKey
 
-internal actual object EpisodeShuffleStorage {
+actual object EpisodeShuffleStorage {
     private var preferences: SharedPreferences? = null
 
     fun initialize(context: Context) {

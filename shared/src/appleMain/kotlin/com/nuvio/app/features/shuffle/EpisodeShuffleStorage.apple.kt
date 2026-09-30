@@ -3,7 +3,7 @@ package com.nuvio.app.features.shuffle
 import com.nuvio.app.core.storage.ProfileScopedKey
 import platform.Foundation.NSUserDefaults
 
-internal actual object EpisodeShuffleStorage {
+actual object EpisodeShuffleStorage {
     actual fun load(profileId: Int): String? =
         NSUserDefaults.standardUserDefaults.stringForKey(ProfileScopedKey.of("episode_shuffle", profileId))
 

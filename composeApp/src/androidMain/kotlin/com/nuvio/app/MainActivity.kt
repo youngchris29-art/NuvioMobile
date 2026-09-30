@@ -47,6 +47,7 @@ import com.nuvio.app.features.search.DiscoverSelectionStorage
 import com.nuvio.app.features.search.SearchHistoryStorage
 import com.nuvio.app.features.settings.SentrySettingsStorage
 import com.nuvio.app.features.settings.ThemeSettingsStorage
+import com.nuvio.app.features.shuffle.EpisodeShuffleStorage
 import com.nuvio.app.features.simkl.SimklAuthStorage
 import com.nuvio.app.features.simkl.SimklSyncStorage
 import com.nuvio.app.features.trakt.TraktAuthStorage
@@ -90,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         LibraryStorage.initialize(applicationContext)
         WatchedStorage.initialize(applicationContext)
         MetaScreenSettingsStorage.initialize(applicationContext)
+        EpisodeShuffleStorage.initialize(applicationContext)
         HomeCatalogSettingsStorage.initialize(applicationContext)
         PlayerSettingsStorage.initialize(applicationContext)
         PlayerTrackPreferenceStorage.initialize(applicationContext)
