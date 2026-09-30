@@ -1,6 +1,7 @@
 package com.nuvio.app.core.storage
 
 import com.nuvio.app.core.build.AppFeaturePolicy
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
 import com.nuvio.app.core.sync.SyncManager
 import com.nuvio.app.core.sync.ProfileSettingsSync
 import com.nuvio.app.features.addons.AddonRepository
@@ -71,6 +72,7 @@ internal object LocalAccountDataCleaner {
         CollectionRepository.clearLocalState()
         ThemeSettingsRepository.clearLocalState()
         PosterCardStyleRepository.clearLocalState()
+        CustomPosterUrlRepository.clearLocalState()
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()

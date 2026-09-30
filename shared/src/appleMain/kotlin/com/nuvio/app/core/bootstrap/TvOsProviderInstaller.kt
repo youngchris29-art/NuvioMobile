@@ -6,6 +6,7 @@ import com.nuvio.app.core.build.FeaturePolicy
 import com.nuvio.app.core.build.FeaturePolicyProvider
 import com.nuvio.app.core.network.ServerAuthRequirement
 import com.nuvio.app.core.network.ServerConfigurationRepository
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
 import com.nuvio.app.core.profile.ActiveProfileIdProvider
 import com.nuvio.app.core.profile.ActiveProfileProvider
 import com.nuvio.app.core.sync.ProfileSettingsSync
@@ -247,6 +248,7 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         FolderDetailRepository.clear()
         ThemeSettingsRepository.clearLocalState()
         PosterCardStyleRepository.clearLocalState()
+        CustomPosterUrlRepository.clearLocalState()
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
@@ -390,6 +392,9 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("addons") { AddonRepository.onProfileChanged(profileIndex) }
         step("theme") { ThemeSettingsRepository.onProfileChanged() }
         step("posterCardStyle") { PosterCardStyleRepository.onProfileChanged() }
+        // Upstream 13adcdd4: reload the pattern before the Home/catalog clears below, so the
+        // incoming profile's rows are overlaid with ITS pattern, not the previous profile's.
+        step("customPosters") { CustomPosterUrlRepository.onProfileChanged() }
         step("cardDepthStyle") { CardDepthStyleRepository.onProfileChanged() }
         step("playerSettings") { PlayerSettingsRepository.onProfileChanged() }
         step("streamBadges") { StreamBadgeSettingsRepository.onProfileChanged() }

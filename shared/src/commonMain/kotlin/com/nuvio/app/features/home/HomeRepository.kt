@@ -11,6 +11,10 @@ import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.enabledAddons
 import com.nuvio.app.features.catalog.CatalogTarget
 import com.nuvio.app.features.catalog.fetchCatalogPage
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.reapplyCustomPosterUrls
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.collection.Collection
 import com.nuvio.app.features.collection.CollectionRepository
 import com.nuvio.app.features.collection.CollectionSource
@@ -901,8 +905,15 @@ object HomeRepository {
         val tmdb = TmdbSettingsRepository.snapshot()
         // snapshot() first so a not-yet-loaded settings store cannot report an empty signature.
         HomeCatalogSettingsRepository.snapshot()
+        // Custom poster overlay: a pattern or per-screen toggle change must republish Home, or the
+        // rows keep the previous overlay until something else moves the signature.
+        CustomPosterUrlRepository.ensureLoaded()
         return buildString {
             append(HomeCatalogSettingsRepository.uiState.value.signature)
+            append("|poster=")
+            append(CustomPosterUrlRepository.pattern.value)
+            append(':')
+            append(CustomPosterScreen.toKeys(CustomPosterUrlRepository.enabledScreens.value).sorted().joinToString(separator = ","))
             append("|tmdb=")
             append(tmdb.enabled)
             append(':')
@@ -1003,8 +1014,17 @@ object HomeRepository {
         val snapshot = HomeCatalogSettingsRepository.snapshot()
         val preferences = snapshot.preferences
         val todayIsoDate = if (snapshot.hideUnreleasedContent) CurrentDateProvider.todayIsoDate() else null
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.HOME)
+        // Custom poster overlay (HOME screen). reapply restores from rawPosterUrl first, so cached
+        // sections that already carry an older pattern's URLs are re-resolved, never compounded.
+        // Runs BEFORE the release filter (which only drops whole items) on every list below.
+        fun HomeCatalogSection.withPosterOverlay(): HomeCatalogSection =
+            copy(items = items.reapplyCustomPosterUrls(posterPattern))
         fun HomeCatalogSection.withReleaseFilter(): HomeCatalogSection =
-            if (todayIsoDate == null) this else filterReleasedItems(todayIsoDate)
+            withPosterOverlay().let { overlaid ->
+                if (todayIsoDate == null) overlaid else overlaid.filterReleasedItems(todayIsoDate)
+            }
 
         val sections = currentDefinitions
             .sortedBy { definition -> preferences[definition.key]?.order ?: Int.MAX_VALUE }
@@ -1623,7 +1643,8 @@ object HomeRepository {
             maxItems = HOME_CATALOG_PREVIEW_FETCH_LIMIT,
             forceRefresh = forceRefresh,
         )
-        val items = page.items
+        CustomPosterUrlRepository.ensureLoaded()
+        val items = page.items.withCustomPosterUrls(CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.HOME))
         if (items.isEmpty()) {
             return HomeCatalogSection(
                 key = key,

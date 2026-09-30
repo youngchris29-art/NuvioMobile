@@ -6,6 +6,9 @@ import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.core.ui.ToastControllerProvider
 import com.nuvio.app.features.library.sync.LibrarySyncAdapter
 import com.nuvio.app.features.library.sync.SupabaseLibrarySyncAdapter
@@ -32,6 +35,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,6 +88,16 @@ object LibraryRepository {
                         refreshLibraryProviderAsync(provider)
                     }
                 }
+        }
+        // Upstream db6c3128: republish when the custom poster pattern or its per-screen toggles change.
+        syncScope.launch {
+            combine(
+                CustomPosterUrlRepository.pattern,
+                CustomPosterUrlRepository.enabledScreens,
+            ) { _, _ -> Unit }
+                .distinctUntilChanged()
+                .drop(1)
+                .collectLatest { publish() }
         }
         TrackingProviderRegistry.libraryProviders().forEach { provider ->
             syncScope.launch {
@@ -539,12 +554,16 @@ object LibraryRepository {
     private fun publish() {
         val localSnapshot = localState.snapshot()
         val sourceMode = effectiveLibrarySourceMode()
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.LIBRARY)
         activeLibraryProvider(sourceMode)?.let { provider ->
             val providerSnapshot = provider.snapshot()
             val newUiState = LibraryUiState(
                 sourceMode = sourceMode,
-                items = providerSnapshot.items,
-                sections = providerSnapshot.sections,
+                items = providerSnapshot.items.withCustomPosterUrls(posterPattern),
+                sections = providerSnapshot.sections.map { section ->
+                    section.copy(items = section.items.withCustomPosterUrls(posterPattern))
+                },
                 isLoaded = providerSnapshot.hasLoaded,
                 isLoading = providerSnapshot.isLoading,
                 errorMessage = providerSnapshot.errorMessage,
@@ -570,8 +589,10 @@ object LibraryRepository {
 
         val newUiState = LibraryUiState(
             sourceMode = LibrarySourceMode.LOCAL,
-            items = items,
-            sections = sections,
+            items = items.withCustomPosterUrls(posterPattern),
+            sections = sections.map { section ->
+                section.copy(items = section.items.withCustomPosterUrls(posterPattern))
+            },
             isLoaded = localSnapshot.hasLoaded,
             isLoading = localSnapshot.isLoading,
             errorMessage = null,

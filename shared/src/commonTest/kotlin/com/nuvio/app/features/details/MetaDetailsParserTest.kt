@@ -332,4 +332,22 @@ class MetaDetailsParserTest {
         }
         return MetaDetailsParser.parse(payload.toString()).videos.single()
     }
+
+    @Test
+    fun `parse falls back to landscape poster when background is missing`() {
+        val result = MetaDetailsParser.parse(
+            """
+            {
+              "meta": {
+                "id": "tt1",
+                "type": "movie",
+                "name": "Movie",
+                "landscapePoster": "https://img/landscape.jpg"
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals("https://img/landscape.jpg", result.background)
+    }
 }

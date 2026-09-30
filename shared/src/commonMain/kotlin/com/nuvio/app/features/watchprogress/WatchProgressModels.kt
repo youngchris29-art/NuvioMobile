@@ -222,6 +222,8 @@ data class ContinueWatchingItem(
     val isNewSeasonRelease: Boolean = false,
     val shufflePlayback: Boolean = false,
     val isWatched: Boolean = false,
+    val rawPosterUrl: String? = null,
+    val rawBackgroundUrl: String? = null,
 )
 
 data class ContinueWatchingPreferencesUiState(

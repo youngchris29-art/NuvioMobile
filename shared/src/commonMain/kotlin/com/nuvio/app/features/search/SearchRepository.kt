@@ -3,6 +3,9 @@ package com.nuvio.app.features.search
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.localizedMediaTypeLabel
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.addons.AddonCatalog
 import com.nuvio.app.features.addons.AddonExtraProperty
 import com.nuvio.app.features.addons.ManagedAddon
@@ -744,7 +747,9 @@ object SearchRepository {
             search = query,
             forceRefresh = forceRefresh,
         ).withUnreleasedFilter()
-        val items = page.items
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.SEARCH)
+        val items = page.items.withCustomPosterUrls(posterPattern)
         require(items.isNotEmpty()) {
             resourceString("No search results returned for $catalogName.", StringKey.search_error_no_results_for_catalog, catalogName)
         }
@@ -813,6 +818,9 @@ object SearchRepository {
                         page.items
                     } else {
                         mergeCatalogItems(latest.items, page.items)
+                    }.let { items ->
+                        CustomPosterUrlRepository.ensureLoaded()
+                        items.withCustomPosterUrls(CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.SEARCH))
                     }
                     val supportsPagination = selectedCatalog.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
                     val loadedNewItems = reset || mergedItems.size > latest.items.size

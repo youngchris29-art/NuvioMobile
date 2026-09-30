@@ -16,6 +16,9 @@ import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.trakt.TraktAuthRepository
 import com.nuvio.app.features.trakt.TraktConnectionMode
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.simkl.SimklAuthRepository
 import com.nuvio.app.features.simkl.SimklRelatedRepository
 import com.nuvio.app.features.simkl.shouldUseSimklMoreLikeThis
@@ -241,9 +244,12 @@ object MetaDetailsRepository {
 
         val metaScreenSettingsFingerprint = buildMetaScreenSettingsFingerprint(MdbListSettingsRepository.snapshot())
         val cachedEntry = cachedMetaByRequestKey[requestKey] ?: return null
-        return cachedEntry.metaScreenMeta
+        // Upstream 75296263: run cached meta through the same overlay + release filter as load(),
+        // so returning to a title keeps its custom posters.
+        val cachedMeta = cachedEntry.metaScreenMeta
             ?.takeIf { cachedEntry.metaScreenSettingsFingerprint == metaScreenSettingsFingerprint }
             ?: cachedEntry.baseMeta
+        return cachedMeta.withUnreleasedFilter()
     }
 
     /**
@@ -636,13 +642,18 @@ object MetaDetailsRepository {
         }
 
     private fun MetaDetails.withUnreleasedFilter(): MetaDetails {
-        if (!HomeUnreleasedContentPolicyProvider.policy.hideUnreleasedContent()) return this
+        // Custom poster overlay (DETAILS screen) runs first; it keeps rawPosterUrl, so the
+        // release filter below only ever drops whole items.
+        CustomPosterUrlRepository.ensureLoaded()
+        val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.DETAILS)
+        val base = withCustomPosterUrls(posterPattern)
+        if (!HomeUnreleasedContentPolicyProvider.policy.hideUnreleasedContent()) return base
         val todayIsoDate = CurrentDateProvider.todayIsoDate()
-        val releasedMoreLikeThis = moreLikeThis.filterReleasedItems(todayIsoDate)
-        return copy(
+        val releasedMoreLikeThis = base.moreLikeThis.filterReleasedItems(todayIsoDate)
+        return base.copy(
             moreLikeThis = releasedMoreLikeThis,
-            moreLikeThisSource = moreLikeThisSource.takeIf { releasedMoreLikeThis.isNotEmpty() },
-            collectionItems = collectionItems.filterReleasedItems(todayIsoDate),
+            moreLikeThisSource = base.moreLikeThisSource.takeIf { releasedMoreLikeThis.isNotEmpty() },
+            collectionItems = base.collectionItems.filterReleasedItems(todayIsoDate),
         )
     }
 

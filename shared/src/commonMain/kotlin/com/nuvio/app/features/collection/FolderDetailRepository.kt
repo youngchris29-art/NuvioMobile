@@ -2,6 +2,9 @@ package com.nuvio.app.features.collection
 
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import co.touchlab.kermit.Logger
+import com.nuvio.app.core.poster.CustomPosterScreen
+import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.poster.withCustomPosterUrls
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.catalog.CATALOG_PAGE_SIZE
@@ -443,12 +446,16 @@ object FolderDetailRepository {
                 // hold the registry lock so a concurrent replacement can't slip between them.
                 kotlinx.atomicfu.locks.synchronized(loadJobsLock) {
                 if (loadJobs[index] !== registeredJob) return@onSuccess
+                // Upstream c7d23c04: COLLECTIONS overlay on the folder's items. The pattern is read
+                // outside the atomic updateTab lambda so the lambda stays pure (it may retry).
+                CustomPosterUrlRepository.ensureLoaded()
+                val posterPattern = CustomPosterUrlRepository.patternForScreen(CustomPosterScreen.COLLECTIONS)
                 updateTab(index) { tab ->
                     val mergedItems = if (reset) {
                         page.items
                     } else {
                         mergeCatalogItems(tab.items, page.items)
-                    }
+                    }.withCustomPosterUrls(posterPattern)
                     val supportsPagination = tab.supportsPagination || page.rawItemCount >= CATALOG_PAGE_SIZE
                     val loadedNewItems = reset || mergedItems.size > tab.items.size
                     val paginationState = nextCatalogPaginationState(
