@@ -613,6 +613,9 @@ object MetaDetailsRepository {
         val tmdbSettings = TmdbSettingsRepository.snapshot()
         return buildString {
             append("${settings.enabled}:${settings.apiKey.trim()}:$providers")
+            // Upstream 3f0d07be: account-backed ratings are keyed by the account scope (only
+            // while no personal key overrides it).
+            append("|mdblist_account=${settings.accountScope.takeUnless { settings.hasApiKey }}")
             append("|more_like=${traktSettings.moreLikeThisSource}:$traktAuthMode")
             val simklActive = isSimklMoreLikeThisActive(traktSettings.moreLikeThisSource)
             append(":simkl=$simklActive")

@@ -402,6 +402,28 @@ class ProviderCredentialModelsTest {
         assertTrue(local.restrictedTo(emptySet()).values.isEmpty())
     }
 
+    @Test
+    fun connectedMdbListAccountNeverEntersTheCredentialSnapshot() {
+        // Upstream 3f0d07be: account-backed ratings. Only the personal key override is a synced
+        // credential; the account scope (and its Keychain token) must not change the snapshot.
+        fun snapshot(mdbList: MdbListSettings) = ProviderCredentialSync.buildSnapshot(
+            profileId = 1,
+            debrid = DebridSettings(),
+            tmdb = TmdbSettings(),
+            mdbList = mdbList,
+            player = PlayerSettingsUiState(),
+        )
+        val scope = com.nuvio.app.features.mdblist.MdbListAuthScope(profileId = 1, generation = 3)
+
+        assertEquals(snapshot(MdbListSettings()), snapshot(MdbListSettings(accountScope = scope)))
+        val withKey = snapshot(MdbListSettings(apiKey = "K", accountScope = scope))
+        assertEquals(snapshot(MdbListSettings(apiKey = "K")), withKey)
+        assertEquals(
+            listOf(ProviderCredentialValue("mdblist", "api_key", "K")),
+            withKey.values.filter { it.provider == "mdblist" },
+        )
+    }
+
     private fun credentialSnapshot(tmdb: TmdbSettings) = ProviderCredentialSync.buildSnapshot(
         profileId = 1,
         debrid = DebridSettings(),

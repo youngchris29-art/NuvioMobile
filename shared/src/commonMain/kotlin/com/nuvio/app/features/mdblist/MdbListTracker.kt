@@ -58,8 +58,8 @@ data class MdbListAccountUiState(
  * the sync repository (watched history, playback, dropped) and library service, and the
  * watched/progress/library/history/scrobble ports registered in [register].
  *
- * Not ported: upstream 3f0d07be's `ratings` client (the fork's ratings still use the API-key
- * `MdbListMetadataService`).
+ * [ratings] (upstream 3f0d07be) serves `MdbListMetadataService`: ratings through the connected
+ * account, or the personal API key when one is set.
  *
  * Fork deviations from upstream (each marked inline):
  *  - network engine built lazily, so touching this object on the JVM test target (which has no
@@ -118,6 +118,7 @@ object MdbListTracker : TrackingAuthProvider {
     private val http = MdbListHttpClient(MdbListHttpEngine { request -> networkEngine.execute(request) })
     val auth = MdbListAuthRepository(http, configuration, store)
     internal val api = MdbListApiClient(http, auth, store)
+    internal val ratings = MdbListRatingsClient(api, store)
     val sync = MdbListSyncRepository(PlatformMdbListSyncStorage, store, api, activeProfile, coroutineScope)
     val library = MdbListLibraryService(api, sync, store, activeProfile, coroutineScope)
     private val history = MdbListHistoryService(api, sync)
@@ -226,10 +227,12 @@ object MdbListTracker : TrackingAuthProvider {
         } catch (error: Exception) {
             log.e(error) { "Failed to remove MDBList credentials for profile $profileId" }
         }
-        val scope = store.scope()
         coroutineScope.launch {
             try {
-                PlatformMdbListSyncStorage.remove(profileId) { store.checkScope(scope) }
+                // Fork: no scope check. This deletes ANOTHER profile's file; tying it to the
+                // current store scope let a profile switch or generation bump before the launch
+                // ran cancel the removal and leave the deleted slot's snapshot on disk.
+                PlatformMdbListSyncStorage.remove(profileId) {}
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {

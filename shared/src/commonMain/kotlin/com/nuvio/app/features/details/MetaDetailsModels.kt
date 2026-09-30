@@ -54,6 +54,8 @@ enum class MoreLikeThisSource {
 data class MetaExternalRating(
     val source: String,
     val value: Double,
+    // Upstream 177f4b5c: Rotten Tomatoes certified-fresh / verified-hot (from MDBList keywords).
+    val isCertified: Boolean = false,
 )
 
 data class MetaTrailer(
