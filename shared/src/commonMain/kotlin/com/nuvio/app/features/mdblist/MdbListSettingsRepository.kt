@@ -149,7 +149,9 @@ object MdbListSettingsRepository {
     private fun observeAccount() {
         if (observingAccount) return
         observingAccount = true
-        scope.launch {
+        // Main dispatcher: every read/write of the unsynchronized settings fields (setters and
+        // loadFromDisk run on main) stays on one thread, so an emission can't publish stale state.
+        scope.launch(Dispatchers.Main) {
             // No drop(1): a state change between ensureLoaded() and subscription must not be lost,
             // and an unchanged re-publish is a no-op (StateFlow equality).
             MdbListTracker.auth.state.collect {

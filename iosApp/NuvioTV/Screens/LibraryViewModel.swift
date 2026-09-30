@@ -56,8 +56,10 @@ final class LibraryViewModel: ObservableObject {
         availableSortOptions = LibraryDisplaySettingsKt.availableLibrarySortOptions(sourceMode: sourceMode)
         if sourceMode == .mdblist {
             // MDBList items carry per-list ranks (`listRanks`), which only the listKey overload
-            // reads. tvOS has no per-list tabs, so rank by the first section — MDBList's watchlist
-            // (its tabs start with it; `MDBLIST_WATCHLIST_KEY` itself is Kotlin-internal).
+            // reads. tvOS has no per-list tabs, so ranks come from the first NON-EMPTY section:
+            // the watchlist whenever it has items, since the shared snapshot drops empty tabs
+            // (`MDBLIST_WATCHLIST_KEY` itself is Kotlin-internal). When the watchlist is empty no
+            // item carries a watchlist rank, so whichever list comes first gives the same order.
             // providerOrder stays nil: MDBList's added-order cache has no public shared accessor.
             items = LibraryDisplaySettingsKt.sortLibraryItems(
                 items: rawItems,

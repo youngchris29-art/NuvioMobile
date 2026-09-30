@@ -1,6 +1,10 @@
 package com.nuvio.app.features.mdblist
 
 import com.nuvio.app.features.details.MetaDetails
+import com.nuvio.app.features.details.MetaExternalRating
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 
 object MdbListMetadataService {
     const val PROVIDER_IMDB = "imdb"
@@ -56,15 +60,30 @@ object MdbListMetadataService {
         val mediaType = toMdbListMediaType(meta.type)
         val enabledProviders = settings.enabledProvidersInPriorityOrder()
 
-        val ratings = repository.getRatings(
-            imdbId = imdbId,
-            mediaType = mediaType,
-            credential = credential,
-            providers = enabledProviders,
-        )
+        val ratings = swallowRepositoryCancellation(emptyList<MetaExternalRating>()) {
+            repository.getRatings(
+                imdbId = imdbId,
+                mediaType = mediaType,
+                credential = credential,
+                providers = enabledProviders,
+            )
+        }
 
         return meta.copy(externalRatings = ratings)
     }
+
+    /**
+     * The ratings repository signals "account changed / cache cleared" with a CancellationException
+     * that is not a cancellation of the caller. Swallow it (returning [fallback]) so enrichment
+     * completes instead of dying silently; a real cancellation of the caller, including a
+     * withTimeout timeout, still propagates.
+     */
+    internal suspend fun <T> swallowRepositoryCancellation(fallback: T, block: suspend () -> T): T =
+        try {
+            block()
+        } catch (error: CancellationException) {
+            if (currentCoroutineContext().isActive) fallback else throw error
+        }
 
     fun clearCache() {
         if (ratingsRepository.isInitialized()) repository.clearCache()

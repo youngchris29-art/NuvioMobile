@@ -192,18 +192,58 @@ enum TrackerScrobblePolicy {
     }
 }
 
+/// Ordering rules for one tracker scrobble session, free of player and Kotlin types so they are
+/// unit tested (`TrackerScrobbleSequencerTests`). `start` and `stop` are fire-and-forget on the
+/// Kotlin side and Simkl's path is not serialized, so a stop issued while the start is still in
+/// flight is deferred until the start completes: a stop can never overtake its start.
+struct TrackerScrobbleSequencer {
+    private(set) var requested = false
+    private(set) var closed = false
+    private(set) var startInFlight = false
+    private(set) var pendingStop: Double?
+
+    /// True when the caller should dispatch `start` now. Refused once stopped or already started.
+    mutating func start() -> Bool {
+        guard !requested, !closed else { return false }
+        requested = true
+        startInFlight = true
+        return true
+    }
+
+    /// A percent to dispatch as `stop` now, or nil when nothing should go out yet (stop before any
+    /// start, a repeated stop, or a stop deferred behind an in-flight start).
+    mutating func stop(percent: Double) -> Double? {
+        guard !closed else { return nil }
+        closed = true
+        guard requested else { return nil }
+        if startInFlight {
+            pendingStop = percent
+            return nil
+        }
+        return percent
+    }
+
+    /// Called when the start dispatch completes; returns a deferred stop percent to dispatch now.
+    mutating func startCompleted() -> Double? {
+        startInFlight = false
+        defer { pendingStop = nil }
+        return pendingStop
+    }
+}
+
 /// Start-once/stop-once scrobble session for every connected tracker except Trakt, dispatched
 /// through the shared `dispatchTrackingScrobble` (the same fan-out `TrackingScrobbleCoordinator`
 /// uses; the coordinator itself is not called because it would also hit Trakt). Before this,
 /// tvOS playback reached Simkl and MDBList only through the local Continue Watching row, so a
 /// title watched on the TV never updated those services. Mirrors the Trakt driver's lifecycle:
 /// no session for a short placeholder, stop at 0% if one is detected late, and the providers that
-/// received `start` are the ones that receive `stop`.
+/// received `start` are the ones that receive `stop`. Ordering guarantee: `stop` is never
+/// dispatched before the `start` dispatch has completed; a stop that arrives while the start is in
+/// flight is held and sent from the start's completion (`TrackerScrobbleSequencer`).
 @MainActor
 final class TrackerScrobbleSession {
     private let context: PlaybackContext
-    private var requested = false
-    private var closed = false
+    private var sequencer = TrackerScrobbleSequencer()
     private var profileId: Int32 = 0
     private var media: TrackingMediaReference?
     private var recipients: [TrackingScrobbler] = []
@@ -211,13 +251,12 @@ final class TrackerScrobbleSession {
     init(context: PlaybackContext) { self.context = context }
 
     func start(positionSec: Double, durationSec: Double) {
-        guard !requested, !closed else { return }
         guard TrackerScrobblePolicy.shouldOpen(durationSec: durationSec) else { return }
-        requested = true
+        guard sequencer.start() else { return }
         TrackingProviderRegistry.shared.ensureLoaded()
         let targets = TrackingProviderRegistry.shared.connectedScrobblers()
             .filter { TrackerScrobblePolicy.receivesFanout(storageId: $0.providerId.storageId) }
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else { _ = sequencer.startCompleted(); return }
         let media = TrackingMediaKt.buildTrackingMediaReference(
             contentType: context.contentType,
             parentMetaId: context.parentMetaId,
@@ -231,19 +270,29 @@ final class TrackerScrobbleSession {
         self.media = media
         self.recipients = targets
         self.profileId = ActiveProfileProvider.shared.activeProfileId
-        dispatch(.start, percent: TrackerScrobblePolicy.percent(positionSec: positionSec, durationSec: durationSec))
+        dispatch(.start, percent: TrackerScrobblePolicy.percent(positionSec: positionSec, durationSec: durationSec)) { [weak self] in
+            Task { @MainActor in self?.startFinished() }
+        }
+    }
+
+    private func startFinished() {
+        if let percent = sequencer.startCompleted() {
+            dispatch(.stop, percent: percent)
+            media = nil
+            recipients = []
+        }
     }
 
     func stop(positionSec: Double, durationSec: Double) {
-        guard !closed else { return }
-        closed = true
+        let percent = TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec)
+        guard let now = sequencer.stop(percent: percent) else { return }
         guard media != nil, !recipients.isEmpty else { return }
-        dispatch(.stop, percent: TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec))
+        dispatch(.stop, percent: now)
         media = nil
         recipients = []
     }
 
-    private func dispatch(_ action: TrackingScrobbleAction, percent: Double) {
+    private func dispatch(_ action: TrackingScrobbleAction, percent: Double, completion: (@Sendable () -> Void)? = nil) {
         guard let media else { return }
         TrackingScrobbleCoordinatorKt.dispatchTrackingScrobble(
             scrobblers: recipients,
@@ -256,6 +305,7 @@ final class TrackerScrobbleSession {
                 print("[TrackerScrobble] \(failure.providerId.storageId) \(action.wireValue) failed: \(failure.cause)")
             }
             #endif
+            completion?()
         }
     }
 }
