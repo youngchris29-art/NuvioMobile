@@ -1489,6 +1489,7 @@ struct HomeView: View {
         // bounds and anti-oscillation argument: `PinnedRowSettle` in BrowseComponents.
         .modifier(PinnedRowSettleRevealModifier(enabled: settleReveal,
                                                compression: pinnedPlan.compression,
+                                               showsCTA: heroCarouselActive,
                                                onSettle: settleProbeSink))
         // BUG-30 A/B knob (see `homeScrollEdgeHard`). Not attached unless the knob is set, so
         // the shipped tree is unchanged.
@@ -2089,10 +2090,12 @@ struct HomeView: View {
             // Compact (pinned) trims ~100pt so the rows viewport below can fit a reach-
             // extended focus frame plus the engine's reveal margin — see the Theme comment
             // on heroCarouselHeightPinned (device round 6). FEAT-15's panel keeps the SAME
-            // fixed height as the pinned carousel — the freed CTA slot is redistributed to the
-            // synopsis INSIDE the panel (see HomeHeroForeground), never given back to the rows,
-            // so the pinned geometry the `heroPinned*` reach constants were tuned against
-            // (device rounds 4–7) is identical in both modes.
+            // fixed height for THIS frame — the freed CTA slot is redistributed to the synopsis
+            // INSIDE the panel (see HomeHeroForeground). The pinned HEADER is not the same height,
+            // though (corrected 2026-09-30): the panel has no `HeroPageDots` child below this
+            // frame, so the header loses `Spacing.sm + HeroPageDots.height` (38pt) and the rows
+            // viewport gains it. `Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)` accounts for
+            // that (455 carousel, 493 panel); device evidence `hero viewport live=561 expected=522`.
             // Wave 10: in pinned mode the hero yields `pinnedHeroCompression` so the focused row
             // fits below the clip edge at the canonical rest. The inner slots below shrink by the
             // same amount (see `HomeHeroForeground.compression`), so this is a graceful compression
@@ -2177,9 +2180,10 @@ struct HomeView: View {
             //
             // The mount is gated on `heroCarouselActive`, not on nothing at all: FEAT-15's focus
             // panel (Show Hero off) has never rendered dots, and mounting an invisible slot there
-            // would take ~30pt off the pinned rows viewport that Wave 10's budget was tuned
-            // against. Panel mode stays byte-identical; the carousel's own load boundary is the
-            // one this fixes. Deliberately still OUTSIDE the fixed 352pt frame either way.
+            // would take 38pt (`Spacing.sm + HeroPageDots.height`) off its pinned rows viewport.
+            // The two forms therefore have different viewport budgets (455 carousel, 493 panel —
+            // `Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)`, 2026-09-30); the carousel's own
+            // load boundary is the one this fixes. Deliberately still OUTSIDE the fixed 352pt frame.
             if heroCarouselActive {
                 let dotsVisible = heroItems.count > 1 && focusModel.focusedItem == nil
                 HeroPageDots(count: max(heroItems.count, 1),
@@ -5511,6 +5515,13 @@ struct HeroPageDots: View {
     let count: Int
     let index: Int
 
+    /// Capsule height of each dot.
+    nonisolated static let dotHeight: CGFloat = 10
+    /// The laid-out height of this view: a dot plus the vertical padding. Read by
+    /// `Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)`, whose panel-form budget is taller by
+    /// exactly this plus the header's `Spacing.sm` (2026-09-30), so the two cannot drift.
+    nonisolated static let height: CGFloat = dotHeight + 2 * Theme.Spacing.xs
+
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
             ForEach(0..<count, id: \.self) { i in
@@ -5518,7 +5529,7 @@ struct HeroPageDots: View {
                     .fill(i == index
                           ? Theme.Palette.textPrimary
                           : Theme.Palette.textSecondary.opacity(0.45))
-                    .frame(width: i == index ? 34 : 10, height: 10)
+                    .frame(width: i == index ? 34 : 10, height: Self.dotHeight)
             }
         }
         .padding(.horizontal, Theme.Spacing.md)

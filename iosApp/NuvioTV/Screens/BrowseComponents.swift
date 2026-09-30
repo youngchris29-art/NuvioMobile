@@ -716,13 +716,19 @@ enum PinnedRowTitle {
     ///
     /// Small and Medium compute to exactly 0, so their layout is bit-identical to Wave 9 — see the
     /// arithmetic table on `Theme.Size.heroPinnedRowsSettledCushion`.
-    nonisolated static func pinnedHeroCompression(rowArtworkHeight: CGFloat) -> CGFloat {
+    ///
+    /// `showsCTA` (2026-09-30) picks the viewport budget of the hero form on screen — the panel's is
+    /// 38pt taller (`Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)`). `PinnedRowGeometry.plan`
+    /// deliberately calls this with `showsCTA: true` for its SCOPE GATE (which Poster Sizes enter
+    /// the structural fit at all) and with the real form for its unsatisfiable fallback.
+    nonisolated static func pinnedHeroCompression(rowArtworkHeight: CGFloat,
+                                                  showsCTA: Bool) -> CGFloat {
         guard !heroCompressionDisabledByKnob else { return 0 }
         let requiredRowExtent = Theme.Spacing.lg
             + Theme.Size.heroPinnedRowTopPad
             + rowArtworkHeight
             + Theme.Size.heroPinnedRowsSettledCushion
-        let raw = max(requiredRowExtent - Theme.Size.heroPinnedRowsViewportBudget, 0)
+        let raw = max(requiredRowExtent - Theme.Size.heroPinnedRowsViewportBudget(showsCTA: showsCTA), 0)
         let capped = min(raw, Theme.Size.heroPinnedCompressionCap)
         if raw > capped, cappedCompressionLogged != rowArtworkHeight {
             cappedCompressionLogged = rowArtworkHeight
@@ -759,9 +765,12 @@ enum PinnedRowTitle {
     /// Verification for the constant `heroPinnedRowsViewportBudget` rests on: the live rows
     /// viewport should be exactly `budget + compression`. Logged once per distinct disagreement so
     /// a drifted platform metric shows up in a device log instead of silently mis-sizing the hero.
-    nonisolated static func verifyViewportBudget(liveViewport: CGFloat, compression: CGFloat) {
+    nonisolated static func verifyViewportBudget(liveViewport: CGFloat, compression: CGFloat,
+                                                 showsCTA: Bool) {
         guard HomeGeometryProbe.enabled else { return }
-        let expected = Theme.Size.heroPinnedRowsViewportBudget + compression
+        // 2026-09-30: the budget depends on the hero form (the panel has no page-dots row).
+        let budget = Theme.Size.heroPinnedRowsViewportBudget(showsCTA: showsCTA)
+        let expected = budget + compression
         // Positive confirmation for device passes (FEAT-30 spike onward): one line per distinct
         // live viewport, so a log with no MISMATCH line is "matched", not "never measured".
         let liveKey = liveViewport.rounded()
@@ -776,7 +785,7 @@ enum PinnedRowTitle {
         viewportBudgetMismatchLogged = key
         NSLog("[HomeScrollProbe] hero %@",
               "viewport BUDGET MISMATCH live=\(Int(liveViewport.rounded())) expected=\(Int(expected.rounded()))"
-                + " (budget \(Int(Theme.Size.heroPinnedRowsViewportBudget)) + compression \(Int(compression.rounded())))")
+                + " (budget \(Int(budget)) + compression \(Int(compression.rounded())) showsCTA=\(showsCTA ? 1 : 0))")
     }
 
     nonisolated(unsafe) private static var viewportBudgetMismatchLogged: CGFloat?
@@ -3959,6 +3968,9 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
     /// observes the rows scroll geometry, and is only enabled in the pinned container — can verify
     /// the constant the compression is sized against. Changes no behaviour.
     var compression: CGFloat = 0
+    /// 2026-09-30: which hero form is on screen, so the budget check uses that form's budget
+    /// (`Theme.Size.heroPinnedRowsViewportBudget(showsCTA:)`). Default is the carousel.
+    var showsCTA: Bool = true
     /// DEBUG-only sink for the harness oracle (`debug_pinned`); nil in release, where nothing is
     /// written anywhere and the whole path is a static-storage update plus one scroll request.
     var onSettle: ((String) -> Void)? = nil
@@ -3991,7 +4003,8 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                     // layout, it just says so in the log if the platform's rows viewport ever
                     // stops matching `budget + compression`.
                     PinnedRowTitle.verifyViewportBudget(liveViewport: sample.viewportHeight,
-                                                        compression: compression)
+                                                        compression: compression,
+                                                        showsCTA: showsCTA)
                     // nil = a debounce is already armed and this sample is within the creep
                     // tolerance of it, so there is nothing to schedule (see `noteScroll`).
                     guard let token = PinnedRowSettle.noteScroll(sample) else { return }

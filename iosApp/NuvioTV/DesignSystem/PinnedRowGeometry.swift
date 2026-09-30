@@ -457,7 +457,9 @@ enum PinnedRowGeometry {
         let captionChrome = captionVisible ? PinnedRowTitle.cardLockupCaptionChrome : 0
         let baseTopReach = Theme.Size.heroPinnedRowTopPad
         let baseBottomReach = Theme.Size.heroPinnedRowBottomReach
-        let budget = Theme.Size.heroPinnedRowsViewportBudget
+        // 2026-09-30: the rows viewport budget of the hero form on screen — the panel's header has
+        // no page-dots row, so its budget is 38pt taller (455 carousel, 493 panel).
+        let budget = Theme.Size.heroPinnedRowsViewportBudget(showsCTA: showsCTA)
         let key = regimeKey(posterHeight: posterHeight,
                             captionVisible: captionVisible,
                             showsCTA: showsCTA,
@@ -488,7 +490,16 @@ enum PinnedRowGeometry {
         // Wave 10's number for this artwork, and the scope gate in one read: it is 0 at exactly the
         // Poster Sizes whose rows already fit the pre-BUG-87 extent rule, and 0 everywhere when
         // `debug.pinnedHeroCompressionOff` is set.
-        let legacyCompression = PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: artwork)
+        //
+        // 2026-09-30: two reads now that the budget depends on the hero form. The SCOPE GATE stays
+        // keyed to the carousel budget, so the population that enters the structural fit (Large,
+        // Medium+) is the same in both forms — with the panel's 493 budget Medium+ would fall
+        // outside the gate and lose the reach hold, resting at its old reach. The unsatisfiable /
+        // closed-gate fallback uses the form's own number, so its viewport is the real one.
+        let scopeGate = PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: artwork, showsCTA: true)
+        let legacyCompression = showsCTA
+            ? scopeGate
+            : PinnedRowTitle.pinnedHeroCompression(rowArtworkHeight: artwork, showsCTA: false)
 
         func settled(compression: CGFloat, topReach: CGFloat, bottomReach: CGFloat) -> Plan {
             let viewport = budget + compression
@@ -508,7 +519,7 @@ enum PinnedRowGeometry {
                                 topReach: baseTopReach,
                                 bottomReach: baseBottomReach)
 
-        guard legacyCompression > 0 else {
+        guard scopeGate > 0 else {
             noteIfShort(unchanged)
             return unchanged
         }

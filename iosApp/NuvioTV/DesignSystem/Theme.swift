@@ -743,7 +743,20 @@ enum Theme {
         /// back would be a layout feedback loop on the single most regression-prone surface in the
         /// app. `PinnedRowTitle.pinnedHeroCompression` logs loudly if the live `vh` ever disagrees
         /// with `budget + compression`, so the assumption cannot rot silently.
-        static let heroPinnedRowsViewportBudget: CGFloat = 455
+        ///
+        /// 2026-09-30: that 455 is the CAROUSEL form's number, so the constant became a function of
+        /// the hero form. The pinned header is a `VStack(spacing: Spacing.sm)` whose fixed-height
+        /// hero frame is followed by `HeroPageDots` ONLY when the carousel is active (mounted at
+        /// opacity 0 when hidden, so it always takes layout). FEAT-15's focus panel (`showsCTA ==
+        /// false`, Show Hero OFF) drops that child and its spacing, so its header is
+        /// `Spacing.sm + HeroPageDots.height` = 12 + 26 = 38pt shorter and its rows viewport 38pt
+        /// taller. Device evidence (walkhf, Large + Hide Titles + panel): `hero viewport live=561
+        /// expected=522`, and rows rested at −26..−28 — the rest law's prediction for the
+        /// resulting restRange 41.7 (−26.4). Deriving the extra from `HeroPageDots.height` keeps the
+        /// two from drifting.
+        nonisolated static func heroPinnedRowsViewportBudget(showsCTA: Bool) -> CGFloat {
+            showsCTA ? 455 : 455 + Spacing.sm + HeroPageDots.height
+        }
 
         // MARK: FEAT-30 — sidebar chrome
 
