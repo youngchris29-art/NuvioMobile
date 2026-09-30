@@ -128,6 +128,15 @@ enum RemoteSetupWebPage {
       <input type="password" id="mdblist-key" autocapitalize="off" autocorrect="off">
     </div>
   </section>
+
+  <section>
+    <h2>Custom Posters</h2>
+    <p class="hint">Optional. Use a poster service such as RPDB for artwork. Placeholders like {id}, {type} and {shape} are replaced for each title. The pattern is only sent when you enter one.</p>
+    <div class="keyrow">
+      <label>Custom poster URL pattern</label>
+      <input type="text" id="poster-pattern" placeholder="https://api.ratingposterdb.com/YOUR-KEY/imdb/poster-default/{id}.jpg" autocapitalize="off" autocorrect="off">
+    </div>
+  </section>
 </main>
 <div class="footer">
   <div class="inner">
@@ -163,6 +172,7 @@ async function load() {
     rows = state.rows || [];
     badgePacks = state.badgePacks || [];
     if (state.mdblistKeySet) el("mdblist-key").placeholder = "Saved on TV — enter to replace";
+    if (state.posterPatternSet) el("poster-pattern").placeholder = "Saved on TV — enter to replace";
     render();
     setStatus("Connected to " + (state.deviceName || "Apple TV"), "ok");
     el("apply").disabled = false;
@@ -255,6 +265,8 @@ async function apply() {
   };
   const mdbl = el("mdblist-key").value.trim();
   if (mdbl) payload.mdblistKey = mdbl;
+  const posterPattern = el("poster-pattern").value.trim();
+  if (posterPattern) payload.posterPattern = posterPattern;
   if (stagedBadgeUrls.length) payload.badgeUrls = stagedBadgeUrls.slice();
 
   try {
@@ -280,6 +292,7 @@ async function poll(id, tries) {
     if (status === "confirmed") {
       setStatus("Applied on the TV ✓", "ok");
       el("mdblist-key").value = "";
+      el("poster-pattern").value = "";
       stagedBadgeUrls = [];
       setTimeout(load, 1500);
       el("apply").disabled = false;

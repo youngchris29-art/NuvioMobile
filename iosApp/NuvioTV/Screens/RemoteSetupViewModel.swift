@@ -34,6 +34,7 @@ final class RemoteSetupViewModel: ObservableObject {
     private var rowWatcher: FlowWatcher?
     private var mdbListWatcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
+    private var posterPatternWatcher: FlowWatcher?
 
     // Cached snapshots (updated by the watchers, read when building state JSON + applying diffs).
     private var addons: [ManagedAddon] = []
@@ -41,6 +42,9 @@ final class RemoteSetupViewModel: ObservableObject {
     // Upstream 60ee0160: TMDB has no user-facing key any more (bundled at compile time), so
     // there's nothing for the remote-setup page to report or accept here.
     private var mdbListKeySet = false
+    /// Whether a custom poster pattern is saved. Only the flag goes to the web page; the pattern
+    /// itself may embed an API key and is never echoed or logged.
+    private var posterPatternSet = false
     /// Source URLs of currently imported stream badge packs (shown read-only on the web page).
     private var badgePackUrls: [String] = []
 
@@ -120,7 +124,13 @@ final class RemoteSetupViewModel: ObservableObject {
             self.badgePackUrls = state.rules.imports.map(\.sourceUrl)
             self.pushState()
         }
+        posterPatternWatcher = FlowWatcherKt.watch(CustomPosterUrlRepository.shared.pattern) { [weak self] emitted in
+            guard let self, let value = emitted as? String else { return }
+            self.posterPatternSet = !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            self.pushState()
+        }
         AddonRepository.shared.initialize()
+        CustomPosterUrlRepository.shared.ensureLoaded()
         MdbListSettingsRepository.shared.ensureLoaded()
         StreamBadgeSettingsRepository.shared.ensureLoaded()
     }
@@ -130,6 +140,8 @@ final class RemoteSetupViewModel: ObservableObject {
         rowWatcher?.cancel()
         mdbListWatcher?.cancel()
         badgeWatcher?.cancel()
+        posterPatternWatcher?.cancel()
+        posterPatternWatcher = nil
         addonWatcher = nil
         rowWatcher = nil
         mdbListWatcher = nil
@@ -170,6 +182,7 @@ final class RemoteSetupViewModel: ObservableObject {
         let addons: [StateAddon]
         let rows: [StateRow]
         let mdblistKeySet: Bool
+        let posterPatternSet: Bool
         let badgePacks: [String]
     }
 
@@ -193,6 +206,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 )
             },
             mdblistKeySet: mdbListKeySet,
+            posterPatternSet: posterPatternSet,
             badgePacks: badgePackUrls
         )
         if let data = try? JSONEncoder().encode(snapshot) {
@@ -208,6 +222,15 @@ final class RemoteSetupViewModel: ObservableObject {
         if let key = proposal.mdblistKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             MdbListSettingsRepository.shared.setApiKey(value: key)
             MdbListSettingsRepository.shared.setEnabled(value: true)
+        }
+        // Custom poster pattern: blank clears. Never logged (may contain an API key).
+        if let raw = proposal.posterPattern {
+            let pattern = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if pattern.isEmpty {
+                CustomPosterUrlRepository.shared.clearPattern()
+            } else {
+                CustomPosterUrlRepository.shared.setPattern(pattern: pattern)
+            }
         }
         // Badge pack imports (async fetch+parse; the badge watcher refreshes the page state as
         // each one lands). Already-imported URLs are re-fetched/updated by the shared repo.
@@ -314,6 +337,11 @@ final class RemoteSetupViewModel: ObservableObject {
         }
 
         if proposal.mdblistKey?.isEmpty == false { parts.append(String(localized: "MDBList key set")) }
+        if let posterPattern = proposal.posterPattern {
+            parts.append(posterPattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? String(localized: "Custom poster pattern cleared")
+                : String(localized: "Custom poster pattern set"))
+        }
         if let badgeCount = proposal.badgeUrls?.count, badgeCount > 0 {
             parts.append(String(localized: "\(badgeCount) badge pack\(badgeCount == 1 ? "" : "s") imported"))
         }

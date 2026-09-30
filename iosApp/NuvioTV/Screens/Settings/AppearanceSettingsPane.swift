@@ -285,6 +285,16 @@ struct AppearanceSettingsPane: View {
             )
         }
 
+        SettingsSection(String(localized: "Custom Posters")) {
+            SettingsLinkRow(
+                title: String(localized: "Custom Posters"),
+                subtitle: String(localized: "Use a poster service like RPDB for artwork."),
+                systemImage: "photo.on.rectangle"
+            ) {
+                CustomPostersSettingsView()
+            }
+        }
+
         SettingsSection(String(localized: "Card Depth")) {
             CardDepthControls(
                 style: model.cardDepth,

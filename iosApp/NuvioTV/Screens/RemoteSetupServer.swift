@@ -37,6 +37,8 @@ final class RemoteSetupServer {
         /// New API key; only sent when the user typed one (never echoes the saved key). TMDB has
         /// no key entry any more (upstream 60ee0160 bundles the key at compile time).
         let mdblistKey: String?
+        /// Custom poster URL pattern. Blank clears it. May embed an API key: never logged.
+        let posterPattern: String?
         /// Stream badge pack JSON URLs to import (staged additions only; removal happens on TV).
         let badgeUrls: [String]?
     }
