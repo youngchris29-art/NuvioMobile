@@ -5082,40 +5082,6 @@
         }
       }
     },
-    "Clears the saved MDBList key and turns ratings off.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Löscht den gespeicherten MDBList-Schlüssel und deaktiviert Bewertungen."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Borra la clave MDBList guardada y desactiva las calificaciones."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Efface la clé MDBList enregistrée et désactive les notes."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cancella la chiave MDBList salvata e disattiva i voti."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Xóa API key MDBList đã lưu và tắt điểm đánh giá."
-          }
-        }
-      }
-    },
     "Clears the saved TMDB key and turns enrichment off.": {
       "localizations": {
         "de": {
@@ -31309,6 +31275,142 @@
           "stringUnit": {
             "state": "translated",
             "value": "MDBList trả về phản hồi không mong đợi."
+          }
+        }
+      }
+    },
+    "Using your connected MDBList account.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verwendet dein verbundenes MDBList-Konto."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usando tu cuenta de MDBList conectada."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utilisation de votre compte MDBList connecté."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uso del tuo account MDBList connesso."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đang dùng tài khoản MDBList đã kết nối của bạn."
+          }
+        }
+      }
+    },
+    "Connect MDBList in Account & Services, or enter a key.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbinde MDBList unter Konto & Dienste oder gib einen Schlüssel ein."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecta MDBList en Cuenta y servicios, o introduce una clave."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connectez MDBList dans Compte et services, ou saisissez une clé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connetti MDBList in Account e servizi, oppure inserisci una chiave."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kết nối MDBList trong Tài khoản & dịch vụ, hoặc nhập một key."
+          }
+        }
+      }
+    },
+    "A personal key overrides the account.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein persönlicher Schlüssel überschreibt das Konto."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una clave personal anula la cuenta."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une clé personnelle remplace le compte."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una chiave personale sostituisce l'account."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key cá nhân sẽ ghi đè tài khoản."
+          }
+        }
+      }
+    },
+    "Clears the saved MDBList key.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Löscht den gespeicherten MDBList-Schlüssel."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Borra la clave de MDBList guardada."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Efface la clé MDBList enregistrée."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancella la chiave MDBList salvata."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xóa API key MDBList đã lưu."
           }
         }
       }

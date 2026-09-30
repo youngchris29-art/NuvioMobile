@@ -37,6 +37,10 @@ final class SettingsViewModel: ObservableObject {
     /// the shared MetaDetailsRepository applies the enrichment itself on every load.
     @Published private(set) var mdbListEnabled = false
     @Published private(set) var mdbListHasKey = false
+    @Published private(set) var mdbListHasPersonalKey = false
+    @Published private(set) var mdbListAccountConnected = false
+    /// Account connected and no personal key: ratings are served through the account.
+    @Published private(set) var mdbListUsingAccount = false
     /// Subtitle appearance (applied by the player on file load). Nil until settings load.
     @Published private(set) var subtitleStyle: SubtitleStyleState?
     /// Preferred track languages (player auto-selects a matching track on load).
@@ -182,6 +186,9 @@ final class SettingsViewModel: ObservableObject {
             guard let self, let state = emitted as? MdbListSettings else { return }
             self.mdbListEnabled = state.enabled
             self.mdbListHasKey = state.hasApiKey
+            self.mdbListHasPersonalKey = state.hasPersonalKey
+            self.mdbListAccountConnected = state.isAccountConnected
+            self.mdbListUsingAccount = state.usingAccount
         }
 
         PosterCardStyleRepository.shared.ensureLoaded()
@@ -386,8 +393,9 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func clearMdbListKey() {
+        // Key-only: ratings stay enabled when a connected account can serve them; the shared
+        // `isActive` covers the no-key/no-account case.
         MdbListSettingsRepository.shared.setApiKey(value: "")
-        MdbListSettingsRepository.shared.setEnabled(value: false)
     }
 
     /// Unconditional now that the key is bundled — no more no-op-while-blank gate.

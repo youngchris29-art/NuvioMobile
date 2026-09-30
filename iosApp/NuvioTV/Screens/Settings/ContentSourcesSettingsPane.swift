@@ -72,25 +72,47 @@ struct ContentSourcesSettingsPane: View {
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
 
-                if model.mdbListHasKey {
-                    SettingsToggleRow(
-                        title: String(localized: "MDBList Ratings"),
-                        subtitle: String(localized: "API key saved"),
-                        isOn: Binding(
-                            get: { model.mdbListEnabled },
-                            set: { model.setMdbListEnabled($0) }
-                        )
+                SettingsToggleRow(
+                    title: String(localized: "MDBList Ratings"),
+                    subtitle: model.mdbListHasPersonalKey ? String(localized: "API key saved") : nil,
+                    isOn: Binding(
+                        get: { model.mdbListEnabled },
+                        set: { model.setMdbListEnabled($0) }
                     )
+                )
+                if model.mdbListHasPersonalKey {
                     SettingsDestructiveRow(
                         title: String(localized: "Remove API Key"),
-                        subtitle: String(localized: "Clears the saved MDBList key and turns ratings off."),
+                        subtitle: String(localized: "Clears the saved MDBList key."),
                         systemImage: "trash"
                     ) {
                         model.clearMdbListKey()
                     }
                 } else {
-                    DebridKeyEntryRow(providerName: "MDBList", placeholder: String(localized: "MDBList API key")) {
+                    if model.mdbListUsingAccount {
+                        Text("Using your connected MDBList account.")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .frame(maxWidth: 1100, alignment: .leading)
+                    } else {
+                        Text("Connect MDBList in Account & Services, or enter a key.")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .frame(maxWidth: 1100, alignment: .leading)
+                    }
+                    DebridKeyEntryRow(
+                        providerName: "MDBList",
+                        placeholder: model.mdbListUsingAccount
+                            ? String(localized: "Personal API Key (Optional)")
+                            : String(localized: "MDBList API key")
+                    ) {
                         model.saveMdbListKey($0)
+                    }
+                    if model.mdbListUsingAccount {
+                        Text("A personal key overrides the account.")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .frame(maxWidth: 1100, alignment: .leading)
                     }
                 }
             }
