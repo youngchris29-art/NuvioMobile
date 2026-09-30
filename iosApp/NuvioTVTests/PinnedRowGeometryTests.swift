@@ -721,7 +721,7 @@ final class PinnedRowGeometryTests: XCTestCase {
                                               landscapeRows: false,
                                               mode: Self.noZoomHolding,
                                               titleHeight: Self.systemTitle).regimeKey,
-                       "M330c1p0r0z1t38h1")
+                       "M330c1p0r0z1t38h1rt4")
         // The ring is not part of the key, because it is not part of the plan.
         XCTAssertEqual(PinnedRowGeometry.regimeKey(posterHeight: Self.medium,
                                                    captionVisible: true,
@@ -763,12 +763,13 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           titleHeight: Self.systemTitle)
         XCTAssertTrue(plan.fits)
         XCTAssertEqual(plan.topReach, 86, accuracy: epsilon)
-        XCTAssertEqual(plan.compression, 70, accuracy: 0.01)
-        XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true), accuracy: epsilon)
-        XCTAssertEqual(plan.viewport, 525, accuracy: 0.01)
+        // 2026-09-30 rest target: a held regime's demand reserves `heroPinnedRowsRestTarget` (4)
+        // instead of 32, so demand 84.333 − bottom 20 − top 2 = 62.333, under the 70 cap.
+        XCTAssertEqual(plan.compression, 62.333, accuracy: 0.01)
+        XCTAssertEqual(plan.viewport, 517.333, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 513.333, accuracy: 0.01)
-        XCTAssertEqual(plan.restRange, 11.667, accuracy: 0.01)
-        XCTAssertEqual(plan.regimeKey, "L403c0p0r0z1t38h1")
+        XCTAssertEqual(plan.restRange, Theme.Size.heroPinnedRowsRestTarget, accuracy: 0.01)
+        XCTAssertEqual(plan.regimeKey, "L403c0p0r0z1t38h1rt4")
     }
 
     /// THE rationale pin for why the flag is routed through the reach floor and never through
@@ -1100,7 +1101,11 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
     /// is the OFF twin at compression 70.333 → 3 lines). The 30–36pt guard pins the System body
     /// metric's plausible range so a future font change fails loudly here instead of silently
     /// flipping which side of the 36pt-per-line assumption this shape lands on.
-    func testNoZoomReachHoldCostsTheHeroOffPanelOneSynopsisLine() {
+    ///
+    /// 2026-09-30: the rest target (`heroPinnedRowsRestTarget`) removed that cost. A held regime's
+    /// demand reserves 4 instead of 32, so the hold's compression is 68.333 (84.333 − 20 − 2) — tiers
+    /// 1+2 cover 68, the 0.333 is frame slack, tier 3 stays shut, slot 108, 3 lines.
+    func testNoZoomReachHoldKeepsTheHeroOffPanelThreeSynopsisLines() {
         XCTAssertGreaterThan(Self.systemBodyLine, 30)
         XCTAssertLessThan(Self.systemBodyLine, 36)
 
@@ -1110,12 +1115,12 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
                                              landscapeRows: false,
                                              mode: Self.noZoomHolding,
                                              titleHeight: Self.systemTitle)
-        XCTAssertEqual(holding.compression, 90.333, accuracy: 0.01)
+        XCTAssertEqual(holding.compression, 62.333, accuracy: 0.01)
         let holdingSplit = PinnedRowGeometry.HeroSlotGive.split(compression: holding.compression,
                                                                 showsCTA: false, folderHero: false)
         let holdingSlot = slotHeight(showsCTA: false, synopsisGive: holdingSplit.synopsis)
-        XCTAssertEqual(holdingSlot, 87.667, accuracy: 0.01)
-        XCTAssertEqual(lineLimit(slotHeight: holdingSlot, lineHeight: Self.systemBodyLine), 2)
+        XCTAssertEqual(holdingSlot, 108, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: holdingSlot, lineHeight: Self.systemBodyLine), 3)
 
         let off = PinnedRowGeometry.plan(posterHeight: Self.large,
                                          captionVisible: false,
@@ -1141,18 +1146,23 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
                                              showsCTA: false, landscapeRows: false,
                                              mode: Self.noZoomHolding, titleHeight: 38)
         XCTAssertEqual(holding.topReach, 86, accuracy: epsilon)
-        XCTAssertEqual(holding.compression, 37.952, accuracy: 0.01)
+        // 2026-09-30 rest target: demand 31.952 − 20 − 2 = 9.952 (was 37.952, the zoom-on number).
+        XCTAssertEqual(holding.compression, 9.952, accuracy: 0.01)
+        XCTAssertEqual(holding.restRange, Theme.Size.heroPinnedRowsRestTarget, accuracy: 0.01)
 
         let zoomOn = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
                                             showsCTA: false, landscapeRows: false,
                                             mode: Self.zoomOn, titleHeight: 38)
-        XCTAssertEqual(holding.compression, zoomOn.compression, accuracy: epsilon)
-        XCTAssertEqual(holding.regimeKey, zoomOn.regimeKey.replacingOccurrences(of: "z0", with: "z1") + "h1")
+        XCTAssertEqual(holding.regimeKey,
+                       zoomOn.regimeKey.replacingOccurrences(of: "z0", with: "z1") + "h1rt4")
 
+        // Slot 144 − 9.952 = 134.05: at least the 3 lines it had (4 on a body line ≤ 33.76pt —
+        // `lineLimit` has no cap, so the exact count follows the host's body metric).
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: holding.compression,
                                                          showsCTA: false, folderHero: false)
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
-        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
+        XCTAssertEqual(slot, 134.048, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
     }
 
     // MARK: - The three tiers
@@ -1399,11 +1409,15 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
 ///
 /// Arithmetic (Large 403.333, Hide Titles, system title 38, demand = artwork − 291 = 112.333):
 ///
-///     carousel held    bottom 44→24 (−20) ⇒ 92.333; top 88→92 (+4) ⇒ 96.333; hero min(96.333, 70) = 70
-///                      viewport 525, link 92 + 403.333 + 24 = 519.333, restRange 5.667
 ///     carousel unheld  top 88→86 (−2) ⇒ 90.333; hero 70; link 513.333, restRange 11.667
-///     panel held       hero min(96.333, 142) = 94.333 (unheld 90.333)
-///     Medium+ carousel demand 59.952 ⇒ 39.952 ⇒ +4 ⇒ 43.952 (unheld 37.952)
+///
+/// Plus the 2026-09-30 rest target: a HELD regime's demand reserves `heroPinnedRowsRestTarget` (4)
+/// in place of `Spacing.lg + settledCushion` (32), i.e. demand = artwork − 319 at Hide Titles:
+///
+///     Large carousel held  84.333 ⇒ −20 ⇒ 64.333 ⇒ +4 ⇒ 68.333 (under the 70 cap)
+///                          viewport 523.333, link 92 + 403.333 + 24 = 519.333, restRange 4
+///     Large panel held     68.333 as well ⇒ tiers 36 + 32, slack 0.333, slot 108, 3 lines
+///     Medium+ carousel     31.952 ⇒ 11.952 ⇒ 15.952; viewport 470.952, link 466.952, restRange 4
 final class PinnedRowZoomReachHoldTests: XCTestCase {
 
     private let epsilon: CGFloat = 0.001
@@ -1450,11 +1464,11 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         XCTAssertTrue(held.fits)
         XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
         XCTAssertEqual(held.bottomReach, 24, accuracy: epsilon)
-        XCTAssertEqual(held.compression, 70, accuracy: epsilon)
-        XCTAssertEqual(held.viewport, 525, accuracy: epsilon)
+        XCTAssertEqual(held.compression, 68.333, accuracy: 0.01)
+        XCTAssertEqual(held.viewport, 523.333, accuracy: 0.01)
         XCTAssertEqual(held.linkFrame, 519.333, accuracy: 0.01)
-        XCTAssertEqual(held.restRange, 5.667, accuracy: 0.01)
-        XCTAssertEqual(held.regimeKey, "L403c0p0r0z0t38hz")
+        XCTAssertEqual(held.restRange, 4, accuracy: 0.01)
+        XCTAssertEqual(held.regimeKey, "L403c0p0r0z0t38hzrt4")
     }
 
     func testHoldOffIsTodaysPlan() {
@@ -1476,8 +1490,10 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         let h1 = plan(Self.large, cta: true, mode: Self.noZoomH1)
         XCTAssertEqual(both, h1)
         XCTAssertEqual(both.topReach, 86, accuracy: epsilon)
-        XCTAssertEqual(both.restRange, 11.667, accuracy: 0.01)
-        XCTAssertEqual(both.regimeKey, "L403c0p0r0z1t38h1")
+        // h1 is a held regime too, so it takes the rest target: 11.667 → 4 (compression 62.333).
+        XCTAssertEqual(both.compression, 62.333, accuracy: 0.01)
+        XCTAssertEqual(both.restRange, 4, accuracy: 0.01)
+        XCTAssertEqual(both.regimeKey, "L403c0p0r0z1t38h1rt4")
     }
 
     func testOpenSansIsCappedAt92() {
@@ -1488,7 +1504,7 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         let held = plan(Self.large, cta: true, mode: Self.zoomOnHeld, title: Self.openSansTitle)
         XCTAssertTrue(held.fits)
         XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
-        XCTAssertEqual(held.compression, 70, accuracy: epsilon)
+        XCTAssertEqual(held.compression, 68.333, accuracy: 0.01)
         // Unheld Open Sans still takes the 88 cap.
         XCTAssertEqual(plan(Self.large, cta: true, mode: Self.zoomOn, title: Self.openSansTitle).topReach,
                        88, accuracy: epsilon)
@@ -1500,33 +1516,72 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         XCTAssertEqual(PinnedRowGeometry.topReachFloor(lift: 20, titleHeight: Self.openSansTitle), 88, accuracy: epsilon)
     }
 
-    func testLargePanelKeepsTwoSynopsisLinesWithTheHold() {
+    func testLargePanelKeepsThreeSynopsisLinesWithTheHold() {
         XCTAssertGreaterThan(Self.systemBodyLine, 30)
         XCTAssertLessThan(Self.systemBodyLine, 36)
         let held = plan(Self.large, cta: false, mode: Self.zoomOnHeld)
         XCTAssertTrue(held.fits)
         XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
-        XCTAssertEqual(held.compression, 96.333, accuracy: 0.01)
+        XCTAssertEqual(held.compression, 68.333, accuracy: 0.01)
+        XCTAssertEqual(held.restRange, 4, accuracy: 0.01)
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: held.compression,
                                                          showsCTA: false, folderHero: false)
-        // Tiers 36 + 32, then 94.333 − 68 − slack 2 = 24.333 from the panel's extra.
-        XCTAssertEqual(split.synopsis, 62.333, accuracy: 0.01)
+        // Tiers 36 + 32 = 68; the 0.333 left is frame slack, so tier 3 stays shut.
+        XCTAssertEqual(split.synopsis, 36, accuracy: 0.01)
         let slot = Theme.Size.heroSynopsisSlotHeightPinnedPanel - split.synopsis
-        XCTAssertEqual(slot, 81.667, accuracy: 0.01)
+        XCTAssertEqual(slot, 108, accuracy: 0.01)
         // Mirror of `HomeHeroForeground.synopsisLineLimit` (1pt tolerance), as in the slot-give suite.
         let lines = max(1, Int(((slot + 1) / Self.systemBodyLine).rounded(.down)))
-        XCTAssertEqual(lines, 2)
+        XCTAssertEqual(lines, 3)
     }
 
-    func testMediumPlusCarouselCompressionGrowsBySix() {
+    /// The 2026-09-30 Medium+ failure: with only the reach hold the plan paid the full 32 of slack
+    /// (restRange 31, device rests −21/−22, outside [−10, 48]). With the rest target: restRange 4.
+    func testMediumPlusCarouselTakesTheRestTarget() {
         let held = plan(Self.mediumPlus, cta: true, mode: Self.zoomOnHeld)
         XCTAssertTrue(held.fits)
         XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
-        XCTAssertEqual(held.compression, 43.952, accuracy: 0.01)
-        XCTAssertEqual(held.regimeKey, "P351c0p0r0z0t38hz")
+        XCTAssertEqual(held.bottomReach, 24, accuracy: epsilon)
+        XCTAssertEqual(held.compression, 15.952, accuracy: 0.01)
+        XCTAssertEqual(held.viewport, 470.952, accuracy: 0.01)
+        XCTAssertEqual(held.linkFrame, 466.952, accuracy: 0.01)
+        XCTAssertEqual(held.restRange, 4, accuracy: 0.01)
+        XCTAssertEqual(held.regimeKey, "P351c0p0r0z0t38hzrt4")
+        // `settlePlan`'s bandHigh for that row: min(48, 48 + vh − lockup − cushion), lockup =
+        // Spacing.lg + topReach + artwork (no captions).
+        let lockup = Theme.Spacing.lg + held.topReach + Self.mediumPlus
+        let bandHigh = min(Theme.Size.heroPinnedRowTitleInset,
+                           Theme.Size.heroPinnedRowTitleInset + held.viewport - lockup
+                               - Theme.Size.heroPinnedRowsSettledCushion)
+        XCTAssertEqual(bandHigh, 44, accuracy: 0.01)
+        // Hold off: unchanged (37.952, restRange 32 by construction).
         let off = plan(Self.mediumPlus, cta: true, mode: Self.zoomOn)
         XCTAssertEqual(off.compression, 37.952, accuracy: 0.01)
-        XCTAssertEqual(held.compression - off.compression, 6, accuracy: epsilon)
+        XCTAssertEqual(off.restRange, 32, accuracy: 0.01)
+        XCTAssertEqual(off.regimeKey, "P351c0p0r0z0t38")
+    }
+
+    /// The fitted law against the four device-measured rests (2026-09-30): restRange → margin.
+    func testThePredictedRestMatchesTheFourMeasuredRests() {
+        let measured: [(restRange: CGFloat, rest: CGFloat)] = [
+            (31.7, -22), (11.7, -12), (5.7, -8.5), (31, -21.5),
+        ]
+        for (range, rest) in measured {
+            XCTAssertEqual(PinnedRowGeometry.predictedRestMargin(restRange: range), rest,
+                           accuracy: 1.5, "restRange=\(range)")
+        }
+        // At the target the predicted rest is −7.5: inside the zoom-on held band [−10, 48].
+        XCTAssertEqual(PinnedRowGeometry.predictedRestMargin(restRange: Theme.Size.heroPinnedRowsRestTarget),
+                       -7.5, accuracy: epsilon)
+    }
+
+    func testTheRestTargetAppliesOnlyToHeldRegimes() {
+        XCTAssertTrue(PinnedRowGeometry.restTargetApplies(mode: Self.zoomOnHeld))
+        XCTAssertTrue(PinnedRowGeometry.restTargetApplies(mode: Self.noZoomH1))
+        XCTAssertFalse(PinnedRowGeometry.restTargetApplies(mode: Self.zoomOn))
+        XCTAssertFalse(PinnedRowGeometry.restTargetApplies(
+            mode: PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false)))
+        XCTAssertEqual(Theme.Size.heroPinnedRowsRestTarget, 4)
     }
 
     func testTheHoldNeverTouchesSizesThatSpendNothing() {
@@ -1535,7 +1590,7 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         let off = plan(medium, cta: true, mode: Self.zoomOn)
         XCTAssertEqual(held.topReach, off.topReach, accuracy: epsilon)
         XCTAssertEqual(held.compression, off.compression, accuracy: epsilon)
-        XCTAssertEqual(held.regimeKey, off.regimeKey + "hz")
+        XCTAssertEqual(held.regimeKey, off.regimeKey + "hzrt4")
     }
 
     func testResolveZoomReachHoldDefaultsOn() throws {

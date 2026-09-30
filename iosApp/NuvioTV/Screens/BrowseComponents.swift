@@ -3362,6 +3362,13 @@ enum PinnedRowSettle {
             // times a reversal has released the pull-back brake this session.
             + " dir=\(pullBack.direction)"
             + " rearm=\(pullBack.rearms)"
+        // 2026-09-30 rest law (probe only, appended at the END per the contract above): the
+        // predicted title margin `−restRange/2 − 5.5` and how far this rest is from it.
+        // `restRange` is derived from THIS row's own frame — `vh − (rowH − 2·Spacing.lg)`, the
+        // shelf's vertical padding around the focusable label — which is exactly the plan's
+        // restRange for a uniform row and the floored label's for a shaped last row. A separate
+        // statement so the long concatenation above does not grow.
+        line += restLawFields(m)
 
         // The correction target is a legibility BAND, not a point (Wave G, BUG-87). Both edges are
         // real constraints that the row's own geometry supplies, and every margin between them is
@@ -3763,6 +3770,16 @@ enum PinnedRowSettle {
         }
         if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
         return Plan(report: line, targetY: target)
+    }
+
+    /// `restPred=` / `restErr=` for the settle line — see the call site and
+    /// `PinnedRowGeometry.predictedRestMargin(restRange:)`. One decimal each.
+    nonisolated static func restLawFields(_ m: Measurement) -> String {
+        let label = m.rowHeight - 2 * Theme.Spacing.lg
+        let restRange = max(m.viewportHeight - label, 0)
+        let predicted = PinnedRowGeometry.predictedRestMargin(restRange: restRange)
+        return " restPred=\(String(format: "%.1f", Double(predicted)))"
+            + " restErr=\(String(format: "%.1f", Double(m.margin - predicted)))"
     }
 
     /// How many corrections this row has fired inside `correctionWindow`, pruning the record as it

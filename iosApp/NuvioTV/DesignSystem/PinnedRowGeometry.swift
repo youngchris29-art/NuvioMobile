@@ -518,13 +518,32 @@ enum PinnedRowGeometry {
         // make a canonical rest sit fully inside the viewport rather than flush to its edges. The
         // formula is unchanged by the rc2 reordering; only the order the three dials pay it in is.
         // Each step below is a pure `min` against a real give; none can raise a dial.
-        let demand = Theme.Spacing.lg
-            + baseTopReach
-            + artwork
-            + captionChrome
-            + baseBottomReach
-            + Theme.Size.heroPinnedRowsSettledCushion
-            - budget
+        //
+        // 2026-09-30 rest target: in a HELD regime (`restTargetApplies`) the slack left for legal
+        // rests is `heroPinnedRowsRestTarget` (4) instead of `Spacing.lg + settledCushion` (32).
+        // The engine rests the title at ≈ −restRange/2 − 5.5 (see the constant's doc), so 32pt of
+        // slack parked Medium+ at −21/−22, outside the zoom-on band. Un-held regimes keep the
+        // original formula byte for byte. A regime whose compression is capped (Large carousel at
+        // 70) keeps whatever slack the cap leaves.
+        // Two literal expressions rather than one with a swapped term, so the un-held one keeps
+        // its original floating-point evaluation order.
+        let demand: CGFloat
+        if restTargetApplies(mode: mode) {
+            demand = baseTopReach
+                + artwork
+                + captionChrome
+                + baseBottomReach
+                + Theme.Size.heroPinnedRowsRestTarget
+                - budget
+        } else {
+            demand = Theme.Spacing.lg
+                + baseTopReach
+                + artwork
+                + captionChrome
+                + baseBottomReach
+                + Theme.Size.heroPinnedRowsSettledCushion
+                - budget
+        }
 
         func spent(topFloor: CGFloat) -> Plan {
             var short = max(demand, 0)
@@ -654,6 +673,22 @@ enum PinnedRowGeometry {
             + "z\(mode.noZoom ? 1 : 0)t\(Int(titleHeight.rounded()))"
             + (mode.reachHoldsLiftEffective ? "h1" : "")
             + (mode.zoomReachHoldEffective ? "hz" : "")
+            + (restTargetApplies(mode: mode) ? "rt\(Int(Theme.Size.heroPinnedRowsRestTarget.rounded()))" : "")
+    }
+
+    /// Whether `plan` sizes this regime's demand to `Theme.Size.heroPinnedRowsRestTarget` rather
+    /// than `Spacing.lg + heroPinnedRowsSettledCushion`: exactly when either reach hold is effective
+    /// (`hz` zoom on, `h1` No Zoom). Encoded in `regimeKey` as `rt4` for the same reason `h1`/`hz`
+    /// are — it changes the plan, so it must not share fits/disarm state with the un-held regime.
+    nonisolated static func restTargetApplies(mode: PinnedRowTitle.FocusModeFlags) -> Bool {
+        mode.zoomReachHoldEffective || mode.reachHoldsLiftEffective
+    }
+
+    /// The 2026-09-30 empirical rest law: the focus engine parks a pinned row's title at margin
+    /// ≈ −restRange/2 − 5.5 (fit to four device walks, see `Theme.Size.heroPinnedRowsRestTarget`).
+    /// Probe/prediction only — the settle line reports it as `restPred=`; nothing branches on it.
+    nonisolated static func predictedRestMargin(restRange: CGFloat) -> CGFloat {
+        -restRange / 2 - 5.5
     }
 
     /// The four synced Poster Size presets, as RATIOS of the Medium default rather than as pixel

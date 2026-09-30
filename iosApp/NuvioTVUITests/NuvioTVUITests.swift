@@ -6455,7 +6455,7 @@ final class NuvioTVUITests: XCTestCase {
         guard let firstLine = readSettleLine(app, "61a_first_rest") else { return }
 
         let regimeToken = Self.probeToken(firstLine, key: "regime") ?? "-"
-        guard regimeToken.contains("z1"), regimeToken.hasSuffix("h1") else {
+        guard regimeToken.contains("z1"), regimeToken.contains("h1") else {
             throw XCTSkip("FIXTURE ASSUMPTION UNMET — regime='\(regimeToken)' does not show No Zoom with the reach-hold A/B active (want a key containing 'z1' and ending 'h1'). Either the fixture is not persisted as No Zoom + Large + Hide Titles ON (FixtureSetupTests.testSetHideLabelsOn then testSetPosterSizeLarge), or -debug.pinnedNoZoomReachHoldsLift did not reach PinnedRowTitle.reachHoldsLiftKnob. Full settle line: \(firstLine)")
         }
 
@@ -6476,8 +6476,8 @@ final class NuvioTVUITests: XCTestCase {
             "topR=\(topR) — the reach-hold should take the same 85/86 floor zoom-on uses (\(envLabel))"
         )
         XCTAssertLessThanOrEqual(
-            abs(slack - 12), 2,
-            "slack (rest range)=\(slack) — expected ≈12 at the held floor, the same as zoom-on's Large carousel (\(envLabel))"
+            abs(slack - 4), 2,
+            "slack (rest range)=\(slack) — expected ≈4: the held plan targets 4 pt of spare room (heroPinnedRowsRestTarget, 2026-09-30) (\(envLabel))"
         )
 
         // ── Middle-row walk: the band/clearance math has to hold on every row visited, not just

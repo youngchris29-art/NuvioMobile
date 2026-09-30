@@ -707,6 +707,24 @@ enum Theme {
         /// the proven 72–88 corridor, so the sim reach sweep, the BUG-112 up walk and one device
         /// walk gate it (2026-09-30 plan).
         static let heroPinnedRowTopReachHoldCap: CGFloat = 92
+        /// Target rest range (`viewport − linkFrame`) for a pinned regime whose reach hold is
+        /// effective (zoom-on `hz` or No Zoom `h1`), replacing `Spacing.lg + heroPinnedRowsSettledCushion`
+        /// (32) in `PinnedRowGeometry.plan`'s demand for those regimes only.
+        ///
+        /// The rest law (2026-09-30 device walks, re-derived from the settle lines' `rowB`/`rowH`):
+        /// the engine parks the title at margin ≈ −restRange/2 − 5.5. Four measured points:
+        ///
+        ///     L403 No Zoom reach 66   restRange 31.7  → −22
+        ///     L403 zoom on reach 86   restRange 11.7  → −12
+        ///     L403 hz reach 92        restRange  5.7  → −8/−9
+        ///     P351 hz reach 92        restRange 31    → −21/−22
+        ///
+        /// Large passed only because the carousel hero's 70pt give caps the compression, which
+        /// happens to leave 5.7; Medium+ still has give, so `plan` paid the full 32 of slack and the
+        /// row rested at −21/−22, outside the zoom-on band [−10, 48]. Reach cannot fix that (the
+        /// hero absorbs it). A target of 4 predicts −7.5: inside both the zoom-on held band and the
+        /// No Zoom band [−24, 48].
+        static let heroPinnedRowsRestTarget: CGFloat = 4
         /// Hard ceiling on ONE settle re-reveal correction (`PinnedRowSettle`, BrowseComponents).
         ///
         /// The measured Large failure needs ~90pt (sim probe 2026-08-30: `margin=-86..-100`,
