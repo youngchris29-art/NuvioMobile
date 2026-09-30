@@ -33,13 +33,13 @@ struct AboutSettingsPane: View {
     @State private var tabBarStateProbeLines: [String] = []
 
     /// BUG-87 rc12 follow-up: the No Zoom reach-hold A/B (`PinnedRowTitle.FocusModeFlags
-    /// .reachHoldsLift`, `PinnedRowGeometry.plan`'s `floorLift`). Default OFF — this row exists so
+    /// .reachHoldsLift`, `PinnedRowGeometry.plan`'s `floorLift`). Default ON since 2026-09-30 (device A/B decided it) — this row exists so
     /// Christian can flip it live on his own Apple TV and A/B the Row Settle Diagnostics pane
-    /// above, not for testers: it costs the Large hero-off panel a synopsis line when on, which is
-    /// exactly why it ships defaulted off rather than as the No Zoom behavior outright. Live, no
+    /// above: it costs the Large hero-off panel a synopsis line when on, but removed the row bounce
+    /// and title fades in the 2026-09-30 device A/B, so it now ships on and the row can turn it off. Live, no
     /// relaunch — `HomeView`'s `@AppStorage` and `PinnedRowTitleTracking`'s both react immediately,
     /// same as the two Appearance focus flags they sit beside.
-    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = false
+    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
 
     /// BUG-118 (rc13): Steven's "row edge fade is intermittent" — see `RowEdgeEffectStyleModifier`
     /// for the root cause (there is no app-drawn fade; it's tvOS 26's system scroll-edge effect,
@@ -577,6 +577,7 @@ struct AboutSettingsPane: View {
                     // untouched; only this innermost Group gains a sibling.
                     SettingsToggleRow(
                         title: String(localized: "No Zoom Row Reach (A/B)"),
+                        // Code comment only (strings unchanged): ON is the default since 2026-09-30.
                         subtitle: noZoomReachHoldsLift
                             ? String(localized: "Rows reserve the zoom-mode band; the hero-off description loses a line at Large")
                             : String(localized: "BUG-87: try if row titles fade or bounce with No Zoom on Focus"),

@@ -335,9 +335,10 @@ enum PinnedRowTitle {
     nonisolated struct FocusModeFlags: Equatable, Sendable {
         var noZoom: Bool
         var accentRing: Bool
-        /// BUG-87 rc12 follow-up: a default-OFF Christian-side A/B (`AboutSettingsPane`'s "No Zoom
-        /// Row Reach (A/B)" row, backing key `PinnedRowTitle.noZoomReachHoldsLiftKey`). Defaulted so
-        /// every existing memberwise call site keeps compiling unchanged. See
+        /// BUG-87 rc12 follow-up: the No Zoom reach hold (`AboutSettingsPane`'s "No Zoom Row Reach
+        /// (A/B)" row, backing key `PinnedRowTitle.noZoomReachHoldsLiftKey`). The memberwise default
+        /// stays `false` for source compatibility, but the APP default is ON since 2026-09-30
+        /// (device A/B decided it); app call sites resolve it via `resolveReachHoldsLift`. See
         /// `reachHoldsLiftEffective` for the gate and `PinnedRowGeometry.plan`'s `floorLift` for
         /// where this actually spends — never through `focusLiftAllowance` below.
         var reachHoldsLift: Bool = false
@@ -354,7 +355,7 @@ enum PinnedRowTitle {
         nonisolated static var current: FocusModeFlags {
             FocusModeFlags(noZoom: UserDefaults.standard.bool(forKey: "no_zoom_on_focus"),
                            accentRing: UserDefaults.standard.bool(forKey: "accent_focus_ring"),
-                           reachHoldsLift: UserDefaults.standard.bool(forKey: noZoomReachHoldsLiftKey))
+                           reachHoldsLift: resolveReachHoldsLift())
         }
     }
 
@@ -370,7 +371,21 @@ enum PinnedRowTitle {
     /// alongside its own `@AppStorage` read so a UI test's launch argument and a live Settings flip
     /// both work.
     nonisolated static var reachHoldsLiftKnob: Bool {
-        UserDefaults.standard.bool(forKey: noZoomReachHoldsLiftKey)
+        resolveReachHoldsLift()
+    }
+
+    /// Default ON since 2026-09-30 (BUG-87 device A/B: hold OFF gave 50+ `UNEXPECTED-WITH-FIT`
+    /// nudges and title fades, hold ON gave none). TRUE when the key was never written; otherwise
+    /// `bool(forKey:)`, which also coerces a UI test's argument-domain "YES"/"NO" string.
+    nonisolated static func resolveReachHoldsLift(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: noZoomReachHoldsLiftKey) == nil ? true : defaults.bool(forKey: noZoomReachHoldsLiftKey)
+    }
+
+    /// View-side form: referencing the `@AppStorage` value keeps the view observing the key so a
+    /// toggle flip re-renders; the resolved value is what is used.
+    nonisolated static func resolveReachHoldsLift(observing stored: Bool) -> Bool {
+        _ = stored
+        return resolveReachHoldsLift()
     }
 
     /// How far the ACTIVE focus treatment raises a focused card's artwork.
@@ -1033,10 +1048,10 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// not guaranteed to re-run the geometry transform.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
-    /// BUG-87 rc12 follow-up A/B (`AboutSettingsPane`'s "No Zoom Row Reach" toggle). OR'd with
-    /// `PinnedRowTitle.reachHoldsLiftKnob` in `focusMode` below — see that static's doc for why the
+    /// BUG-87 rc12 follow-up (`AboutSettingsPane`'s "No Zoom Row Reach" toggle), default ON since
+    /// 2026-09-30. Observed here; the value used is `PinnedRowTitle.resolveReachHoldsLift()` in `focusMode` below — see that static's doc for why the
     /// bare `@AppStorage` read alone would miss a UI test's launch argument.
-    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = false
+    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
 
     /// Last geometry this title measured plus its live focus state, so an out-of-band trigger — a
     /// focus-mode change, or the corrector's stand-down — can re-derive a full `Reading` with no
@@ -1048,7 +1063,7 @@ private struct PinnedRowTitleTracking: ViewModifier {
     private var focusMode: PinnedRowTitle.FocusModeFlags {
         PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
                                       accentRing: accentFocusRing,
-                                      reachHoldsLift: noZoomReachHoldsLift || PinnedRowTitle.reachHoldsLiftKnob)
+                                      reachHoldsLift: PinnedRowTitle.resolveReachHoldsLift(observing: noZoomReachHoldsLift))
     }
 
     func body(content: Content) -> some View {

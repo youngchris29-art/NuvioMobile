@@ -5419,6 +5419,8 @@ final class NuvioTVUITests: XCTestCase {
         // Hunt for a rest that is BOTH clipped and on the artwork, the shape the device produced.
         let app = launchToHome(
             extraArguments: ["-no_zoom_on_focus", "YES",
+                             // The reach hold became default ON 2026-09-30; this gate's premise is OFF.
+                             "-debug.pinnedNoZoomReachHoldsLift", "NO",
                              // Restores the pre-Wave-10 shortfall (vh 524 → ~455) so a deep park
                              // clips again, and turns the corrector off so it stays clipped. See
                              // the header for why both are needed.
@@ -5524,7 +5526,8 @@ final class NuvioTVUITests: XCTestCase {
         // knobs recreate history; this one has to prove the belt stays out of the way in the
         // present.
         let healthyApp = launchToHome(
-            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES"],
+            extraArguments: ["-no_zoom_on_focus", "YES", "-debug.homeScrollProbe", "YES",
+                             "-debug.pinnedNoZoomReachHoldsLift", "NO"],
             forceFreshLaunch: true
         )
         openTab(healthyApp, named: "Home")
@@ -6422,7 +6425,7 @@ final class NuvioTVUITests: XCTestCase {
     /// `margin=-22` against `bandLo=-4` — 2pt outside the belt's arm — the corrector nudges, two
     /// pullbacks disarm it, and titles fade (see `walkToLastRow`'s doc comment above for the exact
     /// numbers in both zoom modes). `PinnedRowTitle.FocusModeFlags.reachHoldsLift`
-    /// (`AboutSettingsPane`'s "No Zoom Row Reach (A/B)" toggle, default OFF) spends the SAME 86
+    /// (`AboutSettingsPane`'s "No Zoom Row Reach (A/B)" toggle, default ON since 2026-09-30; the test still passes `YES` explicitly) spends the SAME 86
     /// floor zoom-on already uses, which should put that same `-22` margin INSIDE a widened band
     /// (`bandLo` `-24` instead of `-4`) — see `PinnedRowGeometryTests.testTheReachHoldWidensTheBandInsteadOfChargingLift`
     /// for the arithmetic this test is the device-adjacent half of.

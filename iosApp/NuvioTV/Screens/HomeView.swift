@@ -113,10 +113,11 @@ struct HomeView: View {
     /// Paired with `noZoomOnFocus` above — `FocusModeFlags` carries both, and the ring branch is the
     /// one that could make the lift height-dependent again (BUG-93 made the two zoom modes equal).
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
-    /// rc12 BUG-87 follow-up: the default-OFF No Zoom reach-hold A/B (`AboutSettingsPane`'s "No Zoom
-    /// Row Reach (A/B)" row). OR'd with `PinnedRowTitle.reachHoldsLiftKnob` at the `pinnedPlan` call
-    /// site below — same launch-argument precedent as the other two flags here.
-    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = false
+    /// rc12 BUG-87 follow-up: the No Zoom reach-hold (`AboutSettingsPane`'s "No Zoom Row Reach (A/B)"
+    /// row), default ON since 2026-09-30. Read only to make this view observe the key; the value
+    /// used is `PinnedRowTitle.resolveReachHoldsLift()` at the `pinnedPlan` call site below, which
+    /// also honours a launch argument and the never-written default.
+    @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
     /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
     /// the entire preference map on every call, so it cannot be read from `body` at render
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
@@ -578,6 +579,9 @@ struct HomeView: View {
     /// focus landed on a row's "See All" tile or an unconfigured folder, both of which report a
     /// nil preview. `@FocusState` cannot disagree with itself the way a preview report could.
     @State private var focusedRowKey: String?
+    /// `systemUptime` of the last time `focusedRowKey` changed to a different row. Feeds
+    /// `HomeUpPressConsumption` so a press the engine already acted on does not start the ladder.
+    @State private var lastRowFocusChangeAt: TimeInterval?
     /// The live focus request the rows observe (`PinnedRowUpFallback.swift`).
     @State private var rowFocusRequest = PinnedRowFocusRequest.none
     @State private var rowFocusRequestSeq = 0
@@ -1493,13 +1497,21 @@ struct HomeView: View {
 
     // MARK: - BUG-112 (Item A): the Up press the focus engine could not resolve
 
-    /// SwiftUI delivers `onMoveCommand` to the focused view chain ONLY for moves the focus engine
-    /// did not consume — the same property `HeroCarouselInteractionModifier` (and the BUG-23 hero
-    /// fix) relies on. On hardware, with rows resting ~100pt deeper on an up-walk than on the way
+    /// History: SwiftUI was believed to deliver `onMoveCommand` to the focused view chain ONLY for
+    /// moves the focus engine did not consume — the same property `HeroCarouselInteractionModifier`
+    /// (and the BUG-23 hero fix) relies on. On hardware, with rows resting ~100pt deeper on an up-walk than on the way
     /// down, row 1 sits entirely above the rows viewport, the engine finds no legal Up candidate,
     /// and the press does nothing at all: the reported BUG-112 wedge. So an Up that arrives HERE
-    /// is, by construction, an Up the engine gave up on, and Home reveals + focuses the previous
+    /// was taken to be an Up the engine gave up on, and Home reveals + focuses the previous
     /// row itself.
+    ///
+    /// Hardware FALSIFIED that premise on 2026-09-30 (Apple TV 4K, tvOS 27): all 28 press-started
+    /// ladders were logged 30-180 ms after a `focusUpdate` showing the engine had already moved
+    /// focus up a row, so `previousRowTarget` resolved one row too far and a single press moved
+    /// focus two rows (rung 1 then yanked it back to the anchor tile). The guard below therefore
+    /// declines a `press` when the row focus changed within `HomeUpPressConsumption.consumedWindow`
+    /// (the engine already consumed it). `swipe` is exempt: `HomeUpSwipeCatcher` snapshots focus
+    /// at touch-down and only fires when focus did not move.
     ///
     /// Guards, in order and each for its own reason:
     ///  - `.up` only. Down/left/right arrive here too (the last row's Down, a row's leading/trailing
@@ -1518,11 +1530,20 @@ struct HomeView: View {
     private func handleRowsMove(_ direction: MoveCommandDirection,
                                 pinned: Bool,
                                 proxy: ScrollViewProxy,
-                                source: String = "press") {
+                                source: String = "press",
+                                enforceConsumedGuard: Bool = true) {
         guard direction == .up, pinned else { return }
         guard !PinnedRowSettle.hostCovered else { return }
         guard let rowKey = focusedRowKey,
               let target = previousRowTarget(for: rowKey) else { return }
+        if source == "press", enforceConsumedGuard {
+            let now = ProcessInfo.processInfo.systemUptime
+            if HomeUpPressConsumption.isConsumed(now: now, lastRowFocusChange: lastRowFocusChangeAt) {
+                let ms = Int(((now - (lastRowFocusChangeAt ?? now)) * 1000).rounded())
+                logUpFallback("row=\(rowKey) prev=\(target.key) action=declined reason=consumed sinceFocus=\(ms) src=press")
+                return
+            }
+        }
         beginUpFallback(from: rowKey, to: target, proxy: proxy, source: source)
     }
 
@@ -1702,6 +1723,7 @@ struct HomeView: View {
             if focusedRowKey != rowKey {
                 let origin = focusedRowKey
                 focusedRowKey = rowKey
+                lastRowFocusChangeAt = ProcessInfo.processInfo.systemUptime
                 if rowKey == activeUpFallbackTarget {
                     endUpFallback(reason: "row=\(activeUpFallbackOrigin ?? origin ?? "-") prev=\(rowKey) action=landed src=\(activeUpFallbackSource)",
                                   log: true)
@@ -1995,7 +2017,9 @@ struct HomeView: View {
                 return
             }
             #endif
-            handleRowsMove(.up, pinned: pinned, proxy: proxy)
+            // The proxy exists because the simulator's engine does not move focus on these
+            // presses, so the consumed-press guard must not apply to it.
+            handleRowsMove(.up, pinned: pinned, proxy: proxy, enforceConsumedGuard: false)
         }
     }
 
@@ -2428,7 +2452,7 @@ struct HomeView: View {
                                landscapeRows: posterStyle.landscapeCatalogRows,
                                mode: PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
                                                                    accentRing: accentFocusRing,
-                                                                   reachHoldsLift: noZoomReachHoldsLift || PinnedRowTitle.reachHoldsLiftKnob))
+                                                                   reachHoldsLift: PinnedRowTitle.resolveReachHoldsLift(observing: noZoomReachHoldsLift)))
     }
 
     /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact

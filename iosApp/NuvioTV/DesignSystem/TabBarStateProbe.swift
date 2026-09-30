@@ -87,6 +87,10 @@ enum TabBarStateProbe {
     /// Held across samples between crossings, per the line-format doc above.
     nonisolated(unsafe) private static var lastScrolledDown = false
     nonisolated(unsafe) private static var lastMode = "unknown"
+    /// Composed state of the last logged bar sample (everything but `reason`), so a `tick` that
+    /// repeats it is dropped instead of flooding the ring buffer (device, 2026-09-30: 41 of 41 lines
+    /// were identical ticks). Reset on arm so the first tick after arming always logs.
+    nonisolated(unsafe) private static var lastLoggedComposed: String?
 
     nonisolated private static var sinceArmMs: Int {
         guard let armStart else { return 0 }
@@ -152,6 +156,7 @@ enum TabBarStateProbe {
         timer?.invalidate()
         armedWindow = window
         armStart = Date()
+        lastLoggedComposed = nil
         sample(reason: "arm")
         let ticker = Timer(timeInterval: 2.0, repeats: true) { _ in
             MainActor.assumeIsolated {
@@ -193,6 +198,8 @@ enum TabBarStateProbe {
     /// when no `UITabBarController` is found (sidebar mode legitimately has none — the system bar
     /// is force-hidden and unfocusable there, see `HiddenTabBarFocusBlocker`), mirroring that
     /// type's own "say so instead of silently doing nothing" house rule.
+    /// A `tick` whose composed state equals the previously logged sample is not logged; every other
+    /// reason always logs.
     static func sample(reason: String) {
         guard enabled else { return }
         guard let window = armedWindow else {
@@ -219,12 +226,13 @@ enum TabBarStateProbe {
         } else {
             state = "partial"
         }
-        log(
-            "minY=\(Int(minY.rounded())) h=\(Int(h.rounded())) "
-                + "alpha=\(String(format: "%.2f", alpha)) hidden=\(bar.isHidden ? 1 : 0) "
-                + "state=\(state) scrolledDown=\(lastScrolledDown ? 1 : 0) "
-                + "mode=\(lastMode) reason=\(reason)"
-        )
+        let composed = "minY=\(Int(minY.rounded())) h=\(Int(h.rounded())) "
+            + "alpha=\(String(format: "%.2f", alpha)) hidden=\(bar.isHidden ? 1 : 0) "
+            + "state=\(state) scrolledDown=\(lastScrolledDown ? 1 : 0) "
+            + "mode=\(lastMode)"
+        if reason == "tick", composed == lastLoggedComposed { return }
+        lastLoggedComposed = composed
+        log(composed + " reason=\(reason)")
     }
 
     private static func findTabBar(in window: UIWindow) -> UITabBar? {
