@@ -57,7 +57,10 @@ enum DeepLink: Identifiable {
                 popularity: nil,
                 voteCount: nil,
                 imdbRating: nil,
-                genres: []
+                genres: [],
+                rawPosterUrl: nil,
+                landscapePoster: nil,
+                rawLandscapePosterUrl: nil
             ))
         default:
             return nil

@@ -2606,7 +2606,10 @@ struct HomeView: View {
             popularity: nil,
             voteCount: nil,
             imdbRating: nil,
-            genres: []
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil
         )
     }
 
@@ -2629,7 +2632,10 @@ struct HomeView: View {
             popularity: nil,
             voteCount: nil,
             imdbRating: nil,
-            genres: []
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil
         )
     }
 
@@ -3084,7 +3090,10 @@ final class HomeHeroFocusModel: ObservableObject {
                     popularity: base.popularity,
                     voteCount: base.voteCount,
                     imdbRating: base.imdbRating,
-                    genres: mergedGenres
+                    genres: mergedGenres,
+                    rawPosterUrl: nil,
+                    landscapePoster: nil,
+                    rawLandscapePosterUrl: nil
                 )
             }
         }

@@ -15,7 +15,10 @@ final class SagaCardTests: XCTestCase {
             posterShape: .landscape,
             description: nil, releaseInfo: releaseInfo, rawReleaseDate: nil,
             popularity: nil, voteCount: nil, imdbRating: nil,
-            genres: []
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil
         )
     }
 

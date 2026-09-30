@@ -120,7 +120,10 @@ final class HeroCrossfadeLayoutTests: XCTestCase {
             posterShape: .poster,
             description: nil, releaseInfo: nil, rawReleaseDate: nil,
             popularity: nil, voteCount: nil, imdbRating: nil,
-            genres: []
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil
         )
     }
 

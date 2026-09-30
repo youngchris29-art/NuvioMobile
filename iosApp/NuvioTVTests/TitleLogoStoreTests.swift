@@ -21,7 +21,10 @@ final class TitleLogoStoreTests: XCTestCase {
             posterShape: .landscape,
             description: nil, releaseInfo: nil, rawReleaseDate: nil,
             popularity: nil, voteCount: nil, imdbRating: nil,
-            genres: []
+            genres: [],
+            rawPosterUrl: nil,
+            landscapePoster: nil,
+            rawLandscapePosterUrl: nil
         )
     }
 
