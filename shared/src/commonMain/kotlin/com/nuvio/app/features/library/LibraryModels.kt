@@ -82,7 +82,8 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         id = id,
         type = type,
         name = name,
-        poster = poster,
+        // Never persist/sync a custom-poster (RPDB-key) URL: store the original art.
+        poster = rawPosterUrl ?: poster,
         banner = banner,
         logo = logo,
         description = description,
@@ -90,6 +91,7 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         imdbRating = imdbRating,
         genres = genres,
         posterShape = posterShape,
+        landscapePoster = rawLandscapePosterUrl ?: landscapePoster,
         imdbId = id.takeIf { it.startsWith("tt") },
         savedAtEpochMs = savedAtEpochMs,
     )

@@ -18,7 +18,15 @@ enum class CustomPosterScreen(val key: String) {
         /** All screens enabled — the default state. */
         val ALL: Set<CustomPosterScreen> = entries.toSet()
 
-        /** Deserialize from stored key strings. Returns [ALL] if the set is null or empty. */
+        /**
+         * Wire/storage sentinel meaning "custom posters enabled on NO screen". An empty set cannot be
+         * stored because null/empty already means [ALL] (mobile clients rely on that). Older builds
+         * read this key as an unknown screen, i.e. an empty set, so it is compatible.
+         */
+        const val NONE_KEY = "none"
+
+        /** Deserialize from stored key strings. Returns [ALL] if the set is null or empty;
+         *  `{"none"}` maps to an empty set (unknown keys are dropped). */
         fun fromKeys(keys: Set<String>?): Set<CustomPosterScreen> {
             if (keys.isNullOrEmpty()) return ALL
             return keys.mapNotNull { key -> entries.find { it.key == key } }.toSet()
@@ -26,6 +34,6 @@ enum class CustomPosterScreen(val key: String) {
 
         /** Serialize to storable key strings. */
         fun toKeys(screens: Set<CustomPosterScreen>): Set<String> =
-            screens.map { it.key }.toSet()
+            if (screens.isEmpty()) setOf(NONE_KEY) else screens.map { it.key }.toSet()
     }
 }

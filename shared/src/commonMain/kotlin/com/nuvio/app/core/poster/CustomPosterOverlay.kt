@@ -37,11 +37,16 @@ fun MetaPreview.withCustomPosterUrl(pattern: String): MetaPreview {
 
     if (resolvedPoster == null && resolvedLandscape == null) return this
 
+    // `rawPosterUrl != null` alone cannot mark "already overlaid" (an original of null is legal),
+    // so customPosterApplied is the explicit marker; rawPosterUrl != null still counts for items
+    // that recorded their original before the flag existed.
+    val alreadyApplied = customPosterApplied || rawPosterUrl != null
     return copy(
         poster = resolvedPoster ?: poster,
-        rawPosterUrl = rawPosterUrl ?: poster,
+        rawPosterUrl = if (alreadyApplied) rawPosterUrl else poster,
         landscapePoster = resolvedLandscape ?: landscapePoster,
-        rawLandscapePosterUrl = if (rawPosterUrl == null) landscapePoster else rawLandscapePosterUrl,
+        rawLandscapePosterUrl = if (alreadyApplied) rawLandscapePosterUrl else landscapePoster,
+        customPosterApplied = true,
     )
 }
 
@@ -51,8 +56,14 @@ fun MetaPreview.withCustomPosterUrl(pattern: String): MetaPreview {
  * Use this when the pattern changes and cached items already carry a previous overlay.
  */
 fun MetaPreview.reapplyCustomPosterUrl(pattern: String): MetaPreview {
-    val restored = if (rawPosterUrl != null) {
-        copy(poster = rawPosterUrl, landscapePoster = rawLandscapePosterUrl)
+    val restored = if (customPosterApplied || rawPosterUrl != null) {
+        copy(
+            poster = rawPosterUrl,
+            landscapePoster = rawLandscapePosterUrl,
+            rawPosterUrl = null,
+            rawLandscapePosterUrl = null,
+            customPosterApplied = false,
+        )
     } else {
         this
     }

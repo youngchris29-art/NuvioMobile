@@ -46,6 +46,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** The pattern the LIBRARY screen effectively uses: blank when the screen is disabled. */
+internal fun libraryPosterPatternKey(pattern: String, screens: Set<CustomPosterScreen>): String =
+    if (CustomPosterScreen.LIBRARY in screens) pattern else ""
+
 object LibraryRepository {
     private const val pushDebounceMs = 500L
 
@@ -89,15 +93,22 @@ object LibraryRepository {
                     }
                 }
         }
-        // Upstream db6c3128: republish when the custom poster pattern or its per-screen toggles change.
+        // Upstream db6c3128: republish when the effective library poster pattern changes. (Upstream
+        // maps to Unit here, so distinctUntilChanged + drop(1) swallow every emission and the
+        // collector never fires; the mapped key is a real value.) drop(1) skips the initial value.
         syncScope.launch {
             combine(
                 CustomPosterUrlRepository.pattern,
                 CustomPosterUrlRepository.enabledScreens,
-            ) { _, _ -> Unit }
+            ) { pattern, screens -> libraryPosterPatternKey(pattern, screens) }
                 .distinctUntilChanged()
                 .drop(1)
-                .collectLatest { publish() }
+                .collectLatest {
+                    // Before the local library has loaded (cold start, or the window in a profile
+                    // switch where onProfileChanged() re-emits the pattern), publish() would push an
+                    // empty unloaded state; loadFromDisk publishes with the current pattern itself.
+                    if (localState.snapshot().hasLoaded) publish()
+                }
         }
         TrackingProviderRegistry.libraryProviders().forEach { provider ->
             syncScope.launch {

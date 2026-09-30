@@ -2,6 +2,7 @@ package com.nuvio.app.core.poster
 
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
+import com.nuvio.app.features.library.toLibraryItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -158,5 +159,49 @@ class CustomPosterOverlayTest {
         )
         val result = items.withCustomPosterUrls("")
         assertEquals(items, result)
+    }
+
+    @Test
+    fun null_original_poster_is_restored_to_null_after_clearing() {
+        val item = MetaPreview(id = "tt1", type = "movie", name = "M", poster = null)
+        val overlaid = item.withCustomPosterUrl(universalPattern)
+        assertEquals(true, overlaid.customPosterApplied)
+        val cleared = overlaid.reapplyCustomPosterUrl("")
+        assertNull(cleared.poster)
+        assertNull(cleared.rawPosterUrl)
+        assertEquals(false, cleared.customPosterApplied)
+    }
+
+    @Test
+    fun null_original_poster_reapply_with_new_pattern_keeps_no_original() {
+        val item = MetaPreview(id = "tt1", type = "movie", name = "M", poster = null)
+        val again = item.withCustomPosterUrl(universalPattern).reapplyCustomPosterUrl(rpdbPattern)
+        assertEquals(rpdbPattern.replace("{imdb_id}", "tt1"), again.poster)
+        assertNull(again.rawPosterUrl)
+        assertNull(again.reapplyCustomPosterUrl("").poster)
+    }
+
+    @Test
+    fun shape_pattern_applied_twice_keeps_raw_landscape() {
+        val item = MetaPreview(
+            id = "tt1", type = "movie", name = "M",
+            poster = "https://o/p.jpg", landscapePoster = "https://o/l.jpg",
+        )
+        val once = item.withCustomPosterUrl(shapePattern)
+        val twice = once.withCustomPosterUrl(shapePattern)
+        assertEquals("https://o/l.jpg", once.rawLandscapePosterUrl)
+        assertEquals("https://o/l.jpg", twice.rawLandscapePosterUrl)
+        assertEquals("https://o/p.jpg", twice.rawPosterUrl)
+    }
+
+    @Test
+    fun overlaid_preview_converts_to_library_item_with_raw_urls() {
+        val overlaid = MetaPreview(
+            id = "tt1", type = "movie", name = "M",
+            poster = "https://o/p.jpg", landscapePoster = "https://o/l.jpg",
+        ).withCustomPosterUrl(shapePattern)
+        val library = overlaid.toLibraryItem(savedAtEpochMs = 1L)
+        assertEquals("https://o/p.jpg", library.poster)
+        assertEquals("https://o/l.jpg", library.landscapePoster)
     }
 }

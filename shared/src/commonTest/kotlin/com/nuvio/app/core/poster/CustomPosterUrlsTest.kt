@@ -84,4 +84,26 @@ class CustomPosterUrlsTest {
         assertEquals(CustomPosterScreen.ALL, CustomPosterScreen.fromKeys(null))
         assertEquals(CustomPosterScreen.ALL, CustomPosterScreen.fromKeys(emptySet()))
     }
+
+    @Test
+    fun `none sentinel round trips as empty set`() {
+        assertEquals(setOf("none"), CustomPosterScreen.toKeys(emptySet()))
+        assertEquals(emptySet(), CustomPosterScreen.fromKeys(setOf("none")))
+    }
+
+    @Test
+    fun `last toggle off survives reload and disables every screen`() {
+        CustomPosterUrlRepository.clearLocalState()
+        CustomPosterUrlRepository.setPattern("https://p.example/{imdb_id}.jpg")
+        for (screen in CustomPosterScreen.entries) CustomPosterUrlRepository.setScreenEnabled(screen, false)
+        assertEquals(emptySet(), CustomPosterUrlRepository.enabledScreens.value)
+        CustomPosterUrlRepository.onProfileChanged() // reload from storage
+        assertEquals(emptySet(), CustomPosterUrlRepository.enabledScreens.value)
+        for (screen in CustomPosterScreen.entries) {
+            assertEquals("", CustomPosterUrlRepository.patternForScreen(screen))
+        }
+        CustomPosterUrlRepository.setScreenEnabled(CustomPosterScreen.HOME, true)
+        CustomPosterUrlRepository.onProfileChanged()
+        assertEquals(setOf(CustomPosterScreen.HOME), CustomPosterUrlRepository.enabledScreens.value)
+    }
 }
