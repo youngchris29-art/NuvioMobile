@@ -22,6 +22,12 @@ internal suspend fun <T> MdbListSyncRepository.write(
 } catch (error: Exception) {
     try {
         invalidate(scope, buckets)
+        // Fork: this refresh is safe after a 429. MdbListHttpClient blocks the account's limit key
+        // until the reset, so the refresh fails locally without a network request, and that local
+        // failure is what records retryAtEpochMs in MdbListSyncState; shouldRefresh then defers
+        // every later attempt until the reset. Recording it here instead is not possible: invalidate
+        // commits a fresh MdbListSyncState, which drops any retry time set before it.
+        // Pinned by MdbListWriteRateLimitTest.
         refreshAsync(TrackingRefreshIntent.INVALIDATED)
     } catch (_: Exception) {
     }

@@ -8,6 +8,8 @@ import com.nuvio.app.features.tracking.TrackingProgressProvider
 import com.nuvio.app.features.tracking.TrackingProgressSnapshot
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import com.nuvio.app.features.tracking.TrackingWatchedProvider
+import com.nuvio.app.features.tracking.isHistoryRemovable
+import com.nuvio.app.features.tracking.trackingHistoryPushItems
 import com.nuvio.app.features.watched.WatchedItem
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import kotlinx.coroutines.CancellationException
@@ -107,7 +109,7 @@ object SimklWatchedSyncAdapter : TrackingWatchedProvider {
         // (e.g. once a new episode airs and the show is no longer fully watched), which would
         // silently wipe history the user never asked to remove.
         // Allowlist, not denylist: an unrecognized type is skipped rather than sent destructively.
-        val removableItems = items.filter { item -> item.isSimklHistoryRemovable() }
+        val removableItems = items.filter { item -> item.isHistoryRemovable() }
         if (removableItems.isEmpty()) return
         val episodeItems = removableItems.filter { item -> item.season != null && item.episode != null }
         // Optimistically mark video IDs as removed so fallback won't show them as watched
@@ -255,37 +257,8 @@ object SimklTrackingProgressProvider : TrackingProgressProvider {
 private const val SIMKL_PLAYBACK_PROGRESS_KEY_PREFIX = "simkl-playback:"
 
 /**
- * Fork: which watched entries may be forwarded to Simkl's `/sync/history/remove`.
- *
- * Episodes and movies map to a single Simkl history entry, so removing them is precise. A
- * series-level marker has no season/episode and would serialize as a bare show, which Simkl treats
- * as "remove this show's entire history" — far more destructive than the local marker it mirrors.
- *
- * Deliberately an allowlist: anything whose type is unrecognized (or that carries a partial
- * season/episode pair) is skipped rather than sent, so the failure mode is a stale Simkl entry
- * instead of deleted history.
- */
-private fun WatchedItem.isSimklHistoryRemovable(): Boolean {
-    val isEpisode = season != null && episode != null
-    val isMovie = type.trim().lowercase() in MOVIE_LIKE_WATCHED_TYPES
-    return isEpisode || isMovie
-}
-
-/**
- * What may travel to Simkl as a watched mark.
- *
- * A mark without episode coordinates describes a whole series. Simkl turns that into a show-level
- * entry and answers by marking every episode of the show watched, including episodes the user never
- * opened, which is how a single ill-timed mark wiped a full series. Only films are allowed through
- * without coordinates; a whole-series action still reports its episodes one by one, which carries the
- * same information and cannot touch anything else. A mark whose type is `anime` is dropped too: the
- * app cannot tell an anime film from an anime series without more metadata.
+ * What may travel to Simkl as a watched mark. The rule (upstream `ba786215`) lives in the shared
+ * [trackingHistoryPushItems] so MDBList applies the same guard; see its KDoc.
  */
 internal fun simklHistoryPushItems(items: Collection<WatchedItem>): List<WatchedItem> =
-    items.filterNot(WatchedItem::isWholeSeriesMark)
-
-private fun WatchedItem.isWholeSeriesMark(): Boolean =
-    season == null && episode == null && type.trim().lowercase() !in MOVIE_LIKE_WATCHED_TYPES
-
-/** Content types that stand on their own and need no episode to be a real mark. */
-private val MOVIE_LIKE_WATCHED_TYPES = setOf("movie", "film")
+    trackingHistoryPushItems(items)

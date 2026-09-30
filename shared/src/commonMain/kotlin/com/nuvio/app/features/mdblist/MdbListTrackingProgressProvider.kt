@@ -4,6 +4,7 @@ import com.nuvio.app.features.tracking.TrackingProgressProvider
 import com.nuvio.app.features.tracking.TrackingProgressSnapshot
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
+import com.nuvio.app.features.tracking.parseTrackingExternalIds
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -49,6 +50,13 @@ class MdbListTrackingProgressProvider(
         sync.currentProjection().canonicalContentId(parentContentId) ?: parentContentId
 
     override fun isHiddenFromProgress(contentId: String): Boolean = sync.currentProjection().isHidden(contentId)
+
+    // Fork: MDBList only resolves imdb/tmdb/tvdb/trakt/mdblist ids (toMdbListIds), so a local
+    // `kitsu:`/`mal:`/`anilist:` continue-watching row can never come back from it. Answering false
+    // keeps such rows merged into continue watching while MDBList is the Watch Progress source
+    // (projectWatchProgressSourceEntries), mirroring Trakt's override.
+    override fun canRepresentContentId(contentId: String): Boolean =
+        parseTrackingExternalIds(contentId).toMdbListIds() != null
 
     override suspend fun refreshEpisodeProgress(contentId: String, forceRefresh: Boolean) =
         sync.refresh(if (forceRefresh) TrackingRefreshIntent.USER_INITIATED else TrackingRefreshIntent.AUTOMATIC)
