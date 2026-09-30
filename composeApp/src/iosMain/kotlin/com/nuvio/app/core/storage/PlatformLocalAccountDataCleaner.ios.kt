@@ -48,5 +48,9 @@ internal actual object PlatformLocalAccountDataCleaner {
         // File-backed payload stores (PayloadFileStore) — the defaults-key removals above only
         // cover values left behind by pre-migration builds.
         AppleFilePayloadStores.deleteAll()
+
+        // Keychain-backed credential stores (MDBList account tokens today), from the same
+        // registry: every `AppleKeySpec.Keychain` service, all profile accounts at once.
+        AppleKeychainStores.deleteAll()
     }
 }

@@ -34,6 +34,7 @@ import com.nuvio.app.features.home.HomeRepository
 import com.nuvio.app.features.library.LibraryDisplaySettingsRepository
 import com.nuvio.app.features.library.LibraryRepository
 import com.nuvio.app.features.mdblist.MdbListSettingsRepository
+import com.nuvio.app.features.mdblist.MdbListTracker
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.player.PlayerLaunchStore
 import com.nuvio.app.features.player.PlayerSettingsRepository
@@ -252,6 +253,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         CardDepthStyleRepository.clearLocalState()
         TraktAuthRepository.clearLocalState()
         TraktSettingsRepository.clearLocalState()
+        // MDBList account (upstream 0a654ac4): memory-only — stops a pending device-flow poll and
+        // drops the in-memory tokens. The registry fan-out below reaches it too once registered;
+        // naming it here keeps the wipe independent of registration order. Its Keychain items are
+        // erased in step 3b (AppleKeychainStores), never by the tracker.
+        MdbListTracker.clearLocalState()
         // Provider-neutral fan-out to every registered tracking provider (Trakt, Simkl, …).
         // NOTE: this only resets IN-MEMORY state — TrackingProfileStore.clearLocalState does not
         // erase persisted payloads (removeStoredProfile does). The actual on-disk erasure happens
@@ -310,6 +316,11 @@ private object TvOsAccountDataCleaner : com.nuvio.app.core.account.AccountDataCl
         // 3) File-backed payload stores (PayloadFileStore) — the defaults-key removals above only
         // cover values left behind by pre-migration builds.
         com.nuvio.app.core.storage.AppleFilePayloadStores.deleteAll()
+
+        // 3b) Keychain-backed credential stores (MDBList account tokens today) — every
+        // `AppleKeySpec.Keychain` service in the registry, all profile accounts at once. The
+        // tracker's clearLocalState() in step 1 only reset memory; this is the on-disk erase.
+        com.nuvio.app.core.storage.AppleKeychainStores.deleteAll()
 
         // 4) Re-arm settings-push observation for the NEXT account. clearAccountState() above
         // cancelled it, and no sign-in path on tvOS restarts it (pre-existing gap: after a
@@ -386,6 +397,9 @@ private object TvOsProfileLifecycleCoordinator : ProfileLifecycleCoordinator {
         step("watched") { WatchedRepository.onProfileChanged(profileIndex) }
         step("traktSettings") { TraktSettingsRepository.onProfileChanged() }
         step("traktAuth") { TraktAuthRepository.onProfileChanged(profileIndex) }
+        // MDBList account: stop the outgoing profile's device-flow poll and load the incoming
+        // profile's Keychain tokens. Idempotent with the registry fan-out LibraryRepository runs.
+        step("mdbListAccount") { MdbListTracker.onProfileChanged() }
         step("library") { LibraryRepository.onProfileChanged(profileIndex) }
         step("libraryDisplaySettings") { LibraryDisplaySettingsRepository.onProfileChanged() }
         step("watchProgress") { WatchProgressRepository.onProfileChanged(profileIndex) }

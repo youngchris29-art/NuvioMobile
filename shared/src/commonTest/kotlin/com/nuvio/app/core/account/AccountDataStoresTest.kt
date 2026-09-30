@@ -88,6 +88,7 @@ class AccountDataStoresTest {
                     is AppleKeySpec.ProfileIndexed -> "ProfileIndexed" to key.prefix
                     is AppleKeySpec.DynamicPrefix -> "DynamicPrefix" to key.prefix
                     is AppleKeySpec.FileStore -> "FileStore" to key.subdirectory
+                    is AppleKeySpec.Keychain -> "Keychain" to key.service
                 }
                 assertTrue(value.isNotBlank(), "\"${store.name}\" has a blank $kind identifier")
             }
@@ -145,6 +146,39 @@ class AccountDataStoresTest {
                 .toSet(),
             AccountDataStores.appleFileStoreSubdirectories().toSet(),
         )
+        assertEquals(
+            AccountDataStores.all
+                .flatMap { it.appleKeys }
+                .filterIsInstance<AppleKeySpec.Keychain>()
+                .map { it.service }
+                .distinct()
+                .toSet(),
+            AccountDataStores.appleKeychainServices().toSet(),
+        )
+    }
+
+    @Test
+    fun `no two stores declare the same Apple Keychain service`() {
+        assertNoDuplicates(
+            AccountDataStores.all.flatMap { store ->
+                store.appleKeys.filterIsInstance<AppleKeySpec.Keychain>().map { it.service }
+            },
+            label = "Keychain service",
+        )
+    }
+
+    /**
+     * MDBList account tokens live in the Keychain (service "com.nuvio.media.mdblist", transcribed
+     * from MdbListAuthPersistence.apple.kt), not NSUserDefaults. A Keychain item outlives an app
+     * delete, so a registry miss here would leak a live OAuth refresh token across accounts.
+     */
+    @Test
+    fun `mdblist account tokens are wiped on both platforms`() {
+        assertContains(AccountDataStores.appleKeychainServices(), "com.nuvio.media.mdblist")
+        assertContains(AccountDataStores.androidPreferenceNames(), "nuvio_mdblist_auth")
+        // A Keychain service is not a defaults key: it must not leak into the defaults projections.
+        assertTrue("com.nuvio.media.mdblist" !in AccountDataStores.applePlainKeys())
+        assertTrue(AccountDataStores.appleDynamicPrefixes().none { "com.nuvio.media.mdblist".startsWith(it) })
     }
 
     /**

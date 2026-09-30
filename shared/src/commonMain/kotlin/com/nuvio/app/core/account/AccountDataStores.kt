@@ -49,6 +49,13 @@ sealed interface AppleKeySpec {
 
     /** A `core.storage.PayloadFileStore` subdirectory of Application Support. */
     data class FileStore(val subdirectory: String) : AppleKeySpec
+
+    /**
+     * Keychain generic-password items (`kSecClassGenericPassword`) under [service], every
+     * account. Wiped by deleting the whole service (`core.storage.AppleKeychainStores`), which
+     * covers every profile's `profile.<id>` account in one call. Not an NSUserDefaults key.
+     */
+    data class Keychain(val service: String) : AppleKeySpec
 }
 
 /**
@@ -559,6 +566,16 @@ object AccountDataStores {
             appleKeys = listOf(AppleKeySpec.ProfileScoped("simkl_auth_payload")),
         ),
         AccountDataStore(
+            // Upstream 8fe994bd MDBList account (device-flow OAuth) tokens + pending device code.
+            // Apple: Keychain only (shared/appleMain MdbListAuthPersistence.apple.kt — service
+            // "com.nuvio.media.mdblist", account "profile.<id>"); it writes no defaults keys.
+            // Android: AES-GCM ciphertext in the "nuvio_mdblist_auth" preferences file (the
+            // AndroidKeyStore key itself is not account data and stays).
+            name = "MdbListAuthPersistence",
+            androidPreferences = "nuvio_mdblist_auth",
+            appleKeys = listOf(AppleKeySpec.Keychain("com.nuvio.media.mdblist")),
+        ),
+        AccountDataStore(
             name = "SimklSyncStorage",
             androidPreferences = "nuvio_simkl_sync",
             appleKeys = listOf(
@@ -602,6 +619,10 @@ object AccountDataStores {
     /** `PayloadFileStore` subdirectories to delete wholesale. */
     fun appleFileStoreSubdirectories(): List<String> =
         appleKeys().filterIsInstance<AppleKeySpec.FileStore>().map { it.subdirectory }.distinct()
+
+    /** Keychain services whose generic-password items are deleted wholesale. */
+    fun appleKeychainServices(): List<String> =
+        appleKeys().filterIsInstance<AppleKeySpec.Keychain>().map { it.service }.distinct()
 
     private fun appleKeys(): List<AppleKeySpec> = all.flatMap { store -> store.appleKeys }
 }

@@ -18,7 +18,7 @@ import java.util.Properties
 // implementation(projects.shared) and DELETES any stale copy of its own (see
 // composeApp/build.gradle.kts). Generated here: core.network.SupabaseConfig,
 // core.build.AppVersionConfig / AppBuildConfig, features.trakt.TraktConfig,
-// features.simkl.SimklConfig, features.debrid.PremiumizeConfig,
+// features.simkl.SimklConfig, features.mdblist.MdbListConfig, features.debrid.PremiumizeConfig,
 // features.player.skip.IntroDbConfig, features.details.ImdbEpisodeRatingsConfig and
 // features.tmdb.TmdbConfig. The remaining feature configs (community) stay in composeApp.
 abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
@@ -57,6 +57,9 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
 
     @get:Input
     abstract val simklAppName: Property<String>
+
+    @get:Input
+    abstract val mdbListClientId: Property<String>
 
     @get:Input
     abstract val premiumizeClientId: Property<String>
@@ -159,6 +162,22 @@ abstract class GenerateSharedRuntimeConfigsTask : DefaultTask() {
                 |object SimklConfig {
                 |    const val CLIENT_ID = "${simklClientId.get()}"
                 |    const val APP_NAME = "${simklAppName.get()}"
+                |}
+                """.trimMargin()
+            )
+        }
+        // Upstream 8fe994bd: MDBList account device-flow client id. Upstream's first cut shipped a
+        // hard-coded default client id; its 550f6f04 merge (2026-09-21) replaced that default with
+        // "" so the id now has to come from local.properties / the environment. Mirrored: no
+        // default. A blank id makes MdbListAuthRepository.hasRequiredCredentials() false.
+        outDir.resolve("com/nuvio/app/features/mdblist").apply {
+            mkdirs()
+            resolve("MdbListConfig.kt").writeText(
+                """
+                |package com.nuvio.app.features.mdblist
+                |
+                |object MdbListConfig {
+                |    const val CLIENT_ID = "${mdbListClientId.get()}"
                 |}
                 """.trimMargin()
             )
@@ -286,6 +305,7 @@ val generateSharedRuntimeConfigs = tasks.register<GenerateSharedRuntimeConfigsTa
     traktRedirectUri.set(sharedRuntimeConfigValue("TRAKT_REDIRECT_URI", "nuvio://auth/trakt"))
     simklClientId.set(sharedRuntimeConfigValue("SIMKL_CLIENT_ID"))
     simklAppName.set(sharedRuntimeConfigValue("SIMKL_APP_NAME", "nuvio"))
+    mdbListClientId.set(sharedRuntimeConfigValue("MDBLIST_CLIENT_ID"))
     premiumizeClientId.set(sharedRuntimeConfigValue("PREMIUMIZE_CLIENT_ID"))
     introDbUrl.set(sharedRuntimeConfigValue("INTRODB_API_URL"))
     imdbRatingsBaseUrl.set(sharedRuntimeConfigValue("IMDB_RATINGS_API_BASE_URL"))
@@ -380,11 +400,15 @@ kotlin {
             // AddonPlatform.android uses okhttp + IPv4FirstDns directly (matches composeApp).
             implementation("com.squareup.okhttp3:okhttp:4.12.0")
         }
-        // Mirrors composeApp's commonTest dependency declaration — kotlin-test only. Runs via the
+        // kotlin-test (as composeApp) plus upstream's coroutines-test. Runs via the
         // native test tasks (:shared:iosSimulatorArm64Test / :shared:tvosSimulatorArm64Test, need
         // a macOS simulator host) and, since the jvm() target above, :shared:jvmTest on any host.
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            // Upstream 8fe994bd: the MDBList auth/account tests use runTest / virtual time. Same
+            // inline coordinate upstream uses, so gradle/libs.versions.toml stays byte-identical
+            // to upstream's catalog.
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${libs.versions.kotlinx.coroutines.get()}")
         }
         // JUnit runner for kotlin-test on the jvm target (jvmMain itself needs no extra deps —
         // its actuals are plain java.* / java.time.* / java.net.*, see src/jvmMain).
