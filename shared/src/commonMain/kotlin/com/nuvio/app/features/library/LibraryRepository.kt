@@ -20,6 +20,7 @@ import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.TrackingLibraryProvider
 import com.nuvio.app.features.tracking.TrackingLibraryTab
 import com.nuvio.app.features.tracking.TrackingLibraryTabKind
+import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.tracking.TrackingRefreshIntent
 import com.nuvio.app.features.tracking.TrackingSettingsRepository
@@ -69,17 +70,26 @@ object LibraryRepository {
     init {
         ensureTrackingProvidersRegistered()
         syncScope.launch {
-            TrackingProviderRegistry.connectedProviderIds.collectLatest {
-                TrackingProviderRegistry.connectedLibraryProviders().forEach(TrackingLibraryProvider::prepare)
-                activeLibraryProvider()?.let { provider ->
-                    refreshLibraryProvider(
-                        provider = provider,
-                        reason = "connection state change",
-                        intent = provider.connectionRefreshIntent,
-                    )
+            // Fork: only library-capable connections matter here, and the ACTIVE library provider is
+            // re-pulled only when it (re)appears. Upstream re-pulled it on every connect/disconnect of
+            // any provider, so connecting MDBList while Trakt is the library source pulled Trakt again.
+            var refreshedActiveProviderId: TrackingProviderId? = null
+            TrackingProviderRegistry.connectedProviderIds
+                .map { ids -> ids.filterTo(linkedSetOf()) { id -> TrackingProviderRegistry.libraryProvider(id) != null } }
+                .distinctUntilChanged()
+                .collectLatest {
+                    TrackingProviderRegistry.connectedLibraryProviders().forEach(TrackingLibraryProvider::prepare)
+                    val provider = activeLibraryProvider()
+                    if (provider != null && provider.providerId != refreshedActiveProviderId) {
+                        refreshLibraryProvider(
+                            provider = provider,
+                            reason = "connection state change",
+                            intent = provider.connectionRefreshIntent,
+                        )
+                    }
+                    refreshedActiveProviderId = provider?.providerId
+                    publish()
                 }
-                publish()
-            }
         }
         syncScope.launch {
             TrackingSettingsRepository.uiState
@@ -433,6 +443,19 @@ object LibraryRepository {
             TrackingProviderRegistry.connectedLibraryProviders()
                 .flatMap { provider -> provider.snapshot().tabs },
         ).filter { tab -> item == null || tab.supportsContentType(item.type) }
+
+    internal fun listManagementContext(): LibraryManagementContext? {
+        val source = effectiveLibrarySourceMode()
+        val provider = activeLibraryProvider(source) ?: return null
+        if (provider.listManager == null) return null
+        val account = TrackingProviderRegistry.authProvider(provider.providerId) ?: return null
+        return LibraryManagementContext(ProfileRepository.activeProfileId, source, account.accountGeneration)
+    }
+
+    internal fun listManager(context: LibraryManagementContext): com.nuvio.app.features.tracking.TrackingListManager {
+        check(context == listManagementContext()) { "Library account changed" }
+        return requireNotNull(activeLibraryProvider(context.source)?.listManager)
+    }
 
     suspend fun getMembershipSnapshot(item: LibraryItem): Map<String, Boolean> {
         ensureLoaded()

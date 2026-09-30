@@ -28,9 +28,8 @@ import com.nuvio.app.features.watching.sync.TraktWatchedSyncAdapter
  * runs the list-writer / history-writer / scrobbler registrations, and `SimklAuthRepository.descriptor`
  * runs `TrackingProviderRegistry.register(this)`.
  *
- * MDBList (upstream 0a654ac4) registers through `MdbListTracker.register()`, as upstream does. In
- * phase 5.1 that registers the account/auth provider only (descriptor = AUTHENTICATION); its
- * watched/progress/library/scrobble ports arrive with phase 5.2.
+ * MDBList (upstream 0a654ac4) registers through `MdbListTracker.register()`, as upstream does: the
+ * auth provider plus its history-writer, scrobbler, progress, watched and library ports.
  */
 fun ensureTrackingProvidersRegistered() {
     TraktAuthRepository.descriptor

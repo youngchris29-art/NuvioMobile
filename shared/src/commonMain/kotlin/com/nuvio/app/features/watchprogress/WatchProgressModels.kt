@@ -61,6 +61,7 @@ data class WatchProgressEntry(
     override val trackingSourceUrl: String? = null,
     /** Stable server/storage identity. [videoId] remains the playback identity. */
     val progressKey: String? = null,
+    val excludedNextUpSeasons: Set<Int> = emptySet(),
 ) : TrackingAttributedItem {
     override val trackingContentId: String
         get() = parentMetaId

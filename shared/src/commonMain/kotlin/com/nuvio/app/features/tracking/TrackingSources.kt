@@ -6,19 +6,21 @@ import kotlinx.serialization.Serializable
 /**
  * Which backend owns "continue watching" / watched history for the active profile.
  *
- * Entry names and order match upstream (`TRAKT, SIMKL, NUVIO_SYNC`) so persisted preferences
+ * Entry names and order match upstream (`TRAKT, SIMKL, NUVIO_SYNC, MDBLIST`) so persisted preferences
  * round-trip identically — [fromStorage] and the `@Serializable` encoding are both name-based.
  */
 @Serializable
 enum class WatchProgressSource {
     TRAKT,
     SIMKL,
-    NUVIO_SYNC;
+    NUVIO_SYNC,
+    MDBLIST;
 
     val providerId: TrackingProviderId?
         get() = when (this) {
             TRAKT -> TrackingProviderId.TRAKT
             SIMKL -> TrackingProviderId.SIMKL
+            MDBLIST -> TrackingProviderId.MDBLIST
             NUVIO_SYNC -> null
         }
 
@@ -39,6 +41,7 @@ val LibrarySourceMode.providerId: TrackingProviderId?
         LibrarySourceMode.LOCAL -> null
         LibrarySourceMode.TRAKT -> TrackingProviderId.TRAKT
         LibrarySourceMode.SIMKL -> TrackingProviderId.SIMKL
+        LibrarySourceMode.MDBLIST -> TrackingProviderId.MDBLIST
     }
 
 fun effectiveWatchProgressSource(

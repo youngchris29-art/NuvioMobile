@@ -25,6 +25,14 @@ package com.nuvio.app.core.account
  */
 
 /**
+ * Keychain service holding the MDBList account tokens (generic-password items, account
+ * `"profile.<id>"`). One constant shared by the Apple persistence actual
+ * (`features.mdblist.MdbListAuthPersistence.apple.kt`), the registry entry below and its tests,
+ * so the wipe cannot drift from the store it erases.
+ */
+const val MDBLIST_KEYCHAIN_SERVICE = "com.nuvio.media.mdblist"
+
+/**
  * How an Apple (iOS/tvOS) `NSUserDefaults` key is actually spelled at the call site. Getting this
  * wrong means the wipe silently misses the data, so each variant mirrors one concrete call shape
  * observed in the storage `actual`s.
@@ -568,12 +576,22 @@ object AccountDataStores {
         AccountDataStore(
             // Upstream 8fe994bd MDBList account (device-flow OAuth) tokens + pending device code.
             // Apple: Keychain only (shared/appleMain MdbListAuthPersistence.apple.kt — service
-            // "com.nuvio.media.mdblist", account "profile.<id>"); it writes no defaults keys.
+            // MDBLIST_KEYCHAIN_SERVICE, account "profile.<id>"); it writes no defaults keys.
             // Android: AES-GCM ciphertext in the "nuvio_mdblist_auth" preferences file (the
             // AndroidKeyStore key itself is not account data and stays).
             name = "MdbListAuthPersistence",
             androidPreferences = "nuvio_mdblist_auth",
-            appleKeys = listOf(AppleKeySpec.Keychain("com.nuvio.media.mdblist")),
+            appleKeys = listOf(AppleKeySpec.Keychain(MDBLIST_KEYCHAIN_SERVICE)),
+        ),
+        AccountDataStore(
+            // Upstream 53c441c0 MDBList sync snapshot (watched history + playback + dropped).
+            // Apple: fork deviation — a PayloadFileStore subdirectory (files
+            // "mdblist_sync_snapshot_<profileId>.json"), NOT upstream's separate
+            // "nuvio_mdblist_sync" NSUserDefaults suite; it never writes defaults keys.
+            // Android: upstream's "nuvio_mdblist_sync" preferences file, keys "profile.<id>".
+            name = "PlatformMdbListSyncStorage",
+            androidPreferences = "nuvio_mdblist_sync",
+            appleKeys = listOf(AppleKeySpec.FileStore("MdbListSync")),
         ),
         AccountDataStore(
             name = "SimklSyncStorage",

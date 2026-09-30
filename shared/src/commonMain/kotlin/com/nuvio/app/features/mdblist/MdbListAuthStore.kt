@@ -51,6 +51,21 @@ class MdbListAuthStore(
         publish()
     }
 
+    /**
+     * Fork: re-reads the current profile's persisted credentials (used by `MdbListTracker` after a
+     * failed Keychain read, which otherwise stays "disconnected" for the whole session because
+     * [selectProfile] ignores the already-selected profile). Publishes and bumps the generation
+     * only when the reloaded value differs.
+     */
+    fun reloadCurrentProfile(): Boolean = synchronized(lock) {
+        val value = load(currentScope.profileId)
+        if (value == stored) return@synchronized false
+        currentScope = currentScope.copy(generation = currentScope.generation + 1)
+        stored = value
+        publish()
+        true
+    }
+
     fun saveSession(session: MdbListDeviceSession, deviceCode: String, scope: MdbListAuthScope): Boolean =
         mutate(scope, advanceGeneration = true) {
             it.copy(session = session, deviceCode = deviceCode)

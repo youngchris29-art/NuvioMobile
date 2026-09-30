@@ -152,6 +152,7 @@ object CatalogRepository {
                     items = items,
                     selected = target.sortOption,
                     sourceMode = libraryState.sourceMode,
+                    listKey = target.sectionType,
                 )
                     .map { it.toMetaPreview() }
                     .let(::dedupeCatalogItems)

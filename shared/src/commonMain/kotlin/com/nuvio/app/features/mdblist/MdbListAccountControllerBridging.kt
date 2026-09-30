@@ -1,5 +1,6 @@
 package com.nuvio.app.features.mdblist
 
+import co.touchlab.kermit.Logger
 import kotlinx.coroutines.CancellationException
 
 /*
@@ -15,6 +16,8 @@ import kotlinx.coroutines.CancellationException
  * acts on the store's CURRENT scope — the ObjC export drops Kotlin default arguments, so Swift
  * could not pass one anyway.
  */
+
+private val bridgingLog = Logger.withTag("MdbListAccountBridging")
 
 /**
  * Starts (or resumes a still-valid) device authorization and begins polling in the background.
@@ -36,23 +39,36 @@ suspend fun MdbListAccountController.disconnectChecked() {
 
 /**
  * Restarts polling for a pending device authorization (e.g. the card reappeared, or the app came
- * back to the foreground). Returns the verification URL, or null when nothing is pending or the
- * account changed. Never throws.
+ * back to the foreground). Returns the verification URL, or null when nothing is pending, the
+ * account changed, or the call failed. Never throws: these are plain (non-`@Throws`) functions,
+ * so ANY exception reaching Swift would abort the process.
+ *
+ * Non-suspend, so catching `CancellationException` here swallows no coroutine cancellation — it
+ * is only ever the store's stale-scope signal.
  */
 fun MdbListAccountController.resumePollingSafely(): String? = try {
     resumePolling()
 } catch (_: CancellationException) {
     null
+} catch (error: Exception) {
+    bridgingLog.e(error) { "MDBList resumePolling failed" }
+    null
 }
 
 /**
  * Abandons a pending device authorization. Returns false (and does nothing) if the account
- * changed before the call landed. Never throws.
+ * changed before the call landed, or if clearing the pending session failed — e.g. the Apple
+ * persistence `check`s on the Keychain status (errSecMissingEntitlement -34018 on an unsigned
+ * simulator run, a transient errSecInteractionNotAllowed -25308) throw `IllegalStateException`.
+ * Never throws.
  */
 fun MdbListAccountController.cancelSafely(): Boolean = try {
     cancel()
     true
 } catch (_: CancellationException) {
+    false
+} catch (error: Exception) {
+    bridgingLog.e(error) { "MDBList cancel failed" }
     false
 }
 

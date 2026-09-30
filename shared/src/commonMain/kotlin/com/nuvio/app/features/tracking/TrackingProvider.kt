@@ -19,10 +19,6 @@ import kotlinx.atomicfu.locks.synchronized
  * [TRAKT], [SIMKL] and [MDBLIST] have registered providers (see
  * `ensureTrackingProvidersRegistered`). The storage ids are upstream-faithful so the parsing in
  * [TrackingMedia]/[TrackingAttribution] round-trips persisted attributions unchanged.
- *
- * [MDBLIST] (upstream 0a654ac4) is registered for account connection only in this phase: its
- * descriptor advertises AUTHENTICATION alone, so no sync/library/progress/scrobble port resolves
- * to it until phase 5.2 ports those.
  */
 enum class TrackingProviderId(
     val storageId: String,

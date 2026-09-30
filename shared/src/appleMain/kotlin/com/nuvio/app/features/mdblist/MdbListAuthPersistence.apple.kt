@@ -1,10 +1,12 @@
 package com.nuvio.app.features.mdblist
 
-// Upstream 8fe994bd (iosMain) ported to :shared appleMain so iOS AND tvOS use it. Verbatim.
+// Upstream 8fe994bd (iosMain) ported to :shared appleMain so iOS AND tvOS use it. Verbatim except
+// the service literal, now the shared MDBLIST_KEYCHAIN_SERVICE constant (same value).
 // Tokens live in the Keychain: generic-password items, service "com.nuvio.media.mdblist",
 // account "profile.<id>". The sign-out wipe erases the whole service through
 // core.storage.AppleKeychainStores (AccountDataStores entry "MdbListAuthPersistence").
 
+import com.nuvio.app.core.account.MDBLIST_KEYCHAIN_SERVICE
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.get
@@ -73,7 +75,7 @@ internal actual object PlatformMdbListAuthPersistence : MdbListAuthPersistence {
         CFDictionaryCreateMutable(null, 0L, kCFTypeDictionaryKeyCallBacks.ptr, kCFTypeDictionaryValueCallBacks.ptr) ?: error("Unable to create credential query")
 
     private inline fun <T> query(profileId: Int?, block: (CFMutableDictionaryRef) -> T): T {
-        val service = CFStringCreateWithCString(null, "com.nuvio.media.mdblist", kCFStringEncodingUTF8)
+        val service = CFStringCreateWithCString(null, MDBLIST_KEYCHAIN_SERVICE, kCFStringEncodingUTF8)
             ?: error("Unable to encode credential service")
         val account = profileId?.let { CFStringCreateWithCString(null, "profile.$it", kCFStringEncodingUTF8) }
         val query = dictionary()

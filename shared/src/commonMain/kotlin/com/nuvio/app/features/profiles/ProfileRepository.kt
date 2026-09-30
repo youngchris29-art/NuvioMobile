@@ -9,6 +9,9 @@ import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
 import com.nuvio.app.core.sync.putSyncOriginClientId
+import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
+import com.nuvio.app.features.tracking.TrackingProviderRegistry
+import kotlinx.coroutines.CancellationException
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlinx.coroutines.CoroutineScope
@@ -233,6 +236,7 @@ object ProfileRepository {
                 activeProfileIndex = _state.value.activeProfile!!.profileIndex
             }
             persist()
+            removeDeletedProfileTrackerData(profileIndex)
             return
         }
         try {
@@ -241,10 +245,36 @@ object ProfileRepository {
                 putSyncOriginClientId()
             }
             SupabaseProvider.client.postgrest.rpc("sync_delete_profile_data", params)
+            // Only after the server delete succeeded: a failed RPC leaves the profile alive, and
+            // wiping its local tracker credentials then would silently disconnect it.
+            removeDeletedProfileTrackerData(profileIndex)
             pullProfiles()
         } catch (e: Throwable) {
             if (AuthRepository.signOutIfSessionInvalid(e, "Profile delete")) return
             log.e(e) { "Failed to delete profile $profileIndex" }
+        }
+    }
+
+    /**
+     * Fork: erase a deleted profile's locally stored tracker data (Trakt/Simkl auth + Simkl sync
+     * snapshot + MDBList Keychain tokens, via each registered `TrackingProfileStore`'s
+     * `removeStoredProfile`). Profile slots are reused, so without this a NEW profile created in
+     * slot [profileIndex] inherited the previous person's connected accounts — and would sync its
+     * watch history into them. Upstream's `TrackingProviderRegistry.removeStoredProfiles` had no
+     * caller in this fork before this.
+     *
+     * Registration is forced first: nothing guarantees the tracker objects were touched this
+     * session, and an unregistered store would silently keep its data. Never throws (the delete
+     * itself already succeeded); a store failure is logged.
+     */
+    internal fun removeDeletedProfileTrackerData(profileIndex: Int) {
+        try {
+            ensureTrackingProvidersRegistered()
+            TrackingProviderRegistry.removeStoredProfiles(listOf(profileIndex))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            log.e(error) { "Failed to remove local tracker data for deleted profile $profileIndex" }
         }
     }
 

@@ -9,6 +9,7 @@ import com.nuvio.app.features.tracking.TrackingCapability
 import com.nuvio.app.features.tracking.TrackingProviderDescriptor
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
 
 /**
  * Flattened, Swift-friendly view of the MDBList account for the tvOS account card (fork-only;
@@ -52,18 +54,20 @@ data class MdbListAccountUiState(
 }
 
 /**
- * MDBList as a tracking provider — upstream 0a654ac4's `MdbListTracker`, AUTH/ACCOUNT SURFACE ONLY
- * (phase 5.1). Upstream's object also owns the sync repository, library service, history and
- * scrobble services and the tracking ports built on them; those land in phase 5.2 (see the
- * `TODO(F5.2)` markers). Until then the descriptor advertises [TrackingCapability.AUTHENTICATION]
- * alone, so the registry never routes watched/progress/library/scrobble work to MDBList.
+ * MDBList as a tracking provider — upstream 0a654ac4/425e4d8a's `MdbListTracker`: account auth,
+ * the sync repository (watched history, playback, dropped) and library service, and the
+ * watched/progress/library/history/scrobble ports registered in [register].
+ *
+ * Not ported: upstream 3f0d07be's `ratings` client (the fork's ratings still use the API-key
+ * `MdbListMetadataService`).
  *
  * Fork deviations from upstream (each marked inline):
  *  - network engine built lazily, so touching this object on the JVM test target (which has no
  *    Ktor engine) or at app startup never constructs an HttpClient;
  *  - [clearLocalState] is memory-only (the fork's `TrackingProfileStore` contract): the on-disk
  *    erase belongs to `core.account.AccountDataStores` (Keychain service
- *    `com.nuvio.media.mdblist` on Apple, `nuvio_mdblist_auth` on Android);
+ *    `com.nuvio.media.mdblist` + file store `MdbListSync` on Apple, `nuvio_mdblist_auth` +
+ *    `nuvio_mdblist_sync` on Android);
  *  - fork-local `ensureLoaded(profileId)` override for per-profile credential isolation;
  *  - `…Checked` / safe twins for Swift (see MdbListAccountControllerBridging.kt) and
  *    [accountUiState].
@@ -85,12 +89,20 @@ object MdbListTracker : TrackingAuthProvider {
      *    at app startup (Swift main thread on tvOS) and from repository tests: an unreadable
      *    Keychain (e.g. errSecMissingEntitlement in a test executable) must not crash either.
      *    Writes still throw, so a failed connect surfaces through the controller's status.
+     *    [failedProfileId] remembers the failure so [ensureLoaded] retries the read (a transient
+     *    Keychain error then recovers without a relaunch).
      */
     private object TrackerAuthPersistence : MdbListAuthPersistence {
+        @Volatile
+        var failedProfileId: Int? = null
+
         override fun read(profileId: Int): String? = try {
-            PlatformMdbListAuthPersistence.read(profileId)
+            PlatformMdbListAuthPersistence.read(profileId).also {
+                if (failedProfileId == profileId) failedProfileId = null
+            }
         } catch (error: Exception) {
             log.w(error) { "MDBList credentials unreadable for profile $profileId; treating as disconnected" }
+            failedProfileId = profileId
             null
         }
 
@@ -106,20 +118,29 @@ object MdbListTracker : TrackingAuthProvider {
     private val http = MdbListHttpClient(MdbListHttpEngine { request -> networkEngine.execute(request) })
     val auth = MdbListAuthRepository(http, configuration, store)
     internal val api = MdbListApiClient(http, auth, store)
-    // TODO(F5.2): ratings client, sync repository, library service, history/scrobble services.
+    val sync = MdbListSyncRepository(PlatformMdbListSyncStorage, store, api, activeProfile, coroutineScope)
+    val library = MdbListLibraryService(api, sync, store, activeProfile, coroutineScope)
+    private val history = MdbListHistoryService(api, sync)
+    private val scrobble = MdbListScrobbleService(api, sync)
     val account = MdbListAccountController(auth, store, coroutineScope, { api.refreshUser(it) })
 
     private val authenticated = MutableStateFlow(isActiveAndAuthenticated(store.state.value))
     override val isAuthenticated: StateFlow<Boolean> = authenticated.asStateFlow()
     override val accountGeneration: Long get() = store.scope().generation
 
-    // TODO(F5.2): upstream also advertises WATCHED_READ/WRITE, PROGRESS_READ/WRITE, SCROBBLE and
-    // LIBRARY_READ/WRITE — add them together with the ports registered in [register].
     override val descriptor = TrackingProviderDescriptor(
         TrackingProviderId.MDBLIST,
         TrackingProviderId.MDBLIST.displayName,
-        setOf(TrackingCapability.AUTHENTICATION),
+        setOf(
+            TrackingCapability.AUTHENTICATION, TrackingCapability.WATCHED_READ, TrackingCapability.WATCHED_WRITE,
+            TrackingCapability.PROGRESS_READ, TrackingCapability.PROGRESS_WRITE, TrackingCapability.SCROBBLE,
+            TrackingCapability.LIBRARY_READ, TrackingCapability.LIBRARY_WRITE,
+        ),
     )
+    val writes = MdbListTrackingWrites(sync, history, scrobble)
+    val progressProvider = MdbListTrackingProgressProvider(sync, scrobble, store, activeProfile, ::ensureLoaded)
+    val watchedProvider = MdbListWatchedSyncAdapter(sync, history, store, activeProfile)
+    val libraryProvider = MdbListTrackingLibraryProvider(library, sync, ::ensureLoaded)
 
     /** Swift-facing account state for the tvOS account card; see [MdbListAccountUiState]. */
     val accountUiState: StateFlow<MdbListAccountUiState> =
@@ -141,8 +162,11 @@ object MdbListTracker : TrackingAuthProvider {
     fun register() {
         if (TrackingProviderRegistry.authProvider(providerId) === this) return
         TrackingProviderRegistry.register(this)
-        // TODO(F5.2): registerHistoryWriter / registerScrobbler (MdbListTrackingWrites),
-        // registerProgressProvider, registerWatchedProvider, registerLibraryProvider.
+        TrackingProviderRegistry.registerHistoryWriter(writes)
+        TrackingProviderRegistry.registerScrobbler(writes)
+        TrackingProviderRegistry.registerProgressProvider(progressProvider)
+        TrackingProviderRegistry.registerWatchedProvider(watchedProvider)
+        TrackingProviderRegistry.registerLibraryProvider(libraryProvider)
     }
 
     /** The device flow needs a client id; the build supplies it via `MDBLIST_CLIENT_ID`. */
@@ -150,7 +174,13 @@ object MdbListTracker : TrackingAuthProvider {
 
     override fun ensureLoaded() {
         if (activeProfile.value != ProfileRepository.activeProfileId) onProfileChanged()
+        retryFailedRead()
         authenticated.value = isActiveAndAuthenticated(store.state.value)
+    }
+
+    /** Fork: re-read once per call while the current profile's last credential read failed. */
+    private fun retryFailedRead() {
+        if (TrackerAuthPersistence.failedProfileId == store.scope().profileId) store.reloadCurrentProfile()
     }
 
     /**
@@ -162,6 +192,7 @@ object MdbListTracker : TrackingAuthProvider {
         if (activeProfile.value != profileId || store.scope().profileId != profileId) {
             selectProfile(profileId)
         }
+        retryFailedRead()
         authenticated.value = isActiveAndAuthenticated(store.state.value)
     }
 
@@ -180,9 +211,11 @@ object MdbListTracker : TrackingAuthProvider {
     override fun clearLocalState() {
         account.stopPolling()
         store.clearAllProfiles()
-        // TODO(F5.2): upstream also calls PlatformMdbListSyncStorage.clearAll() here; in the fork
-        // the sync storage's in-memory state resets here and its disk payload joins
-        // AccountDataStores instead.
+        // Fork: upstream also calls PlatformMdbListSyncStorage.clearAll() here. In the fork the
+        // disk payload is erased by the account wipe (AccountDataStores "PlatformMdbListSyncStorage");
+        // the sync repository and library service drop their in-memory state themselves when the
+        // store's auth state turns unauthenticated (their auth-state collectors clear what they
+        // published).
         authenticated.value = false
     }
 
@@ -193,7 +226,16 @@ object MdbListTracker : TrackingAuthProvider {
         } catch (error: Exception) {
             log.e(error) { "Failed to remove MDBList credentials for profile $profileId" }
         }
-        // TODO(F5.2): upstream also removes the profile's PlatformMdbListSyncStorage payload.
+        val scope = store.scope()
+        coroutineScope.launch {
+            try {
+                PlatformMdbListSyncStorage.remove(profileId) { store.checkScope(scope) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                log.e(error) { "Failed to remove MDBList sync cache for profile $profileId" }
+            }
+        }
     }
 
     private fun isActiveAndAuthenticated(state: MdbListAuthState): Boolean =

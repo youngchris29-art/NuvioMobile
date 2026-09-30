@@ -108,6 +108,13 @@ fun installTvOsSharedProviders() {
         override val customServerConnectionsEnabled: Boolean = true
     }
 
+    // Fork: reinstall guard for Keychain-backed credentials (MDBList account tokens). Keychain
+    // items outlive an app delete while NSUserDefaults do not, so a missing defaults sentinel means
+    // a fresh install: erase the previous install's Keychain stores before anything below (above
+    // all ensureTrackingProvidersRegistered(), which loads MdbListTracker's tokens) can read them.
+    // Touches only NSUserDefaults + the Keychain, so it cannot disturb the policy flip above.
+    com.nuvio.app.core.storage.AppleKeychainStores.deleteAllIfFreshInstall()
+
     // Active profile id → real ProfileRepository. `core.storage.ProfileScopedKey` reads this, so
     // persisted per-profile data (watch progress, library, collections, settings) is keyed to the
     // active profile instead of the hard-coded default id 1.

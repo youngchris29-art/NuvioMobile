@@ -168,17 +168,19 @@ class AccountDataStoresTest {
     }
 
     /**
-     * MDBList account tokens live in the Keychain (service "com.nuvio.media.mdblist", transcribed
-     * from MdbListAuthPersistence.apple.kt), not NSUserDefaults. A Keychain item outlives an app
+     * MDBList account tokens live in the Keychain under [MDBLIST_KEYCHAIN_SERVICE] (the constant the
+     * Apple persistence actual also uses), not NSUserDefaults. A Keychain item outlives an app
      * delete, so a registry miss here would leak a live OAuth refresh token across accounts.
      */
     @Test
     fun `mdblist account tokens are wiped on both platforms`() {
-        assertContains(AccountDataStores.appleKeychainServices(), "com.nuvio.media.mdblist")
+        // Pinned once: renaming the service would orphan every stored token on upgrade.
+        assertEquals("com.nuvio.media.mdblist", MDBLIST_KEYCHAIN_SERVICE)
+        assertContains(AccountDataStores.appleKeychainServices(), MDBLIST_KEYCHAIN_SERVICE)
         assertContains(AccountDataStores.androidPreferenceNames(), "nuvio_mdblist_auth")
         // A Keychain service is not a defaults key: it must not leak into the defaults projections.
-        assertTrue("com.nuvio.media.mdblist" !in AccountDataStores.applePlainKeys())
-        assertTrue(AccountDataStores.appleDynamicPrefixes().none { "com.nuvio.media.mdblist".startsWith(it) })
+        assertTrue(MDBLIST_KEYCHAIN_SERVICE !in AccountDataStores.applePlainKeys())
+        assertTrue(AccountDataStores.appleDynamicPrefixes().none { MDBLIST_KEYCHAIN_SERVICE.startsWith(it) })
     }
 
     /**
@@ -241,6 +243,21 @@ class AccountDataStoresTest {
             }
         }
         assertTrue(collisions.isEmpty(), "Unreported dynamic-prefix collisions: $collisions")
+    }
+
+    /**
+     * The Apple reinstall sentinel (`AppleKeychainStores.INSTALL_SENTINEL_KEY`, appleMain) must
+     * SURVIVE sign-out: if a wipe erased it, the next launch would treat the device as a fresh
+     * install and delete Keychain credentials connected after signing back in. So no registry key
+     * may name or sweep it. Literal duplicated because commonTest cannot see the appleMain constant.
+     */
+    @Test
+    fun `keychain install sentinel is never wiped by sign-out`() {
+        val sentinel = "keychain_install_generation"
+        assertTrue(sentinel !in AccountDataStores.applePlainKeys())
+        assertTrue(AccountDataStores.appleProfileScopedBases().none { sentinel.startsWith(it) })
+        assertTrue(AccountDataStores.appleProfileIndexedPrefixes().none { sentinel.startsWith(it) })
+        assertTrue(AccountDataStores.appleDynamicPrefixes().none { sentinel.startsWith(it) })
     }
 
     private fun assertNoDuplicates(values: List<String>, label: String) {

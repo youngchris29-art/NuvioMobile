@@ -358,6 +358,8 @@ private fun librarySourceModeLabel(source: LibrarySourceMode): String =
         LibrarySourceMode.TRAKT -> stringResource(Res.string.trakt_library_source_trakt)
         LibrarySourceMode.LOCAL -> stringResource(Res.string.trakt_library_source_nuvio)
         LibrarySourceMode.SIMKL -> stringResource(Res.string.tracking_source_simkl)
+        // Fork: no composeApp MDBList string resources yet; the provider's display name is fine.
+        LibrarySourceMode.MDBLIST -> "MDBList"
     }
 
 @Composable
@@ -366,6 +368,7 @@ private fun watchProgressSourceLabel(source: WatchProgressSource): String =
         WatchProgressSource.TRAKT -> stringResource(Res.string.trakt_watch_progress_source_trakt)
         WatchProgressSource.NUVIO_SYNC -> stringResource(Res.string.trakt_watch_progress_source_nuvio)
         WatchProgressSource.SIMKL -> stringResource(Res.string.tracking_source_simkl)
+        WatchProgressSource.MDBLIST -> "MDBList"
     }
 
 @Composable

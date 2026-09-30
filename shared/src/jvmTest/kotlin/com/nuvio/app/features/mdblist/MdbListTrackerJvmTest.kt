@@ -2,6 +2,8 @@ package com.nuvio.app.features.mdblist
 
 import com.nuvio.app.features.tracking.TrackingCapability
 import com.nuvio.app.features.tracking.TrackingProviderId
+import com.nuvio.app.features.tracking.TrackingProviderRegistry
+import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -9,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -28,14 +31,42 @@ class MdbListTrackerJvmTest {
     @AfterTest
     fun reset() {
         PlatformMdbListAuthPersistence.clear()
+        PlatformMdbListSyncStorage.clearAll()
         MdbListTracker.clearLocalState()
     }
 
     @Test
-    fun phaseOneRegistersAccountConnectionOnly() {
+    fun descriptorAdvertisesUpstreamCapabilities() {
         assertEquals(TrackingProviderId.MDBLIST, MdbListTracker.descriptor.id)
         assertEquals("MDBList", MdbListTracker.descriptor.displayName)
-        assertEquals(setOf(TrackingCapability.AUTHENTICATION), MdbListTracker.descriptor.capabilities)
+        assertEquals(
+            setOf(
+                TrackingCapability.AUTHENTICATION, TrackingCapability.WATCHED_READ, TrackingCapability.WATCHED_WRITE,
+                TrackingCapability.PROGRESS_READ, TrackingCapability.PROGRESS_WRITE, TrackingCapability.SCROBBLE,
+                TrackingCapability.LIBRARY_READ, TrackingCapability.LIBRARY_WRITE,
+            ),
+            MdbListTracker.descriptor.capabilities,
+        )
+    }
+
+    @Test
+    fun registerInstallsEveryPort() {
+        MdbListTracker.register()
+        assertSame(MdbListTracker, TrackingProviderRegistry.authProvider(TrackingProviderId.MDBLIST))
+        assertSame(MdbListTracker.libraryProvider, TrackingProviderRegistry.libraryProvider(TrackingProviderId.MDBLIST))
+        assertSame(MdbListTracker.progressProvider, TrackingProviderRegistry.progressProvider(TrackingProviderId.MDBLIST))
+        assertSame(MdbListTracker.watchedProvider, TrackingProviderRegistry.watchedProvider(TrackingProviderId.MDBLIST))
+    }
+
+    @Test
+    fun removeStoredProfileAlsoErasesTheSyncCache() = runBlocking {
+        PlatformMdbListSyncStorage.save(profileId, "{}") {}
+        MdbListTracker.removeStoredProfile(profileId)
+        repeat(200) {
+            if (PlatformMdbListSyncStorage.load(profileId) == null) return@runBlocking
+            Thread.sleep(10)
+        }
+        assertNull(PlatformMdbListSyncStorage.load(profileId))
     }
 
     @Test
