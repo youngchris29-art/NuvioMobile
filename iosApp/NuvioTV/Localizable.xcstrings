@@ -2287,7 +2287,40 @@
     "A muted trailer plays behind the description on detail pages": {},
     "A rotating banner built from up to 2 of your catalogs, switching to the focused title as you browse": {},
     "A row under Continue Watching with your shows' next episodes airing in the next 14 days": {},
-    "API key saved": {},
+    "API key saved": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API-Schlüssel gespeichert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clave de API guardada"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clé API enregistrée"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chiave API salvata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã lưu khóa API"
+          }
+        }
+      }
+    },
     "About": {
       "localizations": {
         "fr": {
@@ -2560,36 +2593,36 @@
         }
       }
     },
-    "Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com → Preferences → API Access. Titles you open after enabling will show the ratings.": {
+    "Show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Connect MDBList in Account & Services, or add a free API key from mdblist.com → Preferences → API Access. Titles you open afterwards will show the ratings.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Füge einen kostenlosen MDBList-API-Schlüssel hinzu, um IMDb-, Rotten-Tomatoes-, Metacritic-, Trakt- und Letterboxd-Bewertungen in den Details eines Titels anzuzeigen. Erstelle einen unter mdblist.com → Preferences → API Access. Titel, die du nach dem Aktivieren öffnest, zeigen die Bewertungen an."
+            "value": "Zeige IMDb-, Rotten-Tomatoes-, Metacritic-, Trakt- und Letterboxd-Bewertungen in den Details eines Titels an. Verbinde MDBList unter Konto & Dienste oder füge einen kostenlosen API-Schlüssel von mdblist.com → Preferences → API Access hinzu. Titel, die du danach öffnest, zeigen die Bewertungen an."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Añade una clave API gratuita de MDBList para mostrar las calificaciones de IMDb, Rotten Tomatoes, Metacritic, Trakt y Letterboxd en los detalles del título. Crea una en mdblist.com → Preferences → API Access. Los títulos que abras después de habilitar mostrarán las calificaciones."
+            "value": "Muestra las calificaciones de IMDb, Rotten Tomatoes, Metacritic, Trakt y Letterboxd en los detalles del título. Conecta MDBList en Cuenta y servicios, o añade una clave API gratuita de mdblist.com → Preferences → API Access. Los títulos que abras después mostrarán las calificaciones."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ajoutez une clé API MDBList gratuite pour afficher les notes IMDb, Rotten Tomatoes, Metacritic, Trakt et Letterboxd dans les détails d'un titre. Créez-en une sur mdblist.com → Preferences → API Access. Les titres que vous ouvrirez après activation afficheront les notes."
+            "value": "Affichez les notes IMDb, Rotten Tomatoes, Metacritic, Trakt et Letterboxd dans les détails d'un titre. Connectez MDBList dans Compte et services, ou ajoutez une clé API gratuite depuis mdblist.com → Preferences → API Access. Les titres que vous ouvrirez ensuite afficheront les notes."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aggiungi una chiave API MDBList gratuita per mostrare i voti di IMDb, Rotten Tomatoes, Metacritic, Trakt e Letterboxd nei dettagli del titolo. Creane una su mdblist.com → Preferenze → Accesso API. I titoli che apri dopo l'abilitazione mostreranno i voti."
+            "value": "Mostra le valutazioni di IMDb, Rotten Tomatoes, Metacritic, Trakt e Letterboxd nei dettagli di un titolo. Collega MDBList in Account e servizi, oppure aggiungi una chiave API gratuita da mdblist.com → Preferences → API Access. I titoli che aprirai dopo mostreranno le valutazioni."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Thêm API key MDBList miễn phí để hiển thị điểm IMDb, Rotten Tomatoes, Metacritic, Trakt và Letterboxd trong phần Chi tiết của phim. Tạo key tại mdblist.com → Preferences → API Access. Các phim mở sau khi bật sẽ hiển thị điểm đánh giá."
+            "value": "Hiển thị điểm IMDb, Rotten Tomatoes, Metacritic, Trakt và Letterboxd trong phần thông tin của một tiêu đề. Kết nối MDBList trong Tài khoản & dịch vụ, hoặc thêm khóa API miễn phí từ mdblist.com → Preferences → API Access. Các tiêu đề bạn mở sau đó sẽ hiển thị điểm."
           }
         }
       }

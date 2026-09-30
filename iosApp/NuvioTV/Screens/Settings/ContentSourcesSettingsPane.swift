@@ -67,7 +67,7 @@ struct ContentSourcesSettingsPane: View {
             }
 
             SettingsSection(String(localized: "Ratings (MDBList)")) {
-                Text("Add a free MDBList API key to show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Create one at mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open after enabling will show the ratings.")
+                Text("Show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Connect MDBList in Account & Services, or add a free API key from mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open afterwards will show the ratings.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
