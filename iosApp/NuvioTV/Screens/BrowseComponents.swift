@@ -348,6 +348,19 @@ enum PinnedRowTitle {
         /// would otherwise reserve zero room for a lift.
         nonisolated var reachHoldsLiftEffective: Bool { reachHoldsLift && noZoom }
 
+        /// BUG-87/89 zoom-on reach hold (2026-09-30, `zoom-on-title-fix-plan.md` option A; backing
+        /// key `PinnedRowTitle.zoomReachHoldKey`, no Settings row yet). Memberwise default `false`
+        /// for source compatibility — the APP default is ON, resolved via `resolveZoomReachHold`.
+        /// When effective, `PinnedRowGeometry.plan` raises the top-reach floor by
+        /// `Theme.Size.heroPinnedRowZoomReachHold` (capped at `heroPinnedRowTopReachHoldCap`) so
+        /// the engine's own −12 rest lands inside the zoom-on band. Like `reachHoldsLift`, it never
+        /// reaches `focusLiftAllowance`: the lift is unchanged, only the reach grows.
+        var zoomReachHold: Bool = false
+
+        /// The mirror of `reachHoldsLiftEffective`: inert in No Zoom, whose own hold already rests
+        /// in band (the extra 6pt would only cost rest range there).
+        nonisolated var zoomReachHoldEffective: Bool { zoomReachHold && !noZoom }
+
         /// Live snapshot for call sites with no SwiftUI context to observe from. This is the
         /// DEFAULT, not the primary path: every call that matters — `reading` from the tracking
         /// modifier, and the probe — is handed explicit `@AppStorage`-backed flags, and it is the
@@ -355,7 +368,8 @@ enum PinnedRowTitle {
         nonisolated static var current: FocusModeFlags {
             FocusModeFlags(noZoom: UserDefaults.standard.bool(forKey: "no_zoom_on_focus"),
                            accentRing: UserDefaults.standard.bool(forKey: "accent_focus_ring"),
-                           reachHoldsLift: resolveReachHoldsLift())
+                           reachHoldsLift: resolveReachHoldsLift(),
+                           zoomReachHold: resolveZoomReachHold())
         }
     }
 
@@ -386,6 +400,23 @@ enum PinnedRowTitle {
     nonisolated static func resolveReachHoldsLift(observing stored: Bool) -> Bool {
         _ = stored
         return resolveReachHoldsLift()
+    }
+
+    /// Backing key for the zoom-on reach hold (`FocusModeFlags.zoomReachHold`, 2026-09-30). No
+    /// About row today; a UI test flips it with `-debug.pinnedZoomReachHold NO`.
+    nonisolated static let zoomReachHoldKey = "debug.pinnedZoomReachHold"
+
+    /// Default ON: TRUE when the key was never written; otherwise `bool(forKey:)`, which also
+    /// coerces a UI test's argument-domain "YES"/"NO" string. Same shape as `resolveReachHoldsLift`.
+    nonisolated static func resolveZoomReachHold(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: zoomReachHoldKey) == nil ? true : defaults.bool(forKey: zoomReachHoldKey)
+    }
+
+    /// View-side form: referencing the `@AppStorage` value keeps the view observing the key; the
+    /// resolved value (launch argument and never-written default included) is what is used.
+    nonisolated static func resolveZoomReachHold(observing stored: Bool) -> Bool {
+        _ = stored
+        return resolveZoomReachHold()
     }
 
     /// How far the ACTIVE focus treatment raises a focused card's artwork.
@@ -1052,6 +1083,9 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// 2026-09-30. Observed here; the value used is `PinnedRowTitle.resolveReachHoldsLift()` in `focusMode` below — see that static's doc for why the
     /// bare `@AppStorage` read alone would miss a UI test's launch argument.
     @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
+    /// 2026-09-30 zoom-on reach hold, default ON; observed here, resolved via
+    /// `PinnedRowTitle.resolveZoomReachHold(observing:)` like the No Zoom hold above.
+    @AppStorage(PinnedRowTitle.zoomReachHoldKey) private var zoomReachHold = true
 
     /// Last geometry this title measured plus its live focus state, so an out-of-band trigger — a
     /// focus-mode change, or the corrector's stand-down — can re-derive a full `Reading` with no
@@ -1063,7 +1097,8 @@ private struct PinnedRowTitleTracking: ViewModifier {
     private var focusMode: PinnedRowTitle.FocusModeFlags {
         PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
                                       accentRing: accentFocusRing,
-                                      reachHoldsLift: PinnedRowTitle.resolveReachHoldsLift(observing: noZoomReachHoldsLift))
+                                      reachHoldsLift: PinnedRowTitle.resolveReachHoldsLift(observing: noZoomReachHoldsLift),
+                                      zoomReachHold: PinnedRowTitle.resolveZoomReachHold(observing: zoomReachHold))
     }
 
     func body(content: Content) -> some View {
@@ -2237,6 +2272,63 @@ enum PinnedRowSettle {
         mutating func forgetHop() { lastRowKey = nil; lastOffsetY = 0 }
     }
 
+    /// 2026-09-30 (`zoom-on-title-fix-plan.md` §2.C(ii)): how far the rows scroll view actually
+    /// travelled TOWARD one fired correction's target before the next settle judged it.
+    ///
+    /// The pull-back detector reads "the row is back within `pullBackTolerance` of the margin the
+    /// correction was fired from" as the focus engine fighting the correction. The 2026-09-30
+    /// device walk showed a second way to end up there: the `scrollTo(y:)` animation lost to the
+    /// engine's own final tail step and the offset NEVER MOVED toward the target (4552 → 4553
+    /// against a 4540 target, twice). Counting those as pull-backs disarmed the corrector for the
+    /// whole walk direction and produced 26 title fades. So the offset is sampled from `noteScroll`
+    /// while the correction is outstanding and its BEST progress is kept: a real pull-back reaches
+    /// the target and is then moved back (progress ≈ 100 %), a dropped correction never gets
+    /// going (progress < `droppedFraction`). The value type keeps the classification unit-testable.
+    nonisolated struct CorrectionProgress: Equatable, Sendable {
+        /// Below this fraction of the issued nudge, the correction never applied.
+        static let droppedFraction: CGFloat = 0.25
+
+        var firedY: CGFloat
+        var targetY: CGFloat
+        /// Best signed travel toward `targetY` seen since firing (negative = moved away).
+        private(set) var maxProgress: CGFloat = 0
+
+        init(firedY: CGFloat, targetY: CGFloat) {
+            self.firedY = firedY
+            self.targetY = targetY
+        }
+
+        /// The signed nudge the correction asked for, in offset space.
+        var nudge: CGFloat { targetY - firedY }
+
+        mutating func note(offsetY: CGFloat) {
+            let direction: CGFloat = nudge >= 0 ? 1 : -1
+            maxProgress = max(maxProgress, (offsetY - firedY) * direction)
+        }
+
+        /// The correction never moved the offset a quarter of the way to its target.
+        var dropped: Bool { maxProgress < Self.droppedFraction * abs(nudge) }
+    }
+
+    /// What a rest back at a correction's origin margin turned out to be.
+    nonisolated enum CorrectionReturn: Equatable, Sendable {
+        /// The correction applied and the engine put the row back: a real pull-back.
+        case pulledBack
+        /// The correction never applied (`CorrectionProgress.dropped`): not the engine fighting
+        /// us, so it must not spend the direction's pull-back budget.
+        case dropped
+    }
+
+    /// Classifies a return to the origin margin and, ONLY for a real pull-back, records it in the
+    /// ledger. A dropped correction leaves `ledger` untouched. No retry is issued either way —
+    /// the caller stands the rest down to the belt exactly as it does for a pull-back.
+    nonisolated static func recordReturn(_ progress: CorrectionProgress,
+                                         into ledger: inout PullBackLedger) -> CorrectionReturn {
+        if progress.dropped { return .dropped }
+        ledger.notePullBack()
+        return .pulledBack
+    }
+
     /// What one fired correction promised, so the next settle can check it landed.
     // `nonisolated`: same @Sendable-transform requirement as PinnedRowTitle.Reading above.
     nonisolated struct Verification: Sendable {
@@ -2324,7 +2416,11 @@ enum PinnedRowSettle {
     /// own margin against this to detect the focus engine pulling the row straight back — see the
     /// pull-back paragraph in the header. Cleared by `invalidateEpoch` (a different row's rest can
     /// never be evidence about this one) but NOT by a good rest, which is the whole point.
-    nonisolated(unsafe) private static var lastCorrection: (rowKey: String, fromMargin: CGFloat, at: Date)?
+    ///
+    /// `progress` (2026-09-30) is sampled by `noteScroll` while the correction is outstanding, so
+    /// the detector can tell a pull-back from a correction that never applied (`DROPPED`).
+    nonisolated(unsafe) private static var lastCorrection: (rowKey: String, fromMargin: CGFloat, at: Date,
+                                                            progress: CorrectionProgress)?
     /// Session totals, not host-scoped: a device that pulls corrections back does it everywhere.
     /// BUG-112 (Item B) scopes the brake itself per WALK DIRECTION rather than dropping the
     /// session-wide framing entirely — see `PullBackLedger`.
@@ -2739,6 +2835,8 @@ enum PinnedRowSettle {
     nonisolated static func noteScroll(_ newSample: ScrollSample) -> Int? {
         let previous = sample?.offsetY
         sample = newSample
+        // 2026-09-30 §2.C(ii): track how far an outstanding correction actually got.
+        lastCorrection?.progress.note(offsetY: newSample.offsetY)
         let now = Date()
         let step: CGFloat? = previous.map { abs(newSample.offsetY - $0) }
 
@@ -3201,15 +3299,24 @@ enum PinnedRowSettle {
         // fires from an OUT-of-band margin, so a landing within 4pt of it can only be in band
         // through the ±2 membership slack, and `standDownFastPath` re-checks the title's own
         // acceptability before hiding anything.
+        //
+        // 2026-09-30 (§2.C(ii)): a return to the origin margin whose correction never moved the
+        // offset a quarter of the way to its target is a DROPPED correction (the `scrollTo(y:)`
+        // animation lost to the engine's own tail), not a pull-back — it does NOT spend the walk
+        // direction's pull-back budget. It is handed to the belt like a pull-back and never
+        // re-issued.
         var pulledBack = false
+        var dropped: CorrectionProgress?
         if let last = lastCorrection,
            last.rowKey == m.rowKey,
            abs(m.margin - last.fromMargin) <= pullBackTolerance,
            Date().timeIntervalSince(last.at) < 2 {
-            pulledBack = true
             pullBackFrom = last.fromMargin
             lastCorrection = nil
-            pullBack.notePullBack()
+            switch recordReturn(last.progress, into: &pullBack) {
+            case .pulledBack: pulledBack = true
+            case .dropped: dropped = last.progress
+            }
         }
 
         let cap = maxSlideCapForReport
@@ -3413,7 +3520,21 @@ enum PinnedRowSettle {
             // unfixable rest — without it `standDown` would notify once per row per host and every
             // later episode would fall back to the belt's timers.
             if standDownRow == m.rowKey { standDownRow = nil }
+            // §2.C(iv): mirror the in-band decision to the console, not only the pane.
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0") }
             return Plan(report: line + " nudge=0", targetY: nil)
+        }
+        // §2.C(ii): the correction never applied. Same terminal handoff as a pull-back (the belt
+        // owns this rest, no re-issue), but the ledger was left untouched above.
+        if let dropped {
+            NSLog("[HomeScrollProbe] settle %@",
+                  "DROPPED row=\(m.rowKey) nudge=\(Int(dropped.nudge.rounded()))"
+                    + " moved=\(Int(dropped.maxProgress.rounded()))"
+                    + " from=\(Int(pullBackFrom.rounded())) landed=\(Int(m.margin.rounded()))"
+                    + " pull=\(pullBack.total)"
+                    + " — the correction never applied; not counted as a pull-back")
+            standDown(rowKey: m.rowKey, reason: "dropped")
+            return Plan(report: line + " nudge=0 dropped=1", targetY: nil)
         }
         // The pull-back detected above (the counters already moved, so `pull=`/`pbDisarm=` on this
         // line are current). Hand the rest to the belt at once — the title is what is at stake, and
@@ -3429,10 +3550,17 @@ enum PinnedRowSettle {
             }
             return Plan(report: line + " nudge=0 pullback=1", targetY: nil)
         }
-        guard !disarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
+        guard !disarmed else {
+            // §2.C(iv): console mirror, same text the pane gets.
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 disarmed=1") }
+            return Plan(report: line + " nudge=0 disarmed=1", targetY: nil)
+        }
         // Same terminal outcome as `disarmed`, different cause — `pbDisarm=1` on the line is what
         // tells the two apart, so the existing `disarmed=1` spelling is kept for both.
-        guard !pullBack.disarmed else { return Plan(report: line + " nudge=0 disarmed=1", targetY: nil) }
+        guard !pullBack.disarmed else {
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 disarmed=1") }
+            return Plan(report: line + " nudge=0 disarmed=1", targetY: nil)
+        }
         // Wave 10 gate knob: with the hero compression in place an unsatisfiable rest is no longer
         // reachable at Large by walking, so test48's premise needs a way to put one back. Disarming
         // the corrector leaves a deep park uncorrected, which is exactly the geometry the belt's
@@ -3603,7 +3731,8 @@ enum PinnedRowSettle {
         // next settle can tell "it landed and stayed" from "the engine put it straight back".
         let firedAt = Date()
         correctionsFired[m.rowKey, default: []].append(firedAt)
-        lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt)
+        lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt,
+                          progress: CorrectionProgress(firedY: sample.offsetY, targetY: target))
         // `nudge` stays signed in the log: positive moved the row DOWN toward the clip edge,
         // negative pulled it UP. A device trace can read the direction straight off the line.
         line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded()))"

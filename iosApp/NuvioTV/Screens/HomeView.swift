@@ -118,6 +118,9 @@ struct HomeView: View {
     /// used is `PinnedRowTitle.resolveReachHoldsLift()` at the `pinnedPlan` call site below, which
     /// also honours a launch argument and the never-written default.
     @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
+    /// 2026-09-30 zoom-on reach hold (`FocusModeFlags.zoomReachHold`), default ON, no Settings row.
+    /// Observed here; resolved at the `pinnedPlan` call site like the No Zoom hold above.
+    @AppStorage(PinnedRowTitle.zoomReachHoldKey) private var zoomReachHold = true
     /// FEAT-15: the live "Show Hero" setting. `HomeCatalogSettingsRepository.snapshot()` rebuilds
     /// the entire preference map on every call, so it cannot be read from `body` at render
     /// frequency the way `reportRowFocus` used to read it per focus event — this watches the same
@@ -2452,7 +2455,8 @@ struct HomeView: View {
                                landscapeRows: posterStyle.landscapeCatalogRows,
                                mode: PinnedRowTitle.FocusModeFlags(noZoom: noZoomOnFocus,
                                                                    accentRing: accentFocusRing,
-                                                                   reachHoldsLift: PinnedRowTitle.resolveReachHoldsLift(observing: noZoomReachHoldsLift)))
+                                                                   reachHoldsLift: PinnedRowTitle.resolveReachHoldsLift(observing: noZoomReachHoldsLift),
+                                                                   zoomReachHold: PinnedRowTitle.resolveZoomReachHold(observing: zoomReachHold)))
     }
 
     /// BUG-30: how far the classic in-scroll hero's frame reaches ABOVE its content — the exact

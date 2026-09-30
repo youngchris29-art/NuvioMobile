@@ -193,4 +193,47 @@ final class PinnedRowSettleDirectionTests: XCTestCase {
         XCTAssertEqual(planned.magnitude, 12, accuracy: 0.001)
         XCTAssertEqual(planned.correction, -12, accuracy: 0.001, "negative = move the content UP")
     }
+
+    // MARK: - 2026-09-30 §2.C(ii): a correction that never applied is DROPPED, not a pull-back
+
+    /// Device walk 2026-09-30 13:24:06: nudge fired 4552 → 4540, the offset went 4552 → 4553 and
+    /// rested there. The old detector counted that as PULLBACK and two of them disarmed the walk.
+    func testACorrectionThatNeverMovedIsDroppedAndNotCounted() {
+        var progress = PinnedRowSettle.CorrectionProgress(firedY: 4552, targetY: 4540)
+        progress.note(offsetY: 4552)
+        progress.note(offsetY: 4553)
+        XCTAssertEqual(progress.nudge, -12, accuracy: 0.001)
+        XCTAssertTrue(progress.dropped)
+        var ledger = PinnedRowSettle.PullBackLedger()
+        _ = walkDown(&ledger, rows: ["r1", "r2"])
+        XCTAssertEqual(PinnedRowSettle.recordReturn(progress, into: &ledger), .dropped)
+        XCTAssertEqual(ledger.total, 0, "a dropped correction must not spend the pull-back budget")
+        XCTAssertEqual(PinnedRowSettle.recordReturn(progress, into: &ledger), .dropped)
+        XCTAssertFalse(ledger.disarmed)
+    }
+
+    /// A correction that landed (1762 → 1750) and was then put back by the engine is still a
+    /// real pull-back — the best progress is kept, not the final offset.
+    func testACorrectionThatLandedAndWasPutBackIsStillAPullBack() {
+        var progress = PinnedRowSettle.CorrectionProgress(firedY: 1762, targetY: 1750)
+        for y: CGFloat in [1758, 1752, 1750, 1756, 1762] { progress.note(offsetY: y) }
+        XCTAssertEqual(progress.maxProgress, 12, accuracy: 0.001)
+        XCTAssertFalse(progress.dropped)
+        var ledger = PinnedRowSettle.PullBackLedger()
+        _ = walkDown(&ledger, rows: ["r1", "r2"])
+        XCTAssertEqual(PinnedRowSettle.recordReturn(progress, into: &ledger), .pulledBack)
+        XCTAssertEqual(ledger.total, 1)
+    }
+
+    /// The 25 % boundary, in the downward-nudge direction too.
+    func testTheDroppedBoundaryIsAQuarterOfTheNudge() {
+        var short = PinnedRowSettle.CorrectionProgress(firedY: 100, targetY: 112)
+        short.note(offsetY: 102)             // 2 of 12 < 3
+        XCTAssertTrue(short.dropped)
+        var enough = PinnedRowSettle.CorrectionProgress(firedY: 100, targetY: 112)
+        enough.note(offsetY: 103)            // 3 of 12 == 25 %
+        XCTAssertFalse(enough.dropped)
+        let untouched = PinnedRowSettle.CorrectionProgress(firedY: 100, targetY: 112)
+        XCTAssertTrue(untouched.dropped, "no sample at all is no progress")
+    }
 }

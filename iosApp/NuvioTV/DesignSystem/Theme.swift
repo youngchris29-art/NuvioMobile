@@ -687,6 +687,26 @@ enum Theme {
         /// borrows in No Zoom when the reach-hold A/B is on, reserving the same band width even
         /// though nothing actually scales in that mode.
         static let heroPinnedRowFocusLiftAllowance: CGFloat = 20
+        /// BUG-87/89 zoom-on reach hold (2026-09-30, `zoom-on-title-fix-plan.md` option A): extra
+        /// points the pinned rows' top-reach FLOOR reserves above `heroPinnedRowFocusLiftAllowance`
+        /// + the belt's arm when a zoom mode is active and `FocusModeFlags.zoomReachHold` is on.
+        ///
+        /// Device evidence (Christian's ATV, Large + Hide Titles + carousel, 2026-09-30 walks): the
+        /// focus engine rests every middle row at margin −22 at top reach 66 and at −12 at reach 86
+        /// — about +0.5 margin per point of reach, and identical in both zoom modes. With zoom on at
+        /// reach 86 the band is [−4, 48], so a −12 rest puts the LIFTED poster 8pt into the title's
+        /// line box, the belt arms (> 4) and fades the title, and the corrector bounces the row +12.
+        /// At reach 92 (86 + this 6) the predicted rest is −9..−12 against a band of [−10, 48]:
+        /// lifted intrusion ≤ 2, never arms. Not applied in No Zoom (its own hold already rests
+        /// −12 inside a [−24, 48] band; the extra would only cost rest range).
+        static let heroPinnedRowZoomReachHold: CGFloat = 6
+        /// Ceiling for the top reach when the zoom-on hold above is active. It is the ONLY path
+        /// allowed past `heroPinnedRowTopPad` (88): system font lands exactly on it (48 + 38 − 24
+        /// + 20 + 4 + 6 = 92), Open Sans wants 96.2 and is capped here (partial fix, measure it).
+        /// Kept well short of 100, where the sim bisected focus resolution dying outright; above
+        /// the proven 72–88 corridor, so the sim reach sweep, the BUG-112 up walk and one device
+        /// walk gate it (2026-09-30 plan).
+        static let heroPinnedRowTopReachHoldCap: CGFloat = 92
         /// Hard ceiling on ONE settle re-reveal correction (`PinnedRowSettle`, BrowseComponents).
         ///
         /// The measured Large failure needs ~90pt (sim probe 2026-08-30: `margin=-86..-100`,

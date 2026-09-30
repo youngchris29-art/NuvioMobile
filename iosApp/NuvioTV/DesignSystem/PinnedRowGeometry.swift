@@ -38,7 +38,7 @@ import CoreGraphics
 ///     it is the cheapest dial in the file.
 ///  2. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor(lift:titleHeight:)`, 22pt of
 ///     give with No Zoom on and 2pt with either zoom mode in the system font). It is never RAISED
-///     here, only lowered, and never below the floor: `heroPinnedRowTitleInset` (48) + the ACTIVE
+///     here (except by the 2026-09-30 zoom-on reach hold, up to 92 — see `plan`), only lowered, and never below the floor: `heroPinnedRowTitleInset` (48) + the ACTIVE
 ///     font's measured title line (38 system, ≈42.2 Open Sans) − `Spacing.lg` (24) holds the TITLE,
 ///     and the floor adds the focus lift and the belt's `fadeIntrusionArm` on top of it — see
 ///     `topReachFloor(lift:titleHeight:)` and the rc10 note below.
@@ -288,10 +288,22 @@ enum PinnedRowGeometry {
     /// A title taller than ≈44pt (accessibility text sizes, in either font) pushes `focusedRaw`
     /// negative even at the cap, and that IS the stand-down's job — see the `LIFT-DEFICIT` branch in
     /// `PinnedRowSettle.settlePlan`.
+    ///
+    /// ### 2026-09-30: the zoom-on reach hold (`hold`, `cap`)
+    ///
+    /// With `FocusModeFlags.zoomReachHoldEffective`, `plan` calls this a second time with
+    /// `hold: Theme.Size.heroPinnedRowZoomReachHold` (6) and `cap: heroPinnedRowTopReachHoldCap`
+    /// (92) — the one path allowed past the 88 cap above. System font: 86 + 6 = 92. Open Sans: 96.2,
+    /// capped to 92. Both default to "no hold", so every other caller is byte-identical. `cap` is an
+    /// optional resolved in the body rather than a `Theme.Size` default expression, for the same
+    /// nonisolated-default reason as `titleHeight`.
     nonisolated static func topReachFloor(lift: CGFloat,
-                                          titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight) -> CGFloat {
+                                          titleHeight: CGFloat = Theme.Font.sectionTitleLineHeight,
+                                          hold: CGFloat = 0,
+                                          cap: CGFloat? = nil) -> CGFloat {
         let titleFloor = Theme.Size.heroPinnedRowTitleInset + titleHeight - Theme.Spacing.lg
-        return min(Theme.Size.heroPinnedRowTopPad, titleFloor + lift + PinnedRowTitle.fadeIntrusionArm)
+        return min(cap ?? Theme.Size.heroPinnedRowTopPad,
+                   titleFloor + lift + PinnedRowTitle.fadeIntrusionArm + hold)
     }
 
     /// The SYSTEM font's `Theme.Font.sectionTitle` line as rendered on the FA87 fixture — the number
@@ -513,26 +525,53 @@ enum PinnedRowGeometry {
             + baseBottomReach
             + Theme.Size.heroPinnedRowsSettledCushion
             - budget
-        var short = max(demand, 0)
 
-        // (a) The downward reach first — the cheapest dial, 20pt of give.
-        let bottomSpend = min(short, baseBottomReach - bottomReachFloor)
-        let bottomReach = baseBottomReach - bottomSpend
-        short -= bottomSpend
+        func spent(topFloor: CGFloat) -> Plan {
+            var short = max(demand, 0)
 
-        // (b) The upward reach next, down to its derived, LIFT-AWARE floor — 22pt of give with No
-        //     Zoom on, 2pt with either zoom mode, because the band it leaves behind has to hold the
-        //     title AND the focus lift (BUG-87/89).
-        let topSpend = min(short, baseTopReach - topFloor)
-        let topReach = baseTopReach - topSpend
-        short -= topSpend
+            // (a) The downward reach first — the cheapest dial, 20pt of give.
+            let bottomSpend = min(short, baseBottomReach - bottomReachFloor)
+            let bottomReach = baseBottomReach - bottomSpend
+            short -= bottomSpend
 
-        // (c) Hero compression LAST, for the remainder — every point of it is description the
-        //     viewer loses (the panel's synopsis slot is where it comes from), which is exactly the
-        //     rc2 complaint this order answers.
-        let compression = min(short, elasticGive(showsCTA: showsCTA))
+            // (b) The upward reach next, down to its derived, LIFT-AWARE floor — 22pt of give with
+            //     No Zoom on, 2pt with either zoom mode, because the band it leaves behind has to
+            //     hold the title AND the focus lift (BUG-87/89). Only the zoom-on hold's floor can
+            //     sit ABOVE the base 88; then the reach is RAISED to it and the extra joins the
+            //     demand the hero absorbs below. Every other floor is capped at 88, so this is
+            //     exactly the old `min` for them.
+            let topSpend = min(short, baseTopReach - topFloor)
+            let topReach = max(baseTopReach - topSpend, topFloor)
+            short += topReach - baseTopReach
 
-        let plan = settled(compression: compression, topReach: topReach, bottomReach: bottomReach)
+            // (c) Hero compression LAST, for the remainder — every point of it is description the
+            //     viewer loses (the panel's synopsis slot is where it comes from), which is exactly
+            //     the rc2 complaint this order answers.
+            let compression = min(max(short, 0), elasticGive(showsCTA: showsCTA))
+
+            return settled(compression: compression, topReach: topReach, bottomReach: bottomReach)
+        }
+
+        // 2026-09-30 zoom-on reach hold (`zoom-on-title-fix-plan.md`, option A). Device walks on
+        // the ATV put the engine's own rest at margin −22 with top reach 66 and −12 with reach 86
+        // (identical y offsets in both zoom modes). No Zoom's band at 86 is [−24, 48], so −12 is
+        // clean; zoom on's is [−4, 48] because the 20pt lift eats the rest, so the lifted poster
+        // sits 8pt inside the title, the belt fades it and the corrector bounces the row. Raising
+        // the floor by `heroPinnedRowZoomReachHold` (to 92, capped there) moves the band to
+        // [−10, 48] and the predicted rest to −9..−12: in band, no correction, no fade. The hero
+        // pays: at Large carousel the compression is already the full 70 give, so nothing changes
+        // there and the extra 6 comes out of rest range (11.67 → 5.67). If the held plan cannot
+        // fit, the unheld plan below applies unchanged. No Zoom never enters this branch.
+        if mode.zoomReachHoldEffective {
+            let heldFloor = topReachFloor(lift: floorLift,
+                                          titleHeight: titleHeight,
+                                          hold: Theme.Size.heroPinnedRowZoomReachHold,
+                                          cap: Theme.Size.heroPinnedRowTopReachHoldCap)
+            let held = spent(topFloor: heldFloor)
+            if held.fits { return held }
+        }
+
+        let plan = spent(topFloor: topFloor)
         guard plan.fits else {
             // Unsatisfiable: hand back today's numbers so the belt regime is exactly what shipped,
             // and say so once.
@@ -580,6 +619,11 @@ enum PinnedRowGeometry {
     /// pair so that with the flag OFF (the shipping default) every key, test literal, fixture parser
     /// and photo contract already written against this string stays byte-for-byte unchanged — `h`
     /// only ever appears when it means something, and `a` stays reserved for `accentRing` above.
+    ///
+    /// `hz` (2026-09-30) is the zoom-on twin of `h1`: appended only when
+    /// `mode.zoomReachHoldEffective` (zoom on, hold on), because that hold raises the top reach to
+    /// 92 and must not share a regime with the 86 plan. The two suffixes are mutually exclusive
+    /// (`h1` needs No Zoom, `hz` needs zoom), and with the hold off every key is unchanged.
     nonisolated static func regimeKey(posterHeight: CGFloat,
                                       captionVisible: Bool,
                                       showsCTA: Bool,
@@ -609,6 +653,7 @@ enum PinnedRowGeometry {
         return "\(tag)\(rounded)c\(captionVisible ? 1 : 0)p\(showsCTA ? 0 : 1)r\(landscapeRows ? 1 : 0)"
             + "z\(mode.noZoom ? 1 : 0)t\(Int(titleHeight.rounded()))"
             + (mode.reachHoldsLiftEffective ? "h1" : "")
+            + (mode.zoomReachHoldEffective ? "hz" : "")
     }
 
     /// The four synced Poster Size presets, as RATIOS of the Medium default rather than as pixel

@@ -1389,3 +1389,165 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         }
     }
 }
+
+// MARK: - 2026-09-30: the zoom-on reach hold (`zoom-on-title-fix-plan.md`, option A)
+
+/// The zoom-on twin of the rc12 No Zoom reach hold. Device walks on 2026-09-30 rested every middle
+/// row at margin −12 with top reach 86 in BOTH zoom modes; with zoom on the band is [−4, 48], so the
+/// lifted poster sat 8pt inside the title and the belt faded it. The hold raises the zoom-on floor
+/// by `heroPinnedRowZoomReachHold` (6) to 92, capped at `heroPinnedRowTopReachHoldCap` (92).
+///
+/// Arithmetic (Large 403.333, Hide Titles, system title 38, demand = artwork − 291 = 112.333):
+///
+///     carousel held    bottom 44→24 (−20) ⇒ 92.333; top 88→92 (+4) ⇒ 96.333; hero min(96.333, 70) = 70
+///                      viewport 525, link 92 + 403.333 + 24 = 519.333, restRange 5.667
+///     carousel unheld  top 88→86 (−2) ⇒ 90.333; hero 70; link 513.333, restRange 11.667
+///     panel held       hero min(96.333, 142) = 94.333 (unheld 90.333)
+///     Medium+ carousel demand 59.952 ⇒ 39.952 ⇒ +4 ⇒ 43.952 (unheld 37.952)
+final class PinnedRowZoomReachHoldTests: XCTestCase {
+
+    private let epsilon: CGFloat = 0.001
+
+    private static func posterHeight(dp: CGFloat) -> CGFloat {
+        dp * (Theme.Size.posterWidth / 126.0) * 1.5
+    }
+    private static let mediumPlus = posterHeight(dp: 134) // 350.952…
+    private static let large = posterHeight(dp: 154)      // 403.333…
+
+    private static let zoomOn = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false)
+    private static let zoomOnHeld = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false,
+                                                                  zoomReachHold: true)
+    /// No Zoom with BOTH holds switched on, as the app resolves them by default today.
+    private static let noZoomBothHolds = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false,
+                                                                       reachHoldsLift: true,
+                                                                       zoomReachHold: true)
+    private static let noZoomH1 = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false,
+                                                                reachHoldsLift: true)
+
+    private static let systemTitle = PinnedRowGeometry.measuredTitleHeight   // 38
+    private static let openSansTitle: CGFloat = 42.2
+    private static let systemBodyLine = UIFont.preferredFont(forTextStyle: .body).lineHeight
+
+    private func plan(_ height: CGFloat, cta: Bool, mode: PinnedRowTitle.FocusModeFlags,
+                      title: CGFloat = PinnedRowGeometry.measuredTitleHeight) -> PinnedRowGeometry.Plan {
+        PinnedRowGeometry.plan(posterHeight: height, captionVisible: false, showsCTA: cta,
+                               landscapeRows: false, mode: mode, titleHeight: title)
+    }
+
+    func testTheConstantsMatchThePlan() {
+        XCTAssertEqual(Theme.Size.heroPinnedRowZoomReachHold, 6)
+        XCTAssertEqual(Theme.Size.heroPinnedRowTopReachHoldCap, 92)
+    }
+
+    func testEffectiveOnlyWithZoomOn() {
+        XCTAssertTrue(Self.zoomOnHeld.zoomReachHoldEffective)
+        XCTAssertFalse(Self.zoomOn.zoomReachHoldEffective)
+        XCTAssertFalse(Self.noZoomBothHolds.zoomReachHoldEffective)
+    }
+
+    func testLargeCarouselZoomOnWithTheHoldReaches92() {
+        let held = plan(Self.large, cta: true, mode: Self.zoomOnHeld)
+        XCTAssertTrue(held.fits)
+        XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
+        XCTAssertEqual(held.bottomReach, 24, accuracy: epsilon)
+        XCTAssertEqual(held.compression, 70, accuracy: epsilon)
+        XCTAssertEqual(held.viewport, 525, accuracy: epsilon)
+        XCTAssertEqual(held.linkFrame, 519.333, accuracy: 0.01)
+        XCTAssertEqual(held.restRange, 5.667, accuracy: 0.01)
+        XCTAssertEqual(held.regimeKey, "L403c0p0r0z0t38hz")
+    }
+
+    func testHoldOffIsTodaysPlan() {
+        let off = plan(Self.large, cta: true, mode: Self.zoomOn)
+        XCTAssertTrue(off.fits)
+        XCTAssertEqual(off.topReach, 86, accuracy: epsilon)
+        XCTAssertEqual(off.compression, 70, accuracy: epsilon)
+        XCTAssertEqual(off.linkFrame, 513.333, accuracy: 0.01)
+        XCTAssertEqual(off.restRange, 11.667, accuracy: 0.01)
+        XCTAssertEqual(off.regimeKey, "L403c0p0r0z0t38")
+        // Explicit `zoomReachHold: false` is the memberwise default.
+        XCTAssertEqual(off, plan(Self.large, cta: true,
+                                 mode: PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false,
+                                                                     zoomReachHold: false)))
+    }
+
+    func testNoZoomH1IsUnchangedByTheZoomHold() {
+        let both = plan(Self.large, cta: true, mode: Self.noZoomBothHolds)
+        let h1 = plan(Self.large, cta: true, mode: Self.noZoomH1)
+        XCTAssertEqual(both, h1)
+        XCTAssertEqual(both.topReach, 86, accuracy: epsilon)
+        XCTAssertEqual(both.restRange, 11.667, accuracy: 0.01)
+        XCTAssertEqual(both.regimeKey, "L403c0p0r0z1t38h1")
+    }
+
+    func testOpenSansIsCappedAt92() {
+        XCTAssertEqual(PinnedRowGeometry.topReachFloor(lift: 20, titleHeight: Self.openSansTitle,
+                                                       hold: Theme.Size.heroPinnedRowZoomReachHold,
+                                                       cap: Theme.Size.heroPinnedRowTopReachHoldCap),
+                       92, accuracy: epsilon)
+        let held = plan(Self.large, cta: true, mode: Self.zoomOnHeld, title: Self.openSansTitle)
+        XCTAssertTrue(held.fits)
+        XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
+        XCTAssertEqual(held.compression, 70, accuracy: epsilon)
+        // Unheld Open Sans still takes the 88 cap.
+        XCTAssertEqual(plan(Self.large, cta: true, mode: Self.zoomOn, title: Self.openSansTitle).topReach,
+                       88, accuracy: epsilon)
+    }
+
+    func testTheDefaultFloorArgumentsAreUnchanged() {
+        XCTAssertEqual(PinnedRowGeometry.topReachFloor(lift: 20, titleHeight: Self.systemTitle), 86, accuracy: epsilon)
+        XCTAssertEqual(PinnedRowGeometry.topReachFloor(lift: 0, titleHeight: Self.systemTitle), 66, accuracy: epsilon)
+        XCTAssertEqual(PinnedRowGeometry.topReachFloor(lift: 20, titleHeight: Self.openSansTitle), 88, accuracy: epsilon)
+    }
+
+    func testLargePanelKeepsTwoSynopsisLinesWithTheHold() {
+        XCTAssertGreaterThan(Self.systemBodyLine, 30)
+        XCTAssertLessThan(Self.systemBodyLine, 36)
+        let held = plan(Self.large, cta: false, mode: Self.zoomOnHeld)
+        XCTAssertTrue(held.fits)
+        XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
+        XCTAssertEqual(held.compression, 96.333, accuracy: 0.01)
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: held.compression,
+                                                         showsCTA: false, folderHero: false)
+        // Tiers 36 + 32, then 94.333 − 68 − slack 2 = 24.333 from the panel's extra.
+        XCTAssertEqual(split.synopsis, 62.333, accuracy: 0.01)
+        let slot = Theme.Size.heroSynopsisSlotHeightPinnedPanel - split.synopsis
+        XCTAssertEqual(slot, 81.667, accuracy: 0.01)
+        // Mirror of `HomeHeroForeground.synopsisLineLimit` (1pt tolerance), as in the slot-give suite.
+        let lines = max(1, Int(((slot + 1) / Self.systemBodyLine).rounded(.down)))
+        XCTAssertEqual(lines, 2)
+    }
+
+    func testMediumPlusCarouselCompressionGrowsBySix() {
+        let held = plan(Self.mediumPlus, cta: true, mode: Self.zoomOnHeld)
+        XCTAssertTrue(held.fits)
+        XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
+        XCTAssertEqual(held.compression, 43.952, accuracy: 0.01)
+        XCTAssertEqual(held.regimeKey, "P351c0p0r0z0t38hz")
+        let off = plan(Self.mediumPlus, cta: true, mode: Self.zoomOn)
+        XCTAssertEqual(off.compression, 37.952, accuracy: 0.01)
+        XCTAssertEqual(held.compression - off.compression, 6, accuracy: epsilon)
+    }
+
+    func testTheHoldNeverTouchesSizesThatSpendNothing() {
+        let medium = Theme.Size.posterHeight
+        let held = plan(medium, cta: true, mode: Self.zoomOnHeld)
+        let off = plan(medium, cta: true, mode: Self.zoomOn)
+        XCTAssertEqual(held.topReach, off.topReach, accuracy: epsilon)
+        XCTAssertEqual(held.compression, off.compression, accuracy: epsilon)
+        XCTAssertEqual(held.regimeKey, off.regimeKey + "hz")
+    }
+
+    func testResolveZoomReachHoldDefaultsOn() throws {
+        let suite = "PinnedRowZoomReachHoldTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(PinnedRowTitle.resolveZoomReachHold(defaults))
+        defaults.set(false, forKey: PinnedRowTitle.zoomReachHoldKey)
+        XCTAssertFalse(PinnedRowTitle.resolveZoomReachHold(defaults))
+        defaults.set("NO", forKey: PinnedRowTitle.zoomReachHoldKey)
+        XCTAssertFalse(PinnedRowTitle.resolveZoomReachHold(defaults))
+        defaults.set(true, forKey: PinnedRowTitle.zoomReachHoldKey)
+        XCTAssertTrue(PinnedRowTitle.resolveZoomReachHold(defaults))
+    }
+}
