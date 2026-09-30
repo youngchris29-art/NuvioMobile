@@ -11,6 +11,9 @@ import UIKit
 /// fades the image in. Swap it in anywhere the app currently uses `AsyncImage` for content art.
 struct CachedAsyncImage<Failure: View>: View {
     private let url: URL?
+    /// Custom-poster-URL feature: the ORIGINAL art tried once when `url` (a user-pattern URL that
+    /// may 404 for a title the poster service doesn't know) fails. nil = no fallback.
+    private let fallbackURL: URL?
     private let contentMode: ContentMode
     /// BUG-59 (reveal-gate wave): when true, the loaded image is scanned once for letterbox/
     /// pillarbox bars baked into its pixels (`ArtworkLetterbox` — TMDB backdrops are sometimes
@@ -30,21 +33,27 @@ struct CachedAsyncImage<Failure: View>: View {
     /// 1.0 until (and unless) `ArtworkLetterbox` measures real bars in the loaded image.
     @State private var barCropZoom: CGFloat = 1
 
-    init(url: URL?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false,
+    init(url: URL?, fallbackURL: URL? = nil, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false,
          @ViewBuilder failure: @escaping () -> Failure) {
         self.url = url
+        self.fallbackURL = fallbackURL
         self.contentMode = contentMode
         self.cropsBakedLetterboxBars = cropsBakedLetterboxBars
         self.failureContent = failure
     }
 
     /// Convenience for the many Kotlin-bridged `String` URL fields; empty/nil → no image.
-    init(string: String?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false,
+    init(string: String?, fallback: String? = nil, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false,
          @ViewBuilder failure: @escaping () -> Failure) {
         if let string, !string.isEmpty {
             self.url = URL(string: string)
         } else {
             self.url = nil
+        }
+        if let fallback, !fallback.isEmpty {
+            self.fallbackURL = URL(string: fallback)
+        } else {
+            self.fallbackURL = nil
         }
         self.contentMode = contentMode
         self.cropsBakedLetterboxBars = cropsBakedLetterboxBars
@@ -68,8 +77,10 @@ struct CachedAsyncImage<Failure: View>: View {
                 ShimmerView()
             }
         }
-        .onAppear { loader.load(url) }
-        .onChange(of: url) { _, newURL in loader.load(newURL) }
+        .onAppear { loader.load(url, fallback: fallbackURL) }
+        .onChange(of: ImageURLPair(primary: url, fallback: fallbackURL)) { _, pair in
+            loader.load(pair.primary, fallback: pair.fallback)
+        }
         // BUG-59: measure the loaded image's baked bars off-main, once per URL (memoized in
         // `ArtworkLetterbox`). Keyed on the image (NSObject identity) so a URL change that swaps
         // the image re-runs, and a re-render that doesn't, doesn't.
@@ -95,13 +106,13 @@ struct CachedAsyncImage<Failure: View>: View {
 extension CachedAsyncImage where Failure == DefaultFailureImage {
     /// Every call site that predates BUG-41's `failure:` parameter — unchanged signature, unchanged
     /// grey-surface-plus-film-glyph rendering on a failed load.
-    init(url: URL?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
-        self.init(url: url, contentMode: contentMode, cropsBakedLetterboxBars: cropsBakedLetterboxBars,
+    init(url: URL?, fallbackURL: URL? = nil, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
+        self.init(url: url, fallbackURL: fallbackURL, contentMode: contentMode, cropsBakedLetterboxBars: cropsBakedLetterboxBars,
                    failure: { DefaultFailureImage() })
     }
 
-    init(string: String?, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
-        self.init(string: string, contentMode: contentMode, cropsBakedLetterboxBars: cropsBakedLetterboxBars,
+    init(string: String?, fallback: String? = nil, contentMode: ContentMode = .fill, cropsBakedLetterboxBars: Bool = false) {
+        self.init(string: string, fallback: fallback, contentMode: contentMode, cropsBakedLetterboxBars: cropsBakedLetterboxBars,
                    failure: { DefaultFailureImage() })
     }
 }
@@ -219,6 +230,17 @@ enum ArtworkStore {
             // Hand the slot straight to the next waiter; activeFetches stays constant.
             fetchWaiters.removeFirst().resume()
         }
+    }
+
+    /// URLs that failed to load this session (bounded). Only consulted when a fallback exists, so
+    /// a re-mounted card whose custom poster 404'd goes straight to the original art.
+    @MainActor private static var failedURLs: Set<URL> = []
+
+    @MainActor static func hasFailed(_ url: URL) -> Bool { failedURLs.contains(url) }
+
+    @MainActor static func noteFailure(_ url: URL) {
+        if failedURLs.count >= 512 { failedURLs.removeAll() }
+        failedURLs.insert(url)
     }
 
     /// Synchronous memory-cache lookup. Safe from any context (NSCache locks internally); lets
@@ -345,6 +367,45 @@ enum ArtworkStore {
     }
 }
 
+/// The (primary, fallback) inputs of one `CachedAsyncImage`; a change of either resets the load.
+struct ImageURLPair: Equatable {
+    let primary: URL?
+    let fallback: URL?
+}
+
+/// Attempt order for a primary URL plus an optional fallback (custom poster URL -> original art).
+/// Pure so the "primary fails -> fallback tried once -> failed only after both" rule is testable.
+enum ImageFallbackPlan {
+    /// Primary first, then the fallback only when it differs. At most two entries, so it can never loop.
+    static func candidates(primary: URL?, fallback: URL?) -> [URL] {
+        var out: [URL] = []
+        if let primary { out.append(primary) }
+        if let fallback, fallback != primary { out.append(fallback) }
+        return out
+    }
+
+    /// Walks `candidates` in order and returns the first image that loads. A candidate for which
+    /// `skip` is true (already failed this session) is passed over unless it is the last one, so a
+    /// remounted card goes straight to the fallback instead of re-requesting a known 404. Returns
+    /// nil only after every attempted candidate failed.
+    @MainActor
+    static func firstLoaded<T>(
+        candidates: [URL],
+        skip: (URL) -> Bool = { _ in false },
+        fetch: (URL) async throws -> T,
+        onFailure: (URL) -> Void = { _ in }
+    ) async -> T? {
+        for (index, candidate) in candidates.enumerated() {
+            if Task.isCancelled { return nil }
+            if index < candidates.count - 1, skip(candidate) { continue }
+            if let image = try? await fetch(candidate) { return image }
+            if Task.isCancelled { return nil }
+            onFailure(candidate)
+        }
+        return nil
+    }
+}
+
 /// Loads and caches a single image URL for one `CachedAsyncImage`, delegating the shared cache,
 /// download, and decode machinery to `ArtworkStore`.
 @MainActor
@@ -352,27 +413,37 @@ private final class CachedImageLoader: ObservableObject {
     @Published var image: UIImage?
     @Published var failed = false
 
-    private var currentURL: URL?
+    private var currentPair = ImageURLPair(primary: nil, fallback: nil)
     private var task: Task<Void, Never>?
 
-    func load(_ url: URL?) {
-        guard url != currentURL else { return }
-        currentURL = url
+    func load(_ url: URL?, fallback: URL? = nil) {
+        let pair = ImageURLPair(primary: url, fallback: fallback)
+        guard pair != currentPair else { return }
+        currentPair = pair
         task?.cancel()
         failed = false
         image = nil
 
-        guard let url else { return }
+        let candidates = ImageFallbackPlan.candidates(primary: url, fallback: fallback)
+        guard !candidates.isEmpty else { return }
 
-        if let cached = ArtworkStore.cached(url) {
-            image = cached
-            return
+        // Memory-cache hit on any candidate (primary first) renders synchronously, no shimmer.
+        for candidate in candidates {
+            if let cached = ArtworkStore.cached(candidate) {
+                image = cached
+                return
+            }
         }
 
         task = Task { [weak self] in
-            let fetched = try? await ArtworkStore.fetch(url)
+            let fetched = await ImageFallbackPlan.firstLoaded(
+                candidates: candidates,
+                skip: { ArtworkStore.hasFailed($0) },
+                fetch: { try await ArtworkStore.fetch($0) },
+                onFailure: { ArtworkStore.noteFailure($0) }
+            )
             if Task.isCancelled { return }
-            guard let self, self.currentURL == url else { return }
+            guard let self, self.currentPair == pair else { return }
             if let fetched {
                 withAnimation(.easeIn(duration: 0.25)) { self.image = fetched }
             } else {

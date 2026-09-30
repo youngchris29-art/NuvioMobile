@@ -60,7 +60,8 @@ enum DeepLink: Identifiable {
                 genres: [],
                 rawPosterUrl: nil,
                 landscapePoster: nil,
-                rawLandscapePosterUrl: nil
+                rawLandscapePosterUrl: nil,
+                customPosterApplied: false
             ))
         default:
             return nil

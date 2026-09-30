@@ -37,7 +37,11 @@ final class PersonDetailViewModel: ObservableObject {
                 if let error {
                     NSLog("[PersonDetailViewModel] fetchPersonDetailChecked failed: %@", String(describing: error))
                 }
-                self.person = detail
+                // Custom poster URL pattern (Details screen) over the filmography rails; the
+                // original art stays in each item's `rawPosterUrl` as the load-failure fallback.
+                CustomPosterUrlRepository.shared.ensureLoaded()
+                let pattern = CustomPosterUrlRepository.shared.patternForScreen(screen: .details)
+                self.person = detail?.withCustomPosterUrls(pattern: pattern)
                 self.failed = (detail == nil)
             }
         }

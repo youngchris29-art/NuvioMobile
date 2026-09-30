@@ -42,7 +42,7 @@ struct LibraryView: View {
                             LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
                                 ForEach(model.items, id: \.id) { item in
                                     NavigationLink(value: TitleRoute(preview: item.toMetaPreview())) {
-                                        PosterCard(title: item.name, imageURL: item.poster)
+                                        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
                                     }
                                     .cardFocusButtonStyle()
                                     .posterButtonShape()

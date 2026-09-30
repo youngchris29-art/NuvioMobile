@@ -4513,6 +4513,6 @@ struct PosterCardView: View {
     let item: MetaPreview
 
     var body: some View {
-        PosterCard(title: item.name, imageURL: item.poster)
+        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
     }
 }

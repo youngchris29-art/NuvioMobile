@@ -2609,7 +2609,8 @@ struct HomeView: View {
             genres: [],
             rawPosterUrl: nil,
             landscapePoster: nil,
-            rawLandscapePosterUrl: nil
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
         )
     }
 
@@ -2635,7 +2636,8 @@ struct HomeView: View {
             genres: [],
             rawPosterUrl: nil,
             landscapePoster: nil,
-            rawLandscapePosterUrl: nil
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
         )
     }
 
@@ -3093,7 +3095,8 @@ final class HomeHeroFocusModel: ObservableObject {
                     genres: mergedGenres,
                     rawPosterUrl: nil,
                     landscapePoster: nil,
-                    rawLandscapePosterUrl: nil
+                    rawLandscapePosterUrl: nil,
+                    customPosterApplied: false
                 )
             }
         }
@@ -4069,7 +4072,8 @@ struct ContinueWatchingRow: View {
                             Button { onSelect(entry) } label: {
                                 LandscapeCard(
                                     title: entry.title,
-                                    imageURL: imageURL(entry),
+                                    imageURL: customImageURL(entry) ?? imageURL(entry),
+                                    fallbackImageURL: customImageURL(entry) == nil ? nil : imageURL(entry),
                                     progress: fraction(entry),
                                     overlayLeading: episodeCode(entry)
                                 )
@@ -4163,6 +4167,18 @@ struct ContinueWatchingRow: View {
     private func fraction(_ entry: WatchProgressEntry) -> Double? {
         // progressFraction covers percentage-only rows (Simkl/Trakt: durationMs == 0).
         entry.progressFraction > 0 ? Double(entry.progressFraction) : nil
+    }
+
+    /// Custom poster URL pattern (Continue Watching screen) for this entry's parent title, computed
+    /// with the shared resolver because `WatchProgressEntry` carries no raw-URL fields. Landscape
+    /// shape: a pattern without `{shape}` resolves nil here, so those cards render exactly as before.
+    private func customImageURL(_ entry: WatchProgressEntry) -> String? {
+        CustomPosterUrls.shared.resolve(
+            contentId: entry.parentMetaId,
+            contentType: entry.parentMetaType,
+            shape: PosterShape.landscape,
+            screen: CustomPosterScreen.continueWatching
+        )
     }
 
     private func imageURL(_ entry: WatchProgressEntry) -> String? {

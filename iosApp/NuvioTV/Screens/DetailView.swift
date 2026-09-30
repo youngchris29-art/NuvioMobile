@@ -1677,6 +1677,7 @@ struct DetailView: View {
                                 PosterCard(
                                     title: item.name,
                                     imageURL: item.poster,
+                                    fallbackImageURL: item.rawPosterUrl,
                                     width: Theme.Size.miniPosterWidth,
                                     height: Theme.Size.miniPosterHeight
                                 )

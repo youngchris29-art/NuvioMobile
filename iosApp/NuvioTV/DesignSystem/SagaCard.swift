@@ -68,7 +68,7 @@ struct SagaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             ZStack(alignment: .bottomLeading) {
-                CachedAsyncImage(string: SagaCardArt.artworkURL(for: item), contentMode: .fill)
+                CachedAsyncImage(string: SagaCardArt.artworkURL(for: item), fallback: item.rawLandscapePosterUrl ?? item.rawPosterUrl, contentMode: .fill)
                     .frame(width: width - 2 * inset, height: height - 2 * inset)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))

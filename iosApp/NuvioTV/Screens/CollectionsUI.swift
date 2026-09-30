@@ -1084,7 +1084,7 @@ struct FolderDetailView: View {
                             LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
                                 ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                                     NavigationLink(value: TitleRoute(preview: item)) {
-                                        PosterCard(title: item.name, imageURL: item.poster)
+                                        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
                                     }
                                     .cardFocusButtonStyle()
                                     .posterButtonShape()

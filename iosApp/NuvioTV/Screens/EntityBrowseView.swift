@@ -87,8 +87,12 @@ final class EntityBrowseViewModel: ObservableObject {
                     self.failed = true
                     return
                 }
-                self.header = data.header
-                self.rails = data.rails.map { rail in
+                // Custom poster URL pattern (Details screen); originals stay in `rawPosterUrl`.
+                CustomPosterUrlRepository.shared.ensureLoaded()
+                let pattern = CustomPosterUrlRepository.shared.patternForScreen(screen: .details)
+                let overlaid = data.withCustomPosterUrls(pattern: pattern)
+                self.header = overlaid.header
+                self.rails = overlaid.rails.map { rail in
                     RailState(
                         id: "\(rail.mediaType.name)-\(rail.railType.name)",
                         mediaType: rail.mediaType,
@@ -133,8 +137,11 @@ final class EntityBrowseViewModel: ObservableObject {
                     return
                 }
                 // Discover pages can repeat titles across page boundaries — dedupe on id.
+                CustomPosterUrlRepository.shared.ensureLoaded()
+                let pattern = CustomPosterUrlRepository.shared.patternForScreen(screen: .details)
+                let pageItems = CustomPosterOverlayKt.withCustomPosterUrls(result.items, pattern: pattern)
                 var seen = Set(self.rails[railIndex].items.map { $0.id })
-                let fresh = result.items.filter { seen.insert($0.id).inserted }
+                let fresh = pageItems.filter { seen.insert($0.id).inserted }
                 self.rails[railIndex].items.append(contentsOf: fresh)
                 self.rails[railIndex].page = nextPage
                 self.rails[railIndex].hasMore = result.hasMore && !fresh.isEmpty
@@ -304,6 +311,7 @@ struct EntityBrowseView: View {
                             PosterCard(
                                 title: item.name,
                                 imageURL: item.poster,
+                                fallbackImageURL: item.rawPosterUrl,
                                 width: Theme.Size.miniPosterWidth,
                                 height: Theme.Size.miniPosterHeight
                             )

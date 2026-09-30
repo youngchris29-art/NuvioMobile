@@ -24,7 +24,8 @@ final class TitleLogoStoreTests: XCTestCase {
             genres: [],
             rawPosterUrl: nil,
             landscapePoster: nil,
-            rawLandscapePosterUrl: nil
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
         )
     }
 

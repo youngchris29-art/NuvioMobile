@@ -858,6 +858,9 @@ extension Theme.Palette {
 struct PosterCard: View {
     let title: String
     let imageURL: String?
+    /// Custom-poster-URL feature: original addon art retried once if `imageURL` (the user's pattern
+    /// URL) fails to load. nil keeps every existing call site unchanged.
+    var fallbackImageURL: String? = nil
     /// Explicit sizes override the environment style (used by the small "more like this" / credit
     /// rails); leave nil to follow the user's Poster Style setting.
     var width: CGFloat? = nil
@@ -887,7 +890,7 @@ struct PosterCard: View {
     var body: some View {
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
-            CachedAsyncImage(string: imageURL)
+            CachedAsyncImage(string: imageURL, fallback: fallbackImageURL)
                 .frame(width: resolvedWidth - 2 * inset, height: resolvedHeight - 2 * inset)
                 // BUG-31: CachedAsyncImage is `.fill` with no clip of its own, and this frame is
                 // always exactly 2:3 — so off-ratio artwork overflows it and the hover lift copies
@@ -993,6 +996,8 @@ struct PosterCard: View {
 struct LandscapeCard: View {
     let title: String
     let imageURL: String?
+    /// Custom-poster-URL feature: original art retried once if `imageURL` fails (see `PosterCard`).
+    var fallbackImageURL: String? = nil
     /// 0...1 watched fraction; pass nil to hide the progress bar.
     var progress: Double? = nil
     var width: CGFloat = Theme.Size.landscapeWidth
@@ -1027,7 +1032,7 @@ struct LandscapeCard: View {
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
             ZStack(alignment: .bottom) {
-                CachedAsyncImage(string: imageURL)
+                CachedAsyncImage(string: imageURL, fallback: fallbackImageURL)
                     .frame(width: width - 2 * inset, height: height - 2 * inset)
                     // BUG-31: same fill-overflow → hover-lift ghosting as PosterCard; artwork whose
                     // ratio isn't 16:9 spills out of this fixed frame unless clipped here.

@@ -24,7 +24,8 @@ final class HeroCommitCoordinatorTests: XCTestCase {
             genres: [],
             rawPosterUrl: nil,
             landscapePoster: nil,
-            rawLandscapePosterUrl: nil
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
         )
     }
 
@@ -850,7 +851,8 @@ final class HeroCommitCoordinatorTests: XCTestCase {
             genres: genres,
             rawPosterUrl: nil,
             landscapePoster: nil,
-            rawLandscapePosterUrl: nil
+            rawLandscapePosterUrl: nil,
+            customPosterApplied: false
         )
     }
 
