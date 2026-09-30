@@ -52,6 +52,7 @@ final class MdbListViewModel: ObservableObject {
     func connect() {
         guard !isBusy else { return }
         localError = nil
+        republish()
         Task { @MainActor in
             do {
                 _ = try await MdbListTracker.shared.account.connectChecked()
@@ -70,6 +71,7 @@ final class MdbListViewModel: ObservableObject {
     func disconnect() {
         guard !isBusy else { return }
         localError = nil
+        republish()
         Task { @MainActor in
             do {
                 try await MdbListTracker.shared.account.disconnectChecked()
@@ -85,6 +87,9 @@ final class MdbListViewModel: ObservableObject {
     }
 
     private func publish(_ state: MdbListAccountUiState) {
+        // A connection that just completed is a successful action: drop any error left over from
+        // before it (e.g. a failed first connect attempt) so it can't surface under Disconnect.
+        if state.isConnected && !isConnected { localError = nil }
         hasClientId = state.hasClientId
         isConnected = state.isConnected
         username = state.username
@@ -94,9 +99,11 @@ final class MdbListViewModel: ObservableObject {
         isAwaitingApproval = state.isAwaitingApproval
         isBusy = state.isBusy
         revokeFailed = state.revokeFailed
-        // Connected accounts don't show stale errors; revokeFailed has its own subtitle.
+        // Connected accounts don't show stale shared-state errors (revokeFailed has its own
+        // subtitle), but our own failed call — a disconnect that threw — must stay visible; the
+        // pane renders it as a caption under the Disconnect row. Cleared by the next action.
         if state.isConnected {
-            errorMessage = nil
+            errorMessage = localError
         } else {
             errorMessage = Self.message(auth: state.authErrorKind, sync: state.errorKind) ?? localError
         }

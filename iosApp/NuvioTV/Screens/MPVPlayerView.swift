@@ -133,6 +133,8 @@ final class MPVTVPlayerViewController: UIViewController {
     /// out before it returns, the late completion must not start a scrobble that nothing will ever
     /// stop (ME-004).
     private var traktSessionClosed = false
+    /// Simkl/MDBList (every connected tracker except Trakt) — same start-once/stop-once lifecycle.
+    private let trackerScrobble: TrackerScrobbleSession
     /// Skip chip + auto-skip policy shared with the native engine (`SkipSegmentPlanner`).
     private var skipPlanner = SkipSegmentPlanner()
     /// Main thread: bumped for every seek the app issues (`issueSeek`); a completion is only
@@ -200,6 +202,7 @@ final class MPVTVPlayerViewController: UIViewController {
     init(context: PlaybackContext, state: MPVPlaybackState) {
         self.context = context
         self.state = state
+        self.trackerScrobble = TrackerScrobbleSession(context: context)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -725,6 +728,7 @@ final class MPVTVPlayerViewController: UIViewController {
         applyDisplayCriteriaIfEnabled()
         fetchSkipSegments()
         startTraktScrobble()
+        trackerScrobble.start(positionSec: state.positionSec, durationSec: state.durationSec)
     }
 
     // MARK: - Match content frame rate (AVDisplayManager)
@@ -837,6 +841,9 @@ final class MPVTVPlayerViewController: UIViewController {
     }
 
     private func stopTraktScrobble() {
+        // The other trackers close on the same two teardown paths (viewDidDisappear + deinit);
+        // idempotent, and independent of whether a Trakt item was ever built.
+        trackerScrobble.stop(positionSec: state.positionSec, durationSec: state.durationSec)
         traktSessionClosed = true
         guard let item = traktScrobbleItem else { return }
         traktScrobbleItem = nil

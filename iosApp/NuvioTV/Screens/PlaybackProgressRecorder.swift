@@ -141,4 +141,121 @@ final class PlaybackProgressRecorder {
         guard durationSec > 0 else { return 0 }
         return Float(min(100, max(0, positionSec / durationSec * 100)))
     }
+
+    // MARK: - Other trackers (Simkl, MDBList)
+
+    private lazy var trackerScrobble = TrackerScrobbleSession(context: context)
+
+    /// Opens the non-Trakt tracker session alongside `startTrakt` — same trigger, same guard.
+    func startTrackers(positionSec: Double, durationSec: Double) {
+        trackerScrobble.start(positionSec: positionSec, durationSec: durationSec)
+    }
+
+    func stopTrackers(positionSec: Double, durationSec: Double) {
+        trackerScrobble.stop(positionSec: positionSec, durationSec: durationSec)
+    }
+}
+
+// MARK: - Tracker scrobble fan-out (Simkl, MDBList)
+
+/// Pure decisions for the non-Trakt scrobble fan-out, kept free of player state so they are unit
+/// tested (`TrackerScrobblePolicyTests`).
+enum TrackerScrobblePolicy {
+    /// Trakt is excluded: both engines already drive it through `TraktScrobbleRepository`'s own
+    /// `buildItem`/`scrobbleStart`/`scrobbleStop` (addon-id → videoId fallback, episode mapping),
+    /// and sending it the fan-out too would double-scrobble. Every other connected scrobbler
+    /// (Simkl, MDBList, and any provider registered later) receives it.
+    static func receivesFanout(storageId: String) -> Bool {
+        storageId.caseInsensitiveCompare(TrackingProviderId.trakt.storageId) != .orderedSame
+    }
+
+    /// Same short-placeholder guard the Trakt drivers run before opening a session.
+    static func shouldOpen(durationSec: Double) -> Bool {
+        !WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: millis(durationSec))
+    }
+
+    /// Progress for the closing `stop`: 0 for a clip that turned out to be a short placeholder
+    /// (so no tracker marks the stub watched), else the clamped percentage — as the Trakt drivers.
+    static func stopPercent(positionSec: Double, durationSec: Double) -> Double {
+        if WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: millis(durationSec)) { return 0 }
+        return percent(positionSec: positionSec, durationSec: durationSec)
+    }
+
+    static func percent(positionSec: Double, durationSec: Double) -> Double {
+        guard durationSec.isFinite, durationSec > 0, positionSec.isFinite else { return 0 }
+        return min(100, max(0, positionSec / durationSec * 100))
+    }
+
+    private static func millis(_ seconds: Double) -> Int64 {
+        guard seconds.isFinite, seconds > 0 else { return 0 }
+        return Int64(seconds * 1000)
+    }
+}
+
+/// Start-once/stop-once scrobble session for every connected tracker except Trakt, dispatched
+/// through the shared `dispatchTrackingScrobble` (the same fan-out `TrackingScrobbleCoordinator`
+/// uses; the coordinator itself is not called because it would also hit Trakt). Before this,
+/// tvOS playback reached Simkl and MDBList only through the local Continue Watching row, so a
+/// title watched on the TV never updated those services. Mirrors the Trakt driver's lifecycle:
+/// no session for a short placeholder, stop at 0% if one is detected late, and the providers that
+/// received `start` are the ones that receive `stop`.
+@MainActor
+final class TrackerScrobbleSession {
+    private let context: PlaybackContext
+    private var requested = false
+    private var closed = false
+    private var profileId: Int32 = 0
+    private var media: TrackingMediaReference?
+    private var recipients: [TrackingScrobbler] = []
+
+    init(context: PlaybackContext) { self.context = context }
+
+    func start(positionSec: Double, durationSec: Double) {
+        guard !requested, !closed else { return }
+        guard TrackerScrobblePolicy.shouldOpen(durationSec: durationSec) else { return }
+        requested = true
+        TrackingProviderRegistry.shared.ensureLoaded()
+        let targets = TrackingProviderRegistry.shared.connectedScrobblers()
+            .filter { TrackerScrobblePolicy.receivesFanout(storageId: $0.providerId.storageId) }
+        guard !targets.isEmpty else { return }
+        let media = TrackingMediaKt.buildTrackingMediaReference(
+            contentType: context.contentType,
+            parentMetaId: context.parentMetaId,
+            videoId: context.videoId,
+            title: context.title,
+            releaseInfo: nil,
+            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
+            episodeTitle: nil
+        )
+        self.media = media
+        self.recipients = targets
+        self.profileId = ActiveProfileProvider.shared.activeProfileId
+        dispatch(.start, percent: TrackerScrobblePolicy.percent(positionSec: positionSec, durationSec: durationSec))
+    }
+
+    func stop(positionSec: Double, durationSec: Double) {
+        guard !closed else { return }
+        closed = true
+        guard media != nil, !recipients.isEmpty else { return }
+        dispatch(.stop, percent: TrackerScrobblePolicy.stopPercent(positionSec: positionSec, durationSec: durationSec))
+        media = nil
+        recipients = []
+    }
+
+    private func dispatch(_ action: TrackingScrobbleAction, percent: Double) {
+        guard let media else { return }
+        TrackingScrobbleCoordinatorKt.dispatchTrackingScrobble(
+            scrobblers: recipients,
+            profileId: profileId,
+            action: action,
+            event: TrackingScrobbleEvent(media: media, progressPercent: percent)
+        ) { failures, _ in
+            #if DEBUG
+            for failure in failures ?? [] {
+                print("[TrackerScrobble] \(failure.providerId.storageId) \(action.wireValue) failed: \(failure.cause)")
+            }
+            #endif
+        }
+    }
 }

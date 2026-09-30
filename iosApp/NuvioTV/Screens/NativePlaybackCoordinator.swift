@@ -396,6 +396,7 @@ final class NativePlaybackCoordinator: ObservableObject {
             recorder.record(positionSec: lastPositionSec, durationSec: lastDurationSec, isPaused: true, speed: 1, flush: true)
         }
         recorder.stopTrakt(positionSec: lastPositionSec, durationSec: lastDurationSec)
+        recorder.stopTrackers(positionSec: lastPositionSec, durationSec: lastDurationSec)
         player?.pause()
         server?.stop(); server = nil
         remux?.stop()
@@ -651,6 +652,7 @@ final class NativePlaybackCoordinator: ObservableObject {
                     if !self.traktStarted {
                         self.traktStarted = true
                         self.recorder.startTrakt(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
+                        self.recorder.startTrackers(positionSec: self.lastPositionSec, durationSec: duration.isFinite ? duration : 0)
                     }
                     self.loadLegibleSelection(item: item)
                 } else if item.status == .failed {

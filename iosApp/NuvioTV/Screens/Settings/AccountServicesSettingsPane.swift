@@ -288,6 +288,14 @@ struct AccountServicesSettingsPane: View {
                 confirmingMdbListDisconnect = true
             }
             .disabled(mdblist.isBusy)
+            // While connected, `errorMessage` carries only our own failed call (a disconnect that
+            // threw); without this caption the failure was never shown.
+            if let error = mdblist.errorMessage {
+                Text(error)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: 1100, alignment: .leading)
+            }
         } else if mdblist.isAwaitingApproval, let code = mdblist.userCode {
             MdbListActivationCard(
                 code: code,

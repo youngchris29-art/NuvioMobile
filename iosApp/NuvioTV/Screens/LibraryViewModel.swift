@@ -14,6 +14,9 @@ final class LibraryViewModel: ObservableObject {
 
     private var rawItems: [LibraryItem] = []
     private var sourceMode: LibrarySourceMode = .local
+    /// Section (list) keys of the current snapshot, in the provider's tab order. MDBList puts its
+    /// watchlist first; the flat tvOS Library ranks by that list (see `republish`).
+    private var sectionKeys: [String] = []
     private var watcher: FlowWatcher?
     private var displayWatcher: FlowWatcher?
 
@@ -25,6 +28,7 @@ final class LibraryViewModel: ObservableObject {
             guard let self, let state = emitted as? LibraryUiState else { return }
             self.rawItems = state.items
             self.sourceMode = state.sourceMode
+            self.sectionKeys = state.sections.map { $0.type }
             self.republish()
         }
         displayWatcher = FlowWatcherKt.watch(LibraryDisplaySettingsRepository.shared.uiState) { [weak self] emitted in
@@ -50,7 +54,21 @@ final class LibraryViewModel: ObservableObject {
     /// ADDED_DESC in local mode, exactly like mobile's Library screen).
     private func republish() {
         availableSortOptions = LibraryDisplaySettingsKt.availableLibrarySortOptions(sourceMode: sourceMode)
-        items = LibraryDisplaySettingsKt.sortLibraryItems(items: rawItems, selected: sortOption, sourceMode: sourceMode)
+        if sourceMode == .mdblist {
+            // MDBList items carry per-list ranks (`listRanks`), which only the listKey overload
+            // reads. tvOS has no per-list tabs, so rank by the first section — MDBList's watchlist
+            // (its tabs start with it; `MDBLIST_WATCHLIST_KEY` itself is Kotlin-internal).
+            // providerOrder stays nil: MDBList's added-order cache has no public shared accessor.
+            items = LibraryDisplaySettingsKt.sortLibraryItems(
+                items: rawItems,
+                selected: sortOption,
+                sourceMode: sourceMode,
+                listKey: sectionKeys.first,
+                providerOrder: nil
+            )
+        } else {
+            items = LibraryDisplaySettingsKt.sortLibraryItems(items: rawItems, selected: sortOption, sourceMode: sourceMode)
+        }
     }
 
     /// Remove a title from the library. `toggleSaved` flips an already-saved item back off.
