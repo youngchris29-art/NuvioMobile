@@ -12,6 +12,9 @@ struct AccountServicesSettingsPane: View {
     @EnvironmentObject private var auth: AuthViewModel
     /// Active backend (official vs self-hosted) for the Server section.
     @StateObject private var server = ActiveServerObserver()
+    /// Owned here (not injected from SettingsView) so the MDBList card needs no SettingsView change.
+    @StateObject private var mdblist = MdbListViewModel()
+    @State private var confirmingMdbListDisconnect = false
 
     /// Drives the shared sign-in/sign-out confirmation alert owned by SettingsView.
     @Binding var confirmingSignOut: Bool
@@ -56,6 +59,18 @@ struct AccountServicesSettingsPane: View {
 
             SettingsSection(String(localized: "Simkl")) {
                 simklSection
+            }
+
+            SettingsSection(String(localized: "MDBList")) {
+                mdblistSection
+            }
+            .onAppear { mdblist.start() }
+            .onDisappear { mdblist.stop() }
+            .alert("Disconnect MDBList?", isPresented: $confirmingMdbListDisconnect) {
+                Button("Disconnect", role: .destructive) { mdblist.disconnect() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("MDBList will stop syncing on this Apple TV.")
             }
 
             SettingsSection(String(localized: "More Like This")) {
@@ -251,6 +266,58 @@ struct AccountServicesSettingsPane: View {
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)
+    }
+
+    /// The MDBList section body: not configured / connected / awaiting approval / disconnected.
+    @ViewBuilder
+    private var mdblistSection: some View {
+        if !mdblist.hasClientId {
+            SettingsValueRow(
+                title: String(localized: "MDBList"),
+                value: String(localized: "Not configured"),
+                subtitle: String(localized: "MDBList isn't configured in this build.")
+            )
+        } else if mdblist.isConnected {
+            SettingsDestructiveRow(
+                title: String(localized: "Disconnect"),
+                subtitle: mdblist.revokeFailed
+                    ? String(localized: "Couldn't revoke on MDBList; the local token was removed.")
+                    : mdblistConnectedSubtitle,
+                systemImage: "checkmark.circle.fill"
+            ) {
+                confirmingMdbListDisconnect = true
+            }
+            .disabled(mdblist.isBusy)
+        } else if mdblist.isAwaitingApproval, let code = mdblist.userCode {
+            MdbListActivationCard(
+                code: code,
+                verificationUrl: mdblist.verificationUrl ?? "https://mdblist.com/device"
+            ) {
+                mdblist.cancel()
+            }
+        } else {
+            SettingsActionRow(
+                title: mdblist.isBusy ? String(localized: "Requesting code\u{2026}") : String(localized: "Connect MDBList"),
+                subtitle: String(localized: "Sync your watchlist and history with MDBList."),
+                systemImage: "antenna.radiowaves.left.and.right"
+            ) {
+                mdblist.connect()
+            }
+            .disabled(mdblist.isBusy)
+            if let error = mdblist.errorMessage {
+                Text(error)
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: 1100, alignment: .leading)
+            }
+        }
+    }
+
+    private var mdblistConnectedSubtitle: String {
+        let name = mdblist.username ?? String(localized: "your MDBList account")
+        return mdblist.isSupporter
+            ? String(localized: "Connected as \(name) \u{00B7} Supporter")
+            : String(localized: "Connected as \(name)")
     }
 
     // MARK: - Debrid (native TorBox/Premiumize resolution via the shared debrid stack)
