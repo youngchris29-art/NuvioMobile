@@ -1254,6 +1254,7 @@ struct HomeView: View {
                         onSelect: { resume = ResumeTarget(entry: $0) },
                         onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
                         shuffleParentIds: model.shuffleParentIds,
+                        posterPattern: model.continueWatchingPosterPattern,
                         // UX-7 (see reportRowFocus for the gating rationale).
                         onItemFocusChange: { entry in
                             reportRowFocus(entry.map(previewFromEntry), source: "continue-watching",
@@ -4037,6 +4038,8 @@ struct ContinueWatchingRow: View {
     let onRemove: (WatchProgressEntry) -> Void
     /// Parent ids of series with Episode Shuffle on — those cards get a small shuffle badge.
     var shuffleParentIds: Set<String> = []
+    /// Custom poster URL pattern for this screen (blank = none), observed by `HomeViewModel`.
+    var posterPattern: String = ""
     /// UX-7: reports the focused card's entry (or nil) so Home can drive the hero from it.
     /// Defaulted — nil is a plain no-op. Gating and backdrop prefetch live in the callback
     /// (HomeView.reportRowFocus), not here.
@@ -4069,11 +4072,12 @@ struct ContinueWatchingRow: View {
                         // Keyed by videoId (NOT position): on reorder the cards move instead of
                         // swapping contents under the focused position — upstream's jump bug.
                         ForEach(entries, id: \.videoId) { entry in
+                            let custom = customImageURL(entry)
                             Button { onSelect(entry) } label: {
                                 LandscapeCard(
                                     title: entry.title,
-                                    imageURL: customImageURL(entry) ?? imageURL(entry),
-                                    fallbackImageURL: customImageURL(entry) == nil ? nil : imageURL(entry),
+                                    imageURL: custom ?? imageURL(entry),
+                                    fallbackImageURL: custom == nil ? nil : imageURL(entry),
                                     progress: fraction(entry),
                                     overlayLeading: episodeCode(entry)
                                 )
@@ -4173,11 +4177,12 @@ struct ContinueWatchingRow: View {
     /// with the shared resolver because `WatchProgressEntry` carries no raw-URL fields. Landscape
     /// shape: a pattern without `{shape}` resolves nil here, so those cards render exactly as before.
     private func customImageURL(_ entry: WatchProgressEntry) -> String? {
-        CustomPosterUrls.shared.resolve(
+        guard !posterPattern.isEmpty else { return nil }
+        return CustomPosterUrls.shared.resolveWithPattern(
+            pattern: posterPattern,
             contentId: entry.parentMetaId,
             contentType: entry.parentMetaType,
-            shape: PosterShape.landscape,
-            screen: CustomPosterScreen.continueWatching
+            shape: PosterShape.landscape
         )
     }
 

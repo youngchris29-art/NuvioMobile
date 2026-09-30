@@ -44,16 +44,9 @@ final class CustomPostersViewModel: ObservableObject {
         enabledScreens.contains(screen)
     }
 
-    /// The shared resolver reads an EMPTY enabled set as "all screens" (`fromKeys`), so turning
-    /// off the last enabled screen would silently turn everything back on. Refuse that switch-off
-    /// and re-publish the current set so the toggle snaps back to on.
+    /// "All off" is a legitimate, syncable state (the shared side stores it as a "none" sentinel),
+    /// so the last toggle is allowed to turn off.
     func setEnabled(_ screen: CustomPosterScreen, _ enabled: Bool) {
-        if !enabled, enabledScreens.contains(screen), enabledScreens.count <= 1 {
-            let current = enabledScreens
-            enabledScreens = current
-            objectWillChange.send()
-            return
-        }
         CustomPosterUrlRepository.shared.setScreenEnabled(screen: screen, enabled: enabled)
     }
 
@@ -92,7 +85,7 @@ struct CustomPostersSettingsView: View {
             ) {
                 SettingsValueRow(
                     title: String(localized: "Poster URL Pattern"),
-                    value: model.hasPattern ? model.pattern : String(localized: "Not set")
+                    value: model.hasPattern ? CustomPosterPatternMask.masked(model.pattern) : String(localized: "Not set")
                 )
                 .lineLimit(3)
                 .truncationMode(.middle)
@@ -115,10 +108,7 @@ struct CustomPostersSettingsView: View {
                 .disabled(!model.hasPattern)
             }
 
-            SettingsSection(
-                String(localized: "Apply To"),
-                footer: String(localized: "At least one screen must stay on.")
-            ) {
+            SettingsSection(String(localized: "Apply To")) {
                 ForEach(CustomPostersViewModel.allScreens, id: \.self) { screen in
                     SettingsToggleRow(
                         title: Self.title(for: screen),
@@ -184,6 +174,61 @@ struct CustomPostersSettingsView: View {
             Text("Couldn't start the local server. Check the network connection and try again.")
                 .font(Theme.Font.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Display-only masking of a poster URL pattern: the TV never shows an API key the phone page
+/// deliberately never echoes. Pure, so it is unit-tested (`CustomPosterPatternMaskTests`).
+///
+/// Rule: the scheme and host are never touched. Any path segment that has no `{placeholder}` and is
+/// at least 16 characters of letters, digits, `-` or `_` is replaced by `\u{2022}\u{2022}\u{2022}\u{2022}`;
+/// in the query, values of key-like parameter names (`key`, `apikey`, `api_key`, `token`, `secret`)
+/// and values that look like a key by the same 16-character rule are masked too. Placeholders such
+/// as `{id}` stay visible.
+enum CustomPosterPatternMask {
+    static let mask = "\u{2022}\u{2022}\u{2022}\u{2022}"
+    private static let keyParams: Set<String> = ["key", "apikey", "api_key", "token", "secret"]
+
+    static func masked(_ pattern: String) -> String {
+        guard let schemeEnd = pattern.range(of: "://") else { return pattern }
+        let restStart = pattern[schemeEnd.upperBound...]
+            .firstIndex(where: { "/?#".contains($0) }) ?? pattern.endIndex
+        let head = String(pattern[..<restStart])
+        let rest = String(pattern[restStart...])
+
+        let tailStart = rest.firstIndex(where: { $0 == "?" || $0 == "#" }) ?? rest.endIndex
+        let path = String(rest[..<tailStart])
+        let tail = String(rest[tailStart...])
+
+        let maskedPath = path
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map { looksLikeKey(String($0)) ? mask : String($0) }
+            .joined(separator: "/")
+
+        var maskedTail = tail
+        if tail.hasPrefix("?") {
+            let fragmentStart = tail.firstIndex(of: "#") ?? tail.endIndex
+            let query = String(tail[tail.index(after: tail.startIndex)..<fragmentStart])
+            let fragment = String(tail[fragmentStart...])
+            let pairs = query.split(separator: "&", omittingEmptySubsequences: false).map { pair -> String in
+                guard let eq = pair.firstIndex(of: "=") else { return String(pair) }
+                let name = String(pair[..<eq])
+                let value = String(pair[pair.index(after: eq)...])
+                let hide = !value.contains("{")
+                    && !value.isEmpty
+                    && (keyParams.contains(name.lowercased()) || looksLikeKey(value))
+                return hide ? "\(name)=\(mask)" : String(pair)
+            }
+            maskedTail = "?" + pairs.joined(separator: "&") + fragment
+        }
+        return head + maskedPath + maskedTail
+    }
+
+    private static func looksLikeKey(_ segment: String) -> Bool {
+        guard segment.count >= 16, !segment.contains("{") else { return false }
+        return segment.unicodeScalars.allSatisfy {
+            ($0.value < 128) && (CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_")
         }
     }
 }

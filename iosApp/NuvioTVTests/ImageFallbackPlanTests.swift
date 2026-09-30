@@ -38,7 +38,7 @@ final class ImageFallbackPlanTests: XCTestCase {
         let result: String? = await ImageFallbackPlan.firstLoaded(
             candidates: [custom, raw],
             fetch: { url in fetched.append(url); throw Boom() },
-            onFailure: { failures.append($0) }
+            onFailure: { url, _ in failures.append(url) }
         )
         XCTAssertNil(result)
         XCTAssertEqual(fetched, [custom, raw])
@@ -63,5 +63,58 @@ final class ImageFallbackPlanTests: XCTestCase {
         )
         XCTAssertEqual(single, "ok")
         XCTAssertEqual(fetched, [custom])
+    }
+
+    func testInitialRenderUncachedPrimaryCachedFallbackStillFetchesPrimary() async {
+        // Primary uncached, fallback cached, primary not failed: fallback is only a placeholder.
+        XCTAssertEqual(
+            ImageFallbackPlan.initialRender(primaryCached: false, fallbackCached: true,
+                                            primaryFailed: false, hasFallback: true),
+            .showFallbackThenFetchPrimary)
+        // ...and the walk that follows fetches the primary first.
+        var fetched: [URL] = []
+        let result: String? = await ImageFallbackPlan.firstLoaded(
+            candidates: [custom, raw],
+            skip: { _ in false },
+            fetch: { url in fetched.append(url); return url == self.custom ? "custom" : "raw" }
+        )
+        XCTAssertEqual(result, "custom")
+        XCTAssertEqual(fetched, [custom])
+    }
+
+    func testInitialRenderOtherCases() {
+        XCTAssertEqual(
+            ImageFallbackPlan.initialRender(primaryCached: false, fallbackCached: true,
+                                            primaryFailed: true, hasFallback: true), .showFallback)
+        XCTAssertEqual(
+            ImageFallbackPlan.initialRender(primaryCached: true, fallbackCached: true,
+                                            primaryFailed: false, hasFallback: true), .showPrimary)
+        XCTAssertEqual(
+            ImageFallbackPlan.initialRender(primaryCached: false, fallbackCached: false,
+                                            primaryFailed: false, hasFallback: true), .fetch)
+        XCTAssertEqual(
+            ImageFallbackPlan.initialRender(primaryCached: false, fallbackCached: true,
+                                            primaryFailed: false, hasFallback: false), .fetch)
+    }
+
+    func testOnlyDefinitiveFailuresAreRecorded() {
+        XCTAssertTrue(ArtworkStore.isDefinitiveFailure(ArtworkFetchError.http(404)))
+        XCTAssertTrue(ArtworkStore.isDefinitiveFailure(ArtworkFetchError.notImage))
+        XCTAssertFalse(ArtworkStore.isDefinitiveFailure(ArtworkFetchError.http(503)))
+        XCTAssertFalse(ArtworkStore.isDefinitiveFailure(ArtworkFetchError.http(429)))
+        XCTAssertFalse(ArtworkStore.isDefinitiveFailure(URLError(.timedOut)))
+        XCTAssertFalse(ArtworkStore.isDefinitiveFailure(URLError(.notConnectedToInternet)))
+        XCTAssertFalse(ArtworkStore.isDefinitiveFailure(CancellationError()))
+    }
+
+    func testFailureMemoExpiresAndClears() {
+        ArtworkStore.clearFailedURLs()
+        let t0 = Date()
+        ArtworkStore.noteFailure(custom, now: t0)
+        XCTAssertTrue(ArtworkStore.hasFailed(custom, now: t0.addingTimeInterval(60)))
+        XCTAssertFalse(ArtworkStore.hasFailed(custom, now: t0.addingTimeInterval(ArtworkStore.failedURLTTL + 1)))
+        ArtworkStore.noteFailure(custom, now: t0)
+        ArtworkStore.clearFailedURLs()
+        XCTAssertFalse(ArtworkStore.hasFailed(custom, now: t0))
     }
 }

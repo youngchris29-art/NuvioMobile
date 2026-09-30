@@ -65,10 +65,19 @@ struct SagaCard: View {
         return logoStore.logoURL(for: item)
     }
 
+    /// The banner is never overlaid, so a non-empty banner needs no fallback; otherwise the art is
+    /// the (possibly custom) poster and its original is `rawPosterUrl` — the same image the card
+    /// showed before the custom-poster feature.
+    private var sagaFallbackURL: String? {
+        let banner: String? = item.banner
+        if let banner, !banner.isEmpty { return nil }
+        return item.rawPosterUrl
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             ZStack(alignment: .bottomLeading) {
-                CachedAsyncImage(string: SagaCardArt.artworkURL(for: item), fallback: item.rawLandscapePosterUrl ?? item.rawPosterUrl, contentMode: .fill)
+                CachedAsyncImage(string: SagaCardArt.artworkURL(for: item), fallback: sagaFallbackURL, contentMode: .fill)
                     .frame(width: width - 2 * inset, height: height - 2 * inset)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))

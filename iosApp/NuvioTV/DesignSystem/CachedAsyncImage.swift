@@ -135,6 +135,11 @@ struct DefaultFailureImage: View {
 /// prefetcher): a process-wide decoded-image memory cache, a dedicated disk-backed session,
 /// ImageIO downsampling, and in-flight request coalescing so concurrent views (or a prefetch
 /// plus a view) never download the same URL twice.
+enum ArtworkFetchError: Error {
+    case http(Int)
+    case notImage
+}
+
 enum ArtworkStore {
     /// Process-wide in-memory decoded-image cache. Bounded by decoded bytes, not just count —
     /// 400 unbounded images (a 4K RGBA backdrop is ~32 MB decoded) could exceed the Apple TV
@@ -232,15 +237,49 @@ enum ArtworkStore {
         }
     }
 
-    /// URLs that failed to load this session (bounded). Only consulted when a fallback exists, so
-    /// a re-mounted card whose custom poster 404'd goes straight to the original art.
-    @MainActor private static var failedURLs: Set<URL> = []
+    /// Custom-poster URLs that DEFINITIVELY failed (4xx, non-image body, undecodable), with the
+    /// time they failed. Only consulted, and only written, when the load has a fallback, so a
+    /// re-mounted card whose custom poster 404'd goes straight to the original art. Entries expire
+    /// (a poster-service outage recovers), the set is size-bounded, and it is cleared on profile
+    /// change (`clearFailedURLs()`, called from `HomeViewModel.stop()`) because the URLs embed the
+    /// user's pattern/keys.
+    @MainActor private static var failedURLs: [URL: Date] = [:]
+    static let failedURLTTL: TimeInterval = 10 * 60
 
-    @MainActor static func hasFailed(_ url: URL) -> Bool { failedURLs.contains(url) }
+    @MainActor static func hasFailed(_ url: URL, now: Date = Date()) -> Bool {
+        guard let at = failedURLs[url] else { return false }
+        if now.timeIntervalSince(at) > failedURLTTL {
+            failedURLs[url] = nil
+            return false
+        }
+        return true
+    }
 
-    @MainActor static func noteFailure(_ url: URL) {
+    @MainActor static func noteFailure(_ url: URL, now: Date = Date()) {
         if failedURLs.count >= 512 { failedURLs.removeAll() }
-        failedURLs.insert(url)
+        failedURLs[url] = now
+    }
+
+    @MainActor static func clearFailedURLs() { failedURLs.removeAll() }
+
+    /// Only outcomes that will not change on a retry count: a 4xx answer, a non-image body, an
+    /// oversized or undecodable payload. Timeouts, connectivity errors, 5xx/408/429 and
+    /// cancellation are transient and never recorded.
+    nonisolated static func isDefinitiveFailure(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let e = error as? ArtworkFetchError {
+            switch e {
+            case .http(let status): return (400...499).contains(status) && status != 408 && status != 429
+            case .notImage: return true
+            }
+        }
+        if let u = error as? URLError {
+            switch u.code {
+            case .cannotDecodeContentData, .dataLengthExceedsMaximum, .cannotDecodeRawData: return true
+            default: return false
+            }
+        }
+        return false
     }
 
     /// Synchronous memory-cache lookup. Safe from any context (NSCache locks internally); lets
@@ -258,7 +297,8 @@ enum ArtworkStore {
     /// that coalesces onto an already-running download inherits that download's admission, since
     /// there is nothing left to queue.
     @MainActor
-    static func fetch(_ url: URL, admission: FetchAdmission = .normal) async throws -> UIImage {
+    static func fetch(_ url: URL, admission: FetchAdmission = .normal,
+                      timeout: TimeInterval? = nil) async throws -> UIImage {
         if let hit = cached(url) {
             #if DEBUG
             LaunchTrace.artwork(.memory)  // BUG-26 attribution
@@ -294,16 +334,27 @@ enum ArtworkStore {
                 traceSource = .disk  // local bytes, no network involved
                 #endif
             } else {
-                let (fetchedData, response) = try await session.data(from: url)
+                // `timeout` (only passed for a custom-poster primary that HAS a fallback) is the
+                // per-request inactivity window; nil keeps the session's 20 s. A black-holed poster
+                // service must not hold a fetch slot for 20 s before the fallback can run.
+                let result: (Data, URLResponse)
+                if let timeout {
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = timeout
+                    result = try await session.data(for: request)
+                } else {
+                    result = try await session.data(from: url)
+                }
+                let (fetchedData, response) = result
 
                 // Reject unsuccessful responses, non-image payloads, and oversized downloads
                 // before spending any decode work on them (HI-006).
                 if let http = response as? HTTPURLResponse {
                     guard (200...299).contains(http.statusCode) else {
-                        throw URLError(.badServerResponse)
+                        throw ArtworkFetchError.http(http.statusCode)
                     }
                     if let mime = http.mimeType?.lowercased(), !mime.hasPrefix("image/") {
-                        throw URLError(.cannotDecodeContentData)
+                        throw ArtworkFetchError.notImage
                     }
                 }
                 data = fetchedData
@@ -384,6 +435,26 @@ enum ImageFallbackPlan {
         return out
     }
 
+    enum InitialRender: Equatable {
+        /// Primary is in memory: show it, done.
+        case showPrimary
+        /// Only the fallback is in memory AND the primary is known-failed: show it, done.
+        case showFallback
+        /// Only the fallback is in memory, primary not known-failed: show it as a placeholder
+        /// (no shimmer) but still fetch the primary and replace it when it loads.
+        case showFallbackThenFetchPrimary
+        /// Nothing usable in memory: shimmer and walk the candidates.
+        case fetch
+    }
+
+    /// Decides what the first frame shows. `hasFallback` is false for a plain single-URL load.
+    static func initialRender(primaryCached: Bool, fallbackCached: Bool,
+                              primaryFailed: Bool, hasFallback: Bool) -> InitialRender {
+        if primaryCached { return .showPrimary }
+        guard hasFallback, fallbackCached else { return .fetch }
+        return primaryFailed ? .showFallback : .showFallbackThenFetchPrimary
+    }
+
     /// Walks `candidates` in order and returns the first image that loads. A candidate for which
     /// `skip` is true (already failed this session) is passed over unless it is the last one, so a
     /// remounted card goes straight to the fallback instead of re-requesting a known 404. Returns
@@ -393,14 +464,17 @@ enum ImageFallbackPlan {
         candidates: [URL],
         skip: (URL) -> Bool = { _ in false },
         fetch: (URL) async throws -> T,
-        onFailure: (URL) -> Void = { _ in }
+        onFailure: (URL, Error) -> Void = { _, _ in }
     ) async -> T? {
         for (index, candidate) in candidates.enumerated() {
             if Task.isCancelled { return nil }
             if index < candidates.count - 1, skip(candidate) { continue }
-            if let image = try? await fetch(candidate) { return image }
-            if Task.isCancelled { return nil }
-            onFailure(candidate)
+            do {
+                return try await fetch(candidate)
+            } catch {
+                if Task.isCancelled { return nil }
+                onFailure(candidate, error)
+            }
         }
         return nil
     }
@@ -427,20 +501,40 @@ private final class CachedImageLoader: ObservableObject {
         let candidates = ImageFallbackPlan.candidates(primary: url, fallback: fallback)
         guard !candidates.isEmpty else { return }
 
-        // Memory-cache hit on any candidate (primary first) renders synchronously, no shimmer.
-        for candidate in candidates {
-            if let cached = ArtworkStore.cached(candidate) {
-                image = cached
-                return
-            }
+        let hasFallback = candidates.count > 1
+        let primary = candidates[0]
+        let fallbackHit = hasFallback ? ArtworkStore.cached(candidates[1]) : nil
+        switch ImageFallbackPlan.initialRender(
+            primaryCached: ArtworkStore.cached(primary) != nil,
+            fallbackCached: fallbackHit != nil,
+            primaryFailed: hasFallback && ArtworkStore.hasFailed(primary),
+            hasFallback: hasFallback
+        ) {
+        case .showPrimary:
+            image = ArtworkStore.cached(primary)
+            return
+        case .showFallback:
+            image = fallbackHit
+            return
+        case .showFallbackThenFetchPrimary:
+            image = fallbackHit   // placeholder only; the walk below still fetches the primary
+        case .fetch:
+            break
         }
 
         task = Task { [weak self] in
             let fetched = await ImageFallbackPlan.firstLoaded(
                 candidates: candidates,
                 skip: { ArtworkStore.hasFailed($0) },
-                fetch: { try await ArtworkStore.fetch($0) },
-                onFailure: { ArtworkStore.noteFailure($0) }
+                fetch: { url in
+                    // Short window for a primary that has a fallback waiting behind it.
+                    try await ArtworkStore.fetch(url, timeout: hasFallback && url == primary ? 8 : nil)
+                },
+                onFailure: { url, error in
+                    // Record only for a primary that has a fallback, and only definitive outcomes.
+                    guard hasFallback, url == primary, ArtworkStore.isDefinitiveFailure(error) else { return }
+                    ArtworkStore.noteFailure(url)
+                }
             )
             if Task.isCancelled { return }
             guard let self, self.currentPair == pair else { return }

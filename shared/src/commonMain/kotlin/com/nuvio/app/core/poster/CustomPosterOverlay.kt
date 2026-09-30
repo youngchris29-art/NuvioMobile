@@ -103,10 +103,13 @@ fun com.nuvio.app.features.library.LibraryItem.withCustomPosterUrl(
 
     if (resolvedPoster == null && resolvedLandscape == null) return this
 
+    val alreadyApplied = customPosterApplied || rawPosterUrl != null
     return copy(
         poster = resolvedPoster ?: poster,
-        rawPosterUrl = rawPosterUrl ?: poster,
+        rawPosterUrl = if (alreadyApplied) rawPosterUrl else poster,
         landscapePoster = resolvedLandscape ?: landscapePoster,
+        rawLandscapePosterUrl = if (alreadyApplied) rawLandscapePosterUrl else landscapePoster,
+        customPosterApplied = true,
     )
 }
 

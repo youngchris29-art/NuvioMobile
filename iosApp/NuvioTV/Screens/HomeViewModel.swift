@@ -170,6 +170,10 @@ final class HomeViewModel: ObservableObject {
     /// Parent ids of Continue Watching series whose show has Episode Shuffle on (drives the card's
     /// shuffle badge). Recomputed with the row and whenever the shuffle profile changes.
     @Published private(set) var shuffleParentIds: Set<String> = []
+    /// Custom poster URL pattern for the Continue Watching screen; blank when the pattern is blank
+    /// or that screen's toggle is off. Kept out of `HomeUiState` (which drops equal republishes) so
+    /// toggling only this screen, or editing the pattern, always reaches the CW cards.
+    @Published private(set) var continueWatchingPosterPattern: String = ""
     /// Home "Upcoming" row: next airing episode per followed show (shared
     /// `UpcomingEpisodesRepository`). Empty while the row is disabled or nothing is airing.
     @Published private(set) var upcoming: [UpcomingEpisodeItem] = []
@@ -218,6 +222,8 @@ final class HomeViewModel: ObservableObject {
     private var progressWatcher: FlowWatcher?
     private var progressSourceWatcher: FlowWatcher?
     private var episodeShuffleWatcher: FlowWatcher?
+    private var posterPatternWatcher: FlowWatcher?
+    private var posterScreensWatcher: FlowWatcher?
     private var traktSettingsWatcher: FlowWatcher?
     /// Last Trakt continue-watching days cap the row was built with; `nil` until the settings
     /// watcher's replay lands. Profile-scoped — cleared with the watchers in `teardownPipeline()`.
@@ -416,6 +422,9 @@ final class HomeViewModel: ObservableObject {
         sections = []
         rows = []
         continueWatching = []
+        continueWatchingPosterPattern = ""
+        // URLs embed the profile's custom-poster pattern/keys; drop failure verdicts with it.
+        ArtworkStore.clearFailedURLs()
         upcoming = []
         isLoading = false
         errorMessage = nil
@@ -763,6 +772,19 @@ final class HomeViewModel: ObservableObject {
             self.refreshShuffleParentIds()
         }
 
+        // Custom poster URL pattern: the CW cards resolve their art from this value, so it must
+        // follow the repository's pattern AND per-screen toggles even while Home itself is disabled.
+        CustomPosterUrlRepository.shared.ensureLoaded()
+        refreshContinueWatchingPosterPattern()
+        posterPatternWatcher = FlowWatcherKt.watch(CustomPosterUrlRepository.shared.pattern) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.refreshContinueWatchingPosterPattern()
+        }
+        posterScreensWatcher = FlowWatcherKt.watch(CustomPosterUrlRepository.shared.enabledScreens) { [weak self] _ in
+            guard let self, self.pipelineGeneration == gen else { return }
+            self.refreshContinueWatchingPosterPattern()
+        }
+
         // BUG-75: the row's two gates (the active provider's dropped-show filter and its recency
         // window) live OUTSIDE `uiState` — switching progress source or changing the Trakt
         // continue-watching days cap changes what the row should contain without touching a single
@@ -864,6 +886,17 @@ final class HomeViewModel: ObservableObject {
         if ids != shuffleParentIds { shuffleParentIds = ids }
     }
 
+    private func refreshContinueWatchingPosterPattern() {
+        let repo = CustomPosterUrlRepository.shared
+        let next = repo.isScreenEnabled(screen: .continueWatching)
+            ? repo.patternForScreen(screen: .continueWatching) : ""
+        if next != continueWatchingPosterPattern {
+            continueWatchingPosterPattern = next
+            // A new pattern makes earlier "this custom URL failed" verdicts meaningless.
+            ArtworkStore.clearFailedURLs()
+        }
+    }
+
     /// The real teardown. Idempotent (`started` gates it) so a hard `stop()` on an already-stopped
     /// model is a no-op and, crucially, does NOT emit a spurious `vm stop` probe line — those two
     /// lines keep meaning "the pipeline actually started/stopped", never "someone asked".
@@ -883,6 +916,8 @@ final class HomeViewModel: ObservableObject {
         progressWatcher?.cancel()
         progressSourceWatcher?.cancel()
         episodeShuffleWatcher?.cancel()
+        posterPatternWatcher?.cancel()
+        posterScreensWatcher?.cancel()
         traktSettingsWatcher?.cancel()
         collectionsWatcher?.cancel()
         catalogSettingsWatcher?.cancel()
@@ -893,6 +928,8 @@ final class HomeViewModel: ObservableObject {
         progressWatcher = nil
         progressSourceWatcher = nil
         episodeShuffleWatcher = nil
+        posterPatternWatcher = nil
+        posterScreensWatcher = nil
         traktSettingsWatcher = nil
         lastTraktContinueWatchingDaysCap = nil
         collectionsWatcher = nil

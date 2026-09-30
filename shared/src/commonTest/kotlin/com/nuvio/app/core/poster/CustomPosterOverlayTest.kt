@@ -2,7 +2,9 @@ package com.nuvio.app.core.poster
 
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
+import com.nuvio.app.features.library.LibraryItem
 import com.nuvio.app.features.library.toLibraryItem
+import com.nuvio.app.features.library.toMetaPreview
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -203,5 +205,52 @@ class CustomPosterOverlayTest {
         val library = overlaid.toLibraryItem(savedAtEpochMs = 1L)
         assertEquals("https://o/p.jpg", library.poster)
         assertEquals("https://o/l.jpg", library.landscapePoster)
+    }
+
+    @Test
+    fun overlaid_preview_with_null_original_converts_to_library_item_without_custom_url() {
+        val overlaid = MetaPreview(id = "tt1", type = "movie", name = "M", poster = null)
+            .withCustomPosterUrl(universalPattern)
+        assertEquals(true, overlaid.poster != null)
+        val library = overlaid.toLibraryItem(savedAtEpochMs = 1L)
+        assertNull(library.poster)
+        assertNull(library.landscapePoster)
+    }
+
+    @Test
+    fun library_item_overlay_records_and_restores_through_meta_preview() {
+        val item = LibraryItem(
+            id = "tt1", type = "movie", name = "M",
+            poster = "https://o/p.jpg", landscapePoster = null, savedAtEpochMs = 1L,
+        )
+        val overlaid = item.withCustomPosterUrl(shapePattern)
+        assertEquals("https://o/p.jpg", overlaid.rawPosterUrl)
+        assertNull(overlaid.rawLandscapePosterUrl)
+        assertEquals(true, overlaid.customPosterApplied)
+        // idempotent
+        val twice = overlaid.withCustomPosterUrl(shapePattern)
+        assertEquals("https://o/p.jpg", twice.rawPosterUrl)
+        assertNull(twice.rawLandscapePosterUrl)
+
+        val preview = overlaid.toMetaPreview()
+        assertEquals(true, preview.customPosterApplied)
+        val cleared = preview.reapplyCustomPosterUrl("")
+        assertEquals("https://o/p.jpg", cleared.poster)
+        assertNull(cleared.landscapePoster)
+        // and back into a library item: raw art only
+        val back = preview.toLibraryItem(savedAtEpochMs = 2L)
+        assertEquals("https://o/p.jpg", back.poster)
+        assertNull(back.landscapePoster)
+    }
+
+    @Test
+    fun library_item_with_existing_landscape_keeps_raw_landscape() {
+        val item = LibraryItem(
+            id = "tt1", type = "movie", name = "M",
+            poster = "https://o/p.jpg", landscapePoster = "https://o/l.jpg", savedAtEpochMs = 1L,
+        )
+        val overlaid = item.withCustomPosterUrl(shapePattern).withCustomPosterUrl(shapePattern)
+        assertEquals("https://o/l.jpg", overlaid.rawLandscapePosterUrl)
+        assertEquals("https://o/l.jpg", overlaid.toMetaPreview().reapplyCustomPosterUrl("").landscapePoster)
     }
 }

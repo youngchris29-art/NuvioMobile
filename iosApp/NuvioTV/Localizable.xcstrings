@@ -30463,40 +30463,6 @@
         }
       }
     },
-    "At least one screen must stay on.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mindestens ein Bildschirm muss aktiviert bleiben."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Al menos una pantalla debe permanecer activada."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Au moins un écran doit rester activé."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Almeno una schermata deve restare attiva."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phải giữ bật ít nhất một màn hình."
-          }
-        }
-      }
-    },
     "Collections": {
       "localizations": {
         "de": {
@@ -30629,6 +30595,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đã xóa mẫu poster tùy chỉnh"
+          }
+        }
+      }
+    },
+    "Custom poster pattern rejected: must be an http(s) URL": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eigenes Poster-Muster abgelehnt: muss eine http(s)-URL sein"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Patrón de póster personalizado rechazado: debe ser una URL http(s)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modèle d’affiche personnalisé refusé : doit être une URL http(s)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modello poster personalizzato rifiutato: deve essere un URL http(s)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã từ chối mẫu poster tùy chỉnh: phải là URL http(s)"
           }
         }
       }

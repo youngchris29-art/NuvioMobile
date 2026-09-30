@@ -5,6 +5,7 @@ import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
 import com.nuvio.app.features.tracking.TrackingAttributedItem
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 data class LibraryItem(
@@ -30,6 +31,10 @@ data class LibraryItem(
     val mediaCategory: String? = null,
     val rawPosterUrl: String? = null,
     val landscapePoster: String? = null,
+    /** UI-only overlay bookkeeping (never persisted or synced): the pre-overlay landscape art. */
+    @Transient val rawLandscapePosterUrl: String? = null,
+    /** UI-only: true once a custom poster overlay recorded the originals (a null original is restorable). */
+    @Transient val customPosterApplied: Boolean = false,
     override val trackingProviderId: String? = null,
     override val trackingProviderItemId: String? = null,
     override val trackingSourceUrl: String? = null,
@@ -83,7 +88,7 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         type = type,
         name = name,
         // Never persist/sync a custom-poster (RPDB-key) URL: store the original art.
-        poster = rawPosterUrl ?: poster,
+        poster = if (customPosterApplied) rawPosterUrl else (rawPosterUrl ?: poster),
         banner = banner,
         logo = logo,
         description = description,
@@ -91,7 +96,7 @@ fun MetaPreview.toLibraryItem(savedAtEpochMs: Long): LibraryItem =
         imdbRating = imdbRating,
         genres = genres,
         posterShape = posterShape,
-        landscapePoster = rawLandscapePosterUrl ?: landscapePoster,
+        landscapePoster = if (customPosterApplied) rawLandscapePosterUrl else (rawLandscapePosterUrl ?: landscapePoster),
         imdbId = id.takeIf { it.startsWith("tt") },
         savedAtEpochMs = savedAtEpochMs,
     )
@@ -111,4 +116,6 @@ fun LibraryItem.toMetaPreview(): MetaPreview =
         genres = genres,
         rawPosterUrl = rawPosterUrl,
         landscapePoster = landscapePoster,
+        rawLandscapePosterUrl = rawLandscapePosterUrl,
+        customPosterApplied = customPosterApplied || rawPosterUrl != null,
     )

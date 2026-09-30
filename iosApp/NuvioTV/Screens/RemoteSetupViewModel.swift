@@ -28,6 +28,10 @@ final class RemoteSetupViewModel: ObservableObject {
     /// Bumped by `start()` and `stop()`; a bind completion from a superseded attempt is ignored
     /// so it can't republish the URL/QR after the user pressed Stop (HI-002/ME-002).
     private var startAttempt = 0
+    /// True only while THIS instance holds the idle-timer override. `stop()` on an instance that
+    /// never started (e.g. the Custom Posters screen's own copy) must not re-enable the idle timer
+    /// while another instance is still serving a phone.
+    private var disabledIdleTimer = false
 
     private let server = RemoteSetupServer()
     private var addonWatcher: FlowWatcher?
@@ -80,6 +84,7 @@ final class RemoteSetupViewModel: ObservableObject {
                 // into the screensaver the app suspends and the server dies mid-edit) and start
                 // feeding state. On failure the idle timer was never touched (ME-002).
                 UIApplication.shared.isIdleTimerDisabled = true
+                self.disabledIdleTimer = true
                 self.installWatchers()
                 // The token is part of the URL — scanning the QR (or typing the short URL) is
                 // what authorizes the browser session (HI-001).
@@ -94,7 +99,10 @@ final class RemoteSetupViewModel: ObservableObject {
         startAttempt += 1
         isStarting = false
         startFailed = false
-        UIApplication.shared.isIdleTimerDisabled = false
+        if disabledIdleTimer {
+            UIApplication.shared.isIdleTimerDisabled = false
+            disabledIdleTimer = false
+        }
         server.stop()
         serverURL = nil
         qrImage = nil
@@ -228,7 +236,7 @@ final class RemoteSetupViewModel: ObservableObject {
             let pattern = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if pattern.isEmpty {
                 CustomPosterUrlRepository.shared.clearPattern()
-            } else {
+            } else if Self.isValidPosterPattern(pattern) {
                 CustomPosterUrlRepository.shared.setPattern(pattern: pattern)
             }
         }
@@ -305,6 +313,23 @@ final class RemoteSetupViewModel: ObservableObject {
         }
     }
 
+    /// Accepts a (trimmed, non-empty) poster pattern only when it is at most 2048 characters, has
+    /// no whitespace, and parses as an http(s) URL with a host. `{placeholder}` groups are swapped
+    /// for a plain token first so `URLComponents` judges the URL shape, not the braces/pipes.
+    static func isValidPosterPattern(_ pattern: String) -> Bool {
+        guard !pattern.isEmpty, pattern.count <= 2048,
+              pattern.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+        else { return false }
+        let neutral = pattern.replacingOccurrences(
+            of: "\\{[^}]*\\}", with: "x", options: .regularExpression
+        )
+        guard let comps = URLComponents(string: neutral),
+              let scheme = comps.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = comps.host, !host.isEmpty
+        else { return false }
+        return true
+    }
+
     // MARK: - Alert summary
 
     private func summarize(_ proposal: RemoteSetupServer.Proposal) -> String {
@@ -338,9 +363,14 @@ final class RemoteSetupViewModel: ObservableObject {
 
         if proposal.mdblistKey?.isEmpty == false { parts.append(String(localized: "MDBList key set")) }
         if let posterPattern = proposal.posterPattern {
-            parts.append(posterPattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? String(localized: "Custom poster pattern cleared")
-                : String(localized: "Custom poster pattern set"))
+            let trimmed = posterPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                parts.append(String(localized: "Custom poster pattern cleared"))
+            } else if Self.isValidPosterPattern(trimmed) {
+                parts.append(String(localized: "Custom poster pattern set"))
+            } else {
+                parts.append(String(localized: "Custom poster pattern rejected: must be an http(s) URL"))
+            }
         }
         if let badgeCount = proposal.badgeUrls?.count, badgeCount > 0 {
             parts.append(String(localized: "\(badgeCount) badge pack\(badgeCount == 1 ? "" : "s") imported"))
