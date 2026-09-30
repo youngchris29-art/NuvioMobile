@@ -173,6 +173,17 @@ struct SkipSegmentPlanner {
         }
     }
 
+    /// The seek in flight will never complete as issued: AVPlayer superseded it (a transport scrub
+    /// cancelled it: `seek` returned false) or mpv rejected the command. Back to `idle` with NO
+    /// side effect: nothing marked or consumed, no stale guard, no late-completion record, and the
+    /// completed-since-last-tick flag untouched — so the next `observeTick` judges the jump the
+    /// user made as a scrub. No seek in flight = no-op. (A chip press already consumed its interval
+    /// in `beginSeek`; that stays.)
+    mutating func seekInterrupted() {
+        guard seekInFlight != nil else { return }
+        seekState = .idle
+    }
+
     /// AVPlayer only, once per tick BEFORE `evaluate`: the move from `fromSec` (previous tick) to
     /// `toSec`. A jump larger than `userJumpThresholdSec` with no app seek in flight and none
     /// completed since the previous tick is a user scrub: recorded as a completed `.user` seek.

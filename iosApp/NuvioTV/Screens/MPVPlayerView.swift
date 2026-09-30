@@ -1388,7 +1388,14 @@ final class MPVTVPlayerViewController: UIViewController {
             self.awaitingSeekStartGeneration = generation
             // An older seek's restart is not this one's completion.
             self.startedSeekGeneration = nil
-            self.command("seek", args: args)
+            guard self.command("seek", args: args) < 0 else { return }
+            // Rejected: no SEEK/PLAYBACK_RESTART will follow, and a later mpv-internal seek (e.g.
+            // an audio-track switch refresh) must not pass for this one's completion.
+            self.awaitingSeekStartGeneration = nil
+            DispatchQueue.main.async {
+                guard generation == self.seekGeneration else { return }
+                self.skipPlanner.seekInterrupted()
+            }
         }
     }
 
@@ -1458,13 +1465,16 @@ final class MPVTVPlayerViewController: UIViewController {
                     var timePos = Double.nan
                     let ok = mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &timePos) >= 0
                     let landed = ok ? timePos : .nan
-                    // The cache may still hold the pre-seek position (its property-change event
-                    // can trail this one): the next UI tick must see where the seek landed.
-                    if landed.isFinite { self.updateProps { $0.position = landed } }
                     DispatchQueue.main.async {
                         // A newer seek was issued meanwhile: this is not its completion.
                         guard generation == self.seekGeneration else { return }
                         self.skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
+                        // The cache may still hold the pre-seek position (its property-change event
+                        // can trail this one): the next UI tick must see where the seek landed.
+                        // Written HERE, after the planner heard the completion (a lock-guarded cache
+                        // write, no mpv call): a UI tick between an earlier eventQueue write and
+                        // this block would evaluate the landing before it is marked deliberate.
+                        if landed.isFinite { self.updateProps { $0.position = landed } }
                     }
                 }
                 if id == MPV_EVENT_PROPERTY_CHANGE, let data = ev.pointee.data {
@@ -1560,14 +1570,18 @@ final class MPVTVPlayerViewController: UIViewController {
 
     // MARK: - libmpv C-interop helpers
 
-    private func command(_ command: String, args: [String?] = []) {
-        guard mpv != nil else { return }
+    /// Returns mpv's status (< 0 = error, already logged; also < 0 when there is no player).
+    @discardableResult
+    private func command(_ command: String, args: [String?] = []) -> CInt {
+        guard mpv != nil else { return -1 }
         var strArgs = args
         strArgs.insert(command, at: 0)
         strArgs.append(nil)
         var cargs = strArgs.map { $0.flatMap { UnsafePointer<CChar>(strdup($0)) } }
         defer { for ptr in cargs where ptr != nil { free(UnsafeMutablePointer(mutating: ptr!)) } }
-        checkError(mpv_command(mpv, &cargs))
+        let status = mpv_command(mpv, &cargs)
+        checkError(status)
+        return status
     }
 
     private func getDouble(_ name: String) -> Double {

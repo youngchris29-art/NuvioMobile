@@ -393,6 +393,37 @@ final class SkipSegmentPlannerTests: XCTestCase {
         XCTAssertNil(tick(&p, 45, at: 1.5, types: [.intro]).autoSkipTargetSec)
     }
 
+    func testTransportScrubInterruptingTheAppsSkipSeekIsJudgedAsAUserScrub() {
+        // Auto-skip of the intro in flight on a slow remux; the user scrubs into the outro, AVPlayer
+        // cancels our seek (finished = false): the outro the user chose is never auto-skipped.
+        var p = planner([interval(0, 90, "op"), interval(1300, 1380, "ed")])
+        let types: [AutoSkipSegmentType] = [.intro, .outro]
+        XCTAssertFalse(p.observeTick(fromSec: 2, toSec: 5, now: 0))
+        XCTAssertEqual(tick(&p, 5, at: 0, types: types).autoSkipTargetSec, 90)
+        p.beginSeek(kind: .auto, targetSec: 90, fromSec: 5, now: 0)
+        p.seekInterrupted()
+        XCTAssertNil(p.seekInFlight)
+        XCTAssertTrue(p.observeTick(fromSec: 5, toSec: 1320, now: 3))
+        let d = tick(&p, 1320, at: 3, types: types)
+        XCTAssertNil(d.autoSkipTargetSec)
+        XCTAssertNotNil(d.prompt)
+    }
+
+    func testRejectedSeekGoesIdleWithoutStaleGuardOrLateCompletion() {
+        // mpv rejected the resume seek: playback simply continues from where it is.
+        var p = planner([interval(0, 90, "op"), interval(1300, 1380, "ed")])
+        p.beginSeek(kind: .resume, targetSec: 1200, now: 0)
+        p.seekInterrupted()
+        // No stale guard: the unchanged position is evaluated normally at once.
+        XCTAssertEqual(tick(&p, 5, at: 0.5, types: [.intro, .outro]).autoSkipTargetSec, 90)
+        // No late-completion record: a later mpv-internal restart is not taken as the resume.
+        p.seekCompleted(atSec: 1320, now: 5)
+        XCTAssertEqual(tick(&p, 1320, at: 5.5, types: [.intro, .outro]).autoSkipTargetSec, 1380)
+        // Nothing in flight: a no-op.
+        p.seekInterrupted()
+        XCTAssertNil(p.seekInFlight)
+    }
+
     /// 12
     func testScrubDetectedByJumpIsDeliberateButTheAppsOwnCompletedSeekIsNot() {
         // A system-transport scrub into the outro: deliberate.

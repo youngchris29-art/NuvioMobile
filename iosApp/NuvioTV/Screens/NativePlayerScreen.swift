@@ -248,12 +248,18 @@ struct NativePlayerScreen: View {
         // The chip can't re-fire while this is in flight: the planner offers no chip until then.
         if skipPrompt != nil { skipPrompt = nil }
         Task { @MainActor in
-            await player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
-                              toleranceBefore: .zero, toleranceAfter: .zero)
-            // A newer seek replaced this one (AVPlayer finishes a superseded seek early): not ours.
+            let finished = await player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                                             toleranceBefore: .zero, toleranceAfter: .zero)
+            // A newer app seek replaced this one in the planner: not ours to report.
             guard skipPlanner.seekInFlight?.startedAt == startedAt else { return }
-            skipPlanner.seekCompleted(atSec: CMTimeGetSeconds(player.currentTime()),
-                                      now: ProcessInfo.processInfo.systemUptime)
+            if finished {
+                skipPlanner.seekCompleted(atSec: CMTimeGetSeconds(player.currentTime()),
+                                          now: ProcessInfo.processInfo.systemUptime)
+            } else {
+                // Cancelled by a newer seek (a transport scrub): the position is the user's, not
+                // ours — the next tick's jump must be judged as a scrub.
+                skipPlanner.seekInterrupted()
+            }
         }
     }
 }
