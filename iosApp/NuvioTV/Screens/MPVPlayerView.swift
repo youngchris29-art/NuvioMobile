@@ -135,6 +135,15 @@ final class MPVTVPlayerViewController: UIViewController {
     private var traktSessionClosed = false
     /// Skip chip + auto-skip policy shared with the native engine (`SkipSegmentPlanner`).
     private var skipPlanner = SkipSegmentPlanner()
+    /// Main thread: bumped for every seek the app issues (`issueSeek`); a completion is only
+    /// reported to `skipPlanner` for the latest one.
+    private var seekGeneration = 0
+    // Engine-confirmed seek completion — `eventQueue` only (see `issueSeek` / `readEvents`).
+    /// Issued to mpv, but mpv has not reported starting it yet (MPV_EVENT_SEEK).
+    private var awaitingSeekStartGeneration: Int?
+    /// mpv reported starting this seek; the next MPV_EVENT_PLAYBACK_RESTART confirms it. A restart
+    /// without one (start of playback, track switch) is not a seek completion.
+    private var startedSeekGeneration: Int?
     /// Last raw eof-reached value (edge detection for the post-play cover).
     private var lastEofFlag = false
 
@@ -1229,8 +1238,9 @@ final class MPVTVPlayerViewController: UIViewController {
         // Auto-skip also requires Skip Intro (the fetch already returns nothing without it).
         let autoSkipTypes: [AutoSkipSegmentType]? = playerSettings.flatMap { $0.skipIntroEnabled ? Array($0.autoSkipSegmentTypes) : nil }
         let decision = skipPlanner.evaluate(positionSec: position, durationSec: duration,
-                                            isPlaying: fileLoaded && !paused, autoSkipTypes: autoSkipTypes)
-        if let target = decision.autoSkipTargetSec { seekAbsolute(target) }
+                                            isPlaying: fileLoaded && !paused, autoSkipTypes: autoSkipTypes,
+                                            now: ProcessInfo.processInfo.systemUptime)
+        if let target = decision.autoSkipTargetSec { seekAbsolute(target, kind: .auto) }
         if decision.prompt != state.skipPrompt { state.skipPrompt = decision.prompt }
     }
 
@@ -1251,8 +1261,9 @@ final class MPVTVPlayerViewController: UIViewController {
                     handled = true
                 } else if let prompt = state.skipPrompt {
                     // Already clamped against duration by `SkipSegmentPlanner` (a target past EOF
-                    // wedges mpv; unclamped while the duration is still unknown).
-                    seekAbsolute(prompt.targetSec)
+                    // wedges mpv; unclamped while the duration is still unknown). The planner
+                    // shows no chip until mpv confirms this seek, so a second press can't re-seek.
+                    seekAbsolute(prompt.targetSec, kind: .chip)
                     state.skipPrompt = nil
                     flashControls()
                     handled = true
@@ -1334,8 +1345,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Post-play "Play Again": back to the start and resume playing.
     private func replay() {
         guard mpv != nil else { return }
-        skipPlanner.resetForReplay()   // intro/outro auto-skip arms again for the second viewing
-        seekAbsolute(0)
+        seekAbsolute(0, kind: .replay)   // intro/outro auto-skip arms again for the second viewing
         setFlag("pause", false)
         state.isEnded = false
         flashControls()
@@ -1344,19 +1354,41 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private func seekBy(_ seconds: Double) {
         guard mpv != nil else { return }
-        // Arrow seeks are deliberate: a segment they start or land in is never auto-skipped.
-        let from = cachedProps().position
-        skipPlanner.noteUserSeek(fromSec: from, toSec: from + seconds)
-        // Seeks issued from held-arrow timers must not park the main thread on the core lock.
-        eventQueue.async { [weak self] in
-            self?.command("seek", args: [String(format: "%.3f", seconds), "relative"])
+        // Arrow seeks are deliberate: a segment they start or land in is never auto-skipped. The
+        // cached position is stale while another seek is in flight — mpv's relative seek then
+        // starts from that seek's target, so the estimate does too (nil = unknown). The planner
+        // marks the position mpv actually lands on, reported by `readEvents`.
+        let base: Double?
+        if let inFlight = skipPlanner.seekInFlight {
+            base = inFlight.targetSec
+        } else {
+            base = cachedProps().position
         }
+        issueSeek(kind: .user, targetSec: base.map { $0 + seconds }, fromSec: base,
+                  args: [String(format: "%.3f", seconds), "relative"])
     }
 
-    private func seekAbsolute(_ seconds: Double) {
+    private func seekAbsolute(_ seconds: Double, kind: SkipSegmentPlanner.SeekKind) {
+        issueSeek(kind: kind, targetSec: seconds, args: [String(format: "%.3f", seconds), "absolute"])
+    }
+
+    /// Every seek the app issues goes through here. Main thread: the skip planner is told first,
+    /// so no tick can act on the pre-seek position. `eventQueue`: the command runs off-main (held-
+    /// arrow timers must not park the main thread on the core lock) and the seek is tracked for its
+    /// engine-confirmed completion (MPV_EVENT_SEEK, then MPV_EVENT_PLAYBACK_RESTART — `readEvents`).
+    private func issueSeek(kind: SkipSegmentPlanner.SeekKind, targetSec: Double?, fromSec: Double? = nil,
+                           args: [String?]) {
         guard mpv != nil else { return }
+        skipPlanner.beginSeek(kind: kind, targetSec: targetSec, fromSec: fromSec,
+                              now: ProcessInfo.processInfo.systemUptime)
+        seekGeneration += 1
+        let generation = seekGeneration
         eventQueue.async { [weak self] in
-            self?.command("seek", args: [String(format: "%.3f", seconds), "absolute"])
+            guard let self else { return }
+            self.awaitingSeekStartGeneration = generation
+            // An older seek's restart is not this one's completion.
+            self.startedSeekGeneration = nil
+            self.command("seek", args: args)
         }
     }
 
@@ -1412,6 +1444,28 @@ final class MPVTVPlayerViewController: UIViewController {
                         self.onFileLoaded()
                     }
                     self.refreshTracksAsync()
+                }
+                // Engine-confirmed seek completion for `skipPlanner` (see `issueSeek`): our seek
+                // started (SEEK), then playback restarted after it (PLAYBACK_RESTART). A restart
+                // with no seek of ours started — start of playback, a track switch — is ignored.
+                if id == MPV_EVENT_SEEK, let generation = self.awaitingSeekStartGeneration {
+                    self.awaitingSeekStartGeneration = nil
+                    self.startedSeekGeneration = generation
+                }
+                if id == MPV_EVENT_PLAYBACK_RESTART, let generation = self.startedSeekGeneration {
+                    self.startedSeekGeneration = nil
+                    // Read on eventQueue (never the main thread — see the property-cache note).
+                    var timePos = Double.nan
+                    let ok = mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &timePos) >= 0
+                    let landed = ok ? timePos : .nan
+                    // The cache may still hold the pre-seek position (its property-change event
+                    // can trail this one): the next UI tick must see where the seek landed.
+                    if landed.isFinite { self.updateProps { $0.position = landed } }
+                    DispatchQueue.main.async {
+                        // A newer seek was issued meanwhile: this is not its completion.
+                        guard generation == self.seekGeneration else { return }
+                        self.skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
+                    }
                 }
                 if id == MPV_EVENT_PROPERTY_CHANGE, let data = ev.pointee.data {
                     let prop = UnsafePointer<mpv_event_property>(OpaquePointer(data)).pointee
@@ -1485,8 +1539,7 @@ final class MPVTVPlayerViewController: UIViewController {
         if let seconds = pendingResumeSec {
             pendingResumeSec = nil
             didResumeSeek = true
-            skipPlanner.noteResumeSeek(toSec: seconds)
-            command("seek", args: [String(format: "%.3f", seconds), "absolute"])
+            seekAbsolute(seconds, kind: .resume)
             return
         }
         guard let entry = pendingResumeEntry else { return }
@@ -1495,15 +1548,13 @@ final class MPVTVPlayerViewController: UIViewController {
             let seconds = Double(entry.resolveResumePosition(actualDurationMs: Int64(actualDurationSec * 1000))) / 1000.0
             guard seconds > 10 else { return }
             didResumeSeek = true
-            skipPlanner.noteResumeSeek(toSec: seconds)
-            command("seek", args: [String(format: "%.3f", seconds), "absolute"])
+            seekAbsolute(seconds, kind: .resume)
         } else {
             // Duration unknown (some HLS): let mpv resolve the percentage itself.
             let pct = Double(entry.progressFraction) * 100
             guard pct > 0 else { return }
             didResumeSeek = true
-            skipPlanner.noteResumeSeek(toSec: nil)
-            command("seek", args: [String(format: "%.3f", pct), "absolute-percent"])
+            issueSeek(kind: .resume, targetSec: nil, args: [String(format: "%.3f", pct), "absolute-percent"])
         }
     }
 

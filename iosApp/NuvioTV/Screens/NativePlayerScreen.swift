@@ -77,11 +77,7 @@ struct NativePlayerScreen: View {
                         allowedSubtitleLanguages: coordinator.languagePlan.onlyPreferredLanguages
                             ? coordinator.languagePlan.subtitleFilterLanguages : nil,
                         panelModel: panelModel,
-                        onSkip: { [weak coordinator] target in
-                            coordinator?.noteProgrammaticSeek(to: target)
-                            coordinator?.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600),
-                                                      toleranceBefore: .zero, toleranceAfter: .zero)
-                        },
+                        onSkip: { target in skipSeek(to: target, kind: .chip) },
                         onPlayNow: { [weak upNext] in _ = upNext?.playNow() },
                         onDismissUpNext: { [weak upNext] in upNext?.dismissIfVisible() ?? false },
                         onPanelOpenChanged: { open in panelOpen = open }
@@ -137,8 +133,15 @@ struct NativePlayerScreen: View {
                 adapter?.onTick()
             }
             // Deliberate entries (resume + transport scrubs) are never auto-skipped.
-            coordinator.onUserSeek = { from, to in skipPlanner.noteUserSeek(fromSec: from, toSec: to) }
-            coordinator.onResumeSeek = { target in skipPlanner.noteResumeSeek(toSec: target) }
+            coordinator.onPositionTick = { from, to in
+                skipPlanner.observeTick(fromSec: from, toSec: to, now: ProcessInfo.processInfo.systemUptime)
+            }
+            coordinator.onResumeSeekBegin = { target in
+                skipPlanner.beginSeek(kind: .resume, targetSec: target, now: ProcessInfo.processInfo.systemUptime)
+            }
+            coordinator.onResumeSeekCompleted = { landed in
+                skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
+            }
             coordinator.start()
             // Only orchestrate up-next when a presenter can swap contexts (series autoplay).
             if onPlayNext != nil { upNext.startNative() }
@@ -230,13 +233,28 @@ struct NativePlayerScreen: View {
         let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
         let autoSkipTypes: [AutoSkipSegmentType]? = settings.flatMap { $0.skipIntroEnabled ? Array($0.autoSkipSegmentTypes) : nil }
         let decision = skipPlanner.evaluate(positionSec: position, durationSec: duration,
-                                            isPlaying: !coordinator.isPaused, autoSkipTypes: autoSkipTypes)
-        if let target = decision.autoSkipTargetSec {
-            coordinator.noteProgrammaticSeek(to: target)
-            coordinator.player?.seek(to: CMTime(seconds: target, preferredTimescale: 600),
-                                     toleranceBefore: .zero, toleranceAfter: .zero)
-        }
+                                            isPlaying: !coordinator.isPaused, autoSkipTypes: autoSkipTypes,
+                                            now: ProcessInfo.processInfo.systemUptime)
+        if let target = decision.autoSkipTargetSec { skipSeek(to: target, kind: .auto) }
         if decision.prompt != skipPrompt { skipPrompt = decision.prompt }
+    }
+
+    /// The screen's own skip seeks (auto-skip, chip): the planner is told first, and AVPlayer's
+    /// completion reports where the seek really landed. Zero tolerance: land exactly on the target.
+    private func skipSeek(to target: Double, kind: SkipSegmentPlanner.SeekKind) {
+        guard let player = coordinator.player else { return }
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        skipPlanner.beginSeek(kind: kind, targetSec: target, fromSec: coordinator.lastPositionSec, now: startedAt)
+        // The chip can't re-fire while this is in flight: the planner offers no chip until then.
+        if skipPrompt != nil { skipPrompt = nil }
+        Task { @MainActor in
+            await player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
+                              toleranceBefore: .zero, toleranceAfter: .zero)
+            // A newer seek replaced this one (AVPlayer finishes a superseded seek early): not ours.
+            guard skipPlanner.seekInFlight?.startedAt == startedAt else { return }
+            skipPlanner.seekCompleted(atSec: CMTimeGetSeconds(player.currentTime()),
+                                      now: ProcessInfo.processInfo.systemUptime)
+        }
     }
 }
 

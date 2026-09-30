@@ -2,9 +2,10 @@ import Foundation
 import SharedCore
 
 /// One skip-segment policy for both player engines (tvOS half of upstream cbe4dc0a..77ce8a73:
-/// IntroDB movie segments + unified skip controls). Pure value type — no UIKit/SwiftUI state; each
-/// engine owns one, feeds it the fetched intervals, its seeks and its position ticks, and renders
-/// the answer with its existing chip (mpv: `PlayerActionChip`; AVPlayer: a contextual action).
+/// IntroDB movie segments + unified skip controls). Pure value type — no UIKit/SwiftUI state, no
+/// clock of its own (callers pass `now`); each engine owns one, feeds it the fetched intervals, its
+/// seeks and its position ticks, and renders the answer with its existing chip (mpv:
+/// `PlayerActionChip`; AVPlayer: a contextual action).
 ///
 /// Rules (upstream `PlayerScreenRuntimeEffects` / `SkipIntroButton`, shared semantics in
 /// `features/player/skip/`):
@@ -16,6 +17,12 @@ import SharedCore
 ///  - Auto-skip fires ONCE per interval per playback, only for selected segment types, only while
 ///    playing, and never for an interval the user entered deliberately (a user seek whose start or
 ///    end lies inside it, or the resume seek landing inside it).
+///
+/// Seeks are an explicit state machine, `idle` ⇄ `seeking`. The engine calls `beginSeek` right
+/// before it issues ANY seek and `seekCompleted` when the ENGINE confirms the seek finished (mpv:
+/// `MPV_EVENT_PLAYBACK_RESTART`; AVPlayer: the seek's completion), with the real position. While
+/// seeking, the reported position is not trusted: no chip, no auto-skip. Nothing is inferred from
+/// reported positions except the post-timeout stale guard and the AVPlayer scrub detector.
 struct SkipSegmentPlanner {
     /// What the engine should do on this tick.
     struct Decision: Equatable {
@@ -25,96 +32,184 @@ struct SkipSegmentPlanner {
         var autoSkipTargetSec: Double?
     }
 
-    /// The full fetched list, `post-credits` intervals included.
-    private(set) var intervals: [SkipInterval] = []
-    /// Indices into `intervals` that must not auto-skip (already auto-skipped, or entered deliberately).
-    private var consumed = Set<Int>()
-    /// Every deliberate seek so far (ms). Re-applied when the intervals arrive after the seek.
-    private var deliberateSeeks: [(fromMs: Int64, toMs: Int64)] = []
-    /// The resume seek is issued before the position the engine reports reflects it (mpv's property
-    /// cache lags the `seek` command), so auto-skip waits until the playhead has landed — otherwise
-    /// a stale position of 0 inside an intro would auto-skip and override the resume.
-    private var landing: Landing?
-    private var landingTicks = 0
-    /// Position reported on the first tick of the current landing window (to tell a stuck, stale
-    /// position from real playback when the window times out).
-    private var landingFirstPosition: Double?
-    /// Set when a landing times out with the position stuck away from its target: the reported
-    /// position is a leftover of a seek that has not landed. A POSITION (not an interval index), so
-    /// it needs no interval predicate and survives `setIntervals`. While the reported position stays
-    /// within `staleMarkerTolerance` of it, no chip and no auto-skip; the first tick that differs
-    /// clears it and everything is armed normally.
-    private var stalePositionSec: Double?
-    /// The interval just auto-skipped: no chip for it until the playhead has left it once, so the
-    /// engine's pre-seek position doesn't flash the chip (upstream dismisses it after an auto-skip).
-    private var chipSuppressedIndex: Int?
-
-    private enum Landing {
-        case at(Double)
-        /// Percentage resume with no known duration: the first real position is the landing.
-        case unknown
+    enum SeekKind: Equatable {
+        /// The resume seek at playback start: an interval it lands in counts as deliberately entered.
+        case resume
+        /// "Play Again": re-arms every interval (done in `beginSeek`).
+        case replay
+        /// The planner's own auto-skip.
+        case auto
+        /// The user pressed the skip chip.
+        case chip
+        /// A user seek (arrow, scrub, transport skip): its start and landing count as deliberate.
+        case user
     }
 
-    static let landingTolerance: Double = 5
-    /// Give up waiting for a landing that never shows (failed seek) after this many ticks.
-    static let maxLandingTicks = 20
-    /// Movement across a landing window at or below this = the position is stuck (stale).
-    static let stuckPositionTolerance: Double = 1
-    static let staleMarkerTolerance: Double = 1
+    struct Seek: Equatable {
+        let kind: SeekKind
+        /// Where the seek is going, when known (nil: mpv percentage resume with unknown duration).
+        let targetSec: Double?
+        /// `.user` only: where the gesture started (nil = unknown; only the landing is then used).
+        let fromSec: Double?
+        let startedAt: TimeInterval
+    }
+
+    enum SeekState: Equatable {
+        case idle
+        case seeking(Seek)
+    }
+
+    /// No engine confirmation after this long: the seek is abandoned (see `evaluate`).
+    static let seekTimeoutSec: TimeInterval = 10
+    /// An abandoned seek's late confirmation still counts within this window from its start.
+    static let lateCompletionWindowSec: TimeInterval = 60
+    /// After an abandoned seek, ticks within this distance of the last pre-timeout position are
+    /// treated as the leftover of the seek that never confirmed.
+    static let staleTolerance: Double = 1
+    /// AVPlayer: a position jump larger than this between ticks, with no app seek involved, is a
+    /// user scrub (the system transport's scrubs are otherwise invisible). Same rule as the stall budget.
+    static let userJumpThresholdSec: Double = 10
+
+    /// The full fetched list, `post-credits` intervals included.
+    private(set) var intervals: [SkipInterval] = []
+    private(set) var seekState: SeekState = .idle
+    /// Indices into `intervals` that must not auto-skip (already skipped, or entered deliberately).
+    private var consumed = Set<Int>()
+    /// Every deliberate entry so far (ms). Re-applied when the intervals arrive after the seek.
+    private var deliberateSeeks: [(fromMs: Int64, toMs: Int64)] = []
+    /// The interval just skipped (auto or chip): no chip for it until the playhead has left it
+    /// once, so a pre-seek position doesn't flash the chip (upstream dismisses it after a skip).
+    private var chipSuppressedIndex: Int?
+    /// Interval behind the chip returned by the last `evaluate` (what a chip press skips).
+    private var promptIndex: Int?
+    /// Position reported by the previous tick.
+    private var lastTickPositionSec: Double?
+    /// Set when a seek times out: the last position seen before the timeout. Ticks within
+    /// `staleTolerance` of it produce nothing; the first different position clears it. A POSITION,
+    /// not an interval, so it survives `setIntervals`.
+    private var stalePositionSec: Double?
+    /// The seek that timed out, kept so a late engine confirmation is still applied.
+    private var abandonedSeek: Seek?
+    /// An app seek completed since the last `observeTick` (AVPlayer scrub detector).
+    private var seekCompletedSinceLastObservedTick = false
+
+    /// The seek currently in flight, if any.
+    var seekInFlight: Seek? {
+        if case .seeking(let seek) = seekState { return seek }
+        return nil
+    }
 
     // MARK: - Inputs
 
     mutating func setIntervals(_ newIntervals: [SkipInterval]) {
         intervals = newIntervals
         consumed = []
+        promptIndex = nil
         for seek in deliberateSeeks { markDeliberate(fromMs: seek.fromMs, toMs: seek.toMs) }
     }
 
-    /// A user seek (scrub, arrow, transport skip) from `fromSec` to `toSec`.
-    mutating func noteUserSeek(fromSec: Double, toSec: Double) {
-        let seek = (fromMs: Self.ms(fromSec), toMs: Self.ms(toSec))
-        deliberateSeeks.append(seek)
-        markDeliberate(fromMs: seek.fromMs, toMs: seek.toMs)
+    /// Call immediately BEFORE the engine issues a seek. The latest seek wins: a new one replaces
+    /// any seek still in flight. `fromSec` is used for `.user` only (the pre-seek position); a user
+    /// seek issued while another seek is in flight starts where that one was going.
+    mutating func beginSeek(kind: SeekKind, targetSec: Double?, fromSec: Double? = nil, now: TimeInterval) {
+        var from: Double?
+        if kind == .user {
+            // While a seek is in flight (or its leftover position is still reported) the engine's
+            // position is stale: the gesture starts where that seek was going.
+            if let prior = seekInFlight ?? (stalePositionSec != nil ? abandonedSeek : nil) {
+                // Held arrows chain several seeks into one gesture: keep where it started.
+                from = prior.kind == .user ? prior.fromSec : prior.targetSec
+            } else {
+                from = fromSec
+            }
+        }
+        switch kind {
+        case .replay:
+            // The playhead returns to 0: everything is armed again for the second viewing.
+            consumed = []
+            deliberateSeeks = []
+            chipSuppressedIndex = nil
+        case .chip:
+            if let index = promptIndex {
+                consumed.insert(index)
+                chipSuppressedIndex = index
+            }
+        case .resume, .auto, .user:
+            break
+        }
+        promptIndex = nil
+        stalePositionSec = nil
+        abandonedSeek = nil
+        seekState = .seeking(Seek(kind: kind, targetSec: targetSec, fromSec: from, startedAt: now))
     }
 
-    /// The resume seek. `toSec` nil = target unknown (mpv `absolute-percent` resume).
-    mutating func noteResumeSeek(toSec: Double?) {
-        landingTicks = 0
-        landingFirstPosition = nil
-        stalePositionSec = nil
-        if let toSec {
-            noteUserSeek(fromSec: toSec, toSec: toSec)
-            landing = .at(toSec)
+    /// Call when the ENGINE confirms the seek finished, with the actual position. No seek in flight
+    /// (e.g. mpv's playback-restart at start of playback or after a track switch) = no-op, except
+    /// for the late confirmation of a seek that timed out.
+    mutating func seekCompleted(atSec: Double, now: TimeInterval) {
+        let seek: Seek
+        if let inFlight = seekInFlight {
+            seek = inFlight
+        } else if let late = abandonedSeek, now - late.startedAt <= Self.lateCompletionWindowSec {
+            seek = late
         } else {
-            landing = .unknown
+            abandonedSeek = nil
+            return
+        }
+        seekState = .idle
+        abandonedSeek = nil
+        stalePositionSec = nil
+        seekCompletedSinceLastObservedTick = true
+        guard atSec.isFinite else { return }
+        switch seek.kind {
+        case .resume:
+            recordDeliberate(fromSec: atSec, toSec: atSec)
+        case .user:
+            recordDeliberate(fromSec: seek.fromSec ?? atSec, toSec: atSec)
+        case .replay, .auto, .chip:
+            // Replay re-armed everything up front. A skip's landing is not a deliberate entry:
+            // recap → intro, the intro must still auto-skip.
+            break
         }
     }
 
-    /// "Play Again": the playhead returns to 0, so every interval must be armed again — auto-skipped
-    /// or deliberately entered earlier must not keep the replay from skipping. Keeps the intervals.
-    mutating func resetForReplay() {
-        consumed = []
-        deliberateSeeks = []
-        chipSuppressedIndex = nil
-        // Hold auto-skip and the chip until the playhead is back near 0: the seek is async and the
-        // cached position may still be the end-of-file one, inside a re-armed outro. Not
-        // `noteResumeSeek(0)`: that would record a deliberate 0 -> 0 seek and consume an intro at 0.
-        landing = .at(0)
-        landingTicks = 0
-        landingFirstPosition = nil
-        stalePositionSec = nil
+    /// AVPlayer only, once per tick BEFORE `evaluate`: the move from `fromSec` (previous tick) to
+    /// `toSec`. A jump larger than `userJumpThresholdSec` with no app seek in flight and none
+    /// completed since the previous tick is a user scrub: recorded as a completed `.user` seek.
+    /// Returns true when it was one.
+    mutating func observeTick(fromSec: Double, toSec: Double, now: TimeInterval) -> Bool {
+        let appSeekInvolved = seekInFlight != nil || seekCompletedSinceLastObservedTick
+        seekCompletedSinceLastObservedTick = false
+        guard !appSeekInvolved, fromSec.isFinite, toSec.isFinite,
+              abs(toSec - fromSec) > Self.userJumpThresholdSec else { return false }
+        beginSeek(kind: .user, targetSec: toSec, fromSec: fromSec, now: now)
+        seekCompleted(atSec: toSec, now: now)
+        seekCompletedSinceLastObservedTick = false
+        return true
     }
 
     // MARK: - Evaluation
 
     /// Call on every position tick. `autoSkipTypes` nil = auto-skip off (Skip Intro disabled).
     mutating func evaluate(positionSec: Double, durationSec: Double, isPlaying: Bool,
-                           autoSkipTypes: [AutoSkipSegmentType]?) -> Decision {
-        updateLanding(positionSec: positionSec)
-        if let stale = stalePositionSec {
-            if abs(positionSec - stale) > Self.staleMarkerTolerance { stalePositionSec = nil }
-            else { return Decision() }
+                           autoSkipTypes: [AutoSkipSegmentType]?, now: TimeInterval) -> Decision {
+        let previousTick = lastTickPositionSec
+        lastTickPositionSec = positionSec
+        promptIndex = nil
+
+        if let seek = seekInFlight {
+            guard now - seek.startedAt > Self.seekTimeoutSec else { return Decision() }
+            // Never confirmed: stop waiting, mark nothing, consume nothing. Until the position
+            // moves away from where it sat before the timeout, it is the leftover of that seek.
+            seekState = .idle
+            abandonedSeek = seek
+            stalePositionSec = previousTick ?? positionSec
         }
+        if let stale = stalePositionSec {
+            guard abs(positionSec - stale) > Self.staleTolerance else { return Decision() }
+            stalePositionSec = nil
+        }
+
         let durationMs = durationSec > 0 ? Self.ms(durationSec) : 0
         guard let index = intervals.firstIndex(where: { interval in
             positionSec >= interval.startTime && positionSec < interval.endTime &&
@@ -129,14 +224,14 @@ struct SkipSegmentPlanner {
         let interval = intervals[index]
         let target = Self.clamp(Double(action.targetMs) / 1000.0, durationSec: durationSec)
 
-        if let types = autoSkipTypes, !types.isEmpty, isPlaying, landing == nil,
+        if let types = autoSkipTypes, !types.isEmpty, isPlaying,
            !consumed.contains(index), interval.shouldAutoSkipForTypes(selectedTypes: types) {
             consumed.insert(index)
             chipSuppressedIndex = index
             return Decision(prompt: nil, autoSkipTargetSec: target)
         }
 
-        guard chipSuppressedIndex != index, landing == nil,
+        guard chipSuppressedIndex != index,
               positionSec < interval.endTime - PlayerChipStyle.lastSecondExclusion else { return Decision() }
         // Fork deviation from upstream's label rule: upstream says "Skip to Post-Credits" whenever
         // `skipsToPostCredits` is set, which the shared heuristic also raises for any >5 s tail after
@@ -152,6 +247,7 @@ struct SkipSegmentPlanner {
                 (durationSec <= 0 || $0.startTime < durationSec)
         }
         let label = Self.label(for: interval.type, skipsToPostCredits: explicitPostCredits)
+        promptIndex = index
         return Decision(prompt: SkipPrompt(label: label, targetSec: target), autoSkipTargetSec: nil)
     }
 
@@ -171,30 +267,10 @@ struct SkipSegmentPlanner {
 
     // MARK: - Helpers
 
-    private mutating func updateLanding(positionSec: Double) {
-        guard let pending = landing else { return }
-        landingTicks += 1
-        if landingTicks == 1 { landingFirstPosition = positionSec }
-        switch pending {
-        case .at(let target):
-            if abs(positionSec - target) <= Self.landingTolerance { landing = nil }
-        case .unknown:
-            if positionSec > 1 {
-                noteUserSeek(fromSec: positionSec, toSec: positionSec)
-                landing = nil
-            }
-        }
-        if landing != nil, landingTicks >= Self.maxLandingTicks {
-            // Timed out. Stuck away from a known target = the seek has not landed and the position
-            // is a leftover: mark it stale. Otherwise the position advanced like real playback (the
-            // seek failed or was abandoned): just stop waiting, chip and auto-skip are available.
-            if case .at(let target) = pending, abs(positionSec - target) > Self.landingTolerance,
-               let first = landingFirstPosition,
-               abs(positionSec - first) <= Self.stuckPositionTolerance {
-                stalePositionSec = positionSec
-            }
-            landing = nil
-        }
+    private mutating func recordDeliberate(fromSec: Double, toSec: Double) {
+        let seek = (fromMs: Self.ms(fromSec), toMs: Self.ms(toSec))
+        deliberateSeeks.append(seek)
+        markDeliberate(fromMs: seek.fromMs, toMs: seek.toMs)
     }
 
     private mutating func markDeliberate(fromMs: Int64, toMs: Int64) {
@@ -215,46 +291,5 @@ struct SkipSegmentPlanner {
         let value = max(0, seconds) * 1000   // NaN → 0; an open-ended end (Double.MAX) → inf
         guard value < 9.2e18 else { return Int64.max }
         return Int64(value)
-    }
-}
-
-/// Tells the AVPlayer tick loop's "position jumped" detector which jumps are the app's own skip
-/// seeks, so only genuine user scrubs reach `SkipSegmentPlanner.noteUserSeek`. Ticks are ~3 s apart
-/// and the tick right after a seek may still report the pre-seek position. While a programmatic
-/// seek is pending: a tick in `[target - 5, target + 5 + 3.5 * ticksWaited]` is the landing (playback
-/// only moves forward from the target, ~one tick per wait); a tick in `[from - 0.5, from + 4]` is a
-/// stale pre-seek reading (max `maxPendingTicks` ticks). Anything else is judged by the normal jump rule.
-struct ProgrammaticSeekFilter {
-    static let jumpThresholdSec: Double = 10
-    static let landingToleranceSec: Double = 5
-    static let tickAllowanceSec: Double = 3.5
-    static let staleForwardSec: Double = 4
-    static let staleBackSec: Double = 0.5
-    static let maxPendingTicks = 4
-
-    private var pending: (from: Double, target: Double, ticks: Int)?
-
-    /// The app is about to seek from `fromSec` to `targetSec`.
-    mutating func noteProgrammaticSeek(from fromSec: Double, to targetSec: Double) {
-        pending = (fromSec, targetSec, 0)
-    }
-
-    /// True when the move from `last` to `new` is a user seek.
-    mutating func isUserSeek(last: Double, new: Double) -> Bool {
-        if var p = pending {
-            p.ticks += 1
-            let upper = p.target + Self.landingToleranceSec + Self.tickAllowanceSec * Double(p.ticks)
-            if new >= p.target - Self.landingToleranceSec, new <= upper {
-                pending = nil
-                return false
-            }
-            if new >= p.from - Self.staleBackSec, new <= p.from + Self.staleForwardSec,
-               p.ticks < Self.maxPendingTicks {
-                pending = p   // stale pre-seek tick: keep waiting for the landing
-                return false
-            }
-            pending = nil
-        }
-        return new.isFinite && abs(new - last) > Self.jumpThresholdSec
     }
 }

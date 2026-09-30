@@ -50,26 +50,20 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// Fired ~every few seconds with (position, duration) while playing — the screen forwards it to
     /// the next-episode engine.
     var onTick: ((Double, Double) -> Void)?
-    /// Fired with (from, to) when a tick shows a position jump (> 10 s — the same "user seek" rule
-    /// the stall budget uses): the system transport's scrub/skip is invisible to us otherwise. The
-    /// screen's `SkipSegmentPlanner` treats a segment such a seek starts or lands in as deliberately
-    /// entered (never auto-skipped). The resume seeks are reported via `onResumeSeek` instead.
-    var onUserSeek: ((Double, Double) -> Void)?
-    /// Fired with the target once a resume seek has been applied (either path below).
-    var onResumeSeek: ((Double) -> Void)?
+    /// Fired every tick with (previous, current) position, before `onTick`: the system transport's
+    /// scrubs are invisible to us otherwise. The screen's `SkipSegmentPlanner.observeTick` decides
+    /// whether a jump was a user scrub (and marks it deliberate); returns true when it was one — the
+    /// stall budget resets on those. Unset: any jump > 10 s counts (the stall budget's old rule).
+    var onPositionTick: ((Double, Double) -> Bool)?
+    /// Fired with the target right BEFORE a resume seek is issued (either path below).
+    var onResumeSeekBegin: ((Double) -> Void)?
+    /// Fired with the actual position once AVPlayer confirms a resume seek finished.
+    var onResumeSeekCompleted: ((Double) -> Void)?
     /// True once a resume seek has been issued (mpv's `didResumeSeek` equivalent).
     private(set) var didResumeSeek = false
 
     /// Last observed position/duration, used when falling back to mpv.
     private(set) var lastPositionSec: Double = 0
-    /// Keeps the app's own skip seeks out of the "position jumped" user-seek detector.
-    private var seekFilter = ProgrammaticSeekFilter()
-
-    /// Call right before the app seeks on its own (auto-skip, skip chip) so the next tick's jump is
-    /// not reported through `onUserSeek`.
-    func noteProgrammaticSeek(to targetSec: Double) {
-        seekFilter.noteProgrammaticSeek(from: lastPositionSec, to: targetSec)
-    }
     private var lastDurationSec: Double = 0
 
     private let context: PlaybackContext
@@ -647,9 +641,11 @@ final class NativePlaybackCoordinator: ObservableObject {
                     if let resume {
                         // The resume seek (user-initiated for skip logic).
                         self.didResumeSeek = true
+                        self.onResumeSeekBegin?(resume)
                         await player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
                         self.lastPositionSec = resume
-                        self.onResumeSeek?(resume)
+                        // Where it really landed (default tolerance: can be past the target).
+                        self.onResumeSeekCompleted?(CMTimeGetSeconds(player.currentTime()))
                     }
                     player.play()
                     if !self.traktStarted {
@@ -686,11 +682,13 @@ final class NativePlaybackCoordinator: ObservableObject {
                 if readied {
                     var pos = CMTimeGetSeconds(player.currentTime())
                     let dur = CMTimeGetSeconds(item.duration)
-                    // A position jump = a user seek. Reset the stall budget so back-to-back scrubs
-                    // (each costing a ~10s reposition) can't accumulate into a false mpv fallback.
-                    if pos.isFinite, self.seekFilter.isUserSeek(last: self.lastPositionSec, new: pos) {
-                        waitingTicks = 0
-                        self.onUserSeek?(self.lastPositionSec, pos)
+                    // A position jump that is not the app's own seek = a user seek. Reset the stall
+                    // budget so back-to-back scrubs (each costing a ~10s reposition) can't
+                    // accumulate into a false mpv fallback.
+                    if pos.isFinite {
+                        let userSeek = self.onPositionTick?(self.lastPositionSec, pos)
+                            ?? (abs(pos - self.lastPositionSec) > SkipSegmentPlanner.userJumpThresholdSec)
+                        if userSeek { waitingTicks = 0 }
                     }
                     if let pct = pendingResumePercent, pos.isFinite, dur.isFinite, dur > 0 {
                         pendingResumePercent = nil
@@ -700,12 +698,14 @@ final class NativePlaybackCoordinator: ObservableObject {
                             if target > 10 {
                                 // The pending-percentage resume seek (user-initiated for skip logic).
                                 self.didResumeSeek = true
+                                self.onResumeSeekBegin?(target)
                                 await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
                                 self.lastPositionSec = target
-                                // `pos` was read before the seek: report the landing, not a stale
+                                // `pos` was read before the seek: use the real landing, not a stale
                                 // pre-seek position the skip planner could auto-skip from.
-                                pos = target
-                                self.onResumeSeek?(target)
+                                let landed = CMTimeGetSeconds(player.currentTime())
+                                pos = landed.isFinite ? landed : target
+                                self.onResumeSeekCompleted?(pos)
                             }
                         }
                     }
