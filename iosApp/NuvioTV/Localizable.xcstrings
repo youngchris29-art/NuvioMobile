@@ -4978,36 +4978,36 @@
         }
       }
     },
-    "Choose where your library and watch progress are saved. Connect Trakt or Simkl in Account & Services first to use them as a source — otherwise this Apple TV falls back to its local/Nuvio option automatically.": {
+    "Choose where your library and watch progress are saved. Connect Trakt, Simkl, or MDBList in Account & Services first to use them as a source — otherwise this Apple TV falls back to its local/Nuvio option automatically.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Wähle, wo deine Bibliothek und dein Wiedergabefortschritt gespeichert werden. Verbinde zuerst Trakt oder Simkl unter „Konto & Dienste“, um sie als Quelle zu nutzen — sonst greift dieses Apple TV automatisch auf seine lokale/Nuvio-Option zurück."
+            "value": "Wähle, wo deine Bibliothek und dein Wiedergabefortschritt gespeichert werden. Verbinde zuerst Trakt, Simkl oder MDBList unter „Konto & Dienste“, um sie als Quelle zu nutzen — sonst greift dieses Apple TV automatisch auf seine lokale/Nuvio-Option zurück."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Elige dónde se guardan tu biblioteca y tu progreso de visualización. Conecta primero Trakt o Simkl en Cuenta y servicios para usarlos como fuente; de lo contrario, este Apple TV vuelve automáticamente a su opción local/Nuvio."
+            "value": "Elige dónde se guardan tu biblioteca y tu progreso de visualización. Conecta primero Trakt, Simkl o MDBList en Cuenta y servicios para usarlos como fuente; de lo contrario, este Apple TV vuelve automáticamente a su opción local/Nuvio."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choisissez où enregistrer votre bibliothèque et votre progression de visionnage. Connectez d'abord Trakt ou Simkl dans Compte et services pour les utiliser comme source — sinon cette Apple TV revient automatiquement à son option locale/Nuvio."
+            "value": "Choisissez où enregistrer votre bibliothèque et votre progression de visionnage. Connectez d'abord Trakt, Simkl ou MDBList dans Compte et services pour les utiliser comme source — sinon cette Apple TV revient automatiquement à son option locale/Nuvio."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scegli dove salvare la tua libreria e i progressi di visione. Connetti prima Trakt o Simkl in Account e servizi per usarli come sorgente — altrimenti questa Apple TV torna automaticamente all'opzione locale/Nuvio."
+            "value": "Scegli dove salvare la tua libreria e i progressi di visione. Connetti prima Trakt, Simkl o MDBList in Account e servizi per usarli come sorgente — altrimenti questa Apple TV torna automaticamente all'opzione locale/Nuvio."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Chọn nơi lưu thư viện và tiến độ xem. Kết nối Trakt hoặc Simkl trong Tài khoản & dịch vụ trước để dùng làm nguồn — nếu không, Apple TV này sẽ tự động dùng tùy chọn cục bộ/Nuvio."
+            "value": "Chọn nơi lưu thư viện và tiến độ xem. Kết nối Trakt, Simkl hoặc MDBList trong Tài khoản & dịch vụ trước để dùng làm nguồn — nếu không, Apple TV này sẽ tự động dùng tùy chọn cục bộ/Nuvio."
           }
         }
       }
@@ -30629,6 +30629,686 @@
           "stringUnit": {
             "state": "translated",
             "value": "Đã từ chối mẫu poster tùy chỉnh: phải là URL http(s)"
+          }
+        }
+      }
+    },
+    "MDBList": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList"
+          }
+        }
+      }
+    },
+    "Not configured": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht konfiguriert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No configurado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non configuré"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non configurato"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chưa cấu hình"
+          }
+        }
+      }
+    },
+    "MDBList isn't configured in this build.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList ist in diesem Build nicht konfiguriert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList no está configurado en esta build."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList n'est pas configuré dans ce build."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList non è configurato in questa build."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList chưa được cấu hình trong bản dựng này."
+          }
+        }
+      }
+    },
+    "Connect MDBList": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList verbinden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectar MDBList"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecter MDBList"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connetti MDBList"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kết nối MDBList"
+          }
+        }
+      }
+    },
+    "Sync your watchlist and history with MDBList.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Synchronisiere deine Watchlist und deinen Verlauf mit MDBList."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sincroniza tu lista de seguimiento y tu historial con MDBList."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Synchronisez votre liste de visionnage et votre historique avec MDBList."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sincronizza la tua watchlist e la cronologia con MDBList."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đồng bộ danh sách xem và lịch sử của bạn với MDBList."
+          }
+        }
+      }
+    },
+    "Disconnect MDBList?": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList trennen?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Desconectar MDBList?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déconnecter MDBList ?"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disconnettere MDBList?"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ngắt kết nối MDBList?"
+          }
+        }
+      }
+    },
+    "MDBList will stop syncing on this Apple TV.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList wird auf diesem Apple TV nicht mehr synchronisiert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList dejará de sincronizarse en este Apple TV."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList ne sera plus synchronisé sur cette Apple TV."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList smetterà di sincronizzarsi su questa Apple TV."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList sẽ ngừng đồng bộ trên Apple TV này."
+          }
+        }
+      }
+    },
+    "Connected as %@": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbunden als %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectado como %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecté en tant que %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connesso come %@"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã kết nối là %@"
+          }
+        }
+      }
+    },
+    "Connected as %@ · Supporter": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verbunden als %@ · Supporter"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectado como %@ · Supporter"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecté en tant que %@ · Supporter"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connesso come %@ · Supporter"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đã kết nối là %@ · Supporter"
+          }
+        }
+      }
+    },
+    "your MDBList account": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dein MDBList-Konto"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tu cuenta de MDBList"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "votre compte MDBList"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "il tuo account MDBList"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tài khoản MDBList của bạn"
+          }
+        }
+      }
+    },
+    "Couldn't revoke on MDBList; the local token was removed.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Widerruf bei MDBList fehlgeschlagen; das lokale Token wurde entfernt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo revocar en MDBList; se eliminó el token local."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de révoquer sur MDBList ; le jeton local a été supprimé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile revocare su MDBList; il token locale è stato rimosso."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không thể thu hồi trên MDBList; token cục bộ đã được xóa."
+          }
+        }
+      }
+    },
+    "Couldn't start MDBList sign-in. Try again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konnte die MDBList-Anmeldung nicht starten. Versuche es erneut."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo iniciar el inicio de sesión de MDBList. Inténtalo de nuevo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de démarrer la connexion à MDBList. Réessayez."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile avviare l'accesso a MDBList. Riprova."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không bắt đầu được đăng nhập MDBList. Thử lại."
+          }
+        }
+      }
+    },
+    "Couldn't disconnect MDBList. Try again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konnte MDBList nicht trennen. Versuche es erneut."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo desconectar MDBList. Inténtalo de nuevo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de déconnecter MDBList. Réessayez."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossibile disconnettere MDBList. Riprova."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không ngắt kết nối được MDBList. Thử lại."
+          }
+        }
+      }
+    },
+    "The code expired. Try again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Code ist abgelaufen. Versuche es erneut."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El código expiró. Inténtalo de nuevo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le code a expiré. Réessayez."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il codice è scaduto. Riprova."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mã đã hết hạn. Thử lại."
+          }
+        }
+      }
+    },
+    "Access was denied.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Zugriff wurde verweigert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se denegó el acceso."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accès a été refusé."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accesso è stato negato."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quyền truy cập đã bị từ chối."
+          }
+        }
+      }
+    },
+    "MDBList access was revoked. Connect again.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der MDBList-Zugriff wurde widerrufen. Verbinde dich erneut."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se revocó el acceso a MDBList. Vuelve a conectar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accès à MDBList a été révoqué. Reconnectez-vous."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accesso a MDBList è stato revocato. Connettiti di nuovo."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quyền truy cập MDBList đã bị thu hồi. Kết nối lại."
+          }
+        }
+      }
+    },
+    "The account didn't grant the needed permissions.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Konto hat die nötigen Berechtigungen nicht erteilt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La cuenta no concedió los permisos necesarios."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le compte n'a pas accordé les autorisations nécessaires."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'account non ha concesso i permessi necessari."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tài khoản chưa cấp các quyền cần thiết."
+          }
+        }
+      }
+    },
+    "MDBList is rate limiting requests. Try again later.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList begrenzt gerade die Anfragen. Versuche es später erneut."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList está limitando las solicitudes. Inténtalo más tarde."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList limite actuellement les requêtes. Réessayez plus tard."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList sta limitando le richieste. Riprova più tardi."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList đang giới hạn số yêu cầu. Thử lại sau."
+          }
+        }
+      }
+    },
+    "MDBList is unavailable right now.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList ist gerade nicht verfügbar."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList no está disponible en este momento."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList est indisponible pour le moment."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList non è disponibile al momento."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList hiện không khả dụng."
+          }
+        }
+      }
+    },
+    "MDBList returned an unexpected response.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList hat eine unerwartete Antwort zurückgegeben."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList devolvió una respuesta inesperada."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList a renvoyé une réponse inattendue."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList ha restituito una risposta imprevista."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MDBList trả về phản hồi không mong đợi."
           }
         }
       }

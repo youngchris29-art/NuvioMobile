@@ -118,11 +118,13 @@ struct ContentSourcesSettingsPane: View {
         (String(localized: "Nuvio Library"), "local"),
         (String(localized: "Trakt"), "trakt"),
         (String(localized: "Simkl"), "simkl"),
+        (String(localized: "MDBList"), "mdblist"),
     ]
     private static let watchProgressSourceLabels: [(name: String, code: String)] = [
         (String(localized: "Nuvio Sync"), "nuvio_sync"),
         (String(localized: "Trakt"), "trakt"),
         (String(localized: "Simkl"), "simkl"),
+        (String(localized: "MDBList"), "mdblist"),
     ]
 
     /// Library Source (which backend the Library tab reads from) and Watch Progress Source (which
@@ -132,7 +134,7 @@ struct ContentSourcesSettingsPane: View {
     /// `effectiveWatchProgressSource`), so this pane doesn't need to gate the options itself.
     @ViewBuilder
     private var librarySection: some View {
-        Text("Choose where your library and watch progress are saved. Connect Trakt or Simkl in Account & Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
+        Text("Choose where your library and watch progress are saved. Connect Trakt, Simkl, or MDBList in Account & Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)

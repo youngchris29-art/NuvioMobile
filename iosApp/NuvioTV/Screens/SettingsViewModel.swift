@@ -543,18 +543,20 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Library Source / Watch Progress Source
 
-    /// "local", "trakt", or "simkl" → the shared `LibrarySourceMode`. Comparisons use `==` against
+    /// "local", "trakt", "simkl", or "mdblist" → the shared `LibrarySourceMode`. Comparisons use `==` against
     /// the bridged Kotlin enum rather than `switch` (same caution as `setCardDepthSurface`: Kotlin
     /// enum entries are not guaranteed to import as an exhaustively-switchable Swift enum).
     private static func librarySourceModeKey(_ mode: LibrarySourceMode) -> String {
         if mode == .trakt { return "trakt" }
         if mode == .simkl { return "simkl" }
+        if mode == .mdblist { return "mdblist" }
         return "local"
     }
 
     private static func watchProgressSourceKey(_ source: WatchProgressSource) -> String {
         if source == .trakt { return "trakt" }
         if source == .simkl { return "simkl" }
+        if source == .mdblist { return "mdblist" }
         return "nuvio_sync"
     }
 
@@ -566,6 +568,7 @@ final class SettingsViewModel: ObservableObject {
         switch key {
         case "trakt": mode = .trakt
         case "simkl": mode = .simkl
+        case "mdblist": mode = .mdblist
         default: mode = .local
         }
         TrackingSettingsRepository.shared.setLibrarySourceMode(source: mode)
@@ -576,6 +579,7 @@ final class SettingsViewModel: ObservableObject {
         switch key {
         case "trakt": source = .trakt
         case "simkl": source = .simkl
+        case "mdblist": source = .mdblist
         default: source = .nuvioSync
         }
         // Route through the repository/coordinator rather than writing the setting directly.
