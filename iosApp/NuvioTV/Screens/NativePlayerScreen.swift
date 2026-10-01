@@ -25,7 +25,7 @@ struct NativePlayerScreen: View {
     var onPlayNext: ((PlaybackContext) -> Void)?
     /// Called with the last known position and the seconds the native path actually played when it
     /// can't play — dispatcher → mpv.
-    var onFallback: ((Double, Double) -> Void)?
+    var onFallback: ((Double, Double, Bool) -> Void)?
     /// Failover hook, set by `PlayerScreen`. Fired when the native path fails and there is NO
     /// `onFallback` to hand the context to (mpv already tried, or no fallback wired): the host then
     /// moves to the next source. With a fallback wired, the dispatcher owns the handoff instead.
@@ -51,7 +51,7 @@ struct NativePlayerScreen: View {
 
     init(context: PlaybackContext,
          onPlayNext: ((PlaybackContext) -> Void)? = nil,
-         onFallback: ((Double, Double) -> Void)? = nil,
+         onFallback: ((Double, Double, Bool) -> Void)? = nil,
          routingNote: String? = nil,
          onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
          onPlaybackHealthy: ((Double) -> Void)? = nil) {
@@ -100,7 +100,10 @@ struct NativePlayerScreen: View {
                 // With no fallback to hand to, report the failure (failover) before dismissing.
                 Color.clear.onAppear {
                     if let onFallback {
-                        onFallback(coordinator.lastPositionSec, coordinator.secondsPlayed)
+                        // Review r2 #1: "started" comes from readiness, not from the play clock —
+                        // a mid-play fallback inside the first tick, or while paused/buffering,
+                        // reads 0 played seconds yet the link demonstrably worked.
+                        onFallback(coordinator.lastPositionSec, coordinator.secondsPlayed, coordinator.readyUptime != nil)
                     } else {
                         if let onPlaybackFailed {
                             print("[Failover] native failure: \(reason) pos=\(Int(coordinator.lastPositionSec)) played=\(Int(coordinator.secondsPlayed)) started=\(coordinator.readyUptime != nil)")

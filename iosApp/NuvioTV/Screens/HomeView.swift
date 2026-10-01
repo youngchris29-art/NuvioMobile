@@ -1276,8 +1276,8 @@ struct HomeView: View {
                         onMarkWatched: { entry in
                             // Same pair a finished playback leaves behind: the episode joins watched
                             // history and its half-played progress row stops showing in the shelf.
-                            // Stamped NOW: a manual mark is recorded when it happens, not at the
-                            // entry's last progress save (the helper has no default for this).
+                            // The helper has no default on the Swift side; WatchedRepository
+                            // restamps the mark time on write anyway (review r2 #6).
                             WatchedRepository.shared.markWatched(
                                 item: WatchingActionsKt.watchedItemFromProgress(
                                     entry: entry,

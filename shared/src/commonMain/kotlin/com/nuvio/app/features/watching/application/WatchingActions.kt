@@ -180,7 +180,7 @@ object WatchingActions {
     fun onProgressEntryUpdated(entry: WatchProgressEntry, syncRemote: Boolean = true) {
         if (!entry.isCompleted) return
 
-        // A completed save is marked at its own last update, not at "now".
+        // Seeds the stamp from the entry; WatchedRepository restamps the mark time on write (review r2 #6).
         val watchedItem = watchedItemFromProgress(entry, markedAtEpochMs = entry.lastUpdatedEpochMs)
         WatchedRepository.markWatchedFromPlaybackCompletion(watchedItem, syncRemote = syncRemote)
 

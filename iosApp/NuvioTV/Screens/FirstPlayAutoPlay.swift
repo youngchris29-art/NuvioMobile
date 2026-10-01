@@ -155,12 +155,12 @@ final class FirstPlayAutoPlayController: ObservableObject {
     func arm() {
         guard phase == .idle else { return }
         phase = .searching
-        print("[AutoPlay] armed title=\(titleKey)")
+        autoPlayLog("[AutoPlay] armed title=\(titleKey)")
         let deadline = deps.searchDeadline
         searchTimeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(deadline, 0) * 1_000_000_000))
             guard !Task.isCancelled, let self, self.phase == .searching else { return }
-            print("[AutoPlay] no candidate settled within \(Int(deadline)) s — showing the list")
+            autoPlayLog("[AutoPlay] no candidate settled within \(Int(deadline)) s — showing the list")
             self.giveUp(.searchTimedOut)
         }
     }
@@ -174,7 +174,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
         case .ignore, .wait:
             return
         case .showList:
-            print("[AutoPlay] repository settled no candidate — showing the list")
+            autoPlayLog("[AutoPlay] repository settled no candidate — showing the list")
             giveUp(.noCandidates)
         case .walk:
             let streams = Policy.snapshot(feed)
@@ -193,7 +193,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
             searchTimeout?.cancel()
             resolveTimeout?.cancel()
             phase = .cancelled
-            print("[AutoPlay] cancelled (\(why)) in \(from) after \(attemptsUsed) attempt(s): \(walkSummary())")
+            autoPlayLog("[AutoPlay] cancelled (\(why)) in \(from) after \(attemptsUsed) attempt(s): \(walkSummary())")
         default:
             return
         }
@@ -204,12 +204,12 @@ final class FirstPlayAutoPlayController: ObservableObject {
     @discardableResult
     func failover(afterFailureOf streamKey: String, addonId: String?) -> Bool {
         guard phase == .done, !candidates.isEmpty else {
-            print("[AutoPlay] failover requested in phase \(phase) — nothing to continue")
+            autoPlayLog("[AutoPlay] failover requested in phase \(phase) — nothing to continue")
             return false
         }
         if !streamKey.isEmpty { triedKeys.insert(streamKey) }
         isFailoverWalk = true
-        print("[AutoPlay] playback failed key=\(streamKey) — failover (\(attemptsUsed)/\(PlaybackFailoverPolicy.maxAutoAttempts) used)")
+        autoPlayLog("[AutoPlay] playback failed key=\(streamKey) — failover (\(attemptsUsed)/\(PlaybackFailoverPolicy.maxAutoAttempts) used)")
         tryNext(preferAddonId: addonId)
         return true
     }
@@ -222,21 +222,21 @@ final class FirstPlayAutoPlayController: ObservableObject {
         let cachedOnly = deps.cachedOnly()
         candidates = Policy.eligible(snapshot, cachedOnly: cachedOnly,
                                      isCachedDebridLink: deps.isCachedDebridLink, rejected: rejected)
-        print("[AutoPlay] candidates=\(snapshot.count) eligible=\(candidates.count) cachedOnly=\(cachedOnly) rejected=\(rejected.count)")
+        autoPlayLog("[AutoPlay] candidates=\(snapshot.count) eligible=\(candidates.count) cachedOnly=\(cachedOnly) rejected=\(rejected.count)")
         tryNext(preferAddonId: nil)
     }
 
     private func tryNext(preferAddonId: String?) {
         while true {
             guard attemptsUsed < PlaybackFailoverPolicy.maxAutoAttempts else {
-                print("[AutoPlay] exhausted: attempt cap \(PlaybackFailoverPolicy.maxAutoAttempts) reached")
+                autoPlayLog("[AutoPlay] exhausted: attempt cap \(PlaybackFailoverPolicy.maxAutoAttempts) reached")
                 giveUp(.allFailed)
                 return
             }
             let rejected = deps.rejected(titleKey)
             guard let index = Policy.nextIndex(in: candidates, triedIndices: triedIndices, triedKeys: triedKeys,
                                                rejected: rejected, preferAddonId: preferAddonId) else {
-                print("[AutoPlay] exhausted: no candidate left after \(attemptsUsed) attempt(s)")
+                autoPlayLog("[AutoPlay] exhausted: no candidate left after \(attemptsUsed) attempt(s)")
                 giveUp(attemptsUsed == 0 && !isFailoverWalk ? .noCandidates : .allFailed)
                 return
             }
@@ -248,19 +248,19 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 attemptsUsed += 1
                 // Key only: the add-on id embeds the manifest URL, which can hold a debrid API key
                 // (a URL key's first part already names the add-on, as a digest).
-                print("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey)")
+                autoPlayLog("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey)")
                 succeed(candidate, resolved: candidate.stream, url: url)
                 return
             }
             guard deps.canResolve(candidate.stream) else {
                 // Not playable on this device (no debrid connection for it): skipped, not counted,
                 // not remembered — the link itself is not at fault.
-                print("[AutoPlay] skip key=\(candidate.streamKey): needs a resolve this device cannot do")
+                autoPlayLog("[AutoPlay] skip key=\(candidate.streamKey): needs a resolve this device cannot do")
                 continue
             }
             attemptsUsed += 1
             phase = .resolving(attempt: attemptsUsed)
-            print("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey)")
+            autoPlayLog("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey)")
             beginResolve(candidate)
             return
         }
@@ -298,7 +298,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
         case let .playable(resolved, url):
             succeed(candidate, resolved: resolved, url: url)
         case let .failed(reason, rejectsLink):
-            print("[AutoPlay] attempt #\(attemptsUsed) failed key=\(candidate.streamKey): \(reason)")
+            autoPlayLog("[AutoPlay] attempt #\(attemptsUsed) failed key=\(candidate.streamKey): \(reason)")
             if rejectsLink {
                 deps.reject(candidate.streamKey, titleKey)
                 deps.invalidate(candidate.stream)
@@ -312,7 +312,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
         resolveTimeout?.cancel()
         generation += 1
         phase = .done
-        print("[AutoPlay] play attempt #\(attemptsUsed) key=\(candidate.streamKey) failover=\(isFailoverWalk)")
+        autoPlayLog("[AutoPlay] play attempt #\(attemptsUsed) key=\(candidate.streamKey) failover=\(isFailoverWalk)")
         events.send(.play(candidate: candidate, resolved: resolved, url: url,
                           attempt: attemptsUsed, isFailover: isFailoverWalk))
     }
@@ -322,7 +322,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
         resolveTimeout?.cancel()
         generation += 1
         phase = .exhausted
-        print("[AutoPlay] give up (\(reason)) after \(attemptsUsed) attempt(s): \(walkSummary())")
+        autoPlayLog("[AutoPlay] give up (\(reason)) after \(attemptsUsed) attempt(s): \(walkSummary())")
         events.send(.gaveUp(reason, duringFailover: isFailoverWalk))
     }
 
@@ -579,4 +579,12 @@ struct FirstPlayAutoPlayOverlay: View {
         .ignoresSafeArea()
         .onAppear { DispatchQueue.main.async { focused = true } }
     }
+}
+
+/// `[AutoPlay]` decision lines go through NSLog (as `%@`, so interpolated text is never a format
+/// string) rather than `print`: the unified log is what `log show` / `devicectl --console` and a
+/// post-hoc device read can see, and `print` never reaches it. The lines carry keys, counts and
+/// reasons only — never a URL, label or add-on id (see PlaybackStreamKey).
+func autoPlayLog(_ line: String) {
+    NSLog("%@", line)
 }

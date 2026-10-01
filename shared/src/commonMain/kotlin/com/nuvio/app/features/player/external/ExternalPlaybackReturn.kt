@@ -3,6 +3,7 @@ package com.nuvio.app.features.player.external
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.watchprogress.WatchProgressPlaybackSession
 import io.ktor.http.Url
+import io.ktor.http.decodeURLQueryComponent
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.serialization.decodeFromString
@@ -215,10 +216,14 @@ internal fun sameSourceUrl(returnedUrl: String?, launchedUrl: String): Boolean =
     returnedUrl != null &&
         normalizeSourceUrlForComparison(returnedUrl) == normalizeSourceUrlForComparison(launchedUrl)
 
-private val percentEscape = Regex("%[0-9a-fA-F]{2}")
-
-private fun normalizeSourceUrlForComparison(url: String): String =
-    percentEscape.replace(url.trim()) { match -> match.value.uppercase() }
-        .replace("%2B", " ")
-        .replace("%20", " ")
-        .replace('+', ' ')
+/**
+ * Review r2 #5: fully percent-decode both sides (a player that decoded the URL once turns `%5B`,
+ * `%28` or UTF-8 escapes in a debrid file name into literal characters just as readily as `%2B`),
+ * then fold `+` to a space so a raw `+`, a `%2B` and a `%20` all compare equal however the
+ * player echoed them. A malformed escape sequence falls back to the raw text.
+ */
+private fun normalizeSourceUrlForComparison(url: String): String {
+    val trimmed = url.trim()
+    val decoded = runCatching { trimmed.decodeURLQueryComponent(plusIsSpace = true) }.getOrDefault(trimmed)
+    return decoded.replace('+', ' ')
+}

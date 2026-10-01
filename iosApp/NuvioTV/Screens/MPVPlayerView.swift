@@ -317,6 +317,13 @@ final class MPVTVPlayerViewController: UIViewController {
             // stopped the poll timer when the cover went up, and the play clock, the early-end
             // rule and the healthy mark all run off that tick.
             startPolling()
+            // Review r2 #2: that same teardown also ended the Trakt scrobble and released the
+            // display mode. Replay plays on this controller, so restore both; a real exit keeps
+            // today's teardown (deliberately not gated on `isLeavingPlayer`, unproven on hardware).
+            if fileLoaded {
+                applyDisplayCriteriaIfEnabled()
+                startTraktScrobble()
+            }
         }
     }
 
@@ -324,6 +331,8 @@ final class MPVTVPlayerViewController: UIViewController {
         super.viewWillDisappear(animated)
         // Failure reporting stays armed while a full-screen cover (the post-play card) merely
         // covers the player: Replay comes back to this same controller.
+        // Device-pass probe (review r2 #3): must read true on a Menu exit, false under the card.
+        print("[Failover] viewWillDisappear isLeavingPlayer=\(isLeavingPlayer)")
         if isLeavingPlayer { closeFailover() }
     }
 

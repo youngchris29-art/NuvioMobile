@@ -924,7 +924,7 @@ struct StreamPickerView: View {
             showToast(String(localized: "Couldn\u{2019}t open the external player \u{2014} playing in NuvioTV."))
             NextEpisodeEngine.consecutiveAutoPlays = 0
             if let autoAttempt {
-                print("[AutoPlay] external player \(playerId) did not open — attempt #\(autoAttempt) plays in NuvioTV")
+                autoPlayLog("[AutoPlay] external player \(playerId) did not open — attempt #\(autoAttempt) plays in NuvioTV")
                 dismissAfterPlayer = true
                 selected = context(url: url, stream: stream, listedStream: listed, streamKey: listed.playbackStreamKey,
                                    launchSource: .autoPlay, attempt: autoAttempt - 1)
@@ -970,7 +970,7 @@ struct StreamPickerView: View {
         case let .play(candidate, resolved, url, attempt, isFailover):
             if isFailover, selected == nil {
                 // The viewer closed the failed player while the next candidate resolved.
-                print("[AutoPlay] failover result after the player closed — dropped")
+                autoPlayLog("[AutoPlay] failover result after the player closed — dropped")
                 return
             }
             autoPlayArmed = false
@@ -981,7 +981,7 @@ struct StreamPickerView: View {
                 // The viewer's default player is external: the auto pick goes there, as Select on a
                 // row would. Handed off, the picker leaves too (Back from the player would have);
                 // a handoff that does not open plays in NuvioTV as this same auto start.
-                print("[AutoPlay] attempt #\(attempt) to external player \(playerId) key=\(candidate.streamKey)")
+                autoPlayLog("[AutoPlay] attempt #\(attempt) to external player \(playerId) key=\(candidate.streamKey)")
                 let opened = openExternally(urlString: url.absoluteString, stream: resolved, listed: candidate.stream,
                                             playerId: playerId, fallbackToInternal: true, autoAttempt: attempt)
                 if opened {
@@ -999,14 +999,14 @@ struct StreamPickerView: View {
             if duringFailover {
                 // The viewer already left the player: nothing to explain.
                 guard selected != nil else {
-                    print("[AutoPlay] walk ended (\(reason)) after the player had closed — nothing shown, rejected=\(rejectedKeys.count)")
+                    autoPlayLog("[AutoPlay] walk ended (\(reason)) after the player had closed — nothing shown, rejected=\(rejectedKeys.count)")
                     return
                 }
                 dismissAfterPlayer = false
                 selected = nil
             }
             let listedStreams = model.groups.reduce(0) { $0 + $1.streams.count }
-            print("[AutoPlay] walk ended (\(reason)) — showing the list: groups=\(model.groups.count) streams=\(listedStreams) rejected=\(rejectedKeys.count) failover=\(duringFailover)")
+            autoPlayLog("[AutoPlay] walk ended (\(reason)) — showing the list: groups=\(model.groups.count) streams=\(listedStreams) rejected=\(rejectedKeys.count) failover=\(duringFailover)")
             if duringFailover || !model.groups.isEmpty {
                 showToast(String(localized: "No source could start. Choose one below."))
             }

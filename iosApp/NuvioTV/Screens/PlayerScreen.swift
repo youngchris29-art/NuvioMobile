@@ -45,9 +45,11 @@ struct PlayerScreen: View {
             switch shown {
             case .native:
                 NativePlayerScreen(context: context, onPlayNext: onPlayNext,
-                                   onFallback: { _, secondsPlayed in
+                                   onFallback: { _, secondsPlayed, startedPlaying in
                                        nativeSecondsPlayed = secondsPlayed
-                                       nativeFailedBeforeStart = secondsPlayed <= 0
+                                       // Readiness, not the play clock (review r2 #1): only a native
+                                       // item that never became ready shortens mpv's start budget.
+                                       nativeFailedBeforeStart = !startedPlaying
                                        forcedMPV = true
                                    },
                                    routingNote: decision?.displayNote,

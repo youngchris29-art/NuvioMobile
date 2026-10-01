@@ -171,6 +171,25 @@ class InfusePlaybackTest {
     }
 
     @Test
+    fun bracketsParenthesesAndOtherEscapesMatchWhenThePlayerDecodedThemOnce() {
+        // Review r2 #5: a player that percent-decoded the URL once hands back literal brackets,
+        // parentheses and spaces where the launch URL carried %5B / %28 / %20 (and a plus for %2B).
+        val callbacks = handler()
+        val launched = "https://cdn.example.com/Show%20%5B2024%5D%20%281080p%29.mkv?token=x%2By"
+        val echoes = mapOf(
+            "exact" to launched.encodeURLParameter(),
+            "decoded once" to "https://cdn.example.com/Show [2024] (1080p).mkv?token=x+y".encodeURLParameter(),
+        )
+        echoes.forEach { (label, encoded) ->
+            recorded.clear()
+            val session = callbacks.launch(sourceUrl = launched)
+            assertTrue(callbacks.handleUrl(successUrlWithEchoedSource(session, encoded), "nuvio"), label)
+            assertEquals(1800.0, recorded.single().second, label)
+            assertNull(stored, label)
+        }
+    }
+
+    @Test
     fun sourceUrlsWithPlusAndEncodedPlusMatchHoweverThePlayerEchoesThem() {
         val callbacks = handler()
         val plusSource = "https://cdn.example.com/video.mkv?token=a+b&name=Episode%205"
