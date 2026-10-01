@@ -44,6 +44,8 @@ hotfix/rebuild that genuinely adds nothing user-facing.
 
 Options:
   --tag <tag>          Use an explicit release tag instead of auto-incrementing
+  --prev-tag <tag>     Changelog + README check span from this tag instead of the
+                       newest tvos-v* tag (a public beta after a run of rc tags)
   --changelog <file>   Markdown file with hand-written highlights for the notes
   --reddit-changelog <file>
                        After publishing, swap the "Latest build" block in the
@@ -66,6 +68,7 @@ EOF
 }
 
 TAG=""
+PREV_TAG_OVERRIDE=""
 SKIP_BUILD=0
 SKIP_README_CHECK=0
 DRY_RUN=0
@@ -76,6 +79,7 @@ ASSUME_YES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="$2"; shift 2 ;;
+    --prev-tag) PREV_TAG_OVERRIDE="$2"; shift 2 ;;
     --changelog) CHANGELOG_FILE="$2"; shift 2 ;;
     --reddit-changelog) REDDIT_CHANGELOG_FILE="$2"; shift 2 ;;
     --reddit-post) REDDIT_POST_ID="$2"; shift 2 ;;
@@ -243,7 +247,13 @@ sanitize_changelog() {
 # exist on GitHub until fetched.
 git fetch --tags --quiet origin \
   || echo "warning: could not fetch tags from origin; changelog range may be stale." >&2
-PREV_TAG="$(git tag --list 'tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
+if [[ -n "$PREV_TAG_OVERRIDE" ]]; then
+  git rev-parse --verify --quiet "refs/tags/$PREV_TAG_OVERRIDE" >/dev/null \
+    || { echo "error: --prev-tag $PREV_TAG_OVERRIDE is not a tag in this repo" >&2; exit 1; }
+  PREV_TAG="$PREV_TAG_OVERRIDE"
+else
+  PREV_TAG="$(git tag --list 'tvos-v*' --sort=-v:refname | grep -Fxv "$TAG" | head -1)"
+fi
 CHANGELOG_BODY=""
 if [[ -n "$PREV_TAG" ]]; then
   RAW_CHANGELOG="$(git log --first-parent --pretty='- %s' "$PREV_TAG..$HEAD_SHA" \
