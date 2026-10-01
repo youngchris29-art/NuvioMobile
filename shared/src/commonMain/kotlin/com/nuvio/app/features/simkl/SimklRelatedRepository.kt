@@ -76,7 +76,11 @@ object SimklRelatedRepository {
             ?: parseSimklRedirectParam(fallbackItemId)
             ?: return emptyList()
 
-        val resolved = SimklIdResolver.resolveIds(source, id) ?: return emptyList()
+        // Upstream 317bf2dc: tell the resolver which Simkl type the caller expects so an ambiguous
+        // external id (a movie and a show sharing it) resolves to the right entry.
+        val contentTypeHint = meta.type.takeIf { it.isNotBlank() } ?: fallbackItemType
+        val resolved = SimklIdResolver.resolveIds(source, id, contentTypeHint = contentTypeHint)
+            ?: return emptyList()
         val animeIdPreference = TraktSettingsRepository.uiState.value.simklAnimeIdPreference
         val cacheKey = relatedCacheKey(resolved.type, resolved.simklId, animeIdPreference)
 

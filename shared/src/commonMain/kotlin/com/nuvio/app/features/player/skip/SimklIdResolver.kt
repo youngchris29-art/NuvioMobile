@@ -8,6 +8,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -50,8 +51,22 @@ internal object SimklIdResolver {
     /// Anime-Skip with season 1's MAL/AniList ids — the same season-awareness the removed ARM path had
     /// (`entries[season - 1]`). When [season] is given and more than one entry matches, prefer the
     /// entry whose Simkl `season` equals it; otherwise fall back to the first result as upstream does.
-    suspend fun resolveIds(source: String, id: String, season: Int? = null): ResolvedIds? {
-        val cacheKey = "$source:$id:${season ?: ""}"
+    ///
+    /// Upstream 317bf2dc adds [contentTypeHint] (the caller's content type: movie/series/anime…):
+    /// `/search/id` can answer one external id with entries of several types, and upstream's
+    /// `results[0]` could be the wrong one. The hint narrows the candidates by Simkl `type` first
+    /// (see [selectCandidatesForTypeHint]); the fork's season scan then runs over that narrowed list.
+    /// Kept as a fourth parameter so the fork's `season` call sites stay as they are.
+    suspend fun resolveIds(
+        source: String,
+        id: String,
+        season: Int? = null,
+        contentTypeHint: String? = null,
+    ): ResolvedIds? {
+        // Review r1: key on the Simkl types the hint resolves to, so "series"/"tv"/"show" share one
+        // entry and an unknown hint shares the no-hint entry (same candidates either way).
+        val expectedTypes = expectedSimklTypes(contentTypeHint)
+        val cacheKey = "$source:$id:${season ?: ""}:${expectedTypes?.sorted()?.joinToString(",") ?: ""}"
         idsCache[cacheKey]?.let { return it }
         if (SimklConfig.CLIENT_ID.isBlank()) return null
 
@@ -59,7 +74,7 @@ internal object SimklIdResolver {
             val searchText = httpGetText(buildSimklApiUrl("/search/id", mapOf(source to id)))
             val results = json.parseToJsonElement(searchText).jsonArray
             if (results.isEmpty()) return null
-            val candidates = results.mapNotNull { it as? JsonObject }
+            val candidates = selectCandidatesForTypeHint(results.mapNotNull { it as? JsonObject }, contentTypeHint)
             val scanForSeason = season != null && candidates.size > 1
             // Codex r4: one candidate's details call failing must not sink the whole lookup —
             // resolve per candidate, keep the first that succeeds as the fallback, and keep scanning.
@@ -85,6 +100,25 @@ internal object SimklIdResolver {
         }
     }
 
+    /// Pure (upstream 317bf2dc): with a usable [contentTypeHint], only the search entries whose Simkl
+    /// `type` matches it; when nothing matches, or the hint is absent/unknown, the full list stands so
+    /// the first result still wins as before.
+    internal fun selectCandidatesForTypeHint(candidates: List<JsonObject>, contentTypeHint: String?): List<JsonObject> {
+        val expected = expectedSimklTypes(contentTypeHint) ?: return candidates
+        val matches = candidates.filter { (it["type"] as? JsonPrimitive)?.contentOrNull in expected }
+        return matches.ifEmpty { candidates }
+    }
+
+    /// Pure: caller content type → the Simkl search `type` values it may resolve to; null when the
+    /// hint carries no usable information (upstream's `else -> emptySet()` branch, same outcome).
+    internal fun expectedSimklTypes(contentTypeHint: String?): Set<String>? =
+        when (contentTypeHint?.trim()?.lowercase()) {
+            "movie", "film" -> setOf("movie")
+            "series", "tv", "show", "tvshow" -> setOf("show", "tv")
+            "anime" -> setOf("anime")
+            else -> null
+        }
+
     /// Search-result entry → full ids via `/{type}/{simklId}?extended=full`; cached per Simkl id so a
     /// multi-season scan (see [resolveIds]) fetches each candidate at most once per process.
     private suspend fun resolveDetails(result: JsonObject): ResolvedIds? {
@@ -92,9 +126,11 @@ internal object SimklIdResolver {
         detailsCache[simklId]?.let { return it }
 
         val type = result["type"]?.jsonPrimitive?.content ?: "anime"
+        // Review r1 (fork deviation): upstream maps only "show" to /tv/, so a "tv"-typed search entry
+        // (which the series hint accepts) would be fetched from /anime/ and labelled anime.
         val mediaType = when (type) {
             "movie" -> "movies"
-            "show" -> "tv"
+            "show", "tv" -> "tv"
             else -> "anime"
         }
 
