@@ -19,6 +19,7 @@ private data class StoredPosterCardStylePreferences(
     val cornerRadiusDp: Int = DefaultPosterCardCornerRadiusDp,
     val catalogLandscapeModeEnabled: Boolean = false,
     val hideLabelsEnabled: Boolean = false,
+    val alwaysShowLandscapeClearlogo: Boolean = false,
 )
 
 data class PosterCardStyleUiState(
@@ -27,6 +28,9 @@ data class PosterCardStyleUiState(
     val cornerRadiusDp: Int = DefaultPosterCardCornerRadiusDp,
     val catalogLandscapeModeEnabled: Boolean = false,
     val hideLabelsEnabled: Boolean = false,
+    // Upstream 317bf2dc: force the clearlogo overlay even when a landscape poster exists. No tvOS UI
+    // reads it yet; carried so the synced poster_card_style payload keeps the phone's key.
+    val alwaysShowLandscapeClearlogo: Boolean = false,
 )
 
 object PosterCardStyleRepository {
@@ -87,6 +91,13 @@ object PosterCardStyleRepository {
         persist()
     }
 
+    fun setAlwaysShowLandscapeClearlogo(enabled: Boolean) {
+        ensureLoaded()
+        if (_uiState.value.alwaysShowLandscapeClearlogo == enabled) return
+        _uiState.value = _uiState.value.copy(alwaysShowLandscapeClearlogo = enabled)
+        persist()
+    }
+
     fun resetToDefaults() {
         ensureLoaded()
         if (_uiState.value == PosterCardStyleUiState()) return
@@ -117,6 +128,7 @@ object PosterCardStyleRepository {
                 cornerRadiusDp = cornerRadiusDp,
                 catalogLandscapeModeEnabled = stored.catalogLandscapeModeEnabled,
                 hideLabelsEnabled = stored.hideLabelsEnabled,
+                alwaysShowLandscapeClearlogo = stored.alwaysShowLandscapeClearlogo,
             )
         } else {
             PosterCardStyleUiState()
@@ -132,6 +144,7 @@ object PosterCardStyleRepository {
                     cornerRadiusDp = _uiState.value.cornerRadiusDp,
                     catalogLandscapeModeEnabled = _uiState.value.catalogLandscapeModeEnabled,
                     hideLabelsEnabled = _uiState.value.hideLabelsEnabled,
+                    alwaysShowLandscapeClearlogo = _uiState.value.alwaysShowLandscapeClearlogo,
                 ),
             ),
         )
