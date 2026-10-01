@@ -251,6 +251,7 @@ struct SearchView: View {
                     }
                     .cardFocusButtonStyle()
                     .posterButtonShape()
+                    .titleHoldMenu(preview: item)
                     .onAppear { model.discoverItemAppeared(at: index) }
                 }
             }

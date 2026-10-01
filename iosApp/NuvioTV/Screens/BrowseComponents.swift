@@ -4689,6 +4689,9 @@ struct CatalogRowView: View {
                                     }
                                     .cardFocusButtonStyle()
                                     .posterButtonShape()
+                                    // Orivio item 3: hold menu (Library / Watched). The card observes
+                                    // no store; the menu reads its own state (see TitleHoldMenu.swift).
+                                    .titleHoldMenu(preview: item)
                                 }
                             }
                             .focused($focusedItemId, equals: item.id)

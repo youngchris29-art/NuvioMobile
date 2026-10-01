@@ -1133,7 +1133,9 @@ struct HomeView: View {
                     // present (blank values count as missing).
                     poster: target.entry.poster,
                     episodeStill: { let still: String? = target.entry.episodeThumbnail; return (still ?? "").isEmpty ? nil : still }(),
-                    synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }()
+                    synopsis: { let d: String? = target.entry.pauseDescription; return (d ?? "").isEmpty ? nil : d }(),
+                    forceManual: target.forceManual,
+                    startFromBeginning: target.startFromBeginning
                 )
             }
         }
@@ -1268,6 +1270,15 @@ struct HomeView: View {
                         entries: model.continueWatching,
                         onSelect: { resume = ResumeTarget(entry: $0) },
                         onRemove: { WatchProgressRepository.shared.clearProgress(videoId: $0.videoId, parentMetaId: $0.parentMetaId) },
+                        onGoToDetails: { homePath.append(TitleRoute(preview: previewFromEntry($0))) },
+                        onPlayManually: { resume = ResumeTarget(entry: $0, forceManual: true) },
+                        onStartOver: { resume = ResumeTarget(entry: $0, startFromBeginning: true) },
+                        onMarkWatched: { entry in
+                            // Same pair a finished playback leaves behind: the episode joins watched
+                            // history and its half-played progress row stops showing in the shelf.
+                            WatchedRepository.shared.markWatched(item: WatchingActionsKt.watchedItemFromProgress(entry: entry))
+                            WatchProgressRepository.shared.clearProgress(videoId: entry.videoId, parentMetaId: entry.parentMetaId)
+                        },
                         shuffleParentIds: model.shuffleParentIds,
                         posterPattern: model.continueWatchingPosterPattern,
                         // UX-7 (see reportRowFocus for the gating rationale).
@@ -4222,6 +4233,11 @@ struct ContinueWatchingRow: View {
     let entries: [WatchProgressEntry]
     let onSelect: (WatchProgressEntry) -> Void
     let onRemove: (WatchProgressEntry) -> Void
+    /// Hold-menu actions (Orivio item 3). The row only renders the menu; Home owns what each does.
+    let onGoToDetails: (WatchProgressEntry) -> Void
+    let onPlayManually: (WatchProgressEntry) -> Void
+    let onStartOver: (WatchProgressEntry) -> Void
+    let onMarkWatched: (WatchProgressEntry) -> Void
     /// Parent ids of series with Episode Shuffle on — those cards get a small shuffle badge.
     var shuffleParentIds: Set<String> = []
     /// Custom poster URL pattern for this screen (blank = none), observed by `HomeViewModel`.
@@ -4307,10 +4323,14 @@ struct ContinueWatchingRow: View {
                             .posterButtonShape()
                             .focused($focusedVideoId, equals: entry.videoId)
                             .contextMenu {
-                                Button(role: .destructive) {
-                                    onRemove(entry)
-                                } label: {
-                                    Label("Remove from Continue Watching", systemImage: "trash")
+                                // Orivio item 3: the action list and its order come from
+                                // `TitleHoldMenuPolicy` (Mark Episode Watched exists for episodes only).
+                                ForEach(TitleHoldMenuPolicy.continueWatchingActions(isEpisode: isEpisode(entry)), id: \.self) { action in
+                                    Button(role: action.isDestructive ? .destructive : nil) {
+                                        perform(action, on: entry)
+                                    } label: {
+                                        Label(action.title, systemImage: action.systemImage)
+                                    }
                                 }
                             }
                             .id(entry.videoId)
@@ -4405,11 +4425,29 @@ struct ContinueWatchingRow: View {
         guard let season = entry.seasonNumber?.intValue, let episode = entry.episodeNumber?.intValue else { return nil }
         return String(format: "S%02dE%02d", season, episode)
     }
+
+    private func isEpisode(_ entry: WatchProgressEntry) -> Bool {
+        TitleHoldMenuPolicy.isEpisode(season: entry.seasonNumber?.intValue, episode: entry.episodeNumber?.intValue)
+    }
+
+    private func perform(_ action: TitleHoldMenuPolicy.CWAction, on entry: WatchProgressEntry) {
+        switch action {
+        case .playManually: onPlayManually(entry)
+        case .goToDetails: onGoToDetails(entry)
+        case .markEpisodeWatched: onMarkWatched(entry)
+        case .startOver: onStartOver(entry)
+        case .remove: onRemove(entry)
+        }
+    }
 }
 
 /// Identifiable wrapper so a progress entry can drive `.fullScreenCover(item:)` for direct resume.
 struct ResumeTarget: Identifiable {
     let entry: WatchProgressEntry
+    /// Hold menu "Play Manually": open the picker without auto-selecting a source.
+    var forceManual: Bool = false
+    /// Hold menu "Start Over": play from 0 instead of the saved position.
+    var startFromBeginning: Bool = false
     var id: String { entry.videoId }
 }
 

@@ -1151,6 +1151,7 @@ struct FolderDetailView: View {
                                     }
                                     .cardFocusButtonStyle()
                                     .posterButtonShape()
+                                    .titleHoldMenu(preview: item)
                                     .onAppear { model.itemAppeared(at: index) }
                                     // rc13 UI test69 (`FolderHeaderStaysPinnedWhileGridScrolls`):
                                     // only the first tile needs an identifier — the test reads its

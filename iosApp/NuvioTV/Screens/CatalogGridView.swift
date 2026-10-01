@@ -45,6 +45,7 @@ struct CatalogGridView: View {
                                 }
                                 .cardFocusButtonStyle()
                                 .posterButtonShape()
+                                .titleHoldMenu(preview: item)
                                 .onAppear { model.itemAppeared(at: index) }
                             }
                         }

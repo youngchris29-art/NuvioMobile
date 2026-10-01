@@ -318,6 +318,7 @@ struct EntityBrowseView: View {
                         }
                         .cardFocusButtonStyle()
                         .posterButtonShape()
+                        .titleHoldMenu(preview: item)
                         .onAppear { model.itemAppeared(railId: rail.id, index: index) }
                     }
                     if rail.isLoadingMore {
