@@ -3,6 +3,27 @@ import QuartzCore
 import SwiftUI
 import SharedCore
 
+/// rc14 (Steven rc13 verdict, 2026-09-30): the Detail backdrop was reported softer than the
+/// reference app's. The addon/TMDB URL the meta carries is the *medium* rendition, so Detail asks
+/// for the larger one first and falls back to the original URL when the larger file does not exist
+/// (`CachedAsyncImage(string:fallback:)` retries the fallback once the primary fails).
+///
+/// Pure string rewrite, `nonisolated` so a unit test can call it synchronously from any isolation
+/// domain. Only two well-known path shapes are rewritten; every other URL passes through untouched.
+enum DetailBackdropURL {
+    /// metahub `/background/medium/…` -> `/background/large/…`; TMDB `/t/p/w1280/…` ->
+    /// `/t/p/original/…`. Anything else (including an empty string) is returned unchanged.
+    nonisolated static func upgraded(_ url: String) -> String {
+        if url.contains("/background/medium/") {
+            return url.replacingOccurrences(of: "/background/medium/", with: "/background/large/")
+        }
+        if url.contains("/t/p/w1280/") {
+            return url.replacingOccurrences(of: "/t/p/w1280/", with: "/t/p/original/")
+        }
+        return url
+    }
+}
+
 /// BUG-41 (beta.18): pure timing math behind `ScrollDimModel.isScrolling` — deliberately split out
 /// of the model so the debounce/hysteresis arithmetic can be exercised in
 /// `DetailScrollProbeTests` with fabricated timestamps instead of a real `Task.sleep`/clock.
@@ -526,6 +547,7 @@ struct DetailView: View {
                         EpisodesSection(
                             meta: meta,
                             episodeRatings: model.episodeRatings,
+                            episodeRatingsVisibility: model.episodeRatingsVisibility,
                             watchedEpisodeKeys: model.watchedEpisodeKeys
                         )
                         // A discrete focus region: vertical D-pad moves must land here instead of
@@ -1209,7 +1231,13 @@ struct DetailView: View {
 
     private var backdropImage: some View {
         GeometryReader { geo in
-            CachedAsyncImage(string: backgroundUrl)
+            // rc14 (Steven rc13 verdict, 2026-09-30): try the larger rendition first (sharper on a
+            // 4K panel); the original URL is the fallback if that file does not exist. No fallback
+            // when the URL had no larger rendition to ask for (it would just repeat the same fetch).
+            CachedAsyncImage(
+                string: backgroundUrl.map(DetailBackdropURL.upgraded),
+                fallback: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 }
+            )
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
         }
@@ -1245,23 +1273,28 @@ struct DetailView: View {
     }
 
     /// Gradient scrims for text legibility, drawn over the backdrop (and the trailer, when present).
-    /// `posterBackdropVisible` softens the trailing (right-edge) stop so the poster-backdrop layer
-    /// behind it (pinned to the right 40%) reads through instead of going nearly opaque black; the
-    /// leading 0.95 stop (left-text readability invariant) and the bottom vertical gradient are
-    /// unchanged either way.
+    /// `posterBackdropVisible` raises the trailing (right-edge) stop slightly so the poster-backdrop
+    /// layer behind it (pinned to the right 40%) reads through instead of going nearly opaque black.
+    /// rc14 (Steven rc13 verdict, 2026-09-30): a tester said a black overlay dulled the background
+    /// image. The left 0.92 stop is what keeps the text readable and stays; the right side no longer
+    /// sits under 0.85 black (now 0.30, or 0.40 over the poster layer), and the bottom fade starts
+    /// at 55% of the height instead of the middle so the lower half of the art is not darkened early.
     private func scrimOverlay(posterBackdropVisible: Bool) -> some View {
         ZStack {
             LinearGradient(
                 colors: [
-                    .black.opacity(0.95),
-                    .black.opacity(0.4),
-                    .black.opacity(posterBackdropVisible ? 0.45 : 0.85)
+                    .black.opacity(0.92),
+                    .black.opacity(0.35),
+                    .black.opacity(posterBackdropVisible ? 0.40 : 0.30)
                 ],
                 startPoint: .leading, endPoint: .trailing
             )
             LinearGradient(
-                colors: [.clear, .black.opacity(0.9)],
-                startPoint: .center, endPoint: .bottom
+                stops: [
+                    .init(color: .clear, location: 0.55),
+                    .init(color: .black.opacity(0.85), location: 1.0)
+                ],
+                startPoint: .top, endPoint: .bottom
             )
         }
         .ignoresSafeArea()
@@ -1294,7 +1327,8 @@ struct DetailView: View {
             }
             if let overview, !overview.isEmpty {
                 Text(overview)
-                    .font(Theme.Font.body)
+                    // rc14 (Steven rc13 verdict, 2026-09-30): regular-weight synopsis token.
+                    .font(Theme.Font.synopsis)
                     .frame(maxWidth: 1100, alignment: .leading)
                     .foregroundStyle(Theme.Palette.textPrimary)
             }
@@ -1714,7 +1748,9 @@ struct DetailView: View {
                             .foregroundStyle(Theme.Palette.textSecondary)
                             .frame(width: 180, alignment: .leading)
                         Text(row.value)
-                            .font(Theme.Font.meta)
+                            // rc14 (Steven rc13 verdict, 2026-09-30): the value reads as prose, so
+                            // it takes the regular-weight token; the label above stays `meta`.
+                            .font(Theme.Font.detail)
                             .foregroundStyle(Theme.Palette.textPrimary)
                             .frame(maxWidth: 900, alignment: .leading)
                     }

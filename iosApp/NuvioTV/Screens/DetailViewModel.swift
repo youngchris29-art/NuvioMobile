@@ -27,6 +27,11 @@ final class DetailViewModel: ObservableObject {
     @Published private(set) var comments: [TraktCommentReview] = []
     /// IMDb episode ratings keyed "season:episode" (api.imdbapi.dev, keyless).
     @Published private(set) var episodeRatings: [String: Double] = [:]
+    /// rc14 (Steven rc13 verdict, 2026-09-30): whether episode cards show their rating badge at all
+    /// (show all / watched only / hide), from the shared `MetaScreenSettingsRepository` — the
+    /// Settings → Poster Style "Episode Ratings" row. Watched in `start()` so a change made in
+    /// Settings applies the next time Detail is on screen without a relaunch.
+    @Published private(set) var episodeRatingsVisibility: EpisodeRatingsVisibility = .showAll
     /// Episodes to badge as watched, keyed "season:episode" — explicit Watched marks OR
     /// effectively-completed watch progress (mirrors mobile's player episode rows).
     @Published private(set) var watchedEpisodeKeys: Set<String> = []
@@ -76,6 +81,8 @@ final class DetailViewModel: ObservableObject {
     /// having to leave and re-enter the page.
     private var addonWatcher: FlowWatcher?
     private var shuffleWatcher: FlowWatcher?
+    /// rc14: drives `episodeRatingsVisibility` (see above).
+    private var metaScreenWatcher: FlowWatcher?
     // Latest shared-state emissions (the exported StateFlow interface has no `value` accessor,
     // so the watchers below capture what the series primary action needs).
     private var latestProgressEntries: [WatchProgressEntry] = []
@@ -185,6 +192,12 @@ final class DetailViewModel: ObservableObject {
             if let profile = emitted as? EpisodeShuffleProfile { self.latestShuffleProfile = profile }
             self.refreshFlags()
         }
+        // rc14 (Steven rc13 verdict, 2026-09-30): episode-ratings visibility setting.
+        MetaScreenSettingsRepository.shared.ensureLoaded()
+        metaScreenWatcher = FlowWatcherKt.watch(MetaScreenSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? MetaScreenSettingsUiState else { return }
+            self.episodeRatingsVisibility = state.episodeRatingsVisibility
+        }
         refreshFlags()
 
         MetaDetailsRepository.shared.load(type: type, id: id)
@@ -198,6 +211,7 @@ final class DetailViewModel: ObservableObject {
         cwPrefsWatcher?.cancel(); cwPrefsWatcher = nil
         addonWatcher?.cancel(); addonWatcher = nil
         shuffleWatcher?.cancel(); shuffleWatcher = nil
+        metaScreenWatcher?.cancel(); metaScreenWatcher = nil
         trailerVideoURL = nil
         trailerVideoId = nil
         didRequestTrailer = false
@@ -713,6 +727,7 @@ final class DetailViewModel: ObservableObject {
         cwPrefsWatcher?.cancel()
         addonWatcher?.cancel()
         shuffleWatcher?.cancel()
+        metaScreenWatcher?.cancel()
     }
 }
 

@@ -66,9 +66,19 @@ struct CollectionRowView: View {
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
     /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
-    /// last.
+    /// last — and, since rc14 (BUG-122), every collection row (the mixed-shape short row).
     @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
+    @Environment(\.pinnedRowIsLast) private var isLastRow
     @Environment(\.posterStyle) private var style
+
+    /// rc14 (BUG-122): see `PinnedRowGeometry.shortRowLayoutCompensation`. The natural shelf is
+    /// `shelfMinHeight`'s pre-floor value — the tallest tile plus its caption chrome, inside the
+    /// reaches.
+    private var shortRowCompensation: CGFloat {
+        PinnedRowGeometry.shortRowLayoutCompensation(floor: cardLinkFrameFloor,
+                                                     naturalLabel: naturalShelfHeight,
+                                                     isLastRow: isLastRow)
+    }
 
     /// Wave 4 item 6 (tester: the section title sliding onto his "Streaming Services" tiles): the
     /// SHORTEST artwork height in this row, handed to the pinned title's slide clamp so its
@@ -170,14 +180,21 @@ struct CollectionRowView: View {
         // hideTitle=false whose title LOGO loads drops its text caption, a state unknowable at
         // layout time — and top alignment turns that overshoot into stable bottom padding
         // instead of a centered mid-frame float that jumps when the logo arrives.
+        // BUG-87/89 (rc11): the scroll-stable floor must agree with the per-label floor
+        // (`rowCardLinkFrameFloor`) or a recycle pass can still collapse the stack below the
+        // height the last row's labels are actually holding.
+        return max(naturalShelfHeight, cardLinkFrameFloor)
+    }
+
+    /// rc14 (BUG-122): `shelfMinHeight` before the floor — the tallest tile plus its own caption
+    /// chrome, inside the reaches. Split out so the layout compensation can compare the floor
+    /// against the same number.
+    private var naturalShelfHeight: CGFloat {
         let captionChrome = Theme.Spacing.sm + Self.folderCaptionHeight
         let maxTileHeight = collection.folders
             .map { FolderTile.artworkHeight(for: $0, style: style) + ($0.hideTitle ? 0 : captionChrome) }
             .max() ?? style.height
-        // BUG-87/89 (rc11): the scroll-stable floor must agree with the per-label floor
-        // (`rowCardLinkFrameFloor`) or a recycle pass can still collapse the stack below the
-        // height the last row's labels are actually holding.
-        return max(maxTileHeight + cardTopReach + cardBottomReach, cardLinkFrameFloor)
+        return maxTileHeight + cardTopReach + cardBottomReach
     }
 
     /// `Theme.Font.cardTitle` (`.caption2`) single-line height under the CURRENT content size
@@ -364,6 +381,11 @@ struct CollectionRowView: View {
             }
         }
         .focusSection()
+        // rc14 (BUG-122): cancel the floor's layout growth so the row's reported height stays its
+        // natural one while the tiles keep their floored (tall) focusable frames. AFTER the focus
+        // section (review r1 P1: frames outside their own section froze directional focus on
+        // device) and before the settle tracker, which must measure the natural row.
+        .padding(.bottom, -shortRowCompensation)
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
         // `pinnedRowSettleTracking` in BrowseComponents. This row is the mixed-shape one, so it is
         // also the one whose stale-relayout rests Wave 4 item 2 could only floor, not correct.
@@ -458,9 +480,29 @@ struct FolderTile: View {
     /// wore the ring and this tile drew nothing (it only knew the still ring). Same key as every
     /// other card, resolved through `PlainLabelRing` (PosterCard.swift).
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// rc14 FEAT-46 (Steven rc13 verdict, 2026-09-30): poster-coloured focus ring, default OFF —
+    /// see `PosterCard`'s copy of these properties for the full rationale. Here it recolours
+    /// whichever `PlainLabelRing` the tile draws (accent or still), keyed on `stillFocused` like
+    /// the ring itself.
+    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    @State private var posterRingTint: Color?
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// rc14 FEAT-46: sample only when the setting is on and a ring can draw on this tile
+    /// (`PlainLabelRing.reservesBand` is exactly "accent ring on, or No Zoom on").
+    private var samplesPosterColor: Bool {
+        ringTakesPosterColor
+            && PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
+    /// rc14 FEAT-46: the ring colour override — the cover's colour, nil with the setting off, while
+    /// unfocused, or on the gradient placeholder (no cover to sample). See `PosterCard.posterTint`.
+    private var posterTint: Color? {
+        guard samplesPosterColor, stillFocused else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: [coverURLString]) ?? posterRingTint
+    }
 
     /// BUG-108: in ring mode this tile owns its lift, so the ring it draws on its own artwork rides
     /// that lift instead of standing still under the native one. `.still` (a no-op) in both other
@@ -574,6 +616,15 @@ struct FolderTile: View {
     /// `body` `let`s aren't visible. Feeds `artworkPresent:` below so a placeholder tile's rail
     /// clamps to the Subtle preset instead of reading as a glitch on a flat gradient.
     private var hasArtworkCover: Bool {
+        !(coverURLString?.isEmpty ?? true)
+    }
+
+    /// The cover string the `body` ZStack hands `CachedAsyncImage(string:)` (nil/empty on the
+    /// gradient placeholder branch) — the chain BUG-110 duplicated into `hasArtworkCover`, lifted
+    /// into its own property for rc14 FEAT-46 so `ArtworkColorStore` samples the exact art on
+    /// screen (same trimmed string, so the same `ArtworkStore` key). `hasArtworkCover` above reads
+    /// it; the `body` `let`s still duplicate it for the BUG-110 reason given there.
+    private var coverURLString: String? {
         let ownCover = folder.coverImageUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         let emoji = folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines)
         let folderBackdrop = folder.heroBackdropUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -582,12 +633,11 @@ struct FolderTile: View {
         let hasFolderBackdrop = !(folderBackdrop?.isEmpty ?? true)
         let hasCollectionBackdrop = !(collectionBackdrop?.isEmpty ?? true)
         let hasEmoji = !(emoji?.isEmpty ?? true)
-        let cover: String? = hasOwnCover ? ownCover
+        return hasOwnCover ? ownCover
             : hasFolderBackdrop ? folderBackdrop
             : hasEmoji ? nil
             : hasCollectionBackdrop ? collectionBackdrop
             : fallbackCoverUrl
-        return !(cover?.isEmpty ?? true)
     }
 
     var body: some View {
@@ -738,11 +788,13 @@ struct FolderTile: View {
             .overlay {
                 // Still ring (no-zoom) or accent ring (setting on, zoom on or off) on the artwork
                 // itself — `PlainLabelRing` holds the precedence, shared with CastCard.
+                // rc14 FEAT-46: `posterTint` (nil unless the poster-colour setting is on and the
+                // cover has been sampled) replaces either ring's colour; same stroke, same geometry.
                 if let ring = PlainLabelRing.resolve(accentFocusRing: accentFocusRing,
                                                      noZoomOnFocus: noZoomOnFocus,
                                                      focused: stillFocused) {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
-                        .strokeBorder(ring.color, lineWidth: ringWidth)
+                        .strokeBorder(posterTint ?? ring.color, lineWidth: ringWidth)
                 }
             }
             // BUG-108 probe (test56): the tile box the ring is drawn on, inside the lift —
@@ -864,6 +916,17 @@ struct FolderTile: View {
         .animation(CollectionFocusAB.dropTileAnimation || reduceMotion
                    ? nil : .easeOut(duration: 0.15),
                    value: isFocused)
+        // rc14 FEAT-46: focus-gain-only colour resolution — see `PosterCard`'s copy. Keyed on
+        // `stillFocused`, the same row-owned focus truth the ring and lift use (never
+        // `isFocused`, for the BUG-108 reason given on `CardArtworkFocusLift` above), so the tint
+        // can never be resolved for a frame in which the ring is not drawn.
+        .onChange(of: stillFocused, initial: true) { _, focused in
+            guard focused, samplesPosterColor else { return }
+            ArtworkColorStore.shared.color(for: [coverURLString]) { color in
+                guard posterRingTint != color else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
+            }
+        }
     }
 }
 
@@ -1134,7 +1197,9 @@ struct FolderDetailView: View {
                     // header-frame-stability half of that test is unaffected.
                     .padding(.horizontal, Theme.Spacing.screen)
                     .padding(.bottom, Theme.Spacing.screen)
-                    .padding(.top, Theme.Spacing.lg + Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
+                    // rc14 (Steven rc13 verdict, 2026-09-30): +md here pairs with the header's -md
+                    // top padding below — the logo moves up 16 pt, this first poster row stays put.
+                    .padding(.top, Theme.Spacing.lg + Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm + Theme.Spacing.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollClipDisabled()
@@ -1222,7 +1287,9 @@ struct FolderDetailView: View {
             }
         }
         .padding(.horizontal, Theme.Spacing.screen)
-        .padding(.top, Theme.Spacing.screen)
+        // rc14 (Steven rc13 verdict, 2026-09-30): "logo too close to the posters, move it up a
+        // little" — 16 pt less top padding; the content's top padding in `body` gained the same 16.
+        .padding(.top, Theme.Spacing.screen - Theme.Spacing.md)
         .background(Theme.Palette.background.ignoresSafeArea(edges: .top))
         .overlay(alignment: .bottom) {
             LinearGradient(

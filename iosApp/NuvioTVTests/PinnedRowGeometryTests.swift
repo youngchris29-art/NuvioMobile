@@ -58,6 +58,11 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// floor `zoomOn` does — see `testNoZoomWithTheReachHoldTakesTheZoomOnFloor`.
     private static let noZoomHolding = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false,
                                                                      reachHoldsLift: true)
+    /// 2026-09-30 zoom-on reach hold (`PinnedRowZoomReachHoldTests` below): the shipping default,
+    /// whose held plan takes the rest target and so keeps a SMALL `restRange` (4). Used by the
+    /// last-row floor test, which needs a carousel regime whose own link frame binds the floor.
+    private static let zoomOnHeld = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false,
+                                                                  zoomReachHold: true)
 
     // MARK: - Title metrics
 
@@ -221,7 +226,7 @@ final class PinnedRowGeometryTests: XCTestCase {
     ///     demand      24 + 88 + 403.33 + 0 + 44 + 8 − 455      = 112.33   (formula unchanged)
     ///     (a) bottom  44 → 24 (bottomReachFloor)                 −20  ⇒ 92.33 left
     ///     (b) top     88 → 66 (topReachFloor(lift: 0))           −22  ⇒ 70.33 left
-    ///     (c) hero    min(70.33, panel give 142)                = 70.33  ⇒ 0 left
+    ///     (c) hero    min(70.33, panel give 160)                = 70.33  ⇒ 0 left
     ///     viewport    455 + 70.33                              = 525.33
     ///     linkFrame   66 + 403.33 + 0 + 24                      = 493.33
     ///     restRange                                            = 32  (Spacing.lg + cushion)
@@ -234,10 +239,11 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// the focus lift, which is the whole of BUG-87/89: with zoom on, `staticClearance` 2 minus the
     /// 20pt lift is −18, and `Clearances`' `max(…, 0)` reported that permanent overlap as 0. The
     /// floor is derived and lift-aware now (`title floor 62 + lift + fadeIntrusionArm 4`), so it is
-    /// 66 here and 2pt of the reach's give goes unspent — the compression takes 70.33 instead, and
-    /// this shape is 2pt past the `HeroSlotGive` tier-3 gate, so the panel's synopsis is 2 lines
-    /// rather than 3. That is the documented price of the clearance (see
-    /// `PinnedRowGeometry.topReachFloor(lift:)`), not a drift to be tuned away here.
+    /// 66 here and 2pt of the reach's give goes unspent — the compression takes 70.33 instead, which
+    /// cost the panel's synopsis a line at the time (2 lines rather than 3). That is the documented
+    /// price of the clearance (see `PinnedRowGeometry.topReachFloor(lift:)`), not a drift to be
+    /// tuned away here. (rc14's `HeroSlotGive` order — free slack, then logo, then synopsis — gives
+    /// the line back: see `testPanelAtRc10NoZoomCompressionHasFourLinesUnderTheSystemSynopsisFont`.)
     ///
     /// 2026-09-30: the panel's viewport budget is 493, not 455 (it has no page-dots row), so the
     /// demand is 38 lower and the compression is 32.33 rather than 70.33. The viewport, link frame
@@ -271,7 +277,7 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// the compression takes the other 22.
     ///
     ///     (b) top     88 → 86 (topReachFloor(lift: 20))          −2   ⇒ 90.33 left
-    ///     (c) hero    min(90.33, panel give 142)                = 90.33
+    ///     (c) hero    min(90.33, panel give 160)                = 90.33
     ///     viewport    455 + 90.33                              = 545.33
     ///     linkFrame   86 + 403.33 + 0 + 24                      = 513.33
     ///
@@ -308,14 +314,18 @@ final class PinnedRowGeometryTests: XCTestCase {
     ///     (a) bottom     44 → 24 (bottomReachFloor)            −20    ⇒ 39.952380952 left
     ///     (b) top        88 → 86 (topReachFloor(lift: 20))     −2     ⇒ 37.952380952 left   (zoom on)
     ///                     88 → 66 (topReachFloor(lift: 0))     −22    ⇒ 17.952380952 left   (no zoom)
-    ///     (c) hero       min(left, panel give 142)             = left (unclamped either way)
+    ///     (c) hero       min(left, panel give 160)             = left (unclamped either way)
     ///
     /// The rough numbers in the FEAT-39 spec (compression 38/18, viewport 493, linkFrame 461) were
     /// hand-rounded; the exact arithmetic above is what `plan(...)` actually returns, asserted here
     /// to three decimals. `restRange` still nets to exactly 32 (`Spacing.lg + settledCushion`) by the
     /// same construction that gives Large's Stevens shape 32 — the repeating decimals in viewport
     /// and linkFrame cancel.
-    func testMediumPlusTakesTheLargeDialWithThreeSystemLines() {
+    ///
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the panel's compression is 0 here, so the hero keeps
+    /// its whole 140pt synopsis slot (144 before the chrome shave) — four lines of
+    /// `Theme.Font.synopsis` on the system face, not the three body lines the old name counted.
+    func testMediumPlusTakesTheLargeDialWithFourSystemLines() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
                                           showsCTA: false, landscapeRows: false,
                                           mode: Self.zoomOn, titleHeight: 38)
@@ -330,6 +340,16 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.linkFrame, 461, accuracy: 0.01)
         XCTAssertEqual(plan.restRange, 32, accuracy: 0.01)
         XCTAssertEqual(plan.regimeKey, "P351c0p1r0z0t38")
+
+        // rc14: nothing is spent, so the synopsis slot is the full 140 and holds four system lines
+        // (`HomeHeroForeground.synopsisLineLimit`'s own arithmetic, 1pt tolerance, mirrored inline).
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: plan.compression,
+                                                         showsCTA: false, folderHero: false)
+        XCTAssertEqual(split.total, 0, accuracy: epsilon)
+        let slot = Theme.Size.heroSynopsisSlotHeightPinnedPanel - split.synopsis
+        XCTAssertEqual(slot, 140, accuracy: epsilon)
+        let synopsisLine = UIFont.preferredFont(forTextStyle: .caption1).lineHeight
+        XCTAssertEqual(Int(((slot + 1) / synopsisLine).rounded(.down)), 4)
 
         let noZoom = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
                                             showsCTA: false, landscapeRows: false,
@@ -502,7 +522,7 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.viewport, 547.333, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 515.333, accuracy: 0.01)
         // The product question this test was asked to answer: the extra 2pt of compression does NOT
-        // cost the fit — the panel's give is 142 and 92.33 of it is enough.
+        // cost the fit — the panel's give is 160 (rc14; 142 before) and 54.33 of it is enough.
         XCTAssertTrue(plan.fits)
         XCTAssertEqual(plan.restRange,
                        Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
@@ -546,19 +566,20 @@ final class PinnedRowGeometryTests: XCTestCase {
                         + " (\(Self.systemTitle) system / \(Self.openSansTitle) Open Sans)")
     }
 
-    /// The same Poster Size with the CAROUSEL hero, which has only 70pt of elastic give where the
-    /// panel has 142, in No Zoom. The reaches are still spent first, but as of rc10's lift-aware
-    /// floor the leftover (70.33) is 0.33pt MORE than the carousel can give, so its 70pt cap binds
-    /// and this regime stops being an exact twin of the panel's plan:
+    /// The same Poster Size with the CAROUSEL hero, in No Zoom. The reaches are still spent first;
+    /// as of rc10's lift-aware floor the leftover is 70.33.
     ///
-    ///     demand 112.33 → bottom 44→24 (−20) → top 88→66 (−22) → compression min(70.33, 70) = 70
-    ///     viewport  455 + 70                 = 525
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the carousel's give grew 70 → 92 (frame slack 2 → 22,
+    /// logo give 32 → 34), so the 0.33pt that used to bind the old 70 cap is no longer clipped and
+    /// this regime gets the full construction (restRange 32) again:
+    ///
+    ///     demand 112.33 → bottom 44→24 (−20) → top 88→66 (−22) → compression min(70.33, 92) = 70.33
+    ///     viewport  455 + 70.33              = 525.33
     ///     linkFrame 66 + 403.33 + 0 + 24     = 493.33
-    ///     restRange                          = 31.67   (0.33 short of Spacing.lg + cushion)
+    ///     restRange                          = 32   (Spacing.lg + cushion, the full construction)
     ///
-    /// It still FITS with room to spare, which is what matters — the 0.33 comes off the settled
-    /// cushion, not off the frame. rc4's version of this test read 68.33 / 523.33 / 491.33 / 32 at
-    /// the flat reach floor of 64.
+    /// The pre-rc14 version of this test read 70 / 525 / 493.33 / 31.67 (cap binding, 0.33 short of
+    /// the cushion); rc4's read 68.33 / 523.33 / 491.33 / 32 at the flat reach floor of 64.
     func testLargeHideLabelsWithCarouselHeroSpendsBothReachesThenTheRemainder() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
@@ -567,33 +588,36 @@ final class PinnedRowGeometryTests: XCTestCase {
                                           mode: Self.noZoom,
                                           titleHeight: Self.systemTitle)
         XCTAssertTrue(plan.fits)
-        XCTAssertEqual(plan.compression, 70, accuracy: 0.01)
-        // The carousel's cap is what binds here, not the leftover demand.
-        XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true), accuracy: epsilon)
+        XCTAssertEqual(plan.compression, 70.333, accuracy: 0.01)
+        // rc14: the leftover demand is what is spent now — the carousel's 92 cap no longer binds.
+        XCTAssertLessThan(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true))
         XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
         XCTAssertEqual(plan.topReach,
                        PinnedRowGeometry.topReachFloor(lift: 0, titleHeight: Self.systemTitle),
                        accuracy: epsilon)
-        XCTAssertEqual(plan.viewport, 525, accuracy: 0.01)
+        XCTAssertEqual(plan.viewport, 525.333, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 493.333, accuracy: 0.01)
-        XCTAssertEqual(plan.restRange, 31.667, accuracy: 0.01)
-        XCTAssertLessThan(plan.restRange,
-                          Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion)
+        XCTAssertEqual(plan.restRange, 32, accuracy: 0.01)
+        XCTAssertEqual(plan.restRange,
+                       Theme.Spacing.lg + Theme.Size.heroPinnedRowsSettledCushion, accuracy: epsilon)
     }
 
-    /// Large + captions + carousel hero is unsatisfiable by design: ~155.8pt of demand against 44pt
-    /// of reach give and 70pt of elastic give — 114 against 156, in either spend order. Under the
-    /// rc10 order the reaches floor at 24/66 (No Zoom) and 113.83 is left over, which the carousel's
-    /// 70pt cap cannot cover. The plan must NOT pretend — it reports `fits == false` and hands back
-    /// TODAY'S numbers verbatim (compression 68.33, reaches 88/44), so the visibility belt owns the
-    /// residue in exactly the regime that shipped in beta.17. The fallback is mode-INDEPENDENT: with
-    /// zoom on the reach floors at 86 and 133.83 is left over, still far past 70.
+    /// Large + captions + carousel hero in ZOOM ON is still unsatisfiable by design: ~155.8pt of
+    /// demand against 44pt of reach give (the zoom-on floor only gives 22 of it: 20 + 2) and 92pt of
+    /// elastic give. The reaches floor at 24/86, 133.83 is left over and the carousel can give 92 of
+    /// it, so the 556.83 link frame sits 9.83pt past the 547 viewport. The plan must NOT pretend — it
+    /// reports `fits == false` and hands back TODAY'S numbers verbatim (compression 68.33, reaches
+    /// 88/44), so the visibility belt owns the residue in exactly the regime that shipped in beta.17.
+    ///
+    /// rc14: this test ran in No Zoom until the carousel's give grew 70 → 92. In No Zoom the reaches
+    /// floor at 24/66 and the 92 cap now covers enough that the frame fits — see
+    /// `testLargeWithCaptionsAndCarouselHeroNoZoomFitsOnTheWiderCap`.
     func testLargeWithCaptionsAndCarouselHeroFallsBackToTodaysNumbers() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: true,
                                           showsCTA: true,
                                           landscapeRows: false,
-                                          mode: Self.noZoom,
+                                          mode: Self.zoomOn,
                                           titleHeight: Self.systemTitle)
         XCTAssertFalse(plan.fits)
         XCTAssertEqual(plan.compression,
@@ -606,20 +630,52 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertEqual(plan.linkFrame, 578.833, accuracy: 0.01)
     }
 
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the No Zoom twin of the test above flipped from
+    /// unsatisfiable to FITTING when the carousel's give grew 70 → 92. Both reaches floor at 24/66,
+    /// the compression takes the whole 92 cap (the 113.83 leftover is more than it can give), and the
+    /// frame fits with a thin rest range — the demand's 32pt of rest slack is no longer fully
+    /// covered, but the frame itself is inside the viewport, which is what `fits` means:
+    ///
+    ///     demand    155.83 → bottom −20 → top −22 → 113.83 left → compression min(113.83, 92) = 92
+    ///     viewport  455 + 92                = 547
+    ///     linkFrame 66 + 403.33 + 43.5 + 24 = 536.83
+    ///     restRange                         = 10.17
+    func testLargeWithCaptionsAndCarouselHeroNoZoomFitsOnTheWiderCap() {
+        let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
+                                          captionVisible: true,
+                                          showsCTA: true,
+                                          landscapeRows: false,
+                                          mode: Self.noZoom,
+                                          titleHeight: Self.systemTitle)
+        XCTAssertTrue(plan.fits)
+        XCTAssertEqual(plan.compression, 92, accuracy: 0.01)
+        XCTAssertEqual(plan.compression, PinnedRowGeometry.elasticGive(showsCTA: true), accuracy: epsilon)
+        XCTAssertEqual(plan.topReach,
+                       PinnedRowGeometry.topReachFloor(lift: 0, titleHeight: Self.systemTitle),
+                       accuracy: epsilon)
+        XCTAssertEqual(plan.bottomReach, PinnedRowGeometry.bottomReachFloor, accuracy: epsilon)
+        XCTAssertEqual(plan.viewport, 547, accuracy: 0.01)
+        XCTAssertEqual(plan.linkFrame, 536.833, accuracy: 0.01)
+        XCTAssertEqual(plan.restRange, 10.167, accuracy: 0.01)
+    }
+
     /// Large + captions in the FEAT-15 panel IS satisfiable, in No Zoom: both reaches go to their
-    /// floors and the panel's 142pt of give covers the 113.83 that is left, short of its own cap.
+    /// floors and the panel's 160pt of give (rc14; 142 before) covers the 113.83 that is left, short
+    /// of its own cap.
     ///
     ///     demand    24 + 88 + 403.33 + 43.5 + 44 + 8 − 455 = 155.83
     ///     (a) bottom 44 → 24                                −20  ⇒ 135.83
     ///     (b) top    88 → 66 (topReachFloor(lift: 0))        −22  ⇒ 113.83
-    ///     (c) hero   min(113.83, 142)                      = 113.83, 28.17 of give unspent
+    ///     (c) hero   min(113.83, 160)                      = 113.83, 46.17 of give unspent
     ///     viewport  455 + 113.83                           = 568.83
     ///     linkFrame 66 + 403.33 + 43.5 + 24                = 536.83
     ///     restRange                                        = 32
     ///
-    /// rc4's version of this test read 111.83 / 566.83 / 534.83 at the flat reach floor of 64. The
-    /// panel's synopsis was already at one line in this regime and stays there (`HeroSlotGive`
-    /// tiers: 36 + 32 + 43.83), so nothing regresses for it.
+    /// (The 493 panel budget lowers the compression to 75.83; the block above is the carousel-budget
+    /// derivation the original was written against.) rc4's version of this test read 111.83 /
+    /// 566.83 / 534.83 at the flat reach floor of 64. The hero spends its free slack and the logo
+    /// before the description (`HeroSlotGive`, rc14: 22 + 34, then 19.83 from the synopsis), so the
+    /// synopsis slot is 140 − 19.83 = 120.17 at the 75.83 compression.
     func testLargeWithCaptionsInPanelModeFitsAfterBothReachesFloor() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: true,
@@ -646,8 +702,10 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// on their floors. (The demand always exceeds the 44pt of reach give wherever the scope gate
     /// is open at all: `demand == legacyRawDemand + captionChrome + 44`.)
     ///
-    /// The mirror clause covers the two paths that spend nothing: the closed gate (Small, Medium,
-    /// landscape) and the unsatisfiable fallback both hand back the shipped reaches untouched.
+    /// The mirror clause covers the paths that spend nothing: the closed gate (Small, Medium,
+    /// landscape) hands back the shipped reaches untouched. rc14: the unsatisfiable fallback is no
+    /// longer reachable from this No Zoom sweep — Large + captions + carousel fits on the 92 cap — it
+    /// survives in zoom on (`testLargeWithCaptionsAndCarouselHeroFallsBackToTodaysNumbers`).
     func testCompressionIsOnlySpentAfterBothReachesAreOnTheirFloors() {
         for (label, plan) in Self.crossProduct() {
             if plan.fits, plan.compression > 0 {
@@ -678,14 +736,34 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// The panel's give is the carousel's plus the CTA slot it absorbed — the arithmetic that made
     /// the tester's shape satisfiable at all, and the number `HomeHeroForeground.synopsisSlotGive`
     /// has to be able to actually spend.
+    ///
+    /// rc14 (Steven rc13 verdict, 2026-09-30): 92 / 160 (were 70 / 142) — the frame slack grew 2 →
+    /// 22 and the logo give 32 → 34, and the panel's absorbed gap is `heroPinnedSlotGap` (12), not
+    /// `Spacing.md` (16), so the form gap is the CTA slot plus 12.
     func testElasticGiveMatchesTheHeroFormOnScreen() {
         XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: true),
                        Theme.Size.heroPinnedCompressionCap, accuracy: epsilon)
-        XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: true), 70, accuracy: epsilon)
-        XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: false), 142, accuracy: epsilon)
+        XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: true), 92, accuracy: epsilon)
+        XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: false), 160, accuracy: epsilon)
         XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: false)
                         - PinnedRowGeometry.elasticGive(showsCTA: true),
-                       Theme.Size.heroButtonSlotHeight + Theme.Spacing.md, accuracy: epsilon)
+                       Theme.Size.heroButtonSlotHeight + Theme.Size.heroPinnedSlotGap, accuracy: epsilon)
+    }
+
+    /// rc14: the compression cap is the sum of the three things the pinned hero can yield — the
+    /// frame's free slack (22, now DERIVED from the chrome: 352 − (2·12 + 110 + 3·12 + 32 + 72 + 56)),
+    /// the logo down to its 76 floor (34), and the synopsis down to one 36pt line (36 carousel, 104
+    /// panel, whose slot is 140). Each constant is pinned so a change to any one of them moves this
+    /// test loudly instead of silently moving the cap.
+    func testElasticGiveIsSlackPlusBothGives() {
+        XCTAssertEqual(Theme.Size.heroPinnedFrameSlack, 22, accuracy: epsilon)
+        XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinnedFloor, 76, accuracy: epsilon)
+        XCTAssertEqual(Theme.Size.heroLogoSlotPinnedGive, 34, accuracy: epsilon)
+        XCTAssertEqual(Theme.Size.heroSynopsisSlotPinnedGive, 36, accuracy: epsilon)
+        XCTAssertEqual(Theme.Size.heroSynopsisSlotHeightPinnedPanel, 140, accuracy: epsilon)
+        XCTAssertEqual(Theme.Size.heroSynopsisSlotPanelPinnedGive, 104, accuracy: epsilon)
+        XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: true), 22 + 34 + 36, accuracy: epsilon)
+        XCTAssertEqual(PinnedRowGeometry.elasticGive(showsCTA: false), 22 + 34 + 104, accuracy: epsilon)
     }
 
     /// A pure function: the plan depends on its inputs and on nothing else (no live layout, no
@@ -772,8 +850,8 @@ final class PinnedRowGeometryTests: XCTestCase {
     /// The headline claim: with the hold ON, No Zoom's Large carousel spends EXACTLY the zoom-on
     /// floor (86, not 66) — compare against
     /// `testLargeHideLabelsWithCarouselHeroSpendsBothReachesThenTheRemainder`'s plain-`noZoom`
-    /// numbers (topReach 66, same compression/viewport because the carousel's 70pt cap binds
-    /// either way — only `linkFrame`/`restRange` move, by exactly the 20pt the floor gained).
+    /// numbers (topReach 66, compression 70.33; the hold takes the 2026-09-30 rest target instead,
+    /// so its compression is 62.33 and `linkFrame`/`restRange` move with the 20pt the floor gained).
     func testNoZoomWithTheReachHoldTakesTheZoomOnFloor() {
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large,
                                           captionVisible: false,
@@ -784,7 +862,7 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertTrue(plan.fits)
         XCTAssertEqual(plan.topReach, 86, accuracy: epsilon)
         // 2026-09-30 rest target: a held regime's demand reserves `heroPinnedRowsRestTarget` (4)
-        // instead of 32, so demand 84.333 − bottom 20 − top 2 = 62.333, under the 70 cap.
+        // instead of 32, so demand 84.333 − bottom 20 − top 2 = 62.333, under the 92 cap.
         XCTAssertEqual(plan.compression, 62.333, accuracy: 0.01)
         XCTAssertEqual(plan.viewport, 517.333, accuracy: 0.01)
         XCTAssertEqual(plan.linkFrame, 513.333, accuracy: 0.01)
@@ -803,8 +881,7 @@ final class PinnedRowGeometryTests: XCTestCase {
     ///
     /// Steven's sim reading (`margin=-22`) sits OUTSIDE the OFF band (−22 < −4, the belt's fade
     /// condition, matching the reported bounce) and INSIDE the ON band (−24 ≤ −22 ≤ 48, `bandHigh`
-    /// unchanged because the carousel cap already binds `viewport` the same way in both regimes —
-    /// see the test above).
+    /// being the title inset, 48, in both regimes).
     func testTheReachHoldWidensTheBandInsteadOfChargingLift() {
         let steadyMargin: CGFloat = -22
         let bandHigh: CGFloat = 48
@@ -867,18 +944,25 @@ final class PinnedRowGeometryTests: XCTestCase {
 
     /// BUG-87/89 (rc11, hardened by Codex r1 on rc11): the last row's label floor is the LARGER of the plan's own
     /// link frame and `viewport − Spacing.lg` — not `linkFrame` alone. The carousel case here is
-    /// where the two coincide (its `restRange`, 12.67, is under `Spacing.lg`), so a uniform row
+    /// where the two coincide (its `restRange`, 4, is under `Spacing.lg`), so a uniform row
     /// needs no extra and a short-tile collection row gets exactly the difference, unchanged from
     /// rc11. The panel case below is where they DON'T coincide (`restRange` 32 > `Spacing.lg`), which
     /// is exactly the shape Finding 1 closes: `linkFrame` alone would have permitted a rest above the
     /// band.
+    ///
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the carousel case moved to the HELD zoom-on regime
+    /// (the shipping default). It used to be the unheld one (title 37, restRange 12.67), but the
+    /// carousel's give grew 70 → 92, so the unheld plan now spends its whole 89.33 leftover and ends
+    /// with `restRange` 32 — a ceiling-bound floor like the panel's, no longer the "linkFrame binds"
+    /// shape this case exists to cover.
     func testLastRowLinkFrameFloorTakesTheLargerOfLinkFrameAndTheBandCeiling() {
         let carousel = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
                                               showsCTA: true, landscapeRows: false,
-                                              mode: Self.zoomOn, titleHeight: 37)
+                                              mode: Self.zoomOnHeld, titleHeight: Self.systemTitle)
         XCTAssertTrue(carousel.fits)
-        // `linkFrame` (512.33) already exceeds `viewport − lg` (525 − 24 = 501): the `max` picks
-        // `linkFrame`, exactly rc11's behavior.
+        XCTAssertEqual(carousel.restRange, 4, accuracy: 0.01)
+        // `linkFrame` (519.33) already exceeds `viewport − lg` (523.33 − 24 = 499.33): the `max`
+        // picks `linkFrame`, exactly rc11's behavior.
         XCTAssertGreaterThan(carousel.linkFrame, carousel.viewport - Theme.Spacing.lg)
         XCTAssertEqual(PinnedRowGeometry.lastRowLinkFrameFloor(plan: carousel), carousel.linkFrame,
                        accuracy: 0.01)
@@ -888,7 +972,7 @@ final class PinnedRowGeometryTests: XCTestCase {
         // The tester's last row: hidden-title SQUARE folder tiles, whose artwork is `style.width`
         // (FolderTile.artworkHeight), not `style.height`.
         let squareTile = Theme.Size.posterWidth / 126.0 * 154.0          // 268.88…
-        let carouselTileLabel = carousel.topReach + squareTile + carousel.bottomReach   // 377.89
+        let carouselTileLabel = carousel.topReach + squareTile + carousel.bottomReach   // 384.89
         XCTAssertEqual(PinnedRowGeometry.lastRowBottomReachExtra(plan: carousel, labelFrame: carouselTileLabel),
                        134.44, accuracy: 0.5)
         // The point of the number: the shaped label leaves the engine only the rest interval every
@@ -970,9 +1054,9 @@ final class PinnedRowGeometryTests: XCTestCase {
 
     /// The floor never manufactures an over-tall frame: `!fits` regimes opt out.
     func testLastRowLinkFrameFloorIsZeroWhenTheRegimeDoesNotFit() {
-        // Large + captions + carousel is the documented unsatisfiable regime (fits == false) — see
-        // `testLargeWithCaptionsAndCarouselHeroFallsBackToTodaysNumbers` above (No Zoom); the header's
-        // trade note documents the fallback as mode-independent, so zoom-on is unsatisfiable too.
+        // Large + captions + carousel in zoom on is the documented unsatisfiable regime (fits ==
+        // false) — see `testLargeWithCaptionsAndCarouselHeroFallsBackToTodaysNumbers` above. rc14: its
+        // No Zoom twin FITS now (the carousel's give grew 70 → 92), so zoom on is the one that opts out.
         let plan = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: true,
                                           showsCTA: true, landscapeRows: false,
                                           mode: Self.zoomOn, titleHeight: 38)
@@ -1000,13 +1084,14 @@ final class PinnedRowGeometryTests: XCTestCase {
         XCTAssertFalse(PinnedRowSettle.lastRowExemptionApplies(lockupExtent: 100, linkFrameFloor: 0))
 
         // (b) The carousel regime from `testLastRowLinkFrameFloorTakesTheLargerOfLinkFrameAndTheBandCeiling`
-        // above: its floor IS `plan.linkFrame` (512.33), sized for this same Large artwork. A
-        // hidden-title SQUARE folder tile's own lockup extent — `lg + topReach + squareTile`, the
-        // same `Measurement.lockupExtent`/`CollectionRowView.focusedTileLockupExtent` shape, with no
-        // caption term because the title is hidden — sits well under it, so the floor governs.
+        // above: its floor IS `plan.linkFrame` (519.33, rc14: the held carousel), sized for this same
+        // Large artwork. A hidden-title SQUARE folder tile's own lockup extent — `lg + topReach +
+        // squareTile`, the same `Measurement.lockupExtent`/`CollectionRowView.focusedTileLockupExtent`
+        // shape, with no caption term because the title is hidden — sits well under it, so the floor
+        // governs.
         let carousel = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
                                               showsCTA: true, landscapeRows: false,
-                                              mode: Self.zoomOn, titleHeight: 37)
+                                              mode: Self.zoomOnHeld, titleHeight: Self.systemTitle)
         let carouselFloor = PinnedRowGeometry.lastRowLinkFrameFloor(plan: carousel)
         let squareTile = Theme.Size.posterWidth / 126.0 * 154.0   // 268.88…, FolderTile.artworkHeight
         let squareLockupExtent = Theme.Spacing.lg + carousel.topReach + squareTile
@@ -1049,16 +1134,23 @@ final class PinnedRowGeometryTests: XCTestCase {
 /// The tester's objection was about LINES OF DESCRIPTION, and the line count is a floor division.
 ///
 /// 2026-09-10: `HomeHeroForeground.synopsisLineLimit` no longer assumes a 36pt line — it measures
-/// `Theme.Font.bodyLineHeight` (the actual `UIFont` line height of the resolved body face/size),
-/// with a 1pt tolerance so a slot that is short of a whole line by less than that still gets it
-/// (the text `Text` sits in a fixed-height frame, so a small overhang is clipped, never seen). The
-/// helper below mirrors that exactly. So the tests assert the slot height AND the line count it
-/// implies — the second is the thing the tester actually sees.
+/// the actual `UIFont` line height of the resolved face/size, with a 1pt tolerance so a slot that is
+/// short of a whole line by less than that still gets it (the text `Text` sits in a fixed-height
+/// frame, so a small overhang is clipped, never seen). The helper below mirrors that exactly. So
+/// the tests assert the slot height AND the line count it implies — the second is the thing the
+/// tester actually sees.
+///
+/// rc14 (Steven rc13 verdict, 2026-09-30): the split spends in a NEW order — the frame's free slack
+/// (`heroPinnedFrameSlack`, 22), then the logo (34, down to its 76 floor), then the synopsis (36
+/// carousel / 104 panel, down to one 36pt line) — and Home's synopsis is set in
+/// `Theme.Font.synopsis` (caption1: ≈30pt a line on the system face, ≈34 in Open Sans), so every
+/// line count below is measured against that synopsis line, not the body line the pre-rc14 tests
+/// used. The panel's synopsis slot is 140 (was 144), so a panel that gives nothing holds four lines.
 final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
 
     private let epsilon: CGFloat = 0.001
 
-    // MARK: - Body line metrics (Codex P3 fix 4)
+    // MARK: - Synopsis line metrics (Codex P3 fix 4, rc14)
     //
     // `lineLimit(slotHeight:)` used to read the live `Theme.Font.bodyLineHeight`, which follows
     // whatever font family the host has applied (System by default, Open Sans under FEAT-31's
@@ -1067,14 +1159,22 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
     // `openSansTitle` above pin the title metric — so every caller below passes an EXPLICIT
     // `lineHeight` instead of letting the helper read the live value.
 
-    /// System body line height (`UIFont.preferredFont(forTextStyle: .body).lineHeight`) — the
-    /// metric `HomeHeroForeground.synopsisLineLimit` measures when the host renders the System
-    /// font, and the one every "3 lines" expectation in this file was written against.
-    private static let systemBodyLine = UIFont.preferredFont(forTextStyle: .body).lineHeight
+    /// System synopsis line height (`UIFont.preferredFont(forTextStyle: .caption1).lineHeight`, the
+    /// text style `Theme.Font.synopsis` resolves to, ≈30pt) — the metric
+    /// `HomeHeroForeground.synopsisLineLimit` measures when the host renders the System font, and
+    /// the one every line count in this file is arithmetic against.
+    private static let systemSynopsisLine = UIFont.preferredFont(forTextStyle: .caption1).lineHeight
 
-    /// FEAT-31's Open Sans body line height at the same text style, from the bundled face itself
-    /// rather than a derived constant — the tester's configuration, where the SAME slot holds one
-    /// fewer line than under the System font.
+    /// FEAT-31's Open Sans synopsis line height at the same text style (≈34pt), from the bundled
+    /// face itself rather than a derived constant — the tester's configuration, where the SAME slot
+    /// can hold one fewer line than under the System font.
+    private static func openSansSynopsisLine() -> CGFloat? {
+        UIFont(name: "OpenSans-Regular", size: Theme.Font.baseSize(for: .caption1))?.lineHeight
+    }
+
+    /// FEAT-31's Open Sans BODY line height — kept for the historical measurement test below (the
+    /// synopsis no longer uses `body`, but the 108pt-slot / 36pt-line assumption it disproved is
+    /// still worth pinning).
     private static func openSansBodyLine() -> CGFloat? {
         UIFont(name: "OpenSans-Regular", size: Theme.Font.baseSize(for: .body))?.lineHeight
     }
@@ -1095,6 +1195,15 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         return max(1, Int(((slotHeight + lineTolerance) / lineHeight).rounded(.down)))
     }
 
+    /// rc14: the guard behind every "N lines" assertion below. The expectations are arithmetic
+    /// against a ≈30pt system caption1 line (a 59.67pt slot only holds two lines while the line is
+    /// ≤ 30.33pt, a 127.67pt one four while it is ≤ 32.17), so a font or text-style change that moves
+    /// the metric out of this range has to fail HERE, loudly, rather than flip line counts silently.
+    func testTheSystemSynopsisLineIsWithinTheAssumedRange() {
+        XCTAssertGreaterThan(Self.systemSynopsisLine, 26)
+        XCTAssertLessThan(Self.systemSynopsisLine, 33)
+    }
+
     // MARK: - rc12: fixtures for the moved reach-hold synopsis tests below (private in
     // `PinnedRowGeometryTests`, so restated here rather than reached across the type boundary).
 
@@ -1110,24 +1219,32 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
     /// rc12 BUG-87 follow-up: No Zoom with the default-OFF reach-hold A/B switched ON.
     private static let noZoomHolding = PinnedRowTitle.FocusModeFlags(noZoom: true, accentRing: false,
                                                                      reachHoldsLift: true)
+    /// 2026-09-30 zoom-on reach hold — the shipping default, and the regime Steven's Large and
+    /// Medium+ carousels run in (see `PinnedRowZoomReachHoldTests` below).
+    private static let zoomOnHeld = PinnedRowTitle.FocusModeFlags(noZoom: false, accentRing: false,
+                                                                  zoomReachHold: true)
 
     /// The SYSTEM font's number, which every expectation in this file was written against.
     private static let systemTitle = PinnedRowGeometry.measuredTitleHeight   // 38
 
     // MARK: - rc12: the No Zoom reach-hold A/B synopsis cost (BUG-87 follow-up)
 
-    /// What turning the hold on costs: the Large hero-off panel's synopsis drops from 3 lines to 2,
-    /// the SAME cost zoom-on already pays (`testPanelAtRc10NoZoomCompressionStillHasThreeLinesUnderTheSystemFont`
-    /// is the OFF twin at compression 70.333 → 3 lines). The 30–36pt guard pins the System body
-    /// metric's plausible range so a future font change fails loudly here instead of silently
-    /// flipping which side of the 36pt-per-line assumption this shape lands on.
+    /// What turning the hold on costs the Large hero-off panel's synopsis. Pre-rc14 it cost a line
+    /// (3 → 2, the same cost zoom-on paid); rc14 spends the frame's free slack and the logo BEFORE
+    /// the description, and both regimes' compressions sit inside that 22 + 34 = 56 — so the
+    /// synopsis gives nothing in either, keeps its whole 140 slot, and the hold costs it no line.
     ///
-    /// 2026-09-30: the rest target (`heroPinnedRowsRestTarget`) removed that cost, and the panel's
+    /// The 26–33 guard (`testTheSystemSynopsisLineIsWithinTheAssumedRange`) pins the System
+    /// synopsis metric's plausible range so a future font change fails loudly instead of silently
+    /// flipping which side of a line boundary this shape lands on.
+    ///
+    /// 2026-09-30: the rest target (`heroPinnedRowsRestTarget`) removed the old cost, and the panel's
     /// own 493 budget lowers it further: demand 88 + 403.333 + 44 + 4 − 493 = 46.333, − 20 − 2 =
-    /// 24.333 — all tier 1, slot 119.667, 3 lines. The OFF twin is 32.333 (70.333 − 38), slot 111.667.
-    func testNoZoomReachHoldKeepsTheHeroOffPanelThreeSynopsisLines() {
-        XCTAssertGreaterThan(Self.systemBodyLine, 30)
-        XCTAssertLessThan(Self.systemBodyLine, 36)
+    /// 24.333 — 22 free slack plus 2.33 of logo. The OFF twin is 32.333 (70.333 − 38): 22 free plus
+    /// 10.33 of logo.
+    func testNoZoomReachHoldKeepsTheHeroOffPanelFourSynopsisLines() {
+        XCTAssertGreaterThan(Self.systemSynopsisLine, 26)
+        XCTAssertLessThan(Self.systemSynopsisLine, 33)
 
         let holding = PinnedRowGeometry.plan(posterHeight: Self.large,
                                              captionVisible: false,
@@ -1138,9 +1255,11 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         XCTAssertEqual(holding.compression, 24.333, accuracy: 0.01)
         let holdingSplit = PinnedRowGeometry.HeroSlotGive.split(compression: holding.compression,
                                                                 showsCTA: false, folderHero: false)
+        XCTAssertEqual(holdingSplit.synopsis, 0, accuracy: epsilon)
+        XCTAssertEqual(holdingSplit.logo, 2.333, accuracy: 0.01)
         let holdingSlot = slotHeight(showsCTA: false, synopsisGive: holdingSplit.synopsis)
-        XCTAssertEqual(holdingSlot, 119.667, accuracy: 0.01)
-        XCTAssertEqual(lineLimit(slotHeight: holdingSlot, lineHeight: Self.systemBodyLine), 3)
+        XCTAssertEqual(holdingSlot, 140, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: holdingSlot, lineHeight: Self.systemSynopsisLine), 4)
 
         let off = PinnedRowGeometry.plan(posterHeight: Self.large,
                                          captionVisible: false,
@@ -1151,17 +1270,18 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         XCTAssertEqual(off.compression, 32.333, accuracy: 0.01)
         let offSplit = PinnedRowGeometry.HeroSlotGive.split(compression: off.compression,
                                                             showsCTA: false, folderHero: false)
+        XCTAssertEqual(offSplit.synopsis, 0, accuracy: epsilon)
+        XCTAssertEqual(offSplit.logo, 10.333, accuracy: 0.01)
         let offSlot = slotHeight(showsCTA: false, synopsisGive: offSplit.synopsis)
-        XCTAssertEqual(offSlot, 111.667, accuracy: 0.01)
-        XCTAssertEqual(lineLimit(slotHeight: offSlot, lineHeight: Self.systemBodyLine), 3)
+        XCTAssertEqual(offSlot, 140, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: offSlot, lineHeight: Self.systemSynopsisLine), 4)
     }
 
     /// Medium+ is unaffected by the hold: it already takes the Large dial's floor with zoom on
-    /// (`testMediumPlusTakesTheLargeDialWithThreeSystemLines`), and the hold converges No Zoom to
+    /// (`testMediumPlusTakesTheLargeDialWithFourSystemLines`), and the hold converges No Zoom to
     /// EXACTLY that same floor/compression — not merely to the same line count. The panel's synopsis
-    /// stays at 3 lines under the System font (`testMediumPlusPanelKeepsThreeSynopsisLines` already
-    /// covers that compression value), so there is nothing new to cost here.
-    func testMediumPlusKeepsThreeSynopsisLinesWithTheReachHold() {
+    /// keeps its whole slot (compression 0), so there is nothing new to cost here.
+    func testMediumPlusKeepsFourSynopsisLinesWithTheReachHold() {
         let holding = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
                                              showsCTA: false, landscapeRows: false,
                                              mode: Self.noZoomHolding, titleHeight: 38)
@@ -1179,81 +1299,87 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         XCTAssertEqual(holding.regimeKey,
                        zoomOn.regimeKey.replacingOccurrences(of: "z0", with: "z1") + "h1rt4")
 
-        // Slot 144 (nothing given): at least the 3 lines it had (4 on any body line under 36.25pt —
-        // `lineLimit` has no cap, so the exact count follows the host's body metric).
+        // rc14: slot 140 (nothing given): four lines on any synopsis line under 35.25pt
+        // (`lineLimit` has no cap, so the exact count follows the host's metric — the guard test
+        // above bounds it at 33, which leaves 4 up to 5).
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: holding.compression,
                                                          showsCTA: false, folderHero: false)
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
-        XCTAssertEqual(slot, 144, accuracy: 0.01)
-        XCTAssertGreaterThanOrEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
+        XCTAssertEqual(slot, 140, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 4)
     }
 
-    // MARK: - The three tiers
+    // MARK: - The three steps (rc14 order: free slack, logo, synopsis)
 
-    /// The whole point of the rc2 change, at the tester's shape.
+    /// The whole point of the rc14 change, at the tester's Large shape.
     ///
-    ///     compression 68.33  (PinnedRowGeometry.plan, Large + Hide Labels + panel)
-    ///     tier 1  synopsis   min(68.33, heroSynopsisSlotPinnedGive 36)          = 36
-    ///     tier 2  logo       min(32.33, heroLogoSlotPinnedGive 32)              = 32
-    ///     tier 3  synopsis   max(68.33 − 36 − 32 − slack 2, 0) = 0              = 0
-    ///     ⇒ synopsis slot 144 − 36 = 108   ⇒ floor(108/36) = 3 lines
+    ///     compression 68.33  (Wave 10's own Large number — the held Large carousel's plan)
+    ///     free      min(68.33, heroPinnedFrameSlack 22)                  = 22
+    ///     logo      min(46.33, heroLogoSlotPinnedGive 34)                = 34
+    ///     synopsis  min(12.33, panel synopsis give 104)                  = 12.33
+    ///     ⇒ synopsis slot 140 − 12.33 = 127.67   ⇒ floor(128.67 / ≈30) = 4 lines
     ///
-    /// The 0.33 that tiers 1+2 do not cover is the hero frame's own `heroPinnedFrameSlack` — 2pt of
-    /// frame that holds no content — which is why tier 3 stays shut. Spending it would take the
-    /// slot to 107.67 and `floor(107.67/36)` is 2, i.e. the regression this test exists to catch.
-    func testPanelAtStevensCompressionKeepsThreeSynopsisLines() {
+    /// Pre-rc14 the synopsis was spent FIRST (36 of it) and the slot was 108 ⇒ 3 body lines; spending
+    /// the free slack and the logo first leaves the description four lines of the smaller synopsis
+    /// face.
+    func testPanelAtStevensCompressionKeepsFourSynopsisLines() {
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: 68.333,
                                                          showsCTA: false,
                                                          folderHero: false)
-        XCTAssertEqual(split.synopsis, Theme.Size.heroSynopsisSlotPinnedGive, accuracy: epsilon)
-        XCTAssertEqual(split.synopsis, 36, accuracy: epsilon)
         XCTAssertEqual(split.logo, Theme.Size.heroLogoSlotPinnedGive, accuracy: epsilon)
-        XCTAssertEqual(split.logo, 32, accuracy: epsilon)
+        XCTAssertEqual(split.logo, 34, accuracy: epsilon)
+        XCTAssertEqual(split.synopsis, 12.333, accuracy: 0.01)
 
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
-        XCTAssertEqual(slot, 108, accuracy: epsilon)
-        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
+        XCTAssertEqual(slot, 127.667, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 4)
 
-        // The logo slot lands exactly on its floor, as it did in Wave 10.
+        // The logo slot lands exactly on its floor (76; it was 78 before rc14).
         XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo,
                        Theme.Size.heroLogoSlotHeightPinnedFloor, accuracy: epsilon)
     }
 
-    /// FEAT-39: Medium+'s own compression at the tester's zoom-on panel shape
-    /// (`PinnedRowGeometryTests.testMediumPlusTakesTheLargeDialWithThreeSystemLines`, 37.952 — the
-    /// spec's hand-rounded "38" is close enough that either number lands in the SAME tier). 37.952
-    /// is comfortably inside tier 1 alone (< the 36 cap plus the logo's 32 give), so the synopsis
-    /// give is capped at exactly 36, same as Large's Stevens shape, and the slot nets to the SAME
-    /// 108pt → 3 lines under the System font, 2 under Open Sans.
-    func testMediumPlusPanelKeepsThreeSynopsisLines() {
+    /// FEAT-39: Medium+'s own compression at the tester's zoom-on carousel shape
+    /// (`PinnedRowGeometryTests.testMediumPlusTakesTheLargeDialWithFourSystemLines` is its panel
+    /// twin, which spends nothing; the unheld carousel's 37.952 is the number used here, and the
+    /// spec's hand-rounded "38" lands in the SAME step). 37.952 sits inside free slack 22 plus the
+    /// logo's 34, so the synopsis gives NOTHING: the slot stays the full 140pt ⇒ four lines under
+    /// the System synopsis face and four under Open Sans (141 / ≈34).
+    func testMediumPlusPanelKeepsFourSynopsisLines() {
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: 37.952,
                                                          showsCTA: false,
                                                          folderHero: false)
-        XCTAssertEqual(split.synopsis, Theme.Size.heroSynopsisSlotPinnedGive, accuracy: epsilon)
-        XCTAssertEqual(split.synopsis, 36, accuracy: epsilon)
+        XCTAssertEqual(split.logo, 15.952, accuracy: 0.01)
+        XCTAssertEqual(split.synopsis, 0, accuracy: epsilon)
 
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
-        XCTAssertEqual(slot, 108, accuracy: epsilon)
-        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
-        if let openSansLine = Self.openSansBodyLine() {
-            XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: openSansLine), 2)
+        XCTAssertEqual(slot, 140, accuracy: epsilon)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 4)
+        if let openSansLine = Self.openSansSynopsisLine() {
+            XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: openSansLine), 4)
         }
     }
 
-    /// rc10: the No-Zoom Large panel lands at compression 70.33 (the lift-aware floor), which the
-    /// tier-3 gate turns into a 107.67 pt slot — a whole visible line short under the OLD 36 pt
-    /// assumption, three lines under the measured system line height.
-    func testPanelAtRc10NoZoomCompressionStillHasThreeLinesUnderTheSystemFont() {
+    /// rc10's No-Zoom Large panel compression (70.33, the lift-aware floor). Under the rc14 order:
+    ///
+    ///     free 22, logo min(48.33, 34) = 34, synopsis 14.33 ⇒ slot 140 − 14.33 = 125.67
+    ///     ⇒ floor(126.67 / ≈30) = 4 lines under the system synopsis face
+    ///
+    /// (Pre-rc14 the tier-3 gate turned this into a 107.67pt slot and three body lines.)
+    func testPanelAtRc10NoZoomCompressionHasFourLinesUnderTheSystemSynopsisFont() {
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: 70.333, showsCTA: false, folderHero: false)
+        XCTAssertEqual(split.logo, 34, accuracy: epsilon)
+        XCTAssertEqual(split.synopsis, 14.333, accuracy: 0.01)
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
-        XCTAssertEqual(slot, 107.667, accuracy: 0.01)
-        // System body line height on tvOS is ~35 pt; assert the measurement, not a literal.
-        XCTAssertLessThan(Self.systemBodyLine, 36)
-        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 3)
+        XCTAssertEqual(slot, 125.667, accuracy: 0.01)
+        // The synopsis measurement, not a literal: the guard test pins its plausible range.
+        XCTAssertLessThan(Self.systemSynopsisLine, 33)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 4)
     }
 
     /// The tester's case: Open Sans body renders taller than the 36 pt the slot math assumed, so
     /// the SAME 108 pt slot holds two lines, not three. This is the measurement, not a fix.
+    /// (Historical: Home's synopsis no longer uses `body`; see the synopsis variant below.)
     func testOpenSansBodyLineIsTallerThanTheAssumedSlotLine() throws {
         guard let openSansLine = Self.openSansBodyLine() else {
             throw XCTSkip("Open Sans is not bundled in the unit-test host")
@@ -1262,35 +1388,65 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         XCTAssertEqual(lineLimit(slotHeight: 108, lineHeight: openSansLine), 2)
     }
 
-    /// Tier 3 opens only past tiers 1+2 plus the frame slack, and then it is the panel's own extra.
+    /// rc14: the same measurement for the face Home's synopsis is actually set in
+    /// (`Theme.Font.synopsis`, caption1). Open Sans's caption1 line is ≈34pt against the system's
+    /// ≈30, so the carousel's full 72pt slot (nothing given) still holds TWO lines in either face.
+    func testOpenSansSynopsisLineIsTallerThanTheSystemLine() throws {
+        guard let openSansLine = Self.openSansSynopsisLine() else {
+            throw XCTSkip("Open Sans is not bundled in the unit-test host")
+        }
+        XCTAssertGreaterThan(openSansLine, 30)
+        XCTAssertGreaterThan(openSansLine, Self.systemSynopsisLine)
+        XCTAssertEqual(lineLimit(slotHeight: 72, lineHeight: openSansLine), 2)
+    }
+
+    /// The synopsis starts to give only past the frame's free slack AND the logo's whole 34 — and
+    /// then it is the panel's own extra on top of the carousel's 36.
     ///
-    ///     compression 111.83  (Large + captions + panel)
-    ///     tier 1  36, tier 2  32, tier 3  min(111.83 − 68 − 2, 72) = 41.83
-    ///     ⇒ synopsis give 77.83, slot 144 − 77.83 = 66.17  ⇒ 1 line
+    ///     compression 111.83
+    ///     free 22, logo min(89.83, 34) = 34, synopsis min(55.83, 104) = 55.83
+    ///     ⇒ synopsis give 55.83, slot 140 − 55.83 = 84.17  ⇒ floor(85.17 / ≈30) = 2 lines
     ///
-    /// One line is what this shape produced before the reordering too (its old compression, 142,
-    /// drained the slot to 36), so nothing regresses for it — the panel simply cannot show three
-    /// lines and absorb a 43.5pt caption row at Large.
-    func testPanelPastTheSlackOpensTheThirdTier() {
+    /// (Pre-rc14 this was "the third tier": 77.83 of synopsis give, a 66.17pt slot, one body line.
+    /// There is no third tier any more — the three steps are the slack, the logo, the synopsis.)
+    func testPanelPastTheLogoFloorSpendsTheSynopsis() {
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: 111.833,
                                                          showsCTA: false,
                                                          folderHero: false)
         XCTAssertEqual(split.logo, Theme.Size.heroLogoSlotPinnedGive, accuracy: epsilon)
-        XCTAssertEqual(split.synopsis, 77.833, accuracy: 0.01)
+        XCTAssertEqual(split.synopsis, 55.833, accuracy: 0.01)
         let slot = slotHeight(showsCTA: false, synopsisGive: split.synopsis)
-        XCTAssertEqual(slot, 66.167, accuracy: 0.01)
-        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemBodyLine), 1)
+        XCTAssertEqual(slot, 84.167, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 2)
     }
 
-    /// Tier 1 alone, below the logo's turn: a small compression comes entirely out of the synopsis
-    /// in BOTH forms, exactly as it always has.
-    func testSmallCompressionsSpendOnlyTheSharedSynopsisGive() {
+    /// The frame's free slack comes first, in BOTH forms: a compression of 20 is entirely slack, so
+    /// neither elastic slot gives anything. Past it the logo takes the next 34, and only then does
+    /// the synopsis start to give.
+    ///
+    ///     c = 20   free 20                      ⇒ logo 0,  synopsis 0
+    ///     c = 40   free 22, rest 18             ⇒ logo 18, synopsis 0
+    ///     c = 60   free 22, rest 38, logo 34    ⇒ logo 34, synopsis 4
+    func testSmallCompressionsAreAbsorbedByTheFrameSlack() {
         for showsCTA in [false, true] {
-            let split = PinnedRowGeometry.HeroSlotGive.split(compression: 20,
+            let label = "showsCTA=\(showsCTA)"
+            let slack = PinnedRowGeometry.HeroSlotGive.split(compression: 20,
                                                              showsCTA: showsCTA,
                                                              folderHero: false)
-            XCTAssertEqual(split.synopsis, 20, accuracy: epsilon, "showsCTA=\(showsCTA)")
-            XCTAssertEqual(split.logo, 0, accuracy: epsilon, "showsCTA=\(showsCTA)")
+            XCTAssertEqual(slack.synopsis, 0, accuracy: epsilon, label)
+            XCTAssertEqual(slack.logo, 0, accuracy: epsilon, label)
+
+            let logoOnly = PinnedRowGeometry.HeroSlotGive.split(compression: 40,
+                                                                showsCTA: showsCTA,
+                                                                folderHero: false)
+            XCTAssertEqual(logoOnly.logo, 18, accuracy: epsilon, label)
+            XCTAssertEqual(logoOnly.synopsis, 0, accuracy: epsilon, label)
+
+            let both = PinnedRowGeometry.HeroSlotGive.split(compression: 60,
+                                                            showsCTA: showsCTA,
+                                                            folderHero: false)
+            XCTAssertEqual(both.logo, 34, accuracy: epsilon, label)
+            XCTAssertEqual(both.synopsis, 4, accuracy: epsilon, label)
         }
     }
 
@@ -1306,33 +1462,107 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         }
     }
 
+    // MARK: - rc14: the carousel's own line counts
+
+    /// The Large carousel's HELD plan (the shipping default: zoom on, reach hold on) compresses by
+    /// 68.33. rc14's order spends the 22 of free slack and the whole 34 of logo before the synopsis,
+    /// which is left with 12.33 of give:
+    ///
+    ///     free 22, logo 34, synopsis 12.33 ⇒ slot 72 − 12.33 = 59.67 ⇒ floor(60.67 / ≈30) = 2 lines
+    ///
+    /// The logo slot ends at its 76 floor. At the old 78 floor the synopsis gave 14.33, the slot was
+    /// 57.67 and the count rounded down to ONE line — Steven's "I still only get one line of
+    /// description for movies on Home". This is borderline BY DESIGN (the 1pt tolerance is what
+    /// carries it): it holds while the system synopsis line is ≤ 30.33pt, which is why the guard
+    /// test pins that metric's range.
+    func testLargeCarouselHeldGivesTwoSynopsisLines() {
+        let held = PinnedRowGeometry.plan(posterHeight: Self.large, captionVisible: false,
+                                          showsCTA: true, landscapeRows: false,
+                                          mode: Self.zoomOnHeld, titleHeight: Self.systemTitle)
+        XCTAssertEqual(held.compression, 68.333, accuracy: 0.01)
+
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: held.compression,
+                                                         showsCTA: true,
+                                                         folderHero: false)
+        XCTAssertEqual(split.logo, 34, accuracy: epsilon)
+        XCTAssertEqual(split.synopsis, 12.333, accuracy: 0.01)
+        XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo,
+                       Theme.Size.heroLogoSlotHeightPinnedFloor, accuracy: epsilon)
+        let slot = slotHeight(showsCTA: true, synopsisGive: split.synopsis)
+        XCTAssertEqual(slot, 59.667, accuracy: 0.01)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 2)
+    }
+
+    /// Medium+ carousel (held): compression 15.95 is inside the frame's 22 of free slack, so
+    /// NOTHING in the hero gives — the logo keeps its full 110pt slot and the synopsis its full
+    /// 72pt slot, which holds two lines in either face (73 / ≈30 and 73 / ≈34). Pre-rc14 the same
+    /// compression took 15.95 straight out of the synopsis (a 56.05pt slot, one line) while the logo
+    /// stayed full.
+    func testMediumPlusCarouselKeepsTheFullLogoAndTwoLines() {
+        let held = PinnedRowGeometry.plan(posterHeight: Self.mediumPlus, captionVisible: false,
+                                          showsCTA: true, landscapeRows: false,
+                                          mode: Self.zoomOnHeld, titleHeight: Self.systemTitle)
+        XCTAssertEqual(held.compression, 15.952, accuracy: 0.01)
+
+        let split = PinnedRowGeometry.HeroSlotGive.split(compression: held.compression,
+                                                         showsCTA: true,
+                                                         folderHero: false)
+        XCTAssertEqual(split.logo, 0, accuracy: epsilon)
+        XCTAssertEqual(split.synopsis, 0, accuracy: epsilon)
+        XCTAssertEqual(Theme.Size.heroLogoSlotHeightPinned - split.logo,
+                       Theme.Size.heroLogoSlotHeightPinned, accuracy: epsilon)
+        let slot = slotHeight(showsCTA: true, synopsisGive: split.synopsis)
+        XCTAssertEqual(slot, 72, accuracy: epsilon)
+        XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 2)
+        if let openSansLine = Self.openSansSynopsisLine() {
+            XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: openSansLine), 2)
+        }
+    }
+
     // MARK: - What must not have changed
 
-    /// The CAROUSEL form is bit-identical to the shipped two-step split at every compression it can
-    /// be handed: its tier-3 ceiling is `72 − 36 − 36 == 0`, so the third tier can never open.
-    func testCarouselSplitIsUnchangedAcrossItsWholeRange() {
+    /// The CAROUSEL split follows the rc14 order at every compression it can be handed — the free
+    /// slack, then the logo, then the synopsis — and never gives more than its 70 of content (the
+    /// 92 cap minus the 22 that is slack), so nothing hard-clips past the cap. The sweep runs to
+    /// `elasticGive + 0.5` to cover the clamp; a handful of literal anchors pin the formula down
+    /// independently of the inlined one.
+    func testCarouselSplitFollowsTheRc14Order() {
         var c: CGFloat = 0
         while c <= PinnedRowGeometry.elasticGive(showsCTA: true) + 0.5 {
             let split = PinnedRowGeometry.HeroSlotGive.split(compression: c,
                                                              showsCTA: true,
                                                              folderHero: false)
-            // The pre-rc2 formula, inlined.
-            let legacySynopsis = c > 0
-                ? min(c, Theme.Size.heroSynopsisSlotHeightPinned - Theme.Size.heroSynopsisSlotHeightPinnedFloor)
-                : 0
-            let legacyLogo = c > 0
-                ? min(max(c - legacySynopsis, 0), Theme.Size.heroLogoSlotPinnedGive)
-                : 0
-            XCTAssertEqual(split.synopsis, legacySynopsis, accuracy: epsilon, "compression=\(c)")
-            XCTAssertEqual(split.logo, legacyLogo, accuracy: epsilon, "compression=\(c)")
+            // The rc14 formula, inlined.
+            let free = min(c, Theme.Size.heroPinnedFrameSlack)
+            let rest = max(c - free, 0)
+            let expectedLogo = min(rest, Theme.Size.heroLogoSlotPinnedGive)
+            let expectedSynopsis = min(max(rest - expectedLogo, 0),
+                                       Theme.Size.heroSynopsisSlotHeightPinned
+                                           - Theme.Size.heroSynopsisSlotHeightPinnedFloor)
+            XCTAssertEqual(split.synopsis, expectedSynopsis, accuracy: epsilon, "compression=\(c)")
+            XCTAssertEqual(split.logo, expectedLogo, accuracy: epsilon, "compression=\(c)")
+            // Content never gives more than the cap minus the frame's slack.
+            XCTAssertLessThanOrEqual(split.total, 70 + epsilon, "compression=\(c)")
             c += 0.25
+        }
+
+        // Literal anchors (22 free · 34 logo · 36 synopsis).
+        let anchors: [(c: CGFloat, logo: CGFloat, synopsis: CGFloat)] = [
+            (0, 0, 0), (15.952, 0, 0), (22, 0, 0), (40, 18, 0), (56, 34, 0),
+            (56.5, 34, 0.5), (68.333, 34, 12.333), (92, 34, 36),
+        ]
+        for (c, logo, synopsis) in anchors {
+            let split = PinnedRowGeometry.HeroSlotGive.split(compression: c, showsCTA: true, folderHero: false)
+            XCTAssertEqual(split.logo, logo, accuracy: 0.01, "compression=\(c)")
+            XCTAssertEqual(split.synopsis, synopsis, accuracy: 0.01, "compression=\(c)")
         }
     }
 
     /// FEAT-29's collection-folder rule is untouched: the whole synopsis slot is give (a folder
     /// preview carries no description, so the slot has a genuine 0 floor) and the logo takes an
     /// unbounded remainder. At Large + panel that is synopsis 68.33, logo 0 — the wordmark keeps
-    /// its full 110pt slot, which is the regression FEAT-29 closed.
+    /// its full 110pt slot, which is the regression FEAT-29 closed. (The sweep runs to the form's
+    /// `elasticGive`, which rc14 grew to 92 / 160.)
     func testFolderHeroSplitIsUnchanged() {
         for showsCTA in [false, true] {
             let slot = showsCTA ? Theme.Size.heroSynopsisSlotHeightPinned
@@ -1355,10 +1585,12 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
     // MARK: - Invariants
 
     /// Nothing hard-clips. The hero's FRAME shrinks by `compression`; its CONTENT shrinks by
-    /// `split.total`, and the frame carries `heroPinnedFrameSlack` (2pt) that holds no content — so
-    /// the content must give up at least `compression − slack` everywhere up to that form's cap, or
-    /// the slots overflow into the rows below. This is the property
-    /// `Theme.Size.heroPinnedCompressionCap` exists to protect.
+    /// `split.total`, and the frame carries `heroPinnedFrameSlack` (22 since rc14's chrome shave;
+    /// 2 before) that holds no content — so the content must give up at least `compression −
+    /// slack` everywhere up to that form's cap, or the slots overflow into the rows below. This is
+    /// the property `Theme.Size.heroPinnedCompressionCap` exists to protect. Under the rc14 order
+    /// the free slack is spent first, so a title hero's total is exactly `max(c − slack, 0)` up to
+    /// the cap; a folder hero gives all of `c`.
     func testContentGiveAlwaysCoversTheFrameShrinkMinusItsSlack() {
         for showsCTA in [false, true] {
             for folder in [false, true] {
@@ -1377,8 +1609,8 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
     }
 
     /// Both slot floors hold for a TITLE hero at every compression up to the cap: the logo never
-    /// goes below `heroLogoSlotHeightPinnedFloor` (78) and the synopsis never below
-    /// `heroSynopsisSlotHeightPinnedFloor` (36), which is one readable line.
+    /// goes below `heroLogoSlotHeightPinnedFloor` (76 since rc14; 78 before) and the synopsis never
+    /// below `heroSynopsisSlotHeightPinnedFloor` (36), which is one readable line.
     func testTitleHeroSlotFloorsHold() {
         for showsCTA in [false, true] {
             var c: CGFloat = 0
@@ -1432,14 +1664,17 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
 ///
 /// Arithmetic (Large 403.333, Hide Titles, system title 38, demand = artwork − 291 = 112.333):
 ///
-///     carousel unheld  top 88→86 (−2) ⇒ 90.333; hero 70; link 513.333, restRange 11.667
+///     carousel unheld  top 88→86 (−2) ⇒ 90.333; hero 90.333 (rc14: the 92 cap no longer binds —
+///                      it was 70 before, with link 513.333, restRange 11.667); viewport 545.333,
+///                      link 513.333, restRange 32
 ///
 /// Plus the 2026-09-30 rest target: a HELD regime's demand reserves `heroPinnedRowsRestTarget` (4)
 /// in place of `Spacing.lg + settledCushion` (32), i.e. demand = artwork − 319 at Hide Titles:
 ///
-///     Large carousel held  84.333 ⇒ −20 ⇒ 64.333 ⇒ +4 ⇒ 68.333 (under the 70 cap)
+///     Large carousel held  84.333 ⇒ −20 ⇒ 64.333 ⇒ +4 ⇒ 68.333 (under the 92 cap)
 ///                          viewport 523.333, link 92 + 403.333 + 24 = 519.333, restRange 4
-///     Large panel held     68.333 as well ⇒ tiers 36 + 32, slack 0.333, slot 108, 3 lines
+///     Large panel held     30.333 on the panel's 493 budget ⇒ free slack 22, logo 8.333, no
+///                          synopsis give, slot 140, 4 lines (rc14)
 ///     Medium+ carousel     31.952 ⇒ 11.952 ⇒ 15.952; viewport 470.952, link 466.952, restRange 4
 final class PinnedRowZoomReachHoldTests: XCTestCase {
 
@@ -1463,7 +1698,9 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
 
     private static let systemTitle = PinnedRowGeometry.measuredTitleHeight   // 38
     private static let openSansTitle: CGFloat = 42.2
-    private static let systemBodyLine = UIFont.preferredFont(forTextStyle: .body).lineHeight
+    /// rc14: the synopsis's text style (`Theme.Font.synopsis`, caption1), ≈30pt — replaces the body
+    /// line the line-count assertion in this class used before Home's synopsis moved off `body`.
+    private static let systemSynopsisLine = UIFont.preferredFont(forTextStyle: .caption1).lineHeight
 
     private func plan(_ height: CGFloat, cta: Bool, mode: PinnedRowTitle.FocusModeFlags,
                       title: CGFloat = PinnedRowGeometry.measuredTitleHeight) -> PinnedRowGeometry.Plan {
@@ -1494,13 +1731,19 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         XCTAssertEqual(held.regimeKey, "L403c0p0r0z0t38hzrt4")
     }
 
+    /// Hold off keeps the pre-hold reach floors (top 86, link frame 513.333). rc14 (Steven rc13
+    /// verdict, 2026-09-30): the carousel's give grew 70 → 92, so the 90.33 leftover this regime
+    /// demands is no longer clipped to 70 — compression 90.333 (was 70), viewport 545.333, and the
+    /// restRange is the full construction, 32 (was 11.667 against the clipped viewport).
     func testHoldOffIsTodaysPlan() {
         let off = plan(Self.large, cta: true, mode: Self.zoomOn)
         XCTAssertTrue(off.fits)
         XCTAssertEqual(off.topReach, 86, accuracy: epsilon)
-        XCTAssertEqual(off.compression, 70, accuracy: epsilon)
+        XCTAssertEqual(off.compression, 90.333, accuracy: 0.01)
+        XCTAssertLessThan(off.compression, PinnedRowGeometry.elasticGive(showsCTA: true))
+        XCTAssertEqual(off.viewport, 545.333, accuracy: 0.01)
         XCTAssertEqual(off.linkFrame, 513.333, accuracy: 0.01)
-        XCTAssertEqual(off.restRange, 11.667, accuracy: 0.01)
+        XCTAssertEqual(off.restRange, 32, accuracy: 0.01)
         XCTAssertEqual(off.regimeKey, "L403c0p0r0z0t38")
         // Explicit `zoomReachHold: false` is the memberwise default.
         XCTAssertEqual(off, plan(Self.large, cta: true,
@@ -1541,9 +1784,14 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
 
     /// 2026-09-30 (walkhf): the panel's budget is 493, so demand = 88 + 403.333 + 44 + 4 − 493 =
     /// 46.333; − 20 bottom, + 4 top ⇒ 30.333; viewport 523.333, link 519.333, restRange 4.
-    func testLargePanelKeepsThreeSynopsisLinesWithTheHold() {
-        XCTAssertGreaterThan(Self.systemBodyLine, 30)
-        XCTAssertLessThan(Self.systemBodyLine, 36)
+    ///
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the 30.33 now sits entirely inside the frame's 22 of
+    /// free slack plus 8.33 of logo — the synopsis gives nothing and keeps its whole 140 slot, four
+    /// lines of `Theme.Font.synopsis` (it was 30.33 of synopsis give, a 113.67 slot, three body
+    /// lines).
+    func testLargePanelKeepsFourSynopsisLinesWithTheHold() {
+        XCTAssertGreaterThan(Self.systemSynopsisLine, 26)
+        XCTAssertLessThan(Self.systemSynopsisLine, 33)
         let held = plan(Self.large, cta: false, mode: Self.zoomOnHeld)
         XCTAssertTrue(held.fits)
         XCTAssertEqual(held.topReach, 92, accuracy: epsilon)
@@ -1553,14 +1801,14 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         XCTAssertEqual(held.restRange, 4, accuracy: 0.01)
         let split = PinnedRowGeometry.HeroSlotGive.split(compression: held.compression,
                                                          showsCTA: false, folderHero: false)
-        // All of it inside tier 1 (≤ 36): the synopsis gives 30.333, the logo nothing.
-        XCTAssertEqual(split.synopsis, 30.333, accuracy: 0.01)
-        XCTAssertEqual(split.logo, 0, accuracy: 0.01)
+        // rc14: free slack 22 first, then 8.333 of logo; the synopsis gives nothing.
+        XCTAssertEqual(split.logo, 8.333, accuracy: 0.01)
+        XCTAssertEqual(split.synopsis, 0, accuracy: 0.01)
         let slot = Theme.Size.heroSynopsisSlotHeightPinnedPanel - split.synopsis
-        XCTAssertEqual(slot, 113.667, accuracy: 0.01)
+        XCTAssertEqual(slot, 140, accuracy: 0.01)
         // Mirror of `HomeHeroForeground.synopsisLineLimit` (1pt tolerance), as in the slot-give suite.
-        let lines = max(1, Int(((slot + 1) / Self.systemBodyLine).rounded(.down)))
-        XCTAssertEqual(lines, 3)
+        let lines = max(1, Int(((slot + 1) / Self.systemSynopsisLine).rounded(.down)))
+        XCTAssertEqual(lines, 4)
     }
 
     /// 2026-09-30 (walkhf): the panel (Show Hero OFF) has no page-dots row, so its rows viewport
@@ -1599,10 +1847,14 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
     }
 
     /// Carousel regimes do not move with the budget change (their budget is still 455).
+    ///
+    /// rc14: the third line is the unheld zoom-on Large carousel, whose compression is the leftover
+    /// demand — zoom-on floor 86: 112.333 − 20 − 2 = 90.333 — and was clipped to the old 70 cap
+    /// before the carousel's give grew to 92. The two held regimes were never near a cap.
     func testCarouselRegimesAreUnchangedByThePanelBudget() {
         XCTAssertEqual(plan(Self.large, cta: true, mode: Self.zoomOnHeld).compression, 68.333, accuracy: 0.01)
         XCTAssertEqual(plan(Self.mediumPlus, cta: true, mode: Self.zoomOnHeld).compression, 15.952, accuracy: 0.01)
-        XCTAssertEqual(plan(Self.large, cta: true, mode: Self.zoomOn).compression, 70, accuracy: 0.01)
+        XCTAssertEqual(plan(Self.large, cta: true, mode: Self.zoomOn).compression, 90.333, accuracy: 0.01)
     }
 
     /// The 2026-09-30 Medium+ failure: with only the reach hold the plan paid the full 32 of slack

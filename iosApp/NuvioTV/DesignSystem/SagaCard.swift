@@ -39,6 +39,12 @@ struct SagaCard: View {
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
     /// BUG-36: opt-in "No Zoom on Focus" — see `LandscapeCard`'s copy of this property.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// rc14 FEAT-46 (Steven rc13 verdict, 2026-09-30): poster-coloured focus ring, default OFF —
+    /// see `PosterCard`'s copy of these properties for the full rationale (same key, same
+    /// once-per-focus-gain resolution through `ArtworkColorStore`, same peek in `posterTint`).
+    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    @State private var posterRingTint: Color?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Where the async-resolved TMDB logo lookups live — a process-wide singleton keyed by item
     /// id/type, so scrolling this row off-screen and back never re-fetches a part's logo.
@@ -72,6 +78,20 @@ struct SagaCard: View {
         let banner: String? = item.banner
         if let banner, !banner.isEmpty { return nil }
         return item.rawPosterUrl
+    }
+
+    /// rc14 FEAT-46 — see `PosterCard`'s copies of these three. The sources are the backdrop art
+    /// the card draws (`artworkURL`, then its fallback), not the title logo composited over it:
+    /// the ring frames the picture.
+    private var samplesPosterColor: Bool {
+        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+    }
+
+    private var ringTintSources: [String?] { [SagaCardArt.artworkURL(for: item), sagaFallbackURL] }
+
+    private var posterTint: Color? {
+        guard samplesPosterColor, isFocused else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: ringTintSources) ?? posterRingTint
     }
 
     var body: some View {
@@ -122,11 +142,11 @@ struct SagaCard: View {
             .frame(width: width, height: height)
             // FEAT-14 (final) — see `LandscapeCard`'s copy of this overlay for the full
             // rationale: the ring is drawn on the artwork/overlay group and rides whatever the
-            // whole-card focus treatment does.
+            // whole-card focus treatment does. rc14 FEAT-46: `posterTint` as in PosterCard.
             .overlay {
                 if accentFocusRing && isFocused {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
-                        .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
+                        .strokeBorder(posterTint ?? Theme.Palette.focusRingColor, lineWidth: ringWidth)
                 }
             }
             .modifier(CardArtworkFocusLift(
@@ -163,8 +183,17 @@ struct SagaCard: View {
             mode: focusMode,
             isFocused: isFocused,
             artworkHeight: height,
-            cornerRadius: style.cornerRadius
+            cornerRadius: style.cornerRadius,
+            tint: posterTint   // rc14 FEAT-46
         ))
+        // rc14 FEAT-46: focus-gain-only resolution — see `PosterCard`'s copy.
+        .onChange(of: isFocused, initial: true) { _, focused in
+            guard focused, samplesPosterColor else { return }
+            ArtworkColorStore.shared.color(for: ringTintSources) { color in
+                guard posterRingTint != color else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
+            }
+        }
         .zIndex(focusMode.raisesFocusedCard && isFocused ? 1 : 0)
         // Kick off the TMDB logo lookup at most once per item id/type — `TitleLogoStore` itself
         // guards re-entrancy and remembers "looked, found nothing" so re-appearing (LazyHStack

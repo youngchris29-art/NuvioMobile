@@ -69,7 +69,10 @@ final class AppFontResolverTests: XCTestCase {
         XCTAssertEqual(Theme.Font.sectionTitle, SwiftUI.Font.callout.weight(.semibold))
         XCTAssertEqual(Theme.Font.cardTitle, SwiftUI.Font.caption2)
         XCTAssertEqual(Theme.Font.body, SwiftUI.Font.body)
-        XCTAssertEqual(Theme.Font.meta, SwiftUI.Font.caption.weight(.semibold))
+        // rc14 (Steven rc13 verdict, 2026-09-30): `meta` is `.medium` now, in both families.
+        XCTAssertEqual(Theme.Font.meta, SwiftUI.Font.caption.weight(.medium))
+        XCTAssertEqual(Theme.Font.synopsis, SwiftUI.Font.caption)
+        XCTAssertEqual(Theme.Font.detail, SwiftUI.Font.caption)
         XCTAssertEqual(Theme.Font.caption, SwiftUI.Font.caption2)
     }
 

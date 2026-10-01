@@ -10,6 +10,10 @@ struct EpisodesSection: View {
     let meta: MetaDetails
     /// IMDb ratings keyed "season:episode" (from `DetailViewModel.episodeRatings`); empty = no badges.
     var episodeRatings: [String: Double] = [:]
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the Settings → Poster Style "Episode Ratings" choice
+    /// (from `DetailViewModel.episodeRatingsVisibility`). `hideEpisodes` drops every badge;
+    /// `hideUnwatchedEpisodes` keeps only watched episodes' badges.
+    var episodeRatingsVisibility: EpisodeRatingsVisibility = .showAll
     /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`).
     var watchedEpisodeKeys: Set<String> = []
 
@@ -261,6 +265,8 @@ struct EpisodesSection: View {
     }
 
     private func rating(for episode: MetaVideo) -> Double? {
+        // rc14 (Steven rc13 verdict, 2026-09-30): honour the episode-ratings visibility setting.
+        guard episodeRatingsVisibility.showRating(isWatched: isWatched(episode)) else { return nil }
         guard let s = episode.season?.value, let e = episode.episode?.value else { return episode.rating?.doubleValue }
         return episodeRatings["\(s):\(e)"] ?? episode.rating?.doubleValue
     }

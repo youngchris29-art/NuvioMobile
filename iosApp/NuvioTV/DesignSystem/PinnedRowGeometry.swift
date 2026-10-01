@@ -181,6 +181,20 @@ enum PinnedRowGeometry {
         return max(plan.linkFrame, plan.viewport - Theme.Spacing.lg)
     }
 
+    /// rc14 (BUG-122): how much negative bottom padding a SHORT pinned row (Continue Watching,
+    /// Upcoming, a collection row) applies to cancel the layout growth `rowCardLinkFrameFloor`
+    /// causes, so only the focusable frame grows and the visible spacing to the next row does not.
+    /// `naturalLabel` is the row's own tallest label — topReach + artwork + caption + bottomReach.
+    /// 0 for the LAST row: its growth is accounted for by Home's bottom inset
+    /// (`HomeView.pinnedLastRowHeight`), exactly as rc11 shipped it. 0 when the floor is inactive
+    /// or the label already fills it (a uniform poster row).
+    nonisolated static func shortRowLayoutCompensation(floor: CGFloat,
+                                                       naturalLabel: CGFloat,
+                                                       isLastRow: Bool) -> CGFloat {
+        guard !isLastRow, floor > 0 else { return 0 }
+        return max(floor - naturalLabel, 0)
+    }
+
     /// How much transparent bottom padding `lastRowLinkFrameFloor` adds to a label whose natural
     /// height is `labelFrame` (= topReach + artwork + captionChrome + bottomReach for that CARD).
     /// Reporting/verification only — the layout applies the floor as a `minHeight`, which needs no
@@ -401,17 +415,26 @@ enum PinnedRowGeometry {
                 return Split(synopsis: synopsis, logo: max(compression - synopsis, 0))
             }
 
-            // Tier 1 — the synopsis give both hero forms have.
-            let firstSynopsis = min(compression, Theme.Size.heroSynopsisSlotPinnedGive)
-            // Tier 2 — the logo, down to its floor.
-            let logo = min(max(compression - firstSynopsis, 0), Theme.Size.heroLogoSlotPinnedGive)
-            // Tier 3 — the CTA slot the panel absorbed, past the frame's own slack. 0 for the
-            // carousel, whose synopsis give IS its whole give above the floor.
-            let panelExtra = max(slot
-                                 - Theme.Size.heroSynopsisSlotHeightPinnedFloor
-                                 - Theme.Size.heroSynopsisSlotPinnedGive, 0)
-            let beyond = max(compression - firstSynopsis - logo - Theme.Size.heroPinnedFrameSlack, 0)
-            return Split(synopsis: firstSynopsis + min(beyond, panelExtra), logo: logo)
+            // rc14 (Steven rc13 verdict, 2026-09-30): three tiers in a NEW order, for both forms.
+            //
+            //  0. The frame's own slack (`heroPinnedFrameSlack`, 22 since the chrome shave) — free,
+            //     no content gives anything.
+            //  1. The logo, down to its floor (`heroLogoSlotPinnedGive`, 34).
+            //  2. The synopsis, down to its one-line floor (36): 36 of give in the carousel, 104 in
+            //     the panel.
+            //
+            // The old order spent the synopsis first, so at Medium+ (compression ≈16) the hero lost
+            // half a description line while its logo stayed at full height, and at Large (68.33)
+            // the synopsis was at its one-line floor before the logo had given anything — the
+            // tester's "I still only get one line of description for movies on Home". Spending the
+            // free slack and the logo first keeps two `Theme.Font.synopsis` lines at Medium+ with a
+            // full-height logo, two at Large (logo 76), and four in both panels.
+            let free = min(compression, Theme.Size.heroPinnedFrameSlack)
+            let rest = max(compression - free, 0)
+            let logo = min(rest, Theme.Size.heroLogoSlotPinnedGive)
+            let synopsis = min(max(rest - logo, 0),
+                               slot - Theme.Size.heroSynopsisSlotHeightPinnedFloor)
+            return Split(synopsis: synopsis, logo: logo)
         }
     }
 

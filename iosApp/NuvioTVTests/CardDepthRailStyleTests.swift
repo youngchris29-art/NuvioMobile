@@ -27,6 +27,11 @@ import XCTest
 ///   alpha step on a 1pt hairline, and Balanced/Bold shared the identical 2pt width everywhere. The
 ///   functions below give every preset (Off/Subtle/Balanced/Bold) its own width, top-stop alpha and
 ///   halo at every coverage.
+/// - BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): "a thick border appears on the poster, in
+///   addition to the border already around the poster." The halo is removed (`railHaloSpread` is 0
+///   at every strength), Bold's top stop drops 0.90 → 0.80, and a focused card draws no rail at all
+///   (`CardDepthModifier`/`CardDepthOverlay.railSuppressed` — view-level, covered by the UI
+///   harness, not by this pure-function file).
 final class CardDepthRailStyleTests: XCTestCase {
 
     // MARK: - railWidth(edgeStrength:) bands
@@ -62,18 +67,28 @@ final class CardDepthRailStyleTests: XCTestCase {
         XCTAssertEqual(CardDepthStyle.railTopAlpha(edge: 0), 0, accuracy: 0.0001)
         XCTAssertEqual(CardDepthStyle.railTopAlpha(edge: 0.28), 0.35, accuracy: 0.0001)
         XCTAssertEqual(CardDepthStyle.railTopAlpha(edge: 0.42), 0.60, accuracy: 0.0001)
-        XCTAssertEqual(CardDepthStyle.railTopAlpha(edge: 0.56), 0.90, accuracy: 0.0001)
+        XCTAssertEqual(CardDepthStyle.railTopAlpha(edge: 0.56), 0.80, accuracy: 0.0001)
         XCTAssertEqual(CardDepthStyle.railTopAlpha(edge: 1.0), 0.95, accuracy: 0.0001)
     }
 
+    /// BUG-110 (rc14): Bold (edge strength 56) renders its top stop at 0.80, down from 0.90 — the
+    /// 3pt rail at 0.90 white read as a hard outline on a real TV. Subtle/Balanced anchors are
+    /// untouched (see `testAlphaAnchors`). `railTopAlpha` takes the 0…1 unit value, so strength 56 is
+    /// passed as 0.56.
+    func testBoldTopAlphaIsEightyPercent() {
+        XCTAssertEqual(CardDepthStyle.railTopAlpha(edge: Double(56) / 100), 0.80, accuracy: 0.001)
+    }
+
     /// Same regression as the width test, in the alpha channel: each preset step must be visibly
-    /// distinct — at least a quarter of the opacity range apart.
-    func testAdjacentPresetAlphaStepsAreAtLeastAQuarter() {
+    /// distinct — at least a fifth of the opacity range apart. (rc14: this was "a quarter" while Bold
+    /// sat at 0.90; lowering Bold to 0.80 narrows the Balanced→Bold step to exactly 0.20, still
+    /// distinct from the 0.25 Subtle→Balanced step and backed by Bold's 1pt-wider rail.)
+    func testAdjacentPresetAlphaStepsAreAtLeastAFifth() {
         let subtle = CardDepthStyle.railTopAlpha(edge: 0.28)
         let balanced = CardDepthStyle.railTopAlpha(edge: 0.42)
         let bold = CardDepthStyle.railTopAlpha(edge: 0.56)
-        XCTAssertGreaterThanOrEqual(balanced - subtle, 0.25)
-        XCTAssertGreaterThanOrEqual(bold - balanced, 0.25)
+        XCTAssertGreaterThanOrEqual(balanced - subtle, 0.25 - 1e-9)
+        XCTAssertGreaterThanOrEqual(bold - balanced, 0.20 - 1e-9)
     }
 
     func testAlphaIsMonotonicAndCapped() {
@@ -138,18 +153,30 @@ final class CardDepthRailStyleTests: XCTestCase {
         XCTAssertEqual(CardDepthStyle.railHaloSpread(edgeStrength: 28), 0)
     }
 
-    func testHaloWidthAtBalancedAndBold() {
-        // width + 2×spread is the halo stroke's own lineWidth (see `edgeHighlight`): 2+2×3=8 at
-        // Balanced, 3+2×5=13 at Bold - the BUG-110 preset table.
-        let balancedWidth = CardDepthStyle.railWidth(edgeStrength: 42) + 2 * CardDepthStyle.railHaloSpread(edgeStrength: 42)
-        let boldWidth = CardDepthStyle.railWidth(edgeStrength: 56) + 2 * CardDepthStyle.railHaloSpread(edgeStrength: 56)
-        XCTAssertEqual(balancedWidth, 8)
-        XCTAssertEqual(boldWidth, 13)
+    /// BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): the halo is removed outright — every preset
+    /// (Subtle 28 / Balanced 42 / Bold 56) now has a zero spread, so `edgeHighlight`'s
+    /// `haloSpread > 0` stroke never draws. (Balanced/Bold were 3pt/5pt through rc13.)
+    func testHaloSpreadIsZeroAtEveryPreset() {
+        XCTAssertEqual(CardDepthStyle.railHaloSpread(edgeStrength: 28), 0)
+        XCTAssertEqual(CardDepthStyle.railHaloSpread(edgeStrength: 42), 0)
+        XCTAssertEqual(CardDepthStyle.railHaloSpread(edgeStrength: 56), 0)
     }
 
+    func testHaloWidthCollapsesToTheCrispRailAtBalancedAndBold() {
+        // width + 2×spread is the halo stroke's own lineWidth (see `edgeHighlight`); with the halo
+        // gone (rc14) it equals the crisp rail's own width: 2 at Balanced, 3 at Bold. Through rc13
+        // this read 2+2×3=8 and 3+2×5=13.
+        let balancedWidth = CardDepthStyle.railWidth(edgeStrength: 42) + 2 * CardDepthStyle.railHaloSpread(edgeStrength: 42)
+        let boldWidth = CardDepthStyle.railWidth(edgeStrength: 56) + 2 * CardDepthStyle.railHaloSpread(edgeStrength: 56)
+        XCTAssertEqual(balancedWidth, 2)
+        XCTAssertEqual(boldWidth, 3)
+    }
+
+    /// The alpha function is unchanged (18% of the top stop) but inert since rc14 — Bold's number
+    /// follows the lowered 0.80 top stop (0.144, was 0.162).
     func testHaloAlphaIsEighteenPercentOfTopAlpha() {
         XCTAssertEqual(CardDepthStyle.railHaloAlpha(edge: 0.42), 0.108, accuracy: 0.0005)
-        XCTAssertEqual(CardDepthStyle.railHaloAlpha(edge: 0.56), 0.162, accuracy: 0.0005)
+        XCTAssertEqual(CardDepthStyle.railHaloAlpha(edge: 0.56), 0.144, accuracy: 0.0005)
     }
 
     // MARK: - effectiveEdgeStrength(_:artworkPresent:) — BUG-110 (rc13) placeholder clamp

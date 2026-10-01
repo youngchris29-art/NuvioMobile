@@ -40,6 +40,8 @@ struct AboutSettingsPane: View {
     /// relaunch — `HomeView`'s `@AppStorage` and `PinnedRowTitleTracking`'s both react immediately,
     /// same as the two Appearance focus flags they sit beside.
     @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
+    /// rc14 (BUG-122): the short-row floor A/B — see `HomeView.pinnedShortRowLinkFrameFloor`.
+    @AppStorage("debug.pinnedShortRowFloor") private var pinnedShortRowFloor = true
 
     /// BUG-118 (rc13): Steven's "row edge fade is intermittent" — see `RowEdgeEffectStyleModifier`
     /// for the root cause (there is no app-drawn fade; it's tvOS 26's system scroll-edge effect,
@@ -604,6 +606,17 @@ struct AboutSettingsPane: View {
                             default: return String(localized: "System")
                             }
                         }
+                    )
+
+                    // rc14 (BUG-122): the short-row floor A/B. ON floors Continue Watching,
+                    // Upcoming and collection rows to the plan's frame so the engine parks them
+                    // like poster rows (no pull-up jump at the top of Home); OFF is rc13's
+                    // behaviour. Here for the device pass: if Up/Down around those rows ever
+                    // misbehaves on hardware, flip it off and report.
+                    SettingsToggleRow(
+                        title: String(localized: "Short Row Floor (A/B)"),
+                        subtitle: String(localized: "BUG-122: Continue Watching, Upcoming and collection rows land like poster rows"),
+                        isOn: $pinnedShortRowFloor
                     )
                 }
             }

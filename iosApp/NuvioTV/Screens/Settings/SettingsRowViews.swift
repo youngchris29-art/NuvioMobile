@@ -29,13 +29,19 @@ import SharedCore
 /// The three type-scale tokens the kit uses, named by role so a future scale change is one edit.
 /// All three resolve to `Theme.Font` semantic tokens — no `Font.system(size:)` anywhere (HIG
 /// hybrid contract, Typography row).
+///
+/// rc14 (Steven rc13 verdict, 2026-09-30): these are computed (`static var`), not `static let`.
+/// A `static let` captured the resolved `SwiftUI.Font` once, so switching the typeface in
+/// Appearance never reached Settings until a relaunch. `Theme.Font` tokens resolve the current
+/// family on every read, so each row now picks up a switch immediately.
 enum SettingsRowFont {
     /// Row titles — Body 29.
-    static let title = Theme.Font.body
-    /// Row subtitles / trailing values — Caption1 25.
-    static let subtitle = Theme.Font.meta
+    static var title: SwiftUI.Font { Theme.Font.body }
+    /// Row subtitles / trailing values — Caption1 25, regular weight (tester: Settings text "still
+    /// feels too heavy"; `Theme.Font.meta` is medium weight, `Theme.Font.detail` is regular).
+    static var subtitle: SwiftUI.Font { Theme.Font.detail }
     /// Section headers and footers — Caption2 23.
-    static let sectionHeader = Theme.Font.caption
+    static var sectionHeader: SwiftUI.Font { Theme.Font.caption }
 }
 
 // MARK: - Accent

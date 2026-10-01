@@ -20,8 +20,19 @@ struct UpcomingRow: View {
     @Environment(\.rowCardTopReach) private var cardTopReach
     @Environment(\.rowCardBottomReach) private var cardBottomReach
     /// BUG-87/89 (rc11): see `EnvironmentValues.rowCardLinkFrameFloor`. 0 for every row but Home's
-    /// last.
+    /// last — and, since rc14 (BUG-122), this row too (a short landscape-card row).
     @Environment(\.rowCardLinkFrameFloor) private var cardLinkFrameFloor
+    @Environment(\.pinnedRowIsLast) private var isLastRow
+    @Environment(\.posterStyle) private var posterStyle
+
+    /// rc14 (BUG-122): see `ContinueWatchingRow.shortRowCompensation` — structural twin.
+    private var shortRowCompensation: CGFloat {
+        let caption = posterStyle.showTitle ? PinnedRowTitle.cardLockupCaptionChrome : 0
+        let natural = cardTopReach + Theme.Size.landscapeHeight + caption + cardBottomReach
+        return PinnedRowGeometry.shortRowLayoutCompensation(floor: cardLinkFrameFloor,
+                                                            naturalLabel: natural,
+                                                            isLastRow: isLastRow)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -89,6 +100,9 @@ struct UpcomingRow: View {
             .rowEdgeEffectStyle()
         }
         .focusSection()
+        // rc14 (BUG-122): see `ContinueWatchingRow` — cancels the floor's layout growth, after the
+        // focus section so every focusable frame stays inside it.
+        .padding(.bottom, -shortRowCompensation)
         // Settle re-reveal (2026-08-30) — one line, same as every other pinned row; see
         // `pinnedRowSettleTracking` in BrowseComponents for the mechanism and its guarantees.
         .pinnedRowSettleTracking(rowKey: "upcoming", isFocused: focusedKey != nil)

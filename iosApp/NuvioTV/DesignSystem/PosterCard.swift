@@ -579,6 +579,13 @@ struct CardFocusTreatment: ViewModifier {
     /// `CardArtworkShape`, so pass the same value the artwork's `.frame(height:)` uses.
     let artworkHeight: CGFloat
     let cornerRadius: CGFloat
+    /// rc14 FEAT-46 (Steven rc13 verdict, 2026-09-30): the focused card's poster colour
+    /// (`ArtworkColorStore`) when "focus ring takes the poster's colour" is on, replacing still
+    /// mode's neutral `stillHighlight` border the same way it replaces the accent ring. nil — the
+    /// default, and every state with the setting off — keeps `stillHighlight`. Appended last as a
+    /// defaulted `var` so every existing memberwise call site compiles unchanged (the `rise`
+    /// precedent on `CardArtworkFocusLift`).
+    var tint: Color? = nil
 
     private var artworkShape: CardArtworkShape {
         CardArtworkShape(artworkHeight: artworkHeight, cornerRadius: cornerRadius)
@@ -619,7 +626,7 @@ struct CardFocusTreatment: ViewModifier {
                 }
                 .overlay {
                     if isFocused && !ringed {
-                        artworkShape.strokeBorder(stillHighlight, lineWidth: ringWidth)
+                        artworkShape.strokeBorder(tint ?? stillHighlight, lineWidth: ringWidth)
                     }
                 }
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isFocused)
@@ -879,12 +886,43 @@ struct PosterCard: View {
     /// UserDefaults key) as `AppearanceSettingsPane`'s toggle, so every card site inherits it
     /// without a prop-drilling pass. OFF resolves to the same two treatments as before.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// rc14 FEAT-46 (Steven rc13 verdict, 2026-09-30: "make the poster border dynamic, so that it
+    /// adapts to the dominant color of each poster"): opt-in, default OFF, same independent read
+    /// as the two keys above (Appearance owns the toggle). With it on, the focused card's ring —
+    /// accent or No Zoom's still ring — wears the poster's own colour from `ArtworkColorStore`.
+    /// OFF: `posterTint` is nil, so every ring keeps exactly the colour it drew before.
+    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    /// rc14 FEAT-46: the last colour `ArtworkColorStore` answered for this card. Written at most
+    /// once per focus GAIN (the `.onChange` just above the `zIndex` in `body`), never per frame or
+    /// per image load; it is the re-render trigger for a colour sampled after focus landed, and
+    /// the fallback if the store has since evicted the entry.
+    @State private var posterRingTint: Color?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var resolvedWidth: CGFloat { width ?? style.width }
     private var resolvedHeight: CGFloat { height ?? style.height }
     private var titleVisible: Bool { showTitle ?? style.showTitle }
     private var focusMode: CardFocusMode {
         .resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
+    /// rc14 FEAT-46: whether this card samples its poster colour at all — the setting is on AND a
+    /// ring can draw (`ringInset`'s rule: accent ring on, or No Zoom's still ring). With neither,
+    /// the focused card only lifts and there is nothing to colour, so nothing is sampled.
+    private var samplesPosterColor: Bool {
+        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+    }
+
+    /// The art the card is showing, in `CachedAsyncImage`'s order (primary, then fallback).
+    private var ringTintSources: [String?] { [imageURL, fallbackImageURL] }
+
+    /// rc14 FEAT-46: the ring colour override, nil whenever the setting is off or the card is not
+    /// focused. Peeks the store first — a read, never a write — so a colour sampled before this
+    /// card gained focus (another row, a recycled card) is on the ring from the first focused frame
+    /// instead of one update later; `posterRingTint` covers a colour that lands after focus did.
+    private var posterTint: Color? {
+        guard samplesPosterColor, isFocused else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: ringTintSources) ?? posterRingTint
     }
 
     var body: some View {
@@ -937,10 +975,12 @@ struct PosterCard: View {
                 // `InlineTrailerCard`. See the file-level comment above for why this replaced the
                 // earlier outside-flush-ring geometry. It rides whatever the whole-card focus
                 // treatment below does, because it is part of that card.
+                // rc14 FEAT-46: `posterTint` (nil unless "focus ring takes the poster's colour" is
+                // on) replaces the accent colour; same stroke, same geometry.
                 .overlay {
                     if accentFocusRing && isFocused {
                         RoundedRectangle(cornerRadius: style.cornerRadius)
-                            .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
+                            .strokeBorder(posterTint ?? Theme.Palette.focusRingColor, lineWidth: ringWidth)
                     }
                 }
                 // BUG-54: in systemLift mode the hover effect hangs HERE, on the artwork container,
@@ -978,8 +1018,24 @@ struct PosterCard: View {
             mode: focusMode,
             isFocused: isFocused,
             artworkHeight: resolvedHeight,
-            cornerRadius: style.cornerRadius
+            cornerRadius: style.cornerRadius,
+            // rc14 FEAT-46: No Zoom's neutral still ring takes the poster colour too.
+            tint: posterTint
         ))
+        // rc14 FEAT-46: resolve the poster colour on focus GAIN only — one store call, at most one
+        // state write, and nothing at all with the setting off or on focus loss (the last tint is
+        // kept, so a re-focus is already right). `initial: true` covers a card created focused.
+        // A colour that is sampled after focus landed blends in over the lift's 0.15 s instead of
+        // snapping from the accent colour; when the store answers synchronously the peek in
+        // `posterTint` already drew it, so that write changes nothing on screen. Sits before the
+        // `zIndex` so that trait stays the outermost modifier, exactly where it was.
+        .onChange(of: isFocused, initial: true) { _, focused in
+            guard focused, samplesPosterColor else { return }
+            ArtworkColorStore.shared.color(for: ringTintSources) { color in
+                guard posterRingTint != color else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
+            }
+        }
         // FEAT-14/BUG-36: a treatment SwiftUI draws itself (ring mode's manual scale, still mode's
         // shadow) isn't lifted into a separate compositor layer the way the system hover effect is,
         // so without an explicit zIndex a focused card can render underneath its unfocused row
@@ -1022,10 +1078,27 @@ struct LandscapeCard: View {
     /// BUG-36: opt-in "No Zoom on Focus", default OFF — see `PosterCard`'s copy of this property
     /// for the full rationale (same UserDefaults key, same independent read).
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// rc14 FEAT-46: poster-coloured focus ring, default OFF — see `PosterCard`'s copy of these
+    /// properties for the full rationale (same key, same once-per-focus-gain resolution).
+    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    @State private var posterRingTint: Color?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var titleVisible: Bool { showTitle ?? style.showTitle }
     private var focusMode: CardFocusMode {
         .resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
+    }
+
+    /// rc14 FEAT-46 — see `PosterCard`'s copies of these three.
+    private var samplesPosterColor: Bool {
+        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+    }
+
+    private var ringTintSources: [String?] { [imageURL, fallbackImageURL] }
+
+    private var posterTint: Color? {
+        guard samplesPosterColor, isFocused else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: ringTintSources) ?? posterRingTint
     }
 
     var body: some View {
@@ -1089,11 +1162,11 @@ struct LandscapeCard: View {
             // FEAT-14 (final) — see PosterCard's copy of this overlay for the full rationale. The
             // ring is drawn on the artwork/progress-bar group, using the same inside-strokeBorder
             // treatment as the trailer surface's ring in `InlineTrailerCard`, and rides whatever
-            // the whole-card focus treatment does.
+            // the whole-card focus treatment does. rc14 FEAT-46: `posterTint` as in PosterCard.
             .overlay {
                 if accentFocusRing && isFocused {
                     RoundedRectangle(cornerRadius: style.cornerRadius)
-                        .strokeBorder(Theme.Palette.focusRingColor, lineWidth: ringWidth)
+                        .strokeBorder(posterTint ?? Theme.Palette.focusRingColor, lineWidth: ringWidth)
                 }
             }
             // BUG-54: systemLift hover lives on the artwork/progress-bar group — bounds == artwork,
@@ -1155,8 +1228,17 @@ struct LandscapeCard: View {
             mode: focusMode,
             isFocused: isFocused,
             artworkHeight: height,
-            cornerRadius: style.cornerRadius
+            cornerRadius: style.cornerRadius,
+            tint: posterTint   // rc14 FEAT-46
         ))
+        // rc14 FEAT-46: focus-gain-only resolution — see `PosterCard`'s copy.
+        .onChange(of: isFocused, initial: true) { _, focused in
+            guard focused, samplesPosterColor else { return }
+            ArtworkColorStore.shared.color(for: ringTintSources) { color in
+                guard posterRingTint != color else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
+            }
+        }
         // FEAT-14/BUG-36: see `PosterCard`'s copy of this zIndex for the full rationale — the
         // SwiftUI-drawn treatments need an explicit zIndex to draw above row neighbors the way the
         // system lift does implicitly; the default path's stacking is untouched.

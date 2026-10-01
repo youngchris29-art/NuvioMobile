@@ -222,6 +222,10 @@ enum Theme {
         static var body: SwiftUI.Font { resolved(.body) }
         /// Metadata lines — year/runtime/rating (was fixed 26pt semibold → caption, 25pt).
         static var meta: SwiftUI.Font { resolved(.meta) }
+        /// rc14: description text on Home's hero and on Detail — see `Token.synopsis`.
+        static var synopsis: SwiftUI.Font { resolved(.synopsis) }
+        /// rc14: regular-weight secondary prose at the `meta` size — see `Token.detail`.
+        static var detail: SwiftUI.Font { resolved(.detail) }
         /// Fine print (was fixed 22pt → caption2, 23pt).
         static var caption: SwiftUI.Font { resolved(.caption) }
 
@@ -236,7 +240,26 @@ enum Theme {
             family = newFamily
             cache = buildCache(for: newFamily)
             bodyLineHeight = measuredBodyLineHeight(for: newFamily)
+            synopsisLineHeight = measuredSynopsisLineHeight(for: newFamily)
             sectionTitleLineHeight = measuredSectionTitleLineHeight(for: newFamily)
+        }
+
+        /// rc14: the rendered line height of `Theme.Font.synopsis`, measured exactly as
+        /// `bodyLineHeight` is (same face, same size the token resolves to) — Home's hero derives
+        /// its synopsis line limit from this now that the synopsis no longer uses `body`.
+        /// System caption1 ≈ 30pt, Open Sans at the same size ≈ 34pt.
+        static private(set) var synopsisLineHeight: CGFloat = measuredSynopsisLineHeight(for: family)
+
+        private static func measuredSynopsisLineHeight(for family: AppFontFamily) -> CGFloat {
+            let style = Token.synopsis.uiTextStyle
+            switch family {
+            case .system:
+                return UIFont.preferredFont(forTextStyle: style).lineHeight
+            case .openSans:
+                let size = baseSize(for: style)
+                return UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
+                    ?? UIFont.preferredFont(forTextStyle: style).lineHeight
+            }
         }
 
         /// The rendered line height of `Theme.Font.body`, from `UIFont` metrics of the SAME face
@@ -390,6 +413,15 @@ enum Theme {
         // actor-isolated (a warning today, an error in Swift 6 mode).
         nonisolated private enum Token: CaseIterable, Hashable {
             case hero, screenTitle, sectionTitle, cardTitle, body, meta, caption
+            /// rc14 (Steven's rc13 verdict, 2026-09-30): the description text on Home's hero and
+            /// the Detail page. One text style below `body` (caption1, 25pt) so the same slot holds
+            /// one more line and the block reads lighter at ten feet — his Orivio reference. Regular
+            /// weight in both families.
+            case synopsis
+            /// rc14: regular-weight secondary copy at the `meta` size — Settings row descriptions
+            /// and values, Detail info-row values. `meta` keeps a (now medium) weight for the
+            /// labels and the hero/detail meta line; this token is for the prose next to them.
+            case detail
 
             var textStyle: SwiftUI.Font.TextStyle {
                 switch self {
@@ -400,6 +432,8 @@ enum Theme {
                 case .body: return .body
                 case .meta: return .caption
                 case .caption: return .caption2
+                case .synopsis: return .caption
+                case .detail: return .caption
                 }
             }
 
@@ -416,6 +450,8 @@ enum Theme {
                 case .body: return .body
                 case .meta: return .caption1
                 case .caption: return .caption2
+                case .synopsis: return .caption1
+                case .detail: return .caption1
                 }
             }
 
@@ -426,8 +462,15 @@ enum Theme {
                 case .sectionTitle: return .semibold
                 case .cardTitle: return nil
                 case .body: return nil
-                case .meta: return .semibold
+                // rc14: was `.semibold`. Steven's rc13 verdict — "the bold text throughout the
+                // app, descriptions, Home, settings, still feels too heavy" — and this token was
+                // the one FEAT-44 never touched (it only pinned the weightless tokens to regular).
+                // Medium keeps the hero/detail meta line distinct from the synopsis under it
+                // without reading as bold.
+                case .meta: return .medium
                 case .caption: return nil
+                case .synopsis: return nil
+                case .detail: return nil
                 }
             }
         }
@@ -877,8 +920,22 @@ enum Theme {
         /// hero from hard-clipping: the logo keeps a legible slot and the synopsis drops from two
         /// lines to one. Their combined give is exactly 68pt (110→78 and 72→36), which covers
         /// Large's 68.3pt requirement with the frame's own 2pt of slack (352 frame vs 350 content).
-        static let heroLogoSlotHeightPinnedFloor: CGFloat = 78
+        /// rc14 (Steven rc13 verdict, 2026-09-30): 78 → 76. Two more points of logo give so the
+        /// Large carousel's synopsis keeps two `Theme.Font.synopsis` lines (≈30pt each on the system
+        /// face): held compression 68.33 − slack 22 − logo 34 = 12.33 from the synopsis ⇒ a 59.67pt
+        /// slot ⇒ 2 lines with the 1pt tolerance. At 78 the slot was 57.67 and rounded to one.
+        static let heroLogoSlotHeightPinnedFloor: CGFloat = 76
         static let heroSynopsisSlotHeightPinnedFloor: CGFloat = 36
+
+        /// rc14: the pinned hero's chrome, shaved so its content carries 22pt of free slack. The
+        /// vertical padding (was `Spacing.md` 16 each side) and the three slot gaps (logo→meta,
+        /// meta→synopsis, synopsis→CTA; were `Spacing.md`) are the cheapest points in the hero —
+        /// nothing the viewer reads lives in them — and `HeroSlotGive.split` spends that slack
+        /// BEFORE either elastic slot, which is what gives Medium+ a full-height logo AND two
+        /// synopsis lines, and Large two lines where it had one. Classic (non-pinned) keeps
+        /// `Spacing.md`/`Spacing.lg`.
+        static let heroPinnedVerticalPad: CGFloat = 12
+        static let heroPinnedSlotGap: CGFloat = Theme.Spacing.sm
 
         /// FEAT-29 (Steven's beta.17 report, re-raised as a regression): a focused collection
         /// folder's hero wordmark used to render inside the shared TITLE-hero pinned logo slot,
@@ -928,17 +985,27 @@ enum Theme {
         /// the same arithmetic: 32 + 110 + 16 + 32 + 16 + 144 = 350 = 32 + 110 + 16 + 32 + 16 + 72
         /// + 16 + 56). Named here (BUG-87, beta.18) because the compression ceiling and the slot's
         /// own give both have to be derived from it rather than from the carousel's 72.
+        /// rc14: the gap folded in is `heroPinnedSlotGap` (12) now, so 72 + 56 + 12 = 140.
         static let heroSynopsisSlotHeightPinnedPanel: CGFloat =
-            heroSynopsisSlotHeightPinned + heroButtonSlotHeight + Theme.Spacing.md  // 72 + 56 + 16 = 144
+            heroSynopsisSlotHeightPinned + heroButtonSlotHeight + heroPinnedSlotGap  // 72 + 56 + 12 = 140
         /// The panel form's synopsis give against the SAME one-line floor the carousel uses:
-        /// 144 → 36 = 108.
+        /// 140 → 36 = 104.
         static let heroSynopsisSlotPanelPinnedGive: CGFloat =
-            heroSynopsisSlotHeightPinnedPanel - heroSynopsisSlotHeightPinnedFloor  // 144 → 36 = 108
-        /// The pinned hero's frame is 2pt taller than the content it holds — 352 against
-        /// `32 padding + 110 logo + 16 + 32 meta + 16 + 72 synopsis + 16 + 56 CTA = 350` (the
-        /// arithmetic `HomeHeroForeground.synopsisSlotHeight` documents). That slack is real give:
-        /// the frame can lose it without the content losing anything.
-        static let heroPinnedFrameSlack: CGFloat = 2
+            heroSynopsisSlotHeightPinnedPanel - heroSynopsisSlotHeightPinnedFloor  // 140 → 36 = 104
+        /// How much taller the pinned hero's frame is than the content it holds. rc14: DERIVED, not
+        /// a literal — 352 against `2·12 padding + 110 logo + 3·12 gaps + 32 meta + 72 synopsis +
+        /// 56 CTA = 330`, i.e. 22 (it was 2 against the old 350 of content). That slack is real
+        /// give: the frame can lose it without the content losing anything, and
+        /// `HeroSlotGive.split` spends it first. Stating it as the subtraction keeps it honest if
+        /// any slot or pad above ever moves.
+        static let heroPinnedFrameSlack: CGFloat =
+            heroCarouselHeightPinned
+                - (2 * heroPinnedVerticalPad
+                   + heroLogoSlotHeightPinned
+                   + 3 * heroPinnedSlotGap
+                   + heroMetaSlotHeight
+                   + heroSynopsisSlotHeightPinned
+                   + heroButtonSlotHeight)
 
         // MARK: Wave 10 / Wave G — settled rests
 

@@ -58,6 +58,10 @@ struct AppearanceSettingsPane: View {
     /// Default OFF — off must render byte-identical to the pre-FEAT-14 tree, so PosterCard reads
     /// this same key independently rather than through a passed-down flag.
     @AppStorage("accent_focus_ring") private var accentFocusRing = false
+    /// FEAT-46 (rc14, Steven rc13 verdict, 2026-09-30): the accent ring takes the focused poster's
+    /// dominant color instead of the accent. Default OFF; only offered while `accentFocusRing` is
+    /// on. The card views read this same key independently (same pattern as the ring above).
+    @AppStorage("focus_ring_poster_color") private var focusRingPosterColor = false
     /// BUG-36: opt-in "focus without motion" for artwork cards (PosterCard/LandscapeCard). Default
     /// OFF — off keeps the two existing treatments (system lift, or the accent ring's manual
     /// scale). Same independent-read pattern as the ring above; the cards resolve both keys into a
@@ -74,6 +78,16 @@ struct AppearanceSettingsPane: View {
         (90, String(localized: "90s")),
         (0, String(localized: "Always")),
     ]
+    /// rc14 (Steven rc13 verdict, 2026-09-30): "Episode Ratings" row options, in the order
+    /// show-all / watched-only / hide. Computed (not a stored `static let`) because the Kotlin enum
+    /// bridge types are not `Sendable`.
+    private static var episodeRatingsOptions: [(value: EpisodeRatingsVisibility, label: String)] {
+        [
+            (.showAll, String(localized: "Show")),
+            (.hideUnwatchedEpisodes, String(localized: "Watched Only")),
+            (.hideEpisodes, String(localized: "Hide")),
+        ]
+    }
     /// FEAT-30 row options. Values are the raw `sidebar_style` UserDefaults strings.
     private static let navigationOptions: [(value: String, label: String)] = [
         ("tabs", String(localized: "Top Tabs")),
@@ -166,6 +180,16 @@ struct AppearanceSettingsPane: View {
                 subtitle: String(localized: "Focused artwork shows a ring in your accent color"),
                 isOn: $accentFocusRing
             )
+            // FEAT-46 (rc14, Steven rc13 verdict, 2026-09-30): only meaningful while the ring itself is on.
+            // rc14 FEAT-46 — shown whenever a ring can draw (the accent ring, or No Zoom's still
+            // ring), since the cards honour the setting for both (review r1 P3).
+            if accentFocusRing || noZoomOnFocus {
+                SettingsToggleRow(
+                    title: String(localized: "Ring Takes Poster Color"),
+                    subtitle: String(localized: "The focus ring uses the focused poster's dominant color"),
+                    isOn: $focusRingPosterColor
+                )
+            }
 
             // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
             // turns the zoom off outright — the card holds its size and marks focus with the
@@ -282,6 +306,19 @@ struct AppearanceSettingsPane: View {
                 title: String(localized: "Icon-Only Detail Buttons"),
                 subtitle: String(localized: "Buttons show icons only"),
                 isOn: $detailActionIconsOnly
+            )
+            // rc14 (Steven rc13 verdict, 2026-09-30): tester ask for an option to completely
+            // disable episode ratings. Backed by the shared `MetaScreenSettingsRepository`, so it
+            // also syncs with mobile's matching setting.
+            SettingsPickerRow(
+                title: String(localized: "Episode Ratings"),
+                subtitle: String(localized: "Rating badges on episode cards"),
+                selection: Binding(
+                    get: { model.episodeRatingsVisibility },
+                    set: { model.setEpisodeRatingsVisibility($0) }
+                ),
+                options: Self.episodeRatingsOptions.map(\.value),
+                label: { value in Self.episodeRatingsOptions.first { $0.value == value }?.label ?? "" }
             )
         }
 

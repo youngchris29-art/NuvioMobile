@@ -53,6 +53,11 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var posterLandscapeRows = false
     /// Card-depth styling (master toggle + edge/sheen/coverage strengths + per-surface flags).
     @Published private(set) var cardDepth = CardDepthStyle.default
+    /// Episode-card rating badge visibility (show all / watched only / hide). rc14 (Steven rc13
+    /// verdict, 2026-09-30): a tester asked for an option to disable episode ratings completely.
+    /// Read from the shared `MetaScreenSettingsRepository` (same value mobile syncs), so a change
+    /// here also reaches Detail through that repository's own watcher.
+    @Published private(set) var episodeRatingsVisibility: EpisodeRatingsVisibility = .showAll
     /// FEAT-10: every search-capable catalog across the enabled addons — the rows behind
     /// Settings → Content Sources → Search Sources. Derived from the addon watcher below.
     @Published private(set) var searchSourceOptions: [SearchCatalogOption] = []
@@ -119,6 +124,7 @@ final class SettingsViewModel: ObservableObject {
     private var mdbListWatcher: FlowWatcher?
     private var posterStyleWatcher: FlowWatcher?
     private var cardDepthWatcher: FlowWatcher?
+    private var metaScreenWatcher: FlowWatcher?
     private var trackingSettingsWatcher: FlowWatcher?
     private var searchStateWatcher: FlowWatcher?
     private var amoledWatcher: FlowWatcher?
@@ -206,6 +212,13 @@ final class SettingsViewModel: ObservableObject {
             self.cardDepth = CardDepthStyle(from: state)
         }
 
+        // rc14 (Steven rc13 verdict, 2026-09-30): episode-ratings visibility (Poster Style pane).
+        MetaScreenSettingsRepository.shared.ensureLoaded()
+        metaScreenWatcher = FlowWatcherKt.watch(MetaScreenSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? MetaScreenSettingsUiState else { return }
+            self.episodeRatingsVisibility = state.episodeRatingsVisibility
+        }
+
         // Library Source / Watch Progress Source (Content Sources pane). `TrackingSettingsRepository`
         // is the provider-neutral facade added alongside Simkl; its uiState is still the Trakt
         // settings type under the hood (`TrackingSettingsUiState` is a Kotlin typealias for
@@ -269,6 +282,7 @@ final class SettingsViewModel: ObservableObject {
         mdbListWatcher?.cancel(); mdbListWatcher = nil
         posterStyleWatcher?.cancel(); posterStyleWatcher = nil
         cardDepthWatcher?.cancel(); cardDepthWatcher = nil
+        metaScreenWatcher?.cancel(); metaScreenWatcher = nil
         trackingSettingsWatcher?.cancel(); trackingSettingsWatcher = nil
         searchStateWatcher?.cancel(); searchStateWatcher = nil
         amoledWatcher?.cancel(); amoledWatcher = nil
@@ -513,6 +527,13 @@ final class SettingsViewModel: ObservableObject {
         PosterCardStyleRepository.shared.resetToDefaults()
     }
 
+    // MARK: - Episode ratings
+
+    /// rc14 (Steven rc13 verdict, 2026-09-30): persists the episode-rating badge visibility.
+    func setEpisodeRatingsVisibility(_ visibility: EpisodeRatingsVisibility) {
+        MetaScreenSettingsRepository.shared.setEpisodeRatingsVisibility(visibility: visibility)
+    }
+
     // MARK: - Card depth
 
     func setCardDepthEnabled(_ enabled: Bool) {
@@ -645,6 +666,7 @@ final class SettingsViewModel: ObservableObject {
         tmdbWatcher?.cancel()
         posterStyleWatcher?.cancel()
         cardDepthWatcher?.cancel()
+        metaScreenWatcher?.cancel()
         trackingSettingsWatcher?.cancel()
         searchStateWatcher?.cancel()
         amoledWatcher?.cancel()

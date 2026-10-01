@@ -96,11 +96,24 @@ struct CardDepthStyle: Equatable {
     //
     //     Off (0)       → 0pt,  —,    0pt,  —
     //     Subtle (28)   → 1pt,  0.35, 0pt,  —
-    //     Balanced (42) → 2pt,  0.60, 8pt,  0.108
-    //     Bold (56)     → 3pt,  0.90, 13pt, 0.162
+    //     Balanced (42) → 2pt,  0.60, 0pt,  —      (rc14: halo removed, was 8pt / 0.108)
+    //     Bold (56)     → 3pt,  0.80, 0pt,  —      (rc14: top α 0.90 → 0.80, halo removed, was 13pt / 0.162)
     //     Placeholder tiles (rc13, any level) → clamped to Subtle (28) → 1pt, 0.35, 0pt, —
     //
-    // (halo width = `railWidth` + 2 × `railHaloSpread`; halo α = `railTopAlpha` × 0.18.)
+    // (halo width = `railWidth` + 2 × `railHaloSpread`; halo α = `railTopAlpha` × 0.18 — both inert
+    // since rc14, `railHaloSpread` is 0 at every strength.)
+    //
+    // BUG-110 (rc14, Steven rc13 verdict, 2026-09-30; Bold/Balanced depth: "a thick border appears on
+    // the poster, in addition to the border already around the poster"): two mechanisms, both
+    // confirmed by reading this file. (1) On a FOCUSED ring-mode card the rail was stroked directly
+    // inside the 4pt accent ring, so the focused card showed two borders — the rail now draws on
+    // UNFOCUSED cards only (`CardDepthModifier` skips the rail layer while `\.isFocused`; the sheen
+    // stays) and the focus treatment (ring / lift / still highlight) owns the focused card's edge.
+    // (2) The inward halo band (3/5pt spread → 8/13pt stroke) read as a thick white frame on every
+    // unfocused Balanced/Bold poster on a real TV — `railHaloSpread` now returns 0 everywhere, so the
+    // halo stroke in `edgeHighlight` never draws. Bold's top stop also drops 0.90 → 0.80 so the
+    // 3pt rail alone is not a hard white outline. An unfocused→focused transition drops the rail
+    // with no animation of its own (acceptable: the ring/lift/highlight animate in over it).
     //
     // BUG-110 (rc13, u/mrStevenx3: "depth rail reads as a glitch on solid Genres tiles"): the table
     // above assumed every rail traces a picture. A tile with no artwork cover — the gradient +
@@ -130,8 +143,9 @@ struct CardDepthStyle: Equatable {
 
     /// The rail's TOP stop opacity, now anchored directly to the Subtle/Balanced/Bold presets so each
     /// one reads as a visibly different brightness, not just a (possibly identical) width. Piecewise
-    /// linear through `(0, 0)`, `(0.28, 0.35)`, `(0.42, 0.60)`, `(0.56, 0.90)`, `(1.0, 0.95)` — the
-    /// preset points name the alpha each preset renders at (Subtle 0.35, Balanced 0.60, Bold 0.90),
+    /// linear through `(0, 0)`, `(0.28, 0.35)`, `(0.42, 0.60)`, `(0.56, 0.80)`, `(1.0, 0.95)` — the
+    /// preset points name the alpha each preset renders at (Subtle 0.35, Balanced 0.60, Bold 0.80;
+    /// Bold was 0.90 until rc14, BUG-110 — a 3pt rail at 0.90 white read as a hard outline on a TV),
     /// `1.0` (100 strength, the ceiling any stronger mobile-synced value can reach) capped at 0.95 so
     /// the rail never quite reads as opaque white. `edge` is the same 0…1 unit value used throughout
     /// this file (`edgeStrength / 100`), matching `partialCoverageRailBoost`'s old parameter space.
@@ -139,10 +153,10 @@ struct CardDepthStyle: Equatable {
     /// Replaces `partialCoverageRailBoost`, which only fired in the partial-coverage branch — Full's
     /// top stop used to be hardcoded equal to `edge` (identical to mid/bottom), which is a large part
     /// of why Full read flat. BUG-57's invariant survives unchanged: the boosted top stays ≥ the raw
-    /// edge strength for every strength up to 0.9 (0.35 ≥ 0.28, 0.60 ≥ 0.42, 0.90 ≥ 0.56) — a thin
+    /// edge strength for every strength up to 0.9 (0.35 ≥ 0.28, 0.60 ≥ 0.42, 0.80 ≥ 0.56) — a thin
     /// rail still needs the lift more than a thick one, not less.
     static func railTopAlpha(edge: Double) -> Double {
-        let anchors: [(x: Double, y: Double)] = [(0, 0), (0.28, 0.35), (0.42, 0.60), (0.56, 0.90), (1.0, 0.95)]
+        let anchors: [(x: Double, y: Double)] = [(0, 0), (0.28, 0.35), (0.42, 0.60), (0.56, 0.80), (1.0, 0.95)]
         let clamped = min(max(edge, 0), 1)
         guard clamped > 0 else { return 0 }
         for index in 1..<anchors.count {
@@ -172,20 +186,23 @@ struct CardDepthStyle: Equatable {
 
     /// How far a soft halo stroke spreads beyond the crisp rail, in points, ADDED to `railWidth` on
     /// each side (`width + 2 × halo` is the halo stroke's own `lineWidth` — see `edgeHighlight`).
-    /// Same three-strength banding as `railWidth`: Subtle draws no halo at all (an already-thin 1pt
-    /// rail doesn't need softening), Balanced/Bold get 3pt/5pt of spread, for a total halo stroke
-    /// width of 2+2×3=8pt (Balanced) and 3+2×5=13pt (Bold) — the BUG-110 preset table above.
+    /// Same three-strength banding as `railWidth`, which rc12-rc13 used to give Balanced/Bold 3pt/5pt
+    /// of spread (a total halo stroke of 8pt/13pt).
+    ///
+    /// BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): the halo is REMOVED — this returns 0 for every
+    /// strength, so the `haloSpread > 0` stroke in `edgeHighlight` never draws. On a real TV the
+    /// inward band read as a thick white frame around every unfocused Balanced/Bold poster ("a thick
+    /// border appears on the poster"). The function and its callers stay so the preset-table
+    /// arithmetic (and `railHaloAlpha`) keep compiling; restoring a halo later is a one-function
+    /// change here, not a re-plumb.
     static func railHaloSpread(edgeStrength: Int) -> CGFloat {
-        if edgeStrength <= 0 { return 0 }
-        if edgeStrength <= 28 { return 0 }
-        if edgeStrength <= 42 { return 3 }
-        return 5
+        return 0
     }
 
     /// The halo stroke's opacity — always a fixed 18% of the crisp rail's own top stop, so the halo
     /// reads as a soft glow trailing the rail rather than an independent setting to tune by hand.
-    /// Subtle/Off render at `railHaloSpread` 0 regardless of this value (see `edgeHighlight`), so the
-    /// number is inert there.
+    /// Inert since rc14 (BUG-110): `railHaloSpread` is 0 at every strength, so `edgeHighlight` never
+    /// draws the halo stroke this alpha would colour.
     static func railHaloAlpha(edge: Double) -> Double {
         railTopAlpha(edge: edge) * 0.18
     }
@@ -202,7 +219,10 @@ struct CardDepthStyle: Equatable {
         return min(edgeStrength, 28)
     }
 
-    /// Whether the halo should be withheld this frame. On a FOCUSED card in either mode that reserves
+    /// Whether the halo should be withheld this frame. rc14 (BUG-110): no longer consulted by the
+    /// renderer — the halo is gone entirely (`railHaloSpread` is 0) and a focused card draws no rail
+    /// at all (`CardDepthModifier`) — kept so the truth-table unit test and any future halo revival
+    /// still compile. Original rationale: on a FOCUSED card in either mode that reserves
     /// the plain-label ring band (`PlainLabelRing.reservesBand`), a 4pt accent ring or still-mode
     /// stroke already sits just outside the rail; the halo's soft spread would bleed straight into
     /// that ring, pixel for pixel, and read as a fuzzy double outline rather than two distinct
@@ -326,9 +346,12 @@ extension View {
     /// With no band reserved (ring off, zoom on) the two attachment points are the same rect and
     /// the render is unchanged.
     ///
-    /// BUG-110: the halo layer added below reads `\.isFocused` and both ring `@AppStorage` flags so
-    /// it can withhold itself on a focused, ring-band-reserving card (`CardDepthStyle.haloSuppressed`)
-    /// — the crisp rail this doc has always described is unaffected by focus state.
+    /// BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): the modifier reads `\.isFocused` and draws NO
+    /// rail on a focused card (the top sheen still draws) — the focus treatment (accent ring / lift /
+    /// still highlight) owns a focused card's edge, so the rail no longer sits inside the 4pt ring as
+    /// a second border. The halo layer that rc12-rc13 added was removed the same release
+    /// (`CardDepthStyle.railHaloSpread` is 0). An unfocused→focused transition drops the rail with
+    /// no animation of its own.
     ///
     /// BUG-110 (rc13): `artworkPresent` defaults to `true` — pass `false` from a tile that is about
     /// to draw its no-cover gradient+initial/emoji placeholder instead of a picture, so the rendered
@@ -346,17 +369,16 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
     var artworkPresent: Bool = true
     @Environment(\.cardDepthStyle) private var style
     /// BUG-110: reflects the nearest focusable ancestor's focus state (the same pattern `PosterCard`,
-    /// `SagaCard` and others already use to read a Button's focus from a nested modifier) — needed
-    /// only to decide `haloSuppressed`; the crisp rail below never reads it.
+    /// `SagaCard` and others already use to read a Button's focus from a nested modifier). rc14
+    /// (Steven rc13 verdict, 2026-09-30): a focused card draws NO rail — the focus treatment owns its
+    /// edge — so this is forwarded to `CardDepthOverlay` as `railSuppressed`. It replaces rc12-rc13's
+    /// halo-only suppression (and the two ring `@AppStorage` reads that fed it: nothing here depends
+    /// on the ring/zoom mode any more, so a ring-mode flip no longer re-evaluates every card).
     @Environment(\.isFocused) private var isFocused
-    @AppStorage("accent_focus_ring") private var accentFocusRing = false
-    @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
 
     func body(content: Content) -> some View {
         if style.isEnabled(for: surface) {
-            let ringBandReserved = PlainLabelRing.reservesBand(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
-            let haloSuppressed = CardDepthStyle.haloSuppressed(focused: isFocused, ringBandReserved: ringBandReserved)
-            content.overlay { CardDepthOverlay(shape: shape, style: style, haloSuppressed: haloSuppressed, artworkPresent: artworkPresent) }
+            content.overlay { CardDepthOverlay(shape: shape, style: style, railSuppressed: isFocused, artworkPresent: artworkPresent) }
         } else {
             content
         }
@@ -370,9 +392,11 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
 private struct CardDepthOverlay<S: InsettableShape>: View {
     let shape: S
     let style: CardDepthStyle
-    /// BUG-110: true when a focused card's own ring/still-stroke would collide with the halo. Never
-    /// affects the crisp rail — only whether `edgeHighlight` draws the soft halo layer under it.
-    let haloSuppressed: Bool
+    /// BUG-110 (rc14, Steven rc13 verdict, 2026-09-30): true while the card is focused. The edge rail
+    /// (and the removed-in-rc14 halo) is skipped entirely so the focus ring / lift / still highlight
+    /// is the only border on a focused card; the top sheen is unaffected. Replaces rc12-rc13's
+    /// halo-only `haloSuppressed`.
+    let railSuppressed: Bool
     /// BUG-110 (rc13): `false` on a tile currently drawing its no-cover gradient+initial/emoji
     /// placeholder. Only the RAIL clamps on this — the sheen above (a flat top-of-card gradient)
     /// reads fine over a placeholder and is left alone.
@@ -397,7 +421,7 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
                 )
                 .clipShape(shape)
             }
-            if edge > 0 {
+            if edge > 0 && !railSuppressed {
                 edgeHighlight(edge: edge, coverage: coverage, effectiveEdgeStrength: effectiveEdgeStrength)
             }
         }
@@ -433,16 +457,18 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// a special case. `CardDepthStyle.railWidth`/`railStops` now supply the width and the three-stop
     /// gradient at EVERY coverage, so Full finally differs across Subtle/Balanced/Bold by width AND
     /// top-stop brightness, the same as Top/Half always did — see the BUG-110 preset table on
-    /// `CardDepthStyle`. A soft halo (`railHaloSpread`/`railHaloAlpha`) now trails the crisp rail at
-    /// Balanced/Bold, withheld on a focused ring-reserving card (`haloSuppressed`) so it never bleeds
-    /// into that card's own ring. `strokeBorder` insets inward on both layers, so nothing paints
+    /// `CardDepthStyle`. A soft halo (`railHaloSpread`/`railHaloAlpha`) trailed the crisp rail at
+    /// Balanced/Bold in rc12-rc13; BUG-110 (rc14, Steven rc13 verdict, 2026-09-30) removed it
+    /// (`railHaloSpread` is 0, so the `haloSpread > 0` stroke below never draws) and the whole rail is
+    /// now skipped on a focused card (`railSuppressed`, see `CardDepthModifier`) so it never doubles
+    /// the focus ring. `strokeBorder` insets inward on both layers, so nothing paints
     /// outside `shape` — no `shadow`/`blur` is used here (the FEAT-14 graveyard: outside paint clips
     /// against the artwork frame and lands as a stray sliver in the ring band).
     @ViewBuilder
     private func edgeHighlight(edge: Double, coverage: Double, effectiveEdgeStrength: Int) -> some View {
         let width = CardDepthStyle.railWidth(edgeStrength: effectiveEdgeStrength)
         let stops = CardDepthStyle.railStops(edge: edge, coverage: coverage)
-        let haloSpread = haloSuppressed ? 0 : CardDepthStyle.railHaloSpread(edgeStrength: effectiveEdgeStrength)
+        let haloSpread = CardDepthStyle.railHaloSpread(edgeStrength: effectiveEdgeStrength)
 
         let rail = ZStack {
             if haloSpread > 0 {

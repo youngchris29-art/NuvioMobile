@@ -31447,7 +31447,14 @@
           }
         }
       }
-    }
+    },
+    "Episode Ratings": {},
+    "Rating badges on episode cards": {},
+    "Show": {},
+    "Watched Only": {},
+    "Hide": {},
+    "Ring Takes Poster Color": {},
+    "The focus ring uses the focused poster's dominant color": {}
   },
   "version": "1.0"
 }

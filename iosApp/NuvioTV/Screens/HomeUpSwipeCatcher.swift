@@ -123,10 +123,15 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
     /// Called on the main actor when an Up swipe produced no focus movement at all. The receiver
     /// still applies every situational guard — this only reports the gesture.
     var onUnconsumedSwipeUp: () -> Void
+    /// rc14 (BUG-112 residue): called on the main actor for EVERY recognised Up swipe, before the
+    /// verdict — consumed ones included. Home stamps the input time from it so a hero focus gain
+    /// that follows a consumed swipe can be told from one gained any other way.
+    var onAnySwipeUp: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> CatcherView {
         let view = CatcherView()
         view.onUnconsumedSwipeUp = onUnconsumedSwipeUp
+        view.onAnySwipeUp = onAnySwipeUp
         return view
     }
 
@@ -135,6 +140,7 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
         // body evaluation), so it has to be replaced on every update or the callback would act on
         // a stale snapshot of `focusedRowKey`/`heroFocused`.
         uiView.onUnconsumedSwipeUp = onUnconsumedSwipeUp
+        uiView.onAnySwipeUp = onAnySwipeUp
     }
 
     static func dismantleUIView(_ uiView: CatcherView, coordinator: ()) {
@@ -184,6 +190,8 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
 
     final class CatcherView: UIView, UIGestureRecognizerDelegate {
         var onUnconsumedSwipeUp: (() -> Void)?
+        /// rc14: every recognised Up swipe, before the verdict. See the representable's doc.
+        var onAnySwipeUp: (() -> Void)?
 
         /// How long to wait before asking whether focus moved. 0.15 s.
         ///
@@ -346,6 +354,9 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
         /// calling the callback directly — the sim proof is worth nothing if it skips the check it
         /// is proving.
         fileprivate func handleSwipe() {
+            // rc14: stamped for EVERY recognised swipe, ahead of the verdict and of the
+            // `evaluating` gate — a consumed swipe is exactly the one Home needs to know about.
+            onAnySwipeUp?()
             guard !evaluating else { return }
             // Captured by VALUE: a new touch sequence starting inside the settle window replaces
             // `touchBaseline`, and the deadline below must still be judging the sequence it

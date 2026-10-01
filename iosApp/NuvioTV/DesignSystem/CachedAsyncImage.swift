@@ -289,6 +289,14 @@ enum ArtworkStore {
         return memory.object(forKey: url as NSURL)
     }
 
+    /// rc14 FEAT-46 (Steven rc13 verdict, 2026-09-30): `cached(_:)` for `ArtworkColorStore`, which
+    /// samples a focused card's ring colour from the image already decoded here and must never
+    /// trigger a download of its own. Explicitly `nonisolated` (the target defaults to MainActor):
+    /// `memory` is an `NSCache`, which locks internally, so the lookup is safe from any context.
+    nonisolated static func cachedImage(for url: URL) -> UIImage? {
+        memory.object(forKey: url as NSURL)
+    }
+
     /// Fetch + validate + decode + cache one URL. Concurrent calls for the same URL share one
     /// download. Cancelling an awaiting caller does NOT cancel the shared work — the image still
     /// lands in the cache for whoever wants it next.

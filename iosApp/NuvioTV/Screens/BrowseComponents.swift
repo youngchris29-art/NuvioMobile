@@ -1194,13 +1194,14 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 // otherwise the first REAL change would take the unanimated seed path and snap,
                 // which is the exact defect this modifier exists to remove.
                 let isFirst = !hasSeeded
-                if isFirst || reduceMotion {
+                if isFirst {
                     // Store BEFORE flipping `hasSeeded` so the frame that switches paths already
                     // carries the measured value in `slide`.
                     slide = newValue.slide
                     hasSeeded = true
-                } else if slide != newValue.slide {
-                    withAnimation(.easeOut(duration: 0.22)) { slide = newValue.slide }
+                    tracking.pendingSlide = nil
+                } else {
+                    applySlide(newValue.slide)
                 }
                 updateFade(previous: oldValue, current: newValue)
                 // Hand this row's measured clearances to the settle re-reveal, which sizes its
@@ -1268,6 +1269,10 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 sawFirstReading = false
                 graceHold = false
                 remeasureFromWatchdog = false
+                // rc14 (review r1): a held slide target dies with the view too — a retained subtree
+                // coming back would otherwise apply a value measured against a layout that is gone.
+                tracking.pendingSlide = nil
+                tracking.slideHoldToken &+= 1
                 PinnedRowSettle.clearBeltFaded(rowKey: rowKey)
                 // Codex Wave 9 r3: reset the LOCAL verdict too, not just the shared key. A
                 // retained subtree — leaving Home without destruction — comes back with its
@@ -1291,6 +1296,63 @@ private struct PinnedRowTitleTracking: ViewModifier {
                                           treatment: treatment,
                                           mode: liftMode,
                                           enabled: HomeGeometryProbe.enabled))
+    }
+
+    /// rc14 (Steven rc13 verdict, 2026-09-30): the BUG-37 slide is a REST remedy — a settled rest
+    /// deep enough to clip the title gets the title pushed down so it stays readable — and it was
+    /// being applied per frame while the rows MOVED. A row scrolling away under the hero had its
+    /// title pinned at the clip edge and slid down over its own posters (his fast pane: every
+    /// departing row `belt arm margin=-89..-107 slide=72`; the video at 22.8 s shows "Top 10 des
+    /// films" painted across the departing row), and the eased 0.22 s animation retargeted on
+    /// every reading, which on a quick press cadence reads as the title bouncing. A slow walk
+    /// shows the same mechanism in miniature (`margin=-18..-38`), which is why he could not see it
+    /// there.
+    ///
+    /// So: a slide target measured while the rows scroll is still in motion (`PinnedRowSettle`'s
+    /// own last-move stamp, the same signal the belt's deferred hide consults) is HELD, and
+    /// applied once the scroll has been still for `slideMotionHold`. During the scroll the title
+    /// keeps whatever slide its last rest had and clips naturally as its row leaves; at the next
+    /// rest it eases once, by the measured amount (≈8pt on a held-regime rest). Rest behaviour is
+    /// byte-identical to before — only motion is excluded.
+    ///
+    /// Cost: one `asyncAfter` per hold episode, not per frame — `slideHoldToken` dedups re-arms
+    /// while a check is already pending, and the pending target is a reference-box write.
+    private static let slideMotionHold: TimeInterval = 0.12
+
+    private func applySlide(_ measured: CGFloat) {
+        // Review r1 P1: a row that has scrolled far above the viewport measures `slide = 72` (the
+        // cap) with its title entirely off screen. Applying that at rest is invisible — but on the
+        // next Up walk the same row comes back DOWN as the focused row carrying that 72, held by
+        // the motion gate for the whole approach, so its title would sit on its posters until the
+        // rest and then ease 72 → 8. A title that is off screen even after sliding gets 0 instead
+        // (`stillOnScreen`'s own inequality, from the cached geometry), so an arriving row clips
+        // naturally and eases 0 → 8 exactly once at its rest.
+        let target: CGFloat
+        if let g = tracking.geometry, g.visibleMinY >= g.titleHeight + measured {
+            target = 0
+        } else {
+            target = measured
+        }
+        if PinnedRowSettle.secondsSinceMotion() < Self.slideMotionHold {
+            let alreadyPending = tracking.pendingSlide != nil
+            tracking.pendingSlide = target
+            guard !alreadyPending else { return }
+            tracking.slideHoldToken &+= 1
+            let token = tracking.slideHoldToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.slideMotionHold) {
+                guard token == tracking.slideHoldToken, let pending = tracking.pendingSlide else { return }
+                tracking.pendingSlide = nil
+                applySlide(pending)
+            }
+            return
+        }
+        tracking.pendingSlide = nil
+        guard slide != target else { return }
+        if reduceMotion {
+            slide = target
+        } else {
+            withAnimation(.easeOut(duration: 0.22)) { slide = target }
+        }
     }
 
     /// Re-derives this title's `Reading` under a new focus mode, from the geometry last measured,
@@ -2009,10 +2071,13 @@ enum PinnedRowSettle {
         /// actual number to compare against `lockupExtent`.
         var linkFrameFloor: CGFloat = 0
 
-        /// Whether the frame-shaping floor is active at all (`linkFrameFloor > 0`) — kept for the
-        /// settle report line, whose `lastRowShaped=` field predates the value-carrying fix and is
-        /// parsed by device traces as a 0/1 flag, not a magnitude.
-        var lastRowShaped: Bool { linkFrameFloor > 0 }
+        /// Whether the frame-shaping floor is active on the LAST row — kept for the settle report
+        /// line, whose `lastRowShaped=` field predates the value-carrying fix and is parsed by
+        /// device traces (and test63) as a 0/1 flag, not a magnitude. rc14 (BUG-122): the floor is
+        /// also published on short middle rows now, which report `shortShaped=1` instead so the
+        /// last-row flag keeps meaning what every trace so far has read it as.
+        var lastRowShaped: Bool { isLastRow && linkFrameFloor > 0 }
+        var shortRowShaped: Bool { !isLastRow && linkFrameFloor > 0 }
 
         /// The title's top vs the viewport's top edge — the probe's `margin`, reproduced from the
         /// ROW's frame. The pinned title is an overlay at the shelf's top-leading corner inset by
@@ -2080,6 +2145,28 @@ enum PinnedRowSettle {
     nonisolated static func lastRowExemptionApplies(lockupExtent: CGFloat, linkFrameFloor: CGFloat) -> Bool {
         linkFrameFloor > 0 && lockupExtent <= Theme.Spacing.lg + linkFrameFloor + 0.5
     }
+
+    /// rc14 (BUG-121): a settle whose title sits more than the row's own height below the clip
+    /// edge is a rest the engine has not produced yet (late content: the row realised after focus
+    /// landed on it) — see the deferral in `settlePlan`. Pure, for the unit test.
+    nonisolated static func lateRestDeferral(margin: CGFloat, rowHeight: CGFloat) -> Bool {
+        rowHeight > 0 && margin > rowHeight
+    }
+
+    /// rc14 (BUG-122): a rest at the scroll view's true top whose row sits BELOW the band is the
+    /// layout's own position for the first row; correcting it means scrolling the first row under
+    /// the hero. Pure, for the unit test. `offsetY` is the rows scroll offset (0 at the top).
+    nonisolated static func topRestExempt(offsetY: CGFloat, margin: CGFloat, bandHigh: CGFloat) -> Bool {
+        offsetY <= 0.5 && margin > bandHigh
+    }
+
+    /// rc14 (BUG-121): how many settle re-checks a late rest gets before the ordinary correction
+    /// path runs. Review r1 P2: the caller's chain budget (`PinnedRowSettleRevealModifier
+    /// .maxSettleHops`, 3) bounds the whole chain, so this must leave at least one hop for the
+    /// correction itself — two deferrals (0.5 s), then the third hop corrects a row the engine
+    /// genuinely never revealed.
+    nonisolated static let maxLateRestRetries = 2
+    nonisolated(unsafe) private static var lateRestRetries: (rowKey: String, count: Int) = ("", 0)
 
     /// The correction `settlePlan` applies, as a pure function of the four quantities that bound
     /// it. Extracted so the bound cases are unit-testable (BUG-112: on the tester's up-walk the
@@ -2951,6 +3038,7 @@ enum PinnedRowSettle {
         armed = false
         epochRearmPending = false
         clearanceLatePending = nil
+        lateRestRetries = ("", 0)
         consecutiveNudges = 0
         latest = nil
         sample = nil
@@ -3354,6 +3442,8 @@ enum PinnedRowSettle {
             // BUG-87/89 (rc11): whether the frame-shaping floor was actually active on this row —
             // see `EnvironmentValues.rowCardLinkFrameFloor` and the `settlePlan` exemption below.
             + " lastRowShaped=\(m.lastRowShaped ? 1 : 0)"
+            // rc14 (BUG-122): a short middle row carrying the floor — see `Measurement.shortRowShaped`.
+            + " shortShaped=\(m.shortRowShaped ? 1 : 0)"
             + " prevHidden=\(m.rowTop <= 2 ? 1 : 0)"
             + " corrN=\(correctionsInWindow(m.rowKey))"
             + " pull=\(pullBack.total)"
@@ -3439,6 +3529,30 @@ enum PinnedRowSettle {
                         retryAfter: settleDelay)
         }
         clearanceLatePending = nil
+        // rc14 (BUG-121, every 2026-09-30 walk): a late-content addon row's first settle fires at
+        // `margin=+410..+540` — the engine simply has not revealed the row yet (its content landed
+        // after focus did) — and the corrector spent two −220 nudges plus the next row's budget on
+        // it before the engine's own reveal arrived. A rest whose title sits more than a whole row
+        // height below the clip edge is not a rest the engine produced; defer it (bounded) and let
+        // the reveal happen. `retryAfter` re-checks on the settle cadence; after the budget the
+        // ordinary path runs so a genuinely stranded row is still corrected.
+        if PinnedRowSettle.lateRestDeferral(margin: m.margin, rowHeight: m.rowHeight) {
+            let retries = lateRestRetries.rowKey == m.rowKey ? lateRestRetries.count : 0
+            if retries < maxLateRestRetries {
+                lateRestRetries = (m.rowKey, retries + 1)
+                consecutiveNudges = 0
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] settle %@",
+                          "late-rest row=\(m.rowKey) margin=\(Int(m.margin.rounded()))"
+                            + " rowH=\(Int(m.rowHeight.rounded())) retry=\(retries + 1)")
+                }
+                return Plan(report: line + " nudge=0 lateRest=\(retries + 1)",
+                            targetY: nil,
+                            retryAfter: settleDelay)
+            }
+        } else if lateRestRetries.rowKey == m.rowKey {
+            lateRestRetries = ("", 0)
+        }
         // BUG-87/89: a NEGATIVE unclamped focused clearance is not a bad rest, it is bad GEOMETRY.
         // The band above the artwork is too short to hold the title AND the focus lift, so the
         // focused card's picture is under the title at every margin, and a correction can only
@@ -3524,6 +3638,19 @@ enum PinnedRowSettle {
             + " bandLo=\(Int(bandLow.rounded()))"
             + " bandHi=\(Int(bandHigh.rounded()))"
             + " inBand=\(inBand ? 1 : 0)"
+
+        // rc14 (BUG-122, the top of every 2026-09-30 walk): the FIRST row at scroll offset 0 reads
+        // `margin=+55/+56` against `bandHi=48` — that is the layout's own position (8pt headroom +
+        // 48 inset), and the only "correction" is to scroll the content UP by 12 and hide the
+        // top of the row under the hero, which the engine undoes on the next focus change. That
+        // was the jump at the top of every walk. A row sitting low at the true top is where the
+        // layout put it; leave it.
+        if !inBand, PinnedRowSettle.topRestExempt(offsetY: sample.offsetY, margin: m.margin, bandHigh: bandHigh) {
+            consecutiveNudges = 0
+            if standDownRow == m.rowKey { standDownRow = nil }
+            if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 topRest=1") }
+            return Plan(report: line + " nudge=0 topRest=1", targetY: nil)
+        }
 
         // A rest inside the band needs nothing. The epoch closes for the `n=` counter's sake, but
         // note what does NOT happen here any more: the per-row WINDOW BUDGET is not refunded. That
@@ -3781,10 +3908,35 @@ enum PinnedRowSettle {
         return Plan(report: line, targetY: target)
     }
 
+    /// rc14 (Steven's rc13 panes): the About pane renders each settle line with
+    /// `.truncationMode(.middle)`, so a field in the middle of the line is exactly the one a photo
+    /// never shows — and the rc13 DM asked him to read `restErr`, which `settlePlan` appends
+    /// mid-line (before the band fields, per the append-only contract the console parsers rely
+    /// on). For the PANE only, this moves the ` restPred=… restErr=…` pair to the end of the
+    /// report. Pure string surgery on a probe line; the console line is untouched, and a report
+    /// without the pair is returned as is.
+    nonisolated static func restLawToTail(_ report: String) -> String {
+        guard let start = report.range(of: " restPred=") else { return report }
+        // The pair is two fields: ` restPred=<n>` then ` restErr=<n>`; the span ends at the first
+        // space after `restErr=`'s value (or at the end of the line).
+        guard let errField = report.range(of: " restErr=", range: start.upperBound..<report.endIndex) else {
+            return report
+        }
+        let valueStart = errField.upperBound
+        let valueEnd = report[valueStart...].firstIndex(of: " ") ?? report.endIndex
+        let pair = String(report[start.lowerBound..<valueEnd])
+        var rest = report
+        rest.removeSubrange(start.lowerBound..<valueEnd)
+        return rest + pair
+    }
+
     /// `restPred=` / `restErr=` for the settle line — see the call site and
     /// `PinnedRowGeometry.predictedRestMargin(restRange:)`. One decimal each.
     nonisolated static func restLawFields(_ m: Measurement) -> String {
-        let label = m.rowHeight - 2 * Theme.Spacing.lg
+        // rc14 (review r1 P2): a floored SHORT row (BUG-122) reports its NATURAL height — the
+        // compensation padding cancels the floor's layout growth — but the engine reveals the
+        // floored label, so the prediction has to use the floor where it governs.
+        let label = max(m.rowHeight - 2 * Theme.Spacing.lg, m.linkFrameFloor)
         let restRange = max(m.viewportHeight - label, 0)
         let predicted = PinnedRowGeometry.predictedRestMargin(restRange: restRange)
         return " restPred=\(String(format: "%.1f", Double(predicted)))"
@@ -4118,7 +4270,9 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
             // the head (`row= margin= net= vh=`) and the tail (`nudge=… endOfContent=… room=…`),
             // which is the whole diagnosis.
             if PinnedRowSettleProbe.enabled, plan.report.contains("margin=") {
-                PinnedRowSettleProbe.log("settle " + plan.report)
+                // rc14: the pane truncates the MIDDLE of a line, so the rest-law pair the tester is
+                // asked to read (`restErr=`) rides at the very end — see `restLawToTail`.
+                PinnedRowSettleProbe.log("settle " + PinnedRowSettle.restLawToTail(plan.report))
             }
             // rc13: the control-flow note, pane only. Deliberately a SEPARATE `if` from the one
             // above rather than a fallback inside it: the two are mutually exclusive today (a plan
@@ -4187,6 +4341,12 @@ private final class TitleTrackingCache {
     /// Live mirror of the row's focus state — see the class note. Drives which clearance the fast
     /// path judges by, which in the lift-bearing focus modes is a ~20pt difference.
     var isFocused = false
+    /// rc14 (Steven rc13 verdict — "the rows still bounce when I scroll quickly"): the slide
+    /// target measured while the rows were still MOVING, held back until they rest. Plain
+    /// reference-box fields, like `geometry`: written per frame during a scroll, so they must not
+    /// be `@State`. See `PinnedRowTitleTracking.applySlide`.
+    var pendingSlide: CGFloat?
+    var slideHoldToken = 0
 }
 
 /// Swift-side navigation value. Kotlin data classes don't conform to Swift `Hashable`, so we wrap the
