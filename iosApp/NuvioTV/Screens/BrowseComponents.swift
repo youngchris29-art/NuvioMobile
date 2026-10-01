@@ -798,6 +798,15 @@ enum PinnedRowTitle {
     /// must never fire on.
     nonisolated static let fadeIntrusionArm: CGFloat = 4
 
+    /// rc14: the slide a title actually APPLIES for a measured one — 0 when the title would be
+    /// off screen even after sliding (`visibleMinY >= titleHeight + measured`, the complement of
+    /// `reading`'s `stillOnScreen`), otherwise the measurement. Shared by the seed and the gated
+    /// apply path so a recycled row re-mounting above the viewport cannot carry a stale 72 into
+    /// its next Up approach. Pure, for the unit test.
+    nonisolated static func appliedSlide(visibleMinY: CGFloat, titleHeight: CGFloat, measured: CGFloat) -> CGFloat {
+        visibleMinY >= titleHeight + measured ? 0 : measured
+    }
+
     /// Signed clearance between the title's top and the viewport's top edge BEFORE sliding —
     /// negative means the rest fell short far enough to cut the title (BUG-37 reproducing).
     /// Probe-only.
@@ -1203,7 +1212,20 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 if isFirst {
                     // Store BEFORE flipping `hasSeeded` so the frame that switches paths already
                     // carries the measured value in `slide`.
-                    slide = newValue.slide
+                    //
+                    // rc14 device round 3 (Christian's Up walk, console `slide apply … from=72
+                    // to=8`): a row the LazyVStack recycled and re-mounted ABOVE the viewport took
+                    // this path with a measured 72 and no gate, so its title rode the posters for
+                    // the whole Up approach and eased 72 → 8 at the rest. The seed now obeys the
+                    // same two rules `applySlide` does: an off-screen title seeds 0, and a title
+                    // that mounts while the rows are moving seeds 0 and takes its slide at the
+                    // rest — a title that mounts at rest (cold launch) still seeds its measured
+                    // value so nothing visibly settles.
+                    slide = isRowsMoving()
+                        ? 0
+                        : PinnedRowTitle.appliedSlide(visibleMinY: tracking.geometry?.visibleMinY ?? 0,
+                                                      titleHeight: tracking.geometry?.titleHeight ?? 0,
+                                                      measured: newValue.slide)
                     hasSeeded = true
                     tracking.pendingSlide = nil
                 } else {
@@ -1325,6 +1347,13 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// while a check is already pending, and the pending target is a reference-box write.
     private static let slideMotionHold: TimeInterval = 0.12
 
+    /// Either motion signal inside `slideMotionHold`: the rows scroll's own stamp, or this
+    /// title's frame having changed (see `TitleTrackingCache.lastGeometryChangeAt`).
+    private func isRowsMoving() -> Bool {
+        PinnedRowSettle.secondsSinceMotion() < Self.slideMotionHold
+            || ProcessInfo.processInfo.systemUptime - tracking.lastGeometryChangeAt < Self.slideMotionHold
+    }
+
     private func applySlide(_ measured: CGFloat) {
         // Review r1 P1: a row that has scrolled far above the viewport measures `slide = 72` (the
         // cap) with its title entirely off screen. Applying that at rest is invisible — but on the
@@ -1333,12 +1362,9 @@ private struct PinnedRowTitleTracking: ViewModifier {
         // rest and then ease 72 → 8. A title that is off screen even after sliding gets 0 instead
         // (`stillOnScreen`'s own inequality, from the cached geometry), so an arriving row clips
         // naturally and eases 0 → 8 exactly once at its rest.
-        let target: CGFloat
-        if let g = tracking.geometry, g.visibleMinY >= g.titleHeight + measured {
-            target = 0
-        } else {
-            target = measured
-        }
+        let target = PinnedRowTitle.appliedSlide(visibleMinY: tracking.geometry?.visibleMinY ?? 0,
+                                                 titleHeight: tracking.geometry?.titleHeight ?? 0,
+                                                 measured: measured)
         // Two motion signals, either one holds (device round 2): the rows scroll's own stamp, and
         // this title's frame having changed inside the window — see `lastGeometryChangeAt`.
         let sinceScroll = PinnedRowSettle.secondsSinceMotion()

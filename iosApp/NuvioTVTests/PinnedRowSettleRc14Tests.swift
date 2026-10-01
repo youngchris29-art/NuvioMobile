@@ -101,4 +101,17 @@ final class PinnedRowSettleRc14Tests: XCTestCase {
                                                                     isLastRow: false),
                        0, accuracy: epsilon)
     }
+
+    // MARK: - appliedSlide (rc14 device round 3)
+
+    /// A title that would still be off screen after sliding applies 0; a title inside the
+    /// viewport (or partially clipped) applies its measurement. The recycled-row case from
+    /// Christian's Up walk: measured 72 with the title 300pt above the clip edge → 0.
+    func testAppliedSlideIsZeroForAnOffScreenTitle() {
+        XCTAssertEqual(PinnedRowTitle.appliedSlide(visibleMinY: 300, titleHeight: 38, measured: 72), 0)
+        XCTAssertEqual(PinnedRowTitle.appliedSlide(visibleMinY: 110, titleHeight: 38, measured: 72), 0)
+        XCTAssertEqual(PinnedRowTitle.appliedSlide(visibleMinY: 109, titleHeight: 38, measured: 72), 72)
+        XCTAssertEqual(PinnedRowTitle.appliedSlide(visibleMinY: 8, titleHeight: 38, measured: 8), 8)
+        XCTAssertEqual(PinnedRowTitle.appliedSlide(visibleMinY: -20, titleHeight: 38, measured: 0), 0)
+    }
 }
