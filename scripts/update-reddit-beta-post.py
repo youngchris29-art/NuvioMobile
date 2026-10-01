@@ -7,6 +7,18 @@ r/Nuvio post 1v26ebw, which that sub removed on 2026-09-27) carries a
 post body always describes what releases/latest actually serves. This script
 swaps that block for a new one at release time.
 
+The edit is sent as Reddit rich-text JSON (`richtext_json=`), not markdown
+(`text=`). The post is a rich-text post whose four inline screenshots live at the
+end of the body; a `text=` edit converts the whole post to markdown mode and
+those screenshots degrade to bare links (`![img](url)` renders as the literal
+word "img"). Seen live on 2026-10-01 and repaired by re-sending the body as
+rich text. So after the block swap the new body is converted with the outer
+repo's scripts/reddit/md-to-rtjson.py (each bare preview.redd.it line becomes an
+{"e":"img","id":<media id>} node) and every image id is checked against the
+post's media_metadata before anything is sent. The converter is looked up at
+../../scripts/reddit/md-to-rtjson.py relative to this file (the fork wrapper
+layout); override with --rtjson-converter or NUVIO_RTJSON_CONVERTER.
+
 It deliberately does NOT write the changelog for you. The Reddit changelog is
 hand-written prose with its own constraints (no em dashes, straight quotes, and
 wording that avoids the Automod rules that have tripped this sub before); text
@@ -34,26 +46,30 @@ One-time setup:
 
 Usage:
     update-reddit-beta-post.py --changelog notes.md [--post-id 1wtmutc]
-                               [--dry-run] [--yes]
+                               [--dry-run] [--yes] [--rtjson-converter PATH]
     update-reddit-beta-post.py --authorize [--redirect-uri URI]
     update-reddit-beta-post.py --self-test
 
-    --dry-run    Fetch and show the diff, write nothing. Needs credentials
+    --dry-run    Fetch and show the diff, convert the new body to rich text and
+                 report its image nodes, write nothing. Needs credentials
                  (Reddit returns 403 for unauthenticated reads).
     --yes        Skip the confirmation prompt. For non-interactive release runs.
     --authorize  One-time flow that turns an approval into a refresh token.
-    --self-test  Run the block-replacement logic against fixtures and exit.
-                 Needs no credentials and no network.
+    --self-test  Run the block-replacement and rich-text conversion logic
+                 against fixtures and exit. Needs no credentials and no
+                 network (it does need the converter file, see above).
 """
 
 from __future__ import annotations
 
 import argparse
 import difflib
+import importlib.util
 import json
 import os
 import re
 import sys
+from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -74,6 +90,15 @@ ANCHOR = re.compile(r"^\**Download the beta IPA:.*$", re.MULTILINE)
 
 class BlockError(RuntimeError):
     """The post body is not in the shape this script knows how to edit."""
+
+
+# The docs/comms-reddit-*-changelog.md files open with <!-- --> notes (when the
+# block was applied, what it replaces). Those are for the repo, not the post.
+HTML_COMMENT = re.compile(r"<!--.*?-->\s*", re.DOTALL)
+
+
+def strip_html_comments(block: str) -> str:
+    return HTML_COMMENT.sub("", block)
 
 
 def replace_block(body: str, new_block: str) -> tuple[str, str]:
@@ -112,6 +137,63 @@ def replace_block(body: str, new_block: str) -> tuple[str, str]:
         )
     at = anchors[0].end()
     return body[:at] + "\n\n" + new_block + body[at:], "inserted"
+
+
+# The markdown -> rich-text converter lives in the fork wrapper repo (this file
+# sits at <wrapper>/NuvioMobile/scripts/, the converter at
+# <wrapper>/scripts/reddit/md-to-rtjson.py). It handles exactly the constructs
+# the thread body uses: paragraphs, **bold**, [text](url), "* " bullets and the
+# bare preview.redd.it image lines.
+CONVERTER_ENV = "NUVIO_RTJSON_CONVERTER"
+DEFAULT_CONVERTER = Path(__file__).resolve().parents[2] / "scripts" / "reddit" / "md-to-rtjson.py"
+# The converter turns a bare image line into an img node when it looks like
+# this. Mirrored here so the pre-send check can count what the body carries.
+IMAGE_LINE = re.compile(r"^https://preview\.redd\.it/([a-z0-9]+)\.png", re.MULTILINE)
+
+
+def load_converter(path: str | None = None):
+    """Import md-to-rtjson.py by path and return its convert(body) -> rtjson dict."""
+    chosen = path or os.environ.get(CONVERTER_ENV) or str(DEFAULT_CONVERTER)
+    file = Path(chosen)
+    if not file.is_file():
+        raise SystemExit(
+            f"error: rich-text converter not found at {file}\n"
+            "       It is scripts/reddit/md-to-rtjson.py in the NuvioTV wrapper repo. "
+            f"Point --rtjson-converter or ${CONVERTER_ENV} at it."
+        )
+    spec = importlib.util.spec_from_file_location("md_to_rtjson", file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not callable(getattr(module, "convert", None)):
+        raise SystemExit(f"error: {file} has no convert() function")
+    return module.convert
+
+
+def image_ids(document: dict) -> list[str]:
+    """Media ids of the top-level img nodes, in document order."""
+    return [n["id"] for n in document.get("document", []) if n.get("e") == "img"]
+
+
+def check_images(body: str, document: dict, media_metadata: dict | None) -> None:
+    """Refuse to send a rich-text body that would lose a screenshot.
+
+    Every bare preview line in the markdown must have become an img node, and
+    every img node's id must be in the post's media_metadata (Reddit renders an
+    img node only when it can resolve the id there).
+    """
+    expected = IMAGE_LINE.findall(body)
+    got = image_ids(document)
+    if got != expected:
+        raise BlockError(
+            f"image lines in the body {expected} did not convert to img nodes {got}"
+        )
+    known = set((media_metadata or {}).keys())
+    missing = [i for i in got if i not in known]
+    if missing:
+        raise BlockError(
+            f"image ids {missing} are not in the post's media_metadata "
+            f"(known: {sorted(known)}); sending would drop those screenshots"
+        )
 
 
 def _api(method: str, url: str, token: str | None = None, data: dict | None = None,
@@ -218,7 +300,11 @@ def authorize(redirect_uri: str) -> int:
 
 
 def fetch_post(token: str, post_id: str) -> dict:
-    out = _api("GET", f"https://oauth.reddit.com/api/info?id=t3_{post_id}", token=token)
+    # raw_json=1: without it Reddit HTML-escapes selftext ("->" arrives as
+    # "-&gt;"), which would break the BLOCK_END anchor and, worse, be sent back
+    # verbatim inside rich-text text nodes.
+    out = _api("GET", f"https://oauth.reddit.com/api/info?id=t3_{post_id}&raw_json=1",
+               token=token)
     children = out.get("data", {}).get("children", [])
     if not children:
         raise SystemExit(f"error: post t3_{post_id} not found (or not visible to this account)")
@@ -233,6 +319,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--rtjson-converter", metavar="PATH",
+                    help="markdown -> rich-text converter (default: "
+                         f"scripts/reddit/md-to-rtjson.py in the wrapper repo, or ${CONVERTER_ENV})")
     ap.add_argument("--authorize", action="store_true",
                     help="one-time: exchange a browser approval for a refresh token")
     ap.add_argument("--redirect-uri", default="http://localhost:8080",
@@ -240,7 +329,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.self_test:
-        return self_test()
+        return self_test(args.rtjson_converter)
 
     if args.authorize:
         return authorize(args.redirect_uri)
@@ -249,7 +338,7 @@ def main() -> int:
         ap.error("--changelog is required (or use --self-test)")
     try:
         with open(args.changelog, encoding="utf-8") as fh:
-            new_block = fh.read()
+            new_block = strip_html_comments(fh.read())
     except OSError as exc:
         raise SystemExit(f"error: cannot read changelog: {exc}") from exc
 
@@ -279,6 +368,18 @@ def main() -> int:
     print("\n".join(diff))
     print(f"\n==> {len(old_body)} chars -> {len(new_body)} chars")
 
+    # Convert before the prompt so a body the converter cannot represent, or an
+    # image id Reddit would not resolve, stops the run before anyone says yes.
+    convert = load_converter(args.rtjson_converter)
+    document = convert(new_body)
+    try:
+        check_images(new_body, document, post.get("media_metadata"))
+    except BlockError as exc:
+        raise SystemExit(f"error: {exc}\n       Post not modified.") from exc
+    nodes = document.get("document", [])
+    print(f"==> rich text: {len(nodes)} top-level nodes, "
+          f"{len(image_ids(document))} inline images (all in media_metadata)")
+
     if args.dry_run:
         print("==> dry run, post not modified")
         return 0
@@ -291,18 +392,45 @@ def main() -> int:
             print("==> aborted, post not modified")
             return 1
 
+    # richtext_json, never text: a markdown edit flips the post out of rich-text
+    # mode and the inline screenshots degrade to links (see the module docstring).
     out = _api("POST", "https://oauth.reddit.com/api/editusertext", token=token,
-               data={"thing_id": f"t3_{args.post_id}", "text": new_body,
+               data={"thing_id": f"t3_{args.post_id}",
+                     "richtext_json": json.dumps(document),
                      "api_type": "json"})
-    errors = out.get("json", {}).get("errors") or []
-    if errors:
-        raise SystemExit(f"error: reddit rejected the edit: {errors}")
-    print("==> post updated")
-    return 0
+    return report_edit(out, args.post_id)
 
 
-def self_test() -> int:
-    """Exercise replace_block without credentials or network."""
+def report_edit(out: dict, post_id: str) -> int:
+    """Interpret the editusertext response and print the outcome.
+
+    A markdown edit answers {"json": {"errors": [...]}}. A rich-text edit
+    answers with the post object itself (id, name, selftext, ...), so the
+    absence of a "json" key is not a failure.
+    """
+    if isinstance(out, dict) and "json" in out:
+        errors = (out.get("json") or {}).get("errors") or []
+        if errors:
+            raise SystemExit(f"error: reddit rejected the edit: {errors}")
+        print("==> post updated")
+        return 0
+    if isinstance(out, dict) and out.get("id") == post_id:
+        print(f"==> post updated (reddit returned the post object, "
+              f"{len(out.get('selftext') or '')} chars of selftext)")
+        return 0
+    data = out.get("data") if isinstance(out, dict) else None
+    if isinstance(data, dict) and data.get("id") == post_id:
+        print(f"==> post updated (reddit returned the post object, "
+              f"{len(data.get('selftext') or '')} chars of selftext)")
+        return 0
+    raise SystemExit(
+        "error: unrecognised editusertext response, check the post by hand:\n"
+        + json.dumps(out)[:600]
+    )
+
+
+def self_test(converter_path: str | None = None) -> int:
+    """Exercise replace_block and the rich-text conversion without credentials or network."""
     # Mirrors the live post, which writes these two lines bold. An earlier version
     # of ANCHOR only matched the unbolded form and would have refused to insert.
     base = (
@@ -368,6 +496,95 @@ def self_test() -> int:
         check("empty changelog rejected", False)
     except BlockError:
         check("empty changelog rejected", True)
+
+    noted = ("<!-- APPLIED 2026-10-01 to post 1wtmutc. -->\n"
+             "<!-- beta 11 block. Keep the image lines. -->\n" + block11)
+    check("leading <!-- --> notes in the changelog file are dropped",
+          strip_html_comments(noted) == block11)
+    check("a changelog without notes is untouched", strip_html_comments(block11) == block11)
+
+    # Rich text. The live post ends with four screenshots stored as bare
+    # preview.redd.it lines; after a block swap each must become an img node
+    # whose id is a media_metadata key, and nothing else may mention the URL.
+    four = ["h0m3aaaa1", "h3r0bbbb2", "d3t41lccc3", "pl4y3rddd4"]
+    image_lines = "".join(
+        f"\n\nhttps://preview.redd.it/{i}.png?width=3840&format=png&auto=webp&s={n}"
+        for n, i in enumerate(four, 1)) + "\n"
+    block12 = ("**Latest build: beta 12 (build 108)**\n\nWhat's new in beta 12:\n\n"
+               "* [Linked](https://example.invalid/a) **bold** item.\n"
+               "* Second item.\n\n"
+               "Settings -> About should read 0.3.0 (108).")
+    swapped, action = replace_block(inserted + image_lines, block12)
+    check("four-image swap replaces the block", action == "replaced")
+    try:
+        convert = load_converter(converter_path)
+    except SystemExit as exc:
+        print(f"  FAIL rich-text converter unavailable: {exc}")
+        failures.append("rich-text converter unavailable")
+        convert = None
+    if convert is not None:
+        doc = convert(swapped)
+        nodes = doc.get("document", [])
+        check("rich text has a document", isinstance(nodes, list) and len(nodes) > 0)
+        check("four image lines become four img nodes, in order", image_ids(doc) == four)
+        check("img nodes are the last four nodes",
+              [n.get("e") for n in nodes[-4:]] == ["img"] * 4)
+        check("img nodes carry only the media id",
+              all(set(n) == {"e", "id"} for n in nodes if n.get("e") == "img"))
+        flat = json.dumps(doc)
+        check("no image URL survives as text", "preview.redd.it" not in flat)
+        check("no literal img placeholder", "![img]" not in flat)
+        check("new heading is a bold text node",
+              any(n.get("e") == "par" and any(
+                  c.get("t") == "Latest build: beta 12 (build 108)" and c.get("f") == [[1, 0, 33]]
+                  for c in n.get("c", [])) for n in nodes))
+        check("bullets become a list with two items",
+              any(n.get("e") == "list" and len(n.get("c", [])) == 2 for n in nodes))
+        check("link becomes a link node",
+              any(c.get("e") == "link" and c.get("u") == "https://example.invalid/a"
+                  for n in nodes if n.get("e") == "list"
+                  for li in n["c"] for par in li["c"] for c in par["c"]))
+        check("old build gone from rich text", "build 106" not in flat)
+        meta = {i: {"status": "valid", "e": "Image", "id": i} for i in four}
+        try:
+            check_images(swapped, doc, meta)
+            check("image check passes with all ids in media_metadata", True)
+        except BlockError:
+            check("image check passes with all ids in media_metadata", False)
+        try:
+            check_images(swapped, doc, {k: v for k, v in meta.items() if k != four[2]})
+            check("image check rejects an id missing from media_metadata", False)
+        except BlockError:
+            check("image check rejects an id missing from media_metadata", True)
+        try:
+            check_images(swapped, {"document": nodes[:-1]}, meta)
+            check("image check rejects a dropped img node", False)
+        except BlockError:
+            check("image check rejects a dropped img node", True)
+        # A post with no screenshots still edits fine.
+        try:
+            check_images(replaced, convert(replaced), {})
+            check("image check passes with no images", True)
+        except BlockError:
+            check("image check passes with no images", False)
+
+    # The response of a rich-text edit is the post object, not the {"json": ...}
+    # envelope a markdown edit returns; both are success, errors are not.
+    check("post-object response is success",
+          report_edit({"id": "abc123", "name": "t3_abc123", "selftext": "x"}, "abc123") == 0)
+    check("wrapped post-object response is success",
+          report_edit({"kind": "t3", "data": {"id": "abc123", "selftext": "x"}}, "abc123") == 0)
+    check("empty-errors envelope is success",
+          report_edit({"json": {"errors": []}}, "abc123") == 0)
+    for name, resp in (
+        ("errors envelope rejected", {"json": {"errors": [["TOO_LONG", "too long", "text"]]}}),
+        ("unrelated response rejected", {"id": "other"}),
+    ):
+        try:
+            report_edit(resp, "abc123")
+            check(name, False)
+        except SystemExit:
+            check(name, True)
 
     print(("\nself-test FAILED: " + ", ".join(failures)) if failures else "\nself-test passed")
     return 1 if failures else 0
