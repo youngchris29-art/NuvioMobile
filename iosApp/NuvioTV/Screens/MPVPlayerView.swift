@@ -224,6 +224,10 @@ final class MPVTVPlayerViewController: UIViewController {
     private var healthyReported = false
     /// Main thread: `ProcessInfo.systemUptime` of this file's `MPV_EVENT_FILE_LOADED`; nil until then.
     private var failoverLoadedUptime: TimeInterval?
+    /// Main thread: seconds mpv actually spent playing this file (not paused, not buffering), fed
+    /// from the ~0.5 s `refreshState` tick. `secondsPlayed` for a failure report and the 300 s
+    /// healthy mark read this, never a wall clock since load.
+    private var playClock = PlaybackHealthClock()
 
     init(context: PlaybackContext, state: MPVPlaybackState) {
         self.context = context
@@ -308,17 +312,24 @@ final class MPVTVPlayerViewController: UIViewController {
                 self.playerSettings = settings
                 if self.fileLoaded { self.applySubtitleStyle() }
             }
+        } else if mpv != nil, pollTimer == nil {
+            // Back from a full-screen cover (the post-play card, then Replay): `viewDidDisappear`
+            // stopped the poll timer when the cover went up, and the play clock, the early-end
+            // rule and the healthy mark all run off that tick.
+            startPolling()
         }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        closeFailover()
+        // Failure reporting stays armed while a full-screen cover (the post-play card) merely
+        // covers the player: Replay comes back to this same controller.
+        if isLeavingPlayer { closeFailover() }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        closeFailover()
+        if isLeavingPlayer { closeFailover() }
         pollTimer?.invalidate()
         pollTimer = nil
         endSeek()
@@ -1221,20 +1232,13 @@ final class MPVTVPlayerViewController: UIViewController {
         state.positionSec = max(snap.position, 0)
         state.isPaused = snap.paused
         state.isBuffering = snap.cacheWait || (snap.coreIdle && !snap.paused)
+        samplePlayClock(snap)
 
         // Rising-edge detection: eof-reached STAYS true while keep-open holds the last frame, so
         // only propagate transitions — otherwise a dismissed post-play cover re-presents each tick.
         if snap.eof != lastEofFlag {
             lastEofFlag = snap.eof
-            if snap.eof, onPlaybackFailed != nil, snap.duration.isFinite, snap.duration > 0,
-               snap.position.isFinite, snap.position < snap.duration - 60 {
-                // The stream ran dry long before its declared end: a failure for the failover to
-                // handle, not a finished movie — no post-play card.
-                reportPlaybackFailure(
-                    reason: "stream ended early at \(Int(snap.position))/\(Int(snap.duration)) s",
-                    startedPlaying: true, secondsPlayed: failoverSecondsPlayed,
-                    positionSec: snap.position)
-            } else {
+            if !(snap.eof && handleEarlyEndOfFile(snap)) {
                 state.isEnded = snap.eof
             }
         }
@@ -1474,12 +1478,44 @@ final class MPVTVPlayerViewController: UIViewController {
     // host that wires nothing sees exactly the player it always had. Every failure path funnels
     // through `reportPlaybackFailure`, which is one-shot per player. Greppable: `[Failover]`.
 
-    /// Seconds of real playback for a failure report: wall-clock since `MPV_EVENT_FILE_LOADED`
-    /// plus whatever the native engine played before falling back to this player. 0 until a file
-    /// has loaded (nothing played yet, whatever the other engine did).
+    /// Seconds of real playback for a failure report: what `playClock` accumulated while mpv was
+    /// actually playing (paused and buffering time does not count) plus whatever the native engine
+    /// played before falling back to this player. 0 until a file has loaded (nothing played yet,
+    /// whatever the other engine did).
     private var failoverSecondsPlayed: Double {
-        guard let loaded = failoverLoadedUptime else { return 0 }
-        return max(0, ProcessInfo.processInfo.systemUptime - loaded) + nativeSecondsPlayedBeforeFallback
+        guard failoverLoadedUptime != nil else { return 0 }
+        return playClock.seconds + nativeSecondsPlayedBeforeFallback
+    }
+
+    /// One `refreshState` tick into the play clock. Nothing counts before `MPV_EVENT_FILE_LOADED`
+    /// (the property cache's defaults read as "playing"). "Playing" is the same definition the
+    /// buffering spinner uses: not paused, not waiting on the cache, core not idle (a seek or a
+    /// stall), and not parked at the end of the file by keep-open.
+    private func samplePlayClock(_ snap: PropSnapshot) {
+        guard failoverLoadedUptime != nil else { return }
+        let playing = !snap.paused && !snap.cacheWait && !snap.coreIdle && !snap.eof
+        playClock.note(playing: playing, at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// (d) `eof-reached` just rose (keep-open holds the last frame). A stream that ran dry well
+    /// before its declared end is a failure for the failover to handle, not a finished movie
+    /// (`PlaybackEndPolicy`). Returns true when the caller must NOT raise the post-play card: the
+    /// host was told now, or was told before and is already swapping or closing this player (a
+    /// card on top of that would fight the dismissal). False means a normal end — also when the
+    /// report was refused because the viewer is leaving or a context swap is underway, so the
+    /// player never sits at the end of the file with nothing on screen to act on.
+    private func handleEarlyEndOfFile(_ snap: PropSnapshot) -> Bool {
+        guard onPlaybackFailed != nil else { return false }
+        let played = failoverSecondsPlayed
+        guard PlaybackEndPolicy.isEarlyEndFailure(
+            position: snap.position, duration: snap.duration,
+            secondsPlayed: played, launchSource: context.launchSource) else { return false }
+        if reportPlaybackFailure(
+            reason: "stream ended early at \(Int(snap.position))/\(Int(snap.duration)) s",
+            startedPlaying: true, secondsPlayed: played, positionSec: snap.position) {
+            return true
+        }
+        return failoverReported
     }
 
     /// The single exit for every failover signal. Returns true when the host was told.
@@ -1562,15 +1598,29 @@ final class MPVTVPlayerViewController: UIViewController {
         return true
     }
 
-    /// Fire `onPlaybackHealthy` once, when `secondsPlayed` first reaches 300. Called from the
-    /// ~5 s progress-save tick in `refreshState`.
+    /// Fire `onPlaybackHealthy` once, when the play clock first reaches 300 s
+    /// (`PlaybackFailoverPolicy.healthySeconds`). Called from the ~5 s progress-save tick in
+    /// `refreshState`.
     private func reportHealthyIfNeeded() {
         guard !healthyReported, let onPlaybackHealthy, failoverLoadedUptime != nil else { return }
         let played = failoverSecondsPlayed
-        guard played >= 300 else { return }
+        guard played >= PlaybackFailoverPolicy.healthySeconds else { return }
         healthyReported = true
         print("[Failover] mpv healthy after \(Int(played)) s")
         onPlaybackHealthy(played)
+    }
+
+    /// True while this controller is actually going away: it, or anything above it in the
+    /// containment chain, is being dismissed or removed from its parent. A full-screen cover
+    /// presented over the player (the post-play card) also fires `viewWillDisappear`, but none of
+    /// these flags are set then. Only meaningful from inside `viewWillDisappear`/`viewDidDisappear`.
+    private var isLeavingPlayer: Bool {
+        var node: UIViewController? = self
+        while let current = node {
+            if current.isBeingDismissed || current.isMovingFromParent { return true }
+            node = current.parent
+        }
+        return false
     }
 
     /// The viewer is leaving or the player is going away: no failure may be reported from here on.

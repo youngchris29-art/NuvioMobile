@@ -69,12 +69,13 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// `ProcessInfo.systemUptime` when the item FIRST became ready to play; nil until then (a
     /// signaling retry or a later item never moves it).
     private(set) var readyUptime: TimeInterval?
-    /// Wall-clock seconds since the item became ready (0 before) — the "how long did this stream
-    /// actually play" number the failover policy reads when the native path gives up.
-    var secondsPlayed: Double {
-        guard let readyUptime else { return 0 }
-        return max(0, ProcessInfo.processInfo.systemUptime - readyUptime)
-    }
+    /// Accumulates play time only while `timeControlStatus == .playing`, sampled on the ~3 s
+    /// observation tick once the item is ready. Paused, buffering and stalled time does not count.
+    private var playClock = PlaybackHealthClock()
+    /// Seconds the stream actually played (0 before the item was ready) — the "how long did this
+    /// stream play" number the failover policy reads when the native path gives up, and the
+    /// 300 s healthy mark. Not a wall clock: a paused or stalled stretch is left out.
+    var secondsPlayed: Double { playClock.seconds }
     /// Fired once per session, from the playback tick, when `secondsPlayed` first reaches 300 and the
     /// player is playing — the stream has proven itself. Set by the screen (host: `PlayerScreen`).
     var onPlaybackHealthy: ((Double) -> Void)?
@@ -702,6 +703,10 @@ final class NativePlaybackCoordinator: ObservableObject {
                 }
 
                 if readied {
+                    // Sampled before anything below can await (the resume seek): `secondsPlayed`
+                    // counts only ticks that both begin and end with the player actually playing.
+                    self.playClock.note(playing: player.timeControlStatus == .playing,
+                                        at: ProcessInfo.processInfo.systemUptime)
                     var pos = CMTimeGetSeconds(player.currentTime())
                     let dur = CMTimeGetSeconds(item.duration)
                     // A position jump that is not the app's own seek = a user seek. Reset the stall
@@ -744,7 +749,8 @@ final class NativePlaybackCoordinator: ObservableObject {
 
                     // The stream has now played for 5 minutes: tell the host once (failover policy).
                     if !self.healthyReported, let onPlaybackHealthy = self.onPlaybackHealthy,
-                       player.timeControlStatus == .playing, self.secondsPlayed >= 300 {
+                       player.timeControlStatus == .playing,
+                       self.secondsPlayed >= PlaybackFailoverPolicy.healthySeconds {
                         self.healthyReported = true
                         print("[Failover] native healthy after \(Int(self.secondsPlayed)) s")
                         onPlaybackHealthy(self.secondsPlayed)
