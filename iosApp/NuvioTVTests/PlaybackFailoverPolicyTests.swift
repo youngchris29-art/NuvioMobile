@@ -120,16 +120,67 @@ final class PlaybackFailoverPolicyTests: XCTestCase {
                                               url: nil, label: "x"), "abcdef#")
     }
 
-    func testUrlKeyIsAddonHostAndPathWithoutTheQuery() {
-        XCTAssertEqual(PlaybackStreamKey.make(infoHash: nil, fileIdx: nil, addonId: "addon:x",
-                                              url: "https://CDN.example.com/d/abc/file.mkv?token=secret#t=1", label: "x"),
-                       "addon:x|cdn.example.com/d/abc/file.mkv")
+    private func urlKey(_ url: String, addonId: String = "addon:x") -> String {
+        PlaybackStreamKey.make(infoHash: nil, fileIdx: nil, addonId: addonId, url: url, label: "x")
     }
 
-    func testKeyFallsBackToTheLabelAndIsEmptyWithNothing() {
-        XCTAssertEqual(PlaybackStreamKey.make(infoHash: nil, fileIdx: nil, addonId: "addon:x", url: nil, label: " 1080p "),
-                       "addon:x|1080p")
+    func testUrlKeyIsStableDigestOfAddonAndHostPath() {
+        // Pinned: keys are persisted for eight hours, so the digest must not drift between builds.
+        // e3600bd8 = SHA-256("addon:x")[0..<4], 05c9…990d = SHA-256("cdn.example.com/d/abc/file.mkv")[0..<16].
+        XCTAssertEqual(urlKey("https://CDN.example.com/d/abc/file.mkv?token=secret#t=1"),
+                       "e3600bd8|05c9e8e2ae7e7620befe2fea6c61990d")
+        XCTAssertEqual(urlKey("https://cdn.example.com/d/abc/file.mkv"),
+                       urlKey("https://cdn.example.com/d/abc/file.mkv"), "same host+path, same key")
+    }
+
+    func testUrlKeyIgnoresQueryFragmentAndHostCase() {
+        let base = urlKey("https://cdn.example.com/d/abc/file.mkv")
+        XCTAssertEqual(urlKey("https://cdn.example.com/d/abc/file.mkv?token=one"), base)
+        XCTAssertEqual(urlKey("https://cdn.example.com/d/abc/file.mkv?token=two&exp=9#t=30"), base,
+                       "a refreshed session token is still the same link")
+        XCTAssertEqual(urlKey("https://CDN.Example.com/d/abc/file.mkv"), base)
+    }
+
+    func testUrlKeyChangesWithThePathHostOrAddon() {
+        let base = urlKey("https://cdn.example.com/d/abc/file.mkv")
+        XCTAssertNotEqual(urlKey("https://cdn.example.com/d/abc/other.mkv"), base)
+        XCTAssertNotEqual(urlKey("https://mirror.example.com/d/abc/file.mkv"), base)
+        XCTAssertNotEqual(urlKey("https://cdn.example.com/d/abc/file.mkv", addonId: "addon:y"), base,
+                          "the same link from another add-on is its own entry")
+    }
+
+    func testUrlKeyNeverCarriesTheLinkOrAddonInTheClear() {
+        // Torrentio-style: the debrid API key sits in the resolve path and in the configured
+        // manifest URL that the add-on id embeds.
+        let secret = "SECRETKEY123"
+        let key = urlKey("https://torrentio.strem.fun/resolve/realdebrid/\(secret)/abcdef/null/0/file.mkv",
+                         addonId: "addon:com.stremio.torrentio.addon:https://torrentio.strem.fun/realdebrid=\(secret)/manifest.json")
+        XCTAssertFalse(key.contains(secret))
+        XCTAssertFalse(key.contains("torrentio"))
+        XCTAssertFalse(key.contains("realdebrid"))
+        XCTAssertNotNil(key.range(of: "^[0-9a-f]{8}\\|[0-9a-f]{32}$", options: .regularExpression),
+                        "an 8-hex add-on tag and a 32-hex link digest, nothing else: \(key)")
+    }
+
+    func testHostlessUrlKeyDropsTheQueryAndIsDigested() {
+        let key = urlKey("plain-path/file.mkv?token=secret")
+        XCTAssertEqual(key, urlKey("plain-path/file.mkv"))
+        XCTAssertFalse(key.contains("plain-path"))
+        XCTAssertFalse(key.contains("secret"))
+    }
+
+    func testKeyFallsBackToTheLabelDigestAndIsEmptyWithNothing() {
+        let labelKey = PlaybackStreamKey.make(infoHash: nil, fileIdx: nil, addonId: "addon:x", url: nil, label: " 1080p ")
+        XCTAssertEqual(labelKey, "e3600bd8|00a6c687935e22c7cabb42eeaafd06a9", "SHA-256(\"label\\u{1F}1080p\")[0..<16]")
+        XCTAssertEqual(labelKey, PlaybackStreamKey.make(infoHash: nil, fileIdx: nil, addonId: "addon:x", url: nil, label: "1080p"))
+        XCTAssertNotEqual(labelKey, urlKey("1080p"), "a label and a link with the same text are different keys")
         XCTAssertEqual(PlaybackStreamKey.make(infoHash: "  ", fileIdx: nil, addonId: "addon:x", url: "", label: ""), "")
+    }
+
+    func testDigestHexIsTheLeadingBytesOfSha256() {
+        // SHA-256("abc") = ba7816bf 8f01cfea 414140de 5dae2223 …
+        XCTAssertEqual(PlaybackStreamKey.digestHex("abc", bytes: 4), "ba7816bf")
+        XCTAssertEqual(PlaybackStreamKey.digestHex("abc", bytes: 16), "ba7816bf8f01cfea414140de5dae2223")
     }
 
     func testStreamItemKeyUsesItsInfoHash() {

@@ -16,8 +16,15 @@ final class PlaybackProgressRecorder {
     /// Saved percentage (0-100) for a percentage-only entry (no stored position), else nil.
     /// Used when the item duration is not yet finite at `readyToPlay`. nil for "Start Over".
     func pendingResumePercent() -> Double? {
-        guard !context.startFromBeginning else { return nil }
-        guard let entry = savedEntry(), !entry.isCompleted, entry.lastPositionMs <= 0,
+        Self.pendingResumePercent(startFromBeginning: context.startFromBeginning, entry: savedEntry())
+    }
+
+    /// Pure form of `pendingResumePercent()`. "Start Over" wins before the saved entry is read
+    /// (`entry` is only evaluated when it is needed). Unit tested (`PlaybackProgressRecorderTests`).
+    nonisolated static func pendingResumePercent(startFromBeginning: Bool,
+                                                 entry: @autoclosure () -> WatchProgressEntry?) -> Double? {
+        guard !startFromBeginning else { return nil }
+        guard let entry = entry(), !entry.isCompleted, entry.lastPositionMs <= 0,
               entry.progressFraction > 0 else { return nil }
         return Double(entry.progressFraction) * 100
     }
@@ -35,13 +42,17 @@ final class PlaybackProgressRecorder {
     /// `actualDurationSec` (item duration, when finite) lets percentage-only rows resolve.
     /// "Start Over" (`context.startFromBeginning`) ignores saved progress: always nil.
     func resumePositionSec(actualDurationSec: Double = 0) -> Double? {
-        guard !context.startFromBeginning else { return nil }
-        guard let entry = WatchProgressRepository.shared.progressForVideo(
-            videoId: context.videoId,
-            parentMetaId: context.parentMetaId,
-            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
-            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) }
-        ), !entry.isCompleted else { return nil }
+        Self.resumePositionSec(startFromBeginning: context.startFromBeginning,
+                               actualDurationSec: actualDurationSec, entry: savedEntry())
+    }
+
+    /// Pure form of `resumePositionSec(actualDurationSec:)`. "Start Over" wins before the saved
+    /// entry is read (`entry` is only evaluated when it is needed). Unit tested
+    /// (`PlaybackProgressRecorderTests`).
+    nonisolated static func resumePositionSec(startFromBeginning: Bool, actualDurationSec: Double,
+                                              entry: @autoclosure () -> WatchProgressEntry?) -> Double? {
+        guard !startFromBeginning else { return nil }
+        guard let entry = entry(), !entry.isCompleted else { return nil }
         let durationMs = actualDurationSec.isFinite && actualDurationSec > 0 ? Int64(actualDurationSec * 1000) : 0
         let seconds = Double(entry.resolveResumePosition(actualDurationMs: durationMs)) / 1000.0
         return seconds > 10 ? seconds : nil

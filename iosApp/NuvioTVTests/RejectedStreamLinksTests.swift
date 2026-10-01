@@ -51,6 +51,23 @@ final class RejectedStreamLinksTests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: RejectedStreamLinks.storageKey), "nothing should have been written")
     }
 
+    func testStoredBlobHoldsNoLinkText() throws {
+        // A Torrentio-style debrid link: the API key sits in the path and in the add-on's manifest URL.
+        let secret = "SECRETKEY123"
+        let key = PlaybackStreamKey.make(
+            infoHash: nil, fileIdx: nil,
+            addonId: "addon:com.stremio.torrentio.addon:https://torrentio.strem.fun/realdebrid=\(secret)/manifest.json",
+            url: "https://torrentio.strem.fun/resolve/realdebrid/\(secret)/abcdef/null/0/file.mkv?token=t",
+            label: "Torrentio"
+        )
+        reject(key)
+        XCTAssertEqual(rejected(), [key])
+        let data = try XCTUnwrap(defaults.data(forKey: RejectedStreamLinks.storageKey))
+        let blob = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(blob.contains(secret))
+        XCTAssertFalse(blob.contains("torrentio"))
+    }
+
     // MARK: TTL
 
     func testEntryExpiresAfterEightHours() {

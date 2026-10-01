@@ -377,6 +377,39 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
         XCTAssertEqual(harness.gaveUp.first?.1, true, "the picker closes the failed player")
     }
 
+    // MARK: - External default player
+
+    func testExternalDefaultTakesTheFirstPlayAndFailoverStaysBuiltIn() throws {
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        let harness = Harness()
+        let controller = harness.makeController()
+        controller.arm()
+        controller.ingest(feed(settled: [stream("A1", direct: true), stream("A2", direct: true)]))
+
+        let first = try XCTUnwrap(harness.played.first)
+        XCTAssertFalse(first.failover)
+        XCTAssertEqual(Policy.startDestination(isFailover: first.failover, defaultExternalPlayerId: "infuse"),
+                       .external(playerId: "infuse"), "the first auto pick goes to the external default")
+        XCTAssertEqual(Policy.startDestination(isFailover: first.failover, defaultExternalPlayerId: nil),
+                       .builtIn, "no external default: the built-in player")
+
+        // A failover (only reachable when the first start played in NuvioTV) never hands off.
+        controller.failover(afterFailureOf: stream("A1", direct: true).playbackStreamKey, addonId: "addon:a")
+        XCTAssertEqual(harness.played.count, 2)
+        let second = try XCTUnwrap(harness.played.last)
+        XCTAssertEqual(second.name, "A2")
+        XCTAssertTrue(second.failover)
+        XCTAssertEqual(Policy.startDestination(isFailover: second.failover, defaultExternalPlayerId: "infuse"),
+                       .builtIn)
+    }
+
+    func testStartDestinationNeedsANonEmptyDefault() {
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        XCTAssertEqual(Policy.startDestination(isFailover: false, defaultExternalPlayerId: ""), .builtIn)
+        XCTAssertEqual(Policy.startDestination(isFailover: false, defaultExternalPlayerId: "vlc"), .external(playerId: "vlc"))
+        XCTAssertEqual(Policy.startDestination(isFailover: true, defaultExternalPlayerId: "vlc"), .builtIn)
+    }
+
     func testFailoverWithoutAStartedWalkDeclines() async {
         let harness = Harness()
         let controller = harness.makeController()

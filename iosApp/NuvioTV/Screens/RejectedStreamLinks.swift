@@ -12,7 +12,8 @@ import Foundation
 /// this type (registered as `RejectedStreamLinks` in the shared `AccountDataStores`), and a cache
 /// would resurrect the previous account's history. `title` is the playing video's id
 /// (`PlaybackContext.videoId`: the movie id, or the episode's `meta:season:episode`); keys are
-/// `StreamItem.playbackStreamKey`.
+/// `StreamItem.playbackStreamKey` — an info hash or a digest, never link text, so neither this
+/// store nor its log lines hold a token or a debrid API key (`PlaybackStreamKey`).
 ///
 /// Caps: 6 keys per title and 60 titles, the oldest dropped first; entries past the 8-hour TTL
 /// are pruned on every read and write. The `defaults` / `now` parameters exist for tests.

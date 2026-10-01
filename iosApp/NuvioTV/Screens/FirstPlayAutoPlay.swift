@@ -82,7 +82,8 @@ final class FirstPlayAutoPlayController: ObservableObject {
 
     enum Event {
         /// Open the player on `url` (the resolved stream). `attempt` is 1-based; `isFailover` means
-        /// this replaces a player that failed (the picker swaps it in place).
+        /// this replaces a player that failed (the picker swaps it in place). Which player opens is
+        /// `Policy.startDestination`: a first play may go to the viewer's external default.
         case play(candidate: Candidate, resolved: StreamItem, url: URL, attempt: Int, isFailover: Bool)
         /// Stop auto mode and show the list.
         case gaveUp(GiveUpReason, duringFailover: Bool)
@@ -183,15 +184,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
     }
 
     /// Menu on the overlay, or the viewer closed the player while a failover resolved. Only
-    /// in-flight work is cancelled; a settled phase is left alone.
-    func cancel() {
+    /// in-flight work is cancelled; a settled phase is left alone. `why` only feeds the log line.
+    func cancel(why: String = "cancelled") {
         switch phase {
         case .searching, .resolving:
+            let from = phase
             generation += 1
             searchTimeout?.cancel()
             resolveTimeout?.cancel()
             phase = .cancelled
-            print("[AutoPlay] cancelled after \(attemptsUsed) attempt(s)")
+            print("[AutoPlay] cancelled (\(why)) in \(from) after \(attemptsUsed) attempt(s): \(walkSummary())")
         default:
             return
         }
@@ -244,7 +246,9 @@ final class FirstPlayAutoPlayController: ObservableObject {
 
             if let url = deps.directURL(candidate.stream) {
                 attemptsUsed += 1
-                print("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey) addon=\(candidate.addonId)")
+                // Key only: the add-on id embeds the manifest URL, which can hold a debrid API key
+                // (a URL key's first part already names the add-on, as a digest).
+                print("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey)")
                 succeed(candidate, resolved: candidate.stream, url: url)
                 return
             }
@@ -256,7 +260,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
             }
             attemptsUsed += 1
             phase = .resolving(attempt: attemptsUsed)
-            print("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey) addon=\(candidate.addonId)")
+            print("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey)")
             beginResolve(candidate)
             return
         }
@@ -318,8 +322,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
         resolveTimeout?.cancel()
         generation += 1
         phase = .exhausted
-        print("[AutoPlay] give up (\(reason)) after \(attemptsUsed) attempt(s)")
+        print("[AutoPlay] give up (\(reason)) after \(attemptsUsed) attempt(s): \(walkSummary())")
         events.send(.gaveUp(reason, duringFailover: isFailoverWalk))
+    }
+
+    /// Why a walk ended, for the log: how many candidates were eligible and tried, how many of this
+    /// title's links are remembered as failed, and whether the walk was continuing after a failed
+    /// playback. Counts only, never a key or a link.
+    private func walkSummary() -> String {
+        "candidates=\(candidates.count) tried=\(triedIndices.count) rejected=\(deps.rejected(titleKey).count)"
+            + " failover=\(isFailoverWalk)"
     }
 
     // MARK: - Policy (pure)
@@ -408,6 +420,21 @@ final class FirstPlayAutoPlayController: ObservableObject {
             let active = (activeResolverProviderId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !active.isEmpty, let value else { return true }
             return value.caseInsensitiveCompare(active) == .orderedSame
+        }
+
+        /// Where an auto pick plays (`Event.play`).
+        enum StartDestination: Equatable {
+            case builtIn
+            case external(playerId: String)
+        }
+
+        /// The first start of a visit follows the viewer's default player, as Select on a row does:
+        /// an external default (`defaultExternalPlayerId`, the validated installed one) gets the
+        /// handoff. A failover always stays on the built-in player: an external player reports no
+        /// failure back, so a walk handed to one could never continue.
+        static func startDestination(isFailover: Bool, defaultExternalPlayerId: String?) -> StartDestination {
+            guard !isFailover, let playerId = defaultExternalPlayerId, !playerId.isEmpty else { return .builtIn }
+            return .external(playerId: playerId)
         }
 
         /// Overlay text for a phase; nil hides the overlay.

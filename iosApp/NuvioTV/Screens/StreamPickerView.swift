@@ -28,7 +28,9 @@ import SharedCore
 /// Auto-Play Best Source (orivio batch item 1): with the "first stream" auto-play mode on and the
 /// picker not forced manual, a visit opens in auto mode — `FirstPlayAutoPlayController` walks the
 /// shared repository's settled candidates under a full-screen "Finding the best source…" overlay
-/// and opens the player itself; Back from that player dismisses the picker too. Menu on the overlay
+/// and opens the player itself; Back from that player dismisses the picker too. With an external
+/// default player (Settings → Playback → Default Player) the first auto pick is handed to it and
+/// the picker closes; failover always plays in the built-in player. Menu on the overlay
 /// drops to the list. Failover (item 2): a presented playback that fails is remembered
 /// (`RejectedStreamLinks`) and, by `PlaybackContext.launchSource`, swaps in the next auto
 /// candidate, opens a picker for the Up Next episode that failed, or offers "Try Next Source".
@@ -400,6 +402,11 @@ struct StreamPickerView: View {
                 }
             }
             .onAppear {
+                // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
+                // appearance so an Infuse install mid-session is picked up next time the picker
+                // opens instead of requiring an app relaunch. First, so an auto-play start already
+                // knows the viewer's default player.
+                externalPlayers = ExternalPlayerPlatform.shared.availablePlayers()
                 if !autoPlayEvaluated {
                     autoPlayEvaluated = true
                     autoPlayArmed = !forceManual && Self.firstStreamAutoPlayOn()
@@ -412,10 +419,6 @@ struct StreamPickerView: View {
                 rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
                 model.start(forceManual: !autoPlayArmed)
                 fetchEpisodesIfNeeded()
-                // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
-                // appearance so an Infuse install mid-session is picked up next time the picker
-                // opens instead of requiring an app relaunch.
-                externalPlayers = ExternalPlayerPlatform.shared.availablePlayers()
                 // Head start for the player: addon subtitles for this title begin fetching while
                 // the user is still choosing a stream, so the native path's pre-master window
                 // (and the mpv side-load) see results instead of racing the network. The player's
@@ -856,8 +859,13 @@ struct StreamPickerView: View {
     /// passes Infuse its x-success / x-error callback URLs on this install's own URL scheme, so the
     /// position Infuse reports back is recorded (`ExternalPlaybackReturn`). A handoff that does not
     /// open drops that session again. `listed` is the stream as the list shows it (pre-resolve).
+    ///
+    /// `autoAttempt` (1-based) marks the first-play auto start handing its pick to the viewer's
+    /// external default: its built-in fallback is then an auto start too (`.autoPlay`, Back leaves
+    /// the picker, a failure continues the walk). Returns true when the external player opened.
+    @discardableResult
     private func openExternally(urlString: String, stream: StreamItem, listed: StreamItem, playerId: String,
-                                fallbackToInternal: Bool = false) {
+                                fallbackToInternal: Bool = false, autoAttempt: Int? = nil) -> Bool {
         let progress = WatchProgressRepository.shared.progressForVideo(
             videoId: videoId,
             parentMetaId: parentMetaId,
@@ -907,7 +915,7 @@ struct StreamPickerView: View {
         )
         let result = ExternalPlayerPlatform.shared.open(request: request, playerId: playerId)
         // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).
-        guard result != ExternalPlayerOpenResult.opened else { return }
+        guard result != ExternalPlayerOpenResult.opened else { return true }
         if let launchSessionId {
             // Nothing was handed off: drop the pending return session (only if it is still this one).
             ExternalPlaybackReturn.shared.cancelLaunch(sessionId: launchSessionId)
@@ -915,12 +923,20 @@ struct StreamPickerView: View {
         if fallbackToInternal, let url = URL(string: urlString) {
             showToast(String(localized: "Couldn\u{2019}t open the external player \u{2014} playing in NuvioTV."))
             NextEpisodeEngine.consecutiveAutoPlays = 0
-            dismissAfterPlayer = false
-            selected = context(url: url, stream: stream, listedStream: listed, streamKey: listed.playbackStreamKey,
-                               launchSource: .manual)
+            if let autoAttempt {
+                print("[AutoPlay] external player \(playerId) did not open — attempt #\(autoAttempt) plays in NuvioTV")
+                dismissAfterPlayer = true
+                selected = context(url: url, stream: stream, listedStream: listed, streamKey: listed.playbackStreamKey,
+                                   launchSource: .autoPlay, attempt: autoAttempt - 1)
+            } else {
+                dismissAfterPlayer = false
+                selected = context(url: url, stream: stream, listedStream: listed, streamKey: listed.playbackStreamKey,
+                                   launchSource: .manual)
+            }
         } else {
             showToast(String(localized: "Couldn\u{2019}t open the external player."))
         }
+        return false
     }
 
     /// Duration for the external-player return: the stored progress entry's, else the episode's
@@ -959,19 +975,38 @@ struct StreamPickerView: View {
             }
             autoPlayArmed = false
             NextEpisodeEngine.consecutiveAutoPlays = 0
+            if case let .external(playerId) = FirstPlayAutoPlayController.Policy.startDestination(
+                isFailover: isFailover, defaultExternalPlayerId: activeDefaultExternalPlayer?.id
+            ) {
+                // The viewer's default player is external: the auto pick goes there, as Select on a
+                // row would. Handed off, the picker leaves too (Back from the player would have);
+                // a handoff that does not open plays in NuvioTV as this same auto start.
+                print("[AutoPlay] attempt #\(attempt) to external player \(playerId) key=\(candidate.streamKey)")
+                let opened = openExternally(urlString: url.absoluteString, stream: resolved, listed: candidate.stream,
+                                            playerId: playerId, fallbackToInternal: true, autoAttempt: attempt)
+                if opened {
+                    DispatchQueue.main.async { dismiss() }
+                }
+                return
+            }
             dismissAfterPlayer = true
             // Set straight from the event: during a failover this swaps the open player in place.
             selected = context(url: url, stream: resolved, listedStream: candidate.stream,
                                streamKey: candidate.streamKey, launchSource: .autoPlay, attempt: attempt - 1)
-        case let .gaveUp(_, duringFailover):
+        case let .gaveUp(reason, duringFailover):
             autoPlayArmed = false
+            rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
             if duringFailover {
                 // The viewer already left the player: nothing to explain.
-                guard selected != nil else { return }
+                guard selected != nil else {
+                    print("[AutoPlay] walk ended (\(reason)) after the player had closed — nothing shown, rejected=\(rejectedKeys.count)")
+                    return
+                }
                 dismissAfterPlayer = false
                 selected = nil
             }
-            rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+            let listedStreams = model.groups.reduce(0) { $0 + $1.streams.count }
+            print("[AutoPlay] walk ended (\(reason)) — showing the list: groups=\(model.groups.count) streams=\(listedStreams) rejected=\(rejectedKeys.count) failover=\(duringFailover)")
             if duringFailover || !model.groups.isEmpty {
                 showToast(String(localized: "No source could start. Choose one below."))
             }
@@ -981,7 +1016,7 @@ struct StreamPickerView: View {
 
     /// Menu on the overlay: stop auto mode and show the list; the picker stays.
     private func cancelAutoPlay() {
-        autoPlay.cancel()
+        autoPlay.cancel(why: "Menu on the overlay")
         autoPlayArmed = false
         focusListAfterAutoPlay()
     }
@@ -1093,7 +1128,7 @@ struct StreamPickerView: View {
             return
         }
         // A failover still resolving behind the closed player must not reopen it.
-        autoPlay.cancel()
+        autoPlay.cancel(why: "player closed")
         if dismissAfterPlayer {
             dismissAfterPlayer = false
             DispatchQueue.main.async { dismiss() }

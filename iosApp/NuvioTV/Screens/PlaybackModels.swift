@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SharedCore
 
@@ -193,28 +194,45 @@ enum PlaybackFailoverPolicy {
 
 /// The key a stream link is remembered under (`RejectedStreamLinks`, `PlaybackContext.streamKey`).
 /// Shared by the stream picker, its auto-play controller and the Up Next engine so all three agree.
+///
+/// Keys are persisted (`RejectedStreamLinks`) and printed in `[AutoPlay]` / `[Failover]` lines, so
+/// no link text goes into one in the clear: Torrentio-style debrid links carry the debrid API key
+/// in the URL path (`/resolve/<service>/<API key>/…`), and an add-on's `addonId` is
+/// `addon:<manifest id>:<manifest URL>`, where a configured manifest URL can hold the same key.
 enum PlaybackStreamKey {
     /// `infoHash#fileIdx` for torrent / debrid candidates (the same torrent from two add-ons is the
-    /// same file), else `addonId|host+path` of the stream URL — never the full URL, whose query
-    /// usually carries a session token — else `addonId|label` for a stream with neither. Built
-    /// from the stream as listed: a debrid resolve's per-session link must not be the identity.
+    /// same file; an info hash is public). Otherwise `<add-on tag>|<link digest>`: the add-on tag
+    /// is the hex of the first 4 bytes of SHA-256 of `addonId`, the link digest the hex of the
+    /// first 16 bytes of SHA-256 of the stream URL's host+path. The query and fragment never join
+    /// the digest (they usually carry a per-session token, so a refreshed token keeps the key). A
+    /// stream with no URL digests its label instead; one with neither has no key (""). Built from
+    /// the stream as listed: a debrid resolve's per-session link must not be the identity.
     static func make(infoHash: String?, fileIdx: Int?, addonId: String, url: String?, label: String) -> String {
         if let hash = infoHash?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !hash.isEmpty {
             return "\(hash)#\(fileIdx.map(String.init) ?? "")"
         }
         if let raw = url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let link: String
             if let components = URLComponents(string: raw), let host = components.host, !host.isEmpty {
-                return "\(addonId)|\(host.lowercased())\(components.path)"
+                link = host.lowercased() + components.path
+            } else {
+                let bare = raw.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+                    .map(String.init) ?? raw
+                link = bare.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first
+                    .map(String.init) ?? bare
             }
-            let bare = raw.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
-                .map(String.init) ?? raw
-            let noFragment = bare.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first
-                .map(String.init) ?? bare
-            return "\(addonId)|\(noFragment)"
+            return "\(digestHex(addonId, bytes: 4))|\(digestHex(link, bytes: 16))"
         }
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedLabel.isEmpty else { return "" }
-        return "\(addonId)|\(trimmedLabel)"
+        // The prefix keeps a label's digest apart from a link's.
+        return "\(digestHex(addonId, bytes: 4))|\(digestHex("label\u{1F}" + trimmedLabel, bytes: 16))"
+    }
+
+    /// Lowercase hex of the first `bytes` bytes of SHA-256 of `text` (UTF-8). The same on every
+    /// launch and device, which the persisted keys rely on.
+    static func digestHex(_ text: String, bytes: Int) -> String {
+        SHA256.hash(data: Data(text.utf8)).prefix(bytes).map { String(format: "%02x", $0) }.joined()
     }
 }
 
