@@ -1158,7 +1158,13 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 return PinnedRowTitle.TitleGeometry(visibleMinY: visible.minY,
                                                     titleHeight: proxy.size.height)
             }, action: { newValue in
-                if let newValue { tracking.geometry = newValue }
+                if let newValue {
+                    tracking.geometry = newValue
+                    // rc14 device round 2: the title's own motion stamp — see
+                    // `TitleTrackingCache.lastGeometryChangeAt`. `onGeometryChange` fires only on
+                    // a CHANGE, so this is exactly "the title moved this frame".
+                    tracking.lastGeometryChangeAt = ProcessInfo.processInfo.systemUptime
+                }
             })
             // Wave W5: the value type is `TickedReading?`, not `Reading?` — see that type's doc for
             // why a tick has to ride along. The `TitleGeometry` observer ABOVE deliberately does
@@ -1333,7 +1339,12 @@ private struct PinnedRowTitleTracking: ViewModifier {
         } else {
             target = measured
         }
-        if PinnedRowSettle.secondsSinceMotion() < Self.slideMotionHold {
+        // Two motion signals, either one holds (device round 2): the rows scroll's own stamp, and
+        // this title's frame having changed inside the window — see `lastGeometryChangeAt`.
+        let sinceScroll = PinnedRowSettle.secondsSinceMotion()
+        let sinceTitleMove = ProcessInfo.processInfo.systemUptime - tracking.lastGeometryChangeAt
+        let moving = sinceScroll < Self.slideMotionHold || sinceTitleMove < Self.slideMotionHold
+        if moving {
             let alreadyPending = tracking.pendingSlide != nil
             tracking.pendingSlide = target
             guard !alreadyPending else { return }
@@ -1347,6 +1358,13 @@ private struct PinnedRowTitleTracking: ViewModifier {
             return
         }
         tracking.pendingSlide = nil
+        if HomeGeometryProbe.enabled, slide != target {
+            NSLog("[HomeScrollProbe] slide %@",
+                  "apply row=\(rowKey) from=\(Int(slide.rounded())) to=\(Int(target.rounded()))"
+                    + " measured=\(Int(measured.rounded()))"
+                    + " sinceScroll=\(Int((min(sinceScroll, 99) * 1000).rounded()))ms"
+                    + " sinceTitle=\(Int((min(sinceTitleMove, 99) * 1000).rounded()))ms")
+        }
         guard slide != target else { return }
         if reduceMotion {
             slide = target
@@ -4347,6 +4365,15 @@ private final class TitleTrackingCache {
     /// be `@State`. See `PinnedRowTitleTracking.applySlide`.
     var pendingSlide: CGFloat?
     var slideHoldToken = 0
+    /// rc14 device round 2 (Christian, Up walk): when this title's own geometry last changed —
+    /// the SECOND motion signal the slide gate consults. The scroll stamp (`noteScroll`) counts a
+    /// frame as motion only past `driftTolerance` (4pt) or the windowed displacement, and the
+    /// engine's Up reveal ends in a creep of 1–2pt steps that it does not count; the gate then
+    /// released ≈30pt early and the title eased 30 → 8 while the row was still moving — the
+    /// "overlap, then jumps into position" on every Up press. Any change to the title's frame is
+    /// motion as far as the title is concerned. Written per frame; a reference-box field, never
+    /// `@State`.
+    var lastGeometryChangeAt: TimeInterval = 0
 }
 
 /// Swift-side navigation value. Kotlin data classes don't conform to Swift `Hashable`, so we wrap the

@@ -1262,7 +1262,9 @@ struct FolderDetailView: View {
             TitleLogoHeader(
                 title: model.folderTitle,
                 logoUrl: model.titleLogoUrl,
-                alignment: .center,
+                // rc14 device round 2: `.top` (horizontally centred, pinned to the slot's top) —
+                // see the header's top-padding note below.
+                alignment: .top,
                 textFont: Theme.Font.hero,
                 slotHeight: Theme.Size.heroLogoSlotHeight
             )
@@ -1289,7 +1291,11 @@ struct FolderDetailView: View {
         .padding(.horizontal, Theme.Spacing.screen)
         // rc14 (Steven rc13 verdict, 2026-09-30): "logo too close to the posters, move it up a
         // little" — 16 pt less top padding; the content's top padding in `body` gained the same 16.
-        .padding(.top, Theme.Spacing.screen - Theme.Spacing.md)
+        // rc14 device round 2 (Christian: "the logo still isn't high enough"): 44 → 32, and the
+        // logo is TOP-aligned inside its 150pt slot (it was centred, so a short wordmark sat up to
+        // 45pt lower than the slot's top) — see the `alignment: .top` on `TitleLogoHeader` above.
+        // The grid does not move.
+        .padding(.top, Theme.Spacing.screen - Theme.Spacing.lg - Theme.Spacing.xxs)
         .background(Theme.Palette.background.ignoresSafeArea(edges: .top))
         .overlay(alignment: .bottom) {
             LinearGradient(
