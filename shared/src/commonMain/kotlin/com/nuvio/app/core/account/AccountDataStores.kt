@@ -365,6 +365,15 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("debrid_stream_badge_rules"),
             ),
         ),
+        AccountDataStore(
+            // tvOS-only (Swift `RejectedStreamLinks`): one unscoped JSON blob in
+            // `UserDefaults.standard`, `[title: [streamKey: Date]]`. It records which stream links
+            // failed recently for a title, so it is per-account viewing history and must not
+            // survive sign-out. No Android backing.
+            name = "RejectedStreamLinks",
+            androidPreferences = null,
+            appleKeys = listOf(AppleKeySpec.Plain("tvos_rejected_stream_links_v1")),
+        ),
 
         // ── Player ─────────────────────────────────────────────────────────────────────────────
         AccountDataStore(
@@ -420,8 +429,10 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("introdb_api_key"),
                 AppleKeySpec.ProfileScoped("intro_submit_enabled"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_next_episode_enabled"),
+                AppleKeySpec.ProfileScoped("stream_auto_play_next_episode_fallback_enabled"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_prefer_binge_group"),
                 AppleKeySpec.ProfileScoped("stream_auto_play_reuse_binge_group"),
+                AppleKeySpec.ProfileScoped("stream_auto_play_cached_only"),
                 AppleKeySpec.ProfileScoped("next_episode_threshold_mode"),
                 AppleKeySpec.ProfileScoped("next_episode_threshold_percent_v2"),
                 AppleKeySpec.ProfileScoped("next_episode_threshold_minutes_before_end_v2"),
@@ -465,6 +476,14 @@ object AccountDataStores {
                 AppleKeySpec.DynamicPrefix("subtitle_delay_ms|"),
             ),
         ),
+        AccountDataStore(
+            // The pending hand-off to an external player (Infuse): one JSON session that carries
+            // its own profileId, so the key is plain rather than profile-scoped. Without this
+            // entry a session left pending at sign-out would be replayed into the next account.
+            name = "ExternalPlaybackSessionStorage",
+            androidPreferences = "nuvio_external_playback",
+            appleKeys = listOf(AppleKeySpec.Plain("pending_external_playback")),
+        ),
 
         // ── Credentials & third-party services ─────────────────────────────────────────────────
         AccountDataStore(
@@ -485,6 +504,7 @@ object AccountDataStores {
                 AppleKeySpec.ProfileScoped("debrid_stream_max_results"),
                 AppleKeySpec.ProfileScoped("debrid_stream_sort_mode"),
                 AppleKeySpec.ProfileScoped("debrid_stream_minimum_quality"),
+                AppleKeySpec.ProfileScoped("debrid_stream_cached_only"),
                 AppleKeySpec.ProfileScoped("debrid_stream_dolby_vision_filter"),
                 AppleKeySpec.ProfileScoped("debrid_stream_hdr_filter"),
                 AppleKeySpec.ProfileScoped("debrid_stream_codec_filter"),
