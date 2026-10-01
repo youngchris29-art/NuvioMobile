@@ -7893,4 +7893,229 @@ final class NuvioTVUITests: XCTestCase {
             shot(app, "bug118-\(leg.name)-12")
         }
     }
+
+    // MARK: - Orivio batch (2026-10-01): hold menus, first-play auto mode, external-player return
+
+    /// Any element whose accessibility label contains `text` — a tvOS context menu's rows are not
+    /// reliably `buttons`, so look across the whole tree.
+    private func anyElement(containing text: String, in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", text))
+            .firstMatch
+    }
+
+    /// True when any element's label contains one of `fragments` (one tree walk for several wordings).
+    private func anyLabelExists(_ fragments: [String], in app: XCUIApplication) -> Bool {
+        let predicates = fragments.map { NSPredicate(format: "label CONTAINS[c] %@", $0) }
+        return app.descendants(matching: .any)
+            .matching(NSCompoundPredicate(orPredicateWithSubpredicates: predicates))
+            .firstMatch.exists
+    }
+
+    /// The full-screen "Finding the best source…" / "Trying another source (n of m)…" cover that
+    /// `FirstPlayAutoPlayOverlay` draws over the stream picker while auto mode works.
+    private func autoPlayOverlayVisible(_ app: XCUIApplication) -> Bool {
+        anyLabelExists(["the best source", "Trying another source"], in: app)
+    }
+
+    /// The stream picker's own list: an add-on group header ("<add-on> 12 streams"), the
+    /// "Finding streams…" loading line, or the empty state's "Play test stream" row. None of these
+    /// exist on Detail, Home or in a player.
+    private func streamPickerListVisible(_ app: XCUIApplication) -> Bool {
+        let list = NSPredicate(
+            format: "label MATCHES '.*[0-9]+ streams?.*' OR label CONTAINS[c] 'Finding streams' OR label CONTAINS[c] 'Play test stream'")
+        return app.descendants(matching: .any).matching(list).firstMatch.exists
+    }
+
+    /// Deep-links into The 100's Detail page with Auto-Play Best Source on for this launch only
+    /// (the fixture profile is id 2 and the synced mode is read from NSUserDefaults as the enum
+    /// name under `stream_auto_play_mode_2`, so nothing is persisted), waits for the action row,
+    /// and leaves focus on Play. Detail's initial focus is not deterministic on this runtime and
+    /// `hasFocus` never reports, so walk Left three times: Play is the leftmost action button.
+    /// An earlier probe run can leave the fixture's The 100 marked Watched; restore it first.
+    private func launchTheHundredOnPlay(shotPrefix: String) throws -> XCUIApplication {
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", "nuviotv://title?id=tt2661044&type=series&name=The%20100",
+            "-stream_auto_play_mode_2", "FIRST_STREAM",
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES"
+        ], forceFreshLaunch: true)
+        let actionRowLabels = ["Mark Watched", "Watched", "Add to Library", "In Library"]
+        var detailReached = false
+        for _ in 0..<90 {
+            if actionRowLabels.contains(where: { app.buttons[$0].exists }) { detailReached = true; break }
+            pause(0.5)
+        }
+        guard detailReached else {
+            throw XCTSkip("the deep-linked Detail page never appeared within 45 s — fixture/network, not the feature")
+        }
+        pause(2)
+        press(.left, times: 3, gap: 0.8)
+        pause(1)
+        let playButton = app.buttons.matching(NSPredicate(
+            format: "label BEGINSWITH 'Play' OR label BEGINSWITH 'Resume' OR label BEGINSWITH 'Up Next'")).firstMatch
+        if playButton.exists, app.buttons["Watched"].exists {
+            shot(app, "\(shotPrefix)_fixture_marked_watched")
+            press(.right, times: 1, gap: 1.0)
+            remote.press(.select)
+            _ = app.buttons["Mark Watched"].waitForExistence(timeout: 5)
+            press(.left, times: 1, gap: 1.0)
+        }
+        shot(app, "\(shotPrefix)_detail_on_play")
+        return app
+    }
+
+    /// Hold menu on posters: a 2 s Select on a catalog poster opens the hold menu with the Library + Watched
+    /// actions. A Continue Watching card also ships a hold menu (its own list, "Remove from
+    /// Continue Watching" among them), so stepping Down from the top keeps going past one until a
+    /// catalog poster answers (max 6 steps); a CW-only result still counts. Focus cannot be read on
+    /// this runtime, so the screenshots are the record of which row each press landed on. The Detail
+    /// page's own "Add to Library" button exists too, hence the "Mark as …" pairing: only the hold
+    /// menu says "Mark as Watched/Unwatched" (Detail says "Mark Watched").
+    func test71HoldMenuOnCatalogPoster() throws {
+        let app = launchToHome(extraArguments: [
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerForceNoTrailer", "YES"
+        ], forceFreshLaunch: true)
+        pause(3)
+        var catalogLabel = ""
+        var sawContinueWatchingMenu = false
+        for step in 0..<6 {
+            if step > 0 { press(.down); pause(1.2) }
+            shot(app, "71_step\(step)_before_hold")
+            remote.press(.select, forDuration: 2.0)
+            pause(1.5)
+            shot(app, "71_step\(step)_after_hold")
+            let hasWatchedRow = anyElement(containing: "Mark as ", in: app).waitForExistence(timeout: 3)
+            if hasWatchedRow {
+                if anyElement(containing: "Remove from Library", in: app).exists {
+                    catalogLabel = "Remove from Library"
+                } else if anyElement(containing: "Add to Library", in: app).exists {
+                    catalogLabel = "Add to Library"
+                }
+            }
+            if !catalogLabel.isEmpty {
+                // Menu closes the hold menu and nothing else.
+                remote.press(.menu)
+                pause(1)
+                shot(app, "71_menu_closed")
+                XCTAssertFalse(anyElement(containing: "Mark as ", in: app).exists, "Menu did not close the hold menu")
+                break
+            }
+            if anyElement(containing: "Remove from Continue Watching", in: app).exists {
+                sawContinueWatchingMenu = true
+                remote.press(.menu)
+                pause(1)
+                continue
+            }
+            // No menu: the press may have fired the link on release (Detail pushed) — pop it.
+            if ["Add to Library", "In Library", "Mark Watched", "Watched"].contains(where: { app.buttons[$0].exists }) {
+                remote.press(.menu)
+                pause(1.5)
+            }
+        }
+        NSLog("[HoldMenu] catalog label=\(catalogLabel.isEmpty ? "none" : catalogLabel) cwMenuSeen=\(sawContinueWatchingMenu)")
+        XCTAssertTrue(!catalogLabel.isEmpty || sawContinueWatchingMenu,
+                      "no hold menu (catalog Add/Remove from Library, or a Continue Watching menu) opened in 6 steps")
+    }
+
+    /// First-play auto mode and hold-Play: with Auto-Play Best Source on, a plain Select on Play shows the "Finding the best
+    /// source…" overlay and then either starts a player or lands on the list with the "No source
+    /// could start" toast (both fine, the outcome is recorded). Then a fresh launch: a 2 s hold on
+    /// Play offers "Choose Source…", which opens the picker's list with no overlay at all. Both
+    /// halves close their screen with Menu right away so the fixture profile's Continue Watching
+    /// does not pick up progress. The mode is a launch-argument override, so there is no toggle to
+    /// turn back off.
+    func test72AutoPlayFirstPlayAndHoldPlay() throws {
+        var app = try launchTheHundredOnPlay(shotPrefix: "72a")
+        if app.buttons["Playback unavailable"].exists {
+            throw XCTSkip("Play is disabled (no source can serve The 100 on this fixture)")
+        }
+        remote.press(.select)
+        XCTAssertTrue(anyElement(containing: "Finding the best source", in: app).waitForExistence(timeout: 10),
+                      "plain Select on Play with auto mode on did not show the \"Finding the best source…\" overlay")
+        shot(app, "72a_overlay")
+
+        var outcome = "timeout"
+        var listTicks = 0
+        var quietTicks = 0
+        for _ in 0..<120 {
+            if anyElement(containing: "No source could start", in: app).exists { outcome = "list+toast"; break }
+            if autoPlayOverlayVisible(app) {
+                listTicks = 0; quietTicks = 0
+            } else if streamPickerListVisible(app) {
+                listTicks += 1; quietTicks = 0
+                if listTicks >= 2 { outcome = "list"; break }
+            } else {
+                quietTicks += 1; listTicks = 0
+                if quietTicks >= 3 { outcome = "player"; break }
+            }
+            pause(0.5)
+        }
+        NSLog("[AutoPlayLeg] first-play outcome=\(outcome)")
+        shot(app, "72a_outcome_\(outcome)")
+        XCTAssertNotEqual(outcome, "timeout", "auto mode neither started a player nor returned the list within 60 s")
+        // Close right away: Menu once for the list (or the cancelled overlay), twice for a player.
+        remote.press(.menu)
+        pause(1.5)
+        if outcome == "player" { remote.press(.menu); pause(1.5) }
+
+        app = try launchTheHundredOnPlay(shotPrefix: "72b")
+        remote.press(.select, forDuration: 2.0)
+        pause(1.5)
+        shot(app, "72b_after_hold")
+        let chooseSource = anyElement(containing: "Choose Source", in: app)
+        XCTAssertTrue(chooseSource.waitForExistence(timeout: 4), "a 2 s Select on Play did not offer \"Choose Source…\"")
+        guard chooseSource.exists else {
+            remote.press(.menu) // the hold fell through to a plain press: leave the picker before it plays
+            return
+        }
+        remote.press(.select)
+        var sawOverlay = false
+        var listSeen = false
+        var settledTicks = 0
+        for _ in 0..<60 {
+            if autoPlayOverlayVisible(app) { sawOverlay = true; break }
+            if streamPickerListVisible(app) { listSeen = true; settledTicks += 1 }
+            if settledTicks >= 5 { break }
+            pause(0.5)
+        }
+        shot(app, "72b_picker_list")
+        XCTAssertFalse(sawOverlay, "\"Choose Source…\" must open the list without the auto-play overlay")
+        XCTAssertTrue(listSeen, "\"Choose Source…\" did not open the stream picker's list within 30 s")
+        remote.press(.menu)
+        pause(1.5)
+    }
+
+    /// External-player return: an external-player (Infuse) x-callback for a session this install never prepared
+    /// must be swallowed — no cover opens and nothing already open closes. The scheme is the dev
+    /// build's own callback scheme on the simulator (Info.plist registers the bundle id, which the
+    /// simulator build keeps at the release value). `ContentView.handleDeepLink` consumes the URL
+    /// ~1 s after the profile gate, well inside `launchToHome`'s own 10 s Home settle.
+    func test73ExternalCallbackDeepLink() throws {
+        let callback = "com.nuvio.media.NuvioTV://external-player/infuse/00000000-0000-0000-0000-000000000000/success"
+            + "?lastPlayedUrl=https%3A%2F%2Fexample.com%2Fx.mkv&position=600"
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", callback,
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerForceNoTrailer", "YES"
+        ], forceFreshLaunch: true)
+        pause(4)
+        shot(app, "73a_after_callback")
+
+        let sidebarMode = app.descendants(matching: .any)["sidebar_item_Home"].exists || app.otherElements["sidebar_overlay"].exists
+        XCTAssertTrue(app.state == .runningForeground)
+        XCTAssertTrue(app.buttons["Home"].exists || sidebarMode, "Home's tab bar / sidebar is gone — a cover opened over Home")
+        for label in ["Mark Watched", "Watched", "Add to Library", "In Library", "Play"] {
+            XCTAssertFalse(app.buttons[label].exists, "a Detail/picker screen opened (found \"\(label)\"): the unknown-session callback was not ignored")
+        }
+        XCTAssertFalse(autoPlayOverlayVisible(app) || streamPickerListVisible(app), "a stream picker opened for the unknown-session callback")
+
+        // Home still takes input afterwards (nothing wedged behind the ignored URL).
+        press(.down)
+        pause(1)
+        shot(app, "73b_home_after_down")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
 }
