@@ -75,6 +75,9 @@ final class MPVPlaybackState: ObservableObject {
     /// Menu while the up-next chip is visible dismisses the chip instead of exiting the player;
     /// returns true when it consumed the press. The next Menu exits as before (upstream 4026ec92).
     var upNextDismiss: (() -> Bool)?
+    /// Main thread. Set when a context swap (next episode, stream switch) is underway, so the
+    /// outgoing controller never reports a failover for a player the viewer already left.
+    var playbackFailoverSuppressed = false
 
     let title: String
     init(title: String) { self.title = title }
@@ -199,6 +202,29 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Open the swipe-down top panel (D-pad Down with nothing else to do, or a down swipe).
     var onOpenPanel: (() -> Void)?
 
+    // MARK: Failover hooks (set by the host, `PlayerScreen`; all unset = today's behaviour)
+    /// Fired on the main thread, at most once per player, when this engine cannot give the viewer
+    /// playback: an mpv load/decode error, nothing loaded within the start budget, a placeholder
+    /// clip on an auto flow, or a stream that ended long before its declared duration. Never fired
+    /// after the viewer exited or a context swap began.
+    var onPlaybackFailed: ((PlaybackFailure) -> Void)?
+    /// Fired once, on the main thread, when `secondsPlayed` first reaches 300 — the stream has
+    /// proven itself and the host can stop treating it as a failover candidate.
+    var onPlaybackHealthy: ((Double) -> Void)?
+    /// The native engine already failed before start, so this attempt gets the shortened budget.
+    var startWatchdogShortened = false
+    /// Seconds the native engine played before it fell back to this player (added to `secondsPlayed`).
+    var nativeSecondsPlayedBeforeFallback: Double = 0
+    private var startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.defaultLimitSeconds)
+    private var startWatchdogTimer: Timer?
+    /// Main thread: a failure was already reported (every path shares this one-shot).
+    private var failoverReported = false
+    /// Main thread: the viewer is leaving (or the player is torn down) — report nothing further.
+    private var failoverClosed = false
+    private var healthyReported = false
+    /// Main thread: `ProcessInfo.systemUptime` of this file's `MPV_EVENT_FILE_LOADED`; nil until then.
+    private var failoverLoadedUptime: TimeInterval?
+
     init(context: PlaybackContext, state: MPVPlaybackState) {
         self.context = context
         self.state = state
@@ -260,6 +286,7 @@ final class MPVTVPlayerViewController: UIViewController {
             // the fallback for a `setupMpv()` that ran before the settings store had hydrated.
             applyAudioLanguagePreferences()
             command("loadfile", args: [context.url.absoluteString, "replace"])
+            armStartWatchdog()
             startPolling()
             flashControls()
 
@@ -284,8 +311,14 @@ final class MPVTVPlayerViewController: UIViewController {
         }
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        closeFailover()
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        closeFailover()
         pollTimer?.invalidate()
         pollTimer = nil
         endSeek()
@@ -1101,6 +1134,12 @@ final class MPVTVPlayerViewController: UIViewController {
     // MARK: - Watch progress (resume + save)
 
     private func computeResumePosition() {
+        // Start Over: play from 0 whatever progress is saved. Not after a native fallback that
+        // already played: that session's own saved progress is the point to continue from.
+        if context.startFromBeginning, nativeSecondsPlayedBeforeFallback <= 0 {
+            print("[Failover] start over: ignoring saved progress")
+            return
+        }
         guard let entry = WatchProgressRepository.shared.progressForVideo(
             videoId: context.videoId,
             parentMetaId: context.parentMetaId,
@@ -1187,7 +1226,17 @@ final class MPVTVPlayerViewController: UIViewController {
         // only propagate transitions — otherwise a dismissed post-play cover re-presents each tick.
         if snap.eof != lastEofFlag {
             lastEofFlag = snap.eof
-            state.isEnded = snap.eof
+            if snap.eof, onPlaybackFailed != nil, snap.duration.isFinite, snap.duration > 0,
+               snap.position.isFinite, snap.position < snap.duration - 60 {
+                // The stream ran dry long before its declared end: a failure for the failover to
+                // handle, not a finished movie — no post-play card.
+                reportPlaybackFailure(
+                    reason: "stream ended early at \(Int(snap.position))/\(Int(snap.duration)) s",
+                    startedPlaying: true, secondsPlayed: failoverSecondsPlayed,
+                    positionSec: snap.position)
+            } else {
+                state.isEnded = snap.eof
+            }
         }
 
         if state.showStreamInfo || state.panelOpen {
@@ -1199,6 +1248,7 @@ final class MPVTVPlayerViewController: UIViewController {
             lastSaveUptime = now
             saveProgress()
             logStartupStatsIfNeeded()
+            reportHealthyIfNeeded()
         }
 
         updateSkipPrompt(position: snap.position, duration: snap.duration, paused: snap.paused)
@@ -1287,6 +1337,7 @@ final class MPVTVPlayerViewController: UIViewController {
                 if state.upNextDismiss?() == true {
                     swallowMenuRelease = true
                 } else {
+                    closeFailover()
                     onExit?()
                 }
                 handled = true
@@ -1417,10 +1468,123 @@ final class MPVTVPlayerViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: work)
     }
 
+    // MARK: - Failover signals
+    //
+    // Everything here runs on the main thread and is inert while `onPlaybackFailed` is nil, so a
+    // host that wires nothing sees exactly the player it always had. Every failure path funnels
+    // through `reportPlaybackFailure`, which is one-shot per player. Greppable: `[Failover]`.
+
+    /// Seconds of real playback for a failure report: wall-clock since `MPV_EVENT_FILE_LOADED`
+    /// plus whatever the native engine played before falling back to this player. 0 until a file
+    /// has loaded (nothing played yet, whatever the other engine did).
+    private var failoverSecondsPlayed: Double {
+        guard let loaded = failoverLoadedUptime else { return 0 }
+        return max(0, ProcessInfo.processInfo.systemUptime - loaded) + nativeSecondsPlayedBeforeFallback
+    }
+
+    /// The single exit for every failover signal. Returns true when the host was told.
+    @discardableResult
+    private func reportPlaybackFailure(reason: String, startedPlaying: Bool, secondsPlayed: Double,
+                                       positionSec: Double? = nil) -> Bool {
+        guard let onPlaybackFailed else { return false }
+        guard !failoverReported, !failoverClosed, !state.playbackFailoverSuppressed else {
+            print("[Failover] mpv failure suppressed (\(reason)) reported=\(failoverReported) closed=\(failoverClosed) swapped=\(state.playbackFailoverSuppressed)")
+            return false
+        }
+        failoverReported = true
+        startWatchdog.noteCancelled()
+        stopStartWatchdogTimer()
+        var position = positionSec ?? cachedProps().position
+        if !position.isFinite || position < 0 { position = max(0, state.positionSec) }
+        print("[Failover] mpv failure: \(reason) pos=\(Int(position)) played=\(Int(secondsPlayed)) started=\(startedPlaying)")
+        onPlaybackFailed(PlaybackFailure(reason: reason, positionSec: position,
+                                         secondsPlayed: secondsPlayed, startedPlaying: startedPlaying))
+        return true
+    }
+
+    /// (a) `MPV_END_FILE_REASON_ERROR`: mpv could not open or keep decoding the stream.
+    private func reportEndFileError(_ message: String) {
+        reportPlaybackFailure(reason: "mpv: \(message)", startedPlaying: failoverLoadedUptime != nil,
+                              secondsPlayed: failoverSecondsPlayed)
+    }
+
+    /// (b) Arm the start watchdog when `loadfile` is issued: nothing loading within the budget is a
+    /// failure (a dead host or stalled handshake makes mpv go quiet, not report an error).
+    private func armStartWatchdog() {
+        guard onPlaybackFailed != nil else { return }
+        startWatchdog = MPVStartWatchdog(limitSeconds: MPVStartWatchdog.limitSeconds(shortened: startWatchdogShortened))
+        startWatchdog.noteLoadStarted(at: ProcessInfo.processInfo.systemUptime)
+        print("[Failover] mpv start watchdog armed: \(Int(startWatchdog.limitSeconds)) s")
+        startWatchdogTimer?.invalidate()
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.tickStartWatchdog()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        startWatchdogTimer = timer
+    }
+
+    private func tickStartWatchdog() {
+        switch startWatchdog.poll(now: ProcessInfo.processInfo.systemUptime) {
+        case .waiting:
+            break
+        case .inactive:
+            stopStartWatchdogTimer()
+        case .fired:
+            stopStartWatchdogTimer()
+            reportPlaybackFailure(reason: "no media within \(Int(startWatchdog.limitSeconds)) s",
+                                  startedPlaying: false, secondsPlayed: 0)
+        }
+    }
+
+    private func stopStartWatchdogTimer() {
+        startWatchdogTimer?.invalidate()
+        startWatchdogTimer = nil
+    }
+
+    /// `MPV_EVENT_FILE_LOADED` (main thread): media is flowing, the watchdog stands down.
+    private func noteMediaLoaded(at uptime: TimeInterval) {
+        if failoverLoadedUptime == nil { failoverLoadedUptime = uptime }
+        startWatchdog.noteFileLoaded()
+        stopStartWatchdogTimer()
+    }
+
+    /// (c) A stub clip (debrid cache-sync placeholder, "service unavailable" video) on an auto flow:
+    /// report it and stop playback. Manual picks never take this path — the viewer chose that
+    /// stream. Returns true when the clip was rejected, so the caller skips the normal file-loaded
+    /// work (resume seek, scrobble start, addon-subtitle fetch).
+    private func rejectPlaceholderClip(durationSec: Double) -> Bool {
+        guard onPlaybackFailed != nil, context.launchSource != .manual, durationSec.isFinite else { return false }
+        guard WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) else { return false }
+        let seconds = Int(durationSec.rounded())
+        print("[Failover] mpv placeholder clip rejected: \(seconds) s on an auto flow")
+        reportPlaybackFailure(reason: "placeholder clip (\(seconds)s)", startedPlaying: true, secondsPlayed: 0)
+        eventQueue.async { [weak self] in self?.command("stop") }
+        return true
+    }
+
+    /// Fire `onPlaybackHealthy` once, when `secondsPlayed` first reaches 300. Called from the
+    /// ~5 s progress-save tick in `refreshState`.
+    private func reportHealthyIfNeeded() {
+        guard !healthyReported, let onPlaybackHealthy, failoverLoadedUptime != nil else { return }
+        let played = failoverSecondsPlayed
+        guard played >= 300 else { return }
+        healthyReported = true
+        print("[Failover] mpv healthy after \(Int(played)) s")
+        onPlaybackHealthy(played)
+    }
+
+    /// The viewer is leaving or the player is going away: no failure may be reported from here on.
+    private func closeFailover() {
+        failoverClosed = true
+        startWatchdog.noteCancelled()
+        stopStartWatchdogTimer()
+    }
+
     // MARK: - Teardown
 
     deinit {
         pollTimer?.invalidate()
+        startWatchdogTimer?.invalidate()
         seekTimer?.invalidate()
         subtitleWatcher?.cancel()
         subtitleLoadingWatcher?.cancel()
@@ -1450,10 +1614,15 @@ final class MPVTVPlayerViewController: UIViewController {
                 if id == MPV_EVENT_SHUTDOWN { return }
                 if id == MPV_EVENT_FILE_LOADED {
                     self.fileLoadedUptime = ProcessInfo.processInfo.systemUptime
+                    let loadedAt = self.fileLoadedUptime
                     self.alangTrace("file-loaded alang=\(self.getString("alang") ?? "-") aid=\(self.getString("aid") ?? "-")")
                     // Read on eventQueue (never the main thread — see the property-cache note).
                     let loadedDuration = self.getDouble("duration")
                     DispatchQueue.main.async {
+                        self.noteMediaLoaded(at: loadedAt)
+                        // Auto flows: a stub clip is a failed source, not an episode — no resume,
+                        // no scrobble, no subtitle fetch.
+                        if self.rejectPlaceholderClip(durationSec: loadedDuration) { return }
                         self.applyPendingResume(actualDurationSec: loadedDuration)
                         self.onFileLoaded()
                     }
@@ -1491,7 +1660,12 @@ final class MPVTVPlayerViewController: UIViewController {
                 if id == MPV_EVENT_END_FILE, let data = ev.pointee.data {
                     let endFile = UnsafePointer<mpv_event_end_file>(OpaquePointer(data)).pointee
                     if endFile.reason == MPV_END_FILE_REASON_ERROR {
-                        print("[MPV] End file error: \(String(cString: mpv_error_string(endFile.error)))")
+                        let message = String(cString: mpv_error_string(endFile.error))
+                        print("[MPV] End file error: \(message)")
+                        // This block runs on `eventQueue`; the report is a main-thread affair.
+                        DispatchQueue.main.async { [weak self] in
+                            self?.reportEndFileError(message)
+                        }
                     }
                 }
                 if id == MPV_EVENT_LOG_MESSAGE,
@@ -1640,10 +1814,19 @@ private struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     /// Builds the engine-specific fourth tab at open time (its views observe live state).
     let makeExtraTab: () -> PlayerPanelExtraTab
     let onExit: () -> Void
+    /// Failover hooks, handed straight to the controller (see its doc comments).
+    let onPlaybackFailed: ((PlaybackFailure) -> Void)?
+    let onPlaybackHealthy: ((Double) -> Void)?
+    let startWatchdogShortened: Bool
+    let nativeSecondsPlayedBeforeFallback: Double
 
     func makeUIViewController(context ctx: Context) -> MPVTVPlayerViewController {
         let controller = MPVTVPlayerViewController(context: context, state: state)
         controller.onExit = onExit
+        controller.onPlaybackFailed = onPlaybackFailed
+        controller.onPlaybackHealthy = onPlaybackHealthy
+        controller.startWatchdogShortened = startWatchdogShortened
+        controller.nativeSecondsPlayedBeforeFallback = nativeSecondsPlayedBeforeFallback
         let state = state, model = panelModel, makeExtraTab = makeExtraTab
         controller.onOpenPanel = { [weak controller] in
             guard let controller, controller.presentedViewController == nil else { return }
@@ -1676,6 +1859,14 @@ struct MPVPlayerScreen: View {
     /// Phase 1 routing diagnostic (from `PlayerEngineRouter`) surfaced in Stream Info; playback is
     /// unaffected — this screen always renders via libmpv.
     var routingNote: String? = nil
+    /// Failover hooks, set by `PlayerScreen` (all unset = today's behaviour). See
+    /// `MPVTVPlayerViewController` for when each fires.
+    var onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil
+    var onPlaybackHealthy: ((Double) -> Void)? = nil
+    /// The native engine already failed before start: give this attempt the shortened start budget.
+    var startWatchdogShortened = false
+    /// Seconds the native engine played before falling back to this screen.
+    var nativeSecondsPlayedBeforeFallback: Double = 0
 
     @StateObject private var state: MPVPlaybackState
     @StateObject private var upNext: NextEpisodeEngine
@@ -1694,14 +1885,28 @@ struct MPVPlayerScreen: View {
         }
     }
 
-    init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil) {
+    init(context: PlaybackContext, onPlayNext: ((PlaybackContext) -> Void)? = nil, routingNote: String? = nil,
+         onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
+         onPlaybackHealthy: ((Double) -> Void)? = nil,
+         startWatchdogShortened: Bool = false,
+         nativeSecondsPlayedBeforeFallback: Double = 0) {
         self.context = context
         self.onPlayNext = onPlayNext
         self.routingNote = routingNote
-        _state = StateObject(wrappedValue: MPVPlaybackState(title: context.title))
+        self.onPlaybackFailed = onPlaybackFailed
+        self.onPlaybackHealthy = onPlaybackHealthy
+        self.startWatchdogShortened = startWatchdogShortened
+        self.nativeSecondsPlayedBeforeFallback = nativeSecondsPlayedBeforeFallback
+        let playbackState = MPVPlaybackState(title: context.title)
+        _state = StateObject(wrappedValue: playbackState)
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(
             context: context,
-            onPlayNext: onPlayNext ?? { _ in }
+            onPlayNext: { [weak playbackState] next in
+                // A context swap is underway: the outgoing player must not report a failover.
+                guard let onPlayNext else { return }
+                playbackState?.playbackFailoverSuppressed = true
+                onPlayNext(next)
+            }
         ))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
             info: PlayerPanelInfo(header: NativeInfoHeader(context: context))))
@@ -1717,7 +1922,11 @@ struct MPVPlayerScreen: View {
                                        onClose: { panelModel.onClose?() })
                     }
                 },
-                onExit: { dismiss() }
+                onExit: { dismiss() },
+                onPlaybackFailed: onPlaybackFailed,
+                onPlaybackHealthy: onPlaybackHealthy,
+                startWatchdogShortened: startWatchdogShortened,
+                nativeSecondsPlayedBeforeFallback: nativeSecondsPlayedBeforeFallback
             )
             .ignoresSafeArea()
 

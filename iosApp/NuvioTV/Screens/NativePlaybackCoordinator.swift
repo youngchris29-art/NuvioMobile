@@ -66,6 +66,20 @@ final class NativePlaybackCoordinator: ObservableObject {
     private(set) var lastPositionSec: Double = 0
     private var lastDurationSec: Double = 0
 
+    /// `ProcessInfo.systemUptime` when the item FIRST became ready to play; nil until then (a
+    /// signaling retry or a later item never moves it).
+    private(set) var readyUptime: TimeInterval?
+    /// Wall-clock seconds since the item became ready (0 before) — the "how long did this stream
+    /// actually play" number the failover policy reads when the native path gives up.
+    var secondsPlayed: Double {
+        guard let readyUptime else { return 0 }
+        return max(0, ProcessInfo.processInfo.systemUptime - readyUptime)
+    }
+    /// Fired once per session, from the playback tick, when `secondsPlayed` first reaches 300 and the
+    /// player is playing — the stream has proven itself. Set by the screen (host: `PlayerScreen`).
+    var onPlaybackHealthy: ((Double) -> Void)?
+    private var healthyReported = false
+
     private let context: PlaybackContext
     private let recorder: PlaybackProgressRecorder
     private var remux: RemuxSession?
@@ -633,10 +647,16 @@ final class NativePlaybackCoordinator: ObservableObject {
                 if !readied, item.status == .readyToPlay {
                     readied = true
                     print("[NativePlayer] item readyToPlay")
+                    if self.readyUptime == nil { self.readyUptime = ProcessInfo.processInfo.systemUptime }
                     let duration = CMTimeGetSeconds(item.duration)
-                    let resume = self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0)
+                    // Start Over ignores saved progress (gated here: `PlaybackProgressRecorder` is untouched).
+                    let startOver = self.context.startFromBeginning
+                    if startOver { print("[Failover] start over: ignoring saved progress") }
+                    let resume: Double? = startOver
+                        ? nil
+                        : self.recorder.resumePositionSec(actualDurationSec: duration.isFinite ? duration : 0)
                     // Percentage-only row and no finite duration yet: apply on the first tick that has one.
-                    if resume == nil, !(duration.isFinite && duration > 0) {
+                    if resume == nil, !startOver, !(duration.isFinite && duration > 0) {
                         pendingResumePercent = self.recorder.pendingResumePercent()
                     }
                     if let resume {
@@ -720,6 +740,14 @@ final class NativePlaybackCoordinator: ObservableObject {
                         if self.audibleGroup == nil { self.handleMediaSelectionChange(item: item, player: player) }
                         else { self.syncAudioSelection(item: item, player: player) }
                         self.onTick?(pos, dur)
+                    }
+
+                    // The stream has now played for 5 minutes: tell the host once (failover policy).
+                    if !self.healthyReported, let onPlaybackHealthy = self.onPlaybackHealthy,
+                       player.timeControlStatus == .playing, self.secondsPlayed >= 300 {
+                        self.healthyReported = true
+                        print("[Failover] native healthy after \(Int(self.secondsPlayed)) s")
+                        onPlaybackHealthy(self.secondsPlayed)
                     }
 
                     // Stall diagnostics: if the player sits in a waiting state across several ticks,
@@ -1225,7 +1253,7 @@ final class NativePlaybackCoordinator: ObservableObject {
 
     /// Mid-play escalation to mpv: the native path started but can no longer make progress (a seek past
     /// the linear remux frontier, or the source truncated). Flipping `phase` to `.failed` makes
-    /// `NativePlayerScreen` call `onFallback(lastPositionSec)`, which re-presents mpv at the same
+    /// `NativePlayerScreen` call `onFallback(lastPositionSec, secondsPlayed)`, which re-presents mpv at the same
     /// position — mpv seeks anywhere via its own demuxer. No-op unless we are actually playing.
     private func fallbackMidPlay(_ reason: String) {
         guard phase == .playing else { return }

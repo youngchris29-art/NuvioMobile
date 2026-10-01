@@ -23,8 +23,15 @@ import SwiftUI
 struct NativePlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)?
-    /// Called with the last known position when the native path can't play — dispatcher → mpv.
-    var onFallback: ((Double) -> Void)?
+    /// Called with the last known position and the seconds the native path actually played when it
+    /// can't play — dispatcher → mpv.
+    var onFallback: ((Double, Double) -> Void)?
+    /// Failover hook, set by `PlayerScreen`. Fired when the native path fails and there is NO
+    /// `onFallback` to hand the context to (mpv already tried, or no fallback wired): the host then
+    /// moves to the next source. With a fallback wired, the dispatcher owns the handoff instead.
+    var onPlaybackFailed: ((PlaybackFailure) -> Void)?
+    /// Fired once, when the item has played for 5 minutes (`NativePlaybackCoordinator.onPlaybackHealthy`).
+    var onPlaybackHealthy: ((Double) -> Void)?
     /// Router decision label (e.g. "Native · DV P7 FEL → 8.1") for the Info tab.
     var routingNote: String?
 
@@ -44,12 +51,16 @@ struct NativePlayerScreen: View {
 
     init(context: PlaybackContext,
          onPlayNext: ((PlaybackContext) -> Void)? = nil,
-         onFallback: ((Double) -> Void)? = nil,
-         routingNote: String? = nil) {
+         onFallback: ((Double, Double) -> Void)? = nil,
+         routingNote: String? = nil,
+         onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil,
+         onPlaybackHealthy: ((Double) -> Void)? = nil) {
         self.context = context
         self.onPlayNext = onPlayNext
         self.onFallback = onFallback
         self.routingNote = routingNote
+        self.onPlaybackFailed = onPlaybackFailed
+        self.onPlaybackHealthy = onPlaybackHealthy
         _coordinator = StateObject(wrappedValue: NativePlaybackCoordinator(context: context))
         _upNext = StateObject(wrappedValue: NextEpisodeEngine(context: context, onPlayNext: onPlayNext ?? { _ in }))
         _panelModel = StateObject(wrappedValue: PlayerTopPanelModel(
@@ -84,10 +95,22 @@ struct NativePlayerScreen: View {
                     )
                     .ignoresSafeArea()
                 }
-            case .failed:
+            case .failed(let reason):
                 // Hand back to the dispatcher, which re-presents the mpv player for this context.
+                // With no fallback to hand to, report the failure (failover) before dismissing.
                 Color.clear.onAppear {
-                    if let onFallback { onFallback(coordinator.lastPositionSec) } else { dismiss() }
+                    if let onFallback {
+                        onFallback(coordinator.lastPositionSec, coordinator.secondsPlayed)
+                    } else {
+                        if let onPlaybackFailed {
+                            print("[Failover] native failure: \(reason) pos=\(Int(coordinator.lastPositionSec)) played=\(Int(coordinator.secondsPlayed)) started=\(coordinator.readyUptime != nil)")
+                            onPlaybackFailed(PlaybackFailure(
+                                reason: reason, positionSec: coordinator.lastPositionSec,
+                                secondsPlayed: coordinator.secondsPlayed,
+                                startedPlaying: coordinator.readyUptime != nil))
+                        }
+                        dismiss()
+                    }
                 }
             }
 
@@ -142,6 +165,7 @@ struct NativePlayerScreen: View {
             coordinator.onResumeSeekCompleted = { landed in
                 skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
             }
+            coordinator.onPlaybackHealthy = onPlaybackHealthy
             coordinator.start()
             // Only orchestrate up-next when a presenter can swap contexts (series autoplay).
             if onPlayNext != nil { upNext.startNative() }
