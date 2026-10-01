@@ -114,4 +114,21 @@ final class PinnedRowSettleRc14Tests: XCTestCase {
         XCTAssertEqual(PinnedRowTitle.appliedSlide(visibleMinY: 8, titleHeight: 38, measured: 8), 8)
         XCTAssertEqual(PinnedRowTitle.appliedSlide(visibleMinY: -20, titleHeight: 38, measured: 0), 0)
     }
+
+    /// Round 4 (F3): the Reading itself carries the on-screen verdict the applied slide is derived
+    /// from — a title entirely above the viewport reads `onScreen == false` even at the 72 cap.
+    func testReadingCarriesTheOnScreenVerdict() {
+        let far = PinnedRowTitle.reading(geometry: .init(visibleMinY: 300, titleHeight: 38),
+                                         artworkHeight: 351, cardTopReach: 92, captionVisible: false,
+                                         rowIsFocused: true, treatment: .cardTreatment,
+                                         mode: .init(noZoom: false, accentRing: false))
+        XCTAssertEqual(far.slide, 72)
+        XCTAssertFalse(far.onScreen)
+        let rest = PinnedRowTitle.reading(geometry: .init(visibleMinY: 8, titleHeight: 38),
+                                          artworkHeight: 351, cardTopReach: 92, captionVisible: false,
+                                          rowIsFocused: true, treatment: .cardTreatment,
+                                          mode: .init(noZoom: false, accentRing: false))
+        XCTAssertEqual(rest.slide, 8)
+        XCTAssertTrue(rest.onScreen)
+    }
 }

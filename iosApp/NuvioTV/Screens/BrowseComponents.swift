@@ -571,6 +571,12 @@ enum PinnedRowTitle {
         /// Carried for the belt's probe lines; it is an affine function of `slide`, which is
         /// already here, so it adds no `onGeometryChange` fires of its own.
         var intrusion: CGFloat
+        /// rc14 round 4 (verification workflow F3): `stillOnScreen` — whether the title's rendered
+        /// band is still inside the viewport after sliding. The APPLIED slide is derived from
+        /// this (off screen → 0) rather than from the sibling geometry observer's cache, so the
+        /// seed and the gated apply no longer depend on the order SwiftUI runs the two observers'
+        /// actions in. Flips once per edge crossing, so it adds no fires of its own.
+        var onScreen: Bool = true
     }
 
     /// A `Reading` stamped with the tracking modifier's `remeasureTick` (Wave W5, BUG-87).
@@ -694,7 +700,8 @@ enum PinnedRowTitle {
                        clearances: clearances,
                        hideCandidate: stillOnScreen && (overshoot > 1 || intrusion > fadeIntrusionArm),
                        showAgain: overshoot <= 0 && intrusion <= 0,
-                       intrusion: intrusion)
+                       intrusion: intrusion,
+                       onScreen: stillOnScreen)
     }
 
     /// How far the pinned hero must yield, in points, so the focused row FITS at the canonical
@@ -805,6 +812,17 @@ enum PinnedRowTitle {
     /// its next Up approach. Pure, for the unit test.
     nonisolated static func appliedSlide(visibleMinY: CGFloat, titleHeight: CGFloat, measured: CGFloat) -> CGFloat {
         visibleMinY >= titleHeight + measured ? 0 : measured
+    }
+
+    /// The draw-time slide for the one frame before the first measurement lands (round 4, F3):
+    /// the raw `slide(_:artworkHeight:cardTopReach:)` with the off-screen rule applied, so even
+    /// that frame cannot paint a title 72pt down on a row that is entirely above the viewport.
+    nonisolated static func preSeedSlide(_ proxy: GeometryProxy,
+                                         artworkHeight: CGFloat?,
+                                         cardTopReach: CGFloat) -> CGFloat {
+        let raw = slide(proxy, artworkHeight: artworkHeight, cardTopReach: cardTopReach)
+        guard let visible = visibleBounds(proxy) else { return raw }
+        return appliedSlide(visibleMinY: visible.minY, titleHeight: proxy.size.height, measured: raw)
     }
 
     /// Signed clearance between the title's top and the viewport's top edge BEFORE sliding —
@@ -1153,7 +1171,7 @@ private struct PinnedRowTitleTracking: ViewModifier {
             .visualEffect { effect, proxy in
                 effect.offset(y: hasSeeded
                     ? slide
-                    : PinnedRowTitle.slide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach))
+                    : PinnedRowTitle.preSeedSlide(proxy, artworkHeight: clampArtworkHeight, cardTopReach: clampReach))
             }
             // Codex r10 P2: caches the raw geometry a `Reading` is derived from, so a focus-mode
             // toggle — which moves nothing and so may never produce another geometry pass — can
@@ -1221,15 +1239,22 @@ private struct PinnedRowTitleTracking: ViewModifier {
                     // that mounts while the rows are moving seeds 0 and takes its slide at the
                     // rest — a title that mounts at rest (cold launch) still seeds its measured
                     // value so nothing visibly settles.
-                    slide = isRowsMoving()
-                        ? 0
-                        : PinnedRowTitle.appliedSlide(visibleMinY: tracking.geometry?.visibleMinY ?? 0,
-                                                      titleHeight: tracking.geometry?.titleHeight ?? 0,
-                                                      measured: newValue.slide)
+                    //
+                    // Round 4 (verification workflow F3): ordering-independent. The mount itself
+                    // stamps the title-geometry signal in the same pass, so only the SCROLL stamp
+                    // decides "moving" here, and the off-screen rule reads the Reading's own
+                    // `onScreen` rather than the sibling observer's cache (nil in one ordering,
+                    // which made `appliedSlide(0, 0, 72)` fail open to 72). A seed taken while
+                    // moving also arms the ordinary hold chain, so a title that mounts clipped and
+                    // then rests takes its slide at that rest instead of waiting for the next
+                    // geometry change.
+                    let scrollMoving = PinnedRowSettle.secondsSinceMotion() < Self.slideMotionHold
+                    slide = scrollMoving ? 0 : (newValue.onScreen ? newValue.slide : 0)
                     hasSeeded = true
                     tracking.pendingSlide = nil
+                    if scrollMoving { applySlide(newValue) }
                 } else {
-                    applySlide(newValue.slide)
+                    applySlide(newValue)
                 }
                 updateFade(previous: oldValue, current: newValue)
                 // Hand this row's measured clearances to the settle re-reveal, which sizes its
@@ -1347,29 +1372,32 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// while a check is already pending, and the pending target is a reference-box write.
     private static let slideMotionHold: TimeInterval = 0.12
 
-    /// Either motion signal inside `slideMotionHold`: the rows scroll's own stamp, or this
-    /// title's frame having changed (see `TitleTrackingCache.lastGeometryChangeAt`).
-    private func isRowsMoving() -> Bool {
-        PinnedRowSettle.secondsSinceMotion() < Self.slideMotionHold
-            || ProcessInfo.processInfo.systemUptime - tracking.lastGeometryChangeAt < Self.slideMotionHold
+    /// Review r1 P1: a row that has scrolled far above the viewport measures `slide = 72` (the
+    /// cap) with its title entirely off screen. Applying that at rest is invisible — but on the
+    /// next Up walk the same row comes back DOWN as the focused row carrying that 72, held by the
+    /// motion gate for the whole approach, so its title would sit on its posters until the rest and
+    /// then ease 72 → 8. A title that is off screen even after sliding (`Reading.onScreen`) gets 0
+    /// instead, so an arriving row clips naturally and eases 0 → 8 exactly once at its rest.
+    /// Round 4 (verification workflow F3): the off-screen verdict comes from the Reading itself,
+    /// not from the sibling geometry observer's cache, so it does not depend on the order SwiftUI
+    /// runs the two observers' actions in.
+    private func applySlide(_ reading: PinnedRowTitle.Reading) {
+        commitSlide(target: reading.onScreen ? reading.slide : 0, measured: reading.slide)
     }
 
-    private func applySlide(_ measured: CGFloat) {
-        // Review r1 P1: a row that has scrolled far above the viewport measures `slide = 72` (the
-        // cap) with its title entirely off screen. Applying that at rest is invisible — but on the
-        // next Up walk the same row comes back DOWN as the focused row carrying that 72, held by
-        // the motion gate for the whole approach, so its title would sit on its posters until the
-        // rest and then ease 72 → 8. A title that is off screen even after sliding gets 0 instead
-        // (`stillOnScreen`'s own inequality, from the cached geometry), so an arriving row clips
-        // naturally and eases 0 → 8 exactly once at its rest.
-        let target = PinnedRowTitle.appliedSlide(visibleMinY: tracking.geometry?.visibleMinY ?? 0,
-                                                 titleHeight: tracking.geometry?.titleHeight ?? 0,
-                                                 measured: measured)
+    private func commitSlide(target: CGFloat, measured: CGFloat) {
         // Two motion signals, either one holds (device round 2): the rows scroll's own stamp, and
         // this title's frame having changed inside the window — see `lastGeometryChangeAt`.
         let sinceScroll = PinnedRowSettle.secondsSinceMotion()
         let sinceTitleMove = ProcessInfo.processInfo.systemUptime - tracking.lastGeometryChangeAt
-        let moving = sinceScroll < Self.slideMotionHold || sinceTitleMove < Self.slideMotionHold
+        var moving = sinceScroll < Self.slideMotionHold || sinceTitleMove < Self.slideMotionHold
+        // Round 4 (verification workflow F2): a slide going to ZERO is never held. A title that
+        // legitimately applied a deep slide at a long rest (a BUG-121/122 park) and then moves
+        // DOWN as the row below on the next Up press would otherwise carry that slide, held, for
+        // the whole press — its title 72pt onto its own posters. 0 is never wrong for a title the
+        // viewport fully contains, and an arriving row's measurement never reaches 0 before its
+        // rest (its margin stays negative until the rest), so this cannot re-open the bounce.
+        if target == 0, slide != 0 { moving = false }
         if moving {
             let alreadyPending = tracking.pendingSlide != nil
             tracking.pendingSlide = target
@@ -1379,7 +1407,7 @@ private struct PinnedRowTitleTracking: ViewModifier {
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.slideMotionHold) {
                 guard token == tracking.slideHoldToken, let pending = tracking.pendingSlide else { return }
                 tracking.pendingSlide = nil
-                applySlide(pending)
+                commitSlide(target: pending, measured: pending)
             }
             return
         }
