@@ -15,7 +15,8 @@ final class LibraryViewModel: ObservableObject {
     private var rawItems: [LibraryItem] = []
     private var sourceMode: LibrarySourceMode = .local
     /// Section (list) keys of the current snapshot, in the provider's tab order. MDBList puts its
-    /// watchlist first; the flat tvOS Library ranks by that list (see `republish`).
+    /// watchlist first; the flat tvOS Library orders newest-added first and breaks ties with that
+    /// list's rank (see `republish`).
     private var sectionKeys: [String] = []
     private var watcher: FlowWatcher?
     private var displayWatcher: FlowWatcher?
@@ -56,10 +57,12 @@ final class LibraryViewModel: ObservableObject {
         availableSortOptions = LibraryDisplaySettingsKt.availableLibrarySortOptions(sourceMode: sourceMode)
         if sourceMode == .mdblist {
             // MDBList items carry per-list ranks (`listRanks`), which only the listKey overload
-            // reads. tvOS has no per-list tabs, so ranks come from the first NON-EMPTY section:
-            // the watchlist whenever it has items, since the shared snapshot drops empty tabs
-            // (`MDBLIST_WATCHLIST_KEY` itself is Kotlin-internal). When the watchlist is empty no
-            // item carries a watchlist rank, so whichever list comes first gives the same order.
+            // reads. Since upstream 0e8b51bb the DEFAULT order is newest added first (MDBList's
+            // `listed_at`/`added_at`/`watchlist_at`), with the first section's rank (highest first)
+            // as the tie-break, so items outside that section sort last among equal timestamps.
+            // tvOS has no per-list tabs, so the rank comes from the first NON-EMPTY section: the
+            // watchlist whenever it has items, since the shared snapshot drops empty tabs
+            // (`MDBLIST_WATCHLIST_KEY` itself is Kotlin-internal).
             // providerOrder stays nil: MDBList's added-order cache has no public shared accessor.
             items = LibraryDisplaySettingsKt.sortLibraryItems(
                 items: rawItems,
