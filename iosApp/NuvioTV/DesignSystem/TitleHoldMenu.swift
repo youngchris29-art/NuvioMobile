@@ -57,6 +57,52 @@ enum TitleHoldMenuPolicy {
         ["series", "show", "tv", "tvshow"].contains(type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
+    // MARK: - Explicit actions (fix round 1)
+
+    /// What the library button does. Decided from the state its LABEL was built from, never from
+    /// whatever the repository says at tap time: a button that reads "Add to Library" adds.
+    enum LibraryAction: Equatable {
+        case save
+        case remove
+    }
+
+    /// What the watched button does, on the same rule as `LibraryAction`.
+    enum WatchedAction: Equatable {
+        case mark
+        case unmark
+    }
+
+    /// The action a library button labelled with `libraryLabel(isSaved:)` performs.
+    static func libraryAction(isSaved: Bool) -> LibraryAction {
+        isSaved ? .remove : .save
+    }
+
+    /// The action a watched button labelled with `watchedLabel(isWatched:isSeries:)` performs.
+    static func watchedAction(isWatched: Bool) -> WatchedAction {
+        isWatched ? .unmark : .mark
+    }
+
+    /// Guard for the repository entry points that only exist as TOGGLES (`toggleSaved`, which also
+    /// routes to the active Trakt / Simkl library provider, and `togglePosterWatchedAsync`, which
+    /// marks or unmarks a whole series depending on what it finds when it runs). A toggle flips
+    /// whatever the live state is, so it may only run while the live state still equals the state
+    /// the label was built from; when something else changed the title in between (Detail,
+    /// finished playback, a sync pull) the label is stale and the tap does nothing.
+    static func labelStillMatchesLiveState(labelState: Bool, liveState: Bool) -> Bool {
+        labelState == liveState
+    }
+
+    // MARK: - Detail Play button (hold Play → Choose Source…)
+
+    /// Whether the Detail Play button carries its "Choose Source…" menu. Only while Auto-Play Best
+    /// Source is on (with it off a plain press already opens the source list, so the menu would
+    /// duplicate it) and only while Play itself is enabled (a disabled Play never carries a menu).
+    /// The modifier is attached regardless and renders an empty menu when this is false, so the
+    /// Play button's view identity never depends on a setting.
+    static func holdPlayMenuAvailable(autoPlayFirstStreamOn: Bool, isPlayEnabled: Bool) -> Bool {
+        autoPlayFirstStreamOn && isPlayEnabled
+    }
+
     // MARK: - Continue Watching menu
 
     /// One entry of a Continue Watching card's hold menu.
@@ -116,15 +162,27 @@ extension View {
 
 private struct TitleHoldMenuModifier: ViewModifier {
     let preview: MetaPreview
-    /// Bumped after every menu action. The card never observes the library / watched stores (a
-    /// store write would re-render every card and flicker an open menu), so this is what makes
-    /// the NEXT hold re-read the state: the menu items take it as an input, so a bump re-resolves
-    /// them even if the menu content was built ahead of presentation.
+    /// Bumped shortly after every menu action. The card never observes the library / watched
+    /// stores (a store write would re-render every card and flicker an open menu), so this is what
+    /// makes the NEXT hold re-read the state: the menu items take it as an input, so a bump
+    /// re-resolves them even if the menu content was built ahead of presentation. It is bumped
+    /// from a short `Task` AFTER the action, not before: the series toggle finishes on a
+    /// background dispatcher, so an immediate bump would re-read the state it is about to change.
+    ///
+    /// There is deliberately no `.onAppear` bump. That would be one `@State` write per card mount
+    /// on every Home row (a re-render per card at scroll-in), and the buttons no longer depend on
+    /// freshness for correctness: each performs the action its own label names and declines to run
+    /// when the live state has moved on (`labelStillMatchesLiveState`).
     @State private var revision = 0
 
     func body(content: Content) -> some View {
         content.contextMenu {
-            TitleHoldMenuItems(preview: preview, revision: revision) { revision &+= 1 }
+            TitleHoldMenuItems(preview: preview, revision: revision) {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    revision &+= 1
+                }
+            }
         }
     }
 }
@@ -139,18 +197,13 @@ private struct TitleHoldMenuItems: View {
 
     var body: some View {
         let isSeries = TitleHoldMenuPolicy.isSeries(type: preview.type)
-        let isSaved = LibraryRepository.shared.isSaved(id: preview.id, type: preview.type)
-        let isWatched = TitleHoldMenuPolicy.effectiveWatched(
-            titleMarked: WatchedRepository.shared.isWatched(id: preview.id, type: preview.type, season: nil, episode: nil),
-            fullyWatchedSeries: isSeries
-                ? WatchedRepository.shared.isFullyWatchedSeries(id: preview.id, type: preview.type)
-                : false,
-            isSeries: isSeries
-        )
+        // Captured once per build: the labels below and the actions the buttons perform both come
+        // from these two values, so they cannot disagree.
+        let isSaved = Self.liveSaved(preview)
+        let isWatched = Self.liveWatched(preview, isSeries: isSeries)
 
         Button {
-            // The repo stamps `savedAtEpochMs` itself, so 0 (same as Detail's toggleLibrary).
-            LibraryRepository.shared.toggleSaved(item: preview.toLibraryItem(savedAtEpochMs: 0))
+            performLibraryAction(labelIsSaved: isSaved)
             didAct()
         } label: {
             Label(TitleHoldMenuPolicy.libraryLabel(isSaved: isSaved),
@@ -158,18 +211,67 @@ private struct TitleHoldMenuItems: View {
         }
 
         Button {
-            if isSeries {
-                // Mark-all / unmark-all across the released episodes: fetches the series' meta,
-                // so it is fire-and-forget on the shared side.
-                WatchingActions.shared.togglePosterWatchedAsync(preview: preview)
-            } else {
-                // The repo stamps `markedAtEpochMs` itself, so 0 (same as Detail's toggleWatched).
-                WatchedRepository.shared.toggleWatched(item: preview.toWatchedItem(markedAtEpochMs: 0))
-            }
+            performWatchedAction(labelIsWatched: isWatched, isSeries: isSeries)
             didAct()
         } label: {
             Label(TitleHoldMenuPolicy.watchedLabel(isWatched: isWatched, isSeries: isSeries),
                   systemImage: TitleHoldMenuPolicy.watchedIcon(isWatched: isWatched))
+        }
+    }
+
+    // MARK: - Live state
+
+    private static func liveSaved(_ preview: MetaPreview) -> Bool {
+        LibraryRepository.shared.isSaved(id: preview.id, type: preview.type)
+    }
+
+    private static func liveWatched(_ preview: MetaPreview, isSeries: Bool) -> Bool {
+        TitleHoldMenuPolicy.effectiveWatched(
+            titleMarked: WatchedRepository.shared.isWatched(id: preview.id, type: preview.type, season: nil, episode: nil),
+            fullyWatchedSeries: isSeries
+                ? WatchedRepository.shared.isFullyWatchedSeries(id: preview.id, type: preview.type)
+                : false,
+            isSeries: isSeries
+        )
+    }
+
+    // MARK: - Actions
+
+    /// "Add to Library" / "Remove from Library". `LibraryRepository.save(item:)` and `remove(id:)`
+    /// only touch the LOCAL library; `toggleSaved(item:)` is the one entry that also routes to the
+    /// active Trakt / Simkl library provider (and `isSaved` already reads the provider's state), so
+    /// it stays the call here. It flips the live state, hence the guard: it runs only while the
+    /// live state still equals what the label said, which makes it exactly `libraryAction(isSaved:)`.
+    private func performLibraryAction(labelIsSaved: Bool) {
+        let liveIsSaved = Self.liveSaved(preview)
+        guard TitleHoldMenuPolicy.labelStillMatchesLiveState(labelState: labelIsSaved, liveState: liveIsSaved) else {
+            print("[HoldMenu] library action skipped for \(preview.type):\(preview.id): label offered \(TitleHoldMenuPolicy.libraryAction(isSaved: labelIsSaved)), saved is now \(liveIsSaved)")
+            return
+        }
+        // The repo stamps `savedAtEpochMs` itself, so 0 (same as Detail's toggleLibrary).
+        LibraryRepository.shared.toggleSaved(item: preview.toLibraryItem(savedAtEpochMs: 0))
+    }
+
+    /// "Mark as Watched" / "Mark as Unwatched".
+    private func performWatchedAction(labelIsWatched: Bool, isSeries: Bool) {
+        if isSeries {
+            // Mark-all / unmark-all across the released episodes. The shared side only has the
+            // toggle (it fetches the series' meta first, so it is fire-and-forget), and it decides
+            // mark vs unmark from the live state when it starts: guard it like the library toggle.
+            let liveIsWatched = Self.liveWatched(preview, isSeries: true)
+            guard TitleHoldMenuPolicy.labelStillMatchesLiveState(labelState: labelIsWatched, liveState: liveIsWatched) else {
+                print("[HoldMenu] watched action skipped for \(preview.type):\(preview.id): label offered \(TitleHoldMenuPolicy.watchedAction(isWatched: labelIsWatched)), watched is now \(liveIsWatched)")
+                return
+            }
+            WatchingActions.shared.togglePosterWatchedAsync(preview: preview)
+            return
+        }
+        // Movies have explicit entry points, so no live read is needed. The repo stamps
+        // `markedAtEpochMs` itself, so 0 (same as Detail's toggleWatched).
+        let item = preview.toWatchedItem(markedAtEpochMs: 0)
+        switch TitleHoldMenuPolicy.watchedAction(isWatched: labelIsWatched) {
+        case .mark: WatchedRepository.shared.markWatched(item: item)
+        case .unmark: WatchedRepository.shared.unmarkWatched(item: item)
         }
     }
 }

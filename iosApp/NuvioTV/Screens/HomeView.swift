@@ -1276,7 +1276,14 @@ struct HomeView: View {
                         onMarkWatched: { entry in
                             // Same pair a finished playback leaves behind: the episode joins watched
                             // history and its half-played progress row stops showing in the shelf.
-                            WatchedRepository.shared.markWatched(item: WatchingActionsKt.watchedItemFromProgress(entry: entry))
+                            // Stamped NOW: a manual mark is recorded when it happens, not at the
+                            // entry's last progress save (the helper has no default for this).
+                            WatchedRepository.shared.markWatched(
+                                item: WatchingActionsKt.watchedItemFromProgress(
+                                    entry: entry,
+                                    markedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000)
+                                )
+                            )
                             WatchProgressRepository.shared.clearProgress(videoId: entry.videoId, parentMetaId: entry.parentMetaId)
                         },
                         shuffleParentIds: model.shuffleParentIds,

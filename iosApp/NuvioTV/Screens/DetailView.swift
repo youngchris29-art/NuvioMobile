@@ -1518,7 +1518,8 @@ struct DetailView: View {
                 // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
                 // Streams screen when no addon/plugin/embedded/download source can serve this title.
                 .disabled(!model.isPlayEnabled)
-                .modifier(HoldPlayChooseSourceMenu(isOn: model.autoPlayFirstStreamOn) {
+                .modifier(HoldPlayChooseSourceMenu(autoPlayFirstStreamOn: model.autoPlayFirstStreamOn,
+                                                   isPlayEnabled: model.isPlayEnabled) {
                     forceManualPlay = true
                     showStreams = true
                 })
@@ -1543,7 +1544,8 @@ struct DetailView: View {
                 .tint(Theme.Palette.accent)
                 // C (upstream `972109f9`): same gate as the movie Play button above.
                 .disabled(!model.isPlayEnabled)
-                .modifier(HoldPlayChooseSourceMenu(isOn: model.autoPlayFirstStreamOn) {
+                .modifier(HoldPlayChooseSourceMenu(autoPlayFirstStreamOn: model.autoPlayFirstStreamOn,
+                                                   isPlayEnabled: model.isPlayEnabled) {
                     model.noteSeriesPlayStarted(action)
                     seriesPlay = SeriesPlayRoute(meta: meta, action: action, forceManual: true)
                 })
@@ -2456,24 +2458,28 @@ private struct SeriesPlayRoute: Identifiable {
     }
 }
 
-/// Hold Play (long Select press) → "Choose Source…", for the Detail Play button. Only attached while
-/// Settings → Playback → Auto-Play Best Source is on: with it off a plain press already opens the
-/// source list, so no empty menu exists. The button's own tap action still fires on a normal press;
-/// the menu is a `.contextMenu`, which tvOS opens on a long Select press.
+/// Hold Play (long Select press) → "Choose Source…", for the Detail Play button. The menu only has
+/// an item while Settings → Playback → Auto-Play Best Source is on (with it off a plain press
+/// already opens the source list) and Play is enabled (`TitleHoldMenuPolicy.holdPlayMenuAvailable`).
+/// The button's own tap action still fires on a normal press; the menu is a `.contextMenu`, which
+/// tvOS opens on a long Select press.
+///
+/// The `.contextMenu` is attached UNCONDITIONALLY and only its content varies. An `if` around the
+/// modifier changed the Play button's view identity whenever the setting flipped, rebuilding the
+/// focused button after the first render.
 private struct HoldPlayChooseSourceMenu: ViewModifier {
-    let isOn: Bool
+    let autoPlayFirstStreamOn: Bool
+    let isPlayEnabled: Bool
     let chooseSource: () -> Void
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if isOn {
-            content.contextMenu {
+        content.contextMenu {
+            if TitleHoldMenuPolicy.holdPlayMenuAvailable(autoPlayFirstStreamOn: autoPlayFirstStreamOn,
+                                                         isPlayEnabled: isPlayEnabled) {
                 Button(action: chooseSource) {
                     Label("Choose Source…", systemImage: "list.and.film")
                 }
             }
-        } else {
-            content
         }
     }
 }

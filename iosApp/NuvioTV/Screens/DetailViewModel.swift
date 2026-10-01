@@ -44,8 +44,9 @@ final class DetailViewModel: ObservableObject {
     /// loading so the button never flashes disabled for a frame. See `computeIsPlayEnabled()`.
     @Published private(set) var isPlayEnabled = true
     /// Whether the Settings "Auto-Play Best Source" switch (`StreamAutoPlayMode.firstStream`) is on.
-    /// Drives hold-Play on the action row: the "Choose Source…" menu is only attached while a plain
-    /// press would otherwise skip the source list.
+    /// Drives hold-Play on the action row: the "Choose Source…" menu only has items while a plain
+    /// press would otherwise skip the source list. Seeded synchronously in `init` (see there) and
+    /// kept current by `playerSettingsWatcher`.
     @Published private(set) var autoPlayFirstStreamOn = false
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
@@ -129,6 +130,18 @@ final class DetailViewModel: ObservableObject {
 
     init(preview: MetaPreview) {
         self.preview = preview
+        // Seed before the first render. The `playerSettingsWatcher` in `start()` only emits after a
+        // runloop turn, and with the flag starting `false` the hold-Play wiring changed one beat
+        // after Detail appeared; the repository's current value is a synchronous read.
+        self.autoPlayFirstStreamOn = Self.readAutoPlayFirstStreamOn()
+    }
+
+    /// Synchronous read of Settings → Playback → Auto-Play Best Source
+    /// (`StreamAutoPlayMode.firstStream`), the same read the stream picker does.
+    private static func readAutoPlayFirstStreamOn() -> Bool {
+        PlayerSettingsRepository.shared.ensureLoaded()
+        let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+        return settings?.streamAutoPlayMode == StreamAutoPlayMode.firstStream
     }
 
     func start() {
