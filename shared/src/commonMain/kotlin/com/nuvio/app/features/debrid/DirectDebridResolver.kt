@@ -13,6 +13,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.nuvio.app.core.i18n.StringKey
@@ -89,6 +90,22 @@ object DirectDebridPlaybackResolver {
         val cacheKey = stream.debridResolveCacheKey(season, episode) ?: return null
         return getCachedResult(cacheKey)
             ?.let { result -> stream.withResolvedDebridUrl(result) }
+    }
+
+    /**
+     * Fork (tvOS): drops the 15-minute resolve-cache entry for [stream] at this season/episode,
+     * so the next [resolve] asks the provider again (e.g. after the cached link failed to play).
+     * Keyed exactly like [resolve]. An in-flight resolve for the same key is left alone.
+     *
+     * Non-suspend for Swift. The eviction runs undispatched under [mutex]: it completes before
+     * this returns unless the mutex is held, and then it is queued ahead of any later
+     * lookup (the mutex is fair), so a [resolve] issued after this call never reads the old entry.
+     */
+    fun invalidate(stream: StreamItem, season: Int?, episode: Int?) {
+        val cacheKey = stream.debridResolveCacheKey(season, episode) ?: return
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            mutex.withLock { resolvedCache.remove(cacheKey) }
+        }
     }
 
     private suspend fun getCachedResult(cacheKey: String): DirectDebridResolveResult.Success? =

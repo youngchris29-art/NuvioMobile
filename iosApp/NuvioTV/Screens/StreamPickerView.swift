@@ -693,7 +693,11 @@ struct StreamPickerView: View {
             season: season.map { KotlinInt(int: Int32($0)) },
             episode: episode.map { KotlinInt(int: Int32($0)) },
             episodeTitle: nil,
-            skipSegmentsJson: nil
+            skipSegmentsJson: nil,
+            // Orivio batch K3: the request grew two callback URLs (Kotlin defaults are invisible to
+            // Swift). S1 replaces these with the Infuse x-callback session URLs.
+            callbackSuccessUrl: nil,
+            callbackErrorUrl: nil
         )
         let result = ExternalPlayerPlatform.shared.open(request: request, playerId: playerId)
         // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).

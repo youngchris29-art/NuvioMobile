@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player
 
+import com.nuvio.app.features.player.external.ExternalPlaybackReturn
 import platform.Foundation.NSLog
 import platform.Foundation.NSURL
 import platform.Foundation.NSUserDefaults
@@ -28,6 +29,16 @@ private val iosExternalPlayerSpecs = listOf(
                 request.subtitles?.forEach { subtitle ->
                     append("&sub=")
                     append(subtitle.url.urlQueryEncode())
+                }
+                // Upstream 99ced26a: Infuse opens these when playback ends, reporting the
+                // position back (`ExternalPlaybackReturn.handleUrl`).
+                request.callbackSuccessUrl?.let { callbackUrl ->
+                    append("&x-success=")
+                    append(callbackUrl.urlQueryEncode())
+                }
+                request.callbackErrorUrl?.let { callbackUrl ->
+                    append("&x-error=")
+                    append(callbackUrl.urlQueryEncode())
                 }
             }
         },
@@ -138,10 +149,19 @@ actual object ExternalPlayerPlatform {
         }
         val url = NSURL.URLWithString(urlString)
             ?: return ExternalPlayerOpenResult.Failed
+        // Upstream 99ced26a: a launch that carried a return callback but never opened drops its
+        // own pending session (the open result arrives asynchronously, after `Opened`).
+        val callbackSuccessUrl = request.callbackSuccessUrl
         UIApplication.sharedApplication.openURL(
             url = url,
             options = emptyMap<Any?, Any>(),
-            completionHandler = null,
+            completionHandler = if (callbackSuccessUrl == null) {
+                null
+            } else {
+                { opened: Boolean ->
+                    if (!opened) ExternalPlaybackReturn.cancelLaunchForCallbackUrl(callbackSuccessUrl)
+                }
+            },
         )
         return ExternalPlayerOpenResult.Opened
     }

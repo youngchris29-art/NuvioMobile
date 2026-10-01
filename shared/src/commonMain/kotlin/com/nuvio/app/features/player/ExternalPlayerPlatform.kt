@@ -23,6 +23,11 @@ data class ExternalPlayerPlaybackRequest(
     val episodeTitle: String? = null,
     // JSON array of intro/outro skip segments, passed to players that support auto-skipping.
     val skipSegmentsJson: String? = null,
+    // x-callback return URLs (upstream 99ced26a, generalised): built by
+    // `ExternalPlaybackCallbacks.build` for a session from `ExternalPlaybackReturn.prepare`.
+    // Only players that report playback back (Infuse) use them; null leaves the URL unchanged.
+    val callbackSuccessUrl: String? = null,
+    val callbackErrorUrl: String? = null,
 ) {
     /**
      * Builds a display title for external players.
