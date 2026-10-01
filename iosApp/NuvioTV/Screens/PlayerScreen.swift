@@ -9,13 +9,26 @@ import SwiftUI
 /// flag off, playback goes straight to mpv with no probe delay — non-beta behavior is unchanged. With
 /// it on, a brief probe decides per file, and any native-path failure falls back to mpv for the same
 /// context. See docs/tvos-hybrid-player-plan.md.
+///
+/// Failover (orivio batch item 2): `onPlaybackFailed` / `onPlaybackHealthy` are forwarded to both
+/// engines. A native failure still falls back to mpv on the same URL first; mpv then reports for
+/// the whole attempt (the native seconds played are carried over, and a native path that never
+/// started gives mpv the shortened start watchdog). With both closures nil nothing changes.
 struct PlayerScreen: View {
     let context: PlaybackContext
     var onPlayNext: ((PlaybackContext) -> Void)? = nil
+    /// The playback failed (see `PlaybackFailure`); the host decides what plays next.
+    var onPlaybackFailed: ((PlaybackFailure) -> Void)? = nil
+    /// Fired once per engine session when the link has played `PlaybackFailoverPolicy.healthySeconds`.
+    var onPlaybackHealthy: ((Double) -> Void)? = nil
 
     @State private var decision: EngineDecision?
     /// Set when the native path fails; pins this context to mpv.
     @State private var forcedMPV = false
+    /// Seconds the native engine played before it fell back to mpv.
+    @State private var nativeSecondsPlayed: Double = 0
+    /// The native engine fell back before it ever started playing.
+    @State private var nativeFailedBeforeStart = false
 
     private var nativeDVEnabled: Bool { UserDefaults.standard.bool(forKey: PlayerTuning.nativeDVKey) }
 
@@ -32,11 +45,21 @@ struct PlayerScreen: View {
             switch shown {
             case .native:
                 NativePlayerScreen(context: context, onPlayNext: onPlayNext,
-                                   onFallback: { _ in forcedMPV = true },
-                                   routingNote: decision?.displayNote)
+                                   onFallback: { _, secondsPlayed in
+                                       nativeSecondsPlayed = secondsPlayed
+                                       nativeFailedBeforeStart = secondsPlayed <= 0
+                                       forcedMPV = true
+                                   },
+                                   routingNote: decision?.displayNote,
+                                   onPlaybackFailed: onPlaybackFailed,
+                                   onPlaybackHealthy: onPlaybackHealthy)
             case .mpv:
                 MPVPlayerScreen(context: context, onPlayNext: onPlayNext,
-                                routingNote: forcedMPV ? String(localized: "mpv \u{00B7} fallback") : decision?.displayNote)
+                                routingNote: forcedMPV ? String(localized: "mpv \u{00B7} fallback") : decision?.displayNote,
+                                onPlaybackFailed: onPlaybackFailed,
+                                onPlaybackHealthy: onPlaybackHealthy,
+                                startWatchdogShortened: forcedMPV && nativeFailedBeforeStart,
+                                nativeSecondsPlayedBeforeFallback: forcedMPV ? nativeSecondsPlayed : 0)
             case .deciding:
                 ZStack {
                     Color.black.ignoresSafeArea()
@@ -45,6 +68,12 @@ struct PlayerScreen: View {
             }
         }
         .task(id: context.id) { await decideEngine() }
+        // Hosts that swap the context without rebuilding this view keep mpv pinned (`forcedMPV`),
+        // but the native engine never played the new context: its carried-over state is reset.
+        .onChange(of: context.id) { _, _ in
+            nativeSecondsPlayed = 0
+            nativeFailedBeforeStart = false
+        }
     }
 
     /// Probe off-main (hard-bounded) and pick the engine. No-op straight to mpv when the flag is off.

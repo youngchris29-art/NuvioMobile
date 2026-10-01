@@ -24,6 +24,14 @@ import SharedCore
 /// Collapsing a group that holds focus retargets focus to that group's header first. (Previously
 /// the dev test-stream button at the bottom was the only focusable view while loading, so focus
 /// landed — and stayed — at the bottom of the list.)
+///
+/// Auto-Play Best Source (orivio batch item 1): with the "first stream" auto-play mode on and the
+/// picker not forced manual, a visit opens in auto mode — `FirstPlayAutoPlayController` walks the
+/// shared repository's settled candidates under a full-screen "Finding the best source…" overlay
+/// and opens the player itself; Back from that player dismisses the picker too. Menu on the overlay
+/// drops to the list. Failover (item 2): a presented playback that fails is remembered
+/// (`RejectedStreamLinks`) and, by `PlaybackContext.launchSource`, swaps in the next auto
+/// candidate, opens a picker for the Up Next episode that failed, or offers "Try Next Source".
 struct StreamPickerView: View {
     let type: String
     let videoId: String
@@ -47,8 +55,38 @@ struct StreamPickerView: View {
     /// the plain text heading when it loads — mobile parity for the stream picker screen. `nil`
     /// on launch paths with no meta at hand (Home continue-watching, Top Shelf).
     let logoUrl: String?
+    /// Never auto-start, whatever the auto-play setting says ("Choose Source…", "Play Manually").
+    let forceManual: Bool
+    /// "Start Over": every playback this picker starts ignores saved progress.
+    let startFromBeginning: Bool
+    /// A toast shown when the picker opens on its list (the Up Next failover picker's explanation).
+    let notice: String?
 
     @StateObject private var model: StreamsViewModel
+    @StateObject private var autoPlay: FirstPlayAutoPlayController
+    /// First-play auto mode for this visit. Evaluated once, at the first appearance; cleared when
+    /// the controller plays, gives up or is cancelled, so every later load — the re-appearance
+    /// after the player, the debrid-Stale reload — asks for the plain list (`manualSelection`).
+    @State private var autoPlayArmed = false
+    @State private var autoPlayEvaluated = false
+    /// The open player was auto-started: closing it dismisses the picker too, so Back lands on the
+    /// page that opened the picker.
+    @State private var dismissAfterPlayer = false
+    /// Up Next failover: the picker for the episode whose source failed, presented once the player
+    /// has closed (`pendingFailoverTarget` waits for that).
+    @State private var failoverTarget: FailoverTarget?
+    @State private var pendingFailoverTarget: FailoverTarget?
+    /// Manual-pick failure alert, raised once the player has closed.
+    @State private var manualFailureAlert: ManualFailureAlert?
+    @State private var pendingManualFailureAlert: ManualFailureAlert?
+    /// The list as it was when the viewer picked a row: "Try Next Source" walks this order.
+    @State private var manualFailoverList: [StreamItem] = []
+    /// Keys of links that failed recently for this title (row caption), re-read at the moments
+    /// they can change — `RejectedStreamLinks` itself keeps no cache.
+    @State private var rejectedKeys: Set<String> = []
+    /// A "Start Over" playback from this picker has played five minutes: the request is honoured,
+    /// so a later failover or retry resumes from the saved position instead of starting over again.
+    @State private var startOverHonoured = false
     @State private var selected: PlaybackContext?
     /// Episodes fetched on demand when a series launch path didn't supply them (Home
     /// continue-watching, Detail's primary Play). Filled from `MetaDetailsRepository.fetch`
@@ -78,6 +116,10 @@ struct StreamPickerView: View {
     @Environment(\.dismiss) private var dismiss
 
     private static let testRowKey = "test-stream"
+    /// Spinner key for a "Try Next Source" resolve (its row may be collapsed or off-screen).
+    private static let failoverRowKey = "failover-next"
+    /// `ExternalPlayerApp.id` of Infuse, the external player that reports playback back.
+    private static let infusePlayerId = "infuse"
     private let testStreamURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!
 
     init(
@@ -92,10 +134,16 @@ struct StreamPickerView: View {
         episodeStill: String? = nil,
         synopsis: String? = nil,
         meta: PlaybackMeta? = nil,
-        logoUrl: String? = nil
+        logoUrl: String? = nil,
+        forceManual: Bool = false,
+        startFromBeginning: Bool = false,
+        notice: String? = nil
     ) {
         self.meta = meta
         self.logoUrl = logoUrl
+        self.forceManual = forceManual
+        self.startFromBeginning = startFromBeginning
+        self.notice = notice
         self.poster = poster
         self.episodeStill = episodeStill
         self.synopsis = synopsis
@@ -109,9 +157,17 @@ struct StreamPickerView: View {
         _model = StateObject(wrappedValue: StreamsViewModel(
             type: type, videoId: videoId, parentMetaId: parentMetaId, season: season, episode: episode
         ))
+        _autoPlay = StateObject(wrappedValue: FirstPlayAutoPlayController(
+            titleKey: videoId,
+            dependencies: .live(type: type, videoId: videoId, season: season, episode: episode)
+        ))
     }
 
-    private func context(url: URL, stream: StreamItem?) -> PlaybackContext {
+    /// `listedStream` is the stream as the list shows it (pre-resolve) and `streamKey` its
+    /// `playbackStreamKey`; both empty for the test stream. "Start Over" carries over until a
+    /// playback has honoured it (`startOverHonoured`).
+    private func context(url: URL, stream: StreamItem?, listedStream: StreamItem? = nil, streamKey: String = "",
+                         launchSource: PlaybackLaunchSource = .manual, attempt: Int = 0) -> PlaybackContext {
         PlaybackContext(
             url: url,
             title: title,
@@ -136,7 +192,12 @@ struct StreamPickerView: View {
             meta: meta,
             fileSizeBytes: { let n: Int64? = stream?.behaviorHints.videoSize?.int64Value; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
-                headers: stream?.behaviorHints.proxyHeaders?.request)
+                headers: stream?.behaviorHints.proxyHeaders?.request),
+            launchSource: launchSource,
+            streamKey: streamKey,
+            startFromBeginning: startsOver,
+            attempt: attempt,
+            listedStream: listedStream
         )
     }
 
@@ -146,11 +207,18 @@ struct StreamPickerView: View {
     private func fetchEpisodesIfNeeded() {
         guard episodes.isEmpty, fetchedEpisodes.isEmpty,
               ["series", "tv", "show", "tvshow"].contains(type.lowercased()) else { return }
-        MetaDetailsRepository.shared.fetch(type: type, id: parentMetaId, cacheResult: true) { details, _ in
-            let videos = details?.videos ?? []
-            guard !videos.isEmpty else { return }
-            // Suspend completions can land off-main; hop before mutating view state.
-            DispatchQueue.main.async { fetchedEpisodes = videos }
+        // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
+        Task { @MainActor in
+            do {
+                let details = try await MetaDetailsRepository.shared.fetchChecked(
+                    type: type, id: parentMetaId, cacheResult: true
+                )
+                let videos = details?.videos ?? []
+                guard !videos.isEmpty else { return }
+                fetchedEpisodes = videos
+            } catch {
+                print("[StreamPicker] episode list fetch failed: \(error)")
+            }
         }
     }
 
@@ -253,6 +321,8 @@ struct StreamPickerView: View {
                 }
                 .padding(Theme.Spacing.screen)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Under the auto-play overlay nothing in the list may take focus or a Select.
+                .disabled(autoPlayOverlayVisible)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.Palette.background.ignoresSafeArea())
@@ -268,6 +338,43 @@ struct StreamPickerView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .overlay {
+                if autoPlayOverlayVisible, let message = FirstPlayAutoPlayController.Policy.overlayMessage(for: autoPlay.phase) {
+                    FirstPlayAutoPlayOverlay(
+                        title: title,
+                        logoUrl: logoUrl,
+                        artworkUrl: episodeStill ?? poster,
+                        message: message,
+                        onCancel: cancelAutoPlay
+                    )
+                    .transition(.opacity)
+                }
+            }
+            .onReceive(model.$autoPlayFeed) { feed in autoPlay.ingest(feed) }
+            .onReceive(autoPlay.events) { event in handleAutoPlayEvent(event) }
+            .alert(
+                "Couldn\u{2019}t play this source",
+                isPresented: Binding(
+                    get: { manualFailureAlert != nil },
+                    set: { if !$0 { manualFailureAlert = nil } }
+                ),
+                presenting: manualFailureAlert
+            ) { alert in
+                if let next = alert.next {
+                    Button("Try Next Source") {
+                        manualFailureAlert = nil
+                        // Let the alert finish dismissing before the player cover presents.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            internalPlay(next, rowKey: Self.failoverRowKey, attempt: alert.attempt)
+                        }
+                    }
+                }
+                Button("Back to Sources", role: .cancel) {
+                    manualFailureAlert = nil
+                }
+            } message: { alert in
+                Text(alert.reason)
+            }
             .onChange(of: model.groups.map(\.id)) { _, ids in
                 guard !ids.isEmpty else { return }
                 // Auto-expand exactly once, only when the very first batch of groups turns out
@@ -282,7 +389,9 @@ struct StreamPickerView: View {
                 // there's a single, auto-expanded group (unchanged from before collapsing was
                 // added), otherwise to the first group's header. Never steals focus after the
                 // user has moved it to a real row/header: only fires while focus is nowhere or
-                // on the (now hidden) test button.
+                // on the (now hidden) test button. Never while the auto-play overlay holds focus
+                // (the list is disabled under it); `focusListAfterAutoPlay()` runs when it lifts.
+                guard !autoPlayOverlayVisible else { return }
                 guard focusedRow == nil || focusedRow == Self.testRowKey else { return }
                 if ids.count == 1, let firstKey = model.firstRowKey {
                     DispatchQueue.main.async { focusedRow = firstKey }
@@ -291,7 +400,17 @@ struct StreamPickerView: View {
                 }
             }
             .onAppear {
-                model.start()
+                if !autoPlayEvaluated {
+                    autoPlayEvaluated = true
+                    autoPlayArmed = !forceManual && Self.firstStreamAutoPlayOn()
+                    if autoPlayArmed {
+                        autoPlay.arm()
+                    } else if let notice {
+                        showToast(notice)
+                    }
+                }
+                rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+                model.start(forceManual: !autoPlayArmed)
                 fetchEpisodesIfNeeded()
                 // Main-thread only (UIApplication.canOpenURL); cheap enough to re-probe every
                 // appearance so an Infuse install mid-session is picked up next time the picker
@@ -304,15 +423,50 @@ struct StreamPickerView: View {
                 SubtitleRepository.shared.fetchAddonSubtitles(type: type, videoId: videoId)
             }
             .onDisappear { model.stop() }
-            .fullScreenCover(item: $selected) { ctx in
+            .fullScreenCover(item: $selected, onDismiss: handlePlayerDismissed) { ctx in
                 // `.id(ctx.id)` forces a full player rebuild when autoplay swaps in the next
                 // episode's context (a same-position cover would otherwise keep the old libmpv
-                // controller and just ignore the new context).
-                PlayerScreen(context: ctx, onPlayNext: { next in selected = next })
-                    .ignoresSafeArea()
-                    .id(ctx.id)
+                // controller and just ignore the new context). Failover swaps in place the same
+                // way (`PlaybackContext.attempt` keeps two candidates' ids apart).
+                PlayerScreen(
+                    context: ctx,
+                    onPlayNext: { next in selected = next },
+                    onPlaybackFailed: { failure in handlePlaybackFailure(failure, context: ctx) },
+                    onPlaybackHealthy: { seconds in handlePlaybackHealthy(seconds, context: ctx) }
+                )
+                .ignoresSafeArea()
+                .id(ctx.id)
             }
         }
+        // Up Next failover: a picker for the episode whose source failed. Attached to the stack,
+        // not beside the player cover, so the two presentations never share a view.
+        .fullScreenCover(item: $failoverTarget, onDismiss: handleFailoverPickerDismissed) { target in
+            StreamPickerView(
+                type: target.context.contentType,
+                videoId: target.context.videoId,
+                title: target.context.title,
+                parentMetaId: target.context.parentMetaId,
+                season: target.context.season,
+                episode: target.context.episode,
+                episodes: target.context.episodes,
+                poster: target.context.poster,
+                episodeStill: target.context.episodeStill,
+                synopsis: target.context.synopsis,
+                meta: target.context.meta,
+                logoUrl: logoUrl,
+                forceManual: target.forceManual,
+                startFromBeginning: false,
+                notice: String(localized: "The next episode\u{2019}s source failed. Choose one below.")
+            )
+        }
+    }
+
+    /// "Start Over" still applies to the next playback this picker starts.
+    private var startsOver: Bool { startFromBeginning && !startOverHonoured }
+
+    /// The auto-play overlay is up (not while a failover resolves behind the open player).
+    private var autoPlayOverlayVisible: Bool {
+        autoPlay.isOverlayVisible && !autoPlay.isFailoverWalk
     }
 
     // MARK: - Group headers
@@ -382,6 +536,7 @@ struct StreamPickerView: View {
         let hasBadgeRow = !badges.isEmpty || showSize
 
         return Button {
+            manualFailoverList = model.groups.flatMap(\.streams)
             play(stream, rowKey: key)
         } label: {
             HStack(alignment: .center, spacing: Theme.Spacing.lg) {
@@ -415,6 +570,13 @@ struct StreamPickerView: View {
                     if hasBadgeRow && !model.badgesOnTop {
                         badgeRow(badges: badges, sizeBytes: showSize ? sizeBytes : nil)
                     }
+                    // Orivio batch item 2: this link failed recently for this title, so the
+                    // automatic pickers skip it. Still selectable by hand.
+                    if !rejectedKeys.isEmpty, rejectedKeys.contains(stream.playbackStreamKey) {
+                        Text("Failed recently")
+                            .font(Theme.Font.caption)
+                            .rowTextColor(secondary: true)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -442,6 +604,7 @@ struct StreamPickerView: View {
                 externalPlay(stream, rowKey: key, playerId: player.id)
             },
             onBuiltIn: {
+                manualFailoverList = model.groups.flatMap(\.streams)
                 internalPlay(stream, rowKey: key)
             }
         ))
@@ -563,12 +726,17 @@ struct StreamPickerView: View {
         internalPlay(stream, rowKey: rowKey)
     }
 
-    private func internalPlay(_ stream: StreamItem, rowKey: String) {
+    /// A built-in-player playback the viewer chose (a row, the long-press menu, "Try Next Source",
+    /// whose `attempt` counts the failed tries before it). Always `.manual`.
+    private func internalPlay(_ stream: StreamItem, rowKey: String, attempt: Int = 0) {
+        let streamKey = stream.playbackStreamKey
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty, let url = URL(string: direct) {
             // A manual stream pick is user interaction — reset the Still Watching run.
             NextEpisodeEngine.consecutiveAutoPlays = 0
-            selected = context(url: url, stream: stream)
+            dismissAfterPlayer = false
+            selected = context(url: url, stream: stream, listedStream: stream, streamKey: streamKey,
+                               launchSource: .manual, attempt: attempt)
             return
         }
 
@@ -579,28 +747,35 @@ struct StreamPickerView: View {
             return
         }
         resolvingKey = rowKey
-        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
-            stream: stream,
-            season: season.map { KotlinInt(int: Int32($0)) },
-            episode: episode.map { KotlinInt(int: Int32($0)) }
-        ) { result, _ in
-            // Kotlin suspend completions can land off-main; hop before touching view state.
-            DispatchQueue.main.async {
-                resolvingKey = nil
-                if let success = result as? DirectDebridPlayableResult.Success {
-                    let resolvedUrl: String? = success.stream.playableDirectUrl
-                    if let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) {
-                        NextEpisodeEngine.consecutiveAutoPlays = 0
-                        selected = context(url: url, stream: success.stream)
-                        return
-                    }
+        let kotlinSeason = season.map { KotlinInt(int: Int32($0)) }
+        let kotlinEpisode = episode.map { KotlinInt(int: Int32($0)) }
+        // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
+        Task { @MainActor in
+            let result: DirectDebridPlayableResult?
+            do {
+                result = try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
+                    stream: stream, season: kotlinSeason, episode: kotlinEpisode
+                )
+            } catch {
+                print("[StreamPicker] debrid resolve threw: \(error)")
+                result = nil
+            }
+            resolvingKey = nil
+            if let success = result as? DirectDebridPlayableResult.Success {
+                let resolvedUrl: String? = success.stream.playableDirectUrl
+                if let resolvedUrl, !resolvedUrl.isEmpty, let url = URL(string: resolvedUrl) {
+                    NextEpisodeEngine.consecutiveAutoPlays = 0
+                    dismissAfterPlayer = false
+                    selected = context(url: url, stream: success.stream, listedStream: stream, streamKey: streamKey,
+                                       launchSource: .manual, attempt: attempt)
+                    return
                 }
-                showToast(Self.resolveFailureMessage(result))
-                // The toast promises a refresh — deliver it: stale cached links mean the whole
-                // result set is old, so re-fetch (focus is preserved; see onChange guard).
-                if result is DirectDebridPlayableResult.Stale {
-                    model.reload()
-                }
+            }
+            showToast(Self.resolveFailureMessage(result))
+            // The toast promises a refresh — deliver it: stale cached links mean the whole
+            // result set is old, so re-fetch (focus is preserved; see onChange guard).
+            if result is DirectDebridPlayableResult.Stale {
+                model.reload(forceManual: !autoPlayArmed)
             }
         }
     }
@@ -621,7 +796,8 @@ struct StreamPickerView: View {
     private func externalPlay(_ stream: StreamItem, rowKey: String, playerId: String, fallbackToInternal: Bool = false) {
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty {
-            openExternally(urlString: direct, stream: stream, playerId: playerId, fallbackToInternal: fallbackToInternal)
+            openExternally(urlString: direct, stream: stream, listed: stream, playerId: playerId,
+                           fallbackToInternal: fallbackToInternal)
             return
         }
 
@@ -631,29 +807,36 @@ struct StreamPickerView: View {
             return
         }
         resolvingKey = rowKey
-        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
-            stream: stream,
-            season: season.map { KotlinInt(int: Int32($0)) },
-            episode: episode.map { KotlinInt(int: Int32($0)) }
-        ) { result, _ in
-            DispatchQueue.main.async {
-                resolvingKey = nil
-                if let success = result as? DirectDebridPlayableResult.Success {
-                    let resolvedUrl: String? = success.stream.playableDirectUrl
-                    if let resolvedUrl, !resolvedUrl.isEmpty {
-                        openExternally(
-                            urlString: resolvedUrl,
-                            stream: success.stream,
-                            playerId: playerId,
-                            fallbackToInternal: fallbackToInternal
-                        )
-                        return
-                    }
+        let kotlinSeason = season.map { KotlinInt(int: Int32($0)) }
+        let kotlinEpisode = episode.map { KotlinInt(int: Int32($0)) }
+        // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
+        Task { @MainActor in
+            let result: DirectDebridPlayableResult?
+            do {
+                result = try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
+                    stream: stream, season: kotlinSeason, episode: kotlinEpisode
+                )
+            } catch {
+                print("[StreamPicker] debrid resolve threw: \(error)")
+                result = nil
+            }
+            resolvingKey = nil
+            if let success = result as? DirectDebridPlayableResult.Success {
+                let resolvedUrl: String? = success.stream.playableDirectUrl
+                if let resolvedUrl, !resolvedUrl.isEmpty {
+                    openExternally(
+                        urlString: resolvedUrl,
+                        stream: success.stream,
+                        listed: stream,
+                        playerId: playerId,
+                        fallbackToInternal: fallbackToInternal
+                    )
+                    return
                 }
-                showToast(Self.resolveFailureMessage(result))
-                if result is DirectDebridPlayableResult.Stale {
-                    model.reload()
-                }
+            }
+            showToast(Self.resolveFailureMessage(result))
+            if result is DirectDebridPlayableResult.Stale {
+                model.reload(forceManual: !autoPlayArmed)
             }
         }
     }
@@ -668,7 +851,13 @@ struct StreamPickerView: View {
     /// >10s floor, completed entries excluded), and the stream's addon subtitles, so players
     /// whose URL builders consume `sub`/`position` (VidHub `/play`, Infuse, VLC) resume and
     /// subtitle like the built-in player instead of starting cold.
-    private func openExternally(urlString: String, stream: StreamItem, playerId: String, fallbackToInternal: Bool = false) {
+    ///
+    /// Orivio batch item 5: an Infuse handoff first prepares a shared external-playback session and
+    /// passes Infuse its x-success / x-error callback URLs on this install's own URL scheme, so the
+    /// position Infuse reports back is recorded (`ExternalPlaybackReturn`). A handoff that does not
+    /// open drops that session again. `listed` is the stream as the list shows it (pre-resolve).
+    private func openExternally(urlString: String, stream: StreamItem, listed: StreamItem, playerId: String,
+                                fallbackToInternal: Bool = false) {
         let progress = WatchProgressRepository.shared.progressForVideo(
             videoId: videoId,
             parentMetaId: parentMetaId,
@@ -676,11 +865,29 @@ struct StreamPickerView: View {
             episodeNumber: episode.map { KotlinInt(int: Int32($0)) }
         )
         // Percentage-only rows (Simkl/Trakt) stay 0 here: the real duration is unknown before the
-        // file opens, and scaling by the show runtime is the bug being avoided.
+        // file opens, and scaling by the show runtime is the bug being avoided. "Start Over" sends 0.
         let resumeMs: Int64 = {
+            guard !startsOver else { return 0 }
             guard let progress, !progress.isCompleted, progress.lastPositionMs > 10_000 else { return 0 }
             return progress.lastPositionMs
         }()
+        var launchSessionId: String?
+        var callbackSuccessUrl: String?
+        var callbackErrorUrl: String?
+        if playerId == Self.infusePlayerId, let sourceURL = URL(string: urlString) {
+            let session = ExternalPlaybackReturn.shared.prepare(
+                playerId: Self.infusePlayerId,
+                sourceUrl: urlString,
+                playbackSession: PlaybackProgressRecorder.playbackSession(for: context(url: sourceURL, stream: stream)),
+                durationMs: externalDurationMs(progress: progress).map { KotlinLong(value: $0) }
+            )
+            let callbacks = ExternalPlaybackCallbacks.shared.build(
+                scheme: AppCallbackScheme.value, playerId: Self.infusePlayerId, sessionId: session.id
+            )
+            launchSessionId = session.id
+            callbackSuccessUrl = callbacks.first.map { $0 as String }
+            callbackErrorUrl = callbacks.second.map { $0 as String }
+        }
         let request = ExternalPlayerPlaybackRequest(
             sourceUrl: urlString,
             title: title,
@@ -694,21 +901,216 @@ struct StreamPickerView: View {
             episode: episode.map { KotlinInt(int: Int32($0)) },
             episodeTitle: nil,
             skipSegmentsJson: nil,
-            // Orivio batch K3: the request grew two callback URLs (Kotlin defaults are invisible to
-            // Swift). S1 replaces these with the Infuse x-callback session URLs.
-            callbackSuccessUrl: nil,
-            callbackErrorUrl: nil
+            // Infuse only (nil for every other player): where Infuse reports the stop position.
+            callbackSuccessUrl: callbackSuccessUrl,
+            callbackErrorUrl: callbackErrorUrl
         )
         let result = ExternalPlayerPlatform.shared.open(request: request, playerId: playerId)
         // SharedCore lowercases the whole Kotlin enum entry name (see KMP bridging notes).
         guard result != ExternalPlayerOpenResult.opened else { return }
+        if let launchSessionId {
+            // Nothing was handed off: drop the pending return session (only if it is still this one).
+            ExternalPlaybackReturn.shared.cancelLaunch(sessionId: launchSessionId)
+        }
         if fallbackToInternal, let url = URL(string: urlString) {
             showToast(String(localized: "Couldn\u{2019}t open the external player \u{2014} playing in NuvioTV."))
             NextEpisodeEngine.consecutiveAutoPlays = 0
-            selected = context(url: url, stream: stream)
+            dismissAfterPlayer = false
+            selected = context(url: url, stream: stream, listedStream: listed, streamKey: listed.playbackStreamKey,
+                               launchSource: .manual)
         } else {
             showToast(String(localized: "Couldn\u{2019}t open the external player."))
         }
+    }
+
+    /// Duration for the external-player return: the stored progress entry's, else the episode's
+    /// runtime, else the title's catalog runtime. nil = unknown (the shared side then records the
+    /// position without a tracker scrobble).
+    private func externalDurationMs(progress: WatchProgressEntry?) -> Int64? {
+        if let progress, progress.durationMs > 0 { return progress.durationMs }
+        let all = episodes.isEmpty ? fetchedEpisodes : episodes
+        if let season, let episode,
+           let video = all.first(where: { $0.season?.intValue == season && $0.episode?.intValue == episode }),
+           let minutes = video.runtime?.intValue, minutes > 0 {
+            return Int64(minutes) * 60_000
+        }
+        if let minutes = PlaybackMeta.runtimeMinutes(meta?.runtime), minutes > 0 {
+            return Int64(minutes) * 60_000
+        }
+        return nil
+    }
+
+    // MARK: - First-play auto mode (orivio batch item 1)
+
+    /// "Auto-Play Best Source" is the shared FIRST_STREAM auto-play mode.
+    private static func firstStreamAutoPlayOn() -> Bool {
+        PlayerSettingsRepository.shared.ensureLoaded()
+        let settings = PlayerSettingsRepository.shared.uiState.value_ as? PlayerSettingsUiState
+        return settings?.streamAutoPlayMode == StreamAutoPlayMode.firstStream
+    }
+
+    private func handleAutoPlayEvent(_ event: FirstPlayAutoPlayController.Event) {
+        switch event {
+        case let .play(candidate, resolved, url, attempt, isFailover):
+            if isFailover, selected == nil {
+                // The viewer closed the failed player while the next candidate resolved.
+                print("[AutoPlay] failover result after the player closed — dropped")
+                return
+            }
+            autoPlayArmed = false
+            NextEpisodeEngine.consecutiveAutoPlays = 0
+            dismissAfterPlayer = true
+            // Set straight from the event: during a failover this swaps the open player in place.
+            selected = context(url: url, stream: resolved, listedStream: candidate.stream,
+                               streamKey: candidate.streamKey, launchSource: .autoPlay, attempt: attempt - 1)
+        case let .gaveUp(_, duringFailover):
+            autoPlayArmed = false
+            if duringFailover {
+                // The viewer already left the player: nothing to explain.
+                guard selected != nil else { return }
+                dismissAfterPlayer = false
+                selected = nil
+            }
+            rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+            if duringFailover || !model.groups.isEmpty {
+                showToast(String(localized: "No source could start. Choose one below."))
+            }
+            focusListAfterAutoPlay()
+        }
+    }
+
+    /// Menu on the overlay: stop auto mode and show the list; the picker stays.
+    private func cancelAutoPlay() {
+        autoPlay.cancel()
+        autoPlayArmed = false
+        focusListAfterAutoPlay()
+    }
+
+    /// Initial focus for the list once the overlay lifts (same targets as the first-groups rule).
+    private func focusListAfterAutoPlay() {
+        DispatchQueue.main.async {
+            guard focusedRow == nil || focusedRow == Self.testRowKey else { return }
+            let ids = model.groups.map(\.id)
+            if ids.count == 1, expandedGroups.contains(ids[0]), let firstKey = model.firstRowKey {
+                focusedRow = firstKey
+            } else if let firstId = ids.first {
+                focusedRow = Self.headerKey(groupId: firstId)
+            }
+        }
+    }
+
+    // MARK: - Failover (orivio batch item 2)
+
+    /// A playback this picker presented failed. The link is remembered when it never got going,
+    /// then the launch source decides: swap in the next auto candidate, open a picker for the Up
+    /// Next episode, or close to the "Try Next Source" alert.
+    private func handlePlaybackFailure(_ failure: PlaybackFailure, context ctx: PlaybackContext) {
+        guard selected?.id == ctx.id else {
+            print("[Failover] failure for a context no longer presented — ignored")
+            return
+        }
+        print("[Failover] failure source=\(ctx.launchSource) attempt=\(ctx.attempt) played=\(Int(failure.secondsPlayed))s key=\(ctx.streamKey) reason=\(failure.reason)")
+        if PlaybackFailoverPolicy.shouldKeep(secondsPlayed: failure.secondsPlayed), ctx.videoId == videoId {
+            startOverHonoured = true
+        }
+        if PlaybackFailoverPolicy.shouldReject(failure) {
+            RejectedStreamLinks.reject(ctx.streamKey, title: ctx.videoId)
+            if let listed = ctx.listedStream, listed.isAddonDebridCandidate {
+                // The resolver would hand the same dead link back for 15 minutes.
+                DirectDebridPlaybackResolver.shared.invalidate(
+                    stream: listed,
+                    season: ctx.season.map { KotlinInt(int: Int32($0)) },
+                    episode: ctx.episode.map { KotlinInt(int: Int32($0)) }
+                )
+            }
+        }
+        rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+
+        var response = PlaybackFailoverPolicy.response(for: ctx.launchSource)
+        if response == .manualAlert, ctx.videoId != videoId {
+            // An in-player source switch on a later episode failed: this picker's list is the
+            // wrong title, so open that episode's own picker on its list instead.
+            response = .nextEpisodePicker
+        }
+        switch response {
+        case .autoFailover:
+            if !autoPlay.failover(afterFailureOf: ctx.streamKey, addonId: ctx.providerAddonId) {
+                handleAutoPlayEvent(.gaveUp(.allFailed, duringFailover: true))
+            }
+        case .nextEpisodePicker:
+            let forceManual = ctx.launchSource == .manual || !Self.firstStreamAutoPlayOn()
+            pendingFailoverTarget = FailoverTarget(context: ctx, forceManual: forceManual)
+            selected = nil
+        case .manualAlert:
+            pendingManualFailureAlert = ManualFailureAlert(
+                reason: failure.reason,
+                next: nextManualStream(after: ctx),
+                attempt: ctx.attempt + 1
+            )
+            dismissAfterPlayer = false
+            selected = nil
+        }
+    }
+
+    /// The link played long enough to count as healthy: forget an earlier failure of it.
+    private func handlePlaybackHealthy(_ seconds: Double, context ctx: PlaybackContext) {
+        guard PlaybackFailoverPolicy.shouldKeep(secondsPlayed: seconds) else { return }
+        RejectedStreamLinks.keep(ctx.streamKey, title: ctx.videoId)
+        if ctx.videoId == videoId {
+            startOverHonoured = true
+            rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+        }
+    }
+
+    /// The stream "Try Next Source" plays after `ctx`'s: the list as it was when the viewer picked
+    /// (falling back to the live list), after the failed one, same add-on first, failed links skipped.
+    private func nextManualStream(after ctx: PlaybackContext) -> StreamItem? {
+        let list = manualFailoverList.isEmpty ? model.groups.flatMap(\.streams) : manualFailoverList
+        let entries = list.map { PlaybackFailoverPolicy.Entry(key: $0.playbackStreamKey, addonId: $0.addonId) }
+        guard let index = PlaybackFailoverPolicy.nextManualIndex(
+            entries: entries,
+            failedKey: ctx.streamKey,
+            failedAddonId: ctx.providerAddonId,
+            rejected: RejectedStreamLinks.rejected(for: videoId)
+        ) else { return nil }
+        return list[index]
+    }
+
+    /// The player cover closed. A context swap (failover, Up Next) re-presents instead and leaves
+    /// `selected` set; a real close raises whatever the failure queued — never in the same runloop
+    /// as the dismissal — or, after an auto-started playback, dismisses the picker as well.
+    private func handlePlayerDismissed() {
+        guard selected == nil else { return }
+        rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
+        if let pending = pendingManualFailureAlert {
+            pendingManualFailureAlert = nil
+            DispatchQueue.main.async { manualFailureAlert = pending }
+            return
+        }
+        if let pending = pendingFailoverTarget {
+            pendingFailoverTarget = nil
+            DispatchQueue.main.async { failoverTarget = pending }
+            return
+        }
+        // A failover still resolving behind the closed player must not reopen it.
+        autoPlay.cancel()
+        if dismissAfterPlayer {
+            dismissAfterPlayer = false
+            DispatchQueue.main.async { dismiss() }
+        }
+    }
+
+    /// The Up Next failover picker closed. Both pickers share the one `StreamsRepository`, so this
+    /// picker's list is reloaded; after an auto-started visit, Back keeps going to the opener.
+    private func handleFailoverPickerDismissed() {
+        if dismissAfterPlayer {
+            dismissAfterPlayer = false
+            DispatchQueue.main.async { dismiss() }
+            return
+        }
+        model.stop()
+        model.start(forceManual: true)
+        rejectedKeys = RejectedStreamLinks.rejected(for: videoId)
     }
 
     /// Mirrors the shared `DirectDebridPlayableResult.toastMessage()` wording (tvOS renders the
@@ -739,6 +1141,23 @@ struct StreamPickerView: View {
                 withAnimation { toast = nil }
             }
         }
+    }
+
+    /// The Up Next episode (or other foreign video) whose playback failed, for the nested picker.
+    private struct FailoverTarget: Identifiable {
+        let id = UUID()
+        let context: PlaybackContext
+        /// Open on the list (auto-play off, or the failed link was the viewer's own pick).
+        let forceManual: Bool
+    }
+
+    /// "Couldn't play this source": the engine's reason and the stream "Try Next Source" plays.
+    private struct ManualFailureAlert: Identifiable {
+        let id = UUID()
+        let reason: String
+        let next: StreamItem?
+        /// `PlaybackContext.attempt` for the next try.
+        let attempt: Int
     }
 }
 

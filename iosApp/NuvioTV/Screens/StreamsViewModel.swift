@@ -50,6 +50,10 @@ final class StreamsViewModel: ObservableObject {
     /// a warning banner above the stream list; clears itself on the next successful call or
     /// when the user reconnects (the shared health object is the source of truth).
     @Published private(set) var credentialWarning: String?
+    /// The shared repository's auto-play fields for the current request (orivio batch item 1),
+    /// read by the picker's `FirstPlayAutoPlayController`. Unfiltered: the playability filter in
+    /// `apply(_:)` shapes the visible list only. Republished only when a field actually changes.
+    @Published private(set) var autoPlayFeed = FirstPlayAutoPlayFeed.empty
 
     private var watcher: FlowWatcher?
     private var badgeWatcher: FlowWatcher?
@@ -83,7 +87,9 @@ final class StreamsViewModel: ObservableObject {
 
     static func rowKey(groupId: String, index: Int) -> String { "\(groupId)#\(index)" }
 
-    func start() {
+    /// `forceManual` false lets the shared repository run its direct auto-play flow for this load
+    /// (`manualSelection: false`); the picker passes false only while first-play auto mode is armed.
+    func start(forceManual: Bool = true) {
         guard watcher == nil else { return }
 
         StreamBadgeSettingsRepository.shared.ensureLoaded()
@@ -132,7 +138,7 @@ final class StreamsViewModel: ObservableObject {
             parentMetaId: parentMetaId,
             season: season,
             episode: episode,
-            manualSelection: true
+            manualSelection: forceManual
         )
     }
 
@@ -167,7 +173,7 @@ final class StreamsViewModel: ObservableObject {
     /// (mobile shows the same "Refreshing results" toast and reloads). Uses the repository's
     /// reload() so the addon fetch carries forceRefresh=true and bypasses the HTTP cache —
     /// a stale-link retry that re-reads a cached stream list would just re-pick the dead link.
-    func reload() {
+    func reload(forceManual: Bool = true) {
         lastState = nil
         StreamsRepository.shared.clear()
         StreamsRepository.shared.reload(
@@ -176,7 +182,7 @@ final class StreamsViewModel: ObservableObject {
             parentMetaId: parentMetaId,
             season: season,
             episode: episode,
-            manualSelection: true
+            manualSelection: forceManual
         )
     }
 
@@ -215,6 +221,21 @@ final class StreamsViewModel: ObservableObject {
             emptyReason = nil
             emptyReasonHint = nil
         }
+
+        // Last, so a controller reacting to it (`.onReceive`) already sees this state's list.
+        // Never the overlay flag (`showDirectAutoPlayOverlay`): the tmdb→IMDb remap briefly
+        // publishes a state with it off mid-flow. The controller reads the flow fields instead.
+        let token: String? = state.requestToken
+        let autoStream: StreamItem? = state.autoPlayStream
+        let feed = FirstPlayAutoPlayFeed(
+            requestToken: token,
+            autoPlayStream: autoStream,
+            autoPlayCandidates: state.autoPlayCandidates,
+            isDirectAutoPlayFlow: state.isDirectAutoPlayFlow,
+            isAnyLoading: state.isAnyLoading,
+            hasOutcome: !state.groups.isEmpty || state.emptyStateReason != nil
+        )
+        if feed != autoPlayFeed { autoPlayFeed = feed }
     }
 
     /// Builds the reason/hint pair for the "shared found streams, but our playability filter

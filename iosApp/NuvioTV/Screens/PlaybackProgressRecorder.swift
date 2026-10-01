@@ -14,8 +14,9 @@ final class PlaybackProgressRecorder {
     // MARK: - Resume
 
     /// Saved percentage (0-100) for a percentage-only entry (no stored position), else nil.
-    /// Used when the item duration is not yet finite at `readyToPlay`.
+    /// Used when the item duration is not yet finite at `readyToPlay`. nil for "Start Over".
     func pendingResumePercent() -> Double? {
+        guard !context.startFromBeginning else { return nil }
         guard let entry = savedEntry(), !entry.isCompleted, entry.lastPositionMs <= 0,
               entry.progressFraction > 0 else { return nil }
         return Double(entry.progressFraction) * 100
@@ -32,7 +33,9 @@ final class PlaybackProgressRecorder {
 
     /// Saved resume position in seconds — only if >10s in and not completed (mirrors MPV's gate).
     /// `actualDurationSec` (item duration, when finite) lets percentage-only rows resolve.
+    /// "Start Over" (`context.startFromBeginning`) ignores saved progress: always nil.
     func resumePositionSec(actualDurationSec: Double = 0) -> Double? {
+        guard !context.startFromBeginning else { return nil }
         guard let entry = WatchProgressRepository.shared.progressForVideo(
             videoId: context.videoId,
             parentMetaId: context.parentMetaId,
@@ -46,27 +49,34 @@ final class PlaybackProgressRecorder {
 
     // MARK: - Progress save
 
-    private lazy var session = WatchProgressPlaybackSession(
-        profileId: ActiveProfileProvider.shared.activeProfileId,
-        contentType: context.contentType,
-        parentMetaId: context.parentMetaId,
-        parentMetaType: context.contentType,
-        videoId: context.videoId,
-        title: context.title,
-        logo: nil,
-        poster: context.poster,
-        background: context.background,
-        seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
-        episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
-        episodeTitle: nil,
-        episodeThumbnail: nil,
-        providerName: context.providerName,
-        providerAddonId: context.providerAddonId,
-        lastStreamTitle: context.streamTitle,
-        lastStreamSubtitle: context.streamSubtitle,
-        pauseDescription: nil,
-        lastSourceUrl: context.url.absoluteString
-    )
+    private lazy var session = Self.playbackSession(for: context)
+
+    /// The progress-write session for `context`. Also what the stream picker hands the shared
+    /// external-player return (`ExternalPlaybackReturn.prepare`) for an Infuse launch, so a
+    /// position Infuse reports back lands on the same progress entry the built-in player writes.
+    static func playbackSession(for context: PlaybackContext) -> WatchProgressPlaybackSession {
+        WatchProgressPlaybackSession(
+            profileId: ActiveProfileProvider.shared.activeProfileId,
+            contentType: context.contentType,
+            parentMetaId: context.parentMetaId,
+            parentMetaType: context.contentType,
+            videoId: context.videoId,
+            title: context.title,
+            logo: nil,
+            poster: context.poster,
+            background: context.background,
+            seasonNumber: context.season.map { KotlinInt(int: Int32($0)) },
+            episodeNumber: context.episode.map { KotlinInt(int: Int32($0)) },
+            episodeTitle: nil,
+            episodeThumbnail: nil,
+            providerName: context.providerName,
+            providerAddonId: context.providerAddonId,
+            lastStreamTitle: context.streamTitle,
+            lastStreamSubtitle: context.streamSubtitle,
+            pauseDescription: nil,
+            lastSourceUrl: context.url.absoluteString
+        )
+    }
 
     /// Record playback progress. `flush` forces an immediate write (use on teardown).
     func record(positionSec: Double, durationSec: Double, isPaused: Bool, speed: Double, flush: Bool) {

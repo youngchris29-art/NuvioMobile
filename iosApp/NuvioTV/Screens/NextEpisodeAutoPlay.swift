@@ -208,26 +208,34 @@ final class NextEpisodeEngine: ObservableObject {
     func playSource(_ stream: StreamItem) -> Bool {
         let direct: String? = stream.playableDirectUrl
         if let direct, !direct.isEmpty, let url = URL(string: direct) {
-            switchToSource(stream: stream, url: url)
+            switchToSource(stream: stream, url: url, listed: stream)
             return true
         }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else { return false }
-        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
-            stream: stream,
-            season: context.season.map { KotlinInt(int: Int32($0)) },
-            episode: context.episode.map { KotlinInt(int: Int32($0)) }
-        ) { [weak self] result, _ in
-            DispatchQueue.main.async {
-                guard let self, let success = result as? DirectDebridPlayableResult.Success else { return }
-                let resolved: String? = success.stream.playableDirectUrl
-                guard let resolved, !resolved.isEmpty, let url = URL(string: resolved) else { return }
-                self.switchToSource(stream: success.stream, url: url)
+        let season = context.season.map { KotlinInt(int: Int32($0)) }
+        let episode = context.episode.map { KotlinInt(int: Int32($0)) }
+        // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
+        Task { @MainActor [weak self] in
+            let result: DirectDebridPlayableResult?
+            do {
+                result = try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
+                    stream: stream, season: season, episode: episode
+                )
+            } catch {
+                print("[UpNext] source switch resolve threw: \(error)")
+                result = nil
             }
+            guard let self, let success = result as? DirectDebridPlayableResult.Success else { return }
+            let resolved: String? = success.stream.playableDirectUrl
+            guard let resolved, !resolved.isEmpty, let url = URL(string: resolved) else { return }
+            self.switchToSource(stream: success.stream, url: url, listed: stream)
         }
         return true
     }
 
-    private func switchToSource(stream: StreamItem, url: URL) {
+    /// `listed` is the stream as the source list showed it (pre-resolve): its key is what a failure
+    /// is remembered under. The viewer chose it, so the context is `.manual`.
+    private func switchToSource(stream: StreamItem, url: URL, listed: StreamItem) {
         Self.consecutiveAutoPlays = 0
 
         let switched = PlaybackContext(
@@ -254,7 +262,10 @@ final class NextEpisodeEngine: ObservableObject {
             meta: context.meta,
             fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
-                headers: stream.behaviorHints.proxyHeaders?.request)
+                headers: stream.behaviorHints.proxyHeaders?.request),
+            launchSource: .manual,
+            streamKey: listed.playbackStreamKey,
+            listedStream: listed
         )
         onPlayNext(switched)
     }
@@ -476,7 +487,12 @@ final class NextEpisodeEngine: ObservableObject {
 
     private func select(from groups: [AddonStreamGroup], settings: PlayerSettingsUiState, bingeGroupOnly: Bool,
                         installedAddonIds: Set<String>) -> StreamItem? {
-        let streams = allStreams(groups)
+        // Orivio batch item 2: links that failed recently for the episode about to play are never
+        // auto-selected again (`RejectedStreamLinks`, keyed like the picker's).
+        let rejected: Set<String> = nextVideo.map {
+            RejectedStreamLinks.rejected(for: Self.episodeVideoId(metaId: context.parentMetaId, episode: $0))
+        } ?? []
+        let streams = allStreams(groups).filter { rejected.isEmpty || !rejected.contains($0.playbackStreamKey) }
         guard !streams.isEmpty else { return nil }
 
         // Mobile parity: in MANUAL mode, next-episode/binge settings force first-stream selection.
@@ -576,7 +592,7 @@ final class NextEpisodeEngine: ObservableObject {
         let urlString: String? = stream.playableDirectUrl
         if let urlString, !urlString.isEmpty, let url = URL(string: urlString) {
             phase = .hidden
-            onPlayNext(makeNextContext(stream: stream, url: url, next: next))
+            onPlayNext(makeNextContext(stream: stream, url: url, next: next, listed: stream))
             return
         }
 
@@ -585,29 +601,32 @@ final class NextEpisodeEngine: ObservableObject {
         guard !resolvingNext else { return }
         resolvingNext = true
         print("[UpNext] resolving debrid stream — \(stream.addonName)")
-        DirectDebridPlaybackResolver.shared.resolveToPlayableStream(
-            stream: stream,
-            season: next.season,
-            episode: next.episode
-        ) { [weak self] result, _ in
-            // Kotlin suspend completions can land off-main; hop before touching engine state.
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.resolvingNext = false
-                guard !self.cancelled else { return }
-                if let success = result as? DirectDebridPlayableResult.Success {
-                    let resolved: String? = success.stream.playableDirectUrl
-                    if let resolved, !resolved.isEmpty, let url = URL(string: resolved) {
-                        print("[UpNext] resolved — playing next episode")
-                        self.phase = .hidden
-                        self.onPlayNext(self.makeNextContext(stream: success.stream, url: url, next: next))
-                        return
-                    }
-                }
-                print("[UpNext] debrid resolve failed — \(String(describing: result))")
-                self.selectedStream = nil          // reopen finishWithoutStream's guard
-                self.finishWithoutStream()
+        // The `@Throws` twin: a Kotlin exception out of the plain suspend export aborts the process.
+        Task { @MainActor [weak self] in
+            let result: DirectDebridPlayableResult?
+            do {
+                result = try await DirectDebridPlaybackResolver.shared.resolveToPlayableStreamChecked(
+                    stream: stream, season: next.season, episode: next.episode
+                )
+            } catch {
+                print("[UpNext] debrid resolve threw: \(error)")
+                result = nil
             }
+            guard let self else { return }
+            self.resolvingNext = false
+            guard !self.cancelled else { return }
+            if let success = result as? DirectDebridPlayableResult.Success {
+                let resolved: String? = success.stream.playableDirectUrl
+                if let resolved, !resolved.isEmpty, let url = URL(string: resolved) {
+                    print("[UpNext] resolved — playing next episode")
+                    self.phase = .hidden
+                    self.onPlayNext(self.makeNextContext(stream: success.stream, url: url, next: next, listed: stream))
+                    return
+                }
+            }
+            print("[UpNext] debrid resolve failed — \(String(describing: result))")
+            self.selectedStream = nil          // reopen finishWithoutStream's guard
+            self.finishWithoutStream()
         }
     }
 
@@ -617,7 +636,9 @@ final class NextEpisodeEngine: ObservableObject {
         return value
     }
 
-    private func makeNextContext(stream: StreamItem, url: URL, next: MetaVideo) -> PlaybackContext {
+    /// `listed` is the selected stream before any debrid resolve: its key is what a failure of the
+    /// next episode is remembered under (`StreamPickerView` handles the `.nextEpisode` failure).
+    private func makeNextContext(stream: StreamItem, url: URL, next: MetaVideo, listed: StreamItem) -> PlaybackContext {
         PlaybackContext(
             url: url,
             title: Self.episodeTitle(next),
@@ -643,7 +664,10 @@ final class NextEpisodeEngine: ObservableObject {
             meta: context.meta,
             fileSizeBytes: { let n: Int64? = stream.behaviorHints.videoSize?.int64Value; return n }(),
             requestHeaders: StreamModelsKt.sanitizePlaybackHeaders(
-                headers: stream.behaviorHints.proxyHeaders?.request)
+                headers: stream.behaviorHints.proxyHeaders?.request),
+            launchSource: .nextEpisode,
+            streamKey: listed.playbackStreamKey,
+            listedStream: listed
         )
     }
 
