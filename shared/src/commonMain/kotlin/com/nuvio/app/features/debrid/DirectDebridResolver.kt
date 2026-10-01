@@ -353,7 +353,10 @@ private fun localTorrentResolveCredential(
     settings.activeResolverCredential
         ?.takeIf { credential -> credential.provider.supports(DebridProviderCapability.LocalTorrentResolve) }
 
-private fun StreamItem.debridResolveCacheKey(season: Int?, episode: Int?): String? {
+// internal (not private) so DirectDebridResolverInvalidateTest can pin the key [resolve] and
+// [DirectDebridPlaybackResolver.invalidate] share: the resolver's cache cannot be seeded without a
+// live provider call.
+internal fun StreamItem.debridResolveCacheKey(season: Int?, episode: Int?): String? {
     val resolve = clientResolve
     if (resolve == null && needsLocalDebridResolve) {
         val account = localTorrentResolveCredential() ?: return null

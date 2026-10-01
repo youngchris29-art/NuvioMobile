@@ -41,9 +41,10 @@ class InfusePlaybackTest {
     private fun ExternalPlaybackReturnHandler.launch(
         durationMs: Long? = 3_600_000L,
         playerId: String = "infuse",
+        sourceUrl: String = source,
     ): ExternalPlaybackSession = prepare(
         playerId = playerId,
-        sourceUrl = source,
+        sourceUrl = sourceUrl,
         playbackSession = playback,
         durationMs = durationMs,
     )
@@ -56,6 +57,17 @@ class InfusePlaybackTest {
     ): String {
         val (success, _) = ExternalPlaybackCallbacks.build(scheme, session.playerId, session.id)
         return "$success?lastPlayedUrl=${lastPlayed.encodeURLParameter()}&position=${seconds.encodeURLParameter()}"
+    }
+
+    /** Like [successUrl], but [encodedLastPlayed] is already query-encoded, exactly as the player sent it. */
+    private fun successUrlWithEchoedSource(
+        session: ExternalPlaybackSession,
+        encodedLastPlayed: String,
+        seconds: String = "1800",
+        scheme: String = "nuvio",
+    ): String {
+        val (success, _) = ExternalPlaybackCallbacks.build(scheme, session.playerId, session.id)
+        return "$success?lastPlayedUrl=$encodedLastPlayed&position=$seconds"
     }
 
     private fun errorUrl(session: ExternalPlaybackSession, scheme: String = "nuvio"): String =
@@ -130,7 +142,7 @@ class InfusePlaybackTest {
         val session = callbacks.launch()
         assertFalse(callbacks.handleUrl(successUrl(session, "1200", "https://example.com/other.mkv"), "nuvio"))
         assertTrue(recorded.isEmpty())
-        listOf("-1", "NaN", "1.5", "9223372036854775807", "").forEach { position ->
+        listOf("-1", "-0.5", "NaN", "Infinity", "abc", "9223372036854775807", "").forEach { position ->
             assertFalse(callbacks.handleUrl(successUrl(session, position), "nuvio"), position)
             assertTrue(recorded.isEmpty(), position)
         }
@@ -139,6 +151,96 @@ class InfusePlaybackTest {
         // Zero is a valid report; the recorder (not the parser) decides it writes nothing.
         assertTrue(callbacks.handleUrl(successUrl(session, "0"), "nuvio"))
         assertEquals(0.0, recorded.single().second)
+        assertNull(stored)
+    }
+
+    @Test
+    fun fractionalPositionsAreAccepted() {
+        val callbacks = handler()
+        val session = callbacks.launch()
+        assertTrue(callbacks.handleUrl(successUrl(session, "1234.5"), "nuvio"))
+        assertEquals(1234.5, recorded.single().second)
+        assertNull(stored)
+        listOf("1800" to 1800.0, "0.25" to 0.25, "90.000" to 90.0).forEach { (text, expected) ->
+            recorded.clear()
+            val next = callbacks.launch()
+            assertTrue(callbacks.handleUrl(successUrl(next, text), "nuvio"), text)
+            assertEquals(expected, recorded.single().second, text)
+            assertNull(stored, text)
+        }
+    }
+
+    @Test
+    fun sourceUrlsWithPlusAndEncodedPlusMatchHoweverThePlayerEchoesThem() {
+        val callbacks = handler()
+        val plusSource = "https://cdn.example.com/video.mkv?token=a+b&name=Episode%205"
+        val encodedPlusSource = "https://cdn.example.com/video.mkv?token=a%2Bb&name=Episode%205"
+        listOf(plusSource, encodedPlusSource).forEach { launched ->
+            val echoes = mapOf(
+                // The player hands the URL back exactly as it received it.
+                "exact" to launched.encodeURLParameter(),
+                // It percent-decoded the URL once, so a %2B became a literal plus before re-encoding.
+                "decoded once" to launched.replace("%2B", "+").encodeURLParameter(),
+                // It left the plus unescaped in the query, which Ktor reads back as a space.
+                "raw plus" to launched.replace("%2B", "+").encodeURLParameter().replace("%2B", "+"),
+                // It lower-cased the escape digits.
+                "lower-case escapes" to launched.replace("%2B", "%2b").encodeURLParameter(),
+            )
+            echoes.forEach { (label, encoded) ->
+                recorded.clear()
+                val session = callbacks.launch(sourceUrl = launched)
+                assertTrue(callbacks.handleUrl(successUrlWithEchoedSource(session, encoded), "nuvio"), "$launched / $label")
+                assertEquals(1800.0, recorded.single().second, "$launched / $label")
+                assertEquals(launched, recorded.single().first.sourceUrl, "$launched / $label")
+                assertNull(stored, "$launched / $label")
+            }
+            // A genuinely different stream is still refused, and the session stays pending.
+            recorded.clear()
+            val refused = callbacks.launch(sourceUrl = launched)
+            val other = "https://cdn.example.com/video.mkv?token=a+c&name=Episode%205"
+            assertFalse(callbacks.handleUrl(successUrl(refused, "1800", lastPlayed = other), "nuvio"), launched)
+            assertTrue(recorded.isEmpty())
+            assertNotNull(stored)
+        }
+    }
+
+    @Test
+    fun bundleIdShapedSchemeWorksEndToEndThroughKtorUrl() {
+        // The scheme the tvOS app registers is its bundle id: dots and capitals included.
+        val scheme = "com.youngchris29.NuvioTV"
+        val callbacks = handler()
+        val session = callbacks.launch()
+        val (success, error) = ExternalPlaybackCallbacks.build(scheme, session.playerId, session.id)
+        assertEquals("com.youngchris29.NuvioTV://external-player/infuse/${session.id}/success", success)
+        assertEquals("com.youngchris29.NuvioTV://external-player/infuse/${session.id}/error", error)
+
+        // build -> the player's launch URL -> the callback the player opens -> handleUrl.
+        val launchUrl = Url(
+            "infuse://x-callback-url/play?url=${source.encodeURLParameter()}" +
+                "&x-success=${success.encodeURLParameter()}&x-error=${error.encodeURLParameter()}",
+        )
+        assertEquals(success, launchUrl.parameters["x-success"])
+        assertEquals(error, launchUrl.parameters["x-error"])
+        val returned = "${launchUrl.parameters["x-success"]}?lastPlayedUrl=${source.encodeURLParameter()}&position=1800.5"
+
+        // Another app's scheme (or the old short one) is not ours.
+        assertFalse(callbacks.handleUrl(returned, "nuvio"))
+        assertFalse(callbacks.handleUrl(returned, "com.youngchris29.NuvioTVBeta"))
+        assertTrue(recorded.isEmpty())
+        assertNotNull(stored)
+
+        // The registered scheme matches, however the system cases it.
+        assertTrue(callbacks.handleUrl(returned, scheme))
+        assertEquals(1800.5, recorded.single().second)
+        assertEquals(session.id, recorded.single().first.id)
+        assertNull(stored)
+
+        // The error callback and the open-failure cleanup resolve the same dotted scheme.
+        val failed = callbacks.launch()
+        assertTrue(callbacks.handleUrl(ExternalPlaybackCallbacks.build(scheme, failed.playerId, failed.id).second, scheme.lowercase()))
+        assertNull(stored)
+        val unopened = callbacks.launch()
+        callbacks.cancelLaunchForCallbackUrl(ExternalPlaybackCallbacks.build(scheme, unopened.playerId, unopened.id).first)
         assertNull(stored)
     }
 

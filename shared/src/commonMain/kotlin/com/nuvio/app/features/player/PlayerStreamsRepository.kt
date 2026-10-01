@@ -329,6 +329,12 @@ object PlayerStreamsRepository {
                 .associate { it.addonId to it.scrapers.size }
                 .toMutableMap()
             val pluginFirstErrorByAddonId = mutableMapOf<String, String>()
+            // tvOS (StreamPresentationPlatform.filtersApplyToAllStreams): every plugin group's RAW,
+            // un-presented streams so far, in arrival order. The presented list is rebuilt from this
+            // on each scraper completion; feeding the group's already-presented streams back through
+            // DebridStreamPresentation would present the earlier scrapers' streams again for every
+            // later completion. Only touched from this receive loop, never from a state update lambda.
+            val rawPluginStreamsByAddonId = mutableMapOf<String, List<StreamItem>>()
             val totalTasks = streamAddons.size + pluginProviderGroups.sumOf { it.scrapers.size }
             val completions = Channel<StreamLoadCompletion>(capacity = Channel.BUFFERED)
             val debridAvailabilityJobs = mutableListOf<Job>()
@@ -494,6 +500,14 @@ object PlayerStreamsRepository {
                             pluginFirstErrorByAddonId[completion.addonId] = completionError
                         }
 
+                        val rawPluginStreams: List<StreamItem>? =
+                            if (StreamPresentationPlatform.filtersApplyToAllStreams && completion.streams.isNotEmpty()) {
+                                ((rawPluginStreamsByAddonId[completion.addonId] ?: emptyList()) + completion.streams)
+                                    .also { rawPluginStreamsByAddonId[completion.addonId] = it }
+                            } else {
+                                null
+                            }
+
                         stateFlow.update { current ->
                             val updated = StreamAutoPlaySelector.orderAddonStreams(
                                 groups = current.groups.map { group ->
@@ -502,12 +516,12 @@ object PlayerStreamsRepository {
                                     } else {
                                         val mergedStreams = if (completion.streams.isEmpty()) {
                                             group.streams
-                                        } else if (StreamPresentationPlatform.filtersApplyToAllStreams) {
+                                        } else if (rawPluginStreams != null) {
                                             // tvOS: plugin streams get the same sort / filter preferences as
-                                            // every add-on's. Re-presenting the already-presented streams from
-                                            // earlier scrapers of this group is idempotent (filters and a stable
-                                            // sort), so the whole merged list goes through.
-                                            val merged = (group.streams + completion.streams).sortedForGroupedDisplay()
+                                            // every add-on's. Present from the raw merged list of every scraper
+                                            // of this group so far, not from group.streams: those were already
+                                            // presented on the previous completion.
+                                            val merged = rawPluginStreams.sortedForGroupedDisplay()
                                             DebridStreamPresentation.apply(
                                                 groups = listOf(group.copy(streams = merged)),
                                                 settings = debridSettings,

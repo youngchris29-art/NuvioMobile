@@ -180,7 +180,8 @@ object WatchingActions {
     fun onProgressEntryUpdated(entry: WatchProgressEntry, syncRemote: Boolean = true) {
         if (!entry.isCompleted) return
 
-        val watchedItem = watchedItemFromProgress(entry)
+        // A completed save is marked at its own last update, not at "now".
+        val watchedItem = watchedItemFromProgress(entry, markedAtEpochMs = entry.lastUpdatedEpochMs)
         WatchedRepository.markWatchedFromPlaybackCompletion(watchedItem, syncRemote = syncRemote)
 
         if (!syncRemote || !entry.isEpisode) return
@@ -221,10 +222,12 @@ object WatchingActions {
 }
 
 /**
- * The watched-history item a completed progress [entry] stands for (movie, or one episode when
- * the entry carries season/episode), marked at the entry's last update.
+ * The watched-history item a progress [entry] stands for (movie, or one episode when the entry
+ * carries season/episode), stamped [markedAtEpochMs]. The caller chooses the stamp: playback
+ * completion passes the entry's own `lastUpdatedEpochMs`; a manual "Mark Watched" from the
+ * Continue Watching menu passes the current time. There is deliberately no default.
  */
-fun watchedItemFromProgress(entry: WatchProgressEntry): WatchedItem =
+fun watchedItemFromProgress(entry: WatchProgressEntry, markedAtEpochMs: Long): WatchedItem =
     WatchedItem(
         id = entry.parentMetaId,
         type = entry.parentMetaType,
@@ -232,7 +235,7 @@ fun watchedItemFromProgress(entry: WatchProgressEntry): WatchedItem =
         poster = entry.poster,
         season = entry.seasonNumber,
         episode = entry.episodeNumber,
-        markedAtEpochMs = entry.lastUpdatedEpochMs,
+        markedAtEpochMs = markedAtEpochMs,
     )
 
 private fun String.isSeriesLikeType(): Boolean =

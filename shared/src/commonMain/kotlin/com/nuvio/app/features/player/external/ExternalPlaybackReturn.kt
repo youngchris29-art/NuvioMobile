@@ -78,8 +78,9 @@ object ExternalPlaybackReturn {
      * records the position ([recordExternalPlaybackProgress]) and clears the session, `error`
      * clears it. Returns false, leaving any pending session untouched, for anything else: another
      * scheme (compared case-insensitively) or host, a different player or session id, a
-     * `lastPlayedUrl` that is not the launched source, or a missing/invalid `position`
-     * (whole, non-negative seconds).
+     * `lastPlayedUrl` that is not the launched source (compared leniently, see
+     * [sameSourceUrl]), or a missing/invalid `position` (finite, non-negative seconds; a
+     * fraction such as `1234.5` is fine).
      */
     fun handleUrl(url: String, scheme: String): Boolean = handler.handleUrl(url, scheme)
 }
@@ -165,9 +166,9 @@ internal class ExternalPlaybackReturnHandler(
         val outcome = path[2]
         val positionSec: Double? = when (outcome) {
             ExternalPlaybackCallbacks.SUCCESS -> parsed.parameters["position"]
-                ?.toLongOrNull()
-                ?.takeIf { it in 0..Long.MAX_VALUE / 1000L }
-                ?.toDouble()
+                ?.trim()
+                ?.toDoubleOrNull()
+                ?.takeIf { it.isFinite() && it >= 0.0 && it <= MAX_POSITION_SECONDS }
                 ?: return null
             ExternalPlaybackCallbacks.ERROR -> null
             else -> return null
@@ -178,7 +179,7 @@ internal class ExternalPlaybackReturnHandler(
                 ?.takeIf { session ->
                     session.id == sessionId &&
                         session.playerId.equals(playerId, ignoreCase = true) &&
-                        (positionSec == null || lastPlayedUrl == session.sourceUrl)
+                        (positionSec == null || sameSourceUrl(lastPlayedUrl, session.sourceUrl))
                 }
                 ?.let { session ->
                     clear()
@@ -193,5 +194,31 @@ internal class ExternalPlaybackReturnHandler(
 
     private companion object {
         val log = Logger.withTag("ExternalPlaybackReturn")
+
+        /** Upper bound for a returned position: `seconds * 1000` must still fit a `Long`. */
+        val MAX_POSITION_SECONDS: Double = (Long.MAX_VALUE / 1000L).toDouble()
     }
 }
+
+/**
+ * Whether the `lastPlayedUrl` an external player returned is the [launchedUrl] it was given.
+ *
+ * Ktor has already percent-decoded the callback's query parameters (with `+` read as a space), so
+ * the returned value is compared against the raw launched URL, which still carries its own
+ * encodings. A player may echo the URL back with `+`, `%2B` or `%20` swapped for each other (a
+ * literal plus in a token, a space in a title), or with lower-case escape digits. None of that
+ * changes which stream was launched, so both sides are reduced to one form first: escape digits
+ * upper-cased, and `+`, `%2B`, `%20` and a space all folded to a single space. Everything else
+ * is compared exactly; the session id (not this check) is what ties a callback to its launch.
+ */
+internal fun sameSourceUrl(returnedUrl: String?, launchedUrl: String): Boolean =
+    returnedUrl != null &&
+        normalizeSourceUrlForComparison(returnedUrl) == normalizeSourceUrlForComparison(launchedUrl)
+
+private val percentEscape = Regex("%[0-9a-fA-F]{2}")
+
+private fun normalizeSourceUrlForComparison(url: String): String =
+    percentEscape.replace(url.trim()) { match -> match.value.uppercase() }
+        .replace("%2B", " ")
+        .replace("%20", " ")
+        .replace('+', ' ')
