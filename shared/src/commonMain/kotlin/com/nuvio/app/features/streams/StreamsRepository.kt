@@ -413,6 +413,7 @@ object StreamsRepository {
                 return DebridStreamPresentation.apply(
                     groups = listOf(badgeGroup),
                     settings = debridSettings,
+                    allStreams = StreamPresentationPlatform.filtersApplyToAllStreams,
                 ).firstOrNull() ?: badgeGroup
             }
 
@@ -626,6 +627,17 @@ object StreamsRepository {
                                     } else {
                                         val mergedStreams = if (completion.streams.isEmpty()) {
                                             group.streams
+                                        } else if (StreamPresentationPlatform.filtersApplyToAllStreams) {
+                                            // tvOS: plugin streams get the same sort / filter preferences as
+                                            // every add-on's. Re-presenting the already-presented streams from
+                                            // earlier scrapers of this group is idempotent (filters and a stable
+                                            // sort), so the whole merged list goes through.
+                                            val merged = (group.streams + completion.streams).sortedForGroupedDisplay()
+                                            DebridStreamPresentation.apply(
+                                                groups = listOf(group.copy(streams = merged)),
+                                                settings = debridSettings,
+                                                allStreams = true,
+                                            ).firstOrNull()?.streams ?: merged
                                         } else {
                                             (group.streams + completion.streams).sortedForGroupedDisplay()
                                         }

@@ -140,6 +140,10 @@ fun installTvOsSharedProviders() {
     SyncPlatformProvider.platform = TVOS_SYNC_PLATFORM
     SyncPlatformProvider.legacySettingsPlatforms = listOf(TV_SYNC_PLATFORM)
 
+    // Sources filters: the debrid sort / minimum-resolution / Dolby Vision / HDR / Cached Sources
+    // Only settings reach every add-on's and plugin's streams on tvOS (mobile stays debrid-only).
+    com.nuvio.app.features.streams.StreamPresentationPlatform.filtersApplyToAllStreams = true
+
     // Theme persistence: the shared default ThemeSettingsStore is a no-op (theme would reset every
     // launch). The tvOS adapter persists to NSUserDefaults (profile-scoped keys) and defaults to
     // CRIMSON — the app's launch look. Installed before any ThemeSettingsRepository.ensureLoaded().

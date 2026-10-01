@@ -29,6 +29,8 @@ expect object DebridSettingsStorage {
     fun saveStreamHdrFilter(filter: String)
     fun loadStreamCodecFilter(): String?
     fun saveStreamCodecFilter(filter: String)
+    fun loadStreamCachedOnly(): Boolean?
+    fun saveStreamCachedOnly(enabled: Boolean)
     fun loadStreamPreferences(): String?
     fun saveStreamPreferences(preferences: String)
     fun loadStreamNameTemplate(): String?

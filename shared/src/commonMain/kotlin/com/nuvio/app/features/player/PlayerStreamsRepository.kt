@@ -23,6 +23,7 @@ import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamLoadCompletion
 import com.nuvio.app.features.streams.StreamParser
+import com.nuvio.app.features.streams.StreamPresentationPlatform
 import com.nuvio.app.features.streams.StreamsUiState
 import com.nuvio.app.features.streams.StreamDiagnostics
 import com.nuvio.app.features.streams.StreamVideoIdRemap
@@ -346,6 +347,7 @@ object PlayerStreamsRepository {
                 return DebridStreamPresentation.apply(
                     groups = listOf(badgeGroup),
                     settings = debridSettings,
+                    allStreams = StreamPresentationPlatform.filtersApplyToAllStreams,
                 ).firstOrNull() ?: badgeGroup
             }
 
@@ -500,6 +502,17 @@ object PlayerStreamsRepository {
                                     } else {
                                         val mergedStreams = if (completion.streams.isEmpty()) {
                                             group.streams
+                                        } else if (StreamPresentationPlatform.filtersApplyToAllStreams) {
+                                            // tvOS: plugin streams get the same sort / filter preferences as
+                                            // every add-on's. Re-presenting the already-presented streams from
+                                            // earlier scrapers of this group is idempotent (filters and a stable
+                                            // sort), so the whole merged list goes through.
+                                            val merged = (group.streams + completion.streams).sortedForGroupedDisplay()
+                                            DebridStreamPresentation.apply(
+                                                groups = listOf(group.copy(streams = merged)),
+                                                settings = debridSettings,
+                                                allStreams = true,
+                                            ).firstOrNull()?.streams ?: merged
                                         } else {
                                             (group.streams + completion.streams).sortedForGroupedDisplay()
                                         }

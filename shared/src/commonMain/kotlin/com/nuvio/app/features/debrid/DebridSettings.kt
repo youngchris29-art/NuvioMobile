@@ -14,6 +14,8 @@ data class DebridSettings(
     val streamDolbyVisionFilter: DebridStreamFeatureFilter = DebridStreamFeatureFilter.ANY,
     val streamHdrFilter: DebridStreamFeatureFilter = DebridStreamFeatureFilter.ANY,
     val streamCodecFilter: DebridStreamCodecFilter = DebridStreamCodecFilter.ANY,
+    // tvOS "Cached Sources Only": see DebridStreamPresentation.apply (allStreams) for the semantics.
+    val streamCachedOnly: Boolean = false,
     val streamPreferences: DebridStreamPreferences = DebridStreamPreferences(),
     val streamNameTemplate: String = DebridStreamFormatterDefaults.NAME_TEMPLATE,
     val streamDescriptionTemplate: String = DebridStreamFormatterDefaults.DESCRIPTION_TEMPLATE,

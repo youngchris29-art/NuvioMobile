@@ -31,6 +31,7 @@ object DebridSettingsRepository {
     private var streamDolbyVisionFilter = DebridStreamFeatureFilter.ANY
     private var streamHdrFilter = DebridStreamFeatureFilter.ANY
     private var streamCodecFilter = DebridStreamCodecFilter.ANY
+    private var streamCachedOnly = false
     private var streamPreferences = DebridStreamPreferences()
     private var streamNameTemplate = DebridStreamFormatterDefaults.NAME_TEMPLATE
     private var streamDescriptionTemplate = DebridStreamFormatterDefaults.DESCRIPTION_TEMPLATE
@@ -184,6 +185,14 @@ object DebridSettingsRepository {
         saveStreamPreferences()
     }
 
+    fun setStreamCachedOnly(enabled: Boolean) {
+        ensureLoaded()
+        if (streamCachedOnly == enabled) return
+        streamCachedOnly = enabled
+        publish()
+        DebridSettingsStorage.saveStreamCachedOnly(enabled)
+    }
+
     fun setStreamPreferences(value: DebridStreamPreferences) {
         ensureLoaded()
         val normalized = value.normalized()
@@ -316,6 +325,7 @@ object DebridSettingsRepository {
             DebridSettingsStorage.loadStreamCodecFilter(),
             DebridStreamCodecFilter.ANY,
         )
+        streamCachedOnly = DebridSettingsStorage.loadStreamCachedOnly() ?: false
         val parsedStreamPreferences = parseStreamPreferences(DebridSettingsStorage.loadStreamPreferences())
         streamPreferences = parsedStreamPreferences
             ?: legacyStreamPreferences(
@@ -359,6 +369,7 @@ object DebridSettingsRepository {
             streamDolbyVisionFilter = streamDolbyVisionFilter,
             streamHdrFilter = streamHdrFilter,
             streamCodecFilter = streamCodecFilter,
+            streamCachedOnly = streamCachedOnly,
             streamPreferences = streamPreferences,
             streamNameTemplate = streamNameTemplate,
             streamDescriptionTemplate = streamDescriptionTemplate,

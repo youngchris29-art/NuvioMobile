@@ -7,14 +7,45 @@ import com.nuvio.app.features.streams.StreamItem
 object DebridStreamPresentation {
     private val formatter = DebridStreamFormatter()
 
-    fun apply(groups: List<AddonStreamGroup>, settings: DebridSettings): List<AddonStreamGroup> {
-        if (!settings.canResolvePlayableLinks) return groups
+    /**
+     * [allStreams] = false (mobile, the default) filters, sorts and formats ONLY the managed
+     * debrid streams and appends every other stream untouched.
+     *
+     * [allStreams] = true (tvOS, see `StreamPresentationPlatform`) also runs every non-managed
+     * ("passthrough") add-on / plugin stream through the user's sort, minimum-resolution, Dolby
+     * Vision and HDR preferences, even with no debrid resolver configured:
+     *  - A passthrough stream whose resolution cannot be parsed ([DebridStreamResolution.UNKNOWN])
+     *    still passes the minimum-resolution filter (the debrid branch keeps dropping it).
+     *  - The per-group result limits ([DebridStreamPreferences.maxResults] and the per-resolution /
+     *    per-quality caps) are NOT applied to passthrough streams; sorting is.
+     *  - [DebridSettings.streamCachedOnly], with a resolver configured, keeps only managed debrid
+     *    streams (cached torrents and direct debrid links) and drops every passthrough stream.
+     *    Without a resolver the flag is ignored.
+     */
+    fun apply(
+        groups: List<AddonStreamGroup>,
+        settings: DebridSettings,
+        allStreams: Boolean = false,
+    ): List<AddonStreamGroup> {
+        if (!settings.canResolvePlayableLinks) {
+            if (!allStreams) return groups
+            // No resolver: the debrid-only logic below (inactive-resolver / uncached hiding, debrid
+            // formatting, result limits, Cached Sources Only) must not run, but the user's
+            // sort / filter preferences still reach every stream in the group.
+            return groups.map { group ->
+                group.copy(streams = applyPassthroughPreferences(group.streams, settings))
+            }
+        }
         return groups.map { group ->
             val visibleStreams = group.streams
                 .filterNot { stream -> stream.isInactiveResolverStream(settings) }
                 .filterNot { stream -> stream.isUncachedDebridStream }
             val debridStreams = visibleStreams.filter { stream -> stream.isManagedDebridStream }
-            if (debridStreams.isEmpty()) return@map group.copy(streams = visibleStreams)
+            if (debridStreams.isEmpty()) {
+                return@map group.copy(
+                    streams = if (allStreams) presentPassthroughStreams(visibleStreams, settings) else visibleStreams,
+                )
+            }
 
             val shouldFormatStreams = settings.hasCustomStreamFormatting ||
                 debridStreams.any { stream -> stream.badges.isNotEmpty() }
@@ -27,9 +58,52 @@ object DebridStreamPresentation {
                     }
                 }
             val passthroughStreams = visibleStreams.filterNot { stream -> stream.isManagedDebridStream }
+            val presentedPassthroughStreams = if (allStreams) {
+                presentPassthroughStreams(passthroughStreams, settings)
+            } else {
+                passthroughStreams
+            }
 
-            group.copy(streams = presentedDebridStreams + passthroughStreams)
+            group.copy(streams = presentedDebridStreams + presentedPassthroughStreams)
         }
+    }
+
+    // allStreams only, resolver present: Cached Sources Only drops every passthrough stream (the
+    // caller has already split out the managed ones), otherwise the passthrough preferences apply.
+    private fun presentPassthroughStreams(
+        streams: List<StreamItem>,
+        settings: DebridSettings,
+    ): List<StreamItem> =
+        if (settings.streamCachedOnly) emptyList() else applyPassthroughPreferences(streams, settings)
+
+    // allStreams only: the same filters and sort as [applyPreferences], for streams that are not
+    // managed debrid streams. No limits (no per-add-on cap was asked for) and no debrid formatting.
+    private fun applyPassthroughPreferences(streams: List<StreamItem>, settings: DebridSettings): List<StreamItem> {
+        val preferences = DebridStreamMetadata.effectivePreferences(settings)
+        // Nothing to filter or sort by: leave the add-on's own order untouched (and skip parsing).
+        if (preferences == DebridStreamPreferences()) return streams
+        // A stream whose resolution cannot be parsed is not "below" the minimum; only a parsed
+        // resolution under it is. (Debrid streams keep the strict rule in applyPreferences.)
+        val passthroughPreferences = if (
+            preferences.requiredResolutions.isEmpty() ||
+            DebridStreamResolution.UNKNOWN in preferences.requiredResolutions
+        ) {
+            preferences
+        } else {
+            preferences.copy(requiredResolutions = preferences.requiredResolutions + DebridStreamResolution.UNKNOWN)
+        }
+        val matchedStreams = streams.map { it to DebridStreamMetadata.facts(it, passthroughPreferences) }
+            .filter { (_, facts) -> facts.matchesFilters(passthroughPreferences) }
+
+        val orderedStreams = if (passthroughPreferences.sortCriteria.isEmpty()) {
+            matchedStreams
+        } else {
+            matchedStreams.sortedWith { left, right ->
+                compareFacts(left.second, right.second, passthroughPreferences.sortCriteria)
+            }
+        }
+
+        return orderedStreams.map { it.first }
     }
 
     internal fun applyPreferences(streams: List<StreamItem>, settings: DebridSettings): List<StreamItem> {

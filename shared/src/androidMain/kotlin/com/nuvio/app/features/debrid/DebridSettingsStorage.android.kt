@@ -28,6 +28,7 @@ actual object DebridSettingsStorage {
     private const val streamDolbyVisionFilterKey = "debrid_stream_dolby_vision_filter"
     private const val streamHdrFilterKey = "debrid_stream_hdr_filter"
     private const val streamCodecFilterKey = "debrid_stream_codec_filter"
+    private const val streamCachedOnlyKey = "debrid_stream_cached_only"
     private const val streamPreferencesKey = "debrid_stream_preferences"
     private const val streamNameTemplateKey = "debrid_stream_name_template"
     private const val streamDescriptionTemplateKey = "debrid_stream_description_template"
@@ -44,6 +45,7 @@ actual object DebridSettingsStorage {
             streamDolbyVisionFilterKey,
             streamHdrFilterKey,
             streamCodecFilterKey,
+            streamCachedOnlyKey,
             streamPreferencesKey,
             streamNameTemplateKey,
             streamDescriptionTemplateKey,
@@ -132,6 +134,12 @@ actual object DebridSettingsStorage {
 
     actual fun saveStreamCodecFilter(filter: String) {
         saveString(streamCodecFilterKey, filter)
+    }
+
+    actual fun loadStreamCachedOnly(): Boolean? = loadBoolean(streamCachedOnlyKey)
+
+    actual fun saveStreamCachedOnly(enabled: Boolean) {
+        saveBoolean(streamCachedOnlyKey, enabled)
     }
 
     actual fun loadStreamPreferences(): String? = loadString(streamPreferencesKey)
@@ -226,6 +234,7 @@ actual object DebridSettingsStorage {
         loadStreamDolbyVisionFilter()?.let { put(streamDolbyVisionFilterKey, encodeSyncString(it)) }
         loadStreamHdrFilter()?.let { put(streamHdrFilterKey, encodeSyncString(it)) }
         loadStreamCodecFilter()?.let { put(streamCodecFilterKey, encodeSyncString(it)) }
+        loadStreamCachedOnly()?.let { put(streamCachedOnlyKey, encodeSyncBoolean(it)) }
         loadStreamPreferences()?.let { put(streamPreferencesKey, encodeSyncString(it)) }
         loadStreamNameTemplate()?.let { put(streamNameTemplateKey, encodeSyncString(it)) }
         loadStreamDescriptionTemplate()?.let { put(streamDescriptionTemplateKey, encodeSyncString(it)) }
@@ -251,6 +260,7 @@ actual object DebridSettingsStorage {
         payload.decodeSyncString(streamDolbyVisionFilterKey)?.let(::saveStreamDolbyVisionFilter)
         payload.decodeSyncString(streamHdrFilterKey)?.let(::saveStreamHdrFilter)
         payload.decodeSyncString(streamCodecFilterKey)?.let(::saveStreamCodecFilter)
+        payload.decodeSyncBoolean(streamCachedOnlyKey)?.let(::saveStreamCachedOnly)
         payload.decodeSyncString(streamPreferencesKey)?.let(::saveStreamPreferences)
         payload.decodeSyncString(streamNameTemplateKey)?.let(::saveStreamNameTemplate)
         payload.decodeSyncString(streamDescriptionTemplateKey)?.let(::saveStreamDescriptionTemplate)
