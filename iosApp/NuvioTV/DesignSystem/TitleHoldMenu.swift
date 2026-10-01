@@ -201,6 +201,10 @@ private struct TitleHoldMenuItems: View {
         // from these two values, so they cannot disagree.
         let isSaved = Self.liveSaved(preview)
         let isWatched = Self.liveWatched(preview, isSeries: isSeries)
+        // BUG-125 probe: tvOS evaluates this body when it is about to PRESENT the menu, so this line
+        // proves the hold was recognised as a long press; its absence on a hold means the press
+        // never became one (Orivio's split). Log-only, keys nothing but the title id.
+        let _ = NSLog("[HoldMenu] menu built id=%@", preview.id)
 
         Button {
             performLibraryAction(labelIsSaved: isSaved)

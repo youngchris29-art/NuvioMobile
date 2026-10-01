@@ -1179,6 +1179,13 @@ struct InlineTrailerCard: View {
             expandedTile
         }
         .frame(width: artworkWidth, alignment: .leading)
+        // BUG-125 (device probe 2026-10-01): tvOS hit-tests a `.contextMenu` even though focus does
+        // not. Once the card has morphed, `baseCard` sits at opacity 0 and `expandedTile` is
+        // `.allowsHitTesting(false)`, so a long Select press on the playing card found nothing to
+        // hit and never became a long press (the menu body was never evaluated; the same hold on
+        // a plain poster was). The explicit content shape keeps the whole label hit-testable in
+        // both states without touching layout, focus or the tile's own non-interactivity.
+        .contentShape(Rectangle())
         .animation(reduceMotion ? nil : InlineTrailerCardModel.morphAnimation, value: model.isExpanded)
         .onChange(of: isFocused) { _, focused in model.focusChanged(focused, item: item) }
         // A recycled cell can come back already focused (returning from Detail), which produces
