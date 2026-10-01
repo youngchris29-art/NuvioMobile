@@ -21,8 +21,11 @@ enum DeepLink: Identifiable {
         }
     }
 
-    static func parse(_ url: URL) -> DeepLink? {
-        guard url.scheme == TopShelf.urlScheme,
+    /// `callbackScheme` is this install's own scheme (`AppCallbackScheme.value`, the plist's
+    /// `$(PRODUCT_BUNDLE_IDENTIFIER)` entry); it is a parameter only so tests do not depend on the
+    /// host bundle. Top Shelf keeps `nuviotv`.
+    static func parse(_ url: URL, callbackScheme: String = AppCallbackScheme.value) -> DeepLink? {
+        guard url.scheme == TopShelf.urlScheme || url.scheme?.lowercased() == callbackScheme.lowercased(),
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { return nil }
         var params: [String: String] = [:]

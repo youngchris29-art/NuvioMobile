@@ -67,6 +67,10 @@ struct ContentView: View {
     /// the auth + profile gates when the app is cold-launched from the Top Shelf.
     @State private var deepLink: DeepLink?
     @State private var pendingDeepLinkURL: URL?
+    /// An external player's (Infuse) x-callback return that arrived before the profile gate was
+    /// passed; replayed through `ExternalPlaybackReturnRouter` once `entered`, like
+    /// `pendingDeepLinkURL` but never presented as a cover.
+    @State private var pendingExternalReturnURL: URL?
     #if DEBUG
     /// rc13 (test68): one-shot latch for `-debug.openDeepLink <url>` so the `.task(id: entered)`
     /// below fires the debug link exactly once per launch, not on every later `entered` toggle
@@ -181,6 +185,10 @@ struct ContentView: View {
                     pendingDeepLinkURL = nil
                     deepLink = DeepLink.parse(url)
                 }
+                if let url = pendingExternalReturnURL {
+                    pendingExternalReturnURL = nil
+                    ExternalPlaybackReturnRouter.handle(url)
+                }
             } else {
                 // Sign-out wipes local progress first, so the watcher's final emission already
                 // rewrote the snapshot empty before we stop observing.
@@ -279,6 +287,18 @@ struct ContentView: View {
     /// `-debug.openDeepLink` test hook above — one code path so a UI test exercises exactly what a
     /// device deep link does, not a parallel imitation of it.
     private func handleDeepLink(_ url: URL) {
+        // An external player's x-callback return (Infuse) is consumed here, before `DeepLink.parse`,
+        // and never assigns `deepLink`: an unrecognised URL would nil it and close an open Top Shelf
+        // cover. Before the profile gate it waits for `entered` (the position write and the sync
+        // that follows want a restored session), then replays through the same router.
+        if ExternalPlaybackReturnRouter.isCallback(url) {
+            if auth.gate == .main, entered {
+                ExternalPlaybackReturnRouter.handle(url)
+            } else {
+                pendingExternalReturnURL = url
+            }
+            return
+        }
         if auth.gate == .main, entered {
             deepLink = DeepLink.parse(url)
         } else {

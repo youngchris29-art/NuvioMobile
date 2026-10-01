@@ -37,6 +37,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>nuviotv</string>
+				<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			</array>
 		</dict>
 	</array>
