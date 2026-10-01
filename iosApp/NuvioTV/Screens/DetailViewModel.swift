@@ -43,6 +43,10 @@ final class DetailViewModel: ObservableObject {
     /// for a series, there's no primary action to play at all). True while `meta` is still
     /// loading so the button never flashes disabled for a frame. See `computeIsPlayEnabled()`.
     @Published private(set) var isPlayEnabled = true
+    /// Whether the Settings "Auto-Play Best Source" switch (`StreamAutoPlayMode.firstStream`) is on.
+    /// Drives hold-Play on the action row: the "Choose Source…" menu is only attached while a plain
+    /// press would otherwise skip the source list.
+    @Published private(set) var autoPlayFirstStreamOn = false
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
     /// Episode shuffle (upstream `23b048c3`/`da92f36c`): whether Detail offers the Shuffle button
@@ -83,6 +87,8 @@ final class DetailViewModel: ObservableObject {
     private var shuffleWatcher: FlowWatcher?
     /// rc14: drives `episodeRatingsVisibility` (see above).
     private var metaScreenWatcher: FlowWatcher?
+    /// Feeds `autoPlayFirstStreamOn` (hold-Play → "Choose Source…").
+    private var playerSettingsWatcher: FlowWatcher?
     // Latest shared-state emissions (the exported StateFlow interface has no `value` accessor,
     // so the watchers below capture what the series primary action needs).
     private var latestProgressEntries: [WatchProgressEntry] = []
@@ -198,6 +204,13 @@ final class DetailViewModel: ObservableObject {
             guard let self, let state = emitted as? MetaScreenSettingsUiState else { return }
             self.episodeRatingsVisibility = state.episodeRatingsVisibility
         }
+        // Auto-play mode (Settings → Playback → Auto-Play Source): gates the hold-Play menu.
+        PlayerSettingsRepository.shared.ensureLoaded()
+        playerSettingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? PlayerSettingsUiState else { return }
+            let on = state.streamAutoPlayMode == StreamAutoPlayMode.firstStream
+            if self.autoPlayFirstStreamOn != on { self.autoPlayFirstStreamOn = on }
+        }
         refreshFlags()
 
         MetaDetailsRepository.shared.load(type: type, id: id)
@@ -212,6 +225,7 @@ final class DetailViewModel: ObservableObject {
         addonWatcher?.cancel(); addonWatcher = nil
         shuffleWatcher?.cancel(); shuffleWatcher = nil
         metaScreenWatcher?.cancel(); metaScreenWatcher = nil
+        playerSettingsWatcher?.cancel(); playerSettingsWatcher = nil
         trailerVideoURL = nil
         trailerVideoId = nil
         didRequestTrailer = false
@@ -728,6 +742,7 @@ final class DetailViewModel: ObservableObject {
         addonWatcher?.cancel()
         shuffleWatcher?.cancel()
         metaScreenWatcher?.cancel()
+        playerSettingsWatcher?.cancel()
     }
 }
 

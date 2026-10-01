@@ -121,6 +121,66 @@ struct PlaybackSettingsPane: View {
                 .frame(maxWidth: 1100, alignment: .leading)
         }
 
+        // Orivio batch, item 1: Detail's Play button honours this (a plain press starts the first
+        // source in the Sources order; hold Play opens the list instead).
+        SettingsSection(
+            String(localized: "Auto-Play Source"),
+            footer: String(localized: "Play starts the first source in your Sources order by itself. Hold Play to choose one.")
+        ) {
+            SettingsToggleRow(
+                title: String(localized: "Auto-Play Best Source"),
+                isOn: Binding(get: { model.autoPlayBestSource }, set: { model.setAutoPlayBestSource($0) })
+            )
+            if model.autoPlayBestSource {
+                SettingsToggleRow(
+                    title: String(localized: "Cached Sources Only"),
+                    subtitle: String(localized: "Only start a link your debrid service already has cached; otherwise show the list."),
+                    isOn: Binding(get: { model.autoPlayCachedOnly }, set: { model.setAutoPlayCachedOnly($0) })
+                )
+            }
+        }
+
+        // Orivio batch: global source ordering + filters, applied to every add-on's streams.
+        SettingsSection(
+            String(localized: "Sources"),
+            footer: String(localized: "Applies to every add-on's sources on this Apple TV.")
+        ) {
+            SettingsPickerRow(
+                title: String(localized: "Sort Sources"),
+                selection: Binding(get: { model.streamSortMode }, set: { model.setStreamSortMode($0) }),
+                options: SourceSettingOptions.sortKeys,
+                label: SourceSettingOptions.sortName(forKey:)
+            )
+            SettingsPickerRow(
+                title: String(localized: "Minimum Resolution"),
+                subtitle: String(localized: "Sources with no resolution tag are kept."),
+                selection: Binding(get: { model.streamMinimumQuality }, set: { model.setStreamMinimumQuality($0) }),
+                options: SourceSettingOptions.minimumQualityKeys,
+                label: SourceSettingOptions.minimumQualityName(forKey:)
+            )
+            SettingsPickerRow(
+                title: String(localized: "Dolby Vision"),
+                selection: Binding(get: { model.streamDolbyVisionFilter }, set: { model.setStreamDolbyVisionFilter($0) }),
+                options: SourceSettingOptions.featureFilterKeys,
+                label: SourceSettingOptions.featureFilterName(forKey:)
+            )
+            SettingsPickerRow(
+                title: String(localized: "HDR"),
+                selection: Binding(get: { model.streamHdrFilter }, set: { model.setStreamHdrFilter($0) }),
+                options: SourceSettingOptions.featureFilterKeys,
+                label: SourceSettingOptions.featureFilterName(forKey:)
+            )
+            // Only meaningful while a debrid service is connected and enabled: nothing is "cached"
+            // otherwise.
+            if model.debridCanResolvePlayableLinks {
+                SettingsToggleRow(
+                    title: String(localized: "Cached Sources Only"),
+                    subtitle: String(localized: "Hide sources your debrid service has not cached."),
+                    isOn: Binding(get: { model.streamCachedOnly }, set: { model.setStreamCachedOnly($0) })
+                )
+            }
+        }
+
         SettingsSection(String(localized: "Subtitles")) {
             if let style = model.subtitleStyle {
                 SubtitleAppearanceControls(
@@ -185,6 +245,42 @@ struct PlaybackSettingsPane: View {
         case 60: return String(localized: "60 s")
         case 120: return String(localized: "120 s")
         default: return "\(value) s"
+        }
+    }
+}
+
+/// Picker keys + labels for the "Sources" section: the Swift string keys `SettingsViewModel` maps
+/// to `DebridStreamSortMode` / `DebridStreamMinimumQuality` / `DebridStreamFeatureFilter` (same
+/// pattern as `SimklAnimeIdOptions` in the Account pane — a `Menu` row binds a plain key, not a
+/// bridged Kotlin enum).
+private enum SourceSettingOptions {
+    static let sortKeys = ["default", "quality", "sizeDesc", "sizeAsc"]
+    static let minimumQualityKeys = ["any", "720", "1080", "2160"]
+    static let featureFilterKeys = ["any", "only", "exclude"]
+
+    static func sortName(forKey key: String) -> String {
+        switch key {
+        case "quality": return String(localized: "Quality")
+        case "sizeDesc": return String(localized: "Largest First")
+        case "sizeAsc": return String(localized: "Smallest First")
+        default: return String(localized: "Default")
+        }
+    }
+
+    static func minimumQualityName(forKey key: String) -> String {
+        switch key {
+        case "720": return String(localized: "720p")
+        case "1080": return String(localized: "1080p")
+        case "2160": return String(localized: "2160p")
+        default: return String(localized: "Any")
+        }
+    }
+
+    static func featureFilterName(forKey key: String) -> String {
+        switch key {
+        case "only": return String(localized: "Only")
+        case "exclude": return String(localized: "Exclude")
+        default: return String(localized: "Any")
         }
     }
 }

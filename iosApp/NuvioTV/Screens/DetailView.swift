@@ -322,6 +322,9 @@ struct DetailView: View {
 
     @StateObject private var model: DetailViewModel
     @State private var showStreams = false
+    /// Hold-Play "Choose Source…" (movies): the next picker presentation skips auto-play and shows
+    /// the list. Reset when the cover goes away. Series carry the same flag on `SeriesPlayRoute`.
+    @State private var forceManualPlay = false
     @State private var seriesPlay: SeriesPlayRoute?
     /// Episode shuffle sheet (upstream `23b048c3`), opened from the action row's Shuffle button.
     @State private var showShuffleSheet = false
@@ -931,10 +934,10 @@ struct DetailView: View {
                 showShuffleSheet = false
             }
         }
-        .fullScreenCover(isPresented: $showStreams) {
+        .fullScreenCover(isPresented: $showStreams, onDismiss: { forceManualPlay = false }) {
             StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
                              poster: posterUrl, synopsis: overview, meta: playbackMeta,
-                             logoUrl: logoUrl)
+                             logoUrl: logoUrl, forceManual: forceManualPlay)
         }
         .fullScreenCover(item: $seriesPlay) { route in
             StreamPickerView(
@@ -949,7 +952,8 @@ struct DetailView: View {
                 episodeStill: route.episodeStill,
                 synopsis: route.synopsis,
                 meta: playbackMeta,
-                logoUrl: logoUrl
+                logoUrl: logoUrl,
+                forceManual: route.forceManual
             )
         }
         // FEAT-32: presented from `presentedTrailer`, which `beginTrailerBridge` sets after the
@@ -1514,6 +1518,10 @@ struct DetailView: View {
                 // C (upstream `972109f9`): grey out instead of letting the user tap into an empty
                 // Streams screen when no addon/plugin/embedded/download source can serve this title.
                 .disabled(!model.isPlayEnabled)
+                .modifier(HoldPlayChooseSourceMenu(isOn: model.autoPlayFirstStreamOn) {
+                    forceManualPlay = true
+                    showStreams = true
+                })
             } else if let action = model.seriesAction, let meta = model.meta {
                 prominentActionButtonStyle(
                     Button {
@@ -1535,6 +1543,10 @@ struct DetailView: View {
                 .tint(Theme.Palette.accent)
                 // C (upstream `972109f9`): same gate as the movie Play button above.
                 .disabled(!model.isPlayEnabled)
+                .modifier(HoldPlayChooseSourceMenu(isOn: model.autoPlayFirstStreamOn) {
+                    model.noteSeriesPlayStarted(action)
+                    seriesPlay = SeriesPlayRoute(meta: meta, action: action, forceManual: true)
+                })
             }
 
             if model.trailerVideoURL != nil {
@@ -2408,6 +2420,9 @@ private struct CompanyChip: View {
 private struct SeriesPlayRoute: Identifiable {
     let meta: MetaDetails
     let action: SeriesPrimaryAction
+    /// Hold-Play "Choose Source…": the picker skips auto-play and shows the list. Carried on the
+    /// route (not read from view state) so the cover's content closure is self-contained.
+    var forceManual: Bool = false
     var id: String { action.videoId }
 
     /// The resolved episode (by season/episode number) — the Info header shows ITS still +
@@ -2438,5 +2453,27 @@ private struct SeriesPlayRoute: Identifiable {
             return "S\(s)E\(e)"
         }
         return action.label
+    }
+}
+
+/// Hold Play (long Select press) → "Choose Source…", for the Detail Play button. Only attached while
+/// Settings → Playback → Auto-Play Best Source is on: with it off a plain press already opens the
+/// source list, so no empty menu exists. The button's own tap action still fires on a normal press;
+/// the menu is a `.contextMenu`, which tvOS opens on a long Select press.
+private struct HoldPlayChooseSourceMenu: ViewModifier {
+    let isOn: Bool
+    let chooseSource: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isOn {
+            content.contextMenu {
+                Button(action: chooseSource) {
+                    Label("Choose Source…", systemImage: "list.and.film")
+                }
+            }
+        } else {
+            content
+        }
     }
 }

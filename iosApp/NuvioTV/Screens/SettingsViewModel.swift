@@ -89,6 +89,25 @@ final class SettingsViewModel: ObservableObject {
     /// Upstream ecb69a88 (mobile "pause overlay toggle"): gates the mpv player's own
     /// "metadata card after a sustained pause" overlay. Read out of the existing `playerWatcher`.
     @Published private(set) var pauseOverlayEnabled = true
+    /// Orivio batch, item 1 (Settings → Playback → Auto-Play Source): whether playing a title
+    /// starts the first source in the Sources order by itself (`StreamAutoPlayMode.firstStream`).
+    /// `false` covers manual and the synced-from-mobile regex mode (tvOS has no UI for that one).
+    /// Read out of the existing `playerWatcher`.
+    @Published private(set) var autoPlayBestSource = false
+    /// With auto-play on: only start a link the debrid service already has cached, otherwise show
+    /// the source list (`PlayerSettingsUiState.streamAutoPlayCachedOnly`). Same watcher.
+    @Published private(set) var autoPlayCachedOnly = false
+    /// Orivio batch (Settings → Playback → Sources): the global source ordering/filter settings,
+    /// mirrored from `DebridSettings` by `debridSourcesWatcher`. Pickers bind string keys, not the
+    /// bridged Kotlin enums (see `streamSortKey(_:)` and friends below).
+    @Published private(set) var streamSortMode = "default"
+    @Published private(set) var streamMinimumQuality = "any"
+    @Published private(set) var streamDolbyVisionFilter = "any"
+    @Published private(set) var streamHdrFilter = "any"
+    /// Hide sources the debrid service has not cached. The Settings row only shows while
+    /// `debridCanResolvePlayableLinks` is true (a service is connected and enabled).
+    @Published private(set) var streamCachedOnly = false
+    @Published private(set) var debridCanResolvePlayableLinks = false
 
     /// FEAT-10: flip one search source on/off (persists locally + updates the published mirror).
     ///
@@ -130,6 +149,7 @@ final class SettingsViewModel: ObservableObject {
     private var amoledWatcher: FlowWatcher?
     private var recentSearchesWatcher: FlowWatcher?
     private var episodeShuffleWatcher: FlowWatcher?
+    private var debridSourcesWatcher: FlowWatcher?
     private var enabledAddons: [ManagedAddon] = []
 
     func start() {
@@ -157,6 +177,21 @@ final class SettingsViewModel: ObservableObject {
             self.preferredAudioLanguage = state.preferredAudioLanguage
             self.preferredSubtitleLanguage = state.preferredSubtitleLanguage
             self.pauseOverlayEnabled = state.pauseOverlayEnabled
+            self.autoPlayBestSource = state.streamAutoPlayMode == StreamAutoPlayMode.firstStream
+            self.autoPlayCachedOnly = state.streamAutoPlayCachedOnly
+        }
+
+        // Orivio batch: Sources sort / filter settings live in the debrid settings blob (shared
+        // with every add-on's streams, not only debrid ones), so this watches that repository.
+        DebridSettingsRepository.shared.ensureLoaded()
+        debridSourcesWatcher = FlowWatcherKt.watch(DebridSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self, let state = emitted as? DebridSettings else { return }
+            self.streamSortMode = Self.streamSortKey(state.streamSortMode)
+            self.streamMinimumQuality = Self.streamMinimumQualityKey(state.streamMinimumQuality)
+            self.streamDolbyVisionFilter = Self.streamFeatureFilterKey(state.streamDolbyVisionFilter)
+            self.streamHdrFilter = Self.streamFeatureFilterKey(state.streamHdrFilter)
+            self.streamCachedOnly = state.streamCachedOnly
+            self.debridCanResolvePlayableLinks = state.canResolvePlayableLinks
         }
 
         EpisodeShuffleRepository.shared.ensureLoaded()
@@ -288,6 +323,7 @@ final class SettingsViewModel: ObservableObject {
         amoledWatcher?.cancel(); amoledWatcher = nil
         recentSearchesWatcher?.cancel(); recentSearchesWatcher = nil
         episodeShuffleWatcher?.cancel(); episodeShuffleWatcher = nil
+        debridSourcesWatcher?.cancel(); debridSourcesWatcher = nil
     }
 
     // MARK: - Actions
@@ -331,6 +367,88 @@ final class SettingsViewModel: ObservableObject {
     /// Upstream ecb69a88: gates the mpv player's "metadata card after a sustained pause" overlay.
     func setPauseOverlayEnabled(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setPauseOverlayEnabled(enabled: enabled)
+    }
+
+    // MARK: - Auto-Play Source / Sources (Orivio batch)
+
+    /// On = `firstStream` (Play starts the first source in the Sources order), off = `manual`
+    /// (Play opens the source list). Switching off also replaces a regex mode synced from mobile.
+    func setAutoPlayBestSource(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayMode(
+            mode: enabled ? StreamAutoPlayMode.firstStream : StreamAutoPlayMode.manual
+        )
+    }
+
+    func setAutoPlayCachedOnly(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setStreamAutoPlayCachedOnly(enabled: enabled)
+    }
+
+    /// "default" | "quality" | "sizeDesc" | "sizeAsc" → `DebridStreamSortMode`.
+    func setStreamSortMode(_ key: String) {
+        let mode: DebridStreamSortMode
+        switch key {
+        case "quality": mode = .qualityDesc
+        case "sizeDesc": mode = .sizeDesc
+        case "sizeAsc": mode = .sizeAsc
+        default: mode = .default_
+        }
+        DebridSettingsRepository.shared.setStreamSortMode(value: mode)
+    }
+
+    /// "any" | "720" | "1080" | "2160" → `DebridStreamMinimumQuality`.
+    func setStreamMinimumQuality(_ key: String) {
+        let quality: DebridStreamMinimumQuality
+        switch key {
+        case "720": quality = .p720
+        case "1080": quality = .p1080
+        case "2160": quality = .p2160
+        default: quality = DebridStreamMinimumQuality.any
+        }
+        DebridSettingsRepository.shared.setStreamMinimumQuality(value: quality)
+    }
+
+    /// "any" | "only" | "exclude" → `DebridStreamFeatureFilter`.
+    func setStreamDolbyVisionFilter(_ key: String) {
+        DebridSettingsRepository.shared.setStreamDolbyVisionFilter(value: Self.streamFeatureFilter(forKey: key))
+    }
+
+    func setStreamHdrFilter(_ key: String) {
+        DebridSettingsRepository.shared.setStreamHdrFilter(value: Self.streamFeatureFilter(forKey: key))
+    }
+
+    func setStreamCachedOnly(_ enabled: Bool) {
+        DebridSettingsRepository.shared.setStreamCachedOnly(enabled: enabled)
+    }
+
+    // Bridged Kotlin enum ↔ picker key. Compared with `==` rather than switched over: Kotlin enum
+    // entries do not import as an exhaustively-switchable Swift enum (same caution as
+    // `librarySourceModeKey`).
+    private static func streamSortKey(_ mode: DebridStreamSortMode) -> String {
+        if mode == .qualityDesc { return "quality" }
+        if mode == .sizeDesc { return "sizeDesc" }
+        if mode == .sizeAsc { return "sizeAsc" }
+        return "default"
+    }
+
+    private static func streamMinimumQualityKey(_ quality: DebridStreamMinimumQuality) -> String {
+        if quality == .p720 { return "720" }
+        if quality == .p1080 { return "1080" }
+        if quality == .p2160 { return "2160" }
+        return "any"
+    }
+
+    private static func streamFeatureFilterKey(_ filter: DebridStreamFeatureFilter) -> String {
+        if filter == .only { return "only" }
+        if filter == .exclude { return "exclude" }
+        return "any"
+    }
+
+    private static func streamFeatureFilter(forKey key: String) -> DebridStreamFeatureFilter {
+        switch key {
+        case "only": return .only
+        case "exclude": return .exclude
+        default: return DebridStreamFeatureFilter.any
+        }
     }
 
     // MARK: - Device-local player tuning (UserDefaults — hardware knobs, deliberately unsynced)
@@ -671,5 +789,6 @@ final class SettingsViewModel: ObservableObject {
         searchStateWatcher?.cancel()
         amoledWatcher?.cancel()
         recentSearchesWatcher?.cancel()
+        debridSourcesWatcher?.cancel()
     }
 }
