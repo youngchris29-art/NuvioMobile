@@ -7767,6 +7767,9 @@ final class NuvioTVUITests: XCTestCase {
         add(premise)
         try XCTSkipUnless(gridMoved, "fixture folder is too short to scroll on six Downs (first tile minY unchanged); the exit cannot be exercised here")
         XCTAssertEqual(stateAfter, "scrolled=1", "folder_header_state must read scrolled=1 after scrolling the grid")
+        // The exited header LEAVES the view tree (review r3: an offset/faded header kept its AX
+        // node and frame, and `.accessibilityHidden` did not drop it for XCUITest either), so the
+        // oracle is absence; a node caught mid-transition must at least be above the old top.
         if let headerAfter = namedFrame("folder_header") {
             XCTAssertLessThanOrEqual(headerAfter.maxY, headerBefore.minY + 2,
                                      "header must exit upward on scroll, never sit over the grid (after maxY=\(headerAfter.maxY), before minY=\(headerBefore.minY))")

@@ -1119,12 +1119,10 @@ struct FolderDetailView: View {
     /// Derived through a Bool transform in `onScrollGeometryChange`, so it writes once per crossing,
     /// not per scroll frame. Drives the header's exit (offset + fade) and `Edit Filters`' enablement.
     @State private var gridScrolled = false
+    /// The header slot's height, measured while the content is shown and kept while it is gone.
+    @State private var headerHeight: CGFloat?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// beta.18 verdict (FEAT-40 follow-up): how far the header slides up on exit — its own height
-    /// (top padding 32 + the 150 pt logo slot), so it leaves the screen upward completely instead
-    /// of parking over the grid. The layout slot is unchanged, so the grid never reflows.
-    private static let headerExitDistance = Theme.Size.heroLogoSlotHeight + 32
 
     init(route: FolderRoute) {
         _model = StateObject(wrappedValue: FolderDetailViewModel(route: route))
@@ -1322,7 +1320,29 @@ struct FolderDetailView: View {
     /// bug this `.zIndex`/background fix addresses. See the content padding's own comment in
     /// `body` (`.padding(.top, Theme.Spacing.lg + Theme.Size.heroPinnedRowFocusLiftAllowance +
     /// Theme.Spacing.sm)`) for the fix — it reserves fade + lift + shadow clearance instead.
+    /// beta.18 verdict (FEAT-40 follow-up, review r3): the header content LEAVES the view tree
+    /// once the grid scrolls, inside a slot that keeps the height it measured while shown, so the
+    /// grid never reflows and the exited header is gone for real (an offset + opacity header kept
+    /// its accessibility node and frame, which both the harness and VoiceOver would still report).
+    /// Move-up + fade transition, 0.3 s; `reduceMotion` fades only.
     private var header: some View {
+        ZStack(alignment: .top) {
+            if !gridScrolled {
+                headerContent
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+                        if height > 0, headerHeight != height { headerHeight = height }
+                    }
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: headerHeight, alignment: .top)
+        .clipped()
+        .zIndex(1)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: gridScrolled)
+    }
+
+    private var headerContent: some View {
         ZStack {
             TitleLogoHeader(
                 title: model.folderTitle,
@@ -1376,21 +1396,10 @@ struct FolderDetailView: View {
             .offset(y: 24)
             .allowsHitTesting(false)
         }
-        .zIndex(1)
-        // beta.18 verdict (FEAT-40 follow-up): the header is no longer pinned for the whole scroll —
-        // it exits upward and fades once the grid leaves its top, and returns when the grid is back
-        // at the top. Offset + opacity only: the layout slot is UNCHANGED, so the grid does not
-        // reflow. If the device pass shows recycled cards popping into the vacated band, the
-        // follow-up is a top-only mask on the ScrollView.
-        .offset(y: gridScrolled ? -Self.headerExitDistance : 0)
-        .opacity(gridScrolled ? 0 : 1)
-        // An exited header leaves the accessibility tree: XCUITest frames ignore `.offset` and
-        // `.opacity` (the first test69 run read the old 0…181 frame after the exit), and an
-        // invisible header should not be announced anyway.
-        .accessibilityHidden(gridScrolled)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: gridScrolled)
-        // rc13 UI test69 (`FolderHeaderExitsOnScrollAndReturns`): reads this frame before and after
-        // scrolling the grid (and again after returning to the top).
+        // rc13 UI test69 (`FolderHeaderExitsOnScrollAndReturns`): reads this frame before scrolling
+        // the grid, expects the node ABSENT after the scroll, and the same frame again after
+        // returning to the top. If the device pass shows recycled cards popping into the vacated
+        // band, the follow-up is a top-only mask on the ScrollView.
         .accessibilityIdentifier("folder_header")
     }
 }

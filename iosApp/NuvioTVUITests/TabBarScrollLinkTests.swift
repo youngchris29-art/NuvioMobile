@@ -163,8 +163,12 @@ final class TabBarScrollLinkTests: XCTestCase {
                            "75: after Search → Home the bar must still track the rows — \(last)")
         }
 
+        // `r=tab` is sampled the instant the selection changes, before Home's rows view has
+        // re-entered the window (review r2: the link is withdrawn while Home is off-window and
+        // re-asserted on `didMoveToWindow`), so that one sample legitimately reads `trk=none`;
+        // the settled `tab2` sample and every later tick must not.
         let lostAfterAttach = lines[attachIdx...].filter {
-            probeField($0, "sel") == "0" && probeField($0, "trk") == "none"
+            probeField($0, "sel") == "0" && probeField($0, "trk") == "none" && probeField($0, "r") != "tab"
         }
         XCTAssertTrue(lostAfterAttach.isEmpty,
                       "75: Home lost its tracked scroll view after the attach — \(lostAfterAttach)")
