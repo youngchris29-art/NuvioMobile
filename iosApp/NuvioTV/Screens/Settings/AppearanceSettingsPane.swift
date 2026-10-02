@@ -199,7 +199,8 @@ struct AppearanceSettingsPane: View {
             if model.cardDepth.enabled {
                 SettingsToggleRow(
                     title: String(localized: "Depth Takes Poster Color"),
-                    subtitle: String(localized: "Card depth edges use each poster's dominant color"),
+                    // review r1 (P3-7): cards already on screen recolor when their artwork reloads.
+                    subtitle: String(localized: "Card depth edges take each poster's dominant color as artwork loads"),
                     isOn: $depthRailPosterColor
                 )
             }

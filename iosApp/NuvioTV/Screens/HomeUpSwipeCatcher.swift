@@ -257,6 +257,9 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
             let press = UITapGestureRecognizer(target: self, action: #selector(handleUpPress))
             press.allowedPressTypes = [NSNumber(value: UIPress.PressType.upArrow.rawValue)]
             configurePassively(press)
+            // review r1 (P3-2): press-only. A UITapGestureRecognizer accepts touches by default, so
+            // a light tap of the Siri Remote surface recognised as a tap and stamped a false Up.
+            press.allowedTouchTypes = []
             window.addGestureRecognizer(press)
             upPress = press
 

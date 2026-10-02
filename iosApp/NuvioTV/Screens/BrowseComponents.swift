@@ -971,6 +971,9 @@ extension PinnedRowTitle {
     nonisolated static let slideHoldMax: TimeInterval = 0.6
     /// beta.18 verdict (BUG-87/89, R1): hard ceiling per hold EPISODE, from its first hold. Past it
     /// the pending target applies whatever the rows are doing — a title is never held forever.
+    /// review r1 (P3-5): the FIRST ceiling applies only if the rows are still; if they are still
+    /// moving the episode clock restarts once (`ceilingRestarted`), and the SECOND ceiling applies
+    /// regardless. So the worst-case hold is 2 x this value.
     nonisolated static let slideHoldCeiling: TimeInterval = 1.5
 }
 
@@ -1476,6 +1479,7 @@ private struct PinnedRowTitleTracking: ViewModifier {
             // First hold of an episode: stamp the episode (the ceiling is per episode) and start
             // the fallback chain. A decision normally releases first; see `scheduleSlideHoldFallback`.
             tracking.slideHoldStartedAt = ProcessInfo.processInfo.systemUptime
+            tracking.ceilingRestarted = false // review r1 (P3-5): new episode, one restart again
             tracking.slideHoldToken &+= 1
             scheduleSlideHoldFallback(token: tracking.slideHoldToken, after: Self.slideMotionHold)
         case .apply:
@@ -1497,8 +1501,21 @@ private struct PinnedRowTitleTracking: ViewModifier {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             guard token == tracking.slideHoldToken, tracking.pendingSlide != nil else { return }
             let elapsed = ProcessInfo.processInfo.systemUptime - tracking.slideHoldStartedAt
+            // review r1 (P3-5 / P3-6): at the ceiling apply only when the rows are still, so a row
+            // that stays on screen through a long held-direction walk does not get its slide
+            // applied mid-motion. Still moving: restart the episode clock ONCE (probe line, not a
+            // release); the second ceiling applies regardless.
             if elapsed >= PinnedRowTitle.slideHoldCeiling {
-                releaseHeldSlide(via: "fallback")
+                if tracking.ceilingRestarted || !slideMotion().moving {
+                    releaseHeldSlide(via: "ceiling")
+                    return
+                }
+                tracking.ceilingRestarted = true
+                tracking.slideHoldStartedAt = ProcessInfo.processInfo.systemUptime
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] slide %@", "hold-restart row=\(rowKey)")
+                }
+                scheduleSlideHoldFallback(token: token, after: Self.slideMotionHold)
                 return
             }
             if !slideMotion().moving {
@@ -4643,6 +4660,8 @@ private final class TitleTrackingCache {
     /// beta.18 verdict (BUG-87/89, R1): when the current hold EPISODE began (its first hold), on
     /// the `systemUptime` clock — what `PinnedRowTitle.slideHoldCeiling` is measured from.
     var slideHoldStartedAt: TimeInterval = 0
+    /// review r1 (P3-5): whether this episode's ceiling clock was already restarted once.
+    var ceilingRestarted = false
     /// rc14 device round 2 (Christian, Up walk): when this title's own geometry last changed —
     /// the SECOND motion signal the slide gate consults. The scroll stamp (`noteScroll`) counts a
     /// frame as motion only past `driftTolerance` (4pt) or the windowed displacement, and the

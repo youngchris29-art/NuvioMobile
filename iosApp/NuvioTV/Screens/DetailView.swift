@@ -1454,18 +1454,26 @@ struct DetailView: View {
     /// under `chipGlassFlat`, same BUG-41 rule as the chips). The panel sits over the poster
     /// backdrop layer's right 40 %; the frost showing the poster through is intended. Fallback if
     /// that reads too busy (not built): tint 0.20 while `showPosterBackdrop`.
+    /// review r1 (P3-6): capped at `DetailScrim.panelMaxLines` (18, ~850 chars at 560 pt / 25 pt
+    /// caption). Trade-off: the panel is not focusable, so anything past the cap is unreadable;
+    /// 18 lines keeps the panel from growing into the action row while covering nearly all
+    /// overviews the old 1100 pt text showed in full.
     private func synopsisPanel(_ overview: String) -> some View {
         detailPanelBackground(flat: chipGlassFlat) {
             Text(overview)
+                .accessibilityIdentifier("detail_synopsis_text")
                 .font(Theme.Font.synopsis)
                 .foregroundStyle(Theme.Palette.textPrimary)
-                .lineLimit(12)
+                .lineLimit(DetailScrim.panelMaxLines) // review r1 (P3-6): was 12
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(28)
         }
         .frame(width: Self.synopsisPanelWidth)
         .fixedSize(horizontal: false, vertical: true)
+        // The panel is a real AX container (the identifier on a bare background-wrapped Text was not
+        // reachable from XCUITest in the first test17 run); the text carries its own id too.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("detail_synopsis_panel")
     }
 
@@ -2553,6 +2561,8 @@ nonisolated enum DetailScrim {
     static let panelFlatFill: Double = 0.55
     static let panelWidth: CGFloat = 560
     static let panelCornerRadius: CGFloat = 24
+    /// review r1 (P3-6): synopsis panel line cap (was 12, truncating long overviews).
+    static let panelMaxLines = 18
 
     static func panelUsesFlatFill(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
         DetailView.panelUsesFlatFill(trailerActive: trailerActive, scrolling: scrolling, glassDisabled: glassDisabled)

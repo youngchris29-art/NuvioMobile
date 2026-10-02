@@ -37,6 +37,17 @@ enum TabBarContentScrollLink {
         return defaults.bool(forKey: defaultsKey)
     }
 
+    /// review r1 (P2-1): the controllers that actually receive `setContentScrollView`. Every
+    /// `UINavigationController` in the chain is dropped (order preserved): Home sits inside a
+    /// `NavigationStack`, and a link set on the navigation controller sticks for the session, so
+    /// pages pushed from Home that keep the tab bar (See All, folder, person, entity browse) would
+    /// inherit Home's off-screen rows as the tracked scroll view. The SDK says containing
+    /// navigation/tab controllers observe the value set on their child, so Home's own hosting
+    /// controller is enough.
+    nonisolated static func linkTargets(in chain: [UIViewController]) -> [UIViewController] {
+        chain.filter { !($0 is UINavigationController) }
+    }
+
     /// The rows `UIScrollView` last linked (weak). Read by `TabBarStateProbe` to label `trk=`.
     nonisolated(unsafe) static weak var homeRowsScrollView: UIScrollView?
 }
@@ -142,27 +153,37 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
                 }
                 return
             }
-            for vc in chain where vc.contentScrollView(for: .top) !== scrollView {
+            // review r1 (P2-1): navigation controllers are skipped (see `linkTargets`).
+            let targets = TabBarContentScrollLink.linkTargets(in: chain)
+            guard !targets.isEmpty else { return }
+            for vc in targets where vc.contentScrollView(for: .top) !== scrollView {
                 vc.setContentScrollView(scrollView, for: .top)
             }
             if pinnedContainer, scrollView.contentInsetAdjustmentBehavior != .never {
                 scrollView.contentInsetAdjustmentBehavior = .never
             }
             linkedScrollView = scrollView
-            linkedControllers = chain.map { WeakController(controller: $0) }
+            linkedControllers = targets.map { WeakController(controller: $0) }
             TabBarContentScrollLink.homeRowsScrollView = scrollView
 
             if !loggedLink {
                 loggedLink = true
-                let chainDesc = chain.map { String(describing: type(of: $0)) }.joined(separator: " > ")
-                let observed = chain.last.flatMap { $0.tabBarObservedScrollView }
-                NSLog("[TabBarLink] linked chain=%@ tab=%@ sv=%@ svh=%ld pinned=%ld legacyObserved=%@",
+                // review r1 (P2-1): full chain, skipped navigation controllers marked.
+                let chainDesc = chain.map {
+                    String(describing: type(of: $0)) + ($0 is UINavigationController ? "(skip)" : "")
+                }.joined(separator: " > ")
+                let observed = targets.last.flatMap { $0.tabBarObservedScrollView }
+                NSLog("[TabBarLink] linked chain=%@ tab=%@ sv=%@ svh=%ld pinned=%ld legacyObserved=%@ adjBottom=%ld adjTop=%ld",
                       chainDesc,
                       tabController.map { String(describing: type(of: $0)) } ?? "none",
                       String(describing: type(of: scrollView)),
                       Int(scrollView.bounds.height.rounded()),
                       pinnedContainer ? 1 : 0,
-                      observed.map { $0 === scrollView ? "rows" : String(describing: type(of: $0)) } ?? "nil")
+                      observed.map { $0 === scrollView ? "rows" : String(describing: type(of: $0)) } ?? "nil",
+                      // review r1 (P3-8): `.never` applies to all edges; if SwiftUI had been
+                      // adjusting the bottom inset the last-row floor would move.
+                      Int(scrollView.adjustedContentInset.bottom.rounded()),
+                      Int(scrollView.adjustedContentInset.top.rounded()))
                 TabBarStateProbe.noteAttached()
             }
         }

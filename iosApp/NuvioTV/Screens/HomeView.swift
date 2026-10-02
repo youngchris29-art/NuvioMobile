@@ -1897,13 +1897,26 @@ struct HomeView: View {
         // beta.18 verdict (BUG-112 / BUG-126): every decline is logged (the success path alone used
         // to log, so a tester's "nothing happened" was undiagnosable). Gated on the probe by
         // `logUpFallback`; a no-op otherwise.
-        func decline(_ reason: String) -> Bool {
+        // review r1 (P3-1): the window-level `press-any` / `swipe-any` sources fire for EVERY Up
+        // app-wide, so a row-to-row walk would write one structural decline per press into the
+        // Row Settle pane. For those two sources the cheap structural guards return silently;
+        // `focus`, `focus-deferred` and `press` keep full logging.
+        let quietStructuralDeclines = (source == "press-any" || source == "swipe-any")
+        func decline(_ reason: String, structural: Bool = false) -> Bool {
+            if structural && quietStructuralDeclines {
+                // Quiet for the pane and the console, but the DEBUG AX label still carries it so the
+                // simulator leg (test74) can prove the window-level press path fires at all.
+                #if DEBUG
+                debugUpFallback = "row=hero prev=row action=declined reason=\(reason) src=\(source) quiet=1"
+                #endif
+                return false
+            }
             logUpFallback("row=hero prev=row action=declined reason=\(reason) src=\(source)")
             return false
         }
-        guard pinned else { return decline("notPinned") }
-        guard heroHeaderVisible else { return decline("heroHidden") }
-        guard heroFocused else { return decline("heroNotFocused") }
+        guard pinned else { return decline("notPinned", structural: true) }
+        guard heroHeaderVisible else { return decline("heroHidden", structural: true) }
+        guard heroFocused else { return decline("heroNotFocused", structural: true) }
         let now = ProcessInfo.processInfo.systemUptime
         let verdict = HomeUpIntoHeroGate.evaluate(now: now,
                                                   lastUpInputAt: upInput.lastUpInputAt,
@@ -1916,6 +1929,11 @@ struct HomeView: View {
         guard !PinnedRowSettle.hostCovered else { return decline("covered") }
         guard !tabBarVisibility.homeSurfaceCovered else { return decline("covered") }
         guard resume == nil else { return decline("resume") }
+        // review r1 (P3-3): one physical Up can arrive via focus / focus-deferred / handleHeroUp /
+        // press-any. A reveal issued inside the last 0.5 s is still scrolling (0.45 s), so a repeat
+        // declines WITHOUT bumping `heroUpGeneration`, keeping the landing retry keyed to the first.
+        if let last = upInput.lastRevealAt, now - last < 0.5 { return decline("alreadyRevealing") }
+        upInput.lastRevealAt = now
         let sinceUp = now - upInput.lastUpInputAt
         logUpFallback("row=hero prev=row action=top reason=upIntoHero sinceUp=\(Int((sinceUp * 1000).rounded())) src=\(source)")
         heroUpGeneration &+= 1
@@ -5891,4 +5909,7 @@ final class HomeRowInputBox {
     var lastRowReleasedAt: TimeInterval?
     /// Voids a pending deferred re-check when a newer hero focus gain or a reveal supersedes it.
     var revealGeneration = 0
+    /// review r1 (P3-3): `systemUptime` of the last up-into-hero reveal scroll; latch for the
+    /// `alreadyRevealing` decline.
+    var lastRevealAt: TimeInterval?
 }

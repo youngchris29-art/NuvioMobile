@@ -46,8 +46,14 @@ final class HomeUpIntoHeroUITests: XCTestCase {
         }
         let deadline = Date().addingTimeInterval(1.0)
         var line = fallback.label
-        while Date() < deadline,
-              !(line.contains("reason=upIntoHero") || line.contains("action=declined reason=notPastTop")) {
+        // Any line stamped `src=press-any` proves the window-level Up press recognizer fired and
+        // ran the gate; the fixture is hero-off, so a structural decline (`heroNotFocused`) is the
+        // expected shape there. A reveal (`reason=upIntoHero`) or a gate decline also count.
+        func proves(_ l: String) -> Bool {
+            l.contains("src=press-any") || l.contains("reason=upIntoHero")
+                || l.contains("action=declined reason=notPastTop")
+        }
+        while Date() < deadline, !proves(line) {
             pause(0.1)
             line = fallback.label
         }
@@ -55,7 +61,7 @@ final class HomeUpIntoHeroUITests: XCTestCase {
         attachment.name = "74_upfallback_line"
         attachment.lifetime = .keepAlways
         add(attachment)
-        XCTAssertTrue(line.contains("reason=upIntoHero") || line.contains("action=declined reason=notPastTop"),
+        XCTAssertTrue(proves(line),
                       "the Up-into-hero hook never logged on the press path. Full line: \(line)")
     }
 }

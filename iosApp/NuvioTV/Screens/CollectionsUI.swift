@@ -1384,6 +1384,10 @@ struct FolderDetailView: View {
         // follow-up is a top-only mask on the ScrollView.
         .offset(y: gridScrolled ? -Self.headerExitDistance : 0)
         .opacity(gridScrolled ? 0 : 1)
+        // An exited header leaves the accessibility tree: XCUITest frames ignore `.offset` and
+        // `.opacity` (the first test69 run read the old 0…181 frame after the exit), and an
+        // invisible header should not be announced anyway.
+        .accessibilityHidden(gridScrolled)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: gridScrolled)
         // rc13 UI test69 (`FolderHeaderExitsOnScrollAndReturns`): reads this frame before and after
         // scrolling the grid (and again after returning to the top).

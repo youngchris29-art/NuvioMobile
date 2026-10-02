@@ -135,4 +135,16 @@ final class TabBarContentScrollLinkTests: XCTestCase {
         XCTAssertTrue(PinnedRowSettle.topRestExempt(offsetY: 0, margin: 60, bandHigh: 48))
         XCTAssertFalse(PinnedRowSettle.topRestExempt(offsetY: 0, margin: 40, bandHigh: 48))
     }
+
+    // MARK: - linkTargets (review r1 P2-1)
+
+    func testLinkTargetsDropsNavigationControllersAndKeepsOrder() {
+        let a = UIViewController()
+        let nav = UINavigationController()
+        let b = UIViewController()
+        let targets = TabBarContentScrollLink.linkTargets(in: [a, nav, b])
+        XCTAssertEqual(targets.count, 2)
+        XCTAssertTrue(targets[0] === a)
+        XCTAssertTrue(targets[1] === b)
+    }
 }

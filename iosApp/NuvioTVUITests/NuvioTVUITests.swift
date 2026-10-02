@@ -1172,8 +1172,15 @@ final class NuvioTVUITests: XCTestCase {
         ux6Probe(app, "17a_detail_opened")
         shot(app, "17a_detail_top")
         // beta.18 verdict (BUG-127): the synopsis lives on its own panel now.
-        XCTAssertTrue(app.descendants(matching: .any)["detail_synopsis_panel"].waitForExistence(timeout: 5),
-                      "detail_synopsis_panel missing on Detail (title may have no overview)")
+        let panelShown = app.descendants(matching: .any)["detail_synopsis_panel"].waitForExistence(timeout: 5)
+            || app.descendants(matching: .any)["detail_synopsis_text"].waitForExistence(timeout: 2)
+        if !panelShown {
+            let tree = XCTAttachment(string: String(app.debugDescription.prefix(60_000)))
+            tree.name = "17_ax_tree_no_panel"
+            tree.lifetime = .keepAlways
+            add(tree)
+        }
+        XCTAssertTrue(panelShown, "detail_synopsis_panel missing on Detail (title may have no overview)")
         shot(app, "17c_synopsis_panel")
 
         press(.down, times: 4, gap: 1.0)
@@ -7931,15 +7938,34 @@ final class NuvioTVUITests: XCTestCase {
                 // physical screen edge and the mask owns the leading clip, so the extreme columns
                 // inside the focused row's band must read as plain background, while a column
                 // inside the row frame (x ~ 163) must not.
+                // The probe is a 4 pt overlay at the row's TOP-trailing corner, so its midY is the
+                // row's top edge (the first run clamped it into the hero band and read the backdrop
+                // at x=1916). Scan a column under that edge instead: the row's posters live in the
+                // next ~280 pt. The extreme columns must stay dark across the whole span (the
+                // ramps end at the bezel) while a column inside the row frame carries artwork.
                 let window = app.windows.firstMatch.frame
-                let bandY = min(max(probe.frame.midY, 100), window.height - 100)
+                let top = probe.frame.minY
+                try XCTSkipIf(top < 160 || top > window.height - 300,
+                              "[soft] probe row top \(top) is outside the usable band; cannot sample")
                 let image = XCUIScreen.main.screenshot().image
-                let left = try pixelRGB(in: image, at: CGPoint(x: 4, y: bandY), windowSize: window.size)
-                let right = try pixelRGB(in: image, at: CGPoint(x: 1916, y: bandY), windowSize: window.size)
-                let inside = try pixelRGB(in: image, at: CGPoint(x: 139 + 24, y: bandY), windowSize: window.size)
-                func close(_ a: [Int], _ b: [Int]) -> Bool { zip(a, b).allSatisfy { abs($0 - $1) <= 6 } }
-                XCTAssertTrue(close(left, right), "[soft] edge columns differ: x=4 \(left) vs x=1916 \(right)")
-                XCTAssertFalse(close(left, inside), "[soft] a column inside the row frame (x=163) reads as background \(inside); row content missing or fade swallowed it")
+                func columnMax(_ x: CGFloat) throws -> Int {
+                    var peak = 0
+                    for dy in stride(from: 12, through: 280, by: 8) {
+                        let rgb = try pixelRGB(in: image, at: CGPoint(x: x, y: top + CGFloat(dy)), windowSize: window.size)
+                        peak = max(peak, rgb.max() ?? 0)
+                    }
+                    return peak
+                }
+                let left = try columnMax(4)
+                let right = try columnMax(1916)
+                let inside = try columnMax(139 + 24)
+                let report = XCTAttachment(string: "soft columns: x=4 max=\(left) x=1916 max=\(right) x=163 max=\(inside) top=\(top)")
+                report.name = "bug118-soft-columns"
+                report.lifetime = .keepAlways
+                add(report)
+                XCTAssertLessThanOrEqual(left, 28, "[soft] the leading edge column (x=4) still carries artwork (max channel \(left)); the fade does not reach the bezel")
+                XCTAssertLessThanOrEqual(right, 28, "[soft] the trailing edge column (x=1916) still carries artwork (max channel \(right)); the fade does not reach the bezel")
+                XCTAssertGreaterThan(inside, 60, "[soft] a column inside the row frame (x=163) reads as background (max channel \(inside)); row content missing or the fade swallowed it")
             }
         }
     }

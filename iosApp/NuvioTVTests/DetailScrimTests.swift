@@ -16,6 +16,7 @@ final class DetailScrimTests: XCTestCase {
     func testPanelConstants() {
         XCTAssertEqual(DetailScrim.panelWidth, 560)
         XCTAssertEqual(DetailScrim.panelCornerRadius, 24)
+        XCTAssertEqual(DetailScrim.panelMaxLines, 18) // review r1 (P3-6)
         XCTAssertEqual(DetailScrim.panelGlassTint, 0.30, accuracy: 1e-9)
         XCTAssertEqual(DetailScrim.panelFlatFill, 0.55, accuracy: 1e-9)
     }

@@ -14,6 +14,8 @@ enum HomeUpIntoHeroGate {
     /// Gate order: rows not scrolled past the top, then the Up input must be inside `window`, then
     /// focus must have come from a row (a row still on record, or one that released focus inside
     /// `window`). `lastUpInputAt == -1` means never.
+    /// review r1 (P3-3): `alreadyRevealing` (a reveal within the last 0.5 s) is declined by
+    /// `HomeView.revealTopAfterUpIntoHero` itself via `HomeRowInputBox.lastRevealAt`, after this gate.
     nonisolated static func evaluate(now: TimeInterval,
                                      lastUpInputAt: TimeInterval,
                                      lastRowReleasedAt: TimeInterval?,
