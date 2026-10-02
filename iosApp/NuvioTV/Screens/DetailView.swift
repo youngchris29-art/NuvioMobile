@@ -1219,6 +1219,12 @@ struct DetailView: View {
         trailerActive || scrolling || glassDisabled
     }
 
+    /// beta.18 verdict (BUG-127): the synopsis panel flattens under exactly the same rule as the
+    /// chips (BUG-41), so the truth table is shared and testable via `DetailScrim`.
+    nonisolated static func panelUsesFlatFill(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
+        chipGlassFlat(trailerActive: trailerActive, scrolling: scrolling, glassDisabled: glassDisabled)
+    }
+
     /// The poster-backdrop layer only earns its keep when it would show something the plain
     /// backdrop doesn't already — skip when they're the same URL (`backgroundUrl` already falls
     /// back to poster art itself) — and only while the hero trailer isn't occupying that same area.
@@ -1283,20 +1289,25 @@ struct DetailView: View {
     /// image. The left 0.92 stop is what keeps the text readable and stays; the right side no longer
     /// sits under 0.85 black (now 0.30, or 0.40 over the poster layer), and the bottom fade starts
     /// at 55% of the height instead of the middle so the lower half of the art is not darkened early.
+    ///
+    /// beta.18 verdict (BUG-127): the horizontal stops lifted off black (0.80 / 0.30 / 0.18, 0.26
+    /// over the poster layer) and the vertical fade ends at 0.70 instead of 0.85, because the
+    /// synopsis now sits on its own tinted glass panel (`synopsisPanel`) and no longer needs the
+    /// wall-to-wall scrim for legibility. All values live in `DetailScrim`.
     private func scrimOverlay(posterBackdropVisible: Bool) -> some View {
         ZStack {
             LinearGradient(
                 colors: [
-                    .black.opacity(0.92),
-                    .black.opacity(0.35),
-                    .black.opacity(posterBackdropVisible ? 0.40 : 0.30)
+                    .black.opacity(DetailScrim.horizontalLeading),
+                    .black.opacity(DetailScrim.horizontalMid),
+                    .black.opacity(posterBackdropVisible ? DetailScrim.horizontalTrailingOverPoster : DetailScrim.horizontalTrailing)
                 ],
                 startPoint: .leading, endPoint: .trailing
             )
             LinearGradient(
                 stops: [
-                    .init(color: .clear, location: 0.55),
-                    .init(color: .black.opacity(0.85), location: 1.0)
+                    .init(color: .clear, location: DetailScrim.verticalClearUntil),
+                    .init(color: .black.opacity(DetailScrim.verticalBottom), location: 1.0)
                 ],
                 startPoint: .top, endPoint: .bottom
             )
@@ -1320,23 +1331,27 @@ struct DetailView: View {
     /// the section's focusability even when Play, Watch Trailer, genres, overview and infoSection
     /// are all absent (`.focusSection()` requires *something* focusable inside it).
     private var topBlock: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
-            header
-            metaLine
-            actionRow
-            if !genres.isEmpty {
-                Text(genres.joined(separator: " \u{2022} "))
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.textSecondary)
+        // beta.18 verdict (BUG-127): the synopsis moved out of the left column into its own tinted
+        // glass panel on the right (full FEAT-35 redesign comes later). Content width 1800 − panel
+        // 560 − gap 40 leaves 1200 for the left column.
+        HStack(alignment: .top, spacing: Theme.Spacing.xl) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
+                header
+                metaLine
+                actionRow
+                if !genres.isEmpty {
+                    Text(genres.joined(separator: " \u{2022} "))
+                        // beta.18 verdict (FEAT-44): 23 -> 25 pt (`caption` -> `metaStrong`) on
+                        // purpose, so the genres line matches the meta chips above it.
+                        .font(Theme.Font.metaStrong)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+                infoSection
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if let overview, !overview.isEmpty {
-                Text(overview)
-                    // rc14 (Steven rc13 verdict, 2026-09-30): regular-weight synopsis token.
-                    .font(Theme.Font.synopsis)
-                    .frame(maxWidth: 1100, alignment: .leading)
-                    .foregroundStyle(Theme.Palette.textPrimary)
+                synopsisPanel(overview)
             }
-            infoSection
         }
         // BUG-117: this VStack used to hug its widest child (≈1100 pt — the overview `Text`'s
         // `maxWidth: 1100` and `infoSection`'s own cap), while the season-poster shelf a few rows
@@ -1397,7 +1412,8 @@ struct DetailView: View {
             }
             if model.isLoading { ProgressView() }
         }
-        .font(Theme.Font.meta)
+        // beta.18 verdict (FEAT-44): chips read in the semibold meta token.
+        .font(Theme.Font.metaStrong)
         .foregroundStyle(Theme.Palette.textSecondary)
     }
 
@@ -1424,6 +1440,45 @@ struct DetailView: View {
                 content().background(Color.white.opacity(0.12), in: .capsule)
             } else {
                 content().glassEffect(.regular, in: .capsule)
+            }
+        }
+        .transaction { $0.animation = nil }
+    }
+
+    /// beta.18 verdict (BUG-127): fixed width of the synopsis panel (matches `DetailScrim.panelWidth`).
+    /// If the four-button action row ever cannot fit the remaining 1200 pt with the longest
+    /// localized labels, drop this to 520.
+    private static let synopsisPanelWidth: CGFloat = DetailScrim.panelWidth
+
+    /// beta.18 verdict (BUG-127): the synopsis on its own tinted Liquid Glass panel (flat black fill
+    /// under `chipGlassFlat`, same BUG-41 rule as the chips). The panel sits over the poster
+    /// backdrop layer's right 40 %; the frost showing the poster through is intended. Fallback if
+    /// that reads too busy (not built): tint 0.20 while `showPosterBackdrop`.
+    private func synopsisPanel(_ overview: String) -> some View {
+        detailPanelBackground(flat: chipGlassFlat) {
+            Text(overview)
+                .font(Theme.Font.synopsis)
+                .foregroundStyle(Theme.Palette.textPrimary)
+                .lineLimit(12)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(28)
+        }
+        .frame(width: Self.synopsisPanelWidth)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("detail_synopsis_panel")
+    }
+
+    /// Mirrors `detailChipBackground` for a rounded-rect panel.
+    @ViewBuilder
+    private func detailPanelBackground(flat: Bool, @ViewBuilder _ content: () -> some View) -> some View {
+        Group {
+            if flat {
+                content().background(Color.black.opacity(DetailScrim.panelFlatFill),
+                                     in: .rect(cornerRadius: DetailScrim.panelCornerRadius))
+            } else {
+                content().glassEffect(.regular.tint(.black.opacity(DetailScrim.panelGlassTint)),
+                                      in: .rect(cornerRadius: DetailScrim.panelCornerRadius))
             }
         }
         .transaction { $0.animation = nil }
@@ -2481,5 +2536,25 @@ private struct HoldPlayChooseSourceMenu: ViewModifier {
                 }
             }
         }
+    }
+}
+
+
+/// beta.18 verdict (BUG-127): Detail scrim stops + synopsis-panel constants, lifted out of
+/// `DetailView` so tests can pin them.
+nonisolated enum DetailScrim {
+    static let horizontalLeading: Double = 0.80
+    static let horizontalMid: Double = 0.30
+    static let horizontalTrailing: Double = 0.18
+    static let horizontalTrailingOverPoster: Double = 0.26
+    static let verticalClearUntil: Double = 0.60
+    static let verticalBottom: Double = 0.70
+    static let panelGlassTint: Double = 0.30
+    static let panelFlatFill: Double = 0.55
+    static let panelWidth: CGFloat = 560
+    static let panelCornerRadius: CGFloat = 24
+
+    static func panelUsesFlatFill(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
+        DetailView.panelUsesFlatFill(trailerActive: trailerActive, scrolling: scrolling, glassDisabled: glassDisabled)
     }
 }

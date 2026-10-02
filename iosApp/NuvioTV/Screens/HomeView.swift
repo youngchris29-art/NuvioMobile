@@ -581,17 +581,38 @@ struct HomeView: View {
     /// collection-folder callback, gated on a non-nil hero preview; that went stale the moment
     /// focus landed on a row's "See All" tile or an unconfigured folder, both of which report a
     /// nil preview. `@FocusState` cannot disagree with itself the way a preview report could.
-    @State private var focusedRowKey: String?
+    @State private var focusedRowKeyState: String?
+    /// beta.18 verdict (BUG-126): reads go through the input box (never `body`); writes hit the box
+    /// and, unless `RowStepAB.handlerOnlyRowStateOffBody` is set, the `@State` mirror too so the
+    /// legacy body re-evaluation per row hop is preserved for the A/B.
+    private var focusedRowKey: String? {
+        get { upInput.focusedRowKey }
+        nonmutating set {
+            upInput.focusedRowKey = newValue
+            if !RowStepAB.isSet(RowStepAB.handlerOnlyRowStateOffBody, in: RowStepAB.mask) {
+                focusedRowKeyState = newValue
+            }
+        }
+    }
     /// `systemUptime` of the last time `focusedRowKey` changed to a different row. Feeds
     /// `HomeUpPressConsumption` so a press the engine already acted on does not start the ladder.
-    @State private var lastRowFocusChangeAt: TimeInterval?
+    @State private var lastRowFocusChangeAtState: TimeInterval?
+    private var lastRowFocusChangeAt: TimeInterval? {
+        get { upInput.lastRowFocusChangeAt }
+        nonmutating set {
+            upInput.lastRowFocusChangeAt = newValue
+            if !RowStepAB.isSet(RowStepAB.handlerOnlyRowStateOffBody, in: RowStepAB.mask) {
+                lastRowFocusChangeAtState = newValue
+            }
+        }
+    }
     /// rc14 (BUG-112 residue): when the last Up INPUT (press via `handleRowsMove`, swipe via the
     /// catcher's `onAnySwipeUp`) arrived, consumed or not; when a row last released focus; and
     /// whether the rows ScrollView currently sits past its top. See `revealTopAfterUpIntoHero`.
     /// A reference box, not `@State` fields (review r1 P3): the swipe catcher sits on the WINDOW,
     /// so an Up swipe anywhere — Search, Settings, under the player — would otherwise write Home
     /// state and re-evaluate its body. None of these values are rendered.
-    @State private var upInput = HomeUpInputBox()
+    @State private var upInput = HomeRowInputBox()
     @State private var rowsScrolledPastTop = false
     /// The live focus request the rows observe (`PinnedRowUpFallback.swift`).
     @State private var rowFocusRequest = PinnedRowFocusRequest.none
@@ -1491,7 +1512,16 @@ struct HomeView: View {
         // frame is irrelevant to whether the swipe is seen.
         .background(alignment: .topLeading) {
             HomeUpSwipeCatcher(onUnconsumedSwipeUp: { handleUpSwipe(pinned: pinned, proxy: proxy) },
-                               onAnySwipeUp: { upInput.lastUpInputAt = ProcessInfo.processInfo.systemUptime })
+                               onAnySwipeUp: {
+                                   upInput.lastUpInputAt = ProcessInfo.processInfo.systemUptime
+                                   // beta.18 verdict (BUG-112): symmetric trigger — whichever of
+                                   // (hero focus gain, input stamp) arrives second runs the gate.
+                                   _ = revealTopAfterUpIntoHero(pinned: pinned, proxy: proxy, source: "swipe-any")
+                               },
+                               onAnyUpPress: {
+                                   upInput.lastUpInputAt = ProcessInfo.processInfo.systemUptime
+                                   _ = revealTopAfterUpIntoHero(pinned: pinned, proxy: proxy, source: "press-any")
+                               })
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
         }
@@ -1808,6 +1838,9 @@ struct HomeView: View {
         if owns {
             if focusedRowKey != rowKey {
                 let origin = focusedRowKey
+                // beta.18 verdict (BUG-126): one frame-timing window per row hop (no-op unless
+                // `debug.collectionFrameProbe` is on).
+                CollectionFocusFrameSampler.shared.arm(rowKey: rowKey, gif: false)
                 focusedRowKey = rowKey
                 lastRowFocusChangeAt = ProcessInfo.processInfo.systemUptime
                 if rowKey == activeUpFallbackTarget {
@@ -1845,31 +1878,60 @@ struct HomeView: View {
     /// the press path stamps the input there (review r1 P2).
     @discardableResult
     private func revealTopAfterUpIntoHero(pinned: Bool, proxy: ScrollViewProxy, source: String) -> Bool {
-        guard pinned, heroHeaderVisible, heroFocused else { return false }
-        guard rowsScrolledPastTop else { return false }
+        // beta.18 verdict (BUG-112 / BUG-126): every decline is logged (the success path alone used
+        // to log, so a tester's "nothing happened" was undiagnosable). Gated on the probe by
+        // `logUpFallback`; a no-op otherwise.
+        func decline(_ reason: String) -> Bool {
+            logUpFallback("row=hero prev=row action=declined reason=\(reason) src=\(source)")
+            return false
+        }
+        guard pinned else { return decline("notPinned") }
+        guard heroHeaderVisible else { return decline("heroHidden") }
+        guard heroFocused else { return decline("heroNotFocused") }
         let now = ProcessInfo.processInfo.systemUptime
+        let verdict = HomeUpIntoHeroGate.evaluate(now: now,
+                                                  lastUpInputAt: upInput.lastUpInputAt,
+                                                  lastRowReleasedAt: upInput.lastRowReleasedAt,
+                                                  focusedRowKey: focusedRowKey,
+                                                  rowsScrolledPastTop: rowsScrolledPastTop,
+                                                  window: Self.upIntoHeroWindow)
+        if case .declined(let reason) = verdict { return decline(reason) }
+        guard !SidebarChrome.isEnabled() else { return decline("sidebar") }
+        guard !PinnedRowSettle.hostCovered else { return decline("covered") }
+        guard !tabBarVisibility.homeSurfaceCovered else { return decline("covered") }
+        guard resume == nil else { return decline("resume") }
         let sinceUp = now - upInput.lastUpInputAt
-        let sinceRelease = now - (upInput.lastRowReleasedAt ?? -1)
-        let cameFromRow = focusedRowKey != nil || sinceRelease < Self.upIntoHeroWindow
-        guard sinceUp < Self.upIntoHeroWindow, cameFromRow else { return false }
-        guard !SidebarChrome.isEnabled() else { return false }
-        guard !PinnedRowSettle.hostCovered else { return false }
-        guard !tabBarVisibility.homeSurfaceCovered else { return false }
-        guard resume == nil else { return false }
         logUpFallback("row=hero prev=row action=top reason=upIntoHero sinceUp=\(Int((sinceUp * 1000).rounded())) src=\(source)")
         heroUpGeneration &+= 1
+        let generation = heroUpGeneration
         // Voids any pending deferred re-check so the scroll fires once per gain.
         upInput.revealGeneration &+= 1
         PinnedRowSettle.noteExternalScroll(reason: "up-into-hero-top")
         withAnimation(.easeInOut(duration: 0.45)) {
             proxy.scrollTo("home_top", anchor: .top)
         }
+        // Fix B: landing retry. The first scroll can land before the engine's own reveal settles
+        // (the rows end up ~100pt short); re-check once after it and scroll again if still off.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            guard heroUpGeneration == generation else { return }
+            guard heroFocused, rowsScrolledPastTop else { return }
+            guard !PinnedRowSettle.hostCovered else { return }
+            guard !tabBarVisibility.homeSurfaceCovered else { return }
+            guard resume == nil else { return }
+            logUpFallback("row=hero prev=row action=top-retry reason=upIntoHero src=\(source)")
+            PinnedRowSettle.noteExternalScroll(reason: "up-into-hero-top-retry")
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo("home_top", anchor: .top)
+            }
+        }
         return true
     }
 
     /// How recent an Up input (and a row's focus release) must be for `revealTopAfterUpIntoHero`
     /// to treat a hero focus gain as that input's doing.
-    private static let upIntoHeroWindow: TimeInterval = 0.5
+    /// Beta.18 verdict: 0.5 -> 0.8 s — a slow swipe is recognised at gesture END, so its stamp can
+    /// land well after the focus gain it caused.
+    private static let upIntoHeroWindow: TimeInterval = 0.8
 
     /// The row ABOVE `rowKey` in `rowsScroll`'s actual render order — Continue Watching, then
     /// Upcoming, then `ForEach(model.rows)` — together with the scroll anchor that reveals it.
@@ -2357,7 +2419,7 @@ struct HomeView: View {
 
     /// Content insets for the rows `LazyVStack`. Classic keeps the uniform overscan-safe
     /// `Theme.Spacing.screen` on all four edges, byte-for-byte what it always had. Pinned uses
-    /// `heroPinnedRowsHeadroom` (80) on top: NOT spacing — it is the buffer that absorbs the
+    /// `heroPinnedRowsHeadroom` (8) on top: NOT spacing — it is the buffer that absorbs the
     /// device-only BUG-30 walk-up residual (~67pt short of the sim's rest position), which the
     /// pinned clip edge otherwise turns into cropped poster tops / a bisected row title (device
     /// round 1, 2026-08-03). The horizontal/bottom insets stay at 60 — with clipping ENABLED in
@@ -3101,6 +3163,8 @@ final class HomeHeroFocusModel: ObservableObject {
     /// How long a poster must hold focus before it takes over the hero. Long enough that a fast
     /// scrub across a row commits nothing until the hand actually stops.
     private static let commitDelay: TimeInterval = 0.2
+    /// Test seam for `RowStepAB.deferHeroCommitUntilRest`: seconds since the last Home scroll motion.
+    nonisolated(unsafe) static var motionClock: () -> TimeInterval = { PinnedRowSettle.secondsSinceMotion() }
     /// Grace period before reverting to nil once focus reports nothing. Bridges the brief gap
     /// between one card losing focus and the next gaining it (row-to-row hops, diagonal D-pad
     /// moves), so the hero doesn't flicker back to the carousel mid-navigation.
@@ -3157,6 +3221,18 @@ final class HomeHeroFocusModel: ObservableObject {
             pendingTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.commitDelay * 1_000_000_000))
                 guard !Task.isCancelled, let self, self.generation == generationAtStart else { return }
+                // beta.18 verdict (BUG-126): with `RowStepAB.deferHeroCommitUntilRest`, hold the
+                // commit (logo lookup, hero crossfade, enrichment) until the engine's reveal motion
+                // has been quiet for 0.12 s, polling every 50 ms, capped at 0.5 s. A newer focus
+                // report bumps `generation` and voids the wait.
+                if RowStepAB.isSet(RowStepAB.deferHeroCommitUntilRest, in: RowStepAB.mask) {
+                    var elapsed: TimeInterval = 0
+                    while let wait = RowStepAB.heroCommitDelay(sinceMotion: Self.motionClock(), elapsed: elapsed) {
+                        try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                        elapsed += wait
+                        guard !Task.isCancelled, self.generation == generationAtStart else { return }
+                    }
+                }
                 self.requestLogoIfNeeded(item)
                 self.focusedItem = item
                 self.enrichIfNeeded(item)
@@ -5530,7 +5606,7 @@ struct HomeHeroForeground: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text(metaLine)
-                        .font(Theme.Font.meta)
+                        .font(Theme.Font.metaStrong)
                         .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
                         .lineLimit(1)
                         .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
@@ -5576,7 +5652,7 @@ struct HomeHeroForeground: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text(metaLine)
-                        .font(Theme.Font.meta)
+                        .font(Theme.Font.metaStrong)
                         .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
                         .lineLimit(1)
                         .frame(height: Theme.Size.heroMetaSlotHeight, alignment: .leading)
@@ -5785,7 +5861,13 @@ struct HeroPageDots: View {
 /// a reference box so the window-level swipe catcher can stamp it without a Home body re-evaluation
 /// (review r1 P3). `MainActor` like everything that touches it.
 @MainActor
-final class HomeUpInputBox {
+final class HomeRowInputBox {
+    /// beta.18 verdict (BUG-126): the row-focus ownership state, moved here from `@State` so a row
+    /// hop does not re-evaluate Home's body (see `RowStepAB.handlerOnlyRowStateOffBody`). Handlers
+    /// only; nothing renders these.
+    var focusedRowKey: String?
+    /// `systemUptime` of the last change of `focusedRowKey` to a different row.
+    var lastRowFocusChangeAt: TimeInterval?
     /// When the last Up INPUT arrived — a press via `handleRowsMove`/`handleHeroUp`, a swipe via the
     /// catcher's `onAnySwipeUp` — consumed or not. `-1` = never.
     var lastUpInputAt: TimeInterval = -1

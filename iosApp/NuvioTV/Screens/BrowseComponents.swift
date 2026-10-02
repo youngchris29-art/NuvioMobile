@@ -4973,12 +4973,12 @@ struct CatalogRowView: View {
                     //
                     // beta.18 verdict (BUG-118, R3): in Soft the mask owns the leading edge; 400 =
                     // RowLeadingEdgeClip.softModeAllowance once W2-F lands.
-                    .clipShape(RowLeadingEdgeClip(allowance: rowEdgeFadeMode == 1 ? 400 : leadingEdgeAllowance))
+                    .clipShape(RowLeadingEdgeClip(allowance: rowEdgeFadeMode == 1 ? RowLeadingEdgeClip.softModeAllowance : leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
                 // BUG-118: see `RowEdgeEffectStyleModifier` — same receiver `.scrollClipDisabled()`
                 // is already on.
-                .rowEdgeEffectStyle()
+                .rowEdgeEffectStyle(leadingClipAllowance: leadingEdgeAllowance)
                 // Pinned: the title floats over the (transparent) reach band at the shelf's
                 // top-leading corner — visually where it always was, but INSIDE the region
                 // the focused cards' frames cover, so every reveal shows it.

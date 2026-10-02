@@ -56,6 +56,15 @@ import SwiftUI
 struct RowEdgeEffectStyleModifier: ViewModifier {
     @AppStorage("debug.rowEdgeFade") private var mode = 2
 
+    /// beta.18 verdict (BUG-118, R3): the row's own rest-state leading clip allowance (catalog
+    /// rows only; 0 = no clip, the mask keeps the full leading bleed). Soft pushes the real clip
+    /// out of the way, so the mask reproduces the hard cut at exactly this distance at rest.
+    let leadingClipAllowance: CGFloat
+
+    init(leadingClipAllowance: CGFloat = 0) {
+        self.leadingClipAllowance = leadingClipAllowance
+    }
+
     /// Plain computed property, not a `@ViewBuilder` switch — see `body` below for why that
     /// distinction matters here.
     private var style: ScrollEdgeEffectStyle {
@@ -98,7 +107,8 @@ struct RowEdgeEffectStyleModifier: ViewModifier {
             // the one-time identity change on a flip is acceptable. Note the SOFT/non-soft split is
             // the only `if` in the chain; the `.mask` itself never changes the ScrollView's frame
             // or layout (it paints enlarged, see `RowSoftEdgeMask`).
-            .modifier(RowSoftEdgeMaskModifier(active: mode == 1, leadingActive: scrolled))
+            .modifier(RowSoftEdgeMaskModifier(active: mode == 1, leadingActive: scrolled,
+                                           restClipAllowance: leadingClipAllowance))
             // Since the sim spike proved the three original legs render byte-identical here, the
             // one thing left for a UI test to verify on this simulator is that the launch-arg
             // override actually reached this row's own `@AppStorage` — same hidden single-Text
@@ -109,7 +119,7 @@ struct RowEdgeEffectStyleModifier: ViewModifier {
             // testers. `test70RowEdgeFadeSpike` builds Debug, so the gate costs it nothing.
             #if DEBUG
             .overlay(alignment: .topTrailing) {
-                Text("row_edge_fade_probe mode=\(mode)")
+                Text("row_edge_fade_probe mode=\(mode) margin=\(Int(RowSoftEdgeMask.margin))")
                     .font(.system(size: 4))
                     .opacity(0.011)
                     .accessibilityIdentifier("row_edge_fade_probe")
@@ -122,11 +132,17 @@ struct RowEdgeEffectStyleModifier: ViewModifier {
 private struct RowSoftEdgeMaskModifier: ViewModifier {
     let active: Bool
     let leadingActive: Bool
+    let restClipAllowance: CGFloat
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if active {
-            content.mask { RowSoftEdgeMask(leadingActive: leadingActive) }
+            content.mask {
+                RowSoftEdgeMask(restClipAllowance: restClipAllowance, leadingActive: leadingActive)
+                    // beta.18 verdict (BUG-118, R3): softens the rest-cut -> ramp flip when the row
+                    // first scrolls; the device pass may remove it.
+                    .animation(.easeOut(duration: 0.15), value: leadingActive)
+            }
         } else {
             content
         }
@@ -135,48 +151,74 @@ private struct RowSoftEdgeMaskModifier: ViewModifier {
 
 /// rc14 (BUG-118, Steven rc13 verdict, 2026-09-30): the app-drawn symmetric edge fade behind Soft.
 ///
-/// Built as an `HStack(spacing: 0)` of three pieces — a leading `.clear → .black` ramp, a solid
-/// `.black` middle, a trailing `.black → .clear` ramp — enlarged past the row's frame with NEGATIVE
-/// padding. Every row `ScrollView` this attaches to uses `.scrollClipDisabled()` so cards bleed past
-/// the frame into the screen margin (BUG-103) and their focus lift/ring/shadow overflow vertically;
-/// a mask sized to the frame would clip all of that. Negative padding enlarges the mask beyond the
-/// proposed size, so it still covers the overflow:
-///
-///   - horizontally by `bleed` (= `Theme.Spacing.screen`, 60 pt): the trailing fade then sits in the
-///     screen margin where the cards actually exit, and — when the leading piece is solid (row at
-///     rest) — the leading edge's lift/ring allowance is not clipped either;
-///   - vertically by 400 pt, far more than any lift/ring/shadow reaches.
-///
-/// The leading ramp draws only once the row has scrolled (`leadingActive`); at rest that piece is
-/// solid black so the first card is never faded. The ramps are 48 pt each (`fadeWidth`).
-private struct RowSoftEdgeMask: View {
+/// beta.18 verdict (BUG-118, R3): Steven saw the fade end short of the screen edges. A `.mask`
+/// hides everything outside its own bounds, and the old mask spanned only 60 pt past the row frame
+/// while the real margin to the bezel is `Theme.Spacing.screen` + the side safe area (~140 pt). The
+/// mask now extends `margin` past both sides and the ramps span the whole margin. At rest the
+/// leading piece reproduces BUG-92's hard cut at exactly `−restClipAllowance` (clear before it,
+/// solid after); with allowance 0 (rows without a clip) it is solid across the whole margin.
+/// Scrolled, it is a `margin`-wide `.clear → .black` ramp. Vertical overdraw stays 400 pt so
+/// lift/ring/shadow are not clipped.
+struct RowSoftEdgeMask: View {
+    let restClipAllowance: CGFloat
     let leadingActive: Bool
 
-    private let fadeWidth: CGFloat = 48
-    private let bleed = Theme.Spacing.screen
+    nonisolated static var margin: CGFloat { Theme.Spacing.screen + PinnedRowGeometry.sideSafeArea }
+
+    nonisolated enum Kind: Equatable { case clear, solid, rampIn, rampOut }
+
+    nonisolated struct Segment: Equatable {
+        let start: CGFloat
+        let end: CGFloat
+        let kind: Kind
+    }
+
+    /// Pure geometry in row-local x: leading piece starts at −margin, trailing ends at width + margin.
+    nonisolated static func segments(width: CGFloat, margin: CGFloat, restClipAllowance: CGFloat,
+                                     leadingActive: Bool) -> [Segment] {
+        var out: [Segment] = []
+        if leadingActive {
+            out.append(Segment(start: -margin, end: 0, kind: .rampIn))
+        } else {
+            let allowance = min(max(restClipAllowance, 0), margin)
+            if allowance > 0 {
+                out.append(Segment(start: -margin, end: -allowance, kind: .clear))
+                out.append(Segment(start: -allowance, end: 0, kind: .solid))
+            } else {
+                out.append(Segment(start: -margin, end: 0, kind: .solid))
+            }
+        }
+        out.append(Segment(start: 0, end: width, kind: .solid))
+        out.append(Segment(start: width, end: width + margin, kind: .rampOut))
+        return out
+    }
 
     var body: some View {
-        // Review r1 P2: the leading ramp sits INSIDE the row's frame ([0, 48]) rather than in the
-        // margin outside it, because catalog rows already hard-clip their leading edge at
-        // `−allowance` (`RowLeadingEdgeClip`, ≈ −30) — a ramp placed out there would be cut mid-way
-        // and the edge would still read hard. Inside the frame the exiting card fades over the
-        // first 48 pt and is already transparent by the time the clip takes it. At offset 0 the
-        // whole leading band (margin + 48) stays solid so card #1's bleed into the margin
-        // (BUG-103) is untouched. The trailing ramp stays in the margin, where cards leave through
-        // the screen edge with no clip in the way.
+        let margin = Self.margin
+        // Piece widths come from `segments` (width 0 for the middle; it is the flexible Color.black).
+        let parts = Self.segments(width: 0, margin: margin, restClipAllowance: restClipAllowance,
+                                  leadingActive: leadingActive)
         HStack(spacing: 0) {
-            if leadingActive {
-                Color.clear.frame(width: bleed)
-                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: fadeWidth)
-            } else {
-                Color.black.frame(width: bleed + fadeWidth)
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, seg in
+                switch seg.kind {
+                case .clear:
+                    Color.clear.frame(width: seg.end - seg.start)
+                case .rampIn:
+                    LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: seg.end - seg.start)
+                case .rampOut:
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: seg.end - seg.start)
+                case .solid:
+                    if seg.end > seg.start {
+                        Color.black.frame(width: seg.end - seg.start)
+                    } else {
+                        Color.black // the middle: width-flexible
+                    }
+                }
             }
-            Color.black
-            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                .frame(width: fadeWidth)
         }
-        .padding(.horizontal, -bleed)
+        .padding(.horizontal, -margin)
         .padding(.vertical, -400)
     }
 }
@@ -184,7 +226,10 @@ private struct RowSoftEdgeMask: View {
 extension View {
     /// Attach to a row's horizontal `ScrollView` (the same receiver `.scrollClipDisabled()`
     /// already sits on) — see `RowEdgeEffectStyleModifier`'s header for the full BUG-118 argument.
-    func rowEdgeEffectStyle() -> some View {
-        modifier(RowEdgeEffectStyleModifier())
+    ///
+    /// `leadingClipAllowance`: the row's rest-state `RowLeadingEdgeClip` allowance (catalog rows),
+    /// which Soft's mask reproduces itself; 0 for rows with no leading clip.
+    func rowEdgeEffectStyle(leadingClipAllowance: CGFloat = 0) -> some View {
+        modifier(RowEdgeEffectStyleModifier(leadingClipAllowance: leadingClipAllowance))
     }
 }

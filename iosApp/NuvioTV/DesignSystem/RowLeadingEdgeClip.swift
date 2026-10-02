@@ -114,6 +114,11 @@ struct RowLeadingEdgeClip: Shape {
     /// every row. The shadow is a blur, so its visible extent is its radius.
     static let cardShadowRadius: CGFloat = 22
 
+    /// beta.18 verdict (BUG-118, R3): in Row Edge Fade Soft the app-drawn `RowSoftEdgeMask` owns
+    /// the leading edge (it reproduces BUG-92's rest-state cut itself), so the clip is pushed far
+    /// enough out (400 pt) that it never cuts anything the mask has not already handled.
+    nonisolated static let softModeAllowance: CGFloat = 400
+
     static func allowance(posterWidth: CGFloat, liftScale: CGFloat, ringWidth: CGFloat,
                           shadowRadius: CGFloat = cardShadowRadius) -> CGFloat {
         ceil(posterWidth * (liftScale - 1) / 2) + ringWidth + shadowRadius

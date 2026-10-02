@@ -127,20 +127,27 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
     /// verdict — consumed ones included. Home stamps the input time from it so a hero focus gain
     /// that follows a consumed swipe can be told from one gained any other way.
     var onAnySwipeUp: (() -> Void)? = nil
+    /// beta.18 verdict (BUG-112): called for EVERY physical Up press the window sees. tvOS hands the
+    /// press to the NEW focus owner after the engine has already moved focus, so a row -> hero Up
+    /// never reaches Home's row handler; a window-level passive recognizer is the one place every
+    /// press is visible.
+    var onAnyUpPress: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> CatcherView {
         let view = CatcherView()
         view.onUnconsumedSwipeUp = onUnconsumedSwipeUp
         view.onAnySwipeUp = onAnySwipeUp
+        view.onAnyUpPress = onAnyUpPress
         return view
     }
 
     func updateUIView(_ uiView: CatcherView, context: Context) {
-        // The closure captures HomeView's current state (`self` is a struct re-created on every
-        // body evaluation), so it has to be replaced on every update or the callback would act on
-        // a stale snapshot of `focusedRowKey`/`heroFocused`.
+        // The closure captures HomeView's `self` (a struct re-created on every body evaluation), so
+        // it is replaced on every update. Row-focus state (`focusedRowKey`) is read live from
+        // `HomeRowInputBox` now, so a stale snapshot only affects the `@State` values (`heroFocused`).
         uiView.onUnconsumedSwipeUp = onUnconsumedSwipeUp
         uiView.onAnySwipeUp = onAnySwipeUp
+        uiView.onAnyUpPress = onAnyUpPress
     }
 
     static func dismantleUIView(_ uiView: CatcherView, coordinator: ()) {
@@ -192,6 +199,9 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
         var onUnconsumedSwipeUp: (() -> Void)?
         /// rc14: every recognised Up swipe, before the verdict. See the representable's doc.
         var onAnySwipeUp: (() -> Void)?
+        /// beta.18 verdict: every physical Up press. See the representable's doc.
+        var onAnyUpPress: (() -> Void)?
+        private var upPress: UITapGestureRecognizer?
 
         /// How long to wait before asking whether focus moved. 0.15 s.
         ///
@@ -242,6 +252,14 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
             window.addGestureRecognizer(recognizer)
             swipe = recognizer
 
+            // Passive Up-press observer on the same window: the press reaches the NEW focus owner
+            // after the move, so this is the only place Home sees every Up.
+            let press = UITapGestureRecognizer(target: self, action: #selector(handleUpPress))
+            press.allowedPressTypes = [NSNumber(value: UIPress.PressType.upArrow.rawValue)]
+            configurePassively(press)
+            window.addGestureRecognizer(press)
+            upPress = press
+
             // Installed on the same window and configured identically, so it observes the same
             // touch sequences the swipe recognizer does — one step earlier.
             let baseline = TouchBaselineRecognizer()
@@ -273,7 +291,9 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
         /// alongside everything else. There is deliberately no `require(toFail:)` anywhere — that
         /// is the modifier that WOULD delay the engine.
         private func configurePassively(_ recognizer: UIGestureRecognizer) {
-            recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+            if !(recognizer is UITapGestureRecognizer) {
+                recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+            }
             recognizer.cancelsTouchesInView = false
             recognizer.delaysTouchesBegan = false
             recognizer.delaysTouchesEnded = false
@@ -292,9 +312,11 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
         func uninstall() {
             if let installedOn {
                 if let swipe { installedOn.removeGestureRecognizer(swipe) }
+                if let upPress { installedOn.removeGestureRecognizer(upPress) }
                 if let touchBaselineRecognizer { installedOn.removeGestureRecognizer(touchBaselineRecognizer) }
             }
             swipe = nil
+            upPress = nil
             touchBaselineRecognizer?.onTouchesBegan = nil
             touchBaselineRecognizer = nil
             installedOn = nil
@@ -339,6 +361,10 @@ struct HomeUpSwipeCatcher: UIViewRepresentable {
         fileprivate func beginTouchBaseline() {
             touchBaseline = HomeUpSwipeDecision.Baseline(focusGeneration: focusGeneration,
                                                          focusedItem: focusedItemIdentity())
+        }
+
+        @objc private func handleUpPress() {
+            onAnyUpPress?()
         }
 
         @objc private func handleSwipeGesture() {

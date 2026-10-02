@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import UIKit
 
 /// BUG-87 (beta.18): structural fit for the PINNED rows layout.
 ///
@@ -123,6 +124,22 @@ import CoreGraphics
 /// compression is 0 everywhere, the gate stays shut, and every plan returns the pre-Wave-10 reaches
 /// and viewport.
 enum PinnedRowGeometry {
+
+    /// beta.18 verdict (BUG-118, R3): the left safe-area inset of the key window, read ONCE so the
+    /// Soft edge mask geometry is stable for the session. Not hard-coded because the physical
+    /// margin between a full-width row and the bezel is the HIG safe area (80 pt on tvOS), which
+    /// the mask ramps must span to be visible on an overscanning TV. Falls back to 80 (HIG value)
+    /// when no window exists yet.
+    nonisolated static let sideSafeArea: CGFloat = {
+        let read: @MainActor () -> CGFloat? = {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? scenes.flatMap(\.windows).first
+            guard let inset = window?.safeAreaInsets.left, inset > 0 else { return nil }
+            return inset
+        }
+        let value: CGFloat? = Thread.isMainThread ? MainActor.assumeIsolated { read() } : nil
+        return value ?? 80
+    }()
 
     /// Everything the pinned rows layout needs to agree on for ONE (Poster Size × caption × hero
     /// form × row shape) regime. Every field is derived; nothing here is a literal.

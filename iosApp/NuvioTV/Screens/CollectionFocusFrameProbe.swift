@@ -205,3 +205,33 @@ enum CollectionFocusAB {
     /// site, so both halves of leg 1/3 stay in sync if this value ever changes.
     static let heroCommitDeferral: TimeInterval = 0.2
 }
+
+/// beta.18 verdict (BUG-126): launch-latched Int bitmask `debug.rowStepAB` for the row-to-row
+/// stutter A/B on device (read once):
+///
+///     defaults write com.nuvio.media.NuvioTV debug.rowStepAB -int 3
+///
+///   - bit 1 (`deferHeroCommitUntilRest`): after its 0.2 s dwell, `HomeHeroFocusModel` waits for the
+///     engine's reveal motion to be quiet (0.12 s) before committing the hero, capped at 0.5 s.
+///   - bit 2 (`handlerOnlyRowStateOffBody`): `focusedRowKey`/`lastRowFocusChangeAt` are written to
+///     the input box only, not mirrored into `@State`, so a row hop does not re-evaluate Home's body.
+enum RowStepAB {
+    static let deferHeroCommitUntilRest = 1
+    static let handlerOnlyRowStateOffBody = 2
+    static let mask: Int = UserDefaults.standard.integer(forKey: "debug.rowStepAB")
+
+    nonisolated static func isSet(_ bit: Int, in mask: Int) -> Bool { mask & bit != 0 }
+
+    /// Motion must have been quiet this long before the deferred hero commit runs.
+    nonisolated static let restThreshold: TimeInterval = 0.12
+    nonisolated static let pollInterval: TimeInterval = 0.05
+    nonisolated static let maxWait: TimeInterval = 0.5
+
+    /// Pure wait policy for bit 1: how long to sleep before re-checking, or nil to commit now.
+    /// `elapsed` is the time already spent waiting (after the base dwell).
+    nonisolated static func heroCommitDelay(sinceMotion: TimeInterval, elapsed: TimeInterval) -> TimeInterval? {
+        if sinceMotion >= restThreshold { return nil }
+        if elapsed >= maxWait { return nil }
+        return min(pollInterval, maxWait - elapsed)
+    }
+}

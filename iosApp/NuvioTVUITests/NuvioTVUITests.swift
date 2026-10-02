@@ -1171,6 +1171,10 @@ final class NuvioTVUITests: XCTestCase {
         pause(8)
         ux6Probe(app, "17a_detail_opened")
         shot(app, "17a_detail_top")
+        // beta.18 verdict (BUG-127): the synopsis lives on its own panel now.
+        XCTAssertTrue(app.descendants(matching: .any)["detail_synopsis_panel"].waitForExistence(timeout: 5),
+                      "detail_synopsis_panel missing on Detail (title may have no overview)")
+        shot(app, "17c_synopsis_panel")
 
         press(.down, times: 4, gap: 1.0)
         pause(1.5)
@@ -7921,7 +7925,40 @@ final class NuvioTVUITests: XCTestCase {
             press(.right, times: 9, gap: 0.4)
             pause(0.6)
             shot(app, "bug118-\(leg.name)-12")
+
+            if leg.mode == 1 {
+                // beta.18 verdict (BUG-118 R3): Soft fade ramps over the whole margin to the
+                // physical screen edge and the mask owns the leading clip, so the extreme columns
+                // inside the focused row's band must read as plain background, while a column
+                // inside the row frame (x ~ 163) must not.
+                let window = app.windows.firstMatch.frame
+                let bandY = min(max(probe.frame.midY, 100), window.height - 100)
+                let image = XCUIScreen.main.screenshot().image
+                let left = try pixelRGB(in: image, at: CGPoint(x: 4, y: bandY), windowSize: window.size)
+                let right = try pixelRGB(in: image, at: CGPoint(x: 1916, y: bandY), windowSize: window.size)
+                let inside = try pixelRGB(in: image, at: CGPoint(x: 139 + 24, y: bandY), windowSize: window.size)
+                func close(_ a: [Int], _ b: [Int]) -> Bool { zip(a, b).allSatisfy { abs($0 - $1) <= 6 } }
+                XCTAssertTrue(close(left, right), "[soft] edge columns differ: x=4 \(left) vs x=1916 \(right)")
+                XCTAssertFalse(close(left, inside), "[soft] a column inside the row frame (x=163) reads as background \(inside); row content missing or fade swallowed it")
+            }
         }
+    }
+
+    /// RGB (0-255) of one point (window point space) in a full-screen screenshot.
+    private func pixelRGB(in image: UIImage, at point: CGPoint, windowSize: CGSize) throws -> [Int] {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let rect = CGRect(x: point.x * scale, y: point.y * scale, width: 1, height: 1)
+        guard let px = cg.cropping(to: rect.integral) else { throw XCTSkip("pixel \(point) off-screen") }
+        var buf = [UInt8](repeating: 0, count: 4)
+        guard let ctx = CGContext(data: &buf, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { throw XCTSkip("could not build a bitmap context") }
+        ctx.draw(px, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return [Int(buf[0]), Int(buf[1]), Int(buf[2])]
     }
 
     // MARK: - Orivio batch (2026-10-01): hold menus, first-play auto mode, external-player return
