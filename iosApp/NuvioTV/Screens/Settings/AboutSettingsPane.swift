@@ -42,6 +42,11 @@ struct AboutSettingsPane: View {
     @AppStorage(PinnedRowTitle.noZoomReachHoldsLiftKey) private var noZoomReachHoldsLift = true
     /// rc14 (BUG-122): the short-row floor A/B — see `HomeView.pinnedShortRowLinkFrameFloor`.
     @AppStorage("debug.pinnedShortRowFloor") private var pinnedShortRowFloor = true
+    /// beta.18 verdict (BUG-66): the Tab Bar Scroll Link A/B — see `TabBarContentScrollLink`.
+    /// Launch-latched there (the association is made once per mount), hence "Relaunch" in the
+    /// row's subtitle. Default ON; the key name matches the `-debug.bug66ContentScrollView NO`
+    /// launch argument the UI test uses for the OFF leg.
+    @AppStorage(TabBarContentScrollLink.defaultsKey) private var tabBarScrollLink = true
 
     /// BUG-118 (rc13): Steven's "row edge fade is intermittent" — see `RowEdgeEffectStyleModifier`
     /// for the root cause (there is no app-drawn fade; it's tvOS 26's system scroll-edge effect,
@@ -526,7 +531,7 @@ struct AboutSettingsPane: View {
                     SettingsToggleRow(
                         title: String(localized: "Tab Bar Geometry Diagnostics"),
                         subtitle: tabBarStateDiagnostics
-                            ? String(localized: "Relaunch, scroll Home down ten rows and back up, then photograph this panel")
+                            ? String(localized: "Relaunch, walk ten Home rows down and up, switch to Search and back, walk again, then photograph this panel")
                             : String(localized: "Turn on if asked to capture the tab bar's on-device geometry, then relaunch the app"),
                         isOn: $tabBarStateDiagnostics
                     )
@@ -617,6 +622,16 @@ struct AboutSettingsPane: View {
                         title: String(localized: "Short Row Floor (A/B)"),
                         subtitle: String(localized: "BUG-122: Continue Watching, Upcoming and collection rows land like poster rows"),
                         isOn: $pinnedShortRowFloor
+                    )
+
+                    // beta.18 verdict (BUG-66): eighth child of this Group (two toggles with their
+                    // conditional readouts, No Zoom, Row Edge Fade, Short Row Floor, now this) —
+                    // still under the 10-child @ViewBuilder ceiling; the outer `SettingsSection`
+                    // and this Group's parent stay untouched. Launch-latched, hence "Relaunch".
+                    SettingsToggleRow(
+                        title: String(localized: "Tab Bar Scroll Link (A/B)"),
+                        subtitle: String(localized: "BUG-66: Home tells the tab bar which scroll view to follow. Relaunch after changing"),
+                        isOn: $tabBarScrollLink
                     )
                 }
             }

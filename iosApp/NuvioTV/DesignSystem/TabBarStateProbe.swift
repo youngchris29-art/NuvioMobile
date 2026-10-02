@@ -28,28 +28,32 @@ import UIKit
 /// Diagnostics") and a distinct persisted key (`debug.tabBarStateProbe`) so the two features never
 /// collide — same About pane, two different rows, two different photographable protocols.
 ///
-/// Line format (one per sample, newest first in the pane once paged the way
-/// `PinnedRowSettleProbe.displayPages` already does):
-///     minY=<pt> h=<pt> alpha=<0.00-1.00> hidden=<0/1> state=<expanded|minimized|partial|unknown>
-///     scrolledDown=<0/1> mode=<classic|sidebar> reason=<arm|tick|down|up>
+/// Line format (beta.18 verdict, BUG-66 — renamed short keys so a whole line fits the pane's
+/// one-line `lineLimit` with the `<N>ms ` stamp; worst case
+/// `12345ms y=-1431 h=999 a=1.00 hid=1 tbh=1 st=part sel=5 trk=other sd=1 sdt=1111 m=cls r=attach`
+/// is 93 characters, `composeLine` clamps `y`/`h`/`sel` so it cannot grow past 95):
+///     y=<bar minY in window> h=<height> a=<alpha> hid=<isHidden 0/1> tbh=<isTabBarHidden 0/1>
+///     st=<exp|min|part|unk> sel=<selectedIndex> trk=<rows|none|other|novc> sd=<selected tab's
+///     latch 0/1> sdt=<Home/Search/Library/Add-ons latches, 0/1/- each> m=<cls|sb> r=<reason>
+/// Reasons: `arm`, `tick` (2 s, duplicates dropped), `down`/`up` (a tab's hysteresis crossing),
+/// `attach` (`TabBarContentScrollLink` made its first link for a mount), `tab` (selection change)
+/// and `tab2` (0.6 s later, once the switch has settled), `pop` (immersive depth back to 0).
+/// `trk` is what the SELECTED tab's controller reports for `contentScrollView(for: .top)` (its
+/// `topViewController`'s when it is a navigation controller and reports nil itself), compared by
+/// identity with `TabBarContentScrollLink.homeRowsScrollView`; `novc` = no selected controller.
+/// NSLog-only extras per logged sample: `ins=` (the linked rows scroll view's
+/// `adjustedContentInset.top`) and `svh=` (its height); one NSLog on the first sample carries the
+/// controller chain and the legacy `tabBarObservedScrollView`.
 /// `t=<ms since arm>` is realized as the standard `<N>ms ` prefix `log(_:)` stamps on every line —
-/// the same convention `PinnedRowSettleProbe.log` uses (its own call sites never repeat the
-/// timestamp again inline either) — rather than a duplicated inline field.
+/// the same convention `PinnedRowSettleProbe.log` uses.
 ///
-/// `state` is derived against the TOP edge — this app's tab bar sits at the top of the screen, not
-/// the bottom, so "minimized" here means the bar has moved UP out of view, not down. `expanded`:
+/// `st` is derived against the TOP edge — this app's tab bar sits at the top of the screen, not
+/// the bottom, so "minimized" here means the bar has moved UP out of view, not down. `exp`:
 /// the bar's frame (converted to window coordinates) is fully on screen at the top (`minY >= -1`
-/// and `maxY > 0`), visible (`alpha > 0.5`) and not hidden. `minimized`: the bar has moved up out
-/// of view or collapsed (`maxY <= h * 0.5`, or `alpha < 0.05`, or `isHidden`). `unknown`: no
-/// `UITabBar` was found for this sample (see the `NOT-FOUND` line below) or this is a sample taken
-/// before the bar has ever reported a nonzero frame. Anything else is `partial` — a bar mid
-/// transition. `scrolledDown`/`mode` are
-/// fed in by `TabBarVisibility.swift`'s `TabBarScrollAutoHide` on a real hysteresis crossing (see
-/// `noteScrollState` below) and held for every sample taken after that until the next crossing.
-/// `mode` can only distinguish `sidebar`/`classic` at that call site (`SidebarChrome.isEnabled()`)
-/// — there is no separate "pinned" tab-bar concept reachable from there, so the spec's third value
-/// is never emitted; this is a deliberate simplification, not an oversight. Samples on every
-/// scroll-state crossing and every 2 s otherwise.
+/// and `maxY > 0`), visible (`alpha > 0.5`) and not hidden. `min`: the bar has moved up out
+/// of view or collapsed (`maxY <= h * 0.5`, or `alpha < 0.05`, or `isHidden`). `unk`: this is a
+/// sample taken before the bar has ever reported a nonzero frame (a missing bar logs a `NOT-FOUND`
+/// line instead). Anything else is `part` — a bar mid transition.
 enum TabBarStateProbe {
 
     /// Read ONCE at first access, like every other launch-latched probe knob in this tree
@@ -84,9 +88,15 @@ enum TabBarStateProbe {
     /// requirement.
     nonisolated(unsafe) private static weak var armedWindow: UIWindow?
     nonisolated(unsafe) private static var timer: Timer?
-    /// Held across samples between crossings, per the line-format doc above.
-    nonisolated(unsafe) private static var lastScrolledDown = false
-    nonisolated(unsafe) private static var lastMode = "unknown"
+    /// beta.18 verdict (BUG-66): one hysteresis latch PER TAB (keyed by the `TabView` selection
+    /// value, Home 0 … Add-ons 3), replacing the single global `lastScrolledDown`, which went stale
+    /// across a tab switch (Search's latch was reported while Home was on screen).
+    nonisolated(unsafe) private static var scrolledDownByTab: [Int: Bool] = [:]
+    /// An `attach` that landed before the armer had a window; replayed right after `arm`.
+    nonisolated(unsafe) private static var pendingAttach = false
+    nonisolated(unsafe) private static var loggedControllerChain = false
+    /// NSLog dedupe for the `ins=`/`svh=` extras (the pane line has its own dedupe).
+    nonisolated(unsafe) private static var lastNSLogged: String?
     /// Composed state of the last logged bar sample (everything but `reason`), so a `tick` that
     /// repeats it is dropped instead of flooding the ring buffer (device, 2026-09-30: 41 of 41 lines
     /// were identical ticks). Reset on arm so the first tick after arming always logs.
@@ -158,6 +168,10 @@ enum TabBarStateProbe {
         armStart = Date()
         lastLoggedComposed = nil
         sample(reason: "arm")
+        if pendingAttach {
+            pendingAttach = false
+            sample(reason: "attach")
+        }
         let ticker = Timer(timeInterval: 2.0, repeats: true) { _ in
             MainActor.assumeIsolated {
                 TabBarStateProbe.sample(reason: "tick")
@@ -176,7 +190,7 @@ enum TabBarStateProbe {
         timer?.invalidate()
         timer = nil
         armedWindow = nil
-        log("NOT-FOUND state=unknown reason=window-removed")
+        log("NOT-FOUND why=window-removed st=unk r=disarm")
     }
 
     /// Fed by `TabBarVisibility.swift`'s `TabBarScrollAutoHide` on a real hysteresis crossing
@@ -184,11 +198,71 @@ enum TabBarStateProbe {
     /// for every sample taken from here on and immediately takes one, so the pane shows the bar's
     /// geometry AT the moment Home's scroll state actually changed, not just whatever the next 2 s
     /// tick happens to catch.
-    static func noteScrollState(isScrolledDown: Bool, mode: String) {
+    /// beta.18 verdict (BUG-66): `tab` is the `TabView` selection value of the tab root that
+    /// crossed (nil for a root with no mapping — logged, not latched).
+    static func noteScrollState(isScrolledDown: Bool, tab: Int?) {
         guard enabled else { return }
-        lastScrolledDown = isScrolledDown
-        lastMode = mode
+        if let tab { scrolledDownByTab[tab] = isScrolledDown }
         sample(reason: isScrolledDown ? "down" : "up")
+    }
+
+    /// beta.18 verdict (BUG-66): `TabBarContentScrollLink` made its first link for a mount. Before
+    /// the armer has a window the sample is deferred to `arm` rather than logged as `NOT-FOUND`.
+    static func noteAttached() {
+        guard enabled else { return }
+        guard armedWindow != nil else {
+            pendingAttach = true
+            return
+        }
+        sample(reason: "attach")
+    }
+
+    /// beta.18 verdict (BUG-66): the shell's `selectedTab` changed (`ContentView`). Samples now and
+    /// again 0.6 s later, when UIKit has finished whatever re-search the switch triggered.
+    static func noteTabSelected(_ tab: Int) {
+        guard enabled else { return }
+        sample(reason: "tab")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            MainActor.assumeIsolated {
+                TabBarStateProbe.sample(reason: "tab2")
+            }
+        }
+    }
+
+    /// beta.18 verdict (BUG-66): immersive depth returned to 0 (`TabBarVisibility.popImmersive`).
+    static func notePop() {
+        guard enabled else { return }
+        sample(reason: "pop")
+    }
+
+    /// Pure: `none` when nothing is tracked, `rows` when it is Home's linked rows scroll view,
+    /// `other` for anything else. Identity, never equality.
+    nonisolated static func trackedLabel(tracked: AnyObject?, homeRows: AnyObject?) -> String {
+        guard let tracked else { return "none" }
+        if let homeRows, tracked === homeRows { return "rows" }
+        return "other"
+    }
+
+    /// Pure: the per-tab latch bits, Home/Search/Library/Add-ons, `-` for a tab that never crossed.
+    nonisolated static func latchBits(_ latches: [Int: Bool]) -> String {
+        (0...3).map { latches[$0].map { $0 ? "1" : "0" } ?? "-" }.joined()
+    }
+
+    /// Pure, for the unit test: one pane line (without the `<N>ms ` stamp). `y`, `h` and `sel` are
+    /// clamped so the line keeps its length bound whatever UIKit reports.
+    nonisolated static func composeLine(minY: CGFloat, height: CGFloat, alpha: CGFloat,
+                                        isHidden: Bool, tabBarHidden: Bool, state: String,
+                                        selectedIndex: Int?, tracked: String,
+                                        selectedScrolledDown: Bool, latchBits: String,
+                                        sidebar: Bool, reason: String) -> String {
+        let y = min(max(Int(minY.rounded()), -9999), 9999)
+        let h = min(max(Int(height.rounded()), 0), 999)
+        let sel: String
+        if let selectedIndex, (0...9).contains(selectedIndex) { sel = "\(selectedIndex)" } else { sel = "-" }
+        return "y=\(y) h=\(h) a=\(String(format: "%.2f", min(max(alpha, 0), 1))) "
+            + "hid=\(isHidden ? 1 : 0) tbh=\(tabBarHidden ? 1 : 0) st=\(state) sel=\(sel) "
+            + "trk=\(tracked) sd=\(selectedScrolledDown ? 1 : 0) sdt=\(latchBits) "
+            + "m=\(sidebar ? "sb" : "cls") r=\(reason)"
     }
 
     /// Walks the armed window's controller tree for the first `UITabBar` (same recursive shape as
@@ -202,14 +276,18 @@ enum TabBarStateProbe {
     /// reason always logs.
     static func sample(reason: String) {
         guard enabled else { return }
+        let sidebar = SidebarChrome.isEnabled()
+        let m = sidebar ? "sb" : "cls"
         guard let window = armedWindow else {
-            log("NOT-FOUND why=no-window state=unknown mode=\(lastMode) reason=\(reason)")
+            log("NOT-FOUND why=no-window st=unk m=\(m) r=\(reason)")
             return
         }
-        guard let bar = findTabBar(in: window) else {
-            log("NOT-FOUND why=no-tabbar state=unknown mode=\(lastMode) reason=\(reason)")
+        guard let root = window.rootViewController,
+              let tabController = findTabBarController(from: root) else {
+            log("NOT-FOUND why=no-tabbar st=unk m=\(m) r=\(reason)")
             return
         }
+        let bar = tabController.tabBar
         let frameInWindow = bar.convert(bar.bounds, to: window)
         let minY = frameInWindow.minY
         let maxY = frameInWindow.maxY
@@ -218,26 +296,63 @@ enum TabBarStateProbe {
         let state: String
         if h <= 0 {
             // No nonzero frame reported yet — too early to classify.
-            state = "unknown"
+            state = "unk"
         } else if minY >= -1 && maxY > 0 && alpha > 0.5 && !bar.isHidden {
-            state = "expanded"
+            state = "exp"
         } else if maxY <= h * 0.5 || alpha < 0.05 || bar.isHidden {
-            state = "minimized"
+            state = "min"
         } else {
-            state = "partial"
+            state = "part"
         }
-        let composed = "minY=\(Int(minY.rounded())) h=\(Int(h.rounded())) "
-            + "alpha=\(String(format: "%.2f", alpha)) hidden=\(bar.isHidden ? 1 : 0) "
-            + "state=\(state) scrolledDown=\(lastScrolledDown ? 1 : 0) "
-            + "mode=\(lastMode)"
+
+        let selected = tabController.selectedViewController
+        let rows = TabBarContentScrollLink.homeRowsScrollView
+        let tracked: String
+        if let selected {
+            var trackedView = selected.contentScrollView(for: .top)
+            if trackedView == nil, let nav = selected as? UINavigationController {
+                trackedView = nav.topViewController?.contentScrollView(for: .top)
+            }
+            tracked = trackedLabel(tracked: trackedView, homeRows: rows)
+        } else {
+            tracked = "novc"
+        }
+        let selectedIndex: Int? = selected == nil ? nil : tabController.selectedIndex
+        let selectedLatch = selectedIndex.flatMap { scrolledDownByTab[$0] } ?? false
+
+        if !loggedControllerChain {
+            loggedControllerChain = true
+            var path: [String] = []
+            var node: UIViewController? = selected
+            while let current = node, path.count < 8 {
+                path.append(String(describing: type(of: current)))
+                node = current.children.first
+            }
+            let observed = selected?.tabBarObservedScrollView
+            NSLog("[TabBarStateProbe] chain root=%@ tab=%@ selected=%@ legacyObserved=%@",
+                  String(describing: type(of: root)),
+                  String(describing: type(of: tabController)),
+                  path.joined(separator: " > "),
+                  observed.map { $0 === rows ? "rows" : String(describing: type(of: $0)) } ?? "nil")
+        }
+
+        let line = composeLine(minY: minY, height: h, alpha: alpha, isHidden: bar.isHidden,
+                               tabBarHidden: tabController.isTabBarHidden, state: state,
+                               selectedIndex: selectedIndex, tracked: tracked,
+                               selectedScrolledDown: selectedLatch,
+                               latchBits: latchBits(scrolledDownByTab), sidebar: sidebar,
+                               reason: reason)
+        // Dedupe key = everything but the reason.
+        let composed = line.components(separatedBy: " r=").first ?? line
+        let extras = "ins=\(rows.map { Int($0.adjustedContentInset.top.rounded()) }.map(String.init) ?? "-") "
+            + "svh=\(rows.map { Int($0.bounds.height.rounded()) }.map(String.init) ?? "-")"
+        if reason != "tick" || composed + extras != lastNSLogged {
+            lastNSLogged = composed + extras
+            NSLog("[TabBarStateProbe] %@ %@", line, extras)
+        }
         if reason == "tick", composed == lastLoggedComposed { return }
         lastLoggedComposed = composed
-        log(composed + " reason=\(reason)")
-    }
-
-    private static func findTabBar(in window: UIWindow) -> UITabBar? {
-        guard let root = window.rootViewController else { return nil }
-        return findTabBarController(from: root)?.tabBar
+        log(line)
     }
 
     /// Children first, presented controllers last — identical precedence to

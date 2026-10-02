@@ -4388,6 +4388,8 @@ private struct PinnedRowSettleTracking: ViewModifier {
 /// frame and never at the `heroItems` empty→loaded boundary, so it can't re-identify the rows.
 struct PinnedRowSettleRevealModifier: ViewModifier {
     let enabled: Bool
+    /// beta.18 verdict (BUG-66): one-shot latch for the `INSET-NONZERO` probe line.
+    nonisolated(unsafe) private static var loggedInsetNonzero = false
     /// Wave 10: the hero compression currently in effect, purely so this modifier — which already
     /// observes the rows scroll geometry, and is only enabled in the pinned container — can verify
     /// the constant the compression is sized against. Changes no behaviour.
@@ -4429,6 +4431,14 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
                     PinnedRowTitle.verifyViewportBudget(liveViewport: sample.viewportHeight,
                                                         compression: compression,
                                                         showsCTA: showsCTA)
+                    // beta.18 verdict (BUG-66): the corrector's content-space math assumes the
+                    // pinned rows carry `contentInsets.top == 0`, and the tab-bar scroll link now
+                    // sets `contentInsetAdjustmentBehavior = .never` on this scroll view. Say so
+                    // ONCE, loudly, if the platform ever hands this container a top inset.
+                    if HomeGeometryProbe.enabled, abs(sample.insetTop) > 0.5, !Self.loggedInsetNonzero {
+                        Self.loggedInsetNonzero = true
+                        NSLog("[HomeScrollProbe] settle %@", "INSET-NONZERO inset=\(Int(sample.insetTop.rounded()))")
+                    }
                     // nil = a debounce is already armed and this sample is within the creep
                     // tolerance of it, so there is nothing to schedule (see `noteScroll`).
                     guard let token = PinnedRowSettle.noteScroll(sample) else { return }

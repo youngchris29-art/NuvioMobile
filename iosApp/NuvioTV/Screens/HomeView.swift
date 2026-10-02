@@ -1475,6 +1475,22 @@ struct HomeView: View {
             // BUG-30: `heroInScroll` moves the classic top inset into the hero's own reach (see
             // the hero branch above). Every other configuration keeps its inset unchanged.
             .padding(rowsInsets(pinned: pinned, heroInScroll: !heroItems.isEmpty && !pinned))
+            // beta.18 verdict (BUG-66): tells UIKit this ScrollView is the one the top tab bar
+            // follows (`TabBarContentScrollLink`) instead of leaving it to UIKit's heuristic, which
+            // found these rows at a cold launch (before the pinned header mounted) and lost them
+            // after a tab switch. UNCONDITIONAL, with the A/B knob read inside the attacher: the
+            // BUG-112 rule below (never conditionally re-identify the rows at the load boundary)
+            // applies to this modifier exactly as to the anchor. A `.background`, not a stack
+            // child — classic's 48pt `sectionGap` would open a gap around a zero-height row.
+            // `settleReveal` (the per-call-site container constant), never `pinned` (the header's
+            // load boundary), picks the pinned inset policy. Fallback if a device log shows
+            // `[TabBarLink]` never firing (SwiftUI hosting a lazy stack's `.background` outside the
+            // UIScrollView): `.overlay`, then a zero-height first row in the pinned container only.
+            .background(alignment: .topLeading) {
+                TabBarContentScrollLinkAttacher(pinnedContainer: settleReveal)
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
+            }
             // Menu-to-top scroll anchor (BUG-27). On the LazyVStack itself, not the
             // hero — the anchor must exist even while the hero row is lazily culled.
             // In pinned (Nuvio-style) mode the hero isn't in this stack at all, so the

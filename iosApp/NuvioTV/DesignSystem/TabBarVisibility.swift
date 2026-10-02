@@ -50,6 +50,9 @@ final class TabBarVisibility: ObservableObject {
         guard detailDepth > 0 else { return }
         detailDepth -= 1
         TabBarProbe.recordPop(depthAfter: detailDepth)
+        // beta.18 verdict (BUG-66): `r=pop` — what the bar tracks once the last immersive screen
+        // is gone (hardware checklist step 3). No-op unless the geometry probe is armed.
+        if detailDepth == 0 { TabBarStateProbe.notePop() }
     }
 
     /// BUG-30/66/62 diagnostics only — read-only surface of the depth `immersiveHidden` is
@@ -213,7 +216,12 @@ extension View {
 /// transitions — timestamping exactly the BUG-66 moment the bar's resolved visibility changes.
 /// Hysteresis is unaffected by those extra fires: `residual` is inset-invariant at rest, so a
 /// same-position re-fire from a bar transition never crosses either arm on its own.
-private struct TabBarScrollSample: Equatable {
+///
+/// beta.18 verdict (BUG-66): internal (was `private`) and `nonisolated`, with the hysteresis arms
+/// and the latch step moved here as pure statics, so `TabBarContentScrollLinkTests` can pin the
+/// residual's inset invariance (classic 157 vs pinned 0) — the explicit scroll-view link must not
+/// change where the latch crosses. Values and behaviour unchanged.
+nonisolated struct TabBarScrollSample: Equatable, Sendable {
     var offsetY: CGFloat
     var insetTop: CGFloat
     /// T1 sign fix: 0 at a scroll view's true top, matching the in-tree formula this residual
@@ -223,6 +231,17 @@ private struct TabBarScrollSample: Equatable {
     /// to −2×insetTop instead of 0, and every threshold below it was tuned against that wrong
     /// number.
     var residual: CGFloat { offsetY + insetTop }
+
+    /// See `TabBarScrollAutoHide`'s doc comment on these two values.
+    static let hideArm: CGFloat = 300
+    static let showArm: CGFloat = 160
+
+    /// The hysteresis step: the latch after this sample, given the latch before it.
+    static func latch(after current: Bool, residual: CGFloat) -> Bool {
+        if !current, residual > hideArm { return true }
+        if current, residual < showArm { return false }
+        return current
+    }
 }
 
 /// Reports a tab root's main scroll view position via hysteresis so the bar doesn't flicker right
@@ -263,8 +282,9 @@ private struct TabBarScrollAutoHide: ViewModifier {
     /// the app from Home. If a device pass finds 160 too eager, the conservative fallback pair is
     /// the expanded-bar values above (374 / 322), which reproduce today's shipped behavior
     /// byte-for-byte.
-    private static let hideArm: CGFloat = 300
-    private static let showArm: CGFloat = 160
+    /// beta.18 verdict (BUG-66): the values now live on `TabBarScrollSample` (pure, unit-tested).
+    private static let hideArm: CGFloat = TabBarScrollSample.hideArm
+    private static let showArm: CGFloat = TabBarScrollSample.showArm
 
     /// FEAT-30: tab NAME → `TabView` selection value, so the sidebar can key its per-tab
     /// scrolled-down map by the same number `selectedTab` carries. A table here rather than a new
@@ -299,7 +319,9 @@ private struct TabBarScrollAutoHide: ViewModifier {
             // site, gated by the probe's own toggle so an off probe costs nothing beyond the
             // `Bool` read.
             if crossedHysteresis, TabBarStateProbe.enabled {
-                TabBarStateProbe.noteScrollState(isScrolledDown: hidesBar, mode: SidebarChrome.isEnabled() ? "sidebar" : "classic")
+                // beta.18 verdict (BUG-66): per-tab latch, keyed by the selection value; the mode
+                // is read live by the probe itself.
+                TabBarStateProbe.noteScrollState(isScrolledDown: hidesBar, tab: Self.tabIndexByName[tab])
             }
         })
     }

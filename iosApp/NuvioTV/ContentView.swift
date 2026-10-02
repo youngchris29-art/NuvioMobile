@@ -469,6 +469,10 @@ struct MainTabView: View {
         }
         .onChange(of: selectedTab) { _, tab in
             tabBarVisibility.setHomeTabSelected(tab == 0)
+            // beta.18 verdict (BUG-66): `r=tab` now and `r=tab2` 0.6 s later in the Tab Bar
+            // Geometry pane — what the bar tracks after a switch is the half of BUG-66 the cold
+            // launch never showed. No-op unless that probe is armed.
+            TabBarStateProbe.noteTabSelected(tab)
         }
     }
 }

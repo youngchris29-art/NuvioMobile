@@ -613,7 +613,10 @@ enum Theme {
         // ONE 1080pt screen instead of the hero scrolling away, so the hero region has to be
         // compacted. Height budget, measured in the sim:
         //   ~76 tab-bar safe area + 8 top pad + ~490 carousel (452 + page dots) + 0 gap ≈ 574,
-        // leaving ~506pt for the rows viewport. A default poster row's FOCUS FRAME is
+        // leaving ~506pt for the rows viewport. (beta.18 verdict, BUG-66: that 76 was a sim-era
+        // estimate; the band measured on hardware is 157 — `bug30-probe-capture-2026-08-02.log`,
+        // the BUG-66 rig's "classic inset 157". The live budget is `heroPinnedRowsViewportBudget`,
+        // verified against the platform by `PinnedRowTitle.verifyViewportBudget`.) A default poster row's FOCUS FRAME is
         //   72 top reach + 330 poster + 16 gap + ~28 caption + 48 bottom reach ≈ 494 ≤ 506 —
         // both reaches must fit INSIDE the viewport or the focus engine can't reveal the whole
         // frame and rest positions degrade. Oversized user Poster Style settings can exceed the
