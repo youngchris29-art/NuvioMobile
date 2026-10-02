@@ -170,6 +170,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
     /// the full-bleed hero backdrop, never rounded) and what every existing caller that doesn't pass
     /// this parameter keeps getting.
     var cornerRadius: CGFloat = 0
+    /// BUG-128: which surface this is, for the `[TrailerHealth]` summary (`detail-bg`, `home-hero`).
+    /// nil falls back to `hero` (looping) / `inline`.
+    var surfaceTag: String? = nil
 
     /// UX-9: our YouTube trailer encodes bake letterboxing directly into the frame (2.39:1 film
     /// inside a 16:9 container), so `.resizeAspectFill` alone still shows black bars — it fills the
@@ -210,7 +213,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         view.layer.cornerCurve = .continuous
         view.layer.masksToBounds = true
         view.playerLayer.videoGravity = .resizeAspectFill
-        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId)
+        context.coordinator.attach(to: view, urlString: urlString, loops: loops, zoomKey: zoomKey, videoId: videoId, surfaceTag: surfaceTag)
         return view
     }
 
@@ -242,6 +245,9 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         private var player: AVQueuePlayer?
         private var looper: AVPlayerLooper?
         private var statusObservation: NSKeyValueObservation?
+        /// BUG-128 A/B: only set when `TrailerTuning.forwardBufferSeconds` is. The looper plays COPIES of
+        /// the template item, so the buffer hint must be re-applied to each `currentItem`.
+        private var currentItemObservation: NSKeyValueObservation?
         private var failureObserver: NSObjectProtocol?
         private var endObserver: NSObjectProtocol?
         private var watchdog: Timer?
@@ -262,6 +268,8 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         /// `dismantleUIView` + `deinit`), so the counter must decrement exactly once per counted
         /// `attach()` or the live-pipeline gauge undercounts (Codex round 1).
         private var attachCounted = false
+        /// BUG-128: KVO-only playback-health monitor; stopped in `teardown()` before the pause.
+        private var health: TrailerPlaybackHealthMonitor?
 
         init(onFailure: @escaping (TrailerFailureReport) -> Void, onPlaybackEnded: (() -> Void)? = nil) {
             self.onFailure = onFailure
@@ -269,7 +277,7 @@ struct TrailerHeroPlayer: UIViewRepresentable {
         }
 
         func attach(to view: TrailerPlayerUIView, urlString: String, loops: Bool = true, zoomKey: String? = nil,
-                    videoId: String? = nil) {
+                    videoId: String? = nil, surfaceTag: String? = nil) {
             attachedURLString = urlString
             attachedView = view
             guard let url = URL(string: urlString) else { fail(.badURL); return }
@@ -283,6 +291,12 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             let item = AVPlayerItem(url: url)
             let queue = AVQueuePlayer()
             queue.allowsExternalPlayback = false
+            if let s = TrailerTuning.forwardBufferSeconds {
+                item.preferredForwardBufferDuration = s
+                currentItemObservation = queue.observe(\.currentItem, options: [.new]) { _, change in
+                    if let new = change.newValue ?? nil { new.preferredForwardBufferDuration = s }
+                }
+            }
 
             // Seed with the shared preference's current value (rather than always hardcoding muted)
             // so re-attaching (e.g. returning to a title after unmuting) doesn't flash muted first.
@@ -308,6 +322,8 @@ struct TrailerHeroPlayer: UIViewRepresentable {
             }
             view.playerLayer.player = queue
             player = queue
+            health = TrailerPlaybackHealthMonitor(player: queue, surface: surfaceTag ?? (loops ? "hero" : "inline"), urlString: urlString)
+            health?.start()
 
             statusObservation = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
                 switch observed.status {
@@ -409,10 +425,16 @@ struct TrailerHeroPlayer: UIViewRepresentable {
                 let snap = TrailerPipelineCounters.shared.teardown()
                 NSLog("[TrailerPipeline] teardown live=%d views=%d url=%@", snap.livePlayers, snap.liveViews, attachedURLString.map(TrailerProbe.redactedHost) ?? "-")
             }
+            // BUG-128: stop (and emit) BEFORE `player?.pause()` / queue teardown so the access log is
+            // read from a live item.
+            health?.stop()
+            health = nil
             watchdog?.invalidate()
             watchdog = nil
             statusObservation?.invalidate()
             statusObservation = nil
+            currentItemObservation?.invalidate()
+            currentItemObservation = nil
             if let failureObserver {
                 NotificationCenter.default.removeObserver(failureObserver)
                 self.failureObserver = nil
@@ -536,12 +558,15 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         // will also consult, rather than a `.resizeAspectFill` literal that could drift from it.
         view.playerLayer.videoGravity = TrailerSurfaceZoomPolicy.decide(surface: "full", cached: nil).gravity
         if let url = URL(string: urlString) {
-            let player = AVPlayer(url: url)
+            let fullItem = AVPlayerItem(url: url)
+            if let s = TrailerTuning.forwardBufferSeconds { fullItem.preferredForwardBufferDuration = s }
+            let player = AVPlayer(playerItem: fullItem)
             player.isMuted = false
             view.playerLayer.player = player
             control.player = player
             control.surface = view
             context.coordinator.observeEnd(of: player, onEnded: onPlaybackEnded)
+            context.coordinator.startHealth(player: player, urlString: urlString)
             context.coordinator.startLetterboxProbe(view: view, player: player, urlString: urlString, zoomKey: zoomKey, videoId: videoId)
             // Phase 0 (BUG-46): full-screen plays share `TrailerPipelineCounters` with the
             // inline/hero surfaces (`TrailerHeroPlayer.Coordinator`) so a full-screen "Watch
@@ -572,6 +597,13 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
     final class Coordinator {
         private var endObserver: NSObjectProtocol?
         private var letterboxProbe: TrailerLetterboxProbe?
+        private var health: TrailerPlaybackHealthMonitor?
+
+        /// BUG-128: health monitor for the full-screen player (`detail-full`).
+        func startHealth(player: AVPlayer, urlString: String) {
+            health = TrailerPlaybackHealthMonitor(player: player, surface: "detail-full", urlString: urlString)
+            health?.start()
+        }
 
         func observeEnd(of player: AVPlayer, onEnded: @escaping () -> Void) {
             endObserver = NotificationCenter.default.addObserver(
@@ -591,6 +623,8 @@ private struct FullScreenTrailerSurface: UIViewRepresentable {
         }
 
         func teardown() {
+            health?.stop()
+            health = nil
             if let endObserver {
                 NotificationCenter.default.removeObserver(endObserver)
                 self.endObserver = nil
@@ -1096,6 +1130,19 @@ final class TrailerLetterboxProbe {
             view?.alpha = 1
             apply(policy.zoom, animated: false)
             TrailerZoomProbe.log(String(format: "policy=uncropped surface=%@ zoom=%.3f key=%@", surface, policy.zoom, zoomKey))
+            return
+        }
+        // BUG-128 A/B (launch-latched knob, default off): no sampling timer, no video output, no
+        // cache write. Hero/inline only (the full surface returned above, already uncropped).
+        if TrailerTuning.letterboxProbeOff {
+            var zoom = TrailerHeroPlayer.parityZoom
+            if let cached = TrailerZoomCache.shared.entry(for: zoomKey), cached.token == token {
+                zoom = cached.zoom
+            }
+            revealed = true
+            view?.alpha = 1
+            apply(zoom, animated: false)
+            TrailerZoomProbe.log(String(format: "probe-off surface=%@ key=%@ zoom=%.3f", surface, zoomKey, zoom))
             return
         }
         // Hero/inline only, from here on — the ONLY `TrailerZoomCache` read `start()` ever makes.

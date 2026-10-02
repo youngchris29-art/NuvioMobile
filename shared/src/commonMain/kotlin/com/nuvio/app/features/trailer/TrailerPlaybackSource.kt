@@ -14,6 +14,8 @@ data class TrailerAdaptiveTrack(
     val bitrate: Long,
     val width: Int,
     val height: Int,
+    /** Frame rate from the format (0 when unknown). Diagnostics only. */
+    val fps: Int = 0,
     val initStart: Long,
     val initEnd: Long,
     val indexStart: Long,

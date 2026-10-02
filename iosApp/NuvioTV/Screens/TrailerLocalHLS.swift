@@ -49,6 +49,8 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     /// evicted in lockstep with `playlists`/`tokenOrder` so an identity can never outlive the
     /// token it describes. See `contentIdentity(forToken:)`.
     private var contentIdentities: [String: String] = [:]
+    /// Diagnostics: the video rung each token serves, kept in lockstep with `contentIdentities`.
+    private var trackSummaries: [String: TrackSummary] = [:]
 
     private init() {}
 
@@ -60,6 +62,7 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         let bitrate: Int64
         let width: Int
         let height: Int
+        let fps: Int
         let initStart: Int64
         let initEnd: Int64
         let indexStart: Int64
@@ -71,11 +74,23 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
             bitrate = track.bitrate
             width = Int(track.width)
             height = Int(track.height)
+            fps = Int(track.fps)
             initStart = track.initStart
             initEnd = track.initEnd
             indexStart = track.indexStart
             indexEnd = track.indexEnd
         }
+    }
+
+    /// Diagnostics snapshot of the video rung a repack token serves (trailer health line).
+    struct TrackSummary: Sendable {
+        let height: Int
+        let width: Int
+        let fps: Int
+        let bitrate: Int64
+        let codecs: String
+        let itag: String?
+        let throttledN: Bool
     }
 
     // MARK: - Public API
@@ -183,6 +198,13 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         return shared.contentIdentities[token]
     }
 
+    /// Diagnostics: the video rung served under `token`, or nil when unknown/evicted.
+    static func trackSummary(forToken token: String) -> TrackSummary? {
+        shared.lock.lock()
+        defer { shared.lock.unlock() }
+        return shared.trackSummaries[token]
+    }
+
     /// Test seam: registers the token/content-identity pair `repack(...)` would produce for this
     /// URL pair, without the sidx network fetch a real repack needs (unit tests can't drive that).
     /// `contentIdentity(forToken:)` coverage needs a real minted entry to look up — this is the
@@ -216,7 +238,7 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
                 let videoMedia = Self.mediaPlaylist(track: video, sidx: videoSidx)
                 let audioMedia = Self.mediaPlaylist(track: audio, sidx: audioSidx)
                 let token = Self.token(video: video, audio: audio)
-                self.store(token: token, contentIdentity: Self.contentIdentity(videoURL: video.url), files: [
+                self.store(token: token, contentIdentity: Self.contentIdentity(videoURL: video.url), summary: Self.trackSummary(of: video), files: [
                     "master.m3u8": Data(master.utf8),
                     "video.m3u8": Data(videoMedia.utf8),
                     "audio.m3u8": Data(audioMedia.utf8),
@@ -228,8 +250,10 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
                         return
                     }
                     let url = "http://127.0.0.1:\(port)/\(token)/master.m3u8"
-                    NSLog("[TrailerRepack] serving %dx%d avc1+mp4a (%d+%d segments) at %@",
-                          video.width, video.height, videoSidx.segments.count, audioSidx.segments.count, url)
+                    let summary = Self.trackSummary(of: video)
+                    NSLog("[TrailerRepack] serving %dx%d avc1+mp4a (%d+%d segments) at %@ fps=%d itag=%@ n=%d",
+                          video.width, video.height, videoSidx.segments.count, audioSidx.segments.count, url,
+                          summary.fps, summary.itag ?? "-", summary.throttledN ? 1 : 0)
                     completion(url)
                 }
             }
@@ -412,7 +436,20 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         return "id=\(id)&itag=\(itag ?? "-")"
     }
 
-    private func store(token: String, contentIdentity: String?, files: [String: Data]) {
+    private static func trackSummary(of track: Track) -> TrackSummary {
+        let items = URLComponents(string: track.url)?.queryItems ?? []
+        return TrackSummary(
+            height: track.height,
+            width: track.width,
+            fps: track.fps,
+            bitrate: track.bitrate,
+            codecs: track.codecs,
+            itag: items.first(where: { $0.name == "itag" })?.value,
+            throttledN: items.contains(where: { $0.name == "n" })
+        )
+    }
+
+    private func store(token: String, contentIdentity: String?, summary: TrackSummary?, files: [String: Data]) {
         lock.lock()
         // A re-store is a refresh of an existing trailer, not a new entry: replace the files and
         // move the token to the back of the eviction line rather than double-listing it.
@@ -425,11 +462,17 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         } else {
             contentIdentities.removeValue(forKey: token)
         }
+        if let summary {
+            trackSummaries[token] = summary
+        } else {
+            trackSummaries.removeValue(forKey: token)
+        }
         tokenOrder.append(token)
         while tokenOrder.count > Self.maxTokens {
             let evicted = tokenOrder.removeFirst()
             playlists.removeValue(forKey: evicted)
             contentIdentities.removeValue(forKey: evicted)
+            trackSummaries.removeValue(forKey: evicted)
             if TrailerProbe.enabled {
                 NSLog("[TrailerRepack] token evict token=%@ stored=%d max=%d", evicted, tokenOrder.count, Self.maxTokens)
             }

@@ -111,6 +111,59 @@ struct AboutSettingsPane: View {
     @AppStorage("debug.collectionFrameProbe") private var collectionFrameProbe = false
     @AppStorage("debug.collectionFocusAB") private var collectionFocusAB = 0
 
+    /// BUG-128: the Detail Scroll A/B rows plus the three trailer A/B knobs, hoisted out of
+    /// `body` because the enclosing `Group` was already at the 10-child @ViewBuilder ceiling
+    /// (this is one child there, replacing the two it held before).
+    @AppStorage("debug.trailerMaxFps") private var trailerMaxFps = 0
+    @AppStorage("debug.trailerBufferSeconds") private var trailerBufferSeconds = 0
+    @AppStorage("debug.trailerLetterboxProbeOff") private var trailerLetterboxProbeOff = false
+
+    @ViewBuilder
+    private var detailScrollAndTrailerTuningRows: some View {
+        // BUG-41 (Wave F item D): the five-leg on-device A/B knob DetailView reads live —
+        // this pane is the only lawful lever a sideloaded tester has over it.
+        SettingsPickerRow(
+            title: String(localized: "Detail Scroll A/B"),
+            selection: $detailScrollAB,
+            options: [0, 1, 2, 3, 4],
+            label: { leg in
+                leg == 0 ? String(localized: "Off") : "\(leg)"
+            }
+        )
+
+        SettingsToggleRow(
+            title: String(localized: "Detail Scroll Probe"),
+            subtitle: String(localized: "BUG-41: logs a hitch counter for one Detail visit on Menu-back"),
+            isOn: $detailScrollProbeEnabled
+        )
+
+        // BUG-128 A/B legs: launch-latched (`TrailerTuning` reads them once), honoured without
+        // `debug.trailerProbe`; defaults are today's behaviour.
+        SettingsPickerRow(
+            title: String(localized: "Trailer Max FPS (A/B)"),
+            selection: $trailerMaxFps,
+            options: [0, 30],
+            label: { fps in
+                fps == 0 ? String(localized: "Auto (as shipped)") : String(localized: "30 fps")
+            }
+        )
+
+        SettingsPickerRow(
+            title: String(localized: "Trailer Buffer (A/B)"),
+            selection: $trailerBufferSeconds,
+            options: [0, 4, 8, 12],
+            label: { seconds in
+                seconds == 0 ? String(localized: "Auto") : String(localized: "\(seconds) s")
+            }
+        )
+
+        SettingsToggleRow(
+            title: String(localized: "Trailer Letterbox Probe Off (A/B)"),
+            subtitle: String(localized: "BUG-128: skips the letterbox scan; takes effect on next launch"),
+            isOn: $trailerLetterboxProbeOff
+        )
+    }
+
     private var trailerZoomCacheCount: Int {
         _ = trailerZoomCacheGeneration // dependency only — see the property's doc comment
         return TrailerZoomCache.shared.count
@@ -302,7 +355,7 @@ struct AboutSettingsPane: View {
                     title: String(localized: "Trailer Diagnostics"),
                     subtitle: trailerDiagnostics
                         ? String(localized: "Open the title whose trailer looks zoomed, let it play 10 seconds, come back and photograph this pane.")
-                        : String(localized: "Turn on if asked to capture why a trailer looks zoomed or letterboxed"),
+                        : String(localized: "Turn on if asked to capture why a trailer looks zoomed, letterboxed or stutters"),
                     isOn: $trailerDiagnostics
                 )
 
@@ -353,22 +406,7 @@ struct AboutSettingsPane: View {
                     trailerZoomCacheGeneration += 1
                 }
 
-                // BUG-41 (Wave F item D): the five-leg on-device A/B knob DetailView reads live —
-                // this pane is the only lawful lever a sideloaded tester has over it.
-                SettingsPickerRow(
-                    title: String(localized: "Detail Scroll A/B"),
-                    selection: $detailScrollAB,
-                    options: [0, 1, 2, 3, 4],
-                    label: { leg in
-                        leg == 0 ? String(localized: "Off") : "\(leg)"
-                    }
-                )
-
-                SettingsToggleRow(
-                    title: String(localized: "Detail Scroll Probe"),
-                    subtitle: String(localized: "BUG-41: logs a hitch counter for one Detail visit on Menu-back"),
-                    isOn: $detailScrollProbeEnabled
-                )
+                detailScrollAndTrailerTuningRows
 
                 // FEAT-33 (Wave 1, agent C): release-safe frame-timing probe for the Home
                 // collection row's focus-step animation. Same live-toggle pattern as the trailer

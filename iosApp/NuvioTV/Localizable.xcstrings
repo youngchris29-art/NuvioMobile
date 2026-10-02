@@ -31489,7 +31489,25 @@
     "Dolby Vision": {},
     "HDR": {},
     "Only": {},
-    "Hide sources your debrid service has not cached.": {}
+    "Hide sources your debrid service has not cached.": {},
+    "Next Episode": {},
+    "Up Next looks for the next episode's sources about 30 seconds before the card appears, so the countdown can start the moment it shows.": {},
+    "Preload Next Episode Sources": {},
+    "Start searching for sources in the background before the next episode card appears.": {},
+    "Prepare Links for Instant Playback": {},
+    "Resolve the top cached sources to direct links while a source list is open, so Play starts at once.": {},
+    "Use a lower count when possible. Debrid services rate-limit how many links can be resolved in a time period, and opening a source list can count toward those limits even if you do not press Play, because the links are prepared ahead of time.": {},
+    "1 link": {},
+    "%lld links": {},
+    "Turn on if asked to capture why a trailer looks zoomed, letterboxed or stutters": {},
+    "Trailer Max FPS (A/B)": {},
+    "Auto (as shipped)": {},
+    "30 fps": {},
+    "Trailer Buffer (A/B)": {},
+    "Auto": {},
+    "%lld s": {},
+    "Trailer Letterbox Probe Off (A/B)": {},
+    "BUG-128: skips the letterbox scan; takes effect on next launch": {}
   },
   "version": "1.0"
 }

@@ -253,6 +253,7 @@ private final class HitchCounter: NSObject, ObservableObject {
         frameCount = 0
         maxGapMs = 0
         lastTimestamp = nil
+        DetailHitchSnapshot.reset()
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)
         displayLink = link
@@ -263,6 +264,7 @@ private final class HitchCounter: NSObject, ObservableObject {
         displayLink?.invalidate()
         displayLink = nil
         NSLog("[BUG41] hitches=%d frames=%d maxGap=%.1fms", hitchCount, frameCount, maxGapMs)
+        TrailerZoomProbe.log(String(format: "hitches=%d frames=%d maxGap=%.1fms", hitchCount, frameCount, maxGapMs))
     }
 
     @objc private func tick(_ link: CADisplayLink) {
@@ -273,6 +275,7 @@ private final class HitchCounter: NSObject, ObservableObject {
             if gapMs > maxGapMs { maxGapMs = gapMs }
         }
         lastTimestamp = link.timestamp
+        DetailHitchSnapshot.update(.init(hitches: hitchCount, frames: frameCount, maxGapMs: maxGapMs))
     }
 
     deinit { displayLink?.invalidate() }
@@ -519,7 +522,8 @@ struct DetailView: View {
                 // themselves do the clipping. The failure report is ignored: Detail has one hero
                 // trailer and no negative cache to scope (that's the inline card's problem).
                 TrailerHeroPlayer(urlString: trailer, onFailure: { _ in model.trailerFailed() },
-                                  zoomKey: model.trailerZoomKey, videoId: model.trailerVideoId)
+                                  zoomKey: model.trailerZoomKey, videoId: model.trailerVideoId,
+                                  surfaceTag: "detail-bg")
                     .ignoresSafeArea()
                     .transition(.opacity)
             }

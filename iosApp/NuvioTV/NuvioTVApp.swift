@@ -124,6 +124,9 @@ struct NuvioTVApp: App {
             NSLog("[TrailerZoom] store reset (debug.resetTrailerZoomStore)")
         }
 
+        // BUG-128: trailer max-fps A/B leg (0 = as shipped); must precede the first extraction.
+        TrailerExtractionPreferences.shared.maxVideoFps = Int32(TrailerTuning.maxFps)
+
         // Auth is started by AuthViewModel (ContentView.onAppear): existing guest installs
         // authenticate instantly from their stored anonymous id; otherwise the Supabase session is
         // restored, or the Welcome gate (Sign In / Create Account / Continue as Guest) is shown.

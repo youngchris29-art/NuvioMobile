@@ -565,7 +565,8 @@ class InAppYouTubeExtractor {
         val bestM4aAudio = pairClient?.let { key -> sortCandidates(repackAudios.filter { it.client == key }).firstOrNull() }
         trailerDebugLog(
             "repack candidates: avcVideo=${bestAvcVideo?.let { "${it.height}p ${it.codecs} (${it.client})" } ?: "none"} " +
-                "m4aAudio=${bestM4aAudio?.let { "${it.codecs} (${it.client})" } ?: "none"}"
+                "m4aAudio=${bestM4aAudio?.let { "${it.codecs} (${it.client})" } ?: "none"} " +
+                "maxFps=${TrailerExtractionPreferences.maxVideoFps}"
         )
 
         // BUG-81: stamp the video id on the way out rather than threading it through the
@@ -769,8 +770,15 @@ class InAppYouTubeExtractor {
         return parseUrl(url)?.query?.get("n")?.firstOrNull()?.isNotBlank() == true
     }
 
-    private fun videoScore(height: Int, fps: Int, bitrate: Double): Double {
-        return height * 1_000_000_000.0 + fps * 1_000_000.0 + bitrate
+    internal fun videoScore(
+        height: Int,
+        fps: Int,
+        bitrate: Double,
+        maxFps: Int = TrailerExtractionPreferences.maxVideoFps,
+    ): Double {
+        // BUG-128: a max-fps PREFERENCE (not a cap) — over-limit fps ranks as 0 within a height.
+        val fpsRank = if (maxFps > 0 && fps > maxFps) 0 else fps
+        return height * 1_000_000_000.0 + fpsRank * 1_000_000.0 + bitrate
     }
 
     private fun audioScore(bitrate: Double, audioSampleRate: Double): Double {

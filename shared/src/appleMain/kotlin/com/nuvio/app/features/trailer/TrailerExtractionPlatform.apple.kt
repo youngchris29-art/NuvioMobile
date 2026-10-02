@@ -185,6 +185,7 @@ internal actual object TrailerExtractionPlatform {
             bitrate = bitrateBps,
             width = width,
             height = height,
+            fps = fps,
             initStart = initStart,
             initEnd = initEnd,
             indexStart = indexStart,

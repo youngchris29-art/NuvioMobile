@@ -4697,7 +4697,8 @@ struct HomeHeroBackdrop: View {
                     onFailure: { report in trailerModel.playbackFailed(report) },
                     zoomKey: trailerKey,
                     loops: false,
-                    onPlaybackEnded: { trailerModel.playbackFinished() }
+                    onPlaybackEnded: { trailerModel.playbackFinished() },
+                    surfaceTag: "home-hero"
                 )
                 .transition(.asymmetric(insertion: .opacity, removal: .identity))
             }
