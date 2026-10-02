@@ -973,7 +973,7 @@ extension PinnedRowTitle {
     /// the pending target applies whatever the rows are doing — a title is never held forever.
     /// review r1 (P3-5): the FIRST ceiling applies only if the rows are still; if they are still
     /// moving the episode clock restarts once (`ceilingRestarted`), and the SECOND ceiling applies
-    /// regardless. So the worst-case hold is 2 x this value.
+    /// regardless. So the worst-case hold is ≈ 2 x this value (plus up to two re-check ticks).
     nonisolated static let slideHoldCeiling: TimeInterval = 1.5
 }
 
@@ -1496,12 +1496,14 @@ private struct PinnedRowTitleTracking: ViewModifier {
     ///   rule, kept for holds that start after the corrector has already decided (the title's own
     ///   end-of-reveal creep), which would otherwise always wait the full `slideHoldMax`;
     /// - `fallback`: a decision was expected but has not come by `slideHoldMax` and the rows are
-    ///   still, or the episode has reached `slideHoldCeiling` whatever the rows are doing.
+    ///   still;
+    /// - `ceiling` (review r1 P3-5): the episode has reached `slideHoldCeiling` and the rows are
+    ///   still, or it reached it a second time after one restart (`slide hold-restart`).
     private func scheduleSlideHoldFallback(token: Int, after delay: TimeInterval) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             guard token == tracking.slideHoldToken, tracking.pendingSlide != nil else { return }
             let elapsed = ProcessInfo.processInfo.systemUptime - tracking.slideHoldStartedAt
-            // review r1 (P3-5 / P3-6): at the ceiling apply only when the rows are still, so a row
+            // review r1 (P3-5): at the ceiling apply only when the rows are still, so a row
             // that stays on screen through a long held-direction walk does not get its slide
             // applied mid-motion. Still moving: restart the episode clock ONCE (probe line, not a
             // release); the second ceiling applies regardless.

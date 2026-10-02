@@ -92,6 +92,32 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
             weak var controller: UIViewController?
         }
 
+        /// review r2 (P2-A): Home's rows view leaves the window on a push (See All, folder, person
+        /// pages) and on a tab switch. If SwiftUI hosts the tab in its own hosting controller above
+        /// the navigation controller, that controller is the tab bar's selected controller and
+        /// would keep reporting Home's off-window rows to pushed pages (a hosting controller does
+        /// not forward to its child the way navigation and tab containers do). So the link is
+        /// withdrawn the moment the view leaves the window: every linked controller that still
+        /// reports this scroll view gets `nil` back, and the pushed page falls back to UIKit's own
+        /// heuristic. On return, `didMoveToWindow`, the retry ladder and the focus observer re-link.
+        override func willMove(toWindow newWindow: UIWindow?) {
+            super.willMove(toWindow: newWindow)
+            guard newWindow == nil, let linked = linkedScrollView else { return }
+            for entry in linkedControllers {
+                guard let controller = entry.controller,
+                      controller.contentScrollView(for: .top) === linked else { continue }
+                controller.setContentScrollView(nil, for: .top)
+            }
+            if TabBarContentScrollLink.enabled, !linkedControllers.isEmpty {
+                NSLog("[TabBarLink] unlinked (left window) controllers=%ld", linkedControllers.count)
+            }
+            linkedControllers = []
+            linkedScrollView = nil
+            if TabBarContentScrollLink.homeRowsScrollView === linked {
+                TabBarContentScrollLink.homeRowsScrollView = nil
+            }
+        }
+
         override func didMoveToWindow() {
             super.didMoveToWindow()
             guard window != nil else { return }
