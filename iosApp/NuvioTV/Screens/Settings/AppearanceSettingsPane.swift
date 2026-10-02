@@ -62,6 +62,10 @@ struct AppearanceSettingsPane: View {
     /// dominant color instead of the accent. Default OFF; only offered while `accentFocusRing` is
     /// on. The card views read this same key independently (same pattern as the ring above).
     @AppStorage("focus_ring_poster_color") private var focusRingPosterColor = false
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): the card-depth edge rail takes each
+    /// poster's dominant color instead of white. Default OFF; only offered while Card Depth is on.
+    /// The four card views (poster, landscape, saga, folder tile) read this same key independently.
+    @AppStorage("depth_rail_poster_color") private var depthRailPosterColor = false
     /// BUG-36: opt-in "focus without motion" for artwork cards (PosterCard/LandscapeCard). Default
     /// OFF — off keeps the two existing treatments (system lift, or the accent ring's manual
     /// scale). Same independent-read pattern as the ring above; the cards resolve both keys into a
@@ -188,6 +192,15 @@ struct AppearanceSettingsPane: View {
                     title: String(localized: "Ring Takes Poster Color"),
                     subtitle: String(localized: "The focus ring uses the focused poster's dominant color"),
                     isOn: $focusRingPosterColor
+                )
+            }
+            // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color".
+            // Gated on Card Depth itself: with depth off there is no rail to colour.
+            if model.cardDepth.enabled {
+                SettingsToggleRow(
+                    title: String(localized: "Depth Takes Poster Color"),
+                    subtitle: String(localized: "Card depth edges use each poster's dominant color"),
+                    isOn: $depthRailPosterColor
                 )
             }
 

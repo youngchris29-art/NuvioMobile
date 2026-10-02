@@ -99,6 +99,44 @@ final class ArtworkColorStoreTests: XCTestCase {
         XCTAssertEqual(lifted.v, 0.95, accuracy: 0.0001)
     }
 
+    // MARK: - rail lift (beta.18 verdict, FEAT-46 corrected / FEAT-40 follow-up)
+
+    func testRailLiftFullBrightnessAndClampedSaturation() {
+        let low = ArtworkColorStore.railLifted(h: 0.6, s: 0.2, v: 0.3)
+        XCTAssertEqual(low.h, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(low.s, 0.40, accuracy: 0.0001)
+        XCTAssertEqual(low.v, 1.0, accuracy: 0.0001)
+        let mid = ArtworkColorStore.railLifted(h: 0.1, s: 0.5, v: 0.6)
+        XCTAssertEqual(mid.h, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(mid.s, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(mid.v, 1.0, accuracy: 0.0001)
+        let high = ArtworkColorStore.railLifted(h: 0.33, s: 0.95, v: 0.4)
+        XCTAssertEqual(high.h, 0.33, accuracy: 0.0001)
+        XCTAssertEqual(high.s, 0.70, accuracy: 0.0001)
+        XCTAssertEqual(high.v, 1.0, accuracy: 0.0001)
+    }
+
+    /// One 16x16 sample, two lifts: the ring and the rail of the same art share the mean's hue.
+    func testRingAndRailDeriveFromOneMean() throws {
+        let orange = UIColor(red: 1, green: 0.5, blue: 0, alpha: 1)
+        let mean = try XCTUnwrap(ArtworkColorStore.meanChroma(of: solid(orange)))
+        let ring = ArtworkColorStore.ringLifted(h: mean.h, s: mean.s, v: mean.v)
+        let rail = ArtworkColorStore.railLifted(h: mean.h, s: mean.s, v: mean.v)
+        XCTAssertEqual(ring.h, rail.h, accuracy: 0.0001)
+        XCTAssertLessThan(hueDistance(mean.h, 30.0 / 360.0), 0.05, "hue \(mean.h)")
+        // The pre-existing ring path is the same lift of the same mean.
+        let cgImage = try XCTUnwrap(solid(orange).cgImage)
+        let rgb = try XCTUnwrap(ArtworkColorStore.dominantColor(of: cgImage))
+        let hsb = ArtworkColorStore.hsb(r: rgb.r, g: rgb.g, b: rgb.b)
+        XCTAssertEqual(hsb.h, ring.h, accuracy: 0.001)
+    }
+
+    func testGreyArtGivesNoRailColour() throws {
+        XCTAssertNil(ArtworkColorStore.meanChroma(of: solid(UIColor(white: 0.5, alpha: 1))))
+        XCTAssertNil(ArtworkColorStore.meanChroma(of: solid(.black)))
+        XCTAssertNil(ArtworkColorStore.color(from: nil, use: .rail))
+    }
+
     // MARK: - HSB round trip
 
     func testHSBRoundTrip() {
@@ -127,5 +165,20 @@ final class ArtworkColorStoreTests: XCTestCase {
         XCTAssertTrue(answered, "completion must run inside the call when nothing is in memory")
         XCTAssertFalse(answeredAColour)
         XCTAssertNil(ArtworkColorStore.shared.cachedColor(for: [neverFetched]))
+    }
+
+    /// Same contract for the rail lift: not in memory, nothing downloaded, nil inside the call.
+    @MainActor
+    func testRailColorNotInMemoryAnswersNilSynchronously() {
+        let neverFetched = "https://example.invalid/feat46-rail-never-fetched-\(UUID().uuidString).jpg"
+        var answered = false
+        var answeredAColour = false
+        ArtworkColorStore.shared.color(for: [neverFetched, nil, ""], use: .rail) { color in
+            answered = true
+            answeredAColour = color != nil
+        }
+        XCTAssertTrue(answered, "completion must run inside the call when nothing is in memory")
+        XCTAssertFalse(answeredAColour)
+        XCTAssertNil(ArtworkColorStore.shared.cachedColor(for: [neverFetched], use: .rail))
     }
 }

@@ -935,6 +935,45 @@ private struct PinnedRowTitleTrackingStyleGate: ViewModifier {
     }
 }
 
+// ── beta.18 verdict (BUG-87/89, R1): the slide hold's verdict and clock ───────────────────────
+//
+// Pure and `nonisolated` so `PinnedRowSlideHoldTests` covers the exact logic
+// `PinnedRowTitleTracking.commitSlide` runs, and the constants it times against.
+extension PinnedRowTitle {
+    nonisolated enum SlideHoldVerdict: Equatable, Sendable {
+        /// Apply the target now (eased, or snapped under Reduce Motion).
+        case apply
+        /// Set the slide to 0 with no animation.
+        case snapToZero
+        /// Keep the target pending until the rest is decided (or the fallback fires).
+        case hold
+    }
+
+    /// - A 0 target while the rows MOVE snaps (round 4 F2's "0 is never held", without the 0.22s
+    ///   ease that let the title detach from a row still travelling); at rest it eases as before.
+    /// - A nonzero target waits while the rows move OR a settle decision is still to come: the
+    ///   decision may be a nudge, and a title applied before it eases a second time after it.
+    nonisolated static func slideHoldVerdict(target: CGFloat, current: CGFloat,
+                                             moving: Bool, restPending: Bool) -> SlideHoldVerdict {
+        if target == 0 {
+            return (moving && current != 0) ? .snapToZero : .apply
+        }
+        return (moving || restPending) ? .hold : .apply
+    }
+
+    /// rc14: "moving" = the rows scroll's own stamp or this title's frame changed inside this
+    /// window. beta.18 verdict (BUG-87/89, R1): no longer the release clock — the per-row settle
+    /// decision (`PinnedRowSettle.observeRestDecision`) is the primary release, and this is only the
+    /// motion test and the FALLBACK chain's re-check cadence.
+    nonisolated static let slideMotionHold: TimeInterval = 0.12
+    /// beta.18 verdict (BUG-87/89, R1): wall-clock fallback for a hold still waiting on a decision.
+    /// Longer than `settleDelay + nudgeDuration` (0.5s) so a decision that comes always wins.
+    nonisolated static let slideHoldMax: TimeInterval = 0.6
+    /// beta.18 verdict (BUG-87/89, R1): hard ceiling per hold EPISODE, from its first hold. Past it
+    /// the pending target applies whatever the rows are doing — a title is never held forever.
+    nonisolated static let slideHoldCeiling: TimeInterval = 1.5
+}
+
 private struct PinnedRowTitleTracking: ViewModifier {
     let rowKey: String
     /// Wave 4 item 6: the row's resting artwork height, feeding the proportional slide clamp
@@ -1001,6 +1040,9 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// Token for this title's stand-down subscription, so teardown clears only its own — see
     /// `PinnedRowSettle.observeStandDown`. Written once on appear.
     @State private var standDownObserverID = 0
+    /// beta.18 verdict (BUG-87/89, R1): token for this title's rest-decision subscription — see
+    /// `PinnedRowSettle.observeRestDecision`. Written once on appear.
+    @State private var restObserverID = 0
 
     // ── Wave W5 (BUG-87: the title that vanished on a cold launch and only came back on relaunch) ──
     //
@@ -1288,6 +1330,11 @@ private struct PinnedRowTitleTracking: ViewModifier {
                 standDownObserverID = PinnedRowSettle.observeStandDown(rowKey: rowKey) {
                     standDownFastPath()
                 }
+                // beta.18 verdict (BUG-87/89, R1): the corrector's rest decision is what releases
+                // a held slide — one landing, after any nudge, instead of one per clock.
+                restObserverID = PinnedRowSettle.observeRestDecision(rowKey: rowKey) {
+                    releaseHeldSlideAtRest()
+                }
             }
             // Keeps the mirror current for the escaping observer above — `onChange` rather than a
             // write in `body` so this stays a side-effect-free render, matching how `liftMode` is
@@ -1310,6 +1357,7 @@ private struct PinnedRowTitleTracking: ViewModifier {
             }
             .onDisappear {
                 PinnedRowSettle.stopObservingStandDown(rowKey: rowKey, token: standDownObserverID)
+                PinnedRowSettle.stopObservingRestDecision(rowKey: rowKey, token: restObserverID)
                 fadeToken &+= 1
                 // Wave W5: the same argument `fadeToken` gets here applies to both Wave W5 timers —
                 // a grace bump or a watchdog tick that outlives its row is a state write against a
@@ -1368,9 +1416,13 @@ private struct PinnedRowTitleTracking: ViewModifier {
     /// rest it eases once, by the measured amount (≈8pt on a held-regime rest). Rest behaviour is
     /// byte-identical to before — only motion is excluded.
     ///
-    /// Cost: one `asyncAfter` per hold episode, not per frame — `slideHoldToken` dedups re-arms
-    /// while a check is already pending, and the pending target is a reference-box write.
-    private static let slideMotionHold: TimeInterval = 0.12
+    /// Cost: one `asyncAfter` chain per hold episode, not per frame — `slideHoldToken` dedups
+    /// re-arms while a check is already pending, and the pending target is a reference-box write.
+    ///
+    /// beta.18 verdict (BUG-87/89, R1): the release is now the settle corrector's DECISION, not
+    /// this title's own quiet clock — see `PinnedRowTitle.slideHoldVerdict` and `commitSlide`.
+    /// `PinnedRowTitle.slideMotionHold` remains the motion test and the fallback cadence.
+    private static var slideMotionHold: TimeInterval { PinnedRowTitle.slideMotionHold }
 
     /// Review r1 P1: a row that has scrolled far above the viewport measures `slide = 72` (the
     /// cap) with its title entirely off screen. Applying that at rest is invisible — but on the
@@ -1385,39 +1437,112 @@ private struct PinnedRowTitleTracking: ViewModifier {
         commitSlide(target: reading.onScreen ? reading.slide : 0, measured: reading.slide)
     }
 
-    private func commitSlide(target: CGFloat, measured: CGFloat) {
-        // Two motion signals, either one holds (device round 2): the rows scroll's own stamp, and
-        // this title's frame having changed inside the window — see `lastGeometryChangeAt`.
+    /// The two motion signals, either one counts (device round 2): the rows scroll's own stamp,
+    /// and this title's frame having changed inside the window — see `lastGeometryChangeAt`.
+    private func slideMotion() -> (moving: Bool, sinceScroll: TimeInterval, sinceTitle: TimeInterval) {
         let sinceScroll = PinnedRowSettle.secondsSinceMotion()
-        let sinceTitleMove = ProcessInfo.processInfo.systemUptime - tracking.lastGeometryChangeAt
-        var moving = sinceScroll < Self.slideMotionHold || sinceTitleMove < Self.slideMotionHold
-        // Round 4 (verification workflow F2): a slide going to ZERO is never held. A title that
-        // legitimately applied a deep slide at a long rest (a BUG-121/122 park) and then moves
-        // DOWN as the row below on the next Up press would otherwise carry that slide, held, for
-        // the whole press — its title 72pt onto its own posters. 0 is never wrong for a title the
-        // viewport fully contains, and an arriving row's measurement never reaches 0 before its
-        // rest (its margin stays negative until the rest), so this cannot re-open the bounce.
-        if target == 0, slide != 0 { moving = false }
-        if moving {
+        let sinceTitle = ProcessInfo.processInfo.systemUptime - tracking.lastGeometryChangeAt
+        return (sinceScroll < Self.slideMotionHold || sinceTitle < Self.slideMotionHold,
+                sinceScroll, sinceTitle)
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): the hold is released by the settle corrector's DECISION
+    /// (`releaseHeldSlideAtRest`, via `PinnedRowSettle.observeRestDecision`), not by this title's
+    /// own 0.12s quiet clock. That clock released before the corrector's 0.25s decision; a nudge
+    /// then moved the rows again, re-held the title, and it eased a second time — Steven's beta.18
+    /// "titles bounce again" and the ~1s collection name. Now the title lands once, after the nudge.
+    private func commitSlide(target: CGFloat, measured: CGFloat) {
+        let motion = slideMotion()
+        let restPending = PinnedRowSettle.isRestPending
+        switch PinnedRowTitle.slideHoldVerdict(target: target, current: slide,
+                                               moving: motion.moving, restPending: restPending) {
+        case .snapToZero:
+            // beta.18 verdict (BUG-87/89, R1): round 4 F2 already never HELD a 0 target, but it
+            // eased it over 0.22s while the row still travelled, so the title visibly detached
+            // from its row. In motion it now snaps; at rest a 0 target keeps the eased path.
+            tracking.pendingSlide = nil
+            tracking.slideHoldToken &+= 1
+            if HomeGeometryProbe.enabled {
+                NSLog("[HomeScrollProbe] slide %@",
+                      "snap0 row=\(rowKey) from=\(Int(slide.rounded())) measured=\(Int(measured.rounded()))")
+            }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { slide = 0 }
+        case .hold:
             let alreadyPending = tracking.pendingSlide != nil
             tracking.pendingSlide = target
             guard !alreadyPending else { return }
+            // First hold of an episode: stamp the episode (the ceiling is per episode) and start
+            // the fallback chain. A decision normally releases first; see `scheduleSlideHoldFallback`.
+            tracking.slideHoldStartedAt = ProcessInfo.processInfo.systemUptime
             tracking.slideHoldToken &+= 1
-            let token = tracking.slideHoldToken
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.slideMotionHold) {
-                guard token == tracking.slideHoldToken, let pending = tracking.pendingSlide else { return }
-                tracking.pendingSlide = nil
-                commitSlide(target: pending, measured: pending)
-            }
-            return
+            scheduleSlideHoldFallback(token: tracking.slideHoldToken, after: Self.slideMotionHold)
+        case .apply:
+            tracking.pendingSlide = nil
+            tracking.slideHoldToken &+= 1
+            applySlideTarget(target, measured: measured, via: "immediate", motion: motion)
         }
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): the wall-clock FALLBACK for a held slide, re-checked on
+    /// the `slideMotionHold` cadence (a handful of main-queue hops per episode, never per frame).
+    /// It releases:
+    /// - `quiet`: the rows are still AND no decision is coming (`!isRestPending`) — the rc14 rest
+    ///   rule, kept for holds that start after the corrector has already decided (the title's own
+    ///   end-of-reveal creep), which would otherwise always wait the full `slideHoldMax`;
+    /// - `fallback`: a decision was expected but has not come by `slideHoldMax` and the rows are
+    ///   still, or the episode has reached `slideHoldCeiling` whatever the rows are doing.
+    private func scheduleSlideHoldFallback(token: Int, after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard token == tracking.slideHoldToken, tracking.pendingSlide != nil else { return }
+            let elapsed = ProcessInfo.processInfo.systemUptime - tracking.slideHoldStartedAt
+            if elapsed >= PinnedRowTitle.slideHoldCeiling {
+                releaseHeldSlide(via: "fallback")
+                return
+            }
+            if !slideMotion().moving {
+                if !PinnedRowSettle.isRestPending {
+                    releaseHeldSlide(via: "quiet")
+                    return
+                }
+                if elapsed >= PinnedRowTitle.slideHoldMax {
+                    releaseHeldSlide(via: "fallback")
+                    return
+                }
+            }
+            scheduleSlideHoldFallback(token: token, after: Self.slideMotionHold)
+        }
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): the rest-decision observer. The decision says the rows will
+    /// not be corrected; it does not say THIS title has stopped (the engine's end-of-reveal creep
+    /// is uncounted by `noteScroll` — rc14 device round 2), so a title still moving keeps its hold
+    /// and the fallback chain releases it on the first quiet re-check.
+    private func releaseHeldSlideAtRest() {
+        guard tracking.pendingSlide != nil else { return }
+        guard !slideMotion().moving else { return }
+        releaseHeldSlide(via: "settle")
+    }
+
+    /// beta.18 verdict (BUG-87/89, R1): applies the held target, once. Bumping the token kills the
+    /// fallback chain; `via=` on the probe line says which release won.
+    private func releaseHeldSlide(via: String) {
+        guard let pending = tracking.pendingSlide else { return }
         tracking.pendingSlide = nil
+        tracking.slideHoldToken &+= 1
+        applySlideTarget(pending, measured: pending, via: via, motion: slideMotion())
+    }
+
+    private func applySlideTarget(_ target: CGFloat, measured: CGFloat, via: String,
+                                  motion: (moving: Bool, sinceScroll: TimeInterval, sinceTitle: TimeInterval)) {
         if HomeGeometryProbe.enabled, slide != target {
             NSLog("[HomeScrollProbe] slide %@",
                   "apply row=\(rowKey) from=\(Int(slide.rounded())) to=\(Int(target.rounded()))"
                     + " measured=\(Int(measured.rounded()))"
-                    + " sinceScroll=\(Int((min(sinceScroll, 99) * 1000).rounded()))ms"
-                    + " sinceTitle=\(Int((min(sinceTitleMove, 99) * 1000).rounded()))ms")
+                    + " sinceScroll=\(Int((min(motion.sinceScroll, 99) * 1000).rounded()))ms"
+                    + " sinceTitle=\(Int((min(motion.sinceTitle, 99) * 1000).rounded()))ms"
+                    + " via=\(via)")
         }
         guard slide != target else { return }
         if reduceMotion {
@@ -2634,6 +2759,11 @@ enum PinnedRowSettle {
     /// overwrites its own key.
     nonisolated(unsafe) private static var standDownObservers: [String: (token: Int, notify: @MainActor () -> Void)] = [:]
     nonisolated(unsafe) private static var standDownObserverSeq = 0
+    /// beta.18 verdict (BUG-87/89, R1): per-row "the corrector has decided this rest" observers —
+    /// see `observeRestDecision`. Same keying, token scoping and host-swap rule as
+    /// `standDownObservers`; the difference is delivery, which is a BROADCAST (`notifyRestDecided`).
+    nonisolated(unsafe) private static var restObservers: [String: (token: Int, notify: @MainActor () -> Void)] = [:]
+    nonisolated(unsafe) private static var restObserverSeq = 0
     /// Wave W5 (BUG-89). The GEOMETRY REGIME the corrector's session-wide state was accumulated
     /// under — see `noteRegimeChange`. Published by Home (`plan.regimeKey`), reported as `regime=`.
     nonisolated(unsafe) private static var regimeKey: String?
@@ -3223,6 +3353,10 @@ enum PinnedRowSettle {
         if HomeGeometryProbe.enabled {
             NSLog("[HomeScrollProbe] settle %@", "abandoned=1 row=\(latest?.rowKey ?? "-")")
         }
+        // beta.18 verdict (BUG-87/89, R1): a spent chain will not move the rows either — release
+        // any held title slides now rather than at their wall-clock fallback. Notified BEFORE the
+        // guard so both abandon shapes release; an observer applies only if its title is still.
+        defer { notifyRestDecided(reason: "abandoned") }
         guard plan.leavesArmed, armSource == "epoch" else { return }
         armed = false
         epochRearmPending = false
@@ -4091,6 +4225,72 @@ enum PinnedRowSettle {
         standDownObservers.removeValue(forKey: rowKey)
     }
 
+    // ── beta.18 verdict (BUG-87/89, R1): the rest decision, published ──────────────────────────
+    //
+    // Steven's beta.18 report: titles bounce again and the collection name takes ~1s to settle
+    // after a row-to-row move. Two clocks moved the same title. The BUG-37 slide hold released on
+    // its own wall clock (0.12s of quiet), while this corrector decides 0.25s after the last move
+    // and may then NUDGE — and the nudge is motion, so the already-released title had eased once,
+    // got re-held by the nudge, and eased a second time (≈1.2s, two visible title motions).
+    //
+    // The fix makes the corrector the clock: a held title is released by the settle DECISION, the
+    // one moment the rows are known to be at rest with no correction coming.
+
+    /// Registers a title's "this rest is decided" callback; returns the token for
+    /// `stopObservingRestDecision`. Token-scoped for the same `.id()`-remount reason as
+    /// `observeStandDown`.
+    nonisolated static func observeRestDecision(rowKey: String,
+                                                _ notify: @escaping @MainActor () -> Void) -> Int {
+        restObserverSeq &+= 1
+        restObservers[rowKey] = (token: restObserverSeq, notify: notify)
+        return restObserverSeq
+    }
+
+    nonisolated static func stopObservingRestDecision(rowKey: String, token: Int) {
+        guard restObservers[rowKey]?.token == token else { return }
+        restObservers.removeValue(forKey: rowKey)
+    }
+
+    /// A settle chain ENDED without moving the rows: the rest is decided. Calls EVERY registered
+    /// title, not just the focused row's — a decision means all rows are at rest and the corrector
+    /// will not move them, and the non-focused rows never get a decision of their own. Returns how
+    /// many observers were called (the probe line's `released=`; tests assert it).
+    ///
+    /// Called from the main queue (the settle work item, `abandonChain`), like `standDown`.
+    @discardableResult
+    nonisolated static func notifyRestDecided(reason: String) -> Int {
+        // Snapshot first: an observer's state write must never be able to mutate the registry
+        // under the iteration.
+        let observers = Array(restObservers.values)
+        if HomeGeometryProbe.enabled {
+            NSLog("[HomeScrollProbe] settle %@", "decided reason=\(reason) released=\(observers.count)")
+        }
+        MainActor.assumeIsolated {
+            for observer in observers { observer.notify() }
+        }
+        return observers.count
+    }
+
+    /// Whether a rest decision is still to come: a settle is armed, or a correction is in flight
+    /// (its own scroll will arm the next settle). A held slide target waits while this is true —
+    /// see `PinnedRowTitle.slideHoldVerdict`.
+    nonisolated static var isRestPending: Bool {
+        armed || (nudgeDeadline.map { Date() < $0 } ?? false)
+    }
+
+    /// The `reason=` for a settle plan that ended the chain without a correction, derived from its
+    /// report so the dozen `return Plan(…)` sites stay untouched: `nofocus`, `standdown`, the first
+    /// key after `nudge=0` (`topRest`, `dropped`, `pullback`, `budget`, `room`, …), else `clean`.
+    nonisolated static func restDecisionReason(report: String) -> String {
+        if report.contains("state=nofocus") { return "nofocus" }
+        if report.contains("standDown=") { return "standdown" }
+        guard let range = report.range(of: "nudge=0 ") else { return "clean" }
+        let tail = report[range.upperBound...]
+        let token = tail.split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
+        let key = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? ""
+        return key.isEmpty ? "clean" : key
+    }
+
     /// The cap `net` is reported against — the same one `PinnedRowTitle.reading` binds with, so
     /// the settle line and the title line can never disagree about what "net" means.
     nonisolated private static var maxSlideCapForReport: CGFloat {
@@ -4323,9 +4523,20 @@ struct PinnedRowSettleRevealModifier: ViewModifier {
             if PinnedRowSettle.rejectCoveredSettle() {
                 settleWork.item?.cancel()
                 settleWork.item = nil
+                // beta.18 verdict (BUG-87/89, R1): a covered Home is never corrected, so its held
+                // titles must not wait on a decision that will not come.
+                PinnedRowSettle.notifyRestDecided(reason: "covered")
                 return
             }
             guard let plan = PinnedRowSettle.settlePlan(token: token) else { return }
+            // beta.18 verdict (BUG-87/89, R1): a chain that ENDED without a correction is the rest
+            // decision held title slides wait for. A plan WITH a nudge notifies nothing: the nudge
+            // is motion, `noteScroll` arms the next settle, and THAT clean decision releases — so
+            // the title lands once, after the nudge, instead of easing twice.
+            if plan.targetY == nil, plan.retryAfter == nil {
+                PinnedRowSettle.notifyRestDecided(
+                    reason: PinnedRowSettle.restDecisionReason(report: plan.report))
+            }
             // Control-flow plans carry no measurement and must not reach the harness oracle.
             if !plan.report.isEmpty { onSettle?(plan.report) }
             // BUG-89 (rc2): the ONE place every settle DECISION passes through — exactly one line
@@ -4419,6 +4630,9 @@ private final class TitleTrackingCache {
     /// be `@State`. See `PinnedRowTitleTracking.applySlide`.
     var pendingSlide: CGFloat?
     var slideHoldToken = 0
+    /// beta.18 verdict (BUG-87/89, R1): when the current hold EPISODE began (its first hold), on
+    /// the `systemUptime` clock — what `PinnedRowTitle.slideHoldCeiling` is measured from.
+    var slideHoldStartedAt: TimeInterval = 0
     /// rc14 device round 2 (Christian, Up walk): when this title's own geometry last changed —
     /// the SECOND motion signal the slide gate consults. The scroll stamp (`noteScroll`) counts a
     /// frame as motion only past `driftTolerance` (4pt) or the windowed displacement, and the
@@ -4542,6 +4756,11 @@ struct CatalogRowView: View {
     /// automatic focus-driven scroll never fires — the row has to scroll itself, and Reduce Motion
     /// governs whether that scroll animates (see `expansionChanged(for:expanded:proxy:)`).
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// beta.18 verdict (BUG-118, R3): the same live `debug.rowEdgeFade` knob
+    /// `RowEdgeEffectStyleModifier` reads (default 2; 1 = Soft). In Soft the row's own soft mask
+    /// owns the leading edge, so the BUG-92 leading clip opens wide instead of cutting it hard.
+    @AppStorage("debug.rowEdgeFade") private var rowEdgeFadeMode: Int = 2
 
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
@@ -4751,7 +4970,10 @@ struct CatalogRowView: View {
                     // ~2000pt open, so this can never reach a direction BUG-92 was not about — a
                     // card's vertical lift, the row's reach band, or the inline trailer's rightward
                     // morph (UX-4a). See `RowLeadingEdgeClip`.
-                    .clipShape(RowLeadingEdgeClip(allowance: leadingEdgeAllowance))
+                    //
+                    // beta.18 verdict (BUG-118, R3): in Soft the mask owns the leading edge; 400 =
+                    // RowLeadingEdgeClip.softModeAllowance once W2-F lands.
+                    .clipShape(RowLeadingEdgeClip(allowance: rowEdgeFadeMode == 1 ? 400 : leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
                 // BUG-118: see `RowEdgeEffectStyleModifier` — same receiver `.scrollClipDisabled()`

@@ -13,10 +13,19 @@ import UIKit
 /// card's `@State` away once it scrolls far enough off. The colour has to outlive any one card,
 /// or every re-mounted card would sample the same pixels again.
 ///
+/// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): the same sampled mean now also feeds
+/// the card-depth rail ("Depth Takes Poster Color", `depth_rail_poster_color`, default OFF). The rail
+/// is an UNFOCUSED-card treatment, so its colour has to be known without focus: with that toggle on,
+/// a card asks once per URL when its image loads (`CachedAsyncImage.onImageLoaded`). The store keeps
+/// the raw mean per URL and derives two lifts from it (`Use.ring`: the unchanged ring floors;
+/// `Use.rail`: full brightness, saturation clamped 0.40…0.70, so a rail stays an edge highlight and
+/// not a neon frame).
+///
 /// Cost contract (the BUG-19/BUG-41 lesson: work on the focus path is what the tester feels at 10
-/// feet). A colour is computed ONCE per URL, off the main actor, and only because a card asked for
-/// it on a focus GAIN. Nothing here runs when an image loads, when a row scrolls, or per frame. The
-/// sample itself is one 16×16 draw plus 256 pixel reads.
+/// feet). A colour is computed ONCE per URL, off the main actor, because a card asked for it: on a
+/// focus GAIN for the ring, and once on image load for the rail, and only when the depth toggle is
+/// on. With both toggles off nothing here runs. Nothing runs per frame or when a row scrolls. The
+/// sample itself is one 16×16 draw plus 256 pixel reads, on a `.utility` task.
 ///
 /// Not an `ObservableObject` on purpose: a published dictionary has no per-key granularity (see
 /// `TitleLogoStore`'s type note), so one card's colour landing would re-render every card on
@@ -39,7 +48,23 @@ final class ArtworkColorStore {
     /// art is effectively grey (see `dominantColor(of:)`) and the card keeps its own ring colour.
     /// It is cached like a hit so a black-and-white poster is not re-sampled on every focus.
     private struct Entry {
-        let color: Color?
+        /// The raw saturation-weighted mean (nil = grey); both lifts derive from it.
+        let mean: Mean?
+    }
+
+    /// beta.18 verdict: which lift of the sampled mean a caller wants.
+    enum Use {
+        /// Focus ring: floors s ≥ 0.55, v ≥ 0.85 (`ringLifted`).
+        case ring
+        /// Depth rail: v = 1.0, s clamped to 0.40…0.70 (`railLifted`).
+        case rail
+    }
+
+    /// Sampled mean colour in HSB (each 0…1), before any lift.
+    struct Mean: Sendable, Equatable {
+        let h: CGFloat
+        let s: CGFloat
+        let v: CGFloat
     }
 
     private var entries: [String: Entry] = [:]
@@ -47,11 +72,11 @@ final class ArtworkColorStore {
     private var order: [String] = []
     /// Completions parked behind a sample already running for the same URL, so two cards showing
     /// one poster that gain focus back to back share a single sample.
-    private var pending: [String: [@MainActor (Color?) -> Void]] = [:]
+    private var pending: [String: [@MainActor (Mean?) -> Void]] = [:]
 
-    /// Same bound `ArtworkLetterbox` uses for its per-URL memo. An entry is a few bytes; 500 focus
-    /// gains on distinct artwork is a long browsing session.
-    static let maxEntries = 500
+    /// An entry is a few bytes. beta.18 verdict: 500 → 1000, because the rail samples every loaded
+    /// poster (not only focused ones), so a long browse touches many more distinct URLs.
+    static let maxEntries = 1000
 
     /// Ring floor (see `lifted(h:s:v:)`). A dominant colour pulled from a muted or dark poster is
     /// usually too dull to read as a focus ring on a dark screen at 10 feet; the hue is the part
@@ -60,6 +85,11 @@ final class ArtworkColorStore {
     /// visible as the accent ring it replaces.
     nonisolated static let minRingSaturation: CGFloat = 0.55
     nonisolated static let minRingBrightness: CGFloat = 0.85
+
+    /// Rail lift (see `railLifted`): saturation clamp and fixed brightness.
+    nonisolated static let railMinSaturation: CGFloat = 0.40
+    nonisolated static let railMaxSaturation: CGFloat = 0.70
+    nonisolated static let railBrightness: CGFloat = 1.0
 
     /// Below this MEAN chroma weight per pixel the poster counts as grey and `dominantColor`
     /// returns nil. Not 0: near-black JPEG noise (an RGB of 3/1/1 reads as 67% saturated) gives a
@@ -74,8 +104,8 @@ final class ArtworkColorStore {
     // MARK: - Card API
 
     /// The ring colour for one artwork URL. See `color(for urls:completion:)`.
-    func color(for url: String?, completion: @escaping @MainActor (Color?) -> Void) {
-        color(for: [url], completion: completion)
+    func color(for url: String?, use: Use = .ring, completion: @escaping @MainActor (Color?) -> Void) {
+        color(for: [url], use: use, completion: completion)
     }
 
     /// The ring colour for whichever of `urls` the card is actually showing: a card passes its
@@ -88,23 +118,24 @@ final class ArtworkColorStore {
     /// - A candidate with neither is skipped (that art is not what the card is showing).
     ///
     /// `completion(nil)` when no candidate is in memory, and for grey art. Never downloads.
-    func color(for urls: [String?], completion: @escaping @MainActor (Color?) -> Void) {
+    func color(for urls: [String?], use: Use = .ring, completion: @escaping @MainActor (Color?) -> Void) {
+        let answer: @MainActor (Mean?) -> Void = { mean in completion(Self.color(from: mean, use: use)) }
         switch lookup(urls) {
         case .notInMemory:
             completion(nil)
-        case let .known(color):
-            completion(color)
+        case let .known(mean):
+            answer(mean)
         case let .needsSample(key, image):
             if pending[key] != nil {
-                pending[key]?.append(completion)
+                pending[key]?.append(answer)
                 return
             }
-            pending[key] = [completion]
+            pending[key] = [answer]
             Task {
-                let color = await Task.detached(priority: .utility) {
-                    ArtworkColorStore.dominantColor(of: image)
+                let mean = await Task.detached(priority: .utility) {
+                    ArtworkColorStore.meanChroma(of: image)
                 }.value
-                self.finish(key, color)
+                self.finish(key, mean)
             }
         }
     }
@@ -112,16 +143,28 @@ final class ArtworkColorStore {
     /// Synchronous read for a card's `body`: the verdict already sampled for the art the card is
     /// showing, or nil when none is (not sampled yet, not in memory, or grey). A dictionary read
     /// and at most one `NSCache` probe per candidate; never samples, never writes.
-    func cachedColor(for urls: [String?]) -> Color? {
-        if case let .known(color) = lookup(urls) { return color }
+    func cachedColor(for urls: [String?], use: Use = .ring) -> Color? {
+        if case let .known(mean) = lookup(urls) { return Self.color(from: mean, use: use) }
         return nil
+    }
+
+    /// The SwiftUI colour for one lift of a sampled mean; nil for grey.
+    nonisolated static func color(from mean: Mean?, use: Use) -> Color? {
+        guard let mean else { return nil }
+        let lifted: (h: CGFloat, s: CGFloat, v: CGFloat)
+        switch use {
+        case .ring: lifted = ringLifted(h: mean.h, s: mean.s, v: mean.v)
+        case .rail: lifted = railLifted(h: mean.h, s: mean.s, v: mean.v)
+        }
+        let out = rgb(h: lifted.h, s: lifted.s, v: lifted.v)
+        return Color(.sRGB, red: Double(out.r), green: Double(out.g), blue: Double(out.b), opacity: 1)
     }
 
     // MARK: - Lookup
 
     private enum Lookup {
         case notInMemory
-        case known(Color?)
+        case known(Mean?)
         case needsSample(key: String, image: UIImage)
     }
 
@@ -129,7 +172,7 @@ final class ArtworkColorStore {
     /// synchronous peek and the asynchronous answer can never disagree about which art counts.
     private func lookup(_ urls: [String?]) -> Lookup {
         for case let raw? in urls where !raw.isEmpty {
-            if let entry = entries[raw] { return .known(entry.color) }
+            if let entry = entries[raw] { return .known(entry.mean) }
             // Same `URL(string:)` the card's `CachedAsyncImage(string:)` built, so the NSURL key
             // matches the one `ArtworkStore` cached the decoded image under.
             if let url = URL(string: raw), let image = ArtworkStore.cachedImage(for: url) {
@@ -139,10 +182,10 @@ final class ArtworkColorStore {
         return .notInMemory
     }
 
-    private func finish(_ key: String, _ color: Color?) {
-        remember(Entry(color: color), for: key)
+    private func finish(_ key: String, _ mean: Mean?) {
+        remember(Entry(mean: mean), for: key)
         let waiters = pending.removeValue(forKey: key) ?? []
-        for waiter in waiters { waiter(color) }
+        for waiter in waiters { waiter(mean) }
     }
 
     private func remember(_ entry: Entry, for key: String) {
@@ -161,14 +204,27 @@ final class ArtworkColorStore {
     /// `dominantColor(of: CGImage)` as a SwiftUI colour, nil for grey art or an image with no
     /// bitmap behind it. Blocking for well under a millisecond; the store calls it off-main.
     nonisolated static func dominantColor(of image: UIImage) -> Color? {
-        guard let cgImage = image.cgImage, let rgb = dominantColor(of: cgImage) else { return nil }
-        return Color(.sRGB, red: Double(rgb.r), green: Double(rgb.g), blue: Double(rgb.b), opacity: 1)
+        color(from: meanChroma(of: image), use: .ring)
+    }
+
+    /// beta.18 verdict: the raw (unlifted) mean for `image`, nil for grey or no bitmap. What the
+    /// store caches; `dominantColor(of:)` and the rail both derive from it.
+    nonisolated static func meanChroma(of image: UIImage) -> Mean? {
+        guard let cgImage = image.cgImage else { return nil }
+        return meanChroma(of: cgImage)
     }
 
     /// The ring colour for `cgImage`, already lifted for ring use (`lifted(h:s:v:)`), or nil when
     /// the image is effectively grey. Draws the image into a 16×16 RGBA8 bitmap, then takes a
     /// saturation-weighted mean (`dominantColor(rgba:)`).
     nonisolated static func dominantColor(of cgImage: CGImage) -> (r: CGFloat, g: CGFloat, b: CGFloat)? {
+        guard let mean = meanChroma(of: cgImage) else { return nil }
+        let ring = ringLifted(h: mean.h, s: mean.s, v: mean.v)
+        return rgb(h: ring.h, s: ring.s, v: ring.v)
+    }
+
+    /// The raw 16×16 saturation-weighted mean for `cgImage` (see `meanChroma(rgba:)`), unlifted.
+    nonisolated static func meanChroma(of cgImage: CGImage) -> Mean? {
         let side = sampleSide
         let bytesPerRow = side * 4
         var pixels = [UInt8](repeating: 0, count: bytesPerRow * side)
@@ -189,7 +245,7 @@ final class ArtworkColorStore {
             return true
         }
         guard drawn else { return nil }
-        return dominantColor(rgba: pixels)
+        return meanChroma(rgba: pixels)
     }
 
     /// The weighting itself, on premultiplied RGBA8 bytes, split from the draw so it reads (and
@@ -203,6 +259,14 @@ final class ArtworkColorStore {
     /// out: a solid grey poster must keep the accent ring, so grey has to come back nil, and
     /// `minMeanChromaWeight` makes that call explicitly instead.
     nonisolated static func dominantColor(rgba pixels: [UInt8]) -> (r: CGFloat, g: CGFloat, b: CGFloat)? {
+        guard let mean = meanChroma(rgba: pixels) else { return nil }
+        let ring = ringLifted(h: mean.h, s: mean.s, v: mean.v)
+        return rgb(h: ring.h, s: ring.s, v: ring.v)
+    }
+
+    /// beta.18 verdict: the weighting below, returning the raw mean as HSB (nil = grey) so the ring
+    /// and rail lifts derive from one number.
+    nonisolated static func meanChroma(rgba pixels: [UInt8]) -> Mean? {
         var sumR: CGFloat = 0, sumG: CGFloat = 0, sumB: CGFloat = 0, sumW: CGFloat = 0
         var counted = 0
         var index = 0
@@ -229,15 +293,26 @@ final class ArtworkColorStore {
         }
         guard counted > 0, sumW > 0, sumW / CGFloat(counted) >= minMeanChromaWeight else { return nil }
         let mean = hsb(r: sumR / sumW, g: sumG / sumW, b: sumB / sumW)
-        let ring = lifted(h: mean.h, s: mean.s, v: mean.v)
-        return rgb(h: ring.h, s: ring.s, v: ring.v)
+        return Mean(h: mean.h, s: mean.s, v: mean.v)
     }
 
     /// Lifts a sampled colour into one that reads as a focus ring: the hue is kept, saturation and
     /// brightness are floored at `minRingSaturation` / `minRingBrightness` (see those). A colour
     /// already past both floors is returned unchanged.
     nonisolated static func lifted(h: CGFloat, s: CGFloat, v: CGFloat) -> (h: CGFloat, s: CGFloat, v: CGFloat) {
+        ringLifted(h: h, s: s, v: v)
+    }
+
+    /// The ring lift (unchanged numbers; `lifted` is its pre-beta.18 name).
+    nonisolated static func ringLifted(h: CGFloat, s: CGFloat, v: CGFloat) -> (h: CGFloat, s: CGFloat, v: CGFloat) {
         (h, min(1, max(s, minRingSaturation)), min(1, max(v, minRingBrightness)))
+    }
+
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): the depth-rail lift. Hue kept, full
+    /// brightness, saturation clamped to 0.40…0.70: a rail is a 1-3 pt hairline, so it needs to be
+    /// bright to read, but a fully saturated poster colour would turn the edge into a neon frame.
+    nonisolated static func railLifted(h: CGFloat, s: CGFloat, v: CGFloat) -> (h: CGFloat, s: CGFloat, v: CGFloat) {
+        (h, min(railMaxSaturation, max(railMinSaturation, s)), railBrightness)
     }
 
     /// RGB (0…1) → HSB (each 0…1, hue 0 = red, wrapping). Hue is 0 for a grey.

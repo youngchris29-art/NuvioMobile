@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import NuvioTV
 
 /// BUG-110 (rc12, "the three Card Depth strength levels look identical on my TV"): coverage for the
@@ -214,5 +215,37 @@ final class CardDepthRailStyleTests: XCTestCase {
         XCTAssertFalse(CardDepthStyle.haloSuppressed(focused: false, ringBandReserved: true))
         XCTAssertFalse(CardDepthStyle.haloSuppressed(focused: true, ringBandReserved: false))
         XCTAssertTrue(CardDepthStyle.haloSuppressed(focused: true, ringBandReserved: true))
+    }
+
+    // MARK: - railColor(tint:) (beta.18 verdict, FEAT-46 corrected / FEAT-40 follow-up)
+
+    /// No tint (every call site but the four poster-family cards) keeps the white rail.
+    func testRailColorDefaultsToWhite() {
+        XCTAssertEqual(CardDepthStyle.railColor(tint: nil), Color.white)
+    }
+
+    func testRailColorTakesTheTint() {
+        let tint = Color(.sRGB, red: 1, green: 0.5, blue: 0, opacity: 1)
+        XCTAssertEqual(CardDepthStyle.railColor(tint: tint), tint)
+        XCTAssertNotEqual(CardDepthStyle.railColor(tint: tint), Color.white)
+    }
+
+    /// The tint only recolours the rail: widths and the alpha stops come from pure functions that
+    /// take no colour at all, so they are identical with or without a tint at every preset.
+    func testRailStopsUnchangedByTint() {
+        for strength in [28, 42, 56] {
+            let edge = Double(strength) / 100
+            for coverage in [0.0, 0.5, 1.0] {
+                let before = CardDepthStyle.railStops(edge: edge, coverage: coverage)
+                _ = CardDepthStyle.railColor(tint: .orange)
+                let after = CardDepthStyle.railStops(edge: edge, coverage: coverage)
+                XCTAssertEqual(before.top, after.top, accuracy: 0.0000001)
+                XCTAssertEqual(before.mid, after.mid, accuracy: 0.0000001)
+                XCTAssertEqual(before.bottom, after.bottom, accuracy: 0.0000001)
+            }
+            XCTAssertEqual(CardDepthStyle.railWidth(edgeStrength: strength), CardDepthStyle.railWidth(edgeStrength: strength))
+        }
+        // The documented anchors still hold.
+        XCTAssertEqual(CardDepthStyle.railStops(edge: 0.42, coverage: 1.0).top, 0.60, accuracy: 0.0001)
     }
 }

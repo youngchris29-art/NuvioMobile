@@ -28,6 +28,9 @@ struct CachedAsyncImage<Failure: View>: View {
     /// compiling — and rendering — unchanged. Callers with a more meaningful fallback (a title, a
     /// person glyph, a company name) pass their own `failure:` builder instead.
     private let failureContent: () -> Failure
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): optional hook run once per loaded
+    /// image (see `onImageLoaded`). nil = zero cost; every existing call site leaves it nil.
+    private var onLoaded: (@MainActor (UIImage) -> Void)?
 
     @StateObject private var loader = CachedImageLoader()
     /// 1.0 until (and unless) `ArtworkLetterbox` measures real bars in the loaded image.
@@ -60,6 +63,17 @@ struct CachedAsyncImage<Failure: View>: View {
         self.failureContent = failure
     }
 
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): chained setter for a post-load hook.
+    /// `action` runs on the main actor each time a new decoded image lands (the same moment the
+    /// letterbox crop task keys on), BEFORE the crop logic. `ArtworkStore` has already put the image
+    /// in memory by then, so `ArtworkStore.cachedImage(for:)` hits. Returns a copy; the inits are
+    /// untouched.
+    func onImageLoaded(_ action: @escaping @MainActor (UIImage) -> Void) -> CachedAsyncImage {
+        var copy = self
+        copy.onLoaded = action
+        return copy
+    }
+
     var body: some View {
         ZStack {
             if let image = loader.image {
@@ -85,6 +99,7 @@ struct CachedAsyncImage<Failure: View>: View {
         // `ArtworkLetterbox`). Keyed on the image (NSObject identity) so a URL change that swaps
         // the image re-runs, and a re-render that doesn't, doesn't.
         .task(id: loader.image) {
+            if let loaded = loader.image { onLoaded?(loaded) }
             guard cropsBakedLetterboxBars else { return }
             guard let image = loader.image, let key = url?.absoluteString else {
                 barCropZoom = 1

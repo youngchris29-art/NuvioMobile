@@ -486,6 +486,16 @@ struct FolderTile: View {
     /// the ring itself.
     @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
     @State private var posterRingTint: Color?
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color", default
+    /// OFF (Appearance owns the toggle; same independent-read pattern as the keys above). With it on,
+    /// the card-depth rail takes the poster's dominant colour (`ArtworkColorStore`, `Use.rail`),
+    /// sampled once per URL when the image loads, since the rail draws on UNFOCUSED cards. OFF: the
+    /// rail is the white it always was and nothing is sampled.
+    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    /// The last rail colour the store answered for this card; the re-render trigger for a colour
+    /// sampled after the image landed (a store hit is read straight from `body`, never written here).
+    @State private var depthRailTint: Color?
+    @Environment(\.cardDepthStyle) private var depthStyle
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -502,6 +512,19 @@ struct FolderTile: View {
     private var posterTint: Color? {
         guard samplesPosterColor, stillFocused else { return nil }
         return ArtworkColorStore.shared.cachedColor(for: [coverURLString]) ?? posterRingTint
+    }
+
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour only when the
+    /// toggle is on AND depth actually draws for this surface (and the tile has a real cover to sample: the gradient placeholder keeps the white rail).
+    private var samplesDepthColor: Bool {
+        depthTakesPosterColor && depthStyle.isEnabled(for: .posters) && hasArtworkCover
+    }
+
+    /// The rail tint handed to `nuvioCardDepth`: store peek first (a read, so a colour sampled by
+    /// another row or before a recycle is on the rail from the first frame), then the local state.
+    private var depthRailTintResolved: Color? {
+        guard samplesDepthColor else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: [coverURLString], use: .rail) ?? depthRailTint
     }
 
     /// BUG-108: in ring mode this tile owns its lift, so the ring it draws on its own artwork rides
@@ -687,6 +710,17 @@ struct FolderTile: View {
                 // animation, is the 700–830 ms per-step main-thread hang the tester measured.
                 if let cover, !cover.isEmpty {
                     CachedAsyncImage(string: cover)
+                        // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
+                        // the image lands. No animation (the image's own fade is running); a store hit is already on the
+                        // rail via `depthRailTintResolved`, so it writes no state.
+                        .onImageLoaded { _ in
+                            guard samplesDepthColor else { return }
+                            let sources = [coverURLString]
+                            if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
+                            ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                                if depthRailTint != color { depthRailTint = color }
+                            }
+                        }
                 } else {
                     LinearGradient(
                         colors: [Theme.Palette.accent.opacity(0.55), Theme.Palette.background],
@@ -769,7 +803,8 @@ struct FolderTile: View {
             .nuvioCardDepth(
                 RoundedRectangle(cornerRadius: style.cornerRadius),
                 surface: .posters,
-                artworkPresent: hasArtworkCover
+                artworkPresent: hasArtworkCover,
+                railTint: depthRailTintResolved
             )
             // 2026-08-30 no-zoom investigation: same overpaint as TileFocusLift's ring, same fix —
             // the ring used to strokeBorder straight over this tile's own cover/logo/GIF stack.
@@ -1079,6 +1114,17 @@ struct FolderDetailView: View {
     @Environment(\.dismiss) private var dismiss
     /// Drives the TMDB filter editor cover for the selected tab's tmdb source.
     @State private var editing: FolderDetailViewModel.EditableSource?
+    /// beta.18 verdict (FEAT-40 follow-up, Steven: "the folder logo should leave when you scroll, like
+    /// the official app"): true once the grid has scrolled past its top (content offset > 8 pt).
+    /// Derived through a Bool transform in `onScrollGeometryChange`, so it writes once per crossing,
+    /// not per scroll frame. Drives the header's exit (offset + fade) and `Edit Filters`' enablement.
+    @State private var gridScrolled = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// beta.18 verdict (FEAT-40 follow-up): how far the header slides up on exit — its own height
+    /// (top padding 32 + the 150 pt logo slot), so it leaves the screen upward completely instead
+    /// of parking over the grid. The layout slot is unchanged, so the grid never reflows.
+    private static let headerExitDistance = Theme.Size.heroLogoSlotHeight + 32
 
     init(route: FolderRoute) {
         _model = StateObject(wrappedValue: FolderDetailViewModel(route: route))
@@ -1204,7 +1250,25 @@ struct FolderDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollClipDisabled()
+                // beta.18 verdict (FEAT-40 follow-up): the one scroll signal this page has. A Bool
+                // transform, so SwiftUI only calls `action` when the answer flips.
+                .onScrollGeometryChange(for: Bool.self, of: { geometry in
+                    geometry.contentOffset.y > 8
+                }, action: { _, scrolled in
+                    gridScrolled = scrolled
+                })
             }
+
+            #if DEBUG
+            // beta.18 verdict: invisible, harness-readable header state for test69
+            // (`folder_header_state`, `scrolled=0|1`) — same hidden-Text pattern as HomeView's
+            // `debug_*` labels.
+            Text("scrolled=\(gridScrolled ? 1 : 0)")
+                .font(.system(size: 8))
+                .opacity(0.011)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("folder_header_state")
+            #endif
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
@@ -1285,6 +1349,10 @@ struct FolderDetailView: View {
                             .font(Theme.Font.meta)
                     }
                     .buttonStyle(.bordered)
+                    // beta.18 verdict (FEAT-40 follow-up): while the header is scrolled away the
+                    // button is invisible; disabled so it cannot take focus from Up on the first grid
+                    // row. Re-enables when the grid returns to the top.
+                    .disabled(gridScrolled)
                     .accessibilityIdentifier("folder.editFilters")
                 }
             }
@@ -1309,8 +1377,16 @@ struct FolderDetailView: View {
             .allowsHitTesting(false)
         }
         .zIndex(1)
-        // rc13 UI test69 (`FolderHeaderStaysPinnedWhileGridScrolls`): reads this frame before and
-        // after scrolling the grid to prove the header never moves.
+        // beta.18 verdict (FEAT-40 follow-up): the header is no longer pinned for the whole scroll —
+        // it exits upward and fades once the grid leaves its top, and returns when the grid is back
+        // at the top. Offset + opacity only: the layout slot is UNCHANGED, so the grid does not
+        // reflow. If the device pass shows recycled cards popping into the vacated band, the
+        // follow-up is a top-only mask on the ScrollView.
+        .offset(y: gridScrolled ? -Self.headerExitDistance : 0)
+        .opacity(gridScrolled ? 0 : 1)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: gridScrolled)
+        // rc13 UI test69 (`FolderHeaderExitsOnScrollAndReturns`): reads this frame before and after
+        // scrolling the grid (and again after returning to the top).
         .accessibilityIdentifier("folder_header")
     }
 }

@@ -39,7 +39,7 @@ import CoreGraphics
 ///  2. **The upward reach** (`heroPinnedRowTopPad` 88 → `topReachFloor(lift:titleHeight:)`, 22pt of
 ///     give with No Zoom on and 2pt with either zoom mode in the system font). It is never RAISED
 ///     here (except by the 2026-09-30 zoom-on reach hold, up to 92 — see `plan`), only lowered, and never below the floor: `heroPinnedRowTitleInset` (48) + the ACTIVE
-///     font's measured title line (38 system, ≈42.2 Open Sans) − `Spacing.lg` (24) holds the TITLE,
+///     font's measured title line (38 system, ≈38.84 Open Sans since beta.18's 0.92 scale; 42.2 unscaled) − `Spacing.lg` (24) holds the TITLE,
 ///     and the floor adds the focus lift and the belt's `fadeIntrusionArm` on top of it — see
 ///     `topReachFloor(lift:titleHeight:)` and the rc10 note below.
 ///  3. **Hero compression**, for whatever demand the two reaches could not cover, bounded by what
@@ -84,8 +84,8 @@ import CoreGraphics
 ///
 /// The font term is the rc10 Codex P2 half of the same defect: the floor reserved a hard-coded 38pt
 /// title while the clearance it protects is measured live, so FEAT-31's Open Sans (≈42.2pt at the
-/// same text style) reproduced the negative `focusedRaw` the derived floor exists to remove — and the
-/// `LIFT-DEFICIT` stand-down with it. Open Sans + zoom on now wants 90.2 and takes the 88 cap, which
+/// same text style when unscaled; ≈38.84 since the beta.18 verdict's 0.92 scale) reproduced the negative `focusedRaw` the derived floor exists to remove — and the
+/// `LIFT-DEFICIT` stand-down with it. Open Sans + zoom on wanted 90.2 and took the 88 cap (beta.18 verdict: with the scaled 38.84 title it wants 86.84 and is UNDER the cap), which
 /// leaves 1.8pt of clearance: positive, so the corrector keeps working, but inside the belt's arm
 /// band. See `topReachFloor(lift:titleHeight:)` for that trade and for where the stand-down is still
 /// the right answer (titles past ≈44pt, i.e. accessibility text sizes).
@@ -293,7 +293,9 @@ enum PinnedRowGeometry {
     ///
     /// ### At the 88 cap the belt's arm is no longer guaranteed — by design
     ///
-    /// Open Sans + zoom on wants `48 + 42.2 − 24 + 20 + 4 = 90.2` and gets the cap, 88. The settled
+    /// Open Sans + zoom on wanted `48 + 42.2 − 24 + 20 + 4 = 90.2` and got the cap, 88. (beta.18
+    /// verdict: the shipping scaled title is 38.84, so the floor is `48 + 38.84 − 24 + 20 + 4 =
+    /// 86.84`, under the cap; the 42.2 case below is the explicit tall-title regime.) The settled
     /// focused title then clears the artwork by `24 + 88 − 48 − 42.2 − 20 = 1.8`: still POSITIVE, so
     /// the geometry is legible and the corrector keeps working (`focusedRaw >= 0`, no stand-down, and
     /// the band the corrector aims into is simply 2.2pt narrower at its low edge), but under
@@ -307,7 +309,7 @@ enum PinnedRowGeometry {
     ///
     /// With `FocusModeFlags.zoomReachHoldEffective`, `plan` calls this a second time with
     /// `hold: Theme.Size.heroPinnedRowZoomReachHold` (6) and `cap: heroPinnedRowTopReachHoldCap`
-    /// (92) — the one path allowed past the 88 cap above. System font: 86 + 6 = 92. Open Sans: 96.2,
+    /// (92) — the one path allowed past the 88 cap above. System font: 86 + 6 = 92. Open Sans: 96.2 (unscaled 42.2 title; beta.18 verdict: 86.84 + 6 = 92.84 with the scaled 38.84 title),
     /// capped to 92. Both default to "no hold", so every other caller is byte-identical. `cap` is an
     /// optional resolved in the body rather than a `Theme.Size` default expression, for the same
     /// nonisolated-default reason as `titleHeight`.
@@ -649,7 +651,7 @@ enum PinnedRowGeometry {
     /// `t` is the same reasoning applied to the title metric. `plan(...)` has been title-metric-
     /// dependent since Codex r1 fix 3 (`topReachFloor(lift:titleHeight:)` reserves room for the
     /// ACTIVE font's measured title line, not a hard-coded constant), but this key did not encode it
-    /// until now — so System and Open Sans, which measure `sectionTitle` at 38 and ≈42.2
+    /// until now — so System and Open Sans, which measure `sectionTitle` at 38 and ≈42.2 (≈38.84 since the beta.18 scale)
     /// respectively, produced DIFFERENT reaches/compressions under the SAME key. A prior version of
     /// this doc comment argued that was safe because the family can only change via Settings
     /// (FEAT-31), which remounts the whole tree by `.id()` — but the remount does not reset the

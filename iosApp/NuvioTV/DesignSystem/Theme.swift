@@ -222,6 +222,9 @@ enum Theme {
         static var body: SwiftUI.Font { resolved(.body) }
         /// Metadata lines — year/runtime/rating (was fixed 26pt semibold → caption, 25pt).
         static var meta: SwiftUI.Font { resolved(.meta) }
+        /// beta.18 verdict (FEAT-44 / FEAT-31): the hero/Detail year + genre line, semibold;
+        /// `meta` (.medium) stays for labels everywhere else.
+        static var metaStrong: SwiftUI.Font { resolved(.metaStrong) }
         /// rc14: description text on Home's hero and on Detail — see `Token.synopsis`.
         static var synopsis: SwiftUI.Font { resolved(.synopsis) }
         /// rc14: regular-weight secondary prose at the `meta` size — see `Token.detail`.
@@ -247,7 +250,8 @@ enum Theme {
         /// rc14: the rendered line height of `Theme.Font.synopsis`, measured exactly as
         /// `bodyLineHeight` is (same face, same size the token resolves to) — Home's hero derives
         /// its synopsis line limit from this now that the synopsis no longer uses `body`.
-        /// System caption1 ≈ 30pt, Open Sans at the same size ≈ 34pt.
+        /// System caption1 ≈ 30pt. Open Sans (scaled by `openSansScale` 0.92, size 23) ≈ 31.32pt
+        /// (was 34.05 unscaled; 25 × 1.3618).
         static private(set) var synopsisLineHeight: CGFloat = measuredSynopsisLineHeight(for: family)
 
         private static func measuredSynopsisLineHeight(for family: AppFontFamily) -> CGFloat {
@@ -256,7 +260,7 @@ enum Theme {
             case .system:
                 return UIFont.preferredFont(forTextStyle: style).lineHeight
             case .openSans:
-                let size = baseSize(for: style)
+                let size = openSansPointSize(for: style)
                 return UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
                     ?? UIFont.preferredFont(forTextStyle: style).lineHeight
             }
@@ -266,6 +270,9 @@ enum Theme {
         /// and size the SwiftUI token resolves to — never a constant. Home's hero derives its
         /// synopsis line limit from this (BUG "1–2 lines", 2026-09-10): the old
         /// `heroSynopsisSlotHeightPinned / 2` (36) assumption undercounted Open Sans (≈39.5 pt per
+        /// line at the unscaled size; beta.18 verdict (FEAT-31): ≈36.33 now that `openSansScale`
+        /// 0.92 applies — body 29 × 0.92 = 26.68 × 1.3618 — callout 31 → 28.52 → 38.84,
+        /// caption1 25 → 23 → 31.32;
         /// line → a 108 pt slot draws 2 lines while the code counted 3) and overcounted nothing;
         /// with the rc10 Large reach the No-Zoom panel slot is 107.67, which 36 rounds down to 2
         /// while the real ≈35 pt system line fits 3. Refreshed with the font cache on `apply(_:)`.
@@ -276,7 +283,7 @@ enum Theme {
             case .system:
                 return UIFont.preferredFont(forTextStyle: .body).lineHeight
             case .openSans:
-                let size = baseSize(for: .body)
+                let size = openSansPointSize(for: .body)
                 return UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
                     ?? UIFont.preferredFont(forTextStyle: .body).lineHeight
             }
@@ -289,7 +296,8 @@ enum Theme {
         /// `PinnedRowGeometry.topReachFloor(lift:titleHeight:)` defaults to it, and that is why it
         /// exists (BUG-87/89, rc10 Codex P2): the reach floor has to reserve the band the title
         /// ACTUALLY occupies, and it was reserving a hard-coded 38 — the system font's own number.
-        /// Open Sans at the same text style measures ≈42.2 (its bundled faces carry 1.3618 em of
+        /// Open Sans at the same text style measured ≈42.2 unscaled (beta.18 verdict (FEAT-31):
+        /// ≈38.84 with `openSansScale` 0.92 applied; its bundled faces carry 1.3618 em of
         /// vertical metrics against SF's ≈1.21), and the row title's clearance is computed from the
         /// title's live MEASURED height, so the 4pt gap came straight out of
         /// `PinnedRowTitle.Clearances.focusedRaw`: with zoom on it went NEGATIVE, which is the
@@ -330,7 +338,7 @@ enum Theme {
             case .system:
                 return UIFont.preferredFont(forTextStyle: style).lineHeight
             case .openSans:
-                let size = baseSize(for: style)
+                let size = openSansPointSize(for: style)
                 return UIFont(name: "OpenSans-SemiBold", size: size)?.lineHeight
                     ?? UIFont(name: "OpenSans-Regular", size: size)?.lineHeight
                     ?? UIFont.preferredFont(forTextStyle: style).lineHeight
@@ -358,7 +366,9 @@ enum Theme {
                 guard let weight = token.weight else { return base }
                 return base.weight(weight)
             case .openSans:
-                let size = baseSize(for: token.uiTextStyle)
+                // beta.18 verdict (FEAT-31): scaled by `openSansScale` so Open Sans lands near the
+                // system face's rendered size (see `openSansPointSize`).
+                let size = openSansPointSize(for: token.uiTextStyle)
                 let base = SwiftUI.Font.custom("Open Sans", size: size, relativeTo: token.textStyle)
                 // FEAT-44 (Steven, rc12 verdict 2026-09-13): a bare `Font.custom("Open Sans", …)`
                 // with no `.weight()` call left CoreText to choose among the three registered faces
@@ -386,6 +396,17 @@ enum Theme {
             ).pointSize
         }
 
+        /// beta.18 verdict (FEAT-31): Open Sans renders ~14 % larger than the system face at the
+        /// same point size (its bundled faces carry 1.3618 em of vertical metrics against SF's
+        /// ≈1.21, and a larger x-height), so every Open Sans size is scaled by this factor.
+        nonisolated static let openSansScale: CGFloat = 0.92
+
+        /// The Open Sans point size for a text style: the platform size times `openSansScale`.
+        /// `baseSize(for:)` itself stays the unscaled platform metric.
+        nonisolated static func openSansPointSize(for textStyle: UIFont.TextStyle) -> CGFloat {
+            baseSize(for: textStyle) * openSansScale
+        }
+
         /// A `UIFont` for the given text style — the system preferred font in system mode, or an
         /// Open Sans face scaled through `UIFontMetrics` (so Larger Text still applies) in Open
         /// Sans mode, falling back to the system font if the face isn't registered. The one UIKit
@@ -393,7 +414,7 @@ enum Theme {
         /// `UIFont.preferredFont(forTextStyle:)` directly, so it follows the same family choice.
         static func uiFont(for textStyle: UIFont.TextStyle) -> UIFont {
             guard family == .openSans,
-                  let custom = UIFont(name: "OpenSans-Regular", size: baseSize(for: textStyle)) else {
+                  let custom = UIFont(name: "OpenSans-Regular", size: openSansPointSize(for: textStyle)) else {
                 return UIFont.preferredFont(forTextStyle: textStyle)
             }
             return UIFontMetrics(forTextStyle: textStyle).scaledFont(for: custom)
@@ -413,6 +434,9 @@ enum Theme {
         // actor-isolated (a warning today, an error in Swift 6 mode).
         nonisolated private enum Token: CaseIterable, Hashable {
             case hero, screenTitle, sectionTitle, cardTitle, body, meta, caption
+            /// beta.18 verdict (FEAT-44 / FEAT-31): the hero/Detail year + genre line; `meta`
+            /// (.medium) stays for labels everywhere else.
+            case metaStrong
             /// rc14 (Steven's rc13 verdict, 2026-09-30): the description text on Home's hero and
             /// the Detail page. One text style below `body` (caption1, 25pt) so the same slot holds
             /// one more line and the block reads lighter at ten feet — his Orivio reference. Regular
@@ -431,6 +455,7 @@ enum Theme {
                 case .cardTitle: return .caption2
                 case .body: return .body
                 case .meta: return .caption
+                case .metaStrong: return .caption
                 case .caption: return .caption2
                 case .synopsis: return .caption
                 case .detail: return .caption
@@ -449,6 +474,7 @@ enum Theme {
                 case .cardTitle: return .caption2
                 case .body: return .body
                 case .meta: return .caption1
+                case .metaStrong: return .caption1
                 case .caption: return .caption2
                 case .synopsis: return .caption1
                 case .detail: return .caption1
@@ -468,9 +494,14 @@ enum Theme {
                 // Medium keeps the hero/detail meta line distinct from the synopsis under it
                 // without reading as bold.
                 case .meta: return .medium
+                // beta.18 verdict (FEAT-44 / FEAT-31): semibold year/genre line on hero + Detail.
+                case .metaStrong: return .semibold
                 case .caption: return nil
-                case .synopsis: return nil
-                case .detail: return nil
+                // beta.18 verdict (FEAT-44 / FEAT-31): explicit `.regular` is load-bearing — tvOS's
+                // system text styles default to a Medium-ish weight, so a weightless token renders
+                // like `.medium`.
+                case .synopsis: return .regular
+                case .detail: return .regular
                 }
             }
         }

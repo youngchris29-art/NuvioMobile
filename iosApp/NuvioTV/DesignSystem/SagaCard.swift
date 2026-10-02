@@ -44,6 +44,16 @@ struct SagaCard: View {
     /// once-per-focus-gain resolution through `ArtworkColorStore`, same peek in `posterTint`).
     @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
     @State private var posterRingTint: Color?
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color", default
+    /// OFF (Appearance owns the toggle; same independent-read pattern as the keys above). With it on,
+    /// the card-depth rail takes the poster's dominant colour (`ArtworkColorStore`, `Use.rail`),
+    /// sampled once per URL when the image loads, since the rail draws on UNFOCUSED cards. OFF: the
+    /// rail is the white it always was and nothing is sampled.
+    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    /// The last rail colour the store answered for this card; the re-render trigger for a colour
+    /// sampled after the image landed (a store hit is read straight from `body`, never written here).
+    @State private var depthRailTint: Color?
+    @Environment(\.cardDepthStyle) private var depthStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Where the async-resolved TMDB logo lookups live — a process-wide singleton keyed by item
@@ -94,15 +104,39 @@ struct SagaCard: View {
         return ArtworkColorStore.shared.cachedColor(for: ringTintSources) ?? posterRingTint
     }
 
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour only when the
+    /// toggle is on AND depth actually draws for this surface.
+    private var samplesDepthColor: Bool {
+        depthTakesPosterColor && depthStyle.isEnabled(for: .posters)
+    }
+
+    /// The rail tint handed to `nuvioCardDepth`: store peek first (a read, so a colour sampled by
+    /// another row or before a recycle is on the rail from the first frame), then the local state.
+    private var depthRailTintResolved: Color? {
+        guard samplesDepthColor else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: ringTintSources, use: .rail) ?? depthRailTint
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             ZStack(alignment: .bottomLeading) {
                 CachedAsyncImage(string: SagaCardArt.artworkURL(for: item), fallback: sagaFallbackURL, contentMode: .fill)
+                    // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
+                    // the image lands. No animation (the image's own fade is running); a store hit is already on the
+                    // rail via `depthRailTintResolved`, so it writes no state.
+                    .onImageLoaded { _ in
+                        guard samplesDepthColor else { return }
+                        let sources = ringTintSources
+                        if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
+                        ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                            if depthRailTint != color { depthRailTint = color }
+                        }
+                    }
                     .frame(width: width - 2 * inset, height: height - 2 * inset)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)),
-                                    surface: .posters)
+                                    surface: .posters, railTint: depthRailTintResolved)
                     .frame(width: width, height: height)
 
                 if let resolvedLogoURL, let logoImage {

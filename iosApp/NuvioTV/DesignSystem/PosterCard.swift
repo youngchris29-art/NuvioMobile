@@ -897,6 +897,16 @@ struct PosterCard: View {
     /// per image load; it is the re-render trigger for a colour sampled after focus landed, and
     /// the fallback if the store has since evicted the entry.
     @State private var posterRingTint: Color?
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color", default
+    /// OFF (Appearance owns the toggle; same independent-read pattern as the keys above). With it on,
+    /// the card-depth rail takes the poster's dominant colour (`ArtworkColorStore`, `Use.rail`),
+    /// sampled once per URL when the image loads, since the rail draws on UNFOCUSED cards. OFF: the
+    /// rail is the white it always was and nothing is sampled.
+    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    /// The last rail colour the store answered for this card; the re-render trigger for a colour
+    /// sampled after the image landed (a store hit is read straight from `body`, never written here).
+    @State private var depthRailTint: Color?
+    @Environment(\.cardDepthStyle) private var depthStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var resolvedWidth: CGFloat { width ?? style.width }
@@ -925,10 +935,34 @@ struct PosterCard: View {
         return ArtworkColorStore.shared.cachedColor(for: ringTintSources) ?? posterRingTint
     }
 
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour only when the
+    /// toggle is on AND depth actually draws for this surface.
+    private var samplesDepthColor: Bool {
+        depthTakesPosterColor && depthStyle.isEnabled(for: .posters)
+    }
+
+    /// The rail tint handed to `nuvioCardDepth`: store peek first (a read, so a colour sampled by
+    /// another row or before a recycle is on the rail from the first frame), then the local state.
+    private var depthRailTintResolved: Color? {
+        guard samplesDepthColor else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: ringTintSources, use: .rail) ?? depthRailTint
+    }
+
     var body: some View {
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
             CachedAsyncImage(string: imageURL, fallback: fallbackImageURL)
+                // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
+                // the image lands. No animation (the image's own fade is running); a store hit is already on the
+                // rail via `depthRailTintResolved`, so it writes no state.
+                .onImageLoaded { _ in
+                    guard samplesDepthColor else { return }
+                    let sources = ringTintSources
+                    if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
+                    ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                        if depthRailTint != color { depthRailTint = color }
+                    }
+                }
                 .frame(width: resolvedWidth - 2 * inset, height: resolvedHeight - 2 * inset)
                 // BUG-31: CachedAsyncImage is `.fill` with no clip of its own, and this frame is
                 // always exactly 2:3 — so off-ratio artwork overflows it and the hover lift copies
@@ -963,7 +997,7 @@ struct PosterCard: View {
                 // inset artwork's height, which changes no fraction: the mask is relative.
                 // Do NOT collapse the band on focus (Wave 7 rationale in `ringInset` above).
                 .nuvioCardDepth(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)),
-                                surface: .posters)
+                                surface: .posters, railTint: depthRailTintResolved)
                 .frame(width: resolvedWidth, height: resolvedHeight)
                 // BUG-91 gate (test50): the card's OUTER box, the thing the rail has to sit exactly
                 // `ringInset` inside of. Armed only under `-debug.cardGeometryProbe YES`; see
@@ -1082,6 +1116,16 @@ struct LandscapeCard: View {
     /// properties for the full rationale (same key, same once-per-focus-gain resolution).
     @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
     @State private var posterRingTint: Color?
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color", default
+    /// OFF (Appearance owns the toggle; same independent-read pattern as the keys above). With it on,
+    /// the card-depth rail takes the poster's dominant colour (`ArtworkColorStore`, `Use.rail`),
+    /// sampled once per URL when the image loads, since the rail draws on UNFOCUSED cards. OFF: the
+    /// rail is the white it always was and nothing is sampled.
+    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    /// The last rail colour the store answered for this card; the re-render trigger for a colour
+    /// sampled after the image landed (a store hit is read straight from `body`, never written here).
+    @State private var depthRailTint: Color?
+    @Environment(\.cardDepthStyle) private var depthStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var titleVisible: Bool { showTitle ?? style.showTitle }
@@ -1101,11 +1145,35 @@ struct LandscapeCard: View {
         return ArtworkColorStore.shared.cachedColor(for: ringTintSources) ?? posterRingTint
     }
 
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour only when the
+    /// toggle is on AND depth actually draws for this surface.
+    private var samplesDepthColor: Bool {
+        depthTakesPosterColor && depthStyle.isEnabled(for: depthSurface)
+    }
+
+    /// The rail tint handed to `nuvioCardDepth`: store peek first (a read, so a colour sampled by
+    /// another row or before a recycle is on the rail from the first frame), then the local state.
+    private var depthRailTintResolved: Color? {
+        guard samplesDepthColor else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: ringTintSources, use: .rail) ?? depthRailTint
+    }
+
     var body: some View {
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: imageURL, fallback: fallbackImageURL)
+                    // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
+                    // the image lands. No animation (the image's own fade is running); a store hit is already on the
+                    // rail via `depthRailTintResolved`, so it writes no state.
+                    .onImageLoaded { _ in
+                        guard samplesDepthColor else { return }
+                        let sources = ringTintSources
+                        if ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) != nil { return }
+                        ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                            if depthRailTint != color { depthRailTint = color }
+                        }
+                    }
                     .frame(width: width - 2 * inset, height: height - 2 * inset)
                     // BUG-31: same fill-overflow → hover-lift ghosting as PosterCard; artwork whose
                     // ratio isn't 16:9 spills out of this fixed frame unless clipped here.
@@ -1119,7 +1187,7 @@ struct LandscapeCard: View {
                     // see `PosterCard`'s copy of this comment for the full rationale (same empty
                     // band, same fix, same byte-identical default when `inset == 0`).
                     .nuvioCardDepth(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)),
-                                    surface: depthSurface)
+                                    surface: depthSurface, railTint: depthRailTintResolved)
                     .frame(width: width, height: height)
                     // BUG-91 gate: same outer-box marker as PosterCard's, so an armed probe run
                     // leaves the landscape cards' button frames unperturbed too.

@@ -71,9 +71,23 @@ final class AppFontResolverTests: XCTestCase {
         XCTAssertEqual(Theme.Font.body, SwiftUI.Font.body)
         // rc14 (Steven rc13 verdict, 2026-09-30): `meta` is `.medium` now, in both families.
         XCTAssertEqual(Theme.Font.meta, SwiftUI.Font.caption.weight(.medium))
-        XCTAssertEqual(Theme.Font.synopsis, SwiftUI.Font.caption)
-        XCTAssertEqual(Theme.Font.detail, SwiftUI.Font.caption)
+        // beta.18 verdict (FEAT-44 / FEAT-31): synopsis/detail pin an explicit `.regular`;
+        // `metaStrong` is the semibold hero/Detail year + genre line.
+        XCTAssertEqual(Theme.Font.metaStrong, SwiftUI.Font.caption.weight(.semibold))
+        XCTAssertEqual(Theme.Font.synopsis, SwiftUI.Font.caption.weight(.regular))
+        XCTAssertEqual(Theme.Font.detail, SwiftUI.Font.caption.weight(.regular))
         XCTAssertEqual(Theme.Font.caption, SwiftUI.Font.caption2)
+    }
+
+    /// beta.18 verdict (FEAT-44 / FEAT-31): documents why the explicit `.regular` on the synopsis
+    /// and detail tokens is load-bearing — tvOS's default caption1 weight is heavier than Regular.
+    func testTvOSCaptionDefaultWeightIsHeavierThanRegular() throws {
+        let descriptor = UIFont.preferredFont(forTextStyle: .caption1).fontDescriptor
+        let traits = descriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any]
+        guard let weight = traits?[.weight] as? CGFloat else {
+            throw XCTSkip("no weight trait on the default caption1 font")
+        }
+        XCTAssertGreaterThan(weight, 0)
     }
 
     // MARK: - Open Sans mode
@@ -90,17 +104,47 @@ final class AppFontResolverTests: XCTestCase {
     /// FEAT-44 (Steven, rc12 verdict 2026-09-13): before this fix, a token with no explicit weight
     /// (`.body`, the synopsis token) resolved through a bare `Font.custom("Open Sans", …)` with no
     /// `.weight()` call, letting CoreText pick among the three registered faces. It must now pin to
-    /// `.regular` explicitly — and stay visually distinct from `.meta`, which keeps `.semibold`.
+    /// `.regular` explicitly — and stay visually distinct from `.meta`, which carries `.medium` (beta.18 verdict: size is the
+    /// scaled `openSansPointSize`).
     func testOpenSansModeBodyResolvesWithRegularWeightAndStaysDistinctFromMeta() {
         Theme.Font.apply(.openSans)
         let expectedBody = SwiftUI.Font.custom(
             "Open Sans",
-            size: Theme.Font.baseSize(for: .body),
+            size: Theme.Font.openSansPointSize(for: .body),
             relativeTo: .body
         ).weight(.regular)
 
         XCTAssertEqual(Theme.Font.body, expectedBody)
         XCTAssertNotEqual(Theme.Font.body, Theme.Font.meta)
+    }
+
+    func testOpenSansMetaStrongUsesTheSemiBoldFace() {
+        Theme.Font.apply(.openSans)
+        let expected = SwiftUI.Font.custom(
+            "Open Sans",
+            size: Theme.Font.openSansPointSize(for: .caption1),
+            relativeTo: .caption
+        ).weight(.semibold)
+        XCTAssertEqual(Theme.Font.metaStrong, expected)
+    }
+
+    func testOpenSansScaleIsAppliedToEveryTextStyle() {
+        let styles: [UIFont.TextStyle] = [.title2, .title3, .callout, .body, .caption1, .caption2]
+        for style in styles {
+            XCTAssertEqual(Theme.Font.openSansPointSize(for: style),
+                           Theme.Font.baseSize(for: style) * 0.92,
+                           accuracy: 0.001, "\(style)")
+        }
+    }
+
+    /// 25 × 0.92 × 1.3618 = 31.32; 29 × 0.92 × 1.3618 = 36.33; 31 × 0.92 × 1.3618 = 38.84.
+    func testOpenSansLineHeightsLandNearTheSystemFace() throws {
+        Theme.Font.apply(.openSans)
+        try XCTSkipUnless(Theme.Font.isCustomFaceAvailable, "Open Sans face not registered in this test host")
+
+        XCTAssertEqual(Theme.Font.synopsisLineHeight, 31.32, accuracy: 0.5)
+        XCTAssertEqual(Theme.Font.bodyLineHeight, 36.33, accuracy: 0.5)
+        XCTAssertEqual(Theme.Font.sectionTitleLineHeight, 38.84, accuracy: 0.5)
     }
 
     /// `uiFont(for:)` only actually returns an Open Sans face if the bundled TTFs were registered

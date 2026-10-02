@@ -1165,18 +1165,20 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
     /// the one every line count in this file is arithmetic against.
     private static let systemSynopsisLine = UIFont.preferredFont(forTextStyle: .caption1).lineHeight
 
-    /// FEAT-31's Open Sans synopsis line height at the same text style (≈34pt), from the bundled
-    /// face itself rather than a derived constant — the tester's configuration, where the SAME slot
-    /// can hold one fewer line than under the System font.
+    /// FEAT-31's Open Sans synopsis line height at the same text style, from the bundled face
+    /// itself rather than a derived constant. beta.18 verdict (FEAT-31): measured at the shipping
+    /// `openSansPointSize` (25 × 0.92 = 23 pt ⇒ ≈31.32pt; was ≈34.05 unscaled), so it tracks what
+    /// `Theme.Font.synopsisLineHeight` reports.
     private static func openSansSynopsisLine() -> CGFloat? {
-        UIFont(name: "OpenSans-Regular", size: Theme.Font.baseSize(for: .caption1))?.lineHeight
+        UIFont(name: "OpenSans-Regular", size: Theme.Font.openSansPointSize(for: .caption1))?.lineHeight
     }
 
     /// FEAT-31's Open Sans BODY line height — kept for the historical measurement test below (the
     /// synopsis no longer uses `body`, but the 108pt-slot / 36pt-line assumption it disproved is
     /// still worth pinning).
+    /// beta.18 verdict (FEAT-31): shipping scaled size, 29 × 0.92 = 26.68 pt ⇒ ≈36.33pt (was ≈39.49).
     private static func openSansBodyLine() -> CGFloat? {
-        UIFont(name: "OpenSans-Regular", size: Theme.Font.baseSize(for: .body))?.lineHeight
+        UIFont(name: "OpenSans-Regular", size: Theme.Font.openSansPointSize(for: .body))?.lineHeight
     }
 
     /// Mirror of `HomeHeroForeground.synopsisSlotHeight`'s compact branch.
@@ -1377,20 +1379,23 @@ final class PinnedRowGeometryHeroSlotGiveTests: XCTestCase {
         XCTAssertEqual(lineLimit(slotHeight: slot, lineHeight: Self.systemSynopsisLine), 4)
     }
 
-    /// The tester's case: Open Sans body renders taller than the 36 pt the slot math assumed, so
-    /// the SAME 108 pt slot holds two lines, not three. This is the measurement, not a fix.
-    /// (Historical: Home's synopsis no longer uses `body`; see the synopsis variant below.)
+    /// The tester's case, historically: Open Sans body rendered taller than the 36 pt the slot math
+    /// assumed (≈39.49 unscaled), so the 108 pt slot held two lines, not three. beta.18 verdict
+    /// (FEAT-31): with the 0.92 scale the line is ≈36.33, (108 + 1) / 36.33 = 3.0001 ⇒ THREE lines
+    /// again — the measurement, not a fix, and a knife-edge one (the 1 pt tolerance is what keeps
+    /// it at 3). (Historical: Home's synopsis no longer uses `body`; see the synopsis variant below.)
     func testOpenSansBodyLineIsTallerThanTheAssumedSlotLine() throws {
         guard let openSansLine = Self.openSansBodyLine() else {
             throw XCTSkip("Open Sans is not bundled in the unit-test host")
         }
         XCTAssertGreaterThan(openSansLine, 36)
-        XCTAssertEqual(lineLimit(slotHeight: 108, lineHeight: openSansLine), 2)
+        XCTAssertEqual(lineLimit(slotHeight: 108, lineHeight: openSansLine), 3)
     }
 
     /// rc14: the same measurement for the face Home's synopsis is actually set in
-    /// (`Theme.Font.synopsis`, caption1). Open Sans's caption1 line is ≈34pt against the system's
-    /// ≈30, so the carousel's full 72pt slot (nothing given) still holds TWO lines in either face.
+    /// (`Theme.Font.synopsis`, caption1). Open Sans's caption1 line is ≈31.32pt (scaled, beta.18
+    /// verdict) against the system's ≈30, so the carousel's full 72pt slot (nothing given) still
+    /// holds TWO lines in either face: (72 + 1) / 31.32 = 2.33.
     func testOpenSansSynopsisLineIsTallerThanTheSystemLine() throws {
         guard let openSansLine = Self.openSansSynopsisLine() else {
             throw XCTSkip("Open Sans is not bundled in the unit-test host")
@@ -1760,6 +1765,14 @@ final class PinnedRowZoomReachHoldTests: XCTestCase {
         XCTAssertEqual(both.compression, 62.333, accuracy: 0.01)
         XCTAssertEqual(both.restRange, 4, accuracy: 0.01)
         XCTAssertEqual(both.regimeKey, "L403c0p0r0z1t38h1rt4")
+    }
+
+    /// beta.18 verdict (FEAT-31): the shipping (0.92-scaled) Open Sans title line, 38.84, puts the
+    /// zoom-on floor at 48 + 38.84 − 24 + 20 + 4 = 86.84 — UNDER the 88 cap, uncapped.
+    func testOpenSansScaledTitleClearsTheReachCapAtDefaultSize() {
+        let floor = PinnedRowGeometry.topReachFloor(lift: 20, titleHeight: 38.84)
+        XCTAssertEqual(floor, 86.84, accuracy: 0.001)
+        XCTAssertLessThan(floor, Theme.Size.heroPinnedRowTopPad)
     }
 
     func testOpenSansIsCappedAt92() {

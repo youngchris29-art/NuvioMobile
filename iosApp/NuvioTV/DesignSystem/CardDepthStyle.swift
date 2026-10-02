@@ -170,6 +170,10 @@ struct CardDepthStyle: Equatable {
         return 0.95
     }
 
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): the colour of the edge rail's gradient
+    /// stops. White unless a card passes the poster-sampled tint; alphas and widths are unchanged.
+    static func railColor(tint: Color?) -> Color { tint ?? .white }
+
     /// The rail's three-stop gradient (top/mid/bottom), unified across Full and partial coverage for
     /// the first time since BUG-31. Full now takes the SAME boosted top as partial coverage — the top
     /// stop used to be hardcoded equal to `edge` at Full (no boost at all, matching mid/bottom); mid
@@ -357,8 +361,14 @@ extension View {
     /// to draw its no-cover gradient+initial/emoji placeholder instead of a picture, so the rendered
     /// rail clamps to the Subtle preset (`CardDepthStyle.effectiveEdgeStrength`) regardless of the
     /// user's chosen level. Every existing call site is byte-identical (the default keeps it on).
-    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true) -> some View {
-        modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent))
+    ///
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): `railTint` recolours the edge rail
+    /// (never the sheen). nil = the white rail every call site drew before. Only the poster, landscape,
+    /// saga and folder cards pass one (the "Depth Takes Poster Color" Appearance toggle); the other
+    /// depth sites (BrowseComponents, EpisodesSection, TrailerThumbnail, the DetailView cast circle)
+    /// keep the white rail. The modifier still reads no `@AppStorage`: the card passes the tint in.
+    func nuvioCardDepth<S: InsettableShape>(_ shape: S, surface: CardDepthSurface, artworkPresent: Bool = true, railTint: Color? = nil) -> some View {
+        modifier(CardDepthModifier(shape: shape, surface: surface, artworkPresent: artworkPresent, railTint: railTint))
     }
 }
 
@@ -367,6 +377,8 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
     let surface: CardDepthSurface
     /// BUG-110 (rc13): see `nuvioCardDepth`'s doc — forwarded to `CardDepthOverlay` unchanged.
     var artworkPresent: Bool = true
+    /// beta.18 verdict: see `nuvioCardDepth` — forwarded to `CardDepthOverlay` unchanged.
+    var railTint: Color?
     @Environment(\.cardDepthStyle) private var style
     /// BUG-110: reflects the nearest focusable ancestor's focus state (the same pattern `PosterCard`,
     /// `SagaCard` and others already use to read a Button's focus from a nested modifier). rc14
@@ -378,7 +390,7 @@ private struct CardDepthModifier<S: InsettableShape>: ViewModifier {
 
     func body(content: Content) -> some View {
         if style.isEnabled(for: surface) {
-            content.overlay { CardDepthOverlay(shape: shape, style: style, railSuppressed: isFocused, artworkPresent: artworkPresent) }
+            content.overlay { CardDepthOverlay(shape: shape, style: style, railSuppressed: isFocused, artworkPresent: artworkPresent, railTint: railTint) }
         } else {
             content
         }
@@ -401,6 +413,8 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
     /// placeholder. Only the RAIL clamps on this — the sheen above (a flat top-of-card gradient)
     /// reads fine over a placeholder and is left alone.
     var artworkPresent: Bool = true
+    /// beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): rail colour override, nil = white.
+    var railTint: Color?
 
     var body: some View {
         let effectiveEdgeStrength = CardDepthStyle.effectiveEdgeStrength(style.edgeStrength, artworkPresent: artworkPresent)
@@ -473,7 +487,7 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
         let rail = ZStack {
             if haloSpread > 0 {
                 shape.strokeBorder(
-                    Color.white.opacity(CardDepthStyle.railHaloAlpha(edge: edge)),
+                    CardDepthStyle.railColor(tint: railTint).opacity(CardDepthStyle.railHaloAlpha(edge: edge)),
                     lineWidth: width + 2 * haloSpread
                 )
             }
@@ -493,9 +507,9 @@ private struct CardDepthOverlay<S: InsettableShape>: View {
         shape.strokeBorder(
             LinearGradient(
                 stops: [
-                    .init(color: .white.opacity(top), location: 0),
-                    .init(color: .white.opacity(mid), location: 0.5),
-                    .init(color: .white.opacity(bottom), location: 1),
+                    .init(color: CardDepthStyle.railColor(tint: railTint).opacity(top), location: 0),
+                    .init(color: CardDepthStyle.railColor(tint: railTint).opacity(mid), location: 0.5),
+                    .init(color: CardDepthStyle.railColor(tint: railTint).opacity(bottom), location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom

@@ -7603,6 +7603,12 @@ final class NuvioTVUITests: XCTestCase {
                         "the settle line lost `rearm=` — it is append-only by contract. Full line: \(landedLine)")
     }
 
+    /// beta.18 verdict (FEAT-40 follow-up): the header is no longer pinned for the whole scroll — it
+    /// exits upward (and fades) once the grid scrolls, and returns at the top. Contract: the
+    /// pre-scroll gap holds; after 6 Downs `folder_header` is absent OR sits wholly above its old
+    /// top, and `folder_header_state` reads `scrolled=1`; pressing Up until `scrolled=0` puts the
+    /// frame back where it was.
+    ///
     /// FEAT-40 (rc13, "official Nuvio" folder header ask): the folder page header
     /// (`CollectionsUI.swift` `FolderDetailView.header` — the centred `TitleLogoHeader` + Edit
     /// Filters button) moved OUTSIDE the `ScrollView` into its own pinned `VStack` slot, instead of
@@ -7610,7 +7616,7 @@ final class NuvioTVUITests: XCTestCase {
     /// exactly like test56/test57 (Down until the hero probe's `fitem` names a `nuvio-folder://`
     /// tile), opens it, reads the header's `folder_header` AX frame, scrolls the grid, and asserts
     /// the frame never moved.
-    func test69FolderHeaderStaysPinnedWhileGridScrolls() throws {
+    func test69FolderHeaderExitsOnScrollAndReturns() throws {
         let app = launchToHome(forceFreshLaunch: true)
         defer {
             let restored = launchToHome(forceFreshLaunch: true)
@@ -7726,14 +7732,38 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         shot(app, "69b_folder_page_after_scroll")
 
-        guard let headerAfter = namedFrame("folder_header") else {
-            XCTFail("folder_header disappeared after scrolling the grid")
-            return
+        // beta.18 verdict (FEAT-40 follow-up): the header exits upward on scroll. A fully faded
+        // node may drop out of the AX tree entirely, so absence is as good as a frame wholly above
+        // the old top (never over the grid).
+        func headerStateLabel() -> String {
+            let state = app.staticTexts["folder_header_state"]
+            return state.exists ? state.label : ""
         }
-        XCTAssertEqual(headerAfter.minY, headerBefore.minY, accuracy: 2, "header top moved while scrolling the grid")
-        XCTAssertEqual(headerAfter.maxY, headerBefore.maxY, accuracy: 2, "header bottom moved while scrolling the grid")
-        XCTAssertEqual(headerAfter.midX, headerBefore.midX, accuracy: 2, "header drifted horizontally while scrolling the grid")
-        XCTAssertEqual(headerAfter.midX, 960, accuracy: 40, "header is not centred on the screen")
+        if let headerAfter = namedFrame("folder_header") {
+            XCTAssertLessThanOrEqual(headerAfter.maxY, headerBefore.minY + 2,
+                                     "header must exit upward on scroll, never sit over the grid (after maxY=\(headerAfter.maxY), before minY=\(headerBefore.minY))")
+        }
+        XCTAssertEqual(headerStateLabel(), "scrolled=1", "folder_header_state must read scrolled=1 after scrolling the grid")
+
+        // Back to the top: Up until the state clears (a row per press, so at most a handful), then
+        // the header must be exactly where it started.
+        var upPresses = 0
+        while headerStateLabel() != "scrolled=0" && upPresses < 8 {
+            press(.up, times: 1, gap: 0.7)
+            pause(0.5)
+            upPresses += 1
+        }
+        XCTAssertEqual(headerStateLabel(), "scrolled=0", "folder_header_state must return to scrolled=0 within 8 Up presses (took \(upPresses))")
+        pause(0.6)
+        shot(app, "69c_folder_page_back_at_top")
+        if let headerReturned = namedFrame("folder_header") {
+            XCTAssertEqual(headerReturned.minY, headerBefore.minY, accuracy: 2, "header top did not return after scrolling back up")
+            XCTAssertEqual(headerReturned.maxY, headerBefore.maxY, accuracy: 2, "header bottom did not return after scrolling back up")
+            XCTAssertEqual(headerReturned.midX, headerBefore.midX, accuracy: 2, "header drifted horizontally")
+        } else {
+            XCTFail("folder_header did not reappear after scrolling back to the top")
+        }
+        XCTAssertEqual(headerBefore.midX, 960, accuracy: 40, "header is not centred on the screen")
 
         // Codex P2 (rc13): the header staying at a fixed frame isn't the whole contract — before
         // the opaque-background + `.zIndex(1)` fix, a scrolled-past poster's focus lift painted
