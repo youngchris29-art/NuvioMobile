@@ -112,6 +112,11 @@ struct SettingsRowLabel: View {
     var subtitle: String?
     var systemImage: String?
     var iconTint: SettingsRowIconTint = .accent
+    /// FEAT-50: the explainer description this row reports while focused (`nil` = none; the pane
+    /// explainer then keeps showing the last described row, or the pane summary). Read from
+    /// inside the label, the one place `\.isFocused` is populated — see
+    /// `SettingsDescriptionModifier`.
+    var descriptionID: SettingsDescriptionID? = nil
 
     /// BUG-65 container half. In a native list row this stays false and the block below is a
     /// no-op — the system inverts the row's label colour and the kit's colour rule holds as
@@ -153,6 +158,7 @@ struct SettingsRowLabel: View {
             }
         }
         .environment(\.colorScheme, onPlatter ? .light : inheritedScheme)
+        .settingsDescription(descriptionID, title: title, systemImage: systemImage)
     }
 }
 
@@ -256,16 +262,18 @@ struct SettingsToggleRow: View {
     private let title: String
     private let subtitle: String?
     private let isOn: Binding<Bool>
+    private let descriptionID: SettingsDescriptionID?
 
-    init(title: String, subtitle: String? = nil, isOn: Binding<Bool>) {
+    init(title: String, subtitle: String? = nil, isOn: Binding<Bool>, descriptionID: SettingsDescriptionID? = nil) {
         self.title = title
         self.subtitle = subtitle
         self.isOn = isOn
+        self.descriptionID = descriptionID
     }
 
     var body: some View {
         Toggle(isOn: isOn) {
-            SettingsRowLabel(title: title, subtitle: subtitle)
+            SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
         }
         // Kept from the pre-C1 row: the UITest harness's state-aware toggle helper reads this
         // exact value (beta.13 wave 2), and it is a friendlier VoiceOver value than "1"/"0".
@@ -282,6 +290,7 @@ struct SettingsPickerRow<T: Hashable>: View {
     var subtitle: String?
     let selection: Binding<T>
     let options: [T]
+    var descriptionID: SettingsDescriptionID?
     let label: (T) -> String
 
     init(
@@ -289,12 +298,14 @@ struct SettingsPickerRow<T: Hashable>: View {
         subtitle: String? = nil,
         selection: Binding<T>,
         options: [T],
+        descriptionID: SettingsDescriptionID? = nil,
         label: @escaping (T) -> String
     ) {
         self.title = title
         self.subtitle = subtitle
         self.selection = selection
         self.options = options
+        self.descriptionID = descriptionID
         self.label = label
     }
 
@@ -314,7 +325,7 @@ struct SettingsPickerRow<T: Hashable>: View {
                     // read-only information, not a choice, and stays `.secondary`.
                     .settingsAccentTint()
             } label: {
-                SettingsRowLabel(title: title, subtitle: subtitle)
+                SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
             }
         }
     }
@@ -322,29 +333,53 @@ struct SettingsPickerRow<T: Hashable>: View {
 
 // MARK: - Value
 
-/// A read-only title/value row — stock `LabeledContent`. Not focusable by design (HIG: static
+/// A read-only title/value row — stock `LabeledContent`. Not focusable by default (HIG: static
 /// content does not take focus); every pane that uses it also carries at least one focusable row,
 /// which is the BUG-47 requirement.
+///
+/// FEAT-50: `focusable: true` makes the row an INERT focus stop (`.focusable()`, Select does
+/// nothing — the same pattern the About pane's readout anchor uses). It exists for panes whose
+/// rows are all read-only values (the new About pane): without it such a pane has no focusable
+/// row, which breaks BUG-47 and leaves the explainer nothing to describe.
 struct SettingsValueRow: View {
     let title: String
     let value: String
     var subtitle: String?
     var systemImage: String?
+    var descriptionID: SettingsDescriptionID?
+    var focusable: Bool
 
-    init(title: String, value: String, subtitle: String? = nil, systemImage: String? = nil) {
+    init(
+        title: String,
+        value: String,
+        subtitle: String? = nil,
+        systemImage: String? = nil,
+        descriptionID: SettingsDescriptionID? = nil,
+        focusable: Bool = false
+    ) {
         self.title = title
         self.value = value
         self.subtitle = subtitle
         self.systemImage = systemImage
+        self.descriptionID = descriptionID
+        self.focusable = focusable
     }
 
     var body: some View {
+        if focusable {
+            content.focusable()
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         LabeledContent {
             Text(value)
                 .font(SettingsRowFont.title)
                 .foregroundStyle(.secondary)
         } label: {
-            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage)
+            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
         }
     }
 }
@@ -357,17 +392,20 @@ struct SettingsLinkRow<Destination: View>: View {
     let title: String
     var subtitle: String?
     var systemImage: String?
+    var descriptionID: SettingsDescriptionID?
     @ViewBuilder let destination: () -> Destination
 
     init(
         title: String,
         subtitle: String? = nil,
         systemImage: String? = nil,
+        descriptionID: SettingsDescriptionID? = nil,
         @ViewBuilder destination: @escaping () -> Destination
     ) {
         self.title = title
         self.subtitle = subtitle
         self.systemImage = systemImage
+        self.descriptionID = descriptionID
         self.destination = destination
     }
 
@@ -375,7 +413,7 @@ struct SettingsLinkRow<Destination: View>: View {
         NavigationLink {
             destination()
         } label: {
-            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage)
+            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
         }
     }
 }
@@ -388,23 +426,26 @@ struct SettingsActionRow: View {
     let title: String
     var subtitle: String?
     var systemImage: String?
+    var descriptionID: SettingsDescriptionID?
     let action: () -> Void
 
     init(
         title: String,
         subtitle: String = "",
         systemImage: String? = nil,
+        descriptionID: SettingsDescriptionID? = nil,
         action: @escaping () -> Void
     ) {
         self.title = title
         self.subtitle = subtitle.isEmpty ? nil : subtitle
         self.systemImage = systemImage
+        self.descriptionID = descriptionID
         self.action = action
     }
 
     var body: some View {
         Button(action: action) {
-            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage)
+            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
         }
     }
 }
@@ -415,17 +456,20 @@ struct SettingsDestructiveRow: View {
     let title: String
     var subtitle: String?
     var systemImage: String?
+    var descriptionID: SettingsDescriptionID?
     let action: () -> Void
 
     init(
         title: String,
         subtitle: String = "",
         systemImage: String? = nil,
+        descriptionID: SettingsDescriptionID? = nil,
         action: @escaping () -> Void
     ) {
         self.title = title
         self.subtitle = subtitle.isEmpty ? nil : subtitle
         self.systemImage = systemImage
+        self.descriptionID = descriptionID
         self.action = action
     }
 
@@ -433,7 +477,13 @@ struct SettingsDestructiveRow: View {
         Button(role: .destructive, action: action) {
             // `.inherit`: the destructive red is the row's whole point (HIG), and it stays red
             // under every theme. An accent glyph here would fight it.
-            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, iconTint: .inherit)
+            SettingsRowLabel(
+                title: title,
+                subtitle: subtitle,
+                systemImage: systemImage,
+                iconTint: .inherit,
+                descriptionID: descriptionID
+            )
         }
     }
 }
@@ -448,8 +498,17 @@ struct SettingsDestructiveRow: View {
 struct DebridKeyEntryRow: View {
     let providerName: String
     var placeholder: String?
+    /// FEAT-50. Declared between `placeholder` and `onSave` so trailing-closure call sites still
+    /// compile. A `TextField` has no label descendant to read `\.isFocused` from, so the field
+    /// reports through its own `@FocusState` (`focused:` variant of the modifier).
+    var descriptionID: SettingsDescriptionID? = nil
     let onSave: (String) -> Void
     @State private var key = ""
+    @FocusState private var fieldFocused: Bool
+
+    private var fieldPlaceholder: String {
+        placeholder ?? String(localized: "Or paste your \(providerName) API key")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -457,10 +516,12 @@ struct DebridKeyEntryRow: View {
                 Image(systemName: "key")
                     .font(SettingsRowFont.title)
                     .foregroundStyle(.secondary)
-                TextField(placeholder ?? String(localized: "Or paste your \(providerName) API key"), text: $key)
+                TextField(fieldPlaceholder, text: $key)
                     .textFieldStyle(.plain)
                     .font(SettingsRowFont.title)
+                    .focused($fieldFocused)
             }
+            .settingsDescription(descriptionID, title: fieldPlaceholder, systemImage: "key", focused: fieldFocused)
 
             Button {
                 if !key.isEmpty {
@@ -470,6 +531,7 @@ struct DebridKeyEntryRow: View {
             } label: {
                 Label("Save Key", systemImage: "checkmark")
                     .font(SettingsRowFont.subtitle)
+                    .settingsDescription(descriptionID, title: String(localized: "Save Key"), systemImage: "checkmark")
             }
             .disabled(key.isEmpty)
         }

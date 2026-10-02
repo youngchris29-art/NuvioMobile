@@ -48,6 +48,16 @@ final class DetailViewModel: ObservableObject {
     /// press would otherwise skip the source list. Seeded synchronously in `init` (see there) and
     /// kept current by `playerSettingsWatcher`.
     @Published private(set) var autoPlayFirstStreamOn = false
+    /// FEAT-35 (Cinematic ratings strip): whether MDBList ratings can arrive at all — the setting is
+    /// on with credentials (`MdbListSettings.isActive`) and at least one provider is enabled, the
+    /// same test `MdbListMetadataService.shouldFetchForMeta` runs. Seeded synchronously (correction
+    /// F4) so the strip's slot is decided before the first paint, then kept current by
+    /// `mdbListWatcher`.
+    @Published private(set) var mdbListRatingsActive = false
+    /// FEAT-35 (Cinematic Start Over): the title has a saved position Start Over can discard —
+    /// the series primary action's resume position, or a resumable movie entry
+    /// (`DetailStartOver.isAvailable`). Written only when it changes (correction F21a).
+    @Published private(set) var hasResumableProgress = false
     /// IMDb parental-guide severities (empty when the title has no tt-id or no guide data).
     @Published private(set) var parentalWarnings: [ParentalWarning] = []
     /// Episode shuffle (upstream `23b048c3`/`da92f36c`): whether Detail offers the Shuffle button
@@ -90,6 +100,8 @@ final class DetailViewModel: ObservableObject {
     private var metaScreenWatcher: FlowWatcher?
     /// Feeds `autoPlayFirstStreamOn` (hold-Play → "Choose Source…").
     private var playerSettingsWatcher: FlowWatcher?
+    /// FEAT-35: feeds `mdbListRatingsActive`.
+    private var mdbListWatcher: FlowWatcher?
     // Latest shared-state emissions (the exported StateFlow interface has no `value` accessor,
     // so the watchers below capture what the series primary action needs).
     private var latestProgressEntries: [WatchProgressEntry] = []
@@ -134,6 +146,22 @@ final class DetailViewModel: ObservableObject {
         // runloop turn, and with the flag starting `false` the hold-Play wiring changed one beat
         // after Detail appeared; the repository's current value is a synchronous read.
         self.autoPlayFirstStreamOn = Self.readAutoPlayFirstStreamOn()
+        // FEAT-35: same reason — the ratings strip's reserved slot must not appear a beat late.
+        self.mdbListRatingsActive = Self.readMdbListRatingsActive()
+    }
+
+    /// Synchronous read of the MDBList ratings gate (correction F4: `readAutoPlayFirstStreamOn`'s
+    /// pattern).
+    private static func readMdbListRatingsActive() -> Bool {
+        MdbListSettingsRepository.shared.ensureLoaded()
+        return isMdbListRatingsActive(MdbListSettingsRepository.shared.uiState.value_ as? MdbListSettings)
+    }
+
+    /// `MdbListMetadataService.shouldFetchForMeta`'s settings half (its id half is checked by the
+    /// view, see `DetailRatings.hasUsableImdbId`).
+    private static func isMdbListRatingsActive(_ settings: MdbListSettings?) -> Bool {
+        guard let settings else { return false }
+        return settings.isActive && !settings.enabledProvidersInPriorityOrder().isEmpty
     }
 
     /// Synchronous read of Settings → Playback → Auto-Play Best Source
@@ -224,6 +252,15 @@ final class DetailViewModel: ObservableObject {
             let on = state.streamAutoPlayMode == StreamAutoPlayMode.firstStream
             if self.autoPlayFirstStreamOn != on { self.autoPlayFirstStreamOn = on }
         }
+        // FEAT-35: MDBList ratings gate — re-seeded synchronously first (a reused view model may
+        // have missed a Settings change while stopped), then watched.
+        let mdbListOn = Self.readMdbListRatingsActive()
+        if mdbListRatingsActive != mdbListOn { mdbListRatingsActive = mdbListOn }
+        mdbListWatcher = FlowWatcherKt.watch(MdbListSettingsRepository.shared.uiState) { [weak self] emitted in
+            guard let self else { return }
+            let on = Self.isMdbListRatingsActive(emitted as? MdbListSettings)
+            if self.mdbListRatingsActive != on { self.mdbListRatingsActive = on }
+        }
         refreshFlags()
 
         MetaDetailsRepository.shared.load(type: type, id: id)
@@ -239,6 +276,7 @@ final class DetailViewModel: ObservableObject {
         shuffleWatcher?.cancel(); shuffleWatcher = nil
         metaScreenWatcher?.cancel(); metaScreenWatcher = nil
         playerSettingsWatcher?.cancel(); playerSettingsWatcher = nil
+        mdbListWatcher?.cancel(); mdbListWatcher = nil
         trailerVideoURL = nil
         trailerVideoId = nil
         didRequestTrailer = false
@@ -519,6 +557,26 @@ final class DetailViewModel: ObservableObject {
         refreshShuffle()
         seriesAction = computeSeriesAction()
         isPlayEnabled = computeIsPlayEnabled()
+        let resumable = computeHasResumableProgress()
+        if hasResumableProgress != resumable { hasResumableProgress = resumable }
+    }
+
+    /// FEAT-35: see `hasResumableProgress`. Series read the primary action computed just above;
+    /// movies look up the title's own entry the way the stream picker's resume path does.
+    private func computeHasResumableProgress() -> Bool {
+        if let meta, EpisodesSection.isSeriesLike(meta) {
+            return DetailStartOver.isAvailable(isSeries: true,
+                                               seriesResumePositionMs: seriesAction?.resumePositionMs?.int64Value,
+                                               movieEntryPositionMs: nil, movieEntryResumable: false)
+        }
+        if meta == nil, preview.type == "series" { return false }
+        let videoId = meta?.id ?? id
+        let entry = WatchProgressRepository.shared.progressForVideo(
+            videoId: videoId, parentMetaId: videoId, seasonNumber: nil, episodeNumber: nil
+        )
+        return DetailStartOver.isAvailable(isSeries: false, seriesResumePositionMs: nil,
+                                           movieEntryPositionMs: entry?.lastPositionMs,
+                                           movieEntryResumable: entry?.isResumable ?? false)
     }
 
     // MARK: - Episode shuffle
@@ -756,6 +814,7 @@ final class DetailViewModel: ObservableObject {
         shuffleWatcher?.cancel()
         metaScreenWatcher?.cancel()
         playerSettingsWatcher?.cancel()
+        mdbListWatcher?.cancel()
     }
 }
 

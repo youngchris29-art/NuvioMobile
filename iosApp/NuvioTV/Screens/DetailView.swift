@@ -360,6 +360,18 @@ struct DetailView: View {
     /// only to restore the shared `HeroTrailerAudioState` back to this default once a full-screen
     /// trailer is dismissed (see the `.fullScreenCover(item: $model.trailerPlayback` below).
     @AppStorage("trailer_audio_default_on") private var trailerAudioDefaultOn = false
+    /// FEAT-35 (D2): Cinematic (default) or Classic. Classic renders today's `topBlock`, unchanged.
+    @AppStorage(DetailSettingsKeys.layout) private var detailLayoutRaw = DetailLayout.cinematic.rawValue
+    private var detailLayout: DetailLayout { DetailLayout.resolve(detailLayoutRaw) }
+    /// FEAT-35 section toggle "Ratings" (closes FEAT-28): the Cinematic ratings strip and the meta
+    /// line's IMDb ★ (D10). Classic's chips are untouched.
+    @AppStorage(DetailSettingsKeys.sectionRatings) private var sectionRatings = true
+    /// FEAT-35 (D3, correction F8): the full-synopsis cover, opened from the Cinematic teaser. Lives
+    /// here, not in the hero, because it also pauses the background trailer (`isTrailerActive`).
+    @State private var showSynopsisSheet = false
+    /// FEAT-35 Start Over (movies): the next stream-picker presentation starts from 0. Reset when
+    /// the cover goes away, like `forceManualPlay`. Series carry it on `SeriesPlayRoute`.
+    @State private var startOverMovie = false
 
     /// FEAT-8: true once `trailerDurationSeconds` has elapsed for the current background trailer —
     /// fades the background player back out to the still backdrop without ever touching
@@ -457,6 +469,12 @@ struct DetailView: View {
     /// retires that field entirely — `onChange(of: focusedRow)`'s own `old` parameter is already
     /// the row that lost focus, real or nil, with no separate bookkeeping needed.
     @FocusState private var focusedRow: DetailRowID?
+    /// FEAT-35: lets `.defaultFocus` land on Play/Resume (the Cinematic teaser above it can be
+    /// focusable). Bound on both Play buttons in `actionRowButtons`.
+    @FocusState private var heroFocus: DetailHeroFocus?
+    /// FEAT-35: true while focus is anywhere inside the Cinematic hero (read by the hero-return
+    /// scroll in W2-A, so a focus loss to a push or cover never scrolls the page).
+    @FocusState private var heroHasFocus: Bool
     /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
@@ -529,7 +547,13 @@ struct DetailView: View {
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
-            scrimOverlay(posterBackdropVisible: showPosterBackdrop)
+            // FEAT-35: each layout has its own scrim. Written out at both call sites (here and the
+            // trailer cover's copy) so the two always compose the same way (Codex r3 rule).
+            if detailLayout == .cinematic {
+                cinematicScrimOverlay(posterBackdropVisible: showPosterBackdrop)
+            } else {
+                scrimOverlay(posterBackdropVisible: showPosterBackdrop)
+            }
             // UX-6/BUG-41: the dim overlay + its debug Text live in `ScrollDimOverlay`, the sole
             // observer of `dimModel` — see that type's doc comment for why.
             ScrollDimOverlay(model: dimModel, trailerActive: trailerLayerVisible, glassFlat: chipGlassFlat)
@@ -543,7 +567,7 @@ struct DetailView: View {
                 .animation(TrailerBridgeChoreography.blackoutAnimation(to: bridgePhase), value: bridgePhase)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg + Theme.Spacing.sm) {
-                    topBlock
+                    heroBlock
                     // Grouped to stay under ViewBuilder's 10-subview ceiling. BUG-96: every row
                     // below the top block is anchored — see `DetailRowAnchor`.
                     Group {
@@ -871,6 +895,10 @@ struct DetailView: View {
                 .accessibilityIdentifier("debug_bridge")
             #endif
         }
+        // FEAT-35 (correction F18): land on Play/Resume, not on the Cinematic synopsis teaser above
+        // it. On the outermost ZStack, not inside the ScrollView. Classic has nothing focusable
+        // above Play, so this names the target the engine already picked there.
+        .defaultFocus($heroFocus, .play)
         // FEAT-8: combined into one Bool so the fade also triggers when the trailer-duration timer
         // stops the background player (a `withAnimation(.easeInOut(duration: 1.5))` at the call site
         // overrides this ambient 0.8s for that specific change — see `stopBackgroundTrailer()`).
@@ -940,10 +968,14 @@ struct DetailView: View {
                 showShuffleSheet = false
             }
         }
-        .fullScreenCover(isPresented: $showStreams, onDismiss: { forceManualPlay = false }) {
+        .fullScreenCover(isPresented: $showStreams, onDismiss: {
+            forceManualPlay = false
+            startOverMovie = false
+        }) {
             StreamPickerView(type: preview.type, videoId: streamVideoId, title: title,
                              poster: posterUrl, synopsis: overview, meta: playbackMeta,
-                             logoUrl: logoUrl, forceManual: forceManualPlay)
+                             logoUrl: logoUrl, forceManual: forceManualPlay,
+                             startFromBeginning: startOverMovie)
         }
         .fullScreenCover(item: $seriesPlay) { route in
             StreamPickerView(
@@ -959,7 +991,8 @@ struct DetailView: View {
                 synopsis: route.synopsis,
                 meta: playbackMeta,
                 logoUrl: logoUrl,
-                forceManual: route.forceManual
+                forceManual: route.forceManual,
+                startFromBeginning: route.startFromBeginning
             )
         }
         // FEAT-32: presented from `presentedTrailer`, which `beginTrailerBridge` sets after the
@@ -1011,7 +1044,11 @@ struct DetailView: View {
                 // Codex round 3 (P2): composed exactly as the description composes it underneath
                 // (scrim, then the scroll dim at its current value; the poster layer is held for
                 // the whole bridge), or the crossfade runs between a raw and a darkened frame.
-                scrimOverlay(posterBackdropVisible: false)
+                if detailLayout == .cinematic {
+                    cinematicScrimOverlay(posterBackdropVisible: false)
+                } else {
+                    scrimOverlay(posterBackdropVisible: false)
+                }
                 ScrollDimOverlay(model: dimModel, trailerActive: false, glassFlat: chipGlassFlat, showsProbe: false)
                 FullScreenTrailerPlayer(urlString: item.url, onPlaybackEnded: {
                     model.trailerPlayback = nil
@@ -1164,6 +1201,8 @@ struct DetailView: View {
     private var isTrailerActive: Bool {
         backgroundTrailerEnabled && model.trailerVideoURL != nil && !showStreams
             && model.trailerPlayback == nil && !backgroundTrailerStopped
+            // FEAT-35 (correction F8): the full-synopsis cover pauses it like any other cover.
+            && !showSynopsisSheet
     }
 
     /// BUG-41: `isTrailerActive` plus the scroll-dim hysteresis latch — whether the hero-trailer
@@ -1317,6 +1356,91 @@ struct DetailView: View {
                 ],
                 startPoint: .top, endPoint: .bottom
             )
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    /// FEAT-35 (D2): the layout switch point. Classic is today's `topBlock`, untouched.
+    @ViewBuilder
+    private var heroBlock: some View {
+        switch detailLayout {
+        case .classic:
+            topBlock
+        case .cinematic:
+            cinematicHero
+        }
+    }
+
+    /// FEAT-35 "Cinematic Clean": see `DetailCinematicHero`. The action row is `actionRow` itself,
+    /// so every closure, label and identifier is shared with Classic.
+    private var cinematicHero: some View {
+        let ratings = DetailRatings.ordered((model.meta?.externalRatings ?? []).map { DetailRatingInput($0) })
+        // Correction F4: reserve the strip's slot only when MDBList can fetch for this title.
+        let imdbId: String? = model.meta?.imdbId
+        let ratingsGateOn = sectionRatings && model.mdbListRatingsActive
+            && DetailRatings.hasUsableImdbId(metaId: model.meta?.id, fallbackId: preview.id, imdbId: imdbId)
+        let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
+        let runtime: String? = model.meta?.runtime
+        let ageRating: String? = model.meta?.ageRating
+        let imdbRating: String? = model.meta?.imdbRating ?? preview.imdbRating
+        return DetailCinematicHero(
+            title: title,
+            logoURL: logoUrl,
+            meta: DetailMetaLineModel(year: year, runtime: runtime, genres: genres,
+                                      ageRating: ageRating, imdbRating: imdbRating),
+            ratings: ratings,
+            ratingsGateOn: ratingsGateOn,
+            ratingsSectionOn: sectionRatings,
+            overview: overview,
+            synopsisSlotVisible: !(model.meta != nil && (overview ?? "").isEmpty),
+            credits: DetailCredits.make(
+                cast: (model.meta?.cast ?? []).map { $0.name },
+                director: model.meta?.director ?? [],
+                writer: model.meta?.writer ?? [],
+                isSeries: isSeries
+            ),
+            showSynopsisSheet: $showSynopsisSheet,
+            onOpenSynopsis: {
+                userInteracted = true
+                withdrawTrailerBridgeIfLeaving()
+            }
+        ) {
+            actionRow
+        }
+        .focused($heroHasFocus)
+    }
+
+    /// FEAT-35: the Cinematic scrim — a lighter horizontal/vertical pair plus a radial darkening
+    /// centred bottom-leading under the text block. Values and the "never darker than Classic"
+    /// rule live in `DetailScrim`. `scrimOverlay` (Classic) is not touched.
+    private func cinematicScrimOverlay(posterBackdropVisible: Bool) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    .black.opacity(DetailScrim.cinematicHorizontalLeading),
+                    .black.opacity(DetailScrim.cinematicHorizontalMid),
+                    .black.opacity(posterBackdropVisible
+                                   ? DetailScrim.cinematicHorizontalTrailingOverPoster
+                                   : DetailScrim.cinematicHorizontalTrailing)
+                ],
+                startPoint: .leading, endPoint: .trailing
+            )
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: DetailScrim.cinematicVerticalClearUntil),
+                    .init(color: .black.opacity(DetailScrim.cinematicVerticalBottom), location: 1.0)
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            GeometryReader { geo in
+                RadialGradient(
+                    colors: [.black.opacity(DetailScrim.cinematicRadialOpacity), .clear],
+                    center: .bottomLeading,
+                    startRadius: 0,
+                    endRadius: geo.size.width * DetailScrim.cinematicRadialEndRadiusFraction
+                )
+            }
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -1575,11 +1699,13 @@ struct DetailView: View {
                         actionButtonPadding(
                             actionLabel(
                                 model.isPlayEnabled ? "Play" : String(localized: "Playback unavailable"),
-                                systemImage: "play.fill"
+                                systemImage: "play.fill",
+                                primary: true
                             )
                             .font(Theme.Font.meta)
                             .prominentAccentLabel(),
-                            horizontal: Theme.Spacing.lg
+                            horizontal: Theme.Spacing.lg,
+                            primary: true
                         )
                     }
                 )
@@ -1592,6 +1718,8 @@ struct DetailView: View {
                     forceManualPlay = true
                     showStreams = true
                 })
+                // FEAT-35: the `.defaultFocus` target (no visual effect; Classic lands here anyway).
+                .focused($heroFocus, equals: .play)
             } else if let action = model.seriesAction, let meta = model.meta {
                 prominentActionButtonStyle(
                     Button {
@@ -1602,11 +1730,13 @@ struct DetailView: View {
                         actionButtonPadding(
                             actionLabel(
                                 model.isPlayEnabled ? action.label : String(localized: "Playback unavailable"),
-                                systemImage: "play.fill"
+                                systemImage: "play.fill",
+                                primary: true
                             )
                             .font(Theme.Font.meta)
                             .prominentAccentLabel(),
-                            horizontal: Theme.Spacing.lg
+                            horizontal: Theme.Spacing.lg,
+                            primary: true
                         )
                     }
                 )
@@ -1618,6 +1748,14 @@ struct DetailView: View {
                     model.noteSeriesPlayStarted(action)
                     seriesPlay = SeriesPlayRoute(meta: meta, action: action, forceManual: true)
                 })
+                // FEAT-35: same `.defaultFocus` target as the movie Play button.
+                .focused($heroFocus, equals: .play)
+            }
+
+            // FEAT-35: Cinematic only, and only with a saved position to discard. Right after
+            // Play/Resume, before Watch Trailer.
+            if showsStartOver {
+                startOverButton
             }
 
             if model.trailerVideoURL != nil {
@@ -1711,12 +1849,50 @@ struct DetailView: View {
         }
     }
 
+    /// FEAT-35 (D9): in Cinematic the secondary buttons are always round icon-only buttons and
+    /// Play/Resume always keeps its label, so the row fits the 900 pt text column beside the
+    /// credits. Classic keeps FEAT-9's setting for every button, exactly as before.
+    private func usesIconOnlyLabel(primary: Bool) -> Bool {
+        detailLayout == .cinematic ? !primary : actionIconsOnly
+    }
+
+    /// FEAT-35: Start Over sits in the row only in Cinematic, and only when there is a saved
+    /// position (`DetailViewModel.hasResumableProgress`).
+    private var showsStartOver: Bool {
+        detailLayout == .cinematic && model.hasResumableProgress
+    }
+
+    /// FEAT-35 Start Over: the Orivio batch's Continue Watching "Start Over" path, reached from
+    /// Detail — the same stream-picker covers as Play/Resume with `startFromBeginning: true`.
+    private var startOverButton: some View {
+        compactActionButtonStyle(
+            Button {
+                if isSeries {
+                    guard let action = model.seriesAction, let meta = model.meta else { return }
+                    model.noteSeriesPlayStarted(action)
+                    seriesPlay = SeriesPlayRoute(meta: meta, action: action, startFromBeginning: true)
+                } else {
+                    startOverMovie = true
+                    showStreams = true
+                }
+            } label: {
+                actionButtonPadding(
+                    actionLabel(String(localized: "Start Over"), systemImage: "arrow.counterclockwise")
+                        .font(Theme.Font.meta),
+                    horizontal: Theme.Spacing.md
+                )
+            }
+        )
+        .disabled(!model.isPlayEnabled)
+        .accessibilityIdentifier("detail_start_over")
+    }
+
     /// FEAT-9: the underlying `Label` for one action-row button — icon + text normally, icon-only
     /// (with the title preserved for VoiceOver) when `actionIconsOnly` is on.
     @ViewBuilder
-    private func actionLabel(_ title: String, systemImage: String) -> some View {
+    private func actionLabel(_ title: String, systemImage: String, primary: Bool = false) -> some View {
         let label = Label(title, systemImage: systemImage)
-        if actionIconsOnly {
+        if usesIconOnlyLabel(primary: primary) {
             label.labelStyle(.iconOnly).accessibilityLabel(Text(title))
         } else {
             label
@@ -1726,8 +1902,8 @@ struct DetailView: View {
     /// FEAT-9: shared padding for action-row buttons — the normal asymmetric horizontal/vertical
     /// padding, or symmetric padding (pills go square-ish around the bare icon) when icons-only.
     @ViewBuilder
-    private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat) -> some View {
-        if actionIconsOnly {
+    private func actionButtonPadding<Content: View>(_ content: Content, horizontal: CGFloat, primary: Bool = false) -> some View {
+        if usesIconOnlyLabel(primary: primary) {
             content.padding(Theme.Spacing.md)
         } else {
             content
@@ -2494,6 +2670,8 @@ private struct SeriesPlayRoute: Identifiable {
     /// Hold-Play "Choose Source…": the picker skips auto-play and shows the list. Carried on the
     /// route (not read from view state) so the cover's content closure is self-contained.
     var forceManual: Bool = false
+    /// FEAT-35 Start Over: the picker plays from 0 instead of the saved position.
+    var startFromBeginning: Bool = false
     var id: String { action.videoId }
 
     /// The resolved episode (by season/episode number) — the Info header shows ITS still +
@@ -2572,5 +2750,61 @@ nonisolated enum DetailScrim {
 
     static func panelUsesFlatFill(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
         DetailView.panelUsesFlatFill(trailerActive: trailerActive, scrolling: scrolling, glassDisabled: glassDisabled)
+    }
+
+    // MARK: FEAT-35 Cinematic scrim
+
+    /// FEAT-35 (Detail revamp, Cinematic only): a lighter horizontal + vertical pair plus a radial
+    /// darkening centred bottom-leading under the text block, so the rest of the art stays brighter.
+    /// The classic stops above are the CEILING: `cinematicCompositeAlpha` must never exceed
+    /// `classicCompositeAlpha` at any point (`DetailScrimCinematicTests`, 11 × 11 grid). If that
+    /// test ever fails, lower `cinematicRadialOpacity` in 0.05 steps; never raise any value.
+    static let cinematicHorizontalLeading: Double = 0.55
+    static let cinematicHorizontalMid: Double = 0.15
+    static let cinematicHorizontalTrailing: Double = 0.00
+    static let cinematicHorizontalTrailingOverPoster: Double = 0.10
+    static let cinematicVerticalClearUntil: Double = 0.60
+    static let cinematicVerticalBottom: Double = 0.60
+    /// Black at this opacity at the bottom-leading corner, fading linearly to clear.
+    static let cinematicRadialOpacity: Double = 0.55
+    /// The radial's end radius as a fraction of the screen WIDTH.
+    static let cinematicRadialEndRadiusFraction: Double = 0.70
+    /// The aspect the composite math measures radial distance in (the tvOS screen).
+    static let compositeAspectWidth: Double = 1920
+    static let compositeAspectHeight: Double = 1080
+
+    /// Composite darkness (1 − Π(1 − aᵢ)) of the classic scrim at unit point (x, y), y = 0 at top.
+    static func classicCompositeAlpha(x: Double, y: Double, overPoster: Bool) -> Double {
+        let horizontal = threeStop(x, horizontalLeading, horizontalMid,
+                                   overPoster ? horizontalTrailingOverPoster : horizontalTrailing)
+        let vertical = verticalRamp(y, clearUntil: verticalClearUntil, bottom: verticalBottom)
+        return 1 - (1 - horizontal) * (1 - vertical)
+    }
+
+    /// Composite darkness of the Cinematic scrim at unit point (x, y), y = 0 at top.
+    static func cinematicCompositeAlpha(x: Double, y: Double, overPoster: Bool) -> Double {
+        let horizontal = threeStop(x, cinematicHorizontalLeading, cinematicHorizontalMid,
+                                   overPoster ? cinematicHorizontalTrailingOverPoster : cinematicHorizontalTrailing)
+        let vertical = verticalRamp(y, clearUntil: cinematicVerticalClearUntil, bottom: cinematicVerticalBottom)
+        let dx = x * compositeAspectWidth
+        let dy = (1 - y) * compositeAspectHeight
+        let endRadius = cinematicRadialEndRadiusFraction * compositeAspectWidth
+        let distance = (dx * dx + dy * dy).squareRoot()
+        let radial = cinematicRadialOpacity * max(0, 1 - distance / endRadius)
+        return 1 - (1 - horizontal) * (1 - vertical) * (1 - radial)
+    }
+
+    /// Piecewise-linear through three equally spaced stops (x = 0, 0.5, 1), as `LinearGradient`
+    /// draws three colours.
+    private static func threeStop(_ x: Double, _ leading: Double, _ mid: Double, _ trailing: Double) -> Double {
+        let t = min(max(x, 0), 1)
+        return t <= 0.5 ? leading + (mid - leading) * (t / 0.5) : mid + (trailing - mid) * ((t - 0.5) / 0.5)
+    }
+
+    /// Clear until `clearUntil`, then linear to `bottom` at y = 1.
+    private static func verticalRamp(_ y: Double, clearUntil: Double, bottom: Double) -> Double {
+        let t = min(max(y, 0), 1)
+        guard t > clearUntil, clearUntil < 1 else { return 0 }
+        return bottom * (t - clearUntil) / (1 - clearUntil)
     }
 }

@@ -1,55 +1,43 @@
 import SwiftUI
 import SharedCore
 
-/// The Settings tab: a two-pane split — a native `List` of categories on the left (~1/3), the
-/// selected category's pane rendered inside a native `List` on the right (~2/3), under one page
-/// title. Each category's rows live in their own `*SettingsPane` file; the shared row primitives
-/// live in Settings/SettingsRowViews.swift.
+/// The Settings tab (FEAT-50 "Native Split + Explainer", detail-settings-revamp W1-B).
 ///
-/// beta.15 §C (C2): this was a hand-rolled `HStack` of custom `SettingsRowButtonStyle` buttons in
-/// a `ScrollView`. Everything focus- and colour-related is now the system's job — no custom
-/// `ButtonStyle`, no `hoverEffect`, no focus-derived label colours (the BUG-45 sidebar
-/// special-case and the BUG-65 published-focus-environment-key hack are gone from this file).
+/// A `NavigationStack` whose root is `SettingsRootView` — a grouped list of ten categories with an
+/// explainer column — and whose destinations are the panes, each wrapped in `SettingsPaneScaffold`
+/// (explainer column + the pane's native `List`). Each category's rows live in their own
+/// `*SettingsPane` file; the shared row primitives live in Settings/SettingsRowViews.swift, the
+/// explainer plumbing in Settings/SettingsExplainerModel.swift and the copy in
+/// Settings/SettingsDescriptions.swift.
 ///
 /// ## Focus graph (written before the code, per the tvOS skill's workflow)
 ///
-/// **Default focus.** The sidebar `List` is a `.focusScope(sidebarFocus)`; the SELECTED category
-/// row carries `.prefersDefaultFocus(true, in: sidebarFocus)` — on a cold mount that is the first
-/// row (Account & Services), and after a theme-change remount it is whichever category the user
-/// was standing in, so picking a theme swatch no longer throws them to the top. Entering the
-/// Settings tab — from the tab bar, or back from a pushed sub-page — lands focus on a sidebar
-/// row, never in the detail pane. There is no `@FocusState` write on appear: the scope's default
-/// is the only mechanism, so a restored focus (tvOS remembers the last focused row within the
-/// tab) still wins where the system wants it to.
+/// **Root.** See `SettingsRootView`: default focus is the last opened category's row (a
+/// `.prefersDefaultFocus` inside the root List's `.focusScope`), Up / Down walk the categories,
+/// Up from the first row exits to the tab bar, Select pushes the pane.
 ///
-/// **Sidebar.**
-/// - Up / Down walk the seven categories. Focus *is* selection: `onChange(of: focusedCategory)`
-///   writes `selectedCategory`, so the detail pane live-previews the focused category (the
-///   Settings.app behaviour the old screen had, kept deliberately).
-/// - Up from the first row leaves the list upward and lands on the app's tab bar (the standard
-///   tvOS top-edge exit). Down from the last row does nothing — the list ends.
-/// - Left does nothing: the sidebar is the leading edge of the screen.
-/// - Right enters the detail `List` and lands on its first focusable row.
+/// **Pane.** See `SettingsPaneScaffold`: push lands on the pane List's first focusable row,
+/// Up / Down walk the rows, Left / Right do nothing at row level (the explainer is not
+/// focusable).
 ///
-/// **Detail.**
-/// - Up / Down walk the rows and sections; the `List` scrolls to reveal.
-/// - Left from any row returns to the sidebar, on the row that is still selected (the sidebar
-///   keeps its focus memory, so the walk resumes where it left off).
-/// - Right does nothing at row level. Inside a row it is the control's own business: a `Toggle`
-///   ignores it, a `Menu { Picker }` opens on Select, not on Right.
-/// - Up from the first detail row leaves upward to the tab bar; Down from the last does nothing.
+/// **Menu.** Exactly one level per press. Inside an open `Menu`/`Picker` popover it dismisses the
+/// popover; on a page pushed by a `SettingsLinkRow` it pops back to the pane; in a pane it pops
+/// back to the root with focus on the category just left (tvOS focus memory, backed by the root's
+/// preferred focus on `lastCategory`). At the root: in sidebar navigation mode
+/// `.sidebarMenuReveal()` reveals the sidebar (FEAT-30); in tabs mode it leaves Settings for the
+/// tab bar. Only the root view carries `.sidebarMenuReveal()`; panes are stack destinations, not
+/// its descendants, so the stack's pop wins inside them in both modes. An `.alert` is dismissed
+/// by its own Cancel button.
 ///
-/// **Empty / error panes (BUG-47 class).** A pane whose `List` has no focusable row cannot be
-/// entered: Right from the sidebar is a no-op and focus stays on the category row — it is never
-/// stranded, and Menu still exits cleanly. Every pane today has at least one focusable control in
-/// every state (e.g. Advanced offers "Start Remote Setup" when the server is stopped), and every
-/// pushed sub-page a `SettingsLinkRow` presents must keep one too.
+/// **Theme remount.** `path` and `lastCategory` are `@Binding`s owned by `ContentView`, above the
+/// `.id(...)` rebuild boundary. A theme swatch, navigation-style or typeface change remounts this
+/// view; the rebuilt `NavigationStack(path:)` starts with `[.appearance]` already in the path and
+/// shows Appearance directly (no push animation), where `pendingThemeSwatchFocus` /
+/// `pendingAppearanceRowFocus` put focus back on the control that was pressed.
 ///
-/// **Menu.** Exactly one level per press, all of it the system's default — this file installs no
-/// `onExitCommand` anywhere. Inside an open `Menu`/`Picker` popover it dismisses the popover; on a
-/// page pushed by a `SettingsLinkRow` it pops back to the detail list; at the `NavigationStack`
-/// root (the split itself) it leaves Settings for the app's tab bar. An `.alert` is dismissed by
-/// its own Cancel button.
+/// **Empty / error panes (BUG-47 class).** Every pane rendered here, and every sub-page a
+/// `SettingsLinkRow` pushes, must keep at least one focusable control in every state, or a push
+/// strands focus. Read-only panes use `SettingsValueRow(focusable: true)`.
 struct SettingsView: View {
     @StateObject private var model = SettingsViewModel()
     @StateObject private var trakt = TraktViewModel()
@@ -66,15 +54,16 @@ struct SettingsView: View {
     @State private var debridDisconnectId: String?
     /// "Use the official server?" confirmation (self-hosted → api.nuvio.tv switch-back).
     @State private var confirmingUseOfficial = false
-    /// Which category's sections are shown in the detail pane. Non-optional (panes and the pane
-    /// switch below read it directly); the `List`'s selection binding adapts it.
-    ///
-    /// A `@Binding` owned by `ContentView`, NOT local `@State`: `ContentView` pins
-    /// `.id(appTheme.themeName)` on the app root, so choosing a theme swatch in the Appearance pane
-    /// remounts this whole view. While this was `@State` that remount reset the split to
-    /// `.accountServices` — the user pressed a colour and was thrown to the top of Settings with
-    /// nothing visibly changed. Same fix, and same reason, as `selectedTab`.
-    @Binding var selectedCategory: SettingsCategory
+    /// The open pane (depth 0 or 1; value-less `NavigationLink` sub-pages push on top without
+    /// appearing here). A `@Binding` owned by `ContentView`, NOT local `@State`: `ContentView`
+    /// re-identifies the app root on a theme / navigation-style / typeface change, which remounts
+    /// this whole view. Local state would reset to the root and throw the user out of Appearance
+    /// on every swatch press — the "the theme picker doesn't work" report. Same fix, and same
+    /// reason, as `selectedTab`.
+    @Binding var path: [SettingsCategory]
+    /// The category the user last opened: the root's preferred focus after a pop or a remount.
+    /// Owned by `ContentView` for the same reason as `path`.
+    @Binding var lastCategory: SettingsCategory?
     /// Theme name whose swatch should reclaim focus after a theme-change remount (see
     /// `ContentView.pendingThemeSwatchFocus`); the Appearance pane consumes and clears it.
     @Binding var pendingThemeSwatchFocus: String?
@@ -82,42 +71,24 @@ struct SettingsView: View {
     /// remount (see `ContentView.pendingAppearanceRowFocus`); the Appearance pane consumes and
     /// clears it, same contract as `pendingThemeSwatchFocus`.
     @Binding var pendingAppearanceRowFocus: String?
-    @FocusState private var focusedCategory: SettingsCategory?
-    /// Scope that owns the sidebar's default focus — see the focus graph above.
-    @Namespace private var sidebarFocus
-    /// FEAT-7: "Default" shows the category icon; "Minimal" drops it for a denser sidebar. Set
-    /// from the Appearance pane's Settings Style chips.
-    @AppStorage("settings_style") private var settingsStyle = "default"
 
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                // One title for the whole split (HIG Split views: never one per pane).
-                Text("Settings")
-                    .font(Theme.Font.screenTitle)
-                    .foregroundStyle(Theme.Palette.textPrimary)
-                    .padding(.horizontal, Theme.Spacing.screen)
-                    .padding(.top, Theme.Spacing.lg)
-
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        categorySidebar
-                            .frame(width: max(400, geo.size.width / 3))
-
-                        detailPane
-                            .frame(maxWidth: .infinity)
+        NavigationStack(path: $path) {
+            SettingsRootView(path: $path, lastCategory: $lastCategory)
+                // FEAT-30 (Codex r2, internal review r3 P2-8): in sidebar mode the system tab bar
+                // is gone from this root too, so Menu at the root needs the same route to the
+                // replacement chrome the scrolling roots have. Attached to the ROOT view, inside
+                // the stack: pushed panes (and `SettingsLinkRow` sub-pages) are stack
+                // destinations, not descendants of this view, so their Menu (pop) is untouched.
+                .sidebarMenuReveal()
+                .background(Theme.Palette.background.ignoresSafeArea())
+                .navigationDestination(for: SettingsCategory.self) { category in
+                    SettingsPaneScaffold(category: category) {
+                        paneContent(category)
                     }
                 }
-            }
-            // FEAT-30 (Codex r2, internal review r3 P2-8): in sidebar mode the system tab bar is
-            // gone from THIS root too, so Menu / an unplaceable Up at the split root need the same
-            // route to the replacement chrome the four scrolling roots have. Attached INSIDE the
-            // NavigationStack, on the split itself (like Search/Library/Add-ons attach to their
-            // ScrollView): a page pushed by a `SettingsLinkRow` is a descendant of the stack, not
-            // of this VStack, so its own Menu (pop) and Up grammar stay untouched.
-            .sidebarMenuReveal()
-            .background(Theme.Palette.background.ignoresSafeArea())
         }
+        // On the stack, not the root view: pushing a pane must NOT stop the view models.
         .onAppear {
             model.start()
             trakt.start()
@@ -204,36 +175,39 @@ struct SettingsView: View {
         }
     }
 
-    /// Right column: the selected pane's sections inside a native `List`. `settingsUsesNativeList`
-    /// tells the shared `settingsSection(_:)` helper it may emit a real `Section` here (it stays
-    /// on the legacy stack everywhere else — see SettingsRowViews.swift).
-    private var detailPane: some View {
-        List {
-            pane
-        }
-        .environment(\.settingsUsesNativeList, true)
+    /// The existing `AccountServicesSettingsPane` call, verbatim (corrections F13). Used twice by
+    /// the interim switch below.
+    private var accountServicesPane: some View {
+        AccountServicesSettingsPane(
+            trakt: trakt,
+            simkl: simkl,
+            debrid: debrid,
+            confirmingSignOut: $confirmingSignOut,
+            confirmingTraktDisconnect: $confirmingTraktDisconnect,
+            confirmingSimklDisconnect: $confirmingSimklDisconnect,
+            debridDisconnectId: $debridDisconnectId,
+            confirmingUseOfficial: $confirmingUseOfficial
+        )
     }
 
-    /// The detail pane's content for the currently selected sidebar category. Only the selected
-    /// category's pane is built (not the others), matching the previous per-section filtering —
-    /// keeps focus + perf clean.
+    /// A pane's rows, rendered inside the scaffold's `List`. Only the pushed category's pane is
+    /// built.
+    ///
+    /// INTERIM (W1-B): the ten new categories map onto today's seven pane files so the build stays
+    /// green and every current setting stays reachable. Some categories show a whole old pane
+    /// (e.g. Services and Account & Profiles both show the old Account & Services pane). The main
+    /// session replaces this switch once W2-B and W2-C have split the panes (P2 spec §H).
     @ViewBuilder
-    private var pane: some View {
-        switch selectedCategory {
-        case .accountServices:
-            AccountServicesSettingsPane(
-                trakt: trakt,
-                simkl: simkl,
-                debrid: debrid,
-                confirmingSignOut: $confirmingSignOut,
-                confirmingTraktDisconnect: $confirmingTraktDisconnect,
-                confirmingSimklDisconnect: $confirmingSimklDisconnect,
-                debridDisconnectId: $debridDisconnectId,
-                confirmingUseOfficial: $confirmingUseOfficial
-            )
-        case .playback:
-            PlaybackSettingsPane(model: model)
-        case .appearance:
+    private func paneContent(_ category: SettingsCategory) -> some View {
+        switch category {
+        case .accountProfiles:
+            Group {
+                accountServicesPane
+                AdvancedSettingsPane(remote: remote)
+            }
+        case .services:
+            accountServicesPane
+        case .appearance, .detailPage:
             AppearanceSettingsPane(
                 model: model,
                 badges: badges,
@@ -242,115 +216,92 @@ struct SettingsView: View {
             )
         case .homeScreen:
             HomeScreenSettingsPane(model: model)
-        case .contentSources:
+        case .player, .subtitlesAudio:
+            PlaybackSettingsPane(model: model)
+        case .sources:
             ContentSourcesSettingsPane(model: model, plugins: plugins)
-        case .advanced:
-            AdvancedSettingsPane(remote: remote)
-        case .about:
+        case .about, .developer:
             AboutSettingsPane()
         }
     }
-
-    /// Left column: one focusable row per category, in a native `List`. Focusing a row
-    /// live-selects it (the tvOS Settings pattern); Right enters the pane.
-    ///
-    /// Rows are `Button`s, not bare `Label`s: a plain `Label` inside `List(selection:)` is NOT
-    /// focusable on tvOS (C0 spike finding), so selection alone can't drive the walk. No
-    /// `foregroundStyle` here on purpose — the system inverts the row's label colour on the focus
-    /// platter, which is what BUG-45's hand-rolled three-way colour switch was working around.
-    private var categorySidebar: some View {
-        List(selection: sidebarSelection) {
-            ForEach(SettingsCategory.allCases) { category in
-                Button {
-                    selectedCategory = category
-                } label: {
-                    if settingsStyle == "minimal" {
-                        Text(category.title)
-                            .font(Theme.Font.body)
-                    } else {
-                        // FEAT-31 (rc2 tester report, 2026-09-06): the category labels carried no font
-                        // token, so a `List` row's system default rendered them while every other
-                        // Settings label took the Open Sans face. Both branches now read `Theme.Font.body`.
-                        // HStack, not `Label`: the system label's icon-to-title spacing is too tight in a tvOS
-                        // List row (device pass 2026-08-28, and the tester's "icons overlap the text" report) —
-                        // this matches the detail rows' `SettingsRowLabel` spacing instead.
-                        // Icon in the theme accent at rest, `.primary` under the focus platter —
-                        // same `SettingsAccentTint` the detail rows use. The label itself keeps
-                        // NO explicit colour (BUG-45: an accent label here was white-on-white for
-                        // the White theme's near-white accent).
-                        HStack(spacing: Theme.Spacing.md) {
-                            Image(systemName: category.icon)
-                                .settingsAccentTint()
-                                // Decorative: `Label` used to fold the symbol into one
-                                // accessibility element; the raw HStack must not let VoiceOver
-                                // announce the symbol's generated name before the title.
-                                .accessibilityHidden(true)
-                            Text(category.title)
-                                .font(Theme.Font.body)
-                        }
-                    }
-                }
-                .tag(category)
-                .focused($focusedCategory, equals: category)
-                // The scope's default follows the SELECTED category rather than always the first
-                // row. On a cold mount `selectedCategory` is `.accountServices` — the first row —
-                // so the documented "entering Settings lands on Account & Services" behaviour is
-                // unchanged. After a theme-change remount it lands back on the category the user
-                // was actually in, and (because focus IS selection here) the `onChange` below then
-                // re-writes the same value instead of clobbering it with the first row's.
-                .prefersDefaultFocus(category == selectedCategory, in: sidebarFocus)
-            }
-        }
-        .focusScope(sidebarFocus)
-        .onChange(of: focusedCategory) { _, newValue in
-            // Live-preview the focused category in the detail pane.
-            if let newValue { selectedCategory = newValue }
-        }
-    }
-
-    /// `List(selection:)` wants an optional binding; the screen's own state is non-optional so the
-    /// pane switch (and the panes) never deal with "no category".
-    private var sidebarSelection: Binding<SettingsCategory?> {
-        Binding(
-            get: { selectedCategory },
-            set: { if let newValue = $0 { selectedCategory = newValue } }
-        )
-    }
 }
 
-/// Settings categories for the split-view sidebar. Order here is the sidebar order.
-enum SettingsCategory: String, CaseIterable, Identifiable {
-    case accountServices
-    case playback
-    case appearance
-    case homeScreen
-    case contentSources
-    case advanced
-    case about
-
-    var id: String { rawValue }
+/// The four groups of the Settings root, in display order.
+enum SettingsCategoryGroup: CaseIterable {
+    case you
+    case look
+    case watch
+    case system
 
     var title: String {
         switch self {
-        case .accountServices: return String(localized: "Account & Services")
-        case .playback: return String(localized: "Playback")
+        case .you: return String(localized: "You")
+        case .look: return String(localized: "Look")
+        case .watch: return String(localized: "Watch")
+        case .system: return String(localized: "System")
+        }
+    }
+
+    /// This group's categories, in root-list order.
+    var categories: [SettingsCategory] {
+        SettingsCategory.allCases.filter { $0.group == self }
+    }
+}
+
+/// Settings categories (FEAT-50 re-sort, decision D8: 9 panes in 4 groups, plus Developer).
+/// Order here is the root-list order. Raw values are not persisted anywhere (the path lives in
+/// `ContentView` `@State`), so renaming cases needs no migration. `subtitle` and `summary` live
+/// with the rest of the explainer copy in Settings/SettingsDescriptions.swift.
+enum SettingsCategory: String, CaseIterable, Identifiable, Hashable {
+    case accountProfiles
+    case services
+    case appearance
+    case homeScreen
+    case detailPage
+    case player
+    case sources
+    case subtitlesAudio
+    case about
+    case developer
+
+    var id: String { rawValue }
+
+    var group: SettingsCategoryGroup {
+        switch self {
+        case .accountProfiles, .services: return .you
+        case .appearance, .homeScreen, .detailPage: return .look
+        case .player, .sources, .subtitlesAudio: return .watch
+        case .about, .developer: return .system
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .accountProfiles: return String(localized: "Account & Profiles")
+        case .services: return String(localized: "Services")
         case .appearance: return String(localized: "Appearance")
         case .homeScreen: return String(localized: "Home Screen")
-        case .contentSources: return String(localized: "Content Sources")
-        case .advanced: return String(localized: "Advanced")
+        case .detailPage: return String(localized: "Detail Page")
+        case .player: return String(localized: "Player")
+        case .sources: return String(localized: "Sources")
+        case .subtitlesAudio: return String(localized: "Subtitles & Audio")
         case .about: return String(localized: "About")
+        case .developer: return String(localized: "Developer")
         }
     }
 
     var icon: String {
         switch self {
-        case .accountServices: return "person.crop.circle"
-        case .playback: return "play.rectangle"
+        case .accountProfiles: return "person.crop.circle"
+        case .services: return "link"
         case .appearance: return "paintbrush"
         case .homeScreen: return "house"
-        case .contentSources: return "square.stack.3d.up"
-        case .advanced: return "gearshape.2"
+        case .detailPage: return "film"
+        case .player: return "play.rectangle"
+        case .sources: return "square.stack.3d.up"
+        case .subtitlesAudio: return "captions.bubble"
         case .about: return "info.circle"
+        case .developer: return "hammer"
         }
     }
 }

@@ -60,7 +60,8 @@ struct HomeScreenSettingsPane: View {
                 subtitle: upcomingRowEnabled
                     ? String(localized: "A row under Continue Watching with your shows' next episodes airing in the next 14 days")
                     : String(localized: "No Upcoming row on Home"),
-                isOn: $upcomingRowEnabled
+                isOn: $upcomingRowEnabled,
+                descriptionID: .homeUpcoming
             )
 
             if model.catalogs.isEmpty {
@@ -87,7 +88,8 @@ struct HomeScreenSettingsPane: View {
                 SettingsActionRow(
                     title: String(localized: "Refresh Add-ons"),
                     subtitle: String(localized: "Re-check installed add-ons for catalogs."),
-                    systemImage: "arrow.clockwise"
+                    systemImage: "arrow.clockwise",
+                    descriptionID: .homeRefreshAddons
                 ) {
                     AddonRepository.shared.refreshAll()
                 }
@@ -107,7 +109,8 @@ struct HomeScreenSettingsPane: View {
                     isOn: Binding(
                         get: { model.heroEnabled },
                         set: { model.setHeroEnabled($0) }
-                    )
+                    ),
+                    descriptionID: .homeShowHero
                 )
 
                 // Everything inside this branch configures the ROTATING banner specifically —
@@ -126,7 +129,8 @@ struct HomeScreenSettingsPane: View {
                         subtitle: heroNuvioStyle
                             ? String(localized: "Title and description on the left, artwork on the right, hero pinned while rows scroll")
                             : String(localized: "Classic layout with the logo on the lower left"),
-                        isOn: $heroNuvioStyle
+                        isOn: $heroNuvioStyle,
+                        descriptionID: .homeNuvioStyleHero
                     )
 
                     // Collections are hard-forced to heroSourceEnabled = false on the Kotlin side
@@ -153,7 +157,8 @@ struct HomeScreenSettingsPane: View {
                         SettingsDisclosureRow(
                             title: String(localized: "Hero Sources"),
                             subtitle: heroSourcesSummary,
-                            isExpanded: heroSourcesExpanded && !heroSourceCatalogs.isEmpty
+                            isExpanded: heroSourcesExpanded && !heroSourceCatalogs.isEmpty,
+                            descriptionID: .homeHeroSources
                         ) {
                             heroSourcesExpanded.toggle()
                         }
@@ -182,7 +187,8 @@ struct HomeScreenSettingsPane: View {
                         : heroLocationEffective
                             ? String(localized: "The hero plays a muted trailer preview after a moment of focus on a poster")
                             : String(localized: "Posters play a muted trailer preview after a moment of focus"),
-                    isOn: $inlineTrailersEnabled
+                    isOn: $inlineTrailersEnabled,
+                    descriptionID: .homeTrailersOnFocus
                 )
 
                 if inlineTrailersEnabled {
@@ -194,7 +200,8 @@ struct HomeScreenSettingsPane: View {
                     subtitle: heroTrailerAutoplay
                         ? String(localized: "The hero plays its trailer by itself, without waiting for focus")
                         : String(localized: "The hero shows artwork only"),
-                    isOn: $heroTrailerAutoplay
+                    isOn: $heroTrailerAutoplay,
+                    descriptionID: .homeHeroTrailerAutoplay
                 )
 
                 SettingsToggleRow(
@@ -205,7 +212,8 @@ struct HomeScreenSettingsPane: View {
                     isOn: Binding(
                         get: { model.showCatalogType },
                         set: { model.setShowCatalogType($0) }
-                    )
+                    ),
+                    descriptionID: .homeCatalogType
                 )
 
                 // Focus note (2026-08-30): same hoist as Hero Sources above — "Catalogs" is a
@@ -220,7 +228,8 @@ struct HomeScreenSettingsPane: View {
                 SettingsDisclosureRow(
                     title: String(localized: "Catalogs"),
                     subtitle: catalogsSummary,
-                    isExpanded: catalogsExpanded && !model.catalogs.isEmpty
+                    isExpanded: catalogsExpanded && !model.catalogs.isEmpty,
+                    descriptionID: .homeCatalogs
                 ) {
                     catalogsExpanded.toggle()
                 }
@@ -281,6 +290,7 @@ struct HomeScreenSettingsPane: View {
                 set: { trailerPlaybackLocation = $0 }
             ),
             options: ["poster", "hero"],
+            descriptionID: .homeTrailerLocation,
             label: { $0 == "hero" ? String(localized: "Hero") : String(localized: "Poster") }
         )
         if trailerPlaybackLocation == "hero" && model.heroEnabled && !heroNuvioStyle {
@@ -352,12 +362,14 @@ private struct SettingsDisclosureRow: View {
     let title: String
     let subtitle: String
     let isExpanded: Bool
+    /// FEAT-50: passed straight to the label (the `\.isFocused` read site).
+    var descriptionID: SettingsDescriptionID? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: Theme.Spacing.lg) {
-                SettingsRowLabel(title: title, subtitle: subtitle)
+                SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
                 Spacer()
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                     .font(SettingsRowFont.title)
@@ -450,7 +462,7 @@ private struct HeroSourceRowLabel: View {
     private static let inertRowOpacity: Double = 0.4
 
     var body: some View {
-        SettingsRowLabel(title: title, subtitle: subtitle)
+        SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: .homeHeroSource)
             // Never dim what the platter is currently lighting: on the near-white focus platter a
             // 0.4-opacity label is the "vanishes into the platter" failure (BUG-58/65).
             .opacity(dimmed && !isFocused ? Self.inertRowOpacity : 1)
@@ -481,7 +493,7 @@ private struct CatalogSettingRow: View {
     var body: some View {
         Button(action: onToggle) {
             HStack(spacing: Theme.Spacing.lg) {
-                SettingsRowLabel(title: item.displayTitle, subtitle: item.addonName)
+                SettingsRowLabel(title: item.displayTitle, subtitle: item.addonName, descriptionID: .homeCatalog)
                     .opacity(item.enabled ? 1 : 0.55)
                 Spacer()
                 Image(systemName: item.enabled ? "checkmark.circle.fill" : "circle")

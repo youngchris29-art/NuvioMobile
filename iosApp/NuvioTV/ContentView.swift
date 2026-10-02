@@ -31,15 +31,19 @@ struct ContentView: View {
     @StateObject private var topShelf = TopShelfUpdater()
     @State private var entered = false
     @State private var selectedTab = 0
-    /// Which Settings category the split view is showing. Owned HERE, above the
-    /// `.id(appTheme.themeName)` rebuild boundary, for exactly the reason `selectedTab` is: picking
-    /// a theme swatch re-identifies the whole tree, and while this was a plain `@State` inside
-    /// `SettingsView` the split snapped back to the first category (Account & Services) on every
-    /// theme change — so pressing a colour looked like it had done nothing at all, which is how the
-    /// "the theme picker doesn't work" report reads on screen.
-    @State private var settingsCategory: SettingsCategory = .accountServices
+    /// Which Settings pane is open (the Settings `NavigationStack` path; empty = the category
+    /// root). Owned HERE, above the `.id(...)` rebuild boundary, for exactly the reason
+    /// `selectedTab` is: picking a theme swatch re-identifies the whole tree, and while the old
+    /// split's category was a plain `@State` inside `SettingsView` it snapped back to the first
+    /// category on every theme change — so pressing a colour looked like it had done nothing at
+    /// all, which is how the "the theme picker doesn't work" report reads on screen. With the path
+    /// held here, the rebuilt stack starts on Appearance again (FEAT-50).
+    @State private var settingsPath: [SettingsCategory] = []
+    /// The Settings category last opened: the root's preferred focus after a pop or a remount.
+    /// Same ownership reason as `settingsPath`.
+    @State private var settingsLastCategory: SettingsCategory? = nil
     /// Set when the user picks a theme swatch, cleared once the Appearance pane has taken focus
-    /// back. Owned HERE for the same reason as `settingsCategory`: the swatch press re-identifies
+    /// back. Owned HERE for the same reason as `settingsPath`: the swatch press re-identifies
     /// the whole tree, and focus — unlike state — cannot survive a remount at all, so it fell to
     /// the tab bar and the user was thrown to the top of Settings. The hint lets the rebuilt pane
     /// put focus back on the swatch it was on. Not persisted: a cold launch must never steal
@@ -99,7 +103,8 @@ struct ContentView: View {
                         home: home,
                         onSwitchProfile: { entered = false },
                         selectedTab: $selectedTab,
-                        settingsCategory: $settingsCategory,
+                        settingsPath: $settingsPath,
+                        settingsLastCategory: $settingsLastCategory,
                         pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
                         pendingAppearanceRowFocus: $pendingAppearanceRowFocus,
                         // FEAT-25 (Codex beta.14 r8): the app-root deep-link cover (Top Shelf)
@@ -130,7 +135,7 @@ struct ContentView: View {
         // background.
         // Theme change → rebuild the tree so every static Theme.Palette.accent read re-evaluates.
         // Focus resets on change; the state that would visibly strand the user — the selected tab
-        // and the Settings category — is held above this boundary so it survives.
+        // and the Settings path — is held above this boundary so it survives.
         //
         // FEAT-30/31 join the key. Both are rare, deliberate user actions in Appearance, and both
         // change something a mid-session flip cannot safely carry:
@@ -141,7 +146,7 @@ struct ContentView: View {
         //    rebuilt, and the new tree resolves one constant value for its whole lifetime.
         //  * `uiFont` is read through `Theme.Font`'s static cache, the same static-read pattern
         //    `Palette.accent` uses, so it needs the same re-identification to take effect.
-        // Selected tab, Settings category and the two focus hints above are all held ABOVE this
+        // Selected tab, Settings path and the two focus hints above are all held ABOVE this
         // boundary, so a mode or font change costs the user nothing but the rebuild.
         .id("\(appTheme.paletteKey)|\(sidebarStyle)|\(uiFont)")
         .onAppear {
@@ -324,11 +329,13 @@ struct MainTabView: View {
     /// Settings doesn't dump the user back onto the Home tab.
     @Binding var selectedTab: Int
     /// Also owned by ContentView (above the theme `.id()` boundary), same reasoning as
-    /// `selectedTab`: a theme change must not dump the user out of the Settings category they were
+    /// `selectedTab`: a theme change must not dump the user out of the Settings pane they were
     /// standing in. Passed straight through to `SettingsView`.
-    @Binding var settingsCategory: SettingsCategory
+    @Binding var settingsPath: [SettingsCategory]
+    /// Root focus restore for Settings; see `ContentView.settingsLastCategory`.
+    @Binding var settingsLastCategory: SettingsCategory?
     /// See `ContentView.pendingThemeSwatchFocus` — threaded through for the same reason
-    /// `settingsCategory` is: it must live above the theme rebuild boundary.
+    /// `settingsPath` is: it must live above the theme rebuild boundary.
     @Binding var pendingThemeSwatchFocus: String?
     /// FEAT-30/31: see `ContentView.pendingAppearanceRowFocus`. Threaded to here now so the state
     /// already lives above the rebuild boundary; the consumer is Wave 2's Settings work.
@@ -394,7 +401,8 @@ struct MainTabView: View {
             // the bar open (BUG-66 itself), and `.hidden` is wrong for a tab root.
             Tab("Settings", systemImage: "gearshape", value: 4) {
                 SettingsView(
-                    selectedCategory: $settingsCategory,
+                    path: $settingsPath,
+                    lastCategory: $settingsLastCategory,
                     pendingThemeSwatchFocus: $pendingThemeSwatchFocus,
                     pendingAppearanceRowFocus: $pendingAppearanceRowFocus
                 )

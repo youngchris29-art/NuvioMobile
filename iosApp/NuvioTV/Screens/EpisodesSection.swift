@@ -17,6 +17,7 @@ struct EpisodesSection: View {
     /// Episodes to badge as watched, keyed "season:episode" (from `DetailViewModel.watchedEpisodeKeys`).
     var watchedEpisodeKeys: Set<String> = []
 
+    @AppStorage(EpisodeSpoilerRules.defaultsKey) private var hideSpoilers = false
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
     @FocusState private var focusedEpisodeId: String?
@@ -86,7 +87,28 @@ struct EpisodesSection: View {
             // hierarchy. It now labels the shelf it belongs to, directly under the selector. Was
             // also a raw `Text("Episodes")` — the one unlocalized string on this screen (his
             // French locale showed "Episodes", not "Épisodes").
-            Text(String(localized: "Episodes")).font(Theme.Font.screenTitle)
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
+                Text(String(localized: "Episodes")).font(Theme.Font.screenTitle)
+                if hideSpoilers, let label = EpisodeSpoilerRules.airedUnwatchedLabel(
+                    count: EpisodeSpoilerRules.airedUnwatchedCount(
+                        episodes.map {
+                            EpisodeSpoilerRules.EpisodeFacts(
+                                season: $0.season?.value,
+                                episode: $0.episode?.value,
+                                released: $0.released
+                            )
+                        },
+                        watchedKeys: watchedEpisodeKeys,
+                        todayIsoDate: CurrentDateProvider.shared.todayIsoDate()
+                    ),
+                    settingOn: hideSpoilers
+                ) {
+                    Text(label)
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .accessibilityIdentifier("episodes_aired_unwatched")
+                }
+            }
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -99,7 +121,9 @@ struct EpisodesSection: View {
                                     episode: episode,
                                     fallbackImage: meta.background ?? meta.poster,
                                     rating: rating(for: episode),
-                                    isWatched: isWatched(episode)
+                                    isWatched: isWatched(episode),
+                                    hidesSpoiler: EpisodeSpoilerRules.hidesSpoilers(
+                                        settingOn: hideSpoilers, isWatched: isWatched(episode))
                                 )
                             }
                             // BUG-93: EpisodeThumbCard uses tileFocusLift, not CardFocusTreatment - keep the native lift in ring mode.
@@ -157,7 +181,12 @@ struct EpisodesSection: View {
                         .foregroundStyle(Theme.Palette.textSecondary)
                 }
                 let overview: String? = episode.overview
-                if let overview, !overview.isEmpty {
+                if EpisodeSpoilerRules.hidesSpoilers(settingOn: hideSpoilers, isWatched: isWatched(episode)) {
+                    Text(String(localized: "Synopsis hidden until watched"))
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .accessibilityIdentifier("episode_synopsis_hidden")
+                } else if let overview, !overview.isEmpty {
                     Text(overview)
                         .font(Theme.Font.caption)
                         .foregroundStyle(Theme.Palette.textPrimary.opacity(0.9))
@@ -313,6 +342,8 @@ private struct EpisodeThumbCard: View {
     var rating: Double? = nil
     /// Shows the green watched checkmark on the thumbnail (mirrors mobile's watched badge).
     var isWatched: Bool = false
+    /// "Hide Episode Spoilers": blur the still until the episode is watched.
+    var hidesSpoiler: Bool = false
 
     @Environment(\.isFocused) private var isFocused
     // BUG-32: shared corner token, not the hardcoded Theme.Radius.card.
@@ -324,6 +355,7 @@ private struct EpisodeThumbCard: View {
             ZStack(alignment: .bottom) {
                 CachedAsyncImage(string: thumbnailURL)
                     .frame(width: Theme.Size.episodeWidth, height: Theme.Size.episodeHeight)
+                    .blur(radius: hidesSpoiler ? EpisodeSpoilerRules.stillBlurRadius : 0, opaque: true)
                     // BUG-31: episode stills are not all 16:9 (and the poster fallback never is), so
                     // the `.fill` image overflows this fixed frame and the hover lift copies the
                     // overflow as a ghost-doubled subject. Clip inside the frame first.
