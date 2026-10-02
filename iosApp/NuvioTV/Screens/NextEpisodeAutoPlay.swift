@@ -47,8 +47,38 @@ final class NextEpisodeEngine: ObservableObject {
     /// previous episode's (or the autoplay search's) streams as if they were ours (ME-005).
     private var sourceLoadGeneration = 0
 
+    /// The engine's one outside dependency that the trigger tests replace: the stream load that
+    /// both the FEAT-49 preload and `beginSearch()` issue. `.live` is the shared repository.
+    /// (Tier 2 note: a warmup-aware loader slots in here; keep the request key stable.)
+    struct Hooks {
+        var loadStreams: (_ type: String, _ videoId: String, _ season: KotlinInt?, _ episode: KotlinInt?) -> Void
+
+        static var live: Hooks {
+            Hooks(loadStreams: { type, videoId, season, episode in
+                PlayerStreamsRepository.shared.loadEpisodeStreams(
+                    type: type,
+                    videoId: videoId,
+                    season: season,
+                    episode: episode,
+                    forceRefresh: false
+                )
+            })
+        }
+    }
+
+    /// The slice of `PlayerSettingsUiState` the trigger reads, as plain Swift values so
+    /// `NextEpisodeTriggerPolicy` is testable without SharedCore singletons.
+    struct TriggerSettings: Equatable {
+        var percentageMode: Bool
+        var thresholdPercent: Double
+        var thresholdMinutesBeforeEnd: Double
+        var autoPlayTimeoutSeconds: Int
+        var preloadEnabled: Bool
+    }
+
     private let context: PlaybackContext
     private let onPlayNext: (PlaybackContext) -> Void
+    private let hooks: Hooks
 
     /// Panel accessors (the playback-settings panel renders episode/source sections from these).
     var episodes: [MetaVideo] { context.episodes }
@@ -64,7 +94,11 @@ final class NextEpisodeEngine: ObservableObject {
     private var immediatePlay = false
 
     private var settings: PlayerSettingsUiState?
+    /// Built from `settings` in the same watcher callback; `onProgress` reads only this.
+    private var trigger: TriggerSettings?
     private var settingsWatcher: FlowWatcher?
+    /// mpv only: closes of the in-player panel (source-list collision, FEAT-49 layer 2).
+    private var panelWatch: AnyCancellable?
     private var streamsWatcher: FlowWatcher?
     private var countdownTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
@@ -73,6 +107,15 @@ final class NextEpisodeEngine: ObservableObject {
     private var nextVideo: MetaVideo?
     private var triggered = false
     private var cancelled = false
+    /// FEAT-49 Tier 1 (upstream 22c9ab20): the next episode's streams were requested silently
+    /// ahead of the card. `beginSearch()` then hits the repository's request-key dedupe.
+    private var preloaded = false
+    /// #2150 rider: the up-next chip was dismissed with Menu (not a seek or exit cancel).
+    private var dismissedByUser = false
+    /// #2150 rider: the end-of-file re-arm already happened once this session.
+    private var rearmedAtEnd = false
+    /// Last tick seen by `onProgress`, so a dismissal can tell whether it happened at the end.
+    private var lastProgress: (positionSec: Double, durationSec: Double)?
     private var selectedStream: StreamItem?
     /// A debrid resolve for the selected next-episode stream is in flight (play-time resolution).
     private var resolvingNext = false
@@ -82,9 +125,17 @@ final class NextEpisodeEngine: ObservableObject {
     /// screens once fetched. Drives the post-credits hold in `onProgress` (upstream 77ce8a73).
     var skipIntervals: [SkipInterval] = []
 
-    init(context: PlaybackContext, onPlayNext: @escaping (PlaybackContext) -> Void) {
+    init(context: PlaybackContext, onPlayNext: @escaping (PlaybackContext) -> Void, hooks: Hooks = .live) {
         self.context = context
         self.onPlayNext = onPlayNext
+        self.hooks = hooks
+    }
+
+    /// Tests only: skip `prime()` (shared settings + shuffle singletons) and set the next episode
+    /// and the trigger settings directly.
+    func configureForTesting(nextVideo: MetaVideo?, trigger: TriggerSettings) {
+        self.nextVideo = nextVideo
+        self.trigger = trigger
     }
 
     // MARK: - Lifecycle
@@ -95,6 +146,28 @@ final class NextEpisodeEngine: ObservableObject {
         state.upNextPlayNow = { [weak self] in self?.playNow() ?? false }
         state.upNextCancel = { [weak self] in self?.cancel() }
         state.upNextDismiss = { [weak self] in self?.dismissIfVisible() ?? false }
+        // FEAT-49 layer 2: the in-player source list (mpv only) shares `episodeStreamsState` and
+        // clears it, which throws away a preload. When the panel closes, release the list's
+        // watcher so the preload guard opens again, and re-issue a preload the list clobbered.
+        panelWatch = state.$panelOpen
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] open in
+                guard !open else { return }
+                self?.sourceListClosed()
+            }
+    }
+
+    /// Only with the preload toggle on: with it off nothing waits on `sourcesWatcher`, and the
+    /// list keeps today's behaviour (its watcher lives until the next `loadSources`/search).
+    private func sourceListClosed() {
+        guard trigger?.preloadEnabled == true, sourcesWatcher != nil else { return }
+        cancelSourceLoad()
+        if preloaded && !triggered {
+            preloaded = false
+            print("[UpNext] preload invalidated by the source list — will re-issue")
+        }
     }
 
     /// Engine-agnostic start for the native AVPlayer path: same settings watch + next-episode
@@ -107,6 +180,7 @@ final class NextEpisodeEngine: ObservableObject {
         settingsWatcher = FlowWatcherKt.watch(PlayerSettingsRepository.shared.uiState) { [weak self] emitted in
             guard let self, let value = emitted as? PlayerSettingsUiState else { return }
             self.settings = value
+            self.trigger = TriggerSettings(settings: value)
         }
 
         if ShuffleNextEpisode.shared.isEnabled(contentId: context.parentMetaId, contentType: context.contentType) {
@@ -134,6 +208,8 @@ final class NextEpisodeEngine: ObservableObject {
     func stop() {
         settingsWatcher?.cancel()
         settingsWatcher = nil
+        panelWatch?.cancel()
+        panelWatch = nil
         sourcesWatcher?.cancel()
         sourcesWatcher = nil
         tearDownSearch()
@@ -150,6 +226,10 @@ final class NextEpisodeEngine: ObservableObject {
         Self.consecutiveAutoPlays = 0
         cancelled = false
         triggered = true          // the threshold trigger must not re-fire for this session
+        // The #2150 re-arm is for the automatic next episode only; after a jump `nextVideo` is the
+        // jumped-to episode, so a dismissed jump must never come back at end of file.
+        dismissedByUser = false
+        rearmedAtEnd = true
         selectedStream = nil
         immediatePlay = true
         nextVideo = episode
@@ -285,39 +365,103 @@ final class NextEpisodeEngine: ObservableObject {
     // MARK: - Trigger
 
     /// Called on every player position tick; fires the search once near the end of playback.
+    /// The threshold math lives in `NextEpisodeTriggerPolicy` (unchanged from the inline version).
     func onProgress(positionSec: Double, durationSec: Double) {
-        guard !triggered, !cancelled, nextVideo != nil, durationSec > 0 else { return }
-        guard let settings else { return }
+        lastProgress = (positionSec, durationSec)
+        guard nextVideo != nil, durationSec > 0, let trigger else { return }
+        if cancelled {
+            rearmIfEndedAfterDismiss(positionSec: positionSec, durationSec: durationSec)
+            return
+        }
+        guard !triggered else { return }
 
-        var shouldTrigger: Bool
-        if settings.nextEpisodeThresholdMode == NextEpisodeThresholdMode.percentage {
-            let percent = min(max(Double(settings.nextEpisodeThresholdPercent), 97), 100)
-            shouldTrigger = positionSec / durationSec >= percent / 100.0
-        } else {
-            let minutes = min(max(Double(settings.nextEpisodeThresholdMinutesBeforeEnd), 0), 3.5)
-            shouldTrigger = (durationSec - positionSec) <= minutes * 60.0
+        let holdUntilSec = postCreditsHoldUntilSec(durationSec: durationSec)
+        let reachesNow = NextEpisodeTriggerPolicy.reachesThreshold(
+            positionSec: positionSec, durationSec: durationSec, trigger: trigger,
+            holdUntilSec: holdUntilSec, endOfFileSlack: Self.endOfFileSlack
+        )
+
+        // FEAT-49 Tier 1 (upstream 22c9ab20): request the next episode's streams one lead window
+        // before the card would appear, silently: no phase change, no watcher, no timeout, no
+        // subtitle prefetch (the subtitle repository is single-slot and would swap the panel's
+        // subs early). Never while the in-player source list owns the shared streams flow.
+        if !reachesNow, trigger.preloadEnabled, !preloaded, sourcesWatcher == nil,
+           !WatchingPoliciesKt.isShortPlaceholderDuration(durationMs: Int64(durationSec * 1000)) {
+            let lead = NextEpisodeTriggerPolicy.preloadLeadSeconds(timeoutSeconds: trigger.autoPlayTimeoutSeconds)
+            if NextEpisodeTriggerPolicy.reachesThreshold(
+                positionSec: positionSec + lead, durationSec: durationSec, trigger: trigger,
+                holdUntilSec: holdUntilSec, endOfFileSlack: Self.endOfFileSlack
+            ) {
+                preloadNextEpisodeStreams(positionSec: positionSec, durationSec: durationSec, leadSec: lead)
+            }
         }
 
-        // Upstream 77ce8a73: never over a post-credits scene. When the last outro is followed by
-        // one (only when the provider reports an explicit post-credits segment), the shared hold REPLACES the threshold above — it is
-        // already max(scene end, user threshold). Within `endOfFileSlack` of the end counts as
-        // reached (upstream's `isEnded ||`): the reported position at EOF can sit a frame short of
-        // the duration, and a hold that never fires would leave the post-play cover instead.
-        if let hold = PostCreditsHoldKt.nextEpisodeHoldUntilMs(
+        if reachesNow {
+            triggered = true
+            beginSearch()
+        }
+    }
+
+    /// Upstream 77ce8a73: never over a post-credits scene. When the last outro is followed by one
+    /// (only when the provider reports an explicit post-credits segment), the shared hold REPLACES
+    /// the threshold — it is already max(scene end, user threshold). Within `endOfFileSlack` of
+    /// the end still counts as reached (see `NextEpisodeTriggerPolicy.reachesThreshold`).
+    private func postCreditsHoldUntilSec(durationSec: Double) -> Double? {
+        guard let settings else { return nil }
+        guard let hold = PostCreditsHoldKt.nextEpisodeHoldUntilMs(
             intervals: skipIntervals,
             durationMs: Int64(durationSec * 1000),
             thresholdMode: settings.nextEpisodeThresholdMode,
             thresholdPercent: settings.nextEpisodeThresholdPercent,
             thresholdMinutesBeforeEnd: settings.nextEpisodeThresholdMinutesBeforeEnd
-        ) {
-            shouldTrigger = Int64(positionSec * 1000) >= hold.int64Value
-                || positionSec >= durationSec - Self.endOfFileSlack
-        }
+        ) else { return nil }
+        return Double(hold.int64Value) / 1000.0
+    }
 
-        if shouldTrigger {
-            triggered = true
-            beginSearch()
-        }
+    /// Same type / video id / season / episode as `beginSearch()`, so the repository's request
+    /// key matches and the later search is a no-op that replays these results.
+    private func preloadNextEpisodeStreams(positionSec: Double, durationSec: Double, leadSec: Double) {
+        guard let next = nextVideo else { return }
+        preloaded = true
+        let videoId = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
+        print("[UpNext] preload begin — \(videoId) lead=\(Int(leadSec))s pos=\(Int(positionSec))/\(Int(durationSec))s")
+        hooks.loadStreams(context.contentType, videoId, next.season, next.episode)
+    }
+
+    // MARK: - #2150 rider: autoplay at end of file after a dismissed card
+    //
+    // DELIBERATE REVERSAL (Christian, 2026-10-02). tvOS used to keep a Menu dismissal sticky for
+    // the whole playback session, modelled on upstream #858 (4026ec92). Upstream #2150 (f0f980b3)
+    // changed that: a dismissed card no longer blocks autoplay once the episode really ends. This
+    // block adopts #2150. It re-arms once per session (`rearmedAtEnd`), so Menu on the re-armed
+    // card sticks; seek/exit cancels never re-arm (only `dismissIfVisible` sets
+    // `dismissedByUser`). Gated on `nextVideo != nil` (aired-filtered), not on
+    // `streamAutoPlayNextEpisodeEnabled`, which tvOS never reads.
+    //
+    // To revert to the sticky dismissal, delete: `dismissedByUser`, `rearmedAtEnd` and
+    // `lastProgress` (properties), the `if cancelled { … }` block at the top of `onProgress`
+    // (restore `!cancelled` to its guard), `rearmIfEndedAfterDismiss`, `isAtEndOfFile`, the
+    // `dismissedByUser =` line in `dismissIfVisible`, the two rider lines in `jumpToEpisode`,
+    // and `NextEpisodeTriggerPolicy.shouldRearmAfterDismiss` with its tests.
+    private func rearmIfEndedAfterDismiss(positionSec: Double, durationSec: Double) {
+        guard NextEpisodeTriggerPolicy.shouldRearmAfterDismiss(
+            positionSec: positionSec, durationSec: durationSec,
+            dismissedByUser: dismissedByUser, alreadyRearmed: rearmedAtEnd,
+            endOfFileSlack: Self.endOfFileSlack
+        ) else { return }
+        rearmedAtEnd = true
+        dismissedByUser = false
+        cancelled = false
+        triggered = true
+        selectedStream = nil
+        print("[UpNext] re-armed at end of file after a dismissed card")
+        beginSearch()
+    }
+
+    /// True when the last tick sat within `endOfFileSlack` of the end.
+    private var isAtEndOfFile: Bool {
+        guard let last = lastProgress, last.durationSec > 0 else { return false }
+        return last.positionSec >= last.durationSec - Self.endOfFileSlack
     }
 
     /// See the post-credits hold in `onProgress`.
@@ -356,11 +500,16 @@ final class NextEpisodeEngine: ObservableObject {
     /// lacked (Menu used to exit the whole player straight through the chip). Returns true when
     /// the press was consumed so the caller does NOT also exit; false when nothing is showing, so
     /// Menu falls through to its normal exit. `.stillWatching` → `.hidden` lets the mpv post-play
-    /// cover appear at EOF exactly as after a seek-cancel.
+    /// cover appear at EOF exactly as after a seek-cancel. Exception since 2026-10-02: the #2150
+    /// rider re-arms once at end of file after a dismissal (see `rearmIfEndedAfterDismiss`).
     func dismissIfVisible() -> Bool {
         guard phase != .hidden else { return false }
         // A press is proof someone's watching (the native path has no other reset point).
         Self.consecutiveAutoPlays = 0
+        // #2150 rider: only a card dismissed BEFORE the end re-arms at end of file (upstream's
+        // effect is keyed on isEnded changing, so a dismissal at EOF stays dismissed), and never
+        // "Still watching?" — Menu there means stop, and a re-arm would skip the gate.
+        dismissedByUser = phase != .stillWatching && !isAtEndOfFile
         cancel()
         return true
     }
@@ -375,14 +524,8 @@ final class NextEpisodeEngine: ObservableObject {
         sourceName = nil
 
         let videoId = Self.episodeVideoId(metaId: context.parentMetaId, episode: next)
-        print("[UpNext] search begin — \(videoId) s\(next.season?.stringValue ?? "?")e\(next.episode?.stringValue ?? "?")")
-        PlayerStreamsRepository.shared.loadEpisodeStreams(
-            type: context.contentType,
-            videoId: videoId,
-            season: next.season,
-            episode: next.episode,
-            forceRefresh: false
-        )
+        print("[UpNext] search begin — \(videoId) s\(next.season?.stringValue ?? "?")e\(next.episode?.stringValue ?? "?") preloaded=\(preloaded)")
+        hooks.loadStreams(context.contentType, videoId, next.season, next.episode)
         // Prefetch the next episode's addon subtitles alongside the stream search — the current
         // session already side-loaded/baked its own subs, and the rebuilt player's fetch call
         // deduplicates against this one.
@@ -714,5 +857,54 @@ final class NextEpisodeEngine: ObservableObject {
             return "S\(s)E\(e) \u{00B7} \(episode.title)"
         }
         return episode.title
+    }
+}
+
+extension NextEpisodeEngine.TriggerSettings {
+    init(settings: PlayerSettingsUiState) {
+        self.init(
+            percentageMode: settings.nextEpisodeThresholdMode == NextEpisodeThresholdMode.percentage,
+            thresholdPercent: Double(settings.nextEpisodeThresholdPercent),
+            thresholdMinutesBeforeEnd: Double(settings.nextEpisodeThresholdMinutesBeforeEnd),
+            autoPlayTimeoutSeconds: Int(settings.streamAutoPlayTimeoutSeconds),
+            preloadEnabled: settings.preloadNextEpisodeSources
+        )
+    }
+}
+
+/// Pure trigger decisions for `NextEpisodeEngine` (unit-tested in `NextEpisodeEngineTests`).
+enum NextEpisodeTriggerPolicy {
+    /// The up-next threshold, verbatim from the pre-FEAT-49 `onProgress`: percentage clamped to
+    /// 97–100, minutes-before-end clamped to 0–3.5. A non-nil post-credits hold REPLACES the
+    /// threshold, and within `endOfFileSlack` of the end counts as reached (upstream's
+    /// `isEnded ||`: the position at EOF can sit a frame short of the duration).
+    static func reachesThreshold(positionSec: Double, durationSec: Double,
+                                 trigger: NextEpisodeEngine.TriggerSettings,
+                                 holdUntilSec: Double?, endOfFileSlack: Double) -> Bool {
+        if let holdUntilSec {
+            // Compared in whole milliseconds, as the inline version did against the Kotlin Long.
+            let holdMs = Int64((holdUntilSec * 1000).rounded())
+            return Int64(positionSec * 1000) >= holdMs || positionSec >= durationSec - endOfFileSlack
+        }
+        if trigger.percentageMode {
+            let percent = min(max(trigger.thresholdPercent, 97), 100)
+            return positionSec / durationSec >= percent / 100.0
+        }
+        let minutes = min(max(trigger.thresholdMinutesBeforeEnd, 0), 3.5)
+        return (durationSec - positionSec) <= minutes * 60.0
+    }
+
+    /// How far ahead of the threshold the preload fires: one auto-play timeout window (upstream),
+    /// floored at 30 s. tvOS has no timeout row, so this is 30 s in practice.
+    static func preloadLeadSeconds(timeoutSeconds: Int) -> Double {
+        max(Double(timeoutSeconds), 30)
+    }
+
+    /// #2150 rider: re-arm once, at end of file, after a Menu dismissal.
+    static func shouldRearmAfterDismiss(positionSec: Double, durationSec: Double,
+                                        dismissedByUser: Bool, alreadyRearmed: Bool,
+                                        endOfFileSlack: Double) -> Bool {
+        guard dismissedByUser, !alreadyRearmed, durationSec > 0 else { return false }
+        return positionSec >= durationSec - endOfFileSlack
     }
 }

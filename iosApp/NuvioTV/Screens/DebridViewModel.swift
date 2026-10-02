@@ -117,6 +117,14 @@ final class DebridViewModel: ObservableObject {
         DebridSettingsRepository.shared.setPreferredResolverProviderId(providerId: providerId)
     }
 
+    /// 0 = off, 1-5 = how many top CACHED debrid sources the picker and Up Next resolve ahead of
+    /// Play (budget-gated in `DirectDebridStreamPreparer`).
+    var prepareLimit: Int { Int(settings?.instantPlaybackPreparationLimit ?? 0) }
+
+    func setPrepareLimit(_ limit: Int) {
+        DebridSettingsRepository.shared.setInstantPlaybackPreparationLimit(value: Int32(limit))
+    }
+
     func saveManualKey(_ providerId: String, key: String) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

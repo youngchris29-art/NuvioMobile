@@ -97,6 +97,10 @@ final class SettingsViewModel: ObservableObject {
     /// With auto-play on: only start a link the debrid service already has cached, otherwise show
     /// the source list (`PlayerSettingsUiState.streamAutoPlayCachedOnly`). Same watcher.
     @Published private(set) var autoPlayCachedOnly = false
+    /// FEAT-49 (upstream 22c9ab20, Settings → Playback → Next Episode): start the Up Next source
+    /// search ahead of the card's display threshold (`PlayerSettingsUiState.preloadNextEpisodeSources`).
+    /// Same watcher.
+    @Published private(set) var preloadNextEpisodeSources = false
     /// Orivio batch (Settings → Playback → Sources): the global source ordering/filter settings,
     /// mirrored from `DebridSettings` by `debridSourcesWatcher`. Pickers bind string keys, not the
     /// bridged Kotlin enums (see `streamSortKey(_:)` and friends below).
@@ -179,6 +183,7 @@ final class SettingsViewModel: ObservableObject {
             self.pauseOverlayEnabled = state.pauseOverlayEnabled
             self.autoPlayBestSource = state.streamAutoPlayMode == StreamAutoPlayMode.firstStream
             self.autoPlayCachedOnly = state.streamAutoPlayCachedOnly
+            self.preloadNextEpisodeSources = state.preloadNextEpisodeSources
         }
 
         // Orivio batch: Sources sort / filter settings live in the debrid settings blob (shared
@@ -381,6 +386,10 @@ final class SettingsViewModel: ObservableObject {
 
     func setAutoPlayCachedOnly(_ enabled: Bool) {
         PlayerSettingsRepository.shared.setStreamAutoPlayCachedOnly(enabled: enabled)
+    }
+
+    func setPreloadNextEpisodeSources(_ enabled: Bool) {
+        PlayerSettingsRepository.shared.setPreloadNextEpisodeSources(enabled: enabled)
     }
 
     /// "default" | "quality" | "sizeDesc" | "sizeAsc" → `DebridStreamSortMode`.

@@ -140,6 +140,18 @@ struct PlaybackSettingsPane: View {
             }
         }
 
+        // FEAT-49 (upstream 22c9ab20): start the Up Next source search before the card shows.
+        SettingsSection(
+            String(localized: "Next Episode"),
+            footer: String(localized: "Up Next looks for the next episode's sources about 30 seconds before the card appears, so the countdown can start the moment it shows.")
+        ) {
+            SettingsToggleRow(
+                title: String(localized: "Preload Next Episode Sources"),
+                subtitle: String(localized: "Start searching for sources in the background before the next episode card appears."),
+                isOn: Binding(get: { model.preloadNextEpisodeSources }, set: { model.setPreloadNextEpisodeSources($0) })
+            )
+        }
+
         // Orivio batch: global source ordering + filters, applied to every add-on's streams.
         SettingsSection(
             String(localized: "Sources"),

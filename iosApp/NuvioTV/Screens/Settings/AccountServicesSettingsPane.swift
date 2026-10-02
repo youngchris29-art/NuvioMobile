@@ -352,6 +352,20 @@ struct AccountServicesSettingsPane: View {
             )
         }
 
+        if debrid.hasAnyKey, debrid.resolverEnabled {
+            SettingsPickerRow(
+                title: String(localized: "Prepare Links for Instant Playback"),
+                subtitle: String(localized: "Resolve the top cached sources to direct links while a source list is open, so Play starts at once."),
+                selection: Binding(get: { debrid.prepareLimit }, set: { debrid.setPrepareLimit($0) }),
+                options: [0, 1, 2, 3, 4, 5],
+                label: Self.prepareLimitLabel
+            )
+            Text("Use a lower count when possible. Debrid services rate-limit how many links can be resolved in a time period, and opening a source list can count toward those limits even if you do not press Play, because the links are prepared ahead of time.")
+                .font(Theme.Font.caption)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+        }
+
         if debrid.resolverProviders.count > 1 {
             SettingsPickerRow(
                 title: String(localized: "Preferred resolver"),
@@ -364,6 +378,14 @@ struct AccountServicesSettingsPane: View {
                     debrid.resolverProviders.first { $0.id == id }?.displayName ?? id
                 }
             )
+        }
+    }
+
+    private static func prepareLimitLabel(_ n: Int) -> String {
+        switch n {
+        case 0: return String(localized: "Off")
+        case 1: return String(localized: "1 link")
+        default: return String(localized: "\(n) links")
         }
     }
 
