@@ -106,4 +106,28 @@ final class TrailerHealthProbeTests: XCTestCase {
         let health = TrailerZoomProbe.lines.filter { $0.contains("health inline") }
         XCTAssertEqual(health.count, 1, "\(TrailerZoomProbe.lines)")
     }
+
+    func testOpenWaitAtStopIsCounted() {
+        let monitor = TrailerPlaybackHealthMonitor(player: AVPlayer(), surface: "openwait", urlString: "https://example.com/v.mp4")
+        monitor.start()
+        monitor.simulatePlayingForTesting()
+        monitor.simulateWaitForTesting(openedSecondsAgo: 0.5)
+        monitor.stop()
+        let health = TrailerZoomProbe.lines.filter { $0.contains("health openwait") }
+        XCTAssertEqual(health.count, 1, "\(TrailerZoomProbe.lines)")
+        XCTAssertTrue(health.first?.contains("wait=1/0.") == true || health.first?.contains("wait=1/1.") == true, "\(health)")
+    }
+
+    func testFoldingTheSameItemTwiceDoesNotGrowTotals() {
+        let monitor = TrailerPlaybackHealthMonitor(player: AVPlayer(), surface: "foldtwice", urlString: "https://example.com/v.mp4")
+        let item = AVPlayerItem(url: URL(string: "https://example.com/v.mp4")!)
+        monitor.registerItemForTesting(item)
+        monitor.registerItemForTesting(nil)   // folds `item`
+        monitor.registerItemForTesting(item)
+        monitor.registerItemForTesting(nil)   // folds `item` again: baseline makes it a no-op
+        monitor.stop()
+        let health = TrailerZoomProbe.lines.filter { $0.contains("health foldtwice") }
+        XCTAssertEqual(health.count, 1, "\(TrailerZoomProbe.lines)")
+        XCTAssertTrue(health.first?.contains("play=0s") == true && health.first?.contains("drop=0 ") == true, "\(health)")
+    }
 }

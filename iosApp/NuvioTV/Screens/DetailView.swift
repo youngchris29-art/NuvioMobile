@@ -265,6 +265,8 @@ private final class HitchCounter: NSObject, ObservableObject {
         displayLink = nil
         NSLog("[BUG41] hitches=%d frames=%d maxGap=%.1fms", hitchCount, frameCount, maxGapMs)
         TrailerZoomProbe.log(String(format: "hitches=%d frames=%d maxGap=%.1fms", hitchCount, frameCount, maxGapMs))
+        // The detail-bg trailer monitor's stop() may run after onDisappear; reset after it has read the snapshot.
+        DispatchQueue.main.async { DetailHitchSnapshot.reset() }
     }
 
     @objc private func tick(_ link: CADisplayLink) {

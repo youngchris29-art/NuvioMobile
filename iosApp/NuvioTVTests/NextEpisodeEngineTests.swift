@@ -6,8 +6,8 @@ import SharedCore
 /// (`NextEpisodeTriggerPolicy`, unchanged from the inline version), the FEAT-49 Tier 1 preload
 /// (upstream 22c9ab20) through the engine's `Hooks.loadStreams` seam, and the #2150 end-of-file
 /// re-arm decision. The engine is driven with `configureForTesting`, so no SharedCore singleton
-/// (settings, streams, shuffle) is touched; every tick here stays below the card threshold, so
-/// `beginSearch()` never runs.
+/// (settings, streams, shuffle) is touched; `settings` stays nil, so `beginSearch()` returns right
+/// after the `Hooks.searchBegan` signal.
 @MainActor
 final class NextEpisodeEngineTests: XCTestCase {
 
@@ -25,6 +25,7 @@ final class NextEpisodeEngineTests: XCTestCase {
 
     private final class Recorder {
         var calls: [LoadCall] = []
+        var searchBegan = 0
     }
 
     private func makeContext() -> PlaybackContext {
@@ -59,7 +60,7 @@ final class NextEpisodeEngineTests: XCTestCase {
     private func makeEngine(trigger: NextEpisodeEngine.TriggerSettings, recorder: Recorder) -> NextEpisodeEngine {
         let hooks = NextEpisodeEngine.Hooks(loadStreams: { type, videoId, season, episode in
             recorder.calls.append(LoadCall(type: type, videoId: videoId, season: season?.value, episode: episode?.value))
-        })
+        }, searchBegan: { recorder.searchBegan += 1 })
         let engine = NextEpisodeEngine(context: makeContext(), onPlayNext: { _ in }, hooks: hooks)
         engine.configureForTesting(nextVideo: episode(season: 1, episode: 2), trigger: trigger)
         return engine
@@ -190,6 +191,52 @@ final class NextEpisodeEngineTests: XCTestCase {
         engine.onProgress(positionSec: 2250, durationSec: Self.duration)   // D − 150
         XCTAssertEqual(recorder.calls, [LoadCall(type: "series", videoId: "tt1:1:2", season: 1, episode: 2)])
         XCTAssertEqual(engine.phase, .hidden)
+    }
+
+    // MARK: - Engine: search trigger and #2150 rider
+    //
+    // `settings` is nil in tests, so `beginSearch()` returns right after `searchBegan`; phase stays
+    // `.hidden`, which is why the dismissal is simulated (`simulateDismissForTesting`) instead of
+    // calling `dismissIfVisible()`. Not exercised here: the `preloaded` reset after teardown, the
+    // resolve-race guard (both need a live search / debrid resolve, i.e. SharedCore singletons), and
+    // the `dismissIfVisible` phase switch (fix #3: `.noStream`/`.stillWatching` never arm the re-arm;
+    // `.searching`/`.counting` arm it only when not at end of file), which
+    // `simulateDismissForTesting()` bypasses.
+
+    func testNoSearchBeforeTheThresholdThenOneAtIt() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99), recorder: recorder)
+
+        for position in [2000.0, 2350, 2375] {
+            engine.onProgress(positionSec: position, durationSec: Self.duration)
+        }
+        XCTAssertEqual(recorder.searchBegan, 0)
+
+        engine.onProgress(positionSec: 2376, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
+        engine.onProgress(positionSec: 2377, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
+    }
+
+    func testDismissedCardRearmsOnceAtEndOfFileThenSticks() {
+        let recorder = Recorder()
+        let engine = makeEngine(trigger: trigger(percent: 99), recorder: recorder)
+
+        engine.onProgress(positionSec: 2380, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 1)
+
+        engine.simulateDismissForTesting()
+        engine.onProgress(positionSec: 2390, durationSec: Self.duration)     // dismissed, not at EOF
+        XCTAssertEqual(recorder.searchBegan, 1)
+
+        engine.onProgress(positionSec: 2398.5, durationSec: Self.duration)   // D - 1.5: re-arm
+        XCTAssertEqual(recorder.searchBegan, 2)
+        engine.onProgress(positionSec: 2399, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 2)
+
+        engine.simulateDismissForTesting()                                   // second dismissal sticks
+        engine.onProgress(positionSec: 2399.5, durationSec: Self.duration)
+        XCTAssertEqual(recorder.searchBegan, 2)
     }
 
     // MARK: - #2150 rider policy

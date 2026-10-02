@@ -31507,7 +31507,8 @@
     "Auto": {},
     "%lld s": {},
     "Trailer Letterbox Probe Off (A/B)": {},
-    "BUG-128: skips the letterbox scan; takes effect on next launch": {}
+    "BUG-128: skips the letterbox scan; takes effect on next launch": {},
+    "BUG-128 A/B; takes effect on next launch": {}
   },
   "version": "1.0"
 }

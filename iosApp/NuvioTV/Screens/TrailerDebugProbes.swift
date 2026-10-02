@@ -80,15 +80,22 @@ enum TrailerTuning {
             if let s = v as? String { return Double(s.trimmingCharacters(in: .whitespaces)) }
             return nil
         }
+        // nan / inf / 1e999 must fall back to defaults (and never reach Int(...), which traps).
+        func finite(_ v: Double?) -> Double? { v.flatMap { $0.isFinite ? $0 : nil } }
         func flag(_ v: Any?) -> Bool {
             if let b = v as? Bool { return b }
             if let n = v as? NSNumber { return n.boolValue }
             if let s = v as? String { return ["yes", "true", "1"].contains(s.lowercased()) }
             return false
         }
-        let buf = number(buffer).flatMap { $0 > 0 ? $0 : nil }
-        let fps = number(maxFps).map { Int($0) }.flatMap { $0 > 0 ? $0 : nil } ?? 0
-        let lad = number(ladder).map { Int($0) }.flatMap { $0 > 0 ? $0 : nil } ?? 0
+        // Convert only inside [1, Int.max): large negatives would trap in Int(...) too.
+        func positiveInt(_ v: Double?) -> Int {
+            guard let d = v, d >= 1, d < Double(Int.max) else { return 0 }
+            return Int(d)
+        }
+        let buf = number(buffer).flatMap { $0 > 0 && $0.isFinite ? $0 : nil }
+        let fps = positiveInt(number(maxFps))
+        let lad = positiveInt(number(ladder))
         return Values(forwardBufferSeconds: buf, maxFps: fps, letterboxProbeOff: flag(letterboxProbeOff), ladder: lad)
     }
 

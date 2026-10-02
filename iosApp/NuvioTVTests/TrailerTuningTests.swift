@@ -26,4 +26,14 @@ final class TrailerTuningTests: XCTestCase {
         XCTAssertNil(v.forwardBufferSeconds)
         XCTAssertEqual(v.maxFps, 0)
     }
+
+    func testNonFiniteGivesDefaults() {
+        for bad in ["nan", "inf", "-inf", "1e999"] {
+            let v = TrailerTuning.parse(buffer: bad, maxFps: bad, letterboxProbeOff: nil, ladder: bad)
+            XCTAssertEqual(v, TrailerTuning.Values(forwardBufferSeconds: nil, maxFps: 0, letterboxProbeOff: false, ladder: 0), bad)
+        }
+        let defaults = TrailerTuning.Values(forwardBufferSeconds: nil, maxFps: 0, letterboxProbeOff: false, ladder: 0)
+        XCTAssertEqual(TrailerTuning.parse(buffer: "-1e300", maxFps: "-1e300", letterboxProbeOff: nil, ladder: "-1e300"), defaults)
+        XCTAssertEqual(TrailerTuning.parse(buffer: -1e300, maxFps: -1e300, letterboxProbeOff: nil, ladder: -1e300), defaults)
+    }
 }

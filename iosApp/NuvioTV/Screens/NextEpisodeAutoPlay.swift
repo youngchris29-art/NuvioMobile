@@ -52,8 +52,12 @@ final class NextEpisodeEngine: ObservableObject {
     /// (Tier 2 note: a warmup-aware loader slots in here; keep the request key stable.)
     struct Hooks {
         var loadStreams: (_ type: String, _ videoId: String, _ season: KotlinInt?, _ episode: KotlinInt?) -> Void
+        /// Invoked first thing in `beginSearch()`, before the `settings` guard, so tests can see
+        /// that a search was attempted. No-op in `.live`.
+        var searchBegan: () -> Void = {}
 
-        static var live: Hooks {
+        /// `nonisolated` so the init's default argument can be read off the main actor without a warning.
+        nonisolated static var live: Hooks {
             Hooks(loadStreams: { type, videoId, season, episode in
                 PlayerStreamsRepository.shared.loadEpisodeStreams(
                     type: type,
@@ -136,6 +140,14 @@ final class NextEpisodeEngine: ObservableObject {
     func configureForTesting(nextVideo: MetaVideo?, trigger: TriggerSettings) {
         self.nextVideo = nextVideo
         self.trigger = trigger
+    }
+
+    /// Tests only: `dismissIfVisible()` needs a live card (`phase != .hidden`), which needs
+    /// `settings` (nil in tests). This reproduces its effect on a card dismissed before the end
+    /// (`dismissedByUser` + sticky `cancelled`) without `cancel()`'s SharedCore teardown.
+    func simulateDismissForTesting() {
+        dismissedByUser = true
+        cancelled = true
     }
 
     // MARK: - Lifecycle
@@ -360,6 +372,8 @@ final class NextEpisodeEngine: ObservableObject {
         hideTask?.cancel()
         hideTask = nil
         PlayerStreamsRepository.shared.clearEpisodeStreams()
+        // The repository key was just cleared, so the next search is a fresh fetch, not a replay.
+        preloaded = false
     }
 
     // MARK: - Trigger
@@ -444,7 +458,8 @@ final class NextEpisodeEngine: ObservableObject {
     // `dismissedByUser =` line in `dismissIfVisible`, the two rider lines in `jumpToEpisode`,
     // and `NextEpisodeTriggerPolicy.shouldRearmAfterDismiss` with its tests.
     private func rearmIfEndedAfterDismiss(positionSec: Double, durationSec: Double) {
-        guard NextEpisodeTriggerPolicy.shouldRearmAfterDismiss(
+        // a Menu during the final resolve must not race a second search
+        guard !resolvingNext, NextEpisodeTriggerPolicy.shouldRearmAfterDismiss(
             positionSec: positionSec, durationSec: durationSec,
             dismissedByUser: dismissedByUser, alreadyRearmed: rearmedAtEnd,
             endOfFileSlack: Self.endOfFileSlack
@@ -509,7 +524,11 @@ final class NextEpisodeEngine: ObservableObject {
         // #2150 rider: only a card dismissed BEFORE the end re-arms at end of file (upstream's
         // effect is keyed on isEnded changing, so a dismissal at EOF stays dismissed), and never
         // "Still watching?" — Menu there means stop, and a re-arm would skip the gate.
-        dismissedByUser = phase != .stillWatching && !isAtEndOfFile
+        // Only the live card counts: dismissing the no-stream toast must not arm a re-arm.
+        switch phase {
+        case .searching, .counting: dismissedByUser = !isAtEndOfFile
+        default: dismissedByUser = false
+        }
         cancel()
         return true
     }
@@ -517,6 +536,7 @@ final class NextEpisodeEngine: ObservableObject {
     // MARK: - Search + selection
 
     private func beginSearch() {
+        hooks.searchBegan()
         guard let next = nextVideo, let settings else { return }
         // The search and the source list share the repo's episodeStreamsState flow — never both.
         cancelSourceLoad()

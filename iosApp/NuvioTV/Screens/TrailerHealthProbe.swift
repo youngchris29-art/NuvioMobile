@@ -127,7 +127,10 @@ struct TrailerHealthSummary {
 
 /// One monitor per `AVPlayer` attach. KVO + one notification per item; `start()`/`stop()` idempotent,
 /// the summary is emitted exactly once (on the first `stop()`).
-final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
+///
+/// `nonisolated`: KVO and notification callbacks arrive on AVFoundation threads (the target defaults to
+/// MainActor isolation), same declaration as `TrailerLocalHLS`.
+nonisolated final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
     private let player: AVPlayer
     private let surface: String
     private let urlString: String
@@ -145,6 +148,17 @@ final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
     private var waitMs = 0
     private var stalls = 0
     private var empties = 0
+    // Running totals across looper item copies (AVPlayerLooper swaps `currentItem` per loop); each
+    // outgoing item's access log is folded in before `lastItem` changes. Guarded by `lock`.
+    private var accStallsTotal = 0
+    private var droppedTotal = 0
+    private var playedSecondsTotal = 0.0
+    // AVPlayerLooper recycles a fixed set of replica items (A -> B -> A ...) and each item's access log
+    // keeps its old events, so re-summing a whole log on every swap would double-count. Each fold adds
+    // only the growth since that item's last fold. Replicas are retained strongly so an
+    // ObjectIdentifier cannot be reused by another object. Guarded by `lock`.
+    private var foldedBaseline: [ObjectIdentifier: (stalls: Int, dropped: Int, played: Double)] = [:]
+    private var retainedItems: [ObjectIdentifier: AVPlayerItem] = [:]
 
     private var playerObservations: [NSKeyValueObservation] = []
     private var itemObservations: [NSKeyValueObservation] = []
@@ -198,6 +212,9 @@ final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
                 waitOpenedAt = nil
                 line = "wait surface=\(surface) reason=\(waitReason ?? "-") at=\(String(format: "%.1f", waitAt))s dur=\(dur)ms"
             }
+        case .paused:
+            // A stall that leads into a pause is not one the user watched: discard it uncounted.
+            waitOpenedAt = nil
         case .waitingToPlayAtSpecifiedRate:
             if hasPlayed, waitOpenedAt == nil {
                 waitOpenedAt = now
@@ -210,6 +227,22 @@ final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
         if let line { Self.emit(line) }
     }
 
+    /// Adds the growth of `item`'s access log since its previous fold to the running totals.
+    private func foldDelta(of item: AVPlayerItem) {
+        let sums = Self.accessSums(of: item)
+        let key = ObjectIdentifier(item)
+        lock.lock()
+        let base = foldedBaseline[key] ?? (0, 0, 0)
+        accStallsTotal += max(sums.stalls - base.stalls, 0)
+        droppedTotal += max(sums.dropped - base.dropped, 0)
+        playedSecondsTotal += max(sums.played - base.played, 0)
+        foldedBaseline[key] = sums
+        retainedItems[key] = item
+        lock.unlock()
+    }
+
+    func registerItemForTesting(_ item: AVPlayerItem?) { registerItem(item) }
+
     private func registerItem(_ item: AVPlayerItem?) {
         lock.lock()
         if stopped { lock.unlock(); return }
@@ -217,8 +250,10 @@ final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
         itemObservations = []
         if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
         stallObserver = nil
+        let outgoing = lastItem
         lastItem = item
         lock.unlock()
+        if let outgoing { foldDelta(of: outgoing) }
         old.forEach { $0.invalidate() }
         guard let item else { return }
 
@@ -258,22 +293,28 @@ final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
         let io = itemObservations; itemObservations = []
         let so = stallObserver; stallObserver = nil
         let item = lastItem; lastItem = nil
+        // A wait still open at stop is closed and counted.
+        if let opened = waitOpenedAt {
+            waits += 1
+            waitMs += Int(((CFAbsoluteTimeGetCurrent() - opened) * 1000).rounded())
+            waitOpenedAt = nil
+        }
         let snapshot = (startupMs, waits, waitMs, stalls, empties)
         lock.unlock()
 
         _ = wasStarted
-        var accStalls = 0, dropped = 0
-        var played = 0.0
+        if let item { foldDelta(of: item) }
+        lock.lock()
+        let accStalls = accStallsTotal, dropped = droppedTotal, played = playedSecondsTotal
+        foldedBaseline = [:]
+        retainedItems = [:]
+        lock.unlock()
         var ind: Double?, obs: Double?
         var errStatus: Int?, errComment: String?
         var size = CGSize.zero
         if let item {
             if let events = item.accessLog()?.events {
-                for e in events {
-                    accStalls += max(e.numberOfStalls, 0)
-                    dropped += max(e.numberOfDroppedVideoFrames, 0)
-                    if e.durationWatched > 0 { played += e.durationWatched }
-                }
+                // "Last event" semantics only for the bitrates.
                 if let last = events.last {
                     if last.indicatedBitrate > 0 { ind = last.indicatedBitrate / 1_000_000 }
                     if last.observedBitrate > 0 { obs = last.observedBitrate / 1_000_000 }
@@ -285,13 +326,16 @@ final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
             }
             size = item.presentationSize
         }
+        // `DetailHitchSnapshot.latest` is main-thread-only: read it directly on main, otherwise omit it
+        // rather than race the writer.
+        let hitchSnapshot: DetailHitchSnapshot.Value? = Thread.isMainThread ? DetailHitchSnapshot.latest : nil
         let summary = TrailerHealthSummary(
             surface: surface,
             source: TrailerHealthSource.classify(urlString: urlString),
             startupMs: snapshot.0, playedSeconds: played, waits: snapshot.1, waitMs: snapshot.2,
             stalls: snapshot.3, empties: snapshot.4, accessStalls: accStalls, droppedFrames: dropped,
             indicatedMbps: ind, observedMbps: obs, presentation: size,
-            errorStatus: errStatus, errorComment: errComment, hitches: DetailHitchSnapshot.latest)
+            errorStatus: errStatus, errorComment: errComment, hitches: hitchSnapshot)
 
         po.forEach { $0.invalidate() }
         io.forEach { $0.invalidate() }
@@ -302,6 +346,30 @@ final class TrailerPlaybackHealthMonitor: @unchecked Sendable {
         // same knob, so it is not NSLogged here a second time.
         if TrailerProbe.enabled { NSLog("[TrailerHealth] %@", summary.consoleLine()) }
         TrailerZoomProbe.log(summary.paneLine())
+    }
+
+    private nonisolated static func accessSums(of item: AVPlayerItem) -> (stalls: Int, dropped: Int, played: Double) {
+        var stalls = 0, dropped = 0
+        var played = 0.0
+        for e in item.accessLog()?.events ?? [] {
+            stalls += max(e.numberOfStalls, 0)
+            dropped += max(e.numberOfDroppedVideoFrames, 0)
+            if e.durationWatched > 0 { played += e.durationWatched }
+        }
+        return (stalls, dropped, played)
+    }
+
+    /// Test seams: drive the wait-episode state without a live AVPlayer.
+    func simulatePlayingForTesting() {
+        lock.lock()
+        if !hasPlayed { hasPlayed = true; startupMs = 0 }
+        lock.unlock()
+    }
+
+    func simulateWaitForTesting(openedSecondsAgo: Double) {
+        lock.lock()
+        if waitOpenedAt == nil { waitOpenedAt = CFAbsoluteTimeGetCurrent() - openedSecondsAgo }
+        lock.unlock()
     }
 
     private nonisolated static func safe(_ v: Double) -> Double { v.isFinite ? v : 0 }

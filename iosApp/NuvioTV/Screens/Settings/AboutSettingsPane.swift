@@ -141,6 +141,7 @@ struct AboutSettingsPane: View {
         // `debug.trailerProbe`; defaults are today's behaviour.
         SettingsPickerRow(
             title: String(localized: "Trailer Max FPS (A/B)"),
+            subtitle: String(localized: "BUG-128 A/B; takes effect on next launch"),
             selection: $trailerMaxFps,
             options: [0, 30],
             label: { fps in
@@ -150,6 +151,7 @@ struct AboutSettingsPane: View {
 
         SettingsPickerRow(
             title: String(localized: "Trailer Buffer (A/B)"),
+            subtitle: String(localized: "BUG-128 A/B; takes effect on next launch"),
             selection: $trailerBufferSeconds,
             options: [0, 4, 8, 12],
             label: { seconds in
