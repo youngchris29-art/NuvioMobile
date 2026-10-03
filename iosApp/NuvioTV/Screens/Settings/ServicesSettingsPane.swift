@@ -2,57 +2,26 @@ import Foundation
 import SwiftUI
 import SharedCore
 
-/// "Account & Services" category content: Sign In/Out, Trakt scrobbling, and Debrid resolver
-/// connections. Extracted from SettingsView.swift (Phase 2 HIG revamp file split) — logic and
-/// wiring preserved verbatim, only regrouped into a per-category pane.
-struct AccountServicesSettingsPane: View {
+/// "Services" category rows (detail-settings-revamp W2-B): Trakt, Simkl, MDBList, More Like This
+/// and Debrid, split out of the old Account & Services pane. Rows only: `SettingsPaneScaffold`
+/// supplies the `List`. Logic and wiring preserved verbatim.
+struct ServicesSettingsPane: View {
     @ObservedObject var trakt: TraktViewModel
     @ObservedObject var simkl: SimklViewModel
     @ObservedObject var debrid: DebridViewModel
-    @EnvironmentObject private var auth: AuthViewModel
-    /// Active backend (official vs self-hosted) for the Server section.
-    @StateObject private var server = ActiveServerObserver()
     /// Owned here (not injected from SettingsView) so the MDBList card needs no SettingsView change.
     @StateObject private var mdblist = MdbListViewModel()
     @State private var confirmingMdbListDisconnect = false
 
-    /// Drives the shared sign-in/sign-out confirmation alert owned by SettingsView.
-    @Binding var confirmingSignOut: Bool
     /// Drives the shared Trakt-disconnect confirmation alert owned by SettingsView.
     @Binding var confirmingTraktDisconnect: Bool
     /// Drives the shared Simkl-disconnect confirmation alert owned by SettingsView.
     @Binding var confirmingSimklDisconnect: Bool
     /// Provider id pending a debrid disconnect confirmation (drives the alert owned by SettingsView).
     @Binding var debridDisconnectId: String?
-    /// Drives the shared "Use the official server?" confirmation alert owned by SettingsView.
-    @Binding var confirmingUseOfficial: Bool
 
     var body: some View {
         Group {
-            SettingsSection(String(localized: "Account")) {
-                if auth.isAnonymous {
-                    SettingsActionRow(
-                        title: String(localized: "Sign In to Nuvio"),
-                        subtitle: String(localized: "Sync your library, watch progress, and profiles across devices. Local guest data on this Apple TV will be cleared."),
-                        systemImage: "person.crop.circle.badge.plus"
-                    ) {
-                        confirmingSignOut = true
-                    }
-                } else {
-                    SettingsDestructiveRow(
-                        title: String(localized: "Sign Out"),
-                        subtitle: String(localized: "Signed in as \(auth.accountEmail ?? "your Nuvio account"). Local data on this Apple TV will be cleared."),
-                        systemImage: "rectangle.portrait.and.arrow.right"
-                    ) {
-                        confirmingSignOut = true
-                    }
-                }
-            }
-
-            SettingsSection(String(localized: "Server")) {
-                serverSection
-            }
-
             SettingsSection(String(localized: "Trakt")) {
                 traktSection
             }
@@ -82,6 +51,7 @@ struct AccountServicesSettingsPane: View {
                         set: { simkl.setMoreLikeThisSource($0) }
                     ),
                     options: ["trakt", "simkl", "tmdb"],
+                    descriptionID: .servicesMoreLikeThisSource,
                     label: { key in
                         switch key {
                         case "simkl": return String(localized: "Simkl")
@@ -101,39 +71,6 @@ struct AccountServicesSettingsPane: View {
         .onAppear { debrid.revalidateConnected() }
     }
 
-    /// The Server section: which backend this Apple TV talks to, plus the self-hosted discovery
-    /// entry point and (when on a custom server) the way back to api.nuvio.tv. Both switches are
-    /// destructive (sign-out + local wipe) — the "Use Official Server" confirm is a `.alert` on
-    /// SettingsView; the connect flow confirms inside `ServerConnectionView`.
-    @ViewBuilder
-    private var serverSection: some View {
-        SettingsValueRow(
-            title: String(localized: "Server"),
-            value: server.isCustom
-                ? server.displayHost
-                : String(localized: "Official Nuvio (\(server.displayHost))"),
-            systemImage: "server.rack"
-        )
-        SettingsLinkRow(
-            title: server.isCustom
-                ? String(localized: "Connect to Another Server")
-                : String(localized: "Connect to a Self-Hosted Server"),
-            subtitle: String(localized: "Point this Apple TV at a self-hosted Nuvio backend. Switching servers signs you out and clears local data on this Apple TV."),
-            systemImage: "network"
-        ) {
-            ServerConnectionView()
-        }
-        if server.isCustom {
-            SettingsDestructiveRow(
-                title: String(localized: "Use Official Server"),
-                subtitle: String(localized: "Switch back to api.nuvio.tv. You\u{2019}ll be signed out and local data on this Apple TV will be cleared."),
-                systemImage: "arrow.uturn.backward"
-            ) {
-                confirmingUseOfficial = true
-            }
-        }
-    }
-
     /// The Trakt section body — four states: keys missing / connected / awaiting code approval /
     /// disconnected. The device flow runs in the shared repo; this just renders its uiState.
     @ViewBuilder
@@ -147,7 +84,8 @@ struct AccountServicesSettingsPane: View {
             SettingsDestructiveRow(
                 title: String(localized: "Disconnect Trakt"),
                 subtitle: String(localized: "Connected as \(trakt.username ?? "your Trakt account") \u{00B7} watched history is scrobbled automatically as you play."),
-                systemImage: "checkmark.circle.fill"
+                systemImage: "checkmark.circle.fill",
+                descriptionID: .servicesTrakt
             ) {
                 confirmingTraktDisconnect = true
             }
@@ -166,7 +104,8 @@ struct AccountServicesSettingsPane: View {
             SettingsActionRow(
                 title: trakt.isLoading ? String(localized: "Requesting code\u{2026}") : String(localized: "Connect Trakt"),
                 subtitle: String(localized: "Shows a short code to enter at trakt.tv/activate on your phone or computer."),
-                systemImage: "antenna.radiowaves.left.and.right"
+                systemImage: "antenna.radiowaves.left.and.right",
+                descriptionID: .servicesTrakt
             ) {
                 trakt.connect()
             }
@@ -198,7 +137,8 @@ struct AccountServicesSettingsPane: View {
             SettingsDestructiveRow(
                 title: String(localized: "Disconnect Simkl"),
                 subtitle: String(localized: "Connected as \(simkl.username ?? "your Simkl account") \u{00B7} watched history is scrobbled automatically as you play."),
-                systemImage: "checkmark.circle.fill"
+                systemImage: "checkmark.circle.fill",
+                descriptionID: .servicesSimkl
             ) {
                 confirmingSimklDisconnect = true
             }
@@ -230,6 +170,7 @@ struct AccountServicesSettingsPane: View {
                     set: { simkl.setAnimeIdPreference($0) }
                 ),
                 options: SimklAnimeIdOptions.keys,
+                descriptionID: .servicesSimklAnimeId,
                 label: SimklAnimeIdOptions.name(forKey:)
             )
         } else if let code = simkl.deviceUserCode {
@@ -247,7 +188,8 @@ struct AccountServicesSettingsPane: View {
             SettingsActionRow(
                 title: simkl.isLoading ? String(localized: "Requesting code\u{2026}") : String(localized: "Connect Simkl"),
                 subtitle: String(localized: "Shows a short code to enter at simkl.com/pin on your phone or computer."),
-                systemImage: "antenna.radiowaves.left.and.right"
+                systemImage: "antenna.radiowaves.left.and.right",
+                descriptionID: .servicesSimkl
             ) {
                 simkl.connect()
             }
@@ -283,7 +225,8 @@ struct AccountServicesSettingsPane: View {
                 subtitle: mdblist.revokeFailed
                     ? String(localized: "Couldn't revoke on MDBList; the local token was removed.")
                     : mdblistConnectedSubtitle,
-                systemImage: "checkmark.circle.fill"
+                systemImage: "checkmark.circle.fill",
+                descriptionID: .servicesMdblist
             ) {
                 confirmingMdbListDisconnect = true
             }
@@ -307,7 +250,8 @@ struct AccountServicesSettingsPane: View {
             SettingsActionRow(
                 title: mdblist.isBusy ? String(localized: "Requesting code\u{2026}") : String(localized: "Connect MDBList"),
                 subtitle: String(localized: "Sync your watchlist and history with MDBList."),
-                systemImage: "antenna.radiowaves.left.and.right"
+                systemImage: "antenna.radiowaves.left.and.right",
+                descriptionID: .servicesMdblist
             ) {
                 mdblist.connect()
             }
@@ -348,7 +292,8 @@ struct AccountServicesSettingsPane: View {
                 isOn: Binding(
                     get: { debrid.resolverEnabled },
                     set: { debrid.setResolverEnabled($0) }
-                )
+                ),
+                descriptionID: .servicesDebridResolve
             )
         }
 
@@ -358,6 +303,7 @@ struct AccountServicesSettingsPane: View {
                 subtitle: String(localized: "Resolve the top cached sources to direct links while a source list is open, so Play starts at once."),
                 selection: Binding(get: { debrid.prepareLimit }, set: { debrid.setPrepareLimit($0) }),
                 options: [0, 1, 2, 3, 4, 5],
+                descriptionID: .servicesDebridPrepare,
                 label: Self.prepareLimitLabel
             )
             Text("Use a lower count when possible. Debrid services rate-limit how many links can be resolved in a time period, and opening a source list can count toward those limits even if you do not press Play, because the links are prepared ahead of time.")
@@ -374,6 +320,7 @@ struct AccountServicesSettingsPane: View {
                     set: { debrid.setPreferredResolver($0) }
                 ),
                 options: debrid.resolverProviders.map(\.id),
+                descriptionID: .servicesDebridResolver,
                 label: { id in
                     debrid.resolverProviders.first { $0.id == id }?.displayName ?? id
                 }
@@ -399,7 +346,8 @@ struct AccountServicesSettingsPane: View {
                 SettingsDestructiveRow(
                     title: String(localized: "\(provider.displayName) \u{00B7} Session expired"),
                     subtitle: String(localized: "\(provider.displayName) rejected the saved sign-in. Press to disconnect, then connect again."),
-                    systemImage: "exclamationmark.triangle.fill"
+                    systemImage: "exclamationmark.triangle.fill",
+                    descriptionID: .servicesDebridProvider
                 ) {
                     debridDisconnectId = provider.id
                 }
@@ -409,7 +357,8 @@ struct AccountServicesSettingsPane: View {
                     subtitle: debrid.activeResolverId == provider.id
                         ? String(localized: "Active resolver \u{00B7} press to disconnect")
                         : String(localized: "Press to disconnect"),
-                    systemImage: "checkmark.circle.fill"
+                    systemImage: "checkmark.circle.fill",
+                    descriptionID: .servicesDebridProvider
                 ) {
                     debridDisconnectId = provider.id
                 }
@@ -441,7 +390,8 @@ struct AccountServicesSettingsPane: View {
                 SettingsActionRow(
                     title: String(localized: "Dismiss"),
                     subtitle: String(localized: "Back to the connect options for \(provider.displayName)."),
-                    systemImage: "xmark.circle"
+                    systemImage: "xmark.circle",
+                    descriptionID: .servicesDebridDismiss
                 ) {
                     debrid.cancelActivation()
                 }
@@ -452,11 +402,12 @@ struct AccountServicesSettingsPane: View {
             SettingsActionRow(
                 title: String(localized: "Connect \(provider.displayName)"),
                 subtitle: String(localized: "Shows a short code to enter on your phone (device sign-in)."),
-                systemImage: "antenna.radiowaves.left.and.right"
+                systemImage: "antenna.radiowaves.left.and.right",
+                descriptionID: .servicesDebridProvider
             ) {
                 debrid.connect(provider)
             }
-            DebridKeyEntryRow(providerName: provider.displayName) { key in
+            DebridKeyEntryRow(providerName: provider.displayName, descriptionID: .servicesDebridKey) { key in
                 debrid.saveManualKey(provider.id, key: key)
             }
         }
@@ -500,6 +451,7 @@ private struct SimklSyncNowRow: View {
             title: isSyncing ? String(localized: "Syncing\u{2026}") : String(localized: "Sync Now"),
             subtitle: subtitle,
             systemImage: "arrow.triangle.2.circlepath",
+            descriptionID: .servicesSimklSyncNow,
             action: action
         )
     }
@@ -528,7 +480,8 @@ private struct SimklSyncInfoRow: View {
             SettingsActionRow(
                 title: String(localized: "How Syncing Works"),
                 subtitle: String(localized: "What Nuvio sends to Simkl, when it checks back, and why some shows leave Continue Watching."),
-                systemImage: "info.circle"
+                systemImage: "info.circle",
+                descriptionID: .servicesSimklSyncInfo
             ) {
                 isExpanded.toggle()
             }
@@ -604,7 +557,8 @@ private struct TraktActivationCard: View {
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
-                systemImage: "xmark.circle"
+                systemImage: "xmark.circle",
+                descriptionID: .servicesActivationCancel
             ) {
                 onCancel()
             }
@@ -647,7 +601,8 @@ private struct SimklActivationCard: View {
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
-                systemImage: "xmark.circle"
+                systemImage: "xmark.circle",
+                descriptionID: .servicesActivationCancel
             ) {
                 onCancel()
             }
@@ -688,7 +643,8 @@ private struct DebridActivationCard: View {
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
-                systemImage: "xmark.circle"
+                systemImage: "xmark.circle",
+                descriptionID: .servicesActivationCancel
             ) {
                 onCancel()
             }

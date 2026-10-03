@@ -201,7 +201,7 @@ final class ServerConnectionViewModel: ObservableObject {
             return String(localized: "Enter a valid HTTP or HTTPS backend URL.")
         case "OfficialServer":
             if activeIsCustom {
-                return String(localized: "api.nuvio.tv is the official server. Use \u{201C}Use Official Server\u{201D} in Settings to switch back.")
+                return String(localized: "api.nuvio.tv is the official server. Use \u{201C}Use Official Server\u{201D} in Settings \u{2192} Account & Profiles to switch back.")
             }
             return String(localized: "api.nuvio.tv is the official server and is already selected.")
         case "ConnectionFailed":

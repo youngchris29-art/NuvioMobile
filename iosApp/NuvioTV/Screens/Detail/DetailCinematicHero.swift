@@ -41,15 +41,21 @@ struct DetailCinematicHero<Actions: View>: View {
     @ViewBuilder let actions: () -> Actions
 
     @State private var measuredSynopsisHeight: CGFloat = 0
+    /// The rendered height of four `Theme.Font.synopsis` lines (a hidden probe, font-only). The slot
+    /// is sized from this, not from `UIFont.lineHeight` — see `DetailSynopsisTeaser.resolvedSlotHeight`.
+    @State private var measuredFourLineHeight: CGFloat = 0
     #if DEBUG
     @State private var measuredHeroHeight: CGFloat = 0
     #endif
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var synopsisLineHeight: CGFloat { Theme.Font.synopsisLineHeight }
-    private var synopsisSlotHeight: CGFloat { DetailSynopsisTeaser.slotHeight(lineHeight: synopsisLineHeight) }
+    private var synopsisSlotHeight: CGFloat {
+        DetailSynopsisTeaser.resolvedSlotHeight(measuredFourLineHeight: measuredFourLineHeight,
+                                                lineHeight: synopsisLineHeight)
+    }
     private var synopsisTruncated: Bool {
-        DetailSynopsisTeaser.isTruncated(fullTextHeight: measuredSynopsisHeight, lineHeight: synopsisLineHeight)
+        DetailSynopsisTeaser.isTruncated(fullTextHeight: measuredSynopsisHeight, slotHeight: synopsisSlotHeight)
     }
 
     var body: some View {
@@ -244,6 +250,19 @@ struct DetailCinematicHero<Actions: View>: View {
                 })
                 .accessibilityHidden(true)
         }
+        .background(alignment: .topLeading) {
+            // Gate 1 fix: four rendered lines of the same font, whatever the title. Font-only, so
+            // it lands on the first layout pass and never changes for the visit (correction F3).
+            Text(verbatim: "Hg\nHg\nHg\nHg")
+                .font(Theme.Font.synopsis)
+                .lineLimit(DetailSynopsisTeaser.maxLines)
+                .fixedSize()
+                .hidden()
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { height in
+                    if measuredFourLineHeight != height { measuredFourLineHeight = height }
+                })
+                .accessibilityHidden(true)
+        }
     }
 
     private var teaserText: some View {
@@ -252,6 +271,10 @@ struct DetailCinematicHero<Actions: View>: View {
             .foregroundStyle(Theme.Palette.textPrimary)
             .lineLimit(DetailSynopsisTeaser.maxLines)
             .multilineTextAlignment(.leading)
+            // Gate 1 fix: the line limit decides how many lines draw, never the proposed height
+            // (a proposal a fraction short of four lines made SwiftUI drop to three). The slot
+            // above is the measured four-line height, so this never overflows it.
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: DetailCinematicLayout.textColumnMaxWidth, alignment: .topLeading)
     }
 

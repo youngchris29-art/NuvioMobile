@@ -143,10 +143,57 @@ enum DetailRowAnchor {
     /// falls back on which row `old` was — `.comments` reads Up (it sits below every anchored row,
     /// so leaving it can only be Up), anything else reads Down (the original default for a row
     /// whose top dropped out of the map).
+    ///
+    /// FEAT-35: `.about` (the Cinematic page's last row) sits below Comments, so a missing top for
+    /// it reads Up for the same reason.
     static func direction(old: DetailRowID?, oldTop: CGFloat?, newTop: CGFloat) -> Direction {
         guard let old else { return .down }
-        guard let oldTop else { return old == .comments ? .up : .down }
+        guard let oldTop else { return (old == .comments || old == .about) ? .up : .down }
         return newTop > oldTop ? .down : .up
+    }
+
+    // MARK: - FEAT-35 Cinematic hero transitions (W2-A)
+
+    /// What a focus change means for the Cinematic hero. `focusedRow == nil` only inside the hero
+    /// (Comments and About are tracked rows), so nil ↔ row is a hero boundary crossing.
+    enum HeroTransition: Equatable {
+        /// Down out of the hero into the first row below it: that row anchors at `screenRest` in
+        /// one blended motion (replaces the BUG-99 Down settle for this one transition).
+        case exit
+        /// Any row → hero (BUG-117: Up from a far-right season poster can jump straight in past
+        /// rows with nothing directly above, so this is not first-row-only): scroll to y = 0.
+        case enterHero
+        case none
+    }
+
+    /// Where the hero-return scroll lands: the very top of the page.
+    static let heroTopScrollTarget: CGFloat = 0
+
+    /// True when the page rests at its top: the content offset is within `verifyTolerance` of what
+    /// `scrollTo(y: heroTopScrollTarget)` produces (`−inset` on this runtime).
+    static func isAtTop(contentOffset: CGFloat, contentInsetTop: CGFloat) -> Bool {
+        let expected = expectedOffset(scrollTarget: heroTopScrollTarget, contentInsetTop: contentInsetTop)
+        return abs(contentOffset - expected) <= verifyTolerance
+    }
+
+    /// Correction 9 (P3 F6): `.exit` needs `old == nil && new != nil` AND the page at the top.
+    /// Focus coming back from a cover or a push (Cast → Person → Back) also reads nil → row, but
+    /// the page is deep there and must not re-anchor; it takes the ordinary Down path instead.
+    static func heroTransition(old: DetailRowID?, new: DetailRowID?, pageAtTop: Bool) -> HeroTransition {
+        switch (old, new) {
+        case (nil, .some): return pageAtTop ? .exit : .none
+        case (.some, nil): return .enterHero
+        default: return .none
+        }
+    }
+
+    static func heroExit(old: DetailRowID?, new: DetailRowID?, pageAtTop: Bool) -> Bool {
+        heroTransition(old: old, new: new, pageAtTop: pageAtTop) == .exit
+    }
+
+    /// `pageAtTop` plays no part: entering the hero always wants the top.
+    static func heroReturn(old: DetailRowID?, new: DetailRowID?) -> Bool {
+        heroTransition(old: old, new: new, pageAtTop: false) == .enterHero
     }
 
     /// Pure decision table (`DetailRowAnchorTests`). Up is unconditional — always `.anchor`,
@@ -184,8 +231,11 @@ enum DetailRowAnchor {
 /// bails out for it before any anchor decision runs. It needs tracking only so `direction(old:…)`
 /// can see a real top for it instead of the `nil` that made it indistinguishable from the top
 /// block.
+///
+/// FEAT-35: `.about` is the Cinematic page's last row (`DetailAboutSection`), below Comments. Unlike
+/// Comments it takes the normal anchor path. In Cinematic, `focusedRow == nil` means the hero.
 enum DetailRowID: Hashable {
-    case logos, parental, episodes, cast, collection, trailers, moreLikeThis, comments
+    case logos, parental, episodes, cast, collection, trailers, moreLikeThis, comments, about
 }
 
 /// One `onScrollGeometryChange` callback's content offset, timestamped at the moment it fired.

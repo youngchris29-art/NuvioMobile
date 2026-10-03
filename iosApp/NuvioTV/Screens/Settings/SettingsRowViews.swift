@@ -25,6 +25,20 @@ import SharedCore
 // full-width row button style and need it; those screens are out of this beta's scope.
 // `settingsSection` survives here because `TmdbFilterEditorView` (also out of scope) still calls
 // it.
+//
+// D11 visual pass (detail-settings-revamp Wave 2, Christian 2026-10-02 — the option 1 mockup):
+// - V1 `SettingsSwitchToggleStyle`: the toggle row keeps a REAL `Toggle` (state, binding, the
+//   `.switch` accessibility element the UI tests query) but draws a capsule switch glyph. This is
+//   the one Christian-directed exception to "stock Toggle only"; the glyph is decorative and the
+//   focus platter is still the system's.
+// - V2 `SettingsRestPlatter`: every kit row sits on the same subtle rounded fill at rest. The fill
+//   lives INSIDE the control's label and drops to zero opacity whenever the row is on the system
+//   platter, so it never paints anything over, under or instead of the focus platter. Nothing here
+//   uses `listRowBackground` (on tvOS that slot is where the cell's own focus state can live).
+// - V3 section headers are small uppercase letter-spaced captions in `.secondary`.
+// - V4 picker / link rows end in `value ›` in `.secondary`. The `Menu { Picker }` stays; its
+//   native grey pill is retinted to the rest-platter fill (`SettingsRowChromeMetrics`), so the
+//   picker row and every other row read as one family at rest.
 
 /// The three type-scale tokens the kit uses, named by role so a future scale change is one edit.
 /// All three resolve to `Theme.Font` semantic tokens — no `Font.system(size:)` anywhere (HIG
@@ -98,6 +112,158 @@ extension View {
     /// Internal, not private: `SettingsView`'s sidebar builds its own `Label` rather than going
     /// through `SettingsRowLabel`, and its icon column is the most visible place the theme shows.
     func settingsAccentTint() -> some View { modifier(SettingsAccentTint()) }
+}
+
+// MARK: - Row chrome (D11 visual pass: V2 / V4)
+
+/// One place for the rest-platter geometry, so a screenshot-driven tune is one edit.
+///
+/// The insets copy the native `Menu` label pill (Wave 0 sim capture `g1-settings-pane-homescreen-
+/// row2.png`: ≈29 pt from pill edge to text, ≈65 pt tall for a single Body line), which is what
+/// makes a toggle row's rest platter line up with a picker row's pill edge for edge.
+enum SettingsRowChromeMetrics {
+    /// Text inset from the rest platter's leading/trailing edge.
+    static let horizontalInset: CGFloat = 28
+    /// Text inset from the rest platter's top/bottom edge.
+    static let verticalInset: CGFloat = 14
+    /// Close to the system list focus platter's corner (≈28 pt in the Wave 0 capture).
+    static let cornerRadius: CGFloat = 28
+    /// Mockup `.s-row`: white at ~6 % over the background.
+    static let restFill = Color.white.opacity(0.06)
+    /// V4: retint the native `Menu` label pill to `restFill`. `.tint` is the one lever tvOS gives
+    /// for that pill (the 2026-08-25 app-root accent tint repainted it into solid accent bars,
+    /// memory `settings-theme-accent`). The picker label pins its own ink (`SettingsPlatterInk`)
+    /// so a tint can never colour the text. If screenshots show the focused picker row losing its
+    /// white platter, set this to `false`: the pill then stays native grey and only the value
+    /// treatment changes.
+    static let tintsMenuPill = true
+}
+
+/// V2 — the subtle rounded fill every kit row carries at rest.
+///
+/// "On the platter" means: the row's own focus (`\.isFocused`, populated inside a control's
+/// label), the row's published `@FocusState` (BUG-65 device half), or a custom container's
+/// platter (BUG-65 container half).
+///
+/// Drawn as a background of the row's content INSIDE the control's label and faded to zero the
+/// moment that content is on the focus platter. Focused, the only thing behind the label is the
+/// system platter; at rest the fill reads like the mockup. No fixed colour ever sits on the
+/// platter (BUG-4/33/45/65 family). `explicitFocus` is for content that is not inside a single
+/// control's label (the debrid key row: a field plus a button), where `\.isFocused` is not
+/// populated.
+struct SettingsRestPlatter: ViewModifier {
+    var explicitFocus: Bool? = nil
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+
+    private var onPlatter: Bool { (explicitFocus ?? isFocused) || rowFocused || platterActive }
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, SettingsRowChromeMetrics.horizontalInset)
+            .padding(.vertical, SettingsRowChromeMetrics.verticalInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: SettingsRowChromeMetrics.cornerRadius, style: .continuous)
+                    .fill(SettingsRowChromeMetrics.restFill)
+                    .opacity(onPlatter ? 0 : 1)
+            )
+    }
+}
+
+/// Pins the ink of content whose control may carry a `.tint` (the retinted `Menu` pill, V4):
+/// `Color.primary` resolved against the INHERITED scheme at rest, and against `.light` on the
+/// platter — the same device-proven flip `SettingsAccentTint` uses. Hierarchical `.secondary`
+/// children (row subtitles, the trailing value) then resolve relative to `Color.primary`, never
+/// relative to the tint. Not applied to Toggle / Button / NavigationLink rows: those keep the
+/// system's own label inversion untouched.
+struct SettingsPlatterInk: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+    @Environment(\.colorScheme) private var inheritedScheme
+
+    private var onPlatter: Bool { isFocused || rowFocused || platterActive }
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(Color.primary)
+            .environment(\.colorScheme, onPlatter ? .light : inheritedScheme)
+    }
+}
+
+/// Applies `SettingsRowChromeMetrics.tintsMenuPill` to a `Menu`.
+private struct SettingsMenuPillTint: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if SettingsRowChromeMetrics.tintsMenuPill {
+            content.tint(SettingsRowChromeMetrics.restFill)
+        } else {
+            content
+        }
+    }
+}
+
+/// Leading label + trailing accessory on the rest platter. Used as the LABEL of a Toggle-style
+/// Button, a Button, a NavigationLink or the root category Button, so `\.isFocused` inside it is
+/// the control's own focus.
+struct SettingsRowChrome<Leading: View, Trailing: View>: View {
+    var explicitFocus: Bool?
+    let leading: Leading
+    let trailing: Trailing
+
+    init(
+        explicitFocus: Bool? = nil,
+        @ViewBuilder leading: () -> Leading,
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.explicitFocus = explicitFocus
+        self.leading = leading()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            leading
+            Spacer(minLength: Theme.Spacing.md)
+            trailing
+        }
+        .modifier(SettingsRestPlatter(explicitFocus: explicitFocus))
+    }
+}
+
+extension SettingsRowChrome where Trailing == EmptyView {
+    init(explicitFocus: Bool? = nil, @ViewBuilder leading: () -> Leading) {
+        self.init(explicitFocus: explicitFocus, leading: leading, trailing: { EmptyView() })
+    }
+}
+
+/// V4 — `value ›` in `.secondary` (mockup `.s-row .v`). Either half is optional: link rows and
+/// root category rows show the chevron alone. The chevron is decorative and hidden from
+/// accessibility, so the row's accessible label/value are unchanged.
+struct SettingsTrailingValue: View {
+    var value: String?
+    var showsChevron: Bool = true
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            if let value, !value.isEmpty {
+                Text(value)
+                    .font(SettingsRowFont.subtitle)
+                    .lineLimit(1)
+            }
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(SettingsRowFont.subtitle)
+                    .fontWeight(.semibold)
+                    .imageScale(.small)
+                    .accessibilityHidden(true)
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
 }
 
 // MARK: - Shared row label
@@ -190,6 +356,11 @@ struct SettingsSection<Content: View>: View {
             if let title, !title.isEmpty {
                 Text(title)
                     .font(SettingsRowFont.sectionHeader)
+                    // V3 (mockup `.s-row.hd`): small uppercase, letter-spaced, secondary. Never on
+                    // a platter (headers do not take focus), so a semantic colour is safe here.
+                    .textCase(.uppercase)
+                    .tracking(2)
+                    .foregroundStyle(.secondary)
                     // The focused row's platter scales up past the row bounds and was covering the
                     // header at the stock distance (device pass 2026-08-28: "Account" clipped behind
                     // the focused Sign Out row). `sm` of extra bottom padding keeps the header clear
@@ -256,8 +427,79 @@ private struct LegacySettingsSection<Content: View>: View {
 
 // MARK: - Toggle
 
-/// A real `Toggle` — system switch, system platter, system label inversion, VoiceOver state for
-/// free. Replaces the `checkmark.circle.fill` glyph fake.
+/// V1 (D11, Christian-directed exception to the native-Toggle-only rule): the row is drawn as a
+/// `Button` that flips `configuration.isOn` — inside a settings `List` that is the same system
+/// list-row button as `SettingsActionRow`, so the focus platter and the label inversion are still
+/// the system's. The trailing capsule glyph is decorative (`accessibilityHidden`).
+///
+/// Accessibility: `accessibilityRepresentation` hands VoiceOver and XCUITest a REAL `Toggle`
+/// (forced to `.automatic` so the representation never recurses into this style), so the element
+/// keeps its `.switch` type and on/off state — the UI test harness queries `app.switches`. The
+/// `SettingsToggleRow`'s own `.accessibilityValue("On"/"Off")` still sits on top.
+struct SettingsSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            SettingsRowChrome {
+                configuration.label
+            } trailing: {
+                SettingsSwitchGlyph(isOn: configuration.isOn)
+            }
+        }
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) {
+                configuration.label
+            }
+            .toggleStyle(.automatic)
+        }
+    }
+}
+
+/// The capsule switch (mockup `.toggle`). On: green track `#34C759`, white knob right. Off: grey
+/// track, white knob left. On the white focus platter the off track darkens so it stays visible;
+/// the on track stays green (D11). Read inside the Button's label, where `\.isFocused` is the
+/// row's own focus.
+struct SettingsSwitchGlyph: View {
+    let isOn: Bool
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.settingsRowIsFocused) private var rowFocused
+    @Environment(\.settingsRowPlatterActive) private var platterActive
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var onPlatter: Bool { isFocused || rowFocused || platterActive }
+
+    static let trackWidth: CGFloat = 72
+    static let trackHeight: CGFloat = 42
+    static let knobInset: CGFloat = 4
+    static let onTrack = Color(hex: 0x34C759)
+
+    private var track: Color {
+        if isOn { return Self.onTrack }
+        return onPlatter ? Color.black.opacity(0.28) : Color.white.opacity(0.26)
+    }
+
+    var body: some View {
+        Capsule()
+            .fill(track)
+            .frame(width: Self.trackWidth, height: Self.trackHeight)
+            .overlay(alignment: isOn ? .trailing : .leading) {
+                Circle()
+                    .fill(Color.white)
+                    .frame(
+                        width: Self.trackHeight - 2 * Self.knobInset,
+                        height: Self.trackHeight - 2 * Self.knobInset
+                    )
+                    .shadow(color: Color.black.opacity(0.25), radius: 2, y: 1)
+                    .padding(Self.knobInset)
+            }
+            .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: isOn)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A real `Toggle` (binding, VoiceOver state) drawn with `SettingsSwitchToggleStyle`.
 struct SettingsToggleRow: View {
     private let title: String
     private let subtitle: String?
@@ -275,6 +517,7 @@ struct SettingsToggleRow: View {
         Toggle(isOn: isOn) {
             SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
         }
+        .toggleStyle(SettingsSwitchToggleStyle())
         // Kept from the pre-C1 row: the UITest harness's state-aware toggle helper reads this
         // exact value (beta.13 wave 2), and it is a friendlier VoiceOver value than "1"/"0".
         .accessibilityValue(isOn.wrappedValue ? Text("On") : Text("Off"))
@@ -316,18 +559,26 @@ struct SettingsPickerRow<T: Hashable>: View {
                     Text(label(option)).tag(option)
                 }
             }
+            // The pill tint below must not reach the popover's checkmarks: `nil` restores the
+            // system default for the menu content.
+            .tint(nil)
         } label: {
+            // `LabeledContent` stays so the Menu's accessible label/value are unchanged (UI tests
+            // and VoiceOver read title + value, the chevron is hidden).
             LabeledContent {
-                Text(label(selection.wrappedValue))
-                    .font(SettingsRowFont.title)
-                    // The value the user actually picked — accent at rest, platter-flipped when
-                    // this row has focus. `SettingsValueRow` deliberately does NOT do this: it is
-                    // read-only information, not a choice, and stays `.secondary`.
-                    .settingsAccentTint()
+                // V4: `value ›` in `.secondary` (was the accent value). Platter-flipped through
+                // `SettingsPlatterInk` below.
+                SettingsTrailingValue(value: label(selection.wrappedValue))
             } label: {
                 SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
             }
+            // The Menu pill may carry the rest-fill tint; pin the label's ink so the tint never
+            // reaches the text.
+            .modifier(SettingsPlatterInk())
         }
+        // V2/V4: the native pill, retinted to the rest-platter fill (no extra `SettingsRestPlatter`
+        // here — the pill already is this row's platter, with the same insets).
+        .modifier(SettingsMenuPillTint())
     }
 }
 
@@ -375,12 +626,12 @@ struct SettingsValueRow: View {
 
     private var content: some View {
         LabeledContent {
-            Text(value)
-                .font(SettingsRowFont.title)
-                .foregroundStyle(.secondary)
+            // V4: same treatment as a picker value, without the chevron (nothing to open).
+            SettingsTrailingValue(value: value, showsChevron: false)
         } label: {
             SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
         }
+        .modifier(SettingsRestPlatter())
     }
 }
 
@@ -413,7 +664,12 @@ struct SettingsLinkRow<Destination: View>: View {
         NavigationLink {
             destination()
         } label: {
-            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
+            SettingsRowChrome {
+                SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
+            } trailing: {
+                // V4: a link has no value, so the chevron alone.
+                SettingsTrailingValue(value: nil)
+            }
         }
     }
 }
@@ -445,7 +701,9 @@ struct SettingsActionRow: View {
 
     var body: some View {
         Button(action: action) {
-            SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
+            SettingsRowChrome {
+                SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
+            }
         }
     }
 }
@@ -477,13 +735,15 @@ struct SettingsDestructiveRow: View {
         Button(role: .destructive, action: action) {
             // `.inherit`: the destructive red is the row's whole point (HIG), and it stays red
             // under every theme. An accent glyph here would fight it.
-            SettingsRowLabel(
-                title: title,
-                subtitle: subtitle,
-                systemImage: systemImage,
-                iconTint: .inherit,
-                descriptionID: descriptionID
-            )
+            SettingsRowChrome {
+                SettingsRowLabel(
+                    title: title,
+                    subtitle: subtitle,
+                    systemImage: systemImage,
+                    iconTint: .inherit,
+                    descriptionID: descriptionID
+                )
+            }
         }
     }
 }
@@ -505,6 +765,9 @@ struct DebridKeyEntryRow: View {
     let onSave: (String) -> Void
     @State private var key = ""
     @FocusState private var fieldFocused: Bool
+    /// V2: the row holds two focusables (field + Save), so its rest platter is not inside one
+    /// control's label and `\.isFocused` is not populated at its level; it reads both FocusStates.
+    @FocusState private var saveFocused: Bool
 
     private var fieldPlaceholder: String {
         placeholder ?? String(localized: "Or paste your \(providerName) API key")
@@ -534,7 +797,9 @@ struct DebridKeyEntryRow: View {
                     .settingsDescription(descriptionID, title: String(localized: "Save Key"), systemImage: "checkmark")
             }
             .disabled(key.isEmpty)
+            .focused($saveFocused)
         }
+        .modifier(SettingsRestPlatter(explicitFocus: fieldFocused || saveFocused))
     }
 }
 

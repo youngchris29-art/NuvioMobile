@@ -175,39 +175,30 @@ struct SettingsView: View {
         }
     }
 
-    /// The existing `AccountServicesSettingsPane` call, verbatim (corrections F13). Used twice by
-    /// the interim switch below.
-    private var accountServicesPane: some View {
-        AccountServicesSettingsPane(
-            trakt: trakt,
-            simkl: simkl,
-            debrid: debrid,
-            confirmingSignOut: $confirmingSignOut,
-            confirmingTraktDisconnect: $confirmingTraktDisconnect,
-            confirmingSimklDisconnect: $confirmingSimklDisconnect,
-            debridDisconnectId: $debridDisconnectId,
-            confirmingUseOfficial: $confirmingUseOfficial
-        )
-    }
-
     /// A pane's rows, rendered inside the scaffold's `List`. Only the pushed category's pane is
     /// built.
     ///
-    /// INTERIM (W1-B): the ten new categories map onto today's seven pane files so the build stays
-    /// green and every current setting stays reachable. Some categories show a whole old pane
-    /// (e.g. Services and Account & Profiles both show the old Account & Services pane). The main
-    /// session replaces this switch once W2-B and W2-C have split the panes (P2 spec §H).
     @ViewBuilder
     private func paneContent(_ category: SettingsCategory) -> some View {
         switch category {
         case .accountProfiles:
-            Group {
-                accountServicesPane
-                AdvancedSettingsPane(remote: remote)
-            }
+            AccountProfilesSettingsPane(
+                remote: remote,
+                confirmingSignOut: $confirmingSignOut,
+                confirmingUseOfficial: $confirmingUseOfficial
+            )
         case .services:
-            accountServicesPane
-        case .appearance, .detailPage:
+            ServicesSettingsPane(
+                trakt: trakt,
+                simkl: simkl,
+                debrid: debrid,
+                confirmingTraktDisconnect: $confirmingTraktDisconnect,
+                confirmingSimklDisconnect: $confirmingSimklDisconnect,
+                debridDisconnectId: $debridDisconnectId
+            )
+        case .detailPage:
+            DetailPageSettingsPane(model: model)
+        case .appearance:
             AppearanceSettingsPane(
                 model: model,
                 badges: badges,
@@ -216,12 +207,16 @@ struct SettingsView: View {
             )
         case .homeScreen:
             HomeScreenSettingsPane(model: model)
-        case .player, .subtitlesAudio:
-            PlaybackSettingsPane(model: model)
+        case .player:
+            PlayerSettingsPane(model: model)
         case .sources:
-            ContentSourcesSettingsPane(model: model, plugins: plugins)
-        case .about, .developer:
+            SourcesSettingsPane(model: model, plugins: plugins)
+        case .subtitlesAudio:
+            SubtitlesAudioSettingsPane(model: model)
+        case .about:
             AboutSettingsPane()
+        case .developer:
+            DeveloperSettingsPane()
         }
     }
 }

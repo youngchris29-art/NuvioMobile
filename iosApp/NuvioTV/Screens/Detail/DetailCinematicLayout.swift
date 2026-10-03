@@ -151,6 +151,26 @@ nonisolated enum DetailSynopsisTeaser {
         guard lineHeight > 0, fullTextHeight > 0 else { return false }
         return fullTextHeight > lineHeight * CGFloat(maxLines) + lineTolerance
     }
+
+    /// Gate 1 bug (Dune Part Two showed 3 lines, not 4): `UIFont.lineHeight` (≈30 pt for system
+    /// caption1) is SHORTER than the line pitch SwiftUI actually draws (≈31.7 pt measured off the
+    /// Gate 1 screenshots). A slot of `4 × lineHeight` = 120 pt therefore proposed less than four
+    /// rendered lines to the `lineLimit(4)` Text, and SwiftUI truncates to whatever whole lines fit
+    /// the proposed height — three. The slot is now the MEASURED height of four rendered lines of
+    /// the same font (a hidden four-line probe in `DetailCinematicHero`, font-only, so it never
+    /// depends on the title's data), falling back to the metric before the probe lands.
+    static func resolvedSlotHeight(measuredFourLineHeight: CGFloat, lineHeight: CGFloat,
+                                   maxLines: Int = maxLines) -> CGFloat {
+        guard measuredFourLineHeight > 0 else { return slotHeight(lineHeight: lineHeight, maxLines: maxLines) }
+        return measuredFourLineHeight.rounded(.up)
+    }
+
+    /// The truncation decision against the resolved slot (the measured four-line height), so the
+    /// teaser becomes focusable exactly when the full text needs more than the slot shows.
+    static func isTruncated(fullTextHeight: CGFloat, slotHeight: CGFloat) -> Bool {
+        guard slotHeight > 0, fullTextHeight > 0 else { return false }
+        return fullTextHeight > slotHeight + lineTolerance
+    }
 }
 
 // MARK: - Credits
@@ -233,6 +253,20 @@ nonisolated enum DetailDim {
         switch layout {
         case .classic: return classicRampDistance
         case .cinematic: return max(classicRampDistance, heroHeight)
+        }
+    }
+
+    /// W2-A: how far the page has scrolled, as the dim ramp measures it. Classic keeps today's
+    /// formula byte for byte (`contentOffset − inset`, which on this runtime only starts counting
+    /// once the page has moved `2 × inset` from the top, because the top rests at
+    /// `contentOffset == −inset`: `scrollTo(y: 0)` lands at `0 − inset`). Cinematic measures the
+    /// real distance from the top (`contentOffset + inset`), so a ramp equal to the hero height
+    /// saturates as the hero leaves: the hero-exit rest (`≈ heroHeight − 12 + inset` from the top)
+    /// is past the ramp, which puts the dim at the ceiling and the trailer latch (0.80) over it.
+    static func scrolledDistance(layout: DetailLayout, contentOffset: CGFloat, contentInsetTop: CGFloat) -> CGFloat {
+        switch layout {
+        case .classic: return contentOffset - contentInsetTop
+        case .cinematic: return contentOffset + contentInsetTop
         }
     }
 

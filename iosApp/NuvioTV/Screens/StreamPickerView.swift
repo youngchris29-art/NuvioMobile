@@ -29,7 +29,7 @@ import SharedCore
 /// picker not forced manual, a visit opens in auto mode — `FirstPlayAutoPlayController` walks the
 /// shared repository's settled candidates under a full-screen "Finding the best source…" overlay
 /// and opens the player itself; Back from that player dismisses the picker too. With an external
-/// default player (Settings → Playback → Default Player) the first auto pick is handed to it and
+/// default player (Settings → Player → Default Player) the first auto pick is handed to it and
 /// the picker closes; failover always plays in the built-in player. Menu on the overlay
 /// drops to the list. Failover (item 2): a presented playback that fails is remembered
 /// (`RejectedStreamLinks`) and, by `PlaybackContext.launchSource`, swaps in the next auto
@@ -111,7 +111,7 @@ struct StreamPickerView: View {
     /// so testers without any of them installed never see the handoff option at all. Empty ⇒ no
     /// menu is attached.
     @State private var externalPlayers: [ExternalPlayerApp] = []
-    /// User-chosen default player (Settings → Playback → Default Player). Empty = built-in.
+    /// User-chosen default player (Settings → Player → Default Player). Empty = built-in.
     /// Same device-local key `DefaultPlayerRow` writes; validated against the live probe below
     /// so an uninstalled default silently reverts to built-in instead of dead-ending playback.
     @AppStorage("default_external_player_id") private var defaultExternalPlayerId = ""
@@ -718,7 +718,7 @@ struct StreamPickerView: View {
         return externalPlayers.first { $0.id == defaultExternalPlayerId }
     }
 
-    /// Select on a stream row. Routes to the user's default player (Settings → Playback):
+    /// Select on a stream row. Routes to the user's default player (Settings → Player):
     /// external default ⇒ hand off (with automatic fallback to the built-in player if the
     /// handoff fails), otherwise the built-in pipeline.
     private func play(_ stream: StreamItem, rowKey: String) {
@@ -746,7 +746,7 @@ struct StreamPickerView: View {
         // Torrent / clientResolve result → resolve through the in-app debrid connection.
         guard resolvingKey == nil else { return }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
-            showToast(String(localized: "This stream needs a debrid account. Connect one in Settings \u{2192} Debrid."))
+            showToast(String(localized: "This stream needs a debrid account. Connect one in Settings \u{2192} Services \u{2192} Debrid."))
             return
         }
         resolvingKey = rowKey
@@ -806,7 +806,7 @@ struct StreamPickerView: View {
 
         guard resolvingKey == nil else { return }
         guard DirectDebridPlaybackResolver.shared.shouldResolveToPlayableStream(stream: stream) else {
-            showToast(String(localized: "This stream needs a debrid account. Connect one in Settings \u{2192} Debrid."))
+            showToast(String(localized: "This stream needs a debrid account. Connect one in Settings \u{2192} Services \u{2192} Debrid."))
             return
         }
         resolvingKey = rowKey
@@ -1156,7 +1156,7 @@ struct StreamPickerView: View {
     private static func resolveFailureMessage(_ result: DirectDebridPlayableResult?) -> String {
         switch result {
         case is DirectDebridPlayableResult.MissingApiKey:
-            return String(localized: "Connect an account in Settings.")
+            return String(localized: "Connect an account in Settings \u{2192} Services \u{2192} Debrid.")
         case is DirectDebridPlayableResult.NotCached:
             return String(localized: "Not cached on your debrid service.")
         case is DirectDebridPlayableResult.Stale:

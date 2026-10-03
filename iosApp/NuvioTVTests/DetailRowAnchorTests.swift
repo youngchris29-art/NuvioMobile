@@ -199,3 +199,62 @@ final class DetailScrollMotionTests: XCTestCase {
         XCTAssertEqual(DetailScrollMotion.segments(ramp1 + ramp2), 2)
     }
 }
+
+/// FEAT-35 (Detail revamp, P1 §F + correction 9): the Cinematic hero's two transitions. `.exit` is
+/// nil → row with the page at its top; `.enterHero` is any row → nil; the rest are ordinary.
+@MainActor
+final class DetailRowAnchorHeroTransitionTests: XCTestCase {
+    func testHeroTransitionTable() {
+        XCTAssertEqual(DetailRowAnchor.heroTransition(old: nil, new: .logos, pageAtTop: true), .exit)
+        XCTAssertEqual(DetailRowAnchor.heroTransition(old: nil, new: .episodes, pageAtTop: true), .exit)
+        XCTAssertEqual(DetailRowAnchor.heroTransition(old: .cast, new: nil, pageAtTop: false), .enterHero)
+        XCTAssertEqual(DetailRowAnchor.heroTransition(old: .episodes, new: nil, pageAtTop: true), .enterHero)
+        XCTAssertEqual(DetailRowAnchor.heroTransition(old: nil, new: nil, pageAtTop: true), DetailRowAnchor.HeroTransition.none)
+        XCTAssertEqual(DetailRowAnchor.heroTransition(old: .cast, new: .trailers, pageAtTop: true), DetailRowAnchor.HeroTransition.none)
+    }
+
+    /// Correction 9: focus restored to a deep row after a push or a cover (Cast → Person → Back)
+    /// also reads nil → row; with the page away from the top it must not be a hero exit.
+    func testExitNeedsThePageAtTheTop() {
+        XCTAssertEqual(DetailRowAnchor.heroTransition(old: nil, new: .cast, pageAtTop: false), DetailRowAnchor.HeroTransition.none)
+        XCTAssertFalse(DetailRowAnchor.heroExit(old: nil, new: .cast, pageAtTop: false))
+        XCTAssertTrue(DetailRowAnchor.heroExit(old: nil, new: .cast, pageAtTop: true))
+    }
+
+    func testExitAndReturnMirrorTheTable() {
+        XCTAssertTrue(DetailRowAnchor.heroExit(old: nil, new: .logos, pageAtTop: true))
+        XCTAssertFalse(DetailRowAnchor.heroExit(old: .cast, new: nil, pageAtTop: true))
+        XCTAssertFalse(DetailRowAnchor.heroExit(old: nil, new: nil, pageAtTop: true))
+        XCTAssertFalse(DetailRowAnchor.heroExit(old: .cast, new: .trailers, pageAtTop: true))
+
+        XCTAssertTrue(DetailRowAnchor.heroReturn(old: .cast, new: nil))
+        XCTAssertTrue(DetailRowAnchor.heroReturn(old: .episodes, new: nil))
+        XCTAssertTrue(DetailRowAnchor.heroReturn(old: .about, new: nil))
+        XCTAssertFalse(DetailRowAnchor.heroReturn(old: nil, new: .logos))
+        XCTAssertFalse(DetailRowAnchor.heroReturn(old: nil, new: nil))
+        XCTAssertFalse(DetailRowAnchor.heroReturn(old: .cast, new: .trailers))
+    }
+
+    func testHeroTopScrollTargetIsZero() {
+        XCTAssertEqual(DetailRowAnchor.heroTopScrollTarget, 0)
+    }
+
+    /// The top rests at `contentOffset == −inset` on this runtime (`scrollTo(y: 0)` lands at
+    /// `0 − inset`; Home's probe logs `y=-157 inset=157` at rest).
+    func testIsAtTop() {
+        XCTAssertTrue(DetailRowAnchor.isAtTop(contentOffset: -157, contentInsetTop: 157))
+        XCTAssertTrue(DetailRowAnchor.isAtTop(contentOffset: -157 + DetailRowAnchor.verifyTolerance, contentInsetTop: 157))
+        XCTAssertFalse(DetailRowAnchor.isAtTop(contentOffset: -157 + DetailRowAnchor.verifyTolerance + 1, contentInsetTop: 157))
+        XCTAssertFalse(DetailRowAnchor.isAtTop(contentOffset: 675, contentInsetTop: 157))
+        // Before the first geometry read both terms are 0.
+        XCTAssertTrue(DetailRowAnchor.isAtTop(contentOffset: 0, contentInsetTop: 0))
+    }
+
+    func testDirectionWithAbout() {
+        // About sits below every other row: a missing top for it reads Up, like Comments.
+        XCTAssertEqual(DetailRowAnchor.direction(old: .about, oldTop: nil, newTop: 300), .up)
+        // Comments → About is an ordinary Down.
+        XCTAssertEqual(DetailRowAnchor.direction(old: .comments, oldTop: 900, newTop: 1400), .down)
+        XCTAssertEqual(DetailRowAnchor.direction(old: .about, oldTop: 1400, newTop: 900), .up)
+    }
+}

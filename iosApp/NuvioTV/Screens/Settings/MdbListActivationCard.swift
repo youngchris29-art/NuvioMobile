@@ -34,7 +34,8 @@ struct MdbListActivationCard: View {
             SettingsActionRow(
                 title: String(localized: "Cancel"),
                 subtitle: String(localized: "Stop waiting and dismiss the code."),
-                systemImage: "xmark.circle"
+                systemImage: "xmark.circle",
+                descriptionID: .servicesActivationCancel
             ) {
                 onCancel()
             }

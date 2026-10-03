@@ -83,6 +83,16 @@ private final class ScrollDimModel: ObservableObject {
     /// its own settle-check task instead (see `DetailView.onChange(of: focusedRow)`).
     var awaitingRevealRow: DetailRowID?
     var awaitingRevealStartOffset: CGFloat = 0
+    /// FEAT-35 correction 10 (P3 F7): an extra tag for the blend pass the geometry handler fires
+    /// for `awaitingRevealRow` — the hero-exit branch sets `"hero-exit"`, so the probe reads
+    /// `anchor=… blend+hero-exit`. Cleared whenever `awaitingRevealRow` is. Plain field.
+    var awaitingRevealNote: String?
+    /// FEAT-35 hero return (any row → Cinematic hero): armed with the offset at the moment focus
+    /// entered the hero; the geometry handler fires the scroll to the top the instant the engine's
+    /// own reveal starts moving the page (the same blend as `awaitingRevealRow`), with a fallback
+    /// timer in `DetailView.armHeroReturn`. Plain fields, written on the per-frame path.
+    var awaitingHeroReturn = false
+    var awaitingHeroReturnStartOffset: CGFloat = 0
     /// BUG-96 oracle: timestamped content-offset samples for the current focus visit, capped at
     /// ~600 and reset on every `focusedRow` change — feeds `DetailScrollMotion.segments` for the
     /// `moves=` count appended to `geometrySample`. Timestamped (not just the raw offset) because
@@ -366,6 +376,22 @@ struct DetailView: View {
     /// FEAT-35 section toggle "Ratings" (closes FEAT-28): the Cinematic ratings strip and the meta
     /// line's IMDb ★ (D10). Classic's chips are untouched.
     @AppStorage(DetailSettingsKeys.sectionRatings) private var sectionRatings = true
+    /// FEAT-35 section toggles (P1 §H, default ON, both layouts). Episodes has no toggle; About only
+    /// exists in Cinematic. A hidden row's stale `detailRowOffsets` entry is harmless: focus can
+    /// never be inside it.
+    @AppStorage(DetailSettingsKeys.sectionStudioLogos) private var sectionStudioLogos = true
+    @AppStorage(DetailSettingsKeys.sectionParentalGuide) private var sectionParentalGuide = true
+    @AppStorage(DetailSettingsKeys.sectionCast) private var sectionCast = true
+    @AppStorage(DetailSettingsKeys.sectionCollection) private var sectionCollection = true
+    @AppStorage(DetailSettingsKeys.sectionTrailers) private var sectionTrailers = true
+    @AppStorage(DetailSettingsKeys.sectionMoreLikeThis) private var sectionMoreLikeThis = true
+    @AppStorage(DetailSettingsKeys.sectionComments) private var sectionComments = true
+    @AppStorage(DetailSettingsKeys.sectionAbout) private var sectionAbout = true
+    /// FEAT-35 (W2-A): the Cinematic hero's laid-out height, for the dim ramp only. Written by a
+    /// rare `onGeometryChange` on the hero (rounded, and only when it changes — about once per visit,
+    /// the BUG-41 rule), never per scroll frame. Classic never reads it (`DetailDim.rampDistance`
+    /// returns 400 there). Starts at the hero's floor.
+    @State private var cinematicHeroHeight: CGFloat = DetailCinematicLayout.heroMinimumHeight
     /// FEAT-35 (D3, correction F8): the full-synopsis cover, opened from the Cinematic teaser. Lives
     /// here, not in the hero, because it also pauses the background trailer (`isTrailerActive`).
     @State private var showSynopsisSheet = false
@@ -571,10 +597,15 @@ struct DetailView: View {
                     // Grouped to stay under ViewBuilder's 10-subview ceiling. BUG-96: every row
                     // below the top block is anchored — see `DetailRowAnchor`.
                     Group {
-                        companyLogosRow
-                            .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        parentalGuideSection
-                            .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        // FEAT-35 section toggles (P1 §H): every row gate applies to both layouts.
+                        if sectionStudioLogos {
+                            companyLogosRow
+                                .detailRowAnchored(.logos, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
+                        if sectionParentalGuide {
+                            parentalGuideSection
+                                .detailRowAnchored(.parental, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
                     }
                     if let meta = model.meta, EpisodesSection.isSeriesLike(meta) {
                         EpisodesSection(
@@ -589,14 +620,22 @@ struct DetailView: View {
                         .detailRowAnchored(.episodes, focusedRow: $focusedRow, offsets: $detailRowOffsets)
                     }
                     Group {
-                        castRow
-                            .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        collectionRow
-                            .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        trailersRow
-                            .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets)
-                        moreLikeThisRow
-                            .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        if sectionCast {
+                            castRow
+                                .detailRowAnchored(.cast, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
+                        if sectionCollection {
+                            collectionRow
+                                .detailRowAnchored(.collection, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
+                        if sectionTrailers {
+                            trailersRow
+                                .detailRowAnchored(.trailers, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
+                        if sectionMoreLikeThis {
+                            moreLikeThisRow
+                                .detailRowAnchored(.moreLikeThis, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
                         // Codex P2 review finding (BUG-99 follow-up, round 2): TRACKED but never
                         // ANCHORED. Round-1 left this section out of `detailRowAnchored` entirely —
                         // "a vertical list of expandable cards whose focus moves never change
@@ -608,8 +647,16 @@ struct DetailView: View {
                         // correction could scroll back to the section top under a later comment —
                         // so `DetailView.onChange(of: focusedRow)` bails out for `row == .comments`
                         // before any anchor decision runs.
-                        commentsSection
-                            .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        if sectionComments {
+                            commentsSection
+                                .detailRowAnchored(.comments, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
+                        // FEAT-35 (P1 §G): Cinematic's last row. Takes the normal anchor path (it is
+                        // not a Comments-style bail).
+                        if detailLayout == .cinematic && sectionAbout {
+                            DetailAboutSection(rows: aboutRows, isFocused: focusedRow == .about)
+                                .detailRowAnchored(.about, focusedRow: $focusedRow, offsets: $detailRowOffsets)
+                        }
                     }
                 }
                 .padding(Theme.Spacing.screen)
@@ -641,6 +688,8 @@ struct DetailView: View {
             // — the ORIGINAL BUG-96 photo, not the two-step motion the blend fix already solved.
             .onChange(of: focusedRow) { old, row in
                 dimModel.motionSamples.removeAll(keepingCapacity: true)
+                // FEAT-35: a pending hero return belongs to the focus visit that armed it.
+                dimModel.awaitingHeroReturn = false
                 // Codex P2 review finding (BUG-99 follow-up): ownership of the last anchor pass is
                 // cleared on EVERY focus change, whichever direction it turns out to be — a stale
                 // `lastAnchored` from the row that just lost focus must never let the relayout pass
@@ -650,6 +699,14 @@ struct DetailView: View {
                     detailAnchorTask?.cancel()
                     detailAnchorTask = nil
                     dimModel.awaitingRevealRow = nil
+                    dimModel.awaitingRevealNote = nil
+                    // FEAT-35 (P1 §F): any row → Cinematic hero scrolls back to y = 0 (dim → 0).
+                    // A focus loss to a push or a cover also lands here; `heroTopPass` refuses it
+                    // unless focus is genuinely inside the hero (`heroHasFocus`).
+                    if detailLayout == .cinematic, DetailRowAnchor.heroReturn(old: old, new: nil) {
+                        armHeroReturn()
+                        return
+                    }
                     if DetailScrollProbe.enabled { dimModel.anchorNote = "none" }
                     return
                 }
@@ -661,7 +718,19 @@ struct DetailView: View {
                 // for the top block.
                 guard row != .comments else {
                     dimModel.awaitingRevealRow = nil
+                    dimModel.awaitingRevealNote = nil
                     if DetailScrollProbe.enabled { dimModel.anchorNote = "comments free" }
+                    return
+                }
+                // FEAT-35 (P1 §F + correction 9): Down out of the Cinematic hero anchors the first
+                // row at `screenRest` in ONE blended motion, replacing the BUG-99 Down settle for
+                // this transition only. Only when the page is at its top: focus restored to a deep
+                // row after a push or cover also reads nil → row and must take the ordinary path.
+                if detailLayout == .cinematic,
+                   DetailRowAnchor.heroExit(old: old, new: row,
+                                            pageAtTop: DetailRowAnchor.isAtTop(contentOffset: dimModel.lastContentOffset,
+                                                                               contentInsetTop: dimModel.contentInsetTop)) {
+                    startBlendAnchor(row, fallbackNote: "blend-fallback+hero-exit", revealNote: "hero-exit")
                     return
                 }
                 // `focusedRow` now reports `.comments` (never nil) while focus is inside it, so
@@ -675,34 +744,13 @@ struct DetailView: View {
                 )
                 switch direction {
                 case .up:
-                    dimModel.awaitingRevealRow = row
-                    dimModel.awaitingRevealStartOffset = dimModel.lastContentOffset
-                    detailAnchorTask = Task { @MainActor in
-                        // Fallback only: if the scroll-geometry handler hasn't already disarmed by
-                        // the time this fires, the engine never moved the page — fire the pass
-                        // ourselves.
-                        try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
-                        guard !Task.isCancelled else { return }
-                        if dimModel.awaitingRevealRow == row {
-                            dimModel.awaitingRevealRow = nil
-                            guard anchorPass(row, note: "blend-fallback") else { return }
-                        }
-                        // Whether the geometry handler blended in already or the fallback just
-                        // fired: one verify pass. A card whose thumbnails land after the settle
-                        // makes the engine re-reveal it and undo the rest. Re-issue once, never
-                        // loop.
-                        try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
-                        _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
-                        // Publish the geometry sample once, AT REST, for the probe (never per
-                        // frame).
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
-                    }
+                    startBlendAnchor(row, fallbackNote: "blend-fallback")
                 case .down:
                     // BUG-99: no blend arm, no fallback pass, no verify pass — leave the engine's
                     // own reveal running unmodified. One task waits for it to settle, then
                     // straddle-checks the result and anchors only if the header needs rescuing.
                     dimModel.awaitingRevealRow = nil
+                    dimModel.awaitingRevealNote = nil
                     detailAnchorTask = Task { @MainActor in
                         try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.settleCheckDelay * 1_000_000_000))
                         guard !Task.isCancelled, focusedRow == row, bridgePhase == .idle,
@@ -744,11 +792,15 @@ struct DetailView: View {
                 if phase != .idle {
                     detailAnchorTask?.cancel(); detailAnchorTask = nil
                     dimModel.awaitingRevealRow = nil
+                    dimModel.awaitingRevealNote = nil
+                    dimModel.awaitingHeroReturn = false
                 }
             }
             .onDisappear {
                 detailAnchorTask?.cancel(); detailAnchorTask = nil
                 dimModel.awaitingRevealRow = nil
+                dimModel.awaitingRevealNote = nil
+                dimModel.awaitingHeroReturn = false
             }
             // BUG-96 (fixture step 5): late layout under the focused row moved it 470 pt after the
             // pass and the engine re-revealed the card. Re-anchor once per layout change, debounced.
@@ -781,7 +833,8 @@ struct DetailView: View {
             .accessibilityHidden(bridgePhase != .idle)
             // UX-6: final darkening value computed here (not in `action:`) so saturated scrolling
             // stops firing state updates once fully dark.
-            .onScrollGeometryChange(for: Double.self, of: { geo in
+            .onScrollGeometryChange(for: Double.self, of: { [dimLayout = detailLayout,
+                                                              dimRamp = DetailDim.rampDistance(layout: detailLayout, heroHeight: cinematicHeroHeight)] geo in
                 // P-2b (BUG-41 attribution knob): leg 1/3 disables the dim outright by pinning
                 // this closure's result to a constant, so `action:` fires once with 0 and never
                 // again — see `DetailScrollAB`'s doc comment.
@@ -790,7 +843,14 @@ struct DetailView: View {
                 // original 0.35 ceiling was invisible over a bright playing trailer on a real
                 // TV — the reporter's ask (and upstream's cinematic mode) is a near-black dim
                 // once the description scrolls up. Sim-verified via debug_ux6 (test17).
-                let raw = min(max((geo.contentOffset.y - geo.contentInsets.top) / 400.0, 0), 1) * 0.85
+                //
+                // FEAT-35 (W2-A): the ramp distance and the scrolled distance come from `DetailDim`.
+                // Classic is today's formula exactly (400 pt, `offset − inset`); Cinematic ramps over
+                // the hero's height measured from the real top, so it saturates as the hero leaves
+                // (see `DetailDim.scrolledDistance`). Same clamp and 0.05 quantisation as before.
+                let scrolled = DetailDim.scrolledDistance(layout: dimLayout, contentOffset: geo.contentOffset.y,
+                                                          contentInsetTop: geo.contentInsets.top)
+                let raw = min(max(Double(scrolled / dimRamp), 0), 1) * 0.85
                 // BUG-41: quantized to the nearest 0.05 (was 0.01) — `onScrollGeometryChange`
                 // only calls `action:` when the mapped value actually *changes*, so coarsening the
                 // step cuts the write rate from ~85 possible values over the 400pt ramp down to
@@ -855,7 +915,17 @@ struct DetailView: View {
                 if let row = dimModel.awaitingRevealRow,
                    abs(geo.contentOffset.y - dimModel.awaitingRevealStartOffset) >= DetailScrollMotion.stationaryThreshold {
                     dimModel.awaitingRevealRow = nil
-                    _ = anchorPass(row, note: "blend")
+                    // Correction 10: the hero exit tags its blend (`blend+hero-exit`).
+                    let note = dimModel.awaitingRevealNote.map { "blend+\($0)" } ?? "blend"
+                    dimModel.awaitingRevealNote = nil
+                    _ = anchorPass(row, note: note)
+                }
+                // FEAT-35 hero return: the twin of the blend above — the engine's reveal of the
+                // hero target starts moving the page, and the scroll to the top rides on it.
+                if dimModel.awaitingHeroReturn,
+                   abs(geo.contentOffset.y - dimModel.awaitingHeroReturnStartOffset) >= DetailScrollMotion.stationaryThreshold {
+                    dimModel.awaitingHeroReturn = false
+                    _ = heroTopPass("hero-return-blend")
                 }
             })
             .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in
@@ -867,6 +937,10 @@ struct DetailView: View {
             .onReceive(dimModel.$value) { newValue in
                 // Codex r3 (P2): 0.80 / 0.55, not 0.5 / 0.3 — the trailer stays mounted for as
                 // long as it is visibly exposed. See `trailerDimmedOut`'s doc comment.
+                // FEAT-35 (W2-A): no numeric change. The latch works in dim space; in Cinematic the
+                // ramp is the hero's height from the true top, so the trailer tears down at ≈94% of
+                // the hero scrolled (the hero-exit rest is past the ramp, dim at the ceiling) and
+                // remounts below ≈65% — the hero return's single motion to y = 0 crosses it.
                 if newValue >= 0.80 {
                     if !trailerDimmedOut { trailerDimmedOut = true }
                 } else if newValue < 0.55 {
@@ -1229,6 +1303,84 @@ struct DetailView: View {
     /// row inserting asynchronously moves every row below it). Gated on the page being visible and
     /// the trailer bridge idle; honours Reduce Motion (no animated translation). Returns false when
     /// the pass was skipped for good.
+    /// BUG-96 Up blend (extracted unchanged for FEAT-35, which reuses it for the Cinematic hero
+    /// exit): arm the blend for `row`, then a fallback pass if the engine never moved the page, one
+    /// verify pass, and the at-rest probe sample. `revealNote` tags the geometry handler's blend
+    /// pass (correction 10: `blend+hero-exit`); `fallbackNote` names the fallback pass.
+    private func startBlendAnchor(_ row: DetailRowID, fallbackNote: String, revealNote: String? = nil) {
+        dimModel.awaitingRevealRow = row
+        dimModel.awaitingRevealNote = revealNote
+        dimModel.awaitingRevealStartOffset = dimModel.lastContentOffset
+        detailAnchorTask = Task { @MainActor in
+            // Fallback only: if the scroll-geometry handler hasn't already disarmed by
+            // the time this fires, the engine never moved the page — fire the pass
+            // ourselves.
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if dimModel.awaitingRevealRow == row {
+                dimModel.awaitingRevealRow = nil
+                dimModel.awaitingRevealNote = nil
+                guard anchorPass(row, note: fallbackNote) else { return }
+            }
+            // Whether the geometry handler blended in already or the fallback just
+            // fired: one verify pass. A card whose thumbnails land after the settle
+            // makes the engine re-reveal it and undo the rest. Re-issue once, never
+            // loop.
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
+            _ = anchorPass(row, note: "re-issued", onlyIfDrifted: true)
+            // Publish the geometry sample once, AT REST, for the probe (never per
+            // frame).
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+        }
+    }
+
+    /// FEAT-35 (P1 §F): focus just entered the Cinematic hero from a row. Same shape as the Up
+    /// blend: the geometry handler scrolls to the top the instant the engine starts revealing the
+    /// hero target; if it never moves the page, a fallback does it; then one verify pass.
+    private func armHeroReturn() {
+        dimModel.awaitingHeroReturn = true
+        dimModel.awaitingHeroReturnStartOffset = dimModel.lastContentOffset
+        detailAnchorTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.blendFallbackDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if dimModel.awaitingHeroReturn {
+                dimModel.awaitingHeroReturn = false
+                guard heroTopPass("hero-return-fallback") else { return }
+            }
+            try? await Task.sleep(nanoseconds: UInt64(DetailRowAnchor.verifyDelay * 1_000_000_000))
+            _ = heroTopPass("hero-return-reissued", onlyIfDrifted: true)
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if !Task.isCancelled, DetailScrollProbe.enabled { dimModel.scrollGeoNote = dimModel.geometrySample }
+        }
+    }
+
+    /// FEAT-35: one scroll to the page top (`DetailRowAnchor.heroTopScrollTarget`). Refuses unless
+    /// focus is genuinely inside the hero and the bridge is idle: a focus loss to a push (Cast →
+    /// Person) or a cover also reads row → nil, and must never scroll the page under it. Animates
+    /// exactly like `anchorPass`, Reduce Motion included. The probe note carries no `top=` token,
+    /// so the UI anchor oracle never counts it as a residual.
+    @discardableResult
+    private func heroTopPass(_ note: String, onlyIfDrifted: Bool = false) -> Bool {
+        guard !Task.isCancelled, focusedRow == nil, heroHasFocus, bridgePhase == .idle else { return false }
+        let inset = dimModel.contentInsetTop
+        let target = DetailRowAnchor.heroTopScrollTarget
+        if onlyIfDrifted, DetailRowAnchor.isAtTop(contentOffset: dimModel.lastContentOffset, contentInsetTop: inset) {
+            return true
+        }
+        if reduceMotion {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { detailScrollPosition.scrollTo(y: target) }
+        } else {
+            withAnimation(.easeOut(duration: 0.3)) { detailScrollPosition.scrollTo(y: target) }
+        }
+        if DetailScrollProbe.enabled {
+            dimModel.anchorNote = "hero-return y=0 \(note)"
+        }
+        return true
+    }
+
     @discardableResult
     private func anchorPass(_ row: DetailRowID, note: String, onlyIfDrifted: Bool = false) -> Bool {
         // Codex BUG-96 r2 (P2): the sleeps swallow cancellation (`try?`), so the pass itself must
@@ -1409,6 +1561,11 @@ struct DetailView: View {
             actionRow
         }
         .focused($heroHasFocus)
+        // W2-A: the hero's real height for the dim ramp. Rounded, and written only on a change,
+        // which happens about once per visit (the BUG-41 rule: no per-frame state writes).
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { height in
+            if height > 0, cinematicHeroHeight != height { cinematicHeroHeight = height }
+        })
     }
 
     /// FEAT-35: the Cinematic scrim — a lighter horizontal/vertical pair plus a radial darkening
@@ -2038,6 +2195,29 @@ struct DetailView: View {
             add(String(localized: "Ratings"), ratings.map { "\($0.source) \(formatRating($0.value))" }.joined(separator: "   "))
         }
         return rows
+    }
+
+    /// FEAT-35 (P1 §G): the Cinematic About rows, from the same fields as Classic's `infoRows`.
+    private var aboutRows: [DetailAboutRow] {
+        guard let meta = model.meta else { return [] }
+        // Bare Kotlin `String?` reads can bridge as non-optional in this framework — widen before use.
+        let country: String? = meta.country
+        let language: String? = meta.language
+        let status: String? = meta.status
+        let awards: String? = meta.awards
+        return DetailAboutRows.make(
+            director: meta.director,
+            writer: meta.writer,
+            studios: meta.productionCompanies.map { $0.name },
+            networks: meta.networks.map { $0.name },
+            country: country,
+            language: language,
+            status: status,
+            awards: awards,
+            ratings: DetailRatings.ordered(meta.externalRatings.map { DetailRatingInput($0) }),
+            showRatings: sectionRatings,
+            isSeries: isSeries
+        )
     }
 
     private func formatRating(_ v: Double) -> String {

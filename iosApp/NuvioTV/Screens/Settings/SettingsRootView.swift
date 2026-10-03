@@ -32,7 +32,10 @@ import SwiftUI
 /// leaving for the tab bar keeps the last category up.
 ///
 /// **Minimal style** (`settings_style == "minimal"`): no explainer column and no row icons; rows
-/// keep their title + subtitle.
+/// keep their title + subtitle, the rest platter and the chevron.
+///
+/// **D11 visual pass:** each category row sits on the kit's rest platter (`SettingsRowChrome`)
+/// with a trailing `›`, and the group headers come from `SettingsSection` (small uppercase).
 struct SettingsRootView: View {
     @Binding var path: [SettingsCategory]
     @Binding var lastCategory: SettingsCategory?
@@ -79,8 +82,15 @@ struct SettingsRootView: View {
                             lastCategory = category
                             path = [category]
                         } label: {
-                            rowLabel(category)
-                                .modifier(SettingsRootRowFocusReporter(category: category, model: focusModel))
+                            // D11: the same rest platter and trailing `›` as the pane rows (mockup
+                            // option 1's list), inside the Button's label so the platter fades
+                            // out under the system focus platter.
+                            SettingsRowChrome {
+                                rowLabel(category)
+                            } trailing: {
+                                SettingsTrailingValue(value: nil)
+                            }
+                            .modifier(SettingsRootRowFocusReporter(category: category, model: focusModel))
                         }
                         .prefersDefaultFocus(category == (lastCategory ?? .accountProfiles), in: rootFocus)
                         // Keeps `app.buttons["Appearance"]` etc. resolving at the root.

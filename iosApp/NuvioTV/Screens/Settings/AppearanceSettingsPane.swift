@@ -32,16 +32,6 @@ struct AppearanceSettingsPane: View {
     /// independently here) so this toggle can flip the Home hero's focus-gated artwork fade back
     /// on for testers who preferred the original behavior. Local-only, not synced.
     @AppStorage("hero_poster_focus_only") private var heroPosterFocusOnly = false
-    /// Mirrors DetailView's `detail_trailer_autoplay` key. Local-only, not synced.
-    @AppStorage("detail_trailer_autoplay") private var detailTrailerAutoplay = true
-    /// Mirrors DetailView's `detail_poster_backdrop` key. Local-only, not synced.
-    @AppStorage("detail_poster_backdrop") private var detailPosterBackdrop = true
-    /// UX-4b: the muted background trailer on detail pages (distinct from auto-play above).
-    @AppStorage("detail_trailer_background") private var detailTrailerBackground = true
-    /// FEAT-8: mirrors DetailView's `detail_trailer_duration` key. 0 = play forever.
-    @AppStorage("detail_trailer_duration") private var detailTrailerDuration = 0
-    /// FEAT-9: mirrors DetailView's `detail_action_icons_only` key.
-    @AppStorage("detail_action_icons_only") private var detailActionIconsOnly = false
     /// FEAT-7: mirrors SettingsView's own `settings_style` key (same UserDefaults key, read
     /// independently here) so this pane's chip row and the sidebar it controls stay in sync.
     @AppStorage("settings_style") private var settingsStyle = "default"
@@ -76,22 +66,6 @@ struct AppearanceSettingsPane: View {
         ("default", String(localized: "Default")),
         ("minimal", String(localized: "Minimal")),
     ]
-    private static let trailerDurationOptions: [(value: Int, label: String)] = [
-        (30, String(localized: "30s")),
-        (60, String(localized: "1 min")),
-        (90, String(localized: "90s")),
-        (0, String(localized: "Always")),
-    ]
-    /// rc14 (Steven rc13 verdict, 2026-09-30): "Episode Ratings" row options, in the order
-    /// show-all / watched-only / hide. Computed (not a stored `static let`) because the Kotlin enum
-    /// bridge types are not `Sendable`.
-    private static var episodeRatingsOptions: [(value: EpisodeRatingsVisibility, label: String)] {
-        [
-            (.showAll, String(localized: "Show")),
-            (.hideUnwatchedEpisodes, String(localized: "Watched Only")),
-            (.hideEpisodes, String(localized: "Hide")),
-        ]
-    }
     /// FEAT-30 row options. Values are the raw `sidebar_style` UserDefaults strings.
     private static let navigationOptions: [(value: String, label: String)] = [
         ("tabs", String(localized: "Top Tabs")),
@@ -182,7 +156,8 @@ struct AppearanceSettingsPane: View {
             SettingsToggleRow(
                 title: String(localized: "Accent Focus Ring"),
                 subtitle: String(localized: "Focused artwork shows a ring in your accent color"),
-                isOn: $accentFocusRing
+                isOn: $accentFocusRing,
+                descriptionID: .appearanceAccentFocusRing
             )
             // FEAT-46 (rc14, Steven rc13 verdict, 2026-09-30): only meaningful while the ring itself is on.
             // rc14 FEAT-46 — shown whenever a ring can draw (the accent ring, or No Zoom's still
@@ -191,7 +166,8 @@ struct AppearanceSettingsPane: View {
                 SettingsToggleRow(
                     title: String(localized: "Ring Takes Poster Color"),
                     subtitle: String(localized: "The focus ring uses the focused poster's dominant color"),
-                    isOn: $focusRingPosterColor
+                    isOn: $focusRingPosterColor,
+                    descriptionID: .appearanceRingPosterColor
                 )
             }
             // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): "Depth Takes Poster Color".
@@ -201,7 +177,8 @@ struct AppearanceSettingsPane: View {
                     title: String(localized: "Depth Takes Poster Color"),
                     // review r1 (P3-7): cards already on screen recolor when their artwork reloads.
                     subtitle: String(localized: "Card depth edges take each poster's dominant color as artwork loads"),
-                    isOn: $depthRailPosterColor
+                    isOn: $depthRailPosterColor,
+                    descriptionID: .appearanceDepthPosterColor
                 )
             }
 
@@ -212,7 +189,8 @@ struct AppearanceSettingsPane: View {
             SettingsToggleRow(
                 title: String(localized: "No Zoom on Focus"),
                 subtitle: String(localized: "Focused cards keep their size \u{2014} highlight and shadow only"),
-                isOn: $noZoomOnFocus
+                isOn: $noZoomOnFocus,
+                descriptionID: .appearanceNoZoomOnFocus
             )
 
             // FEAT-38: pure black background for OLED screens. Backed by
@@ -225,7 +203,8 @@ struct AppearanceSettingsPane: View {
                 isOn: Binding(
                     get: { model.amoledEnabled },
                     set: { model.setAmoled($0) }
-                )
+                ),
+                descriptionID: .appearanceOledBlack
             )
 
             // FEAT-7: Default keeps the sidebar's category icons at normal row height; Minimal
@@ -235,6 +214,7 @@ struct AppearanceSettingsPane: View {
                 title: String(localized: "Settings Style"),
                 selection: $settingsStyle,
                 options: Self.settingsStyleOptions.map(\.value),
+                descriptionID: .appearanceSettingsStyle,
                 label: { value in Self.settingsStyleOptions.first { $0.value == value }?.label ?? value }
             )
 
@@ -246,6 +226,7 @@ struct AppearanceSettingsPane: View {
                 subtitle: String(localized: "Sidebar hides the top tab bar behind a floating panel"),
                 selection: sidebarStyleBinding,
                 options: Self.navigationOptions.map(\.value),
+                descriptionID: .appearanceNavigation,
                 label: { value in Self.navigationOptions.first { $0.value == value }?.label ?? value }
             )
             .accessibilityIdentifier("appearance_row_navigation")
@@ -259,6 +240,7 @@ struct AppearanceSettingsPane: View {
                 title: String(localized: "Typeface"),
                 selection: uiFontBinding,
                 options: Self.typefaceOptions.map(\.value),
+                descriptionID: .appearanceTypeface,
                 label: { value in Self.typefaceOptions.first { $0.value == value }?.label ?? value }
             )
             .accessibilityIdentifier("appearance_row_typeface")
@@ -287,52 +269,8 @@ struct AppearanceSettingsPane: View {
             SettingsToggleRow(
                 title: String(localized: "Hide Hero Artwork While Browsing"),
                 subtitle: String(localized: "Artwork shows while the hero is highlighted and hides once you move down into the rows"),
-                isOn: $heroPosterFocusOnly
-            )
-            SettingsToggleRow(
-                title: String(localized: "Auto-Play Trailer on Detail"),
-                subtitle: String(localized: "Play the trailer full screen shortly after opening a title"),
-                isOn: $detailTrailerAutoplay
-            )
-            // UX-4b (tester ask): the auto-play toggle above never controlled the muted
-            // trailer looping BEHIND the detail description — that had no switch at all.
-            SettingsToggleRow(
-                title: String(localized: "Background Trailer on Detail"),
-                subtitle: String(localized: "A muted trailer plays behind the description on detail pages"),
-                isOn: $detailTrailerBackground
-            )
-            // FEAT-8: only meaningful while the background trailer itself is on.
-            if detailTrailerBackground {
-                SettingsPickerRow(
-                    title: String(localized: "Trailer Duration"),
-                    selection: $detailTrailerDuration,
-                    options: Self.trailerDurationOptions.map(\.value),
-                    label: { value in Self.trailerDurationOptions.first { $0.value == value }?.label ?? "\(value)" }
-                )
-            }
-            SettingsToggleRow(
-                title: String(localized: "Poster in Detail Background"),
-                subtitle: String(localized: "Show the title's poster on the right side of detail pages"),
-                isOn: $detailPosterBackdrop
-            )
-            // FEAT-9
-            SettingsToggleRow(
-                title: String(localized: "Icon-Only Detail Buttons"),
-                subtitle: String(localized: "Buttons show icons only"),
-                isOn: $detailActionIconsOnly
-            )
-            // rc14 (Steven rc13 verdict, 2026-09-30): tester ask for an option to completely
-            // disable episode ratings. Backed by the shared `MetaScreenSettingsRepository`, so it
-            // also syncs with mobile's matching setting.
-            SettingsPickerRow(
-                title: String(localized: "Episode Ratings"),
-                subtitle: String(localized: "Rating badges on episode cards"),
-                selection: Binding(
-                    get: { model.episodeRatingsVisibility },
-                    set: { model.setEpisodeRatingsVisibility($0) }
-                ),
-                options: Self.episodeRatingsOptions.map(\.value),
-                label: { value in Self.episodeRatingsOptions.first { $0.value == value }?.label ?? "" }
+                isOn: $heroPosterFocusOnly,
+                descriptionID: .appearanceHideHeroArtwork
             )
         }
 
@@ -340,7 +278,8 @@ struct AppearanceSettingsPane: View {
             SettingsLinkRow(
                 title: String(localized: "Custom Posters"),
                 subtitle: String(localized: "Use a poster service like RPDB for artwork."),
-                systemImage: "photo.on.rectangle"
+                systemImage: "photo.on.rectangle",
+                descriptionID: .appearanceCustomPosters
             ) {
                 CustomPostersSettingsView()
             }
@@ -460,6 +399,8 @@ private struct SwatchLabel: View {
         }
         .padding(Theme.Spacing.sm)
         .animation(.easeOut(duration: 0.15), value: isFocused)
+        // All seven swatches share one id/title, so walking them publishes to the explainer once.
+        .settingsDescription(.appearanceTheme, title: String(localized: "Theme"), systemImage: "paintpalette")
     }
 }
 
@@ -496,27 +437,31 @@ private struct PosterStyleControls: View {
             title: String(localized: "Size"),
             selection: Binding(get: { widthDp }, set: { onSize($0) }),
             options: sizes.map(\.dp),
+            descriptionID: .appearancePosterSize,
             label: { dp in sizes.first { $0.dp == dp }?.name ?? "\(dp)" }
         )
         SettingsPickerRow(
             title: String(localized: "Corners"),
             selection: Binding(get: { cornerDp }, set: { onCorner($0) }),
             options: corners.map(\.dp),
+            descriptionID: .appearancePosterCorners,
             label: { dp in corners.first { $0.dp == dp }?.name ?? "\(dp)" }
         )
 
         SettingsToggleRow(
             title: String(localized: "Hide Titles"),
             subtitle: String(localized: "Show posters without a title label"),
-            isOn: Binding(get: { hideLabels }, set: { onHideLabels($0) })
+            isOn: Binding(get: { hideLabels }, set: { onHideLabels($0) }),
+            descriptionID: .appearanceHideTitles
         )
         SettingsToggleRow(
             title: String(localized: "Landscape Rows"),
             subtitle: String(localized: "Show Home & Search catalog rows as wide 16:9 cards"),
-            isOn: Binding(get: { landscapeRows }, set: { onLandscape($0) })
+            isOn: Binding(get: { landscapeRows }, set: { onLandscape($0) }),
+            descriptionID: .appearanceLandscapeRows
         )
 
-        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", action: onReset)
+        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", descriptionID: .appearancePosterReset, action: onReset)
     }
 }
 
@@ -567,7 +512,8 @@ private struct CardDepthControls: View {
         SettingsToggleRow(
             title: String(localized: "Card Depth"),
             subtitle: String(localized: "Enable the edge highlight and top sheen"),
-            isOn: Binding(get: { style.enabled }, set: { onEnabled($0) })
+            isOn: Binding(get: { style.enabled }, set: { onEnabled($0) }),
+            descriptionID: .appearanceCardDepth
         )
 
         if style.enabled {
@@ -575,18 +521,21 @@ private struct CardDepthControls: View {
                 title: String(localized: "Edge"),
                 selection: Binding(get: { Int32(style.edgeStrength) }, set: { onEdge($0) }),
                 options: edgeOptions.map(\.value),
+                descriptionID: .appearanceCardDepthEdge,
                 label: { value in edgeOptions.first { $0.value == value }?.name ?? "\(value)" }
             )
             SettingsPickerRow(
                 title: String(localized: "Sheen"),
                 selection: Binding(get: { Int32(style.sheenStrength) }, set: { onSheen($0) }),
                 options: sheenOptions.map(\.value),
+                descriptionID: .appearanceCardDepthSheen,
                 label: { value in sheenOptions.first { $0.value == value }?.name ?? "\(value)" }
             )
             SettingsPickerRow(
                 title: String(localized: "Edge Coverage"),
                 selection: Binding(get: { Int32(style.edgeCoverage) }, set: { onCoverage($0) }),
                 options: coverageOptions.map(\.value),
+                descriptionID: .appearanceCardDepthCoverage,
                 label: { value in coverageOptions.first { $0.value == value }?.name ?? "\(value)" }
             )
 
@@ -597,12 +546,13 @@ private struct CardDepthControls: View {
                 SettingsToggleRow(
                     title: entry.name,
                     subtitle: entry.subtitle,
-                    isOn: Binding(get: { isOn(entry.surface) }, set: { onSurface(entry.surface, $0) })
+                    isOn: Binding(get: { isOn(entry.surface) }, set: { onSurface(entry.surface, $0) }),
+                    descriptionID: .appearanceCardDepthSurface
                 )
             }
         }
 
-        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", action: onReset)
+        SettingsDestructiveRow(title: String(localized: "Reset to Defaults"), systemImage: "arrow.counterclockwise", descriptionID: .appearanceCardDepthReset, action: onReset)
     }
 
     private func isOn(_ surface: CardDepthSurface) -> Bool {

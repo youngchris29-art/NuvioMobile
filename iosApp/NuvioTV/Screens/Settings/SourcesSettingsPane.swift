@@ -1,15 +1,83 @@
 import SwiftUI
 import SharedCore
 
-/// "Content Sources" category content: TMDB metadata enrichment, MDBList ratings, and JS plugin
-/// providers. Extracted from SettingsView.swift (Phase 2 HIG revamp file split) — logic and
-/// wiring preserved verbatim, only regrouped into a per-category pane.
-struct ContentSourcesSettingsPane: View {
+/// "Sources" category content (detail-settings-revamp W2-C): where streams, metadata, ratings,
+/// library/progress and search results come from. Absorbs the old "Content Sources" pane plus the
+/// Auto-Play Source and source-filter sections that used to live under Playback. Logic and
+/// bindings are unchanged. Returns ROWS ONLY; the pane scaffold supplies the List.
+struct SourcesSettingsPane: View {
     @ObservedObject var model: SettingsViewModel
     @ObservedObject var plugins: PluginsViewModel
 
     var body: some View {
         Group {
+            // Orivio batch, item 1: Detail's Play button honours this (a plain press starts the
+            // first source in the Sources order; hold Play opens the list instead).
+            SettingsSection(
+                String(localized: "Auto-Play Source"),
+                footer: String(localized: "Play starts the first source in your Sources order by itself. Hold Play to choose one.")
+            ) {
+                SettingsToggleRow(
+                    title: String(localized: "Auto-Play Best Source"),
+                    isOn: Binding(get: { model.autoPlayBestSource }, set: { model.setAutoPlayBestSource($0) }),
+                    descriptionID: .sourcesAutoPlayBest
+                )
+                if model.autoPlayBestSource {
+                    SettingsToggleRow(
+                        title: String(localized: "Cached Sources Only"),
+                        subtitle: String(localized: "Only start a link your debrid service already has cached; otherwise show the list."),
+                        isOn: Binding(get: { model.autoPlayCachedOnly }, set: { model.setAutoPlayCachedOnly($0) }),
+                        descriptionID: .sourcesAutoPlayCachedOnly
+                    )
+                }
+            }
+
+            // Orivio batch: global source ordering + filters, applied to every add-on's streams.
+            SettingsSection(
+                String(localized: "Source Filters"),
+                footer: String(localized: "Applies to every add-on's sources on this Apple TV.")
+            ) {
+                SettingsPickerRow(
+                    title: String(localized: "Sort Sources"),
+                    selection: Binding(get: { model.streamSortMode }, set: { model.setStreamSortMode($0) }),
+                    options: SourceSettingOptions.sortKeys,
+                    descriptionID: .sourcesSort,
+                    label: SourceSettingOptions.sortName(forKey:)
+                )
+                SettingsPickerRow(
+                    title: String(localized: "Minimum Resolution"),
+                    subtitle: String(localized: "Sources with no resolution tag are kept."),
+                    selection: Binding(get: { model.streamMinimumQuality }, set: { model.setStreamMinimumQuality($0) }),
+                    options: SourceSettingOptions.minimumQualityKeys,
+                    descriptionID: .sourcesMinResolution,
+                    label: SourceSettingOptions.minimumQualityName(forKey:)
+                )
+                SettingsPickerRow(
+                    title: String(localized: "Dolby Vision"),
+                    selection: Binding(get: { model.streamDolbyVisionFilter }, set: { model.setStreamDolbyVisionFilter($0) }),
+                    options: SourceSettingOptions.featureFilterKeys,
+                    descriptionID: .sourcesDvFilter,
+                    label: SourceSettingOptions.featureFilterName(forKey:)
+                )
+                SettingsPickerRow(
+                    title: String(localized: "HDR"),
+                    selection: Binding(get: { model.streamHdrFilter }, set: { model.setStreamHdrFilter($0) }),
+                    options: SourceSettingOptions.featureFilterKeys,
+                    descriptionID: .sourcesHdrFilter,
+                    label: SourceSettingOptions.featureFilterName(forKey:)
+                )
+                // Only meaningful while a debrid service is connected and enabled: nothing is
+                // "cached" otherwise.
+                if model.debridCanResolvePlayableLinks {
+                    SettingsToggleRow(
+                        title: String(localized: "Cached Sources Only"),
+                        subtitle: String(localized: "Hide sources your debrid service has not cached."),
+                        isOn: Binding(get: { model.streamCachedOnly }, set: { model.setStreamCachedOnly($0) }),
+                        descriptionID: .sourcesCachedOnlyFilter
+                    )
+                }
+            }
+
             SettingsSection(String(localized: "Metadata (TMDB)")) {
                 Text("Enrich titles with cast profiles, studios & networks, collections, and better artwork. Titles you open after enabling will be enriched.")
                     .font(Theme.Font.caption)
@@ -22,24 +90,32 @@ struct ContentSourcesSettingsPane: View {
                     isOn: Binding(
                         get: { model.tmdbEnabled },
                         set: { model.setTmdbEnabled($0) }
-                    )
+                    ),
+                    descriptionID: .sourcesTmdbEnrichment
                 )
                 if model.tmdbHasPersonalKey {
                     SettingsDestructiveRow(
                         title: String(localized: "Remove Personal API Key"),
                         subtitle: String(localized: "Personal key saved. Removing it goes back to the built-in key."),
-                        systemImage: "trash"
+                        systemImage: "trash",
+                        descriptionID: .sourcesTmdbKey
                     ) {
                         model.clearTmdbKey()
                     }
                 } else {
-                    DebridKeyEntryRow(providerName: "TMDB", placeholder: String(localized: "Personal API Key (Optional)")) {
-                        model.saveTmdbKey($0)
+                    Group {
+                        DebridKeyEntryRow(
+                            providerName: "TMDB",
+                            placeholder: String(localized: "Personal API Key (Optional)"),
+                            descriptionID: .sourcesTmdbKey
+                        ) {
+                            model.saveTmdbKey($0)
+                        }
+                        Text("Leave empty to use the built-in key.")
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                            .frame(maxWidth: 1100, alignment: .leading)
                     }
-                    Text("Leave empty to use the built-in key.")
-                        .font(Theme.Font.caption)
-                        .foregroundStyle(Theme.Palette.textSecondary)
-                        .frame(maxWidth: 1100, alignment: .leading)
                 }
                 SettingsToggleRow(
                     title: String(localized: "TMDB Release Dates"),
@@ -49,7 +125,8 @@ struct ContentSourcesSettingsPane: View {
                     isOn: Binding(
                         get: { model.tmdbUseReleaseDates },
                         set: { model.setTmdbUseReleaseDates($0) }
-                    )
+                    ),
+                    descriptionID: .sourcesTmdbReleaseDates
                 )
                 Text("Language for TMDB titles, descriptions, logos and the Home hero. Device follows this Apple TV's language.")
                     .font(Theme.Font.caption)
@@ -62,12 +139,13 @@ struct ContentSourcesSettingsPane: View {
                         set: { model.setTmdbLanguage($0) }
                     ),
                     options: LanguageOptions.tmdbMetadata.map(\.code),
+                    descriptionID: .sourcesTmdbLanguage,
                     label: { LanguageOptions.name(forCode: $0, in: LanguageOptions.tmdbMetadata) }
                 )
             }
 
             SettingsSection(String(localized: "Ratings (MDBList)")) {
-                Text("Show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Connect MDBList in Account & Services, or add a free API key from mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open afterwards will show the ratings.")
+                Text("Show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Connect MDBList in Services, or add a free API key from mdblist.com \u{2192} Preferences \u{2192} API Access. Titles you open afterwards will show the ratings.")
                     .font(Theme.Font.caption)
                     .foregroundStyle(Theme.Palette.textSecondary)
                     .frame(maxWidth: 1100, alignment: .leading)
@@ -78,41 +156,46 @@ struct ContentSourcesSettingsPane: View {
                     isOn: Binding(
                         get: { model.mdbListEnabled },
                         set: { model.setMdbListEnabled($0) }
-                    )
+                    ),
+                    descriptionID: .sourcesMdblistRatings
                 )
                 if model.mdbListHasPersonalKey {
                     SettingsDestructiveRow(
                         title: String(localized: "Remove API Key"),
                         subtitle: String(localized: "Clears the saved MDBList key."),
-                        systemImage: "trash"
+                        systemImage: "trash",
+                        descriptionID: .sourcesMdblistKey
                     ) {
                         model.clearMdbListKey()
                     }
                 } else {
-                    if model.mdbListUsingAccount {
-                        Text("Using your connected MDBList account.")
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .frame(maxWidth: 1100, alignment: .leading)
-                    } else {
-                        Text("Connect MDBList in Account & Services, or enter a key.")
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .frame(maxWidth: 1100, alignment: .leading)
-                    }
-                    DebridKeyEntryRow(
-                        providerName: "MDBList",
-                        placeholder: model.mdbListUsingAccount
-                            ? String(localized: "Personal API Key (Optional)")
-                            : String(localized: "MDBList API key")
-                    ) {
-                        model.saveMdbListKey($0)
-                    }
-                    if model.mdbListUsingAccount {
-                        Text("A personal key overrides the account.")
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(Theme.Palette.textSecondary)
-                            .frame(maxWidth: 1100, alignment: .leading)
+                    Group {
+                        if model.mdbListUsingAccount {
+                            Text("Using your connected MDBList account.")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .frame(maxWidth: 1100, alignment: .leading)
+                        } else {
+                            Text("Connect MDBList in Services, or enter a key.")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .frame(maxWidth: 1100, alignment: .leading)
+                        }
+                        DebridKeyEntryRow(
+                            providerName: "MDBList",
+                            placeholder: model.mdbListUsingAccount
+                                ? String(localized: "Personal API Key (Optional)")
+                                : String(localized: "MDBList API key"),
+                            descriptionID: .sourcesMdblistKey
+                        ) {
+                            model.saveMdbListKey($0)
+                        }
+                        if model.mdbListUsingAccount {
+                            Text("A personal key overrides the account.")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(Theme.Palette.textSecondary)
+                                .frame(maxWidth: 1100, alignment: .leading)
+                        }
                     }
                 }
             }
@@ -156,7 +239,7 @@ struct ContentSourcesSettingsPane: View {
     /// `effectiveWatchProgressSource`), so this pane doesn't need to gate the options itself.
     @ViewBuilder
     private var librarySection: some View {
-        Text("Choose where your library and watch progress are saved. Connect Trakt, Simkl, or MDBList in Account & Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
+        Text("Choose where your library and watch progress are saved. Connect Trakt, Simkl, or MDBList in Services first to use them as a source \u{2014} otherwise this Apple TV falls back to its local/Nuvio option automatically.")
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)
@@ -168,6 +251,7 @@ struct ContentSourcesSettingsPane: View {
                 set: { model.setLibrarySourceMode($0) }
             ),
             options: Self.librarySourceLabels.map(\.code),
+            descriptionID: .sourcesLibrarySource,
             label: { code in LanguageOptions.name(forCode: code, in: Self.librarySourceLabels) }
         )
 
@@ -178,6 +262,7 @@ struct ContentSourcesSettingsPane: View {
                 set: { model.setWatchProgressSource($0) }
             ),
             options: Self.watchProgressSourceLabels.map(\.code),
+            descriptionID: .sourcesWatchProgressSource,
             label: { code in LanguageOptions.name(forCode: code, in: Self.watchProgressSourceLabels) }
         )
     }
@@ -198,7 +283,8 @@ struct ContentSourcesSettingsPane: View {
             isOn: Binding(
                 get: { model.recentSearchesEnabled },
                 set: { model.setRecentSearchesEnabled($0) }
-            )
+            ),
+            descriptionID: .sourcesRecentSearches
         )
 
         // UX-8 (u/mrStevenx3, restated three times, finally "completely hide the Discover
@@ -212,7 +298,8 @@ struct ContentSourcesSettingsPane: View {
             isOn: Binding(
                 get: { model.hideDiscover },
                 set: { model.setHideDiscover($0) }
-            )
+            ),
+            descriptionID: .sourcesHideDiscover
         )
 
         Text("Choose which catalogs Search looks through. Fewer sources means faster, more focused results. Applies to this Apple TV only.")
@@ -237,7 +324,8 @@ struct ContentSourcesSettingsPane: View {
                     isOn: Binding(
                         get: { !disabled },
                         set: { model.setSearchSource(key: option.key, disabled: !$0) }
-                    )
+                    ),
+                    descriptionID: .sourcesSearchCatalog
                 )
             }
 
@@ -268,7 +356,8 @@ struct ContentSourcesSettingsPane: View {
             isOn: Binding(
                 get: { plugins.pluginsEnabled },
                 set: { plugins.setPluginsEnabled($0) }
-            )
+            ),
+            descriptionID: .sourcesPluginsEnabled
         )
 
         PluginRepoEntryRow(isInstalling: plugins.isInstalling) { plugins.addRepository($0) }
@@ -301,6 +390,7 @@ struct ContentSourcesSettingsPane: View {
                         } label: {
                             Image(systemName: "trash")
                                 .font(Theme.Font.caption)
+                                .settingsDescription(.sourcesPluginRepo, title: String(localized: "Remove Repository"), systemImage: "trash")
                         }
                         .buttonStyle(.chip)
                     }
@@ -318,7 +408,8 @@ struct ContentSourcesSettingsPane: View {
                             isOn: Binding(
                                 get: { scraper.enabled },
                                 set: { plugins.toggleScraper(scraper, $0) }
-                            )
+                            ),
+                            descriptionID: .sourcesPluginScraper
                         )
                     }
                 }
@@ -326,7 +417,8 @@ struct ContentSourcesSettingsPane: View {
             SettingsActionRow(
                 title: String(localized: "Refresh Plugins"),
                 subtitle: String(localized: "Re-download provider code from every repository."),
-                systemImage: "arrow.clockwise"
+                systemImage: "arrow.clockwise",
+                descriptionID: .sourcesPluginsRefresh
             ) {
                 plugins.refreshAll()
             }
@@ -334,12 +426,49 @@ struct ContentSourcesSettingsPane: View {
     }
 }
 
+/// Picker keys + labels for the "Source Filters" section: the Swift string keys `SettingsViewModel`
+/// maps to `DebridStreamSortMode` / `DebridStreamMinimumQuality` / `DebridStreamFeatureFilter` (a
+/// `Menu` row binds a plain key, not a bridged Kotlin enum).
+private enum SourceSettingOptions {
+    static let sortKeys = ["default", "quality", "sizeDesc", "sizeAsc"]
+    static let minimumQualityKeys = ["any", "720", "1080", "2160"]
+    static let featureFilterKeys = ["any", "only", "exclude"]
+
+    static func sortName(forKey key: String) -> String {
+        switch key {
+        case "quality": return String(localized: "Quality")
+        case "sizeDesc": return String(localized: "Largest First")
+        case "sizeAsc": return String(localized: "Smallest First")
+        default: return String(localized: "Default")
+        }
+    }
+
+    static func minimumQualityName(forKey key: String) -> String {
+        switch key {
+        case "720": return String(localized: "720p")
+        case "1080": return String(localized: "1080p")
+        case "2160": return String(localized: "2160p")
+        default: return String(localized: "Any")
+        }
+    }
+
+    static func featureFilterName(forKey key: String) -> String {
+        switch key {
+        case "only": return String(localized: "Only")
+        case "exclude": return String(localized: "Exclude")
+        default: return String(localized: "Any")
+        }
+    }
+}
+
 /// Manifest-URL entry for installing a plugin repository from the TV (mirrors the addon install
-/// row; the shared repo normalizes the URL and appends /manifest.json).
+/// row; the shared repo normalizes the URL and appends /manifest.json). The text field reports
+/// through its own `@FocusState`; the Install label carries the modifier for the button.
 private struct PluginRepoEntryRow: View {
     let isInstalling: Bool
     let onInstall: (String) -> Void
     @State private var url = ""
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -350,9 +479,11 @@ private struct PluginRepoEntryRow: View {
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textPrimary)
+                    .focused($fieldFocused)
             }
             .padding(Theme.Spacing.lg)
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .settingsDescription(.sourcesPluginRepoAdd, title: String(localized: "Repository manifest URL"), systemImage: "puzzlepiece.extension", focused: fieldFocused)
 
             Button {
                 if !url.isEmpty {
@@ -367,6 +498,7 @@ private struct PluginRepoEntryRow: View {
                         .font(Theme.Font.meta)
                         .padding(.horizontal, Theme.Spacing.lg)
                         .padding(.vertical, Theme.Spacing.xxs + 2)
+                        .settingsDescription(.sourcesPluginRepoAdd, title: String(localized: "Install Repository"), systemImage: "plus")
                 }
             }
             .buttonStyle(.borderedProminent)

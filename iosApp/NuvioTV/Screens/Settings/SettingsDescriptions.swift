@@ -365,6 +365,16 @@ enum SettingsDescriptions {
         case .devTabBarScrollLink: return LocalizedStringResource("TODO")
         }
     }
+
+    /// Optional small print under the description in the explainer (D11 / V5, mockup: "Also set
+    /// in tvOS Settings › Video and Audio › Match Content"). `nil` = no footnote line, which is
+    /// the default for every row. Add a `case .someId: return LocalizedStringResource("…")` above
+    /// `default` for each row that needs one; same copy rules as `text(for:)`.
+    static func footnote(for id: SettingsDescriptionID) -> LocalizedStringResource? {
+        switch id {
+        default: return nil
+        }
+    }
 }
 
 // MARK: - Category copy

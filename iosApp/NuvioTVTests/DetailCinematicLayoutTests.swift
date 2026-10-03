@@ -121,6 +121,24 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertTrue(DetailSynopsisTeaser.isTruncated(fullTextHeight: 127, lineHeight: 31.32))
     }
 
+    /// Gate 1 bug (Dune Part Two drew 3 lines): the slot is the MEASURED four-line height once the
+    /// probe lands; `4 × UIFont.lineHeight` only until then.
+    func testSynopsisResolvedSlot() {
+        XCTAssertEqual(DetailSynopsisTeaser.resolvedSlotHeight(measuredFourLineHeight: 0, lineHeight: 30), 120)
+        XCTAssertEqual(DetailSynopsisTeaser.resolvedSlotHeight(measuredFourLineHeight: 126.8, lineHeight: 30), 127)
+        XCTAssertEqual(DetailSynopsisTeaser.resolvedSlotHeight(measuredFourLineHeight: 127, lineHeight: 30), 127)
+        XCTAssertEqual(DetailSynopsisTeaser.resolvedSlotHeight(measuredFourLineHeight: -1, lineHeight: 31.32), 126)
+    }
+
+    func testSynopsisTruncationAgainstTheSlot() {
+        // Four rendered lines of a 31.7 pt pitch fill a 127 pt slot exactly: not truncated.
+        XCTAssertFalse(DetailSynopsisTeaser.isTruncated(fullTextHeight: 126.8, slotHeight: 127))
+        XCTAssertFalse(DetailSynopsisTeaser.isTruncated(fullTextHeight: 128, slotHeight: 127))
+        XCTAssertTrue(DetailSynopsisTeaser.isTruncated(fullTextHeight: 158.5, slotHeight: 127))
+        XCTAssertFalse(DetailSynopsisTeaser.isTruncated(fullTextHeight: 0, slotHeight: 127))
+        XCTAssertFalse(DetailSynopsisTeaser.isTruncated(fullTextHeight: 300, slotHeight: 0))
+    }
+
     // MARK: - Credits
 
     func testCredits() {
@@ -175,6 +193,28 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailDim.rampDistance(layout: .cinematic, heroHeight: 300), 400)
     }
 
+    /// W2-A: Classic keeps `offset − inset` (today's formula); Cinematic measures from the real top
+    /// (`offset + inset`, the top resting at `offset == −inset`).
+    func testDimScrolledDistance() {
+        XCTAssertEqual(DetailDim.scrolledDistance(layout: .classic, contentOffset: 600, contentInsetTop: 157), 443)
+        XCTAssertEqual(DetailDim.scrolledDistance(layout: .cinematic, contentOffset: -157, contentInsetTop: 157), 0)
+        XCTAssertEqual(DetailDim.scrolledDistance(layout: .cinematic, contentOffset: 600, contentInsetTop: 157), 757)
+        // Hero 687 on the fixture: the hero-exit rest (first row at screenRest 108) is past the
+        // ramp, so the dim saturates and the 0.80 trailer latch closes.
+        let heroHeight: CGFloat = 687
+        let firstRowTop = 60 + heroHeight + 36
+        let exitOffset = DetailRowAnchorMirror.expectedOffset(rowTop: firstRowTop, inset: 157)
+        let dim = DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: exitOffset,
+                                                                       contentInsetTop: 157),
+                                  rampDistance: DetailDim.rampDistance(layout: .cinematic, heroHeight: heroHeight))
+        XCTAssertEqual(dim, DetailDim.ceiling, accuracy: 1e-9)
+        XCTAssertGreaterThanOrEqual(dim, 0.80)
+        // At the top: no dim.
+        XCTAssertEqual(DetailDim.value(scrolled: DetailDim.scrolledDistance(layout: .cinematic, contentOffset: -157,
+                                                                            contentInsetTop: 157),
+                                       rampDistance: 687), 0, accuracy: 1e-9)
+    }
+
     func testDimValue() {
         XCTAssertEqual(DetailDim.value(scrolled: 0, rampDistance: 400), 0, accuracy: 1e-9)
         XCTAssertEqual(DetailDim.value(scrolled: 100, rampDistance: 400), 0.20, accuracy: 1e-9)
@@ -182,5 +222,13 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailDim.value(scrolled: 1000, rampDistance: 400), 0.85, accuracy: 1e-9)
         XCTAssertEqual(DetailDim.value(scrolled: -50, rampDistance: 400), 0, accuracy: 1e-9)
         XCTAssertEqual(DetailDim.value(scrolled: 627, rampDistance: 627), 0.85, accuracy: 1e-9)
+    }
+}
+
+/// `DetailRowAnchor.scrollTarget`/`expectedOffset` restated for `testDimScrolledDistance` (rest at
+/// `screenRest` 108): offset = rowTop + inset − 108 − inset = rowTop − 108.
+private enum DetailRowAnchorMirror {
+    static func expectedOffset(rowTop: CGFloat, inset: CGFloat) -> CGFloat {
+        (rowTop + inset - 108) - inset
     }
 }

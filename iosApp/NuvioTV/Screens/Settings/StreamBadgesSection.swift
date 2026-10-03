@@ -15,7 +15,7 @@ struct StreamBadgesSection: View {
     @ObservedObject var badges: BadgeSettingsViewModel
 
     var body: some View {
-        Text("Badge packs add quality / HDR / audio-channel chips to stream results. Import a pack by its JSON URL \u{2014} packs imported on the Nuvio mobile app sync here automatically. Tip: Remote Setup (Advanced) lets you paste the URL from a phone browser.")
+        Text("Badge packs add quality / HDR / audio-channel chips to stream results. Import a pack by its JSON URL \u{2014} packs imported on the Nuvio mobile app sync here automatically. Tip: Remote Setup (Account & Profiles) lets you paste the URL from a phone browser.")
             .font(Theme.Font.caption)
             .foregroundStyle(Theme.Palette.textSecondary)
             .frame(maxWidth: 1100, alignment: .leading)
@@ -23,19 +23,22 @@ struct StreamBadgesSection: View {
         SettingsToggleRow(
             title: String(localized: "File Size Badges"),
             subtitle: String(localized: "Show the video size (GB/MB) as a chip on stream results."),
-            isOn: Binding(get: { badges.showFileSizeBadges }, set: { badges.setShowFileSizeBadges($0) })
+            isOn: Binding(get: { badges.showFileSizeBadges }, set: { badges.setShowFileSizeBadges($0) }),
+            descriptionID: .appearanceBadgesFileSize
         )
         SettingsToggleRow(
             title: String(localized: "Show Add-on Logo"),
             subtitle: String(localized: "Show each result's add-on logo and name on the right of the row."),
-            isOn: Binding(get: { badges.showAddonLogo }, set: { badges.setShowAddonLogo($0) })
+            isOn: Binding(get: { badges.showAddonLogo }, set: { badges.setShowAddonLogo($0) }),
+            descriptionID: .appearanceBadgesAddonLogo
         )
         SettingsToggleRow(
             title: String(localized: "Badges Above Title"),
             subtitle: badges.badgesOnTop
                 ? String(localized: "Badge chips render above the stream name.")
                 : String(localized: "Badge chips render below the stream description."),
-            isOn: Binding(get: { badges.badgesOnTop }, set: { badges.setBadgesOnTop($0) })
+            isOn: Binding(get: { badges.badgesOnTop }, set: { badges.setBadgesOnTop($0) }),
+            descriptionID: .appearanceBadgesAboveTitle
         )
 
         if badges.imports.isEmpty {
@@ -64,12 +67,14 @@ struct StreamBadgesSection: View {
                         Button("Set Active") { badges.setActive(pack.sourceUrl) }
                             .buttonStyle(.chip)
                             .font(Theme.Font.meta)
+                            .settingsDescription(.appearanceBadgePack, title: String(localized: "Set Active"), systemImage: "checkmark.circle")
                     }
                     Button {
                         badges.deletePack(pack.sourceUrl)
                     } label: {
                         Image(systemName: "trash")
                             .font(Theme.Font.caption)
+                            .settingsDescription(.appearanceBadgePack, title: String(localized: "Delete Badge Pack"), systemImage: "trash")
                     }
                     .buttonStyle(.chip)
                 }
@@ -91,6 +96,7 @@ private struct BadgeUrlEntryRow: View {
     let isImporting: Bool
     let onImport: (String) -> Void
     @State private var url = ""
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -101,7 +107,9 @@ private struct BadgeUrlEntryRow: View {
                     .textFieldStyle(.plain)
                     .font(Theme.Font.body)
                     .foregroundStyle(Theme.Palette.textPrimary)
+                    .focused($fieldFocused)
             }
+            .settingsDescription(.appearanceBadgeImport, title: String(localized: "Badge pack JSON URL"), systemImage: "tag", focused: fieldFocused)
             .padding(Theme.Spacing.lg)
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
 
@@ -118,6 +126,7 @@ private struct BadgeUrlEntryRow: View {
                         .font(Theme.Font.meta)
                         .padding(.horizontal, Theme.Spacing.lg)
                         .padding(.vertical, Theme.Spacing.xxs + 2)
+                        .settingsDescription(.appearanceBadgeImport, title: String(localized: "Import Badge Pack"), systemImage: "plus")
                 }
             }
             .buttonStyle(.borderedProminent)

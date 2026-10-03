@@ -77,10 +77,12 @@ private struct SettingsPaneExplainer: View {
 
     var body: some View {
         if let entry = model.focused {
+            // V5: a row without its own icon shows the pane's icon.
             SettingsExplainerColumn(
                 systemImage: entry.systemImage ?? category.icon,
                 title: entry.title,
-                text: Text(SettingsDescriptions.text(for: entry.id))
+                text: Text(SettingsDescriptions.text(for: entry.id)),
+                footnote: SettingsDescriptions.footnote(for: entry.id).map { Text($0) }
             )
         } else {
             SettingsExplainerColumn(
@@ -92,31 +94,36 @@ private struct SettingsPaneExplainer: View {
     }
 }
 
-/// Shared by the Settings root and every pane. Non-focusable. The accent symbol sits on an opaque
-/// in-content tile (HIG contract: opaque `Palette.surface*` for in-content fills; the accent is
-/// allowed here as an identity moment, it never marks focus).
+/// Shared by the Settings root and every pane. Non-focusable, never on a platter.
+///
+/// V5 (D11, the option 1 mockup): an accent-gradient tile (theme accent → a darker shade of it,
+/// corner radius 20 % of the side) carrying the symbol in `accentText` — white on every theme
+/// except White, whose near-white accent gets the dark ink so the symbol never vanishes; a bold
+/// display-size title (`screenTitle`, title3 bold, the mockup's title/body ratio); the description
+/// in `body` + `textSecondary`; and an optional footnote in `detail` + `.tertiary`.
+///
+/// HIG contract: the tile is an opaque in-content fill and an identity moment, not focus chrome
+/// (the accent never marks focus here). No glass. No custom animation; if one is added later,
+/// gate it on Reduce Motion.
 struct SettingsExplainerColumn: View {
     let systemImage: String
     let title: String
     let text: Text
+    var footnote: Text? = nil
+
+    static let tileSide: CGFloat = 240
+    static let symbolSide: CGFloat = 112
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-            RoundedRectangle(cornerRadius: Theme.Radius.card)
-                .fill(Theme.Palette.surfaceElevated)
-                .frame(width: 240, height: 240)
-                .overlay(
-                    Image(systemName: systemImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 120, height: 120)
-                        .foregroundStyle(Theme.Palette.accent)
-                )
+            tile
                 .accessibilityHidden(true)
 
             Text(title)
-                .font(Theme.Font.sectionTitle)
+                .font(Theme.Font.screenTitle)
                 .foregroundStyle(Theme.Palette.textPrimary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("settings_explainer_title")
 
             text
@@ -125,9 +132,41 @@ struct SettingsExplainerColumn: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("settings_explainer_body")
 
+            if let footnote {
+                footnote
+                    .font(Theme.Font.detail)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings_explainer_footnote")
+            }
+
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // No custom animation. If one is added later, gate it on Reduce Motion.
+    }
+
+    private var tile: some View {
+        let shape = RoundedRectangle(cornerRadius: Self.tileSide * 0.2, style: .continuous)
+        return shape
+            .fill(Theme.Palette.accent)
+            // The darker end of the gradient: the accent itself, shaded toward black, so every
+            // theme gets its own gradient without a second colour per theme.
+            .overlay(
+                shape.fill(
+                    LinearGradient(
+                        colors: [Color.black.opacity(0), Color.black.opacity(0.38)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            )
+            .frame(width: Self.tileSide, height: Self.tileSide)
+            .overlay(
+                Image(systemName: systemImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: Self.symbolSide, height: Self.symbolSide)
+                    .foregroundStyle(Theme.Palette.accentText)
+            )
     }
 }

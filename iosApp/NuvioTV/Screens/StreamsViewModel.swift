@@ -165,7 +165,7 @@ final class StreamsViewModel: ObservableObject {
         }
         let name = DebridProviders.shared.displayName(id: providerId)
         credentialWarning = String(
-            localized: "Your \(name) session has expired. Reconnect in Settings \u{2192} Account & Services \u{2192} Debrid."
+            localized: "Your \(name) session has expired. Reconnect in Settings \u{2192} Services \u{2192} Debrid."
         )
     }
 
@@ -246,7 +246,7 @@ final class StreamsViewModel: ObservableObject {
         let sourceWord = rawCount == 1 ? "source" : "sources"
         if !debridEnabled {
             let reason = String(localized: "Found \(rawCount) torrent \(sourceWord), but no debrid service is connected.")
-            let hint = String(localized: "Connect one in Settings \u{2192} Account & Services \u{2192} Debrid, or turn on \u{201C}Resolve Streams with Debrid\u{201D}.")
+            let hint = String(localized: "Connect one in Settings \u{2192} Services \u{2192} Debrid, or turn on \u{201C}Resolve Streams with Debrid\u{201D}.")
             return (reason, hint)
         }
         let reason = String(localized: "Found \(rawCount) \(rawCount == 1 ? "stream" : "streams"), but none could be resolved to a playable link.")
@@ -262,7 +262,7 @@ final class StreamsViewModel: ObservableObject {
         switch reason?.name {
         case "NoAddonsInstalled":
             return (String(localized: "No addons installed."),
-                    String(localized: "Add one in Settings \u{2192} Content Sources \u{2192} Addons."))
+                    String(localized: "Add one in the Add-ons tab."))
         case "NoCompatibleAddons":
             return (String(localized: "None of your addons provide streams for this title."),
                     String(localized: "Your installed addons either don\u{2019}t serve streams, or don\u{2019}t cover this content type."))
