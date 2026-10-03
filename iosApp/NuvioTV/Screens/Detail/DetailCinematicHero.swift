@@ -17,6 +17,9 @@ nonisolated enum DetailHeroFocus: Hashable {
 /// Review r1 #2: the series Play button mounts only once the meta and primary action land, after
 /// `.defaultFocus` has already run, so `DetailView` claims it once, late, under these rules.
 nonisolated enum DetailLatePlayFocus {
+    /// Seconds after the page appears during which a late Play claim may still move focus.
+    static let claimWindow: TimeInterval = 4
+
     /// Write attempts per claim: the first, plus one retry `retryDelay` later if focus never
     /// reached Play (review r2 #1). After that the claim gives up.
     static let maxClaimAttempts = 2

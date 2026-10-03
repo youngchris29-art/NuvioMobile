@@ -438,6 +438,10 @@ struct DetailView: View {
     /// Set the moment the user swipes/moves focus at all (see `onMoveCommand` below); cancels the
     /// pending auto-play so it never yanks focus away from someone who's already exploring the page.
     @State private var userInteracted = false
+    /// Review r3 #4: the late Play claim only applies while the page is still settling. A Select on
+    /// Watched/Library is not a move command, so a claim that fired after add-ons finished loading
+    /// could pull focus away from where the user is working.
+    @State private var detailAppearedAt = Date()
     @State private var autoPlayTrailerTask: Task<Void, Never>?
     /// True only while the CURRENT `trailerPlayback` presentation was kicked off by the auto-play
     /// timer (not the explicit "Watch Trailer" button or a "Trailers & Extras" row item) — gates the
@@ -2057,7 +2061,9 @@ struct DetailView: View {
                                             playEnabled: model.isPlayEnabled,
                                             currentFocus: heroFocus)
         }
-        guard !latePlayClaimPending, shouldClaim() else { return }
+        guard !latePlayClaimPending,
+              Date().timeIntervalSince(detailAppearedAt) < DetailLatePlayFocus.claimWindow,
+              shouldClaim() else { return }
         latePlayClaimPending = true
         Task { @MainActor in
             defer { latePlayClaimPending = false }
