@@ -17,15 +17,34 @@ nonisolated enum DetailHeroFocus: Hashable {
 /// Review r1 #2: the series Play button mounts only once the meta and primary action land, after
 /// `.defaultFocus` has already run, so `DetailView` claims it once, late, under these rules.
 nonisolated enum DetailLatePlayFocus {
-    /// A focus change between two different hero targets can only come from the user.
+    /// Write attempts per claim: the first, plus one retry `retryDelay` later if focus never
+    /// reached Play (review r2 #1). After that the claim gives up.
+    static let maxClaimAttempts = 2
+    static let retryDelay: Duration = .milliseconds(120)
+
+    /// A focus change between two different hero targets can only come from the user, and so can
+    /// leaving the hero targets for something else (non-nil → nil: Watched → a row → Watched never
+    /// passes two hero targets back to back, review r2 #2). nil → a target is the engine's landing.
     static func isUserMove(old: DetailHeroFocus?, new: DetailHeroFocus?) -> Bool {
-        guard let old, let new else { return false }
+        guard let old else { return false }
+        guard let new else { return true }
         return old != new
     }
 
+    /// While a claim is in flight, focus arriving on Play is the claim landing: latch it there and
+    /// do not count it as a user move.
+    static func latchesClaim(pending: Bool, new: DetailHeroFocus?) -> Bool {
+        pending && new == .play
+    }
+
+    /// `playEnabled`: a disabled Play button (guest, no playback source) is not focusable, so the
+    /// claim is skipped while it is off (review r2 #1).
     static func shouldClaim(isCinematic: Bool, alreadyClaimed: Bool, userInteracted: Bool,
-                            userMovedInHero: Bool, heroHasFocus: Bool, currentFocus: DetailHeroFocus?) -> Bool {
-        guard isCinematic, !alreadyClaimed, !userInteracted, !userMovedInHero, heroHasFocus else { return false }
+                            userMovedInHero: Bool, heroHasFocus: Bool, playEnabled: Bool,
+                            currentFocus: DetailHeroFocus?) -> Bool {
+        guard isCinematic, !alreadyClaimed, !userInteracted, !userMovedInHero, heroHasFocus, playEnabled else {
+            return false
+        }
         return currentFocus != .play
     }
 }

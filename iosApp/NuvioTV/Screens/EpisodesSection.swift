@@ -28,7 +28,7 @@ struct EpisodesSection: View {
 
     private func airedUnwatchedCount(season: Int?, episodes: [MetaVideo]) -> Int {
         airedCountCache.count(
-            key: AiredUnwatchedCountCache.Key(meta: ObjectIdentifier(meta), season: season,
+            key: AiredUnwatchedCountCache.Key(metaId: meta.id, season: season,
                                               episodeCount: episodes.count, watchedKeys: watchedEpisodeKeys)
         ) { todayIsoDate in
             EpisodeSpoilerRules.airedUnwatchedCount(
@@ -533,7 +533,9 @@ private struct SeasonPosterCard: View {
 /// (the section's lifetime), the count once per key.
 final class AiredUnwatchedCountCache {
     struct Key: Equatable {
-        let meta: ObjectIdentifier
+        /// Review r2 #4: the meta's stable id, not `ObjectIdentifier(meta)` — the cache does not
+        /// retain the meta, so a freed object's address could be reused by a different title.
+        let metaId: String
         let season: Int?
         let episodeCount: Int
         let watchedKeys: Set<String>

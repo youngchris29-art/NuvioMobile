@@ -245,17 +245,30 @@ final class DetailCinematicLayoutTests: XCTestCase {
 
     func testLatePlayFocusUserMove() {
         XCTAssertFalse(DetailLatePlayFocus.isUserMove(old: nil, new: .watched))
-        XCTAssertFalse(DetailLatePlayFocus.isUserMove(old: .watched, new: nil))
+        XCTAssertFalse(DetailLatePlayFocus.isUserMove(old: nil, new: nil))
         XCTAssertFalse(DetailLatePlayFocus.isUserMove(old: .watched, new: .watched))
         XCTAssertTrue(DetailLatePlayFocus.isUserMove(old: .watched, new: .library))
         XCTAssertTrue(DetailLatePlayFocus.isUserMove(old: .teaser, new: .watched))
+        // Review r2 #2: Watched → a row (nil) → Watched is a user move, caught on the way out.
+        XCTAssertTrue(DetailLatePlayFocus.isUserMove(old: .watched, new: nil))
+    }
+
+    func testLatePlayFocusLatch() {
+        XCTAssertTrue(DetailLatePlayFocus.latchesClaim(pending: true, new: .play))
+        XCTAssertFalse(DetailLatePlayFocus.latchesClaim(pending: false, new: .play))
+        XCTAssertFalse(DetailLatePlayFocus.latchesClaim(pending: true, new: .watched))
+        XCTAssertFalse(DetailLatePlayFocus.latchesClaim(pending: true, new: nil))
+        XCTAssertEqual(DetailLatePlayFocus.maxClaimAttempts, 2)
+        XCTAssertGreaterThanOrEqual(DetailLatePlayFocus.retryDelay, .milliseconds(100))
+        XCTAssertLessThanOrEqual(DetailLatePlayFocus.retryDelay, .milliseconds(150))
     }
 
     func testLatePlayFocusClaim() {
         func claim(cinematic: Bool = true, claimed: Bool = false, interacted: Bool = false, moved: Bool = false,
-                   inHero: Bool = true, focus: DetailHeroFocus? = .watched) -> Bool {
+                   inHero: Bool = true, playEnabled: Bool = true, focus: DetailHeroFocus? = .watched) -> Bool {
             DetailLatePlayFocus.shouldClaim(isCinematic: cinematic, alreadyClaimed: claimed, userInteracted: interacted,
-                                            userMovedInHero: moved, heroHasFocus: inHero, currentFocus: focus)
+                                            userMovedInHero: moved, heroHasFocus: inHero, playEnabled: playEnabled,
+                                            currentFocus: focus)
         }
         XCTAssertTrue(claim())
         XCTAssertTrue(claim(focus: .teaser))
@@ -265,6 +278,8 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertFalse(claim(moved: true))
         XCTAssertFalse(claim(inHero: false))
         XCTAssertFalse(claim(focus: .play))
+        // Review r2 #1: a disabled Play (guest, no source) is never claimed.
+        XCTAssertFalse(claim(playEnabled: false))
     }
 
     // MARK: - Dim ramp

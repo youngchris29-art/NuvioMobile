@@ -27,8 +27,8 @@ import SharedCore
 // it.
 //
 // D11 visual pass (detail-settings-revamp Wave 2, Christian 2026-10-02 — the option 1 mockup):
-// - V1 `SettingsSwitchToggleStyle`: the toggle row keeps a REAL `Toggle` (state, binding, the
-//   `.switch` accessibility element the UI tests query) but draws a capsule switch glyph. This is
+// - V1 `SettingsSwitchToggleStyle`: the toggle row keeps a REAL `Toggle` (state, binding) drawn
+//   as a Button carrying `.isToggle` and an "On"/"Off" value, with a capsule switch glyph. This is
 //   the one Christian-directed exception to "stock Toggle only"; the glyph is decorative and the
 //   focus platter is still the system's.
 // - V2 `SettingsRestPlatter`: every kit row sits on the same subtle rounded fill at rest. The fill
@@ -446,10 +446,11 @@ private struct LegacySettingsSection<Content: View>: View {
 /// list-row button as `SettingsActionRow`, so the focus platter and the label inversion are still
 /// the system's. The trailing capsule glyph is decorative (`accessibilityHidden`).
 ///
-/// Accessibility: `accessibilityRepresentation` hands VoiceOver and XCUITest a REAL `Toggle`
-/// (forced to `.automatic` so the representation never recurses into this style), so the element
-/// keeps its `.switch` type and on/off state — the UI test harness queries `app.switches`. The
-/// `SettingsToggleRow`'s own `.accessibilityValue("On"/"Off")` still sits on top.
+/// Accessibility: the Button itself carries the state — `.accessibilityValue("On"/"Off")` plus the
+/// `.isToggle` trait — so VoiceOver announces it as a toggle with its state, and the UI test
+/// harness's state-aware toggle helper reads that exact "On"/"Off" value (beta.13 wave 2). This is
+/// the row's only accessibility value; `SettingsToggleRow` does not add a second one. (An
+/// `accessibilityRepresentation` Toggle was tried first and exposed an EMPTY value, review round 1.)
 struct SettingsSwitchToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button {
@@ -461,8 +462,6 @@ struct SettingsSwitchToggleStyle: ToggleStyle {
                 SettingsSwitchGlyph(isOn: configuration.isOn)
             }
         }
-        // Review round 1 / UI legs: an `accessibilityRepresentation` Toggle exposed an EMPTY value
-        // (XCUITest read "", so VoiceOver had no state either). The Button carries the state itself.
         .accessibilityValue(configuration.isOn ? Text("On") : Text("Off"))
         .accessibilityAddTraits(.isToggle)
     }
@@ -529,10 +528,9 @@ struct SettingsToggleRow: View {
         Toggle(isOn: isOn) {
             SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
         }
+        // The "On"/"Off" accessibility value the UITest harness reads comes from the style's
+        // Button (review r2 #6: one value, not two).
         .toggleStyle(SettingsSwitchToggleStyle())
-        // Kept from the pre-C1 row: the UITest harness's state-aware toggle helper reads this
-        // exact value (beta.13 wave 2), and it is a friendlier VoiceOver value than "1"/"0".
-        .accessibilityValue(isOn.wrappedValue ? Text("On") : Text("Off"))
     }
 }
 
@@ -642,6 +640,9 @@ struct SettingsValueRow: View {
                     SettingsTrailingValue(value: value, showsChevron: false)
                 }
             }
+            // Review r2 #7: Select does nothing, so VoiceOver must not call it a button. It stays
+            // focusable and keeps the system platter.
+            .accessibilityRemoveTraits(.isButton)
         } else {
             content
         }

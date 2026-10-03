@@ -503,6 +503,9 @@ struct DetailView: View {
     @FocusState private var heroHasFocus: Bool
     /// Review r1 #2: one-shot latch for the late Play claim (`claimLatePlayFocusIfNeeded`).
     @State private var didClaimLatePlayFocus = false
+    /// Review r2 #1: a late Play claim is in flight; it latches (`didClaimLatePlayFocus`) only when
+    /// `onChange(of: heroFocus)` sees focus arrive on Play.
+    @State private var latePlayClaimPending = false
     /// Review r1 #2: focus moved between two hero targets this visit. `onMoveCommand` only sees
     /// moves the focus engine did not consume, so a press from Watched to Library never sets
     /// `userInteracted`; this catches it.
@@ -1036,11 +1039,16 @@ struct DetailView: View {
             if interacted { cancelAutoPlayTrailer() }
         }
         .onChange(of: heroFocus) { old, new in
-            if DetailLatePlayFocus.isUserMove(old: old, new: new) { userMovedInHero = true }
+            if DetailLatePlayFocus.latchesClaim(pending: latePlayClaimPending, new: new) {
+                didClaimLatePlayFocus = true
+            } else if DetailLatePlayFocus.isUserMove(old: old, new: new) {
+                userMovedInHero = true
+            }
         }
         // Review r1 #2: the series Play button only mounts once `seriesAction` and `meta` land, so
         // `.defaultFocus` (which runs once) had no target and focus settled on another button.
-        .onChange(of: isSeries && model.seriesAction != nil && model.meta != nil) { _, mounted in
+        // Review r2 #1: a disabled Play is not a target, so also re-check when it turns enabled.
+        .onChange(of: isSeries && model.seriesAction != nil && model.meta != nil && model.isPlayEnabled) { _, mounted in
             if mounted { claimLatePlayFocusIfNeeded() }
         }
         .sheet(isPresented: $showShuffleSheet, onDismiss: {
@@ -2033,9 +2041,12 @@ struct DetailView: View {
         detailLayout == .cinematic ? !primary : actionIconsOnly
     }
 
-    /// Review r1 #2: once, when the series Play button first mounts, move focus onto it — Cinematic
-    /// only, only while focus is still in the hero where the engine first put it and the user has
-    /// not pressed anything. Re-checked after one runloop turn so the new button is focusable.
+    /// Review r1 #2: once, when the series Play button first mounts (enabled), move focus onto it —
+    /// Cinematic only, only while focus is still in the hero where the engine first put it and the
+    /// user has not pressed anything. Re-checked after one runloop turn so the new button is
+    /// focusable. Review r2 #1: the claim latches only when `onChange(of: heroFocus)` sees focus
+    /// land on Play (or Play is read back after the retry delay); if it did not land, one retry
+    /// while the rules still hold, then it gives up. Every attempt re-checks the user-input gates.
     private func claimLatePlayFocusIfNeeded() {
         func shouldClaim() -> Bool {
             DetailLatePlayFocus.shouldClaim(isCinematic: detailLayout == .cinematic,
@@ -2043,14 +2054,24 @@ struct DetailView: View {
                                             userInteracted: userInteracted,
                                             userMovedInHero: userMovedInHero,
                                             heroHasFocus: heroHasFocus,
+                                            playEnabled: model.isPlayEnabled,
                                             currentFocus: heroFocus)
         }
-        guard shouldClaim() else { return }
+        guard !latePlayClaimPending, shouldClaim() else { return }
+        latePlayClaimPending = true
         Task { @MainActor in
+            defer { latePlayClaimPending = false }
             await Task.yield()
-            guard shouldClaim() else { return }
-            didClaimLatePlayFocus = true
-            heroFocus = .play
+            for _ in 0..<DetailLatePlayFocus.maxClaimAttempts {
+                guard shouldClaim() else { return }
+                heroFocus = .play
+                try? await Task.sleep(for: DetailLatePlayFocus.retryDelay)
+                if didClaimLatePlayFocus { return }
+                if heroFocus == .play, heroHasFocus {
+                    didClaimLatePlayFocus = true
+                    return
+                }
+            }
         }
     }
 
