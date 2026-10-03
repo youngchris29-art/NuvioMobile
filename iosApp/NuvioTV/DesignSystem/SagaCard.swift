@@ -120,7 +120,9 @@ struct SagaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             ZStack(alignment: .bottomLeading) {
-                CachedAsyncImage(string: SagaCardArt.artworkURL(for: item), fallback: sagaFallbackURL, contentMode: .fill)
+                // beta.19-rc1 verdict (I1, BUG-134): decoded for the 500×281 card's own size.
+                CachedAsyncImage(string: SagaCardArt.artworkURL(for: item), fallback: sagaFallbackURL, contentMode: .fill,
+                                 decodeSize: .points(width: width, height: height))
                     // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
                     // the image lands. No animation (the image's own fade is running); a store hit is already on the
                     // rail via `depthRailTintResolved`, so it writes no state.

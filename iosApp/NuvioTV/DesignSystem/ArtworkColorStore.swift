@@ -35,7 +35,8 @@ import UIKit
 /// frame rather than one update later.
 ///
 /// Never downloads. The only pixels it reads are decoded images `ArtworkStore` already holds in
-/// memory (`ArtworkStore.cachedImage(for:)`). A focused card's art is on screen, so it is almost
+/// memory (`ArtworkStore.cachedImage(for:)`, the largest decode of any rendition of the URL — I1,
+/// BUG-134). A focused card's art is on screen, so it is almost
 /// always there; when it is not (still loading, evicted) the card keeps the accent colour until
 /// its next focus gain asks again.
 @MainActor
@@ -173,8 +174,12 @@ final class ArtworkColorStore {
     private func lookup(_ urls: [String?]) -> Lookup {
         for case let raw? in urls where !raw.isEmpty {
             if let entry = entries[raw] { return .known(entry.mean) }
-            // Same `URL(string:)` the card's `CachedAsyncImage(string:)` built, so the NSURL key
-            // matches the one `ArtworkStore` cached the decoded image under.
+            // Same `URL(string:)` the card's `CachedAsyncImage(string:)` built. beta.19-rc1 verdict
+            // (I1, BUG-134): a card now often draws a LARGER rendition of that art (TMDB w780, metahub
+            // `large`) that sits in the store under its own URL and bucket, so the exact key is not what
+            // matches any more. `cachedImage(for:)` is `ArtworkStore.cachedLargest`: the largest decode
+            // of any rendition in this URL's family, so ring and rail colours keep working. The keys of
+            // this store's own verdict cache stay the raw strings the cards pass.
             if let url = URL(string: raw), let image = ArtworkStore.cachedImage(for: url) {
                 return .needsSample(key: raw, image: image)
             }

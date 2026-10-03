@@ -261,7 +261,7 @@ object TmdbMetadataService {
                     fallbackEnglishName = englishTitlesById["movie:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
-                val poster = buildImageUrl(credit.posterPath, "w500")
+                val poster = buildImageUrl(credit.posterPath, TmdbImageSizes.POSTER)
                     ?: buildImageUrl(credit.backdropPath, "w780")
                     ?: return@mapNotNull null
                 MetaPreview(
@@ -296,7 +296,7 @@ object TmdbMetadataService {
                     fallbackEnglishName = englishTitlesById["movie:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
-                val poster = buildImageUrl(credit.posterPath, "w500")
+                val poster = buildImageUrl(credit.posterPath, TmdbImageSizes.POSTER)
                     ?: buildImageUrl(credit.backdropPath, "w780")
                     ?: return@mapNotNull null
                 MetaPreview(
@@ -331,7 +331,7 @@ object TmdbMetadataService {
                     fallbackEnglishName = englishTitlesById["tv:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
-                val poster = buildImageUrl(credit.posterPath, "w500")
+                val poster = buildImageUrl(credit.posterPath, TmdbImageSizes.POSTER)
                     ?: buildImageUrl(credit.backdropPath, "w780")
                     ?: return@mapNotNull null
                 MetaPreview(
@@ -366,7 +366,7 @@ object TmdbMetadataService {
                     fallbackEnglishName = englishTitlesById["tv:${credit.id}"],
                     preferredLanguage = preferredLanguage,
                 ) ?: return@mapNotNull null
-                val poster = buildImageUrl(credit.posterPath, "w500")
+                val poster = buildImageUrl(credit.posterPath, TmdbImageSizes.POSTER)
                     ?: buildImageUrl(credit.backdropPath, "w780")
                     ?: return@mapNotNull null
                 MetaPreview(
@@ -652,7 +652,7 @@ object TmdbMetadataService {
             preferredLanguage = preferredLanguage,
         ) ?: return null
 
-        val poster = buildImageUrl(result.posterPath, "w500")
+        val poster = buildImageUrl(result.posterPath, TmdbImageSizes.POSTER)
             ?: buildImageUrl(result.backdropPath, "w780")
             ?: return null
         val releaseInfo = when (mediaType) {
@@ -1138,7 +1138,7 @@ object TmdbMetadataService {
             genres = genres,
             backdrop = buildImageUrl(details.backdropPath, "w1280"),
             logo = buildImageUrl(images?.logos.orEmpty().selectBestLocalizedImagePath(normalizedLanguage), "w500"),
-            poster = buildImageUrl(details.posterPath, "w500"),
+            poster = buildImageUrl(details.posterPath, TmdbImageSizes.POSTER),
             people = people,
             director = directors,
             writer = writers,
@@ -1271,7 +1271,7 @@ object TmdbMetadataService {
                                 title = episode.name?.trim()?.takeIf(String::isNotBlank),
                                 overview = episode.overview?.trim()?.takeIf(String::isNotBlank),
                                 thumbnail = buildImageUrl(episode.stillPath, "w500"),
-                                seasonPoster = buildImageUrl(details.posterPath, "w500"),
+                                seasonPoster = buildImageUrl(details.posterPath, TmdbImageSizes.POSTER),
                                 airDate = episode.airDate?.trim()?.takeIf(String::isNotBlank),
                                 runtimeMinutes = episode.runtime,
                             )
@@ -1334,7 +1334,7 @@ object TmdbMetadataService {
                     id = "tmdb:${recommendation.id}",
                     type = inferredType,
                     name = title,
-                    poster = buildImageUrl(recommendation.posterPath, "w500")
+                    poster = buildImageUrl(recommendation.posterPath, TmdbImageSizes.POSTER)
                         ?: buildImageUrl(recommendation.backdropPath, "w780"),
                     banner = buildImageUrl(recommendation.backdropPath, "w1280"),
                     posterShape = PosterShape.Poster,
@@ -1371,7 +1371,7 @@ object TmdbMetadataService {
                     type = "movie",
                     name = title,
                     poster = buildImageUrl(part.backdropPath, "w780")
-                        ?: buildImageUrl(part.posterPath, "w500"),
+                        ?: buildImageUrl(part.posterPath, TmdbImageSizes.POSTER),
                     banner = buildImageUrl(part.backdropPath, "w1280"),
                     posterShape = PosterShape.Landscape,
                     description = part.overview?.trim()?.takeIf(String::isNotBlank),
@@ -1968,10 +1968,8 @@ private fun List<MetaPerson>.dedupePeople(): List<MetaPerson> {
     return merged.values.toList()
 }
 
-private fun buildImageUrl(path: String?, size: String): String? {
-    val clean = path?.trim()?.takeIf(String::isNotBlank) ?: return null
-    return "https://image.tmdb.org/t/p/$size$clean"
-}
+// I1 (Steven beta.19-rc1 verdict, BUG-134): the URL is built once, in `TmdbImageSizes.kt`.
+private fun buildImageUrl(path: String?, size: String): String? = tmdbImageUrl(path, size)
 
 private fun List<TmdbImage>.selectBestLocalizedImagePath(normalizedLanguage: String): String? {
     if (isEmpty()) return null

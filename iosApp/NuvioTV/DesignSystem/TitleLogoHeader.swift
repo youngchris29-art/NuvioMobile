@@ -23,14 +23,23 @@ struct TitleLogoHeader: View {
     let slotHeight: CGFloat
     private let logoUrl: String?
     private let url: URL?
+    /// beta.19-rc1 verdict (I1, BUG-134): how large the logo is decoded, and which larger rendition of
+    /// the same file to try first (TMDB `original`, see `ArtworkURLUpgrade`). Both default to the
+    /// old behaviour (`.legacy`, no upgrade), so a caller that has not opted in loads exactly as it
+    /// did.
+    private let decodeSize: ArtworkDecodeSize
+    private let upgrade: ArtworkURLUpgrade.Role?
     @State private var image: UIImage?
+    @Environment(\.displayScale) private var displayScale
 
     init(
         title: String,
         logoUrl: String?,
         alignment: Alignment = .leading,
         textFont: Font = Theme.Font.screenTitle,
-        slotHeight: CGFloat = Theme.Size.heroLogoSlotHeightPinned
+        slotHeight: CGFloat = Theme.Size.heroLogoSlotHeightPinned,
+        decodeSize: ArtworkDecodeSize = .legacy,
+        upgrade: ArtworkURLUpgrade.Role? = nil
     ) {
         self.title = title
         self.alignment = alignment
@@ -38,10 +47,25 @@ struct TitleLogoHeader: View {
         self.slotHeight = slotHeight
         self.logoUrl = logoUrl
         self.url = logoUrl.flatMap(URL.init(string:))
+        self.decodeSize = decodeSize
+        self.upgrade = upgrade
         // Codex round 1: seed synchronously from the cache, exactly as `HeroLogo` does — a
         // reopened screen whose logo is already in ArtworkStore must not flash its text title for
-        // one frame before the `.task` consults the same cache.
+        // one frame before the `.task` consults the same cache. (I1: `cached(_:)` is the largest
+        // decode of any rendition of this logo, so it also finds one drawn from the upgraded URL.)
         _image = State(initialValue: ArtworkStore.cached(url))
+    }
+
+    /// beta.19-rc1 verdict (I1): `[upgraded(url), url]` plus the decode request; nil without a URL.
+    /// It is the `.task` id, so a new URL, size or scale reloads the logo.
+    private var chain: ImageURLChain? {
+        guard let url else { return nil }
+        var upgraded: URL?
+        if let upgrade { upgraded = ArtworkURLUpgrade.upgraded(url, role: upgrade) }
+        return ImageURLChain(
+            urls: ImageFallbackPlan.candidates(upgraded: upgraded, primary: url, fallback: nil),
+            request: ArtworkDecodeRequest(size: decodeSize, fill: false, scale: displayScale).normalized
+        )
     }
 
     var body: some View {
@@ -67,17 +91,21 @@ struct TitleLogoHeader: View {
         // exposes for unit testing (`TitleLogoHeaderTests`) — call through it instead of
         // re-deriving `url == nil` inline, so the tested helper is the one actually driving layout.
         .frame(height: Self.slotHeight(logoUrl: logoUrl, slotHeight: slotHeight), alignment: alignment)
-        .task(id: url) {
-            guard let url else {
+        .task(id: chain) {
+            guard let chain else {
                 image = nil
                 return
             }
-            if let hit = ArtworkStore.cached(url) {
+            // beta.19-rc1 verdict (I1): the head (the upgraded file when there is one) at the
+            // requested size is final. Otherwise show whatever smaller or sibling decode is in
+            // memory right now and swap to the right one when it lands, so a logo never flashes the
+            // text title just because its bucket changed.
+            if let hit = ArtworkStore.cached(chain.urls[0], decode: chain.request) {
                 image = hit
                 return
             }
-            image = nil
-            let fetched = try? await ArtworkStore.fetch(url)
+            image = ArtworkStore.cachedPlaceholder(for: chain.urls, decode: chain.request)
+            let fetched = await ImageFallbackPlan.load(candidates: chain.urls, request: chain.request)
             // Codex round 1: `.task(id:)` cancels this task when the URL changes, but
             // `ArtworkStore.fetch` lets shared work run to completion — so a superseded fetch can
             // land after its replacement. Never install a result for a URL that is no longer ours.

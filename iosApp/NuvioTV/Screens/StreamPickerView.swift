@@ -233,7 +233,9 @@ struct StreamPickerView: View {
                 LazyVStack(alignment: .leading, spacing: Theme.Spacing.xl - Theme.Spacing.xs) {
                     // FEAT-42: one heading — the title's logo when it loads, else the plain text
                     // title (mobile shows the series/movie logo on its stream-list screen too).
-                    TitleLogoHeader(title: title, logoUrl: logoUrl)
+                    // beta.19-rc1 verdict (I1, BUG-134): the TMDB `original` logo, decoded for the header's slot.
+                    TitleLogoHeader(title: title, logoUrl: logoUrl,
+                                    decodeSize: .points(width: 600, height: 120), upgrade: .logo)
 
                     // BUG-21 follow-up: the active debrid credential failed auth on a recent
                     // call — without this banner the only symptom is every resolve failing

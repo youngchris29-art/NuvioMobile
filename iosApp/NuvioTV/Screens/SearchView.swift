@@ -53,6 +53,10 @@ struct SearchView: View {
                     .padding(Theme.Spacing.screen)
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (M3, BUG-133): Search has no settle corrector, so its rows'
+                // inline trailers gate on `RowsMotionClock` (`RowRestSource.motionClock`, the
+                // default); this stamps it while the results scroll vertically.
+                .rowsMotionStamp(.vertical)
                 .reportsScrollToTabBar(tab: "Search")
                 // FEAT-30: in sidebar mode Menu summons the floating sidebar instead of
                 // suspending the app; a second Menu (with focus now in the sidebar) falls through

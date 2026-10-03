@@ -5,9 +5,11 @@ import com.nuvio.app.features.addons.httpGetText
 import com.nuvio.app.features.catalog.CatalogPage
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
+import com.nuvio.app.features.tmdb.TmdbImageSizes
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.tmdb.buildTmdbUrl
 import com.nuvio.app.features.tmdb.normalizeTmdbLanguage
+import com.nuvio.app.features.tmdb.tmdbImageUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -61,7 +63,7 @@ object TmdbCollectionSourceResolver {
                     ) ?: error(resourceString("TMDB collection not found", StringKey.collections_tmdb_collection_not_found))
                     TmdbSourceImportMetadata(
                         title = body.name?.takeIf { it.isNotBlank() },
-                        coverImageUrl = imageUrl(body.posterPath, "w500") ?: imageUrl(body.backdropPath, "w1280"),
+                        coverImageUrl = imageUrl(body.posterPath, TmdbImageSizes.POSTER) ?: imageUrl(body.backdropPath, "w1280"),
                     )
                 }
 
@@ -390,7 +392,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -414,7 +416,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -437,7 +439,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -466,7 +468,7 @@ object TmdbCollectionSourceResolver {
             id = "tmdb:$id",
             type = if (mediaType == TmdbCollectionMediaType.TV) "series" else "movie",
             name = title,
-            poster = imageUrl(posterPath, "w500") ?: imageUrl(backdropPath, "w780"),
+            poster = imageUrl(posterPath, TmdbImageSizes.POSTER) ?: imageUrl(backdropPath, "w780"),
             banner = imageUrl(backdropPath, "w1280"),
             posterShape = PosterShape.Poster,
             description = overview?.takeIf { it.isNotBlank() },
@@ -541,10 +543,8 @@ private fun MutableMap<String, String>.putIfNotBlank(key: String, value: String?
     }
 }
 
-private fun imageUrl(path: String?, size: String): String? {
-    val clean = path?.takeIf { it.isNotBlank() } ?: return null
-    return "https://image.tmdb.org/t/p/$size$clean"
-}
+// I1 (Steven beta.19-rc1 verdict, BUG-134): the URL is built once, in `TmdbImageSizes.kt`.
+private fun imageUrl(path: String?, size: String): String? = tmdbImageUrl(path, size)
 
 @Serializable
 private data class TmdbListResponse(

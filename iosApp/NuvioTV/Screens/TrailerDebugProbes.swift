@@ -271,6 +271,20 @@ enum TrailerFailureCause {
         }
     }
 
+    /// beta.19-rc1 verdict (B2): whether this failure looks like the connection to the player's source
+    /// (a dead loopback listener, a network error) rather than the media itself. `playbackFailed`
+    /// asks `TrailerLocalHLS` to verify its listener when this is true for a loopback URL.
+    /// A start-watchdog timeout counts (an item that never loads is what a dead loopback port looks
+    /// like); an item/play-to-end failure counts only when it carries an `NSURLErrorDomain` error
+    /// (-1004 "could not connect" and friends); a bad URL never does.
+    var isConnectionClass: Bool {
+        switch self {
+        case .watchdogTimeout: return true
+        case .badURL: return false
+        case .itemFailed, .failedToPlayToEnd: return underlyingError?.domain == NSURLErrorDomain
+        }
+    }
+
     /// `domain=... code=... http=... category=...` for the `[TrailerPipeline] fail` log line.
     ///
     /// `httpStatus`, when the caller has it from `AVPlayerItem.errorLog()`'s last event's

@@ -58,6 +58,9 @@ struct NuvioTVApp: App {
         LaunchTrace.mark("app_init")  // BUG-26: cold-start attribution zero point
         #endif
         _ = HomeHeroProbe.t0  // BUG-42: anchor the release-safe hero probe's clock at process init
+        // I1 (beta.19-rc1 verdict, BUG-134): seed the display scale non-view artwork code decodes with
+        // (hero resolver, prefetch) while we are certainly on the main thread.
+        ArtworkDecodeMath.seedScreenScale()
 
         // FEAT-31: register the bundled Open Sans faces + apply the persisted font choice before
         // any view (and therefore any `Theme.Font.*` read) is built.

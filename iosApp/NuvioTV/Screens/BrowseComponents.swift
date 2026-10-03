@@ -4780,8 +4780,24 @@ struct CatalogRowView: View {
     /// the focused item, and it is the one playing".
     @FocusState private var focusedItemId: String?
 
-    /// Which card currently owns the single inline `AVPlayer`, published by the shared coordinator.
-    @ObservedObject private var trailerCoordinator = InlineTrailerCoordinator.shared
+    /// beta.19-rc1 verdict (M3, BUG-126): the coordinator's playing key, but ONLY when it belongs to
+    /// one of this row's items (nil otherwise). The row used to `@ObservedObject` the whole
+    /// coordinator, so every claim and release re-rendered every mounted row. Now each row
+    /// `.onReceive`s `playingKeySubject` and writes this only when its own answer changes: a row
+    /// that owns neither the old nor the new key writes nothing and does not re-render. Producers
+    /// are the card model AND, in Trailer Location: Hero, the hero model (which claims with the
+    /// focused card's own key while every card is `enabled: false`), so `muteToggle(for:)` keeps
+    /// working in both locations.
+    @State private var rowPlayingKey: String?
+
+    /// beta.19-rc1 verdict (M3): the row's horizontal scroll geometry, kept in a reference box (no
+    /// view state written per scroll frame), for the morph-scroll math and the `RowsMotionClock`
+    /// stamp. See `RowHScrollBox`.
+    @State private var hScroll = RowHScrollBox()
+    /// beta.19-rc1 verdict (M3): horizontal-only scroll target for the inline-trailer morph — a
+    /// horizontal `ScrollPosition` cannot move the enclosing vertical rows (see `RowMorphScroll`).
+    /// Not attached at all when `-debug.trailerMorphScrollProxy YES` arms the fallback.
+    @State private var rowPosition = ScrollPosition()
 
     /// BUG-29: an inline-trailer expansion widens its card in place without moving focus, so tvOS's
     /// automatic focus-driven scroll never fires — the row has to scroll itself, and Reduce Motion
@@ -5007,6 +5023,18 @@ struct CatalogRowView: View {
                     .clipShape(RowLeadingEdgeClip(allowance: rowEdgeFadeMode == 1 ? RowLeadingEdgeClip.softModeAllowance : leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (M3, BUG-133): the row's horizontal geometry, into a reference
+                // box (never view state), for the morph-scroll math. `record` also stamps
+                // `RowsMotionClock` when the OFFSET moved ≥ 0.5 pt since the last stamp, so a
+                // horizontal step holds the trailer gate until the row is still, and the content
+                // growing under a morph never counts as motion.
+                .onScrollGeometryChange(for: RowHScrollSample.self, of: { geo in
+                    RowHScrollSample(geo)
+                }, action: { _, sample in
+                    hScroll.record(sample)
+                })
+                // M3: the horizontal-only morph scroll target (absent under the proxy fallback).
+                .modifier(RowMorphScrollPositionModifier(position: $rowPosition))
                 // BUG-118: see `RowEdgeEffectStyleModifier` — same receiver `.scrollClipDisabled()`
                 // is already on.
                 .rowEdgeEffectStyle(leadingClipAllowance: leadingEdgeAllowance)
@@ -5053,9 +5081,18 @@ struct CatalogRowView: View {
         .onChange(of: focusedItemId) { _, newId in
             onItemFocusChange?(newId.flatMap { id in section.items.first { $0.id == id } })
         }
+        // beta.19-rc1 verdict (M3, BUG-126): see `rowPlayingKey`. The subject is a
+        // `CurrentValueSubject` that sends only on change, so a row mounting mid-playback syncs at
+        // once and a claim for another row's title costs this row one cheap scan and no render.
+        .onReceive(InlineTrailerCoordinator.shared.playingKeySubject) { key in
+            let mine = Self.rowPlayingKey(key, itemKeys: section.items.lazy.map {
+                TrailerResolutionCache.key(type: $0.type, id: $0.id)
+            })
+            if rowPlayingKey != mine { rowPlayingKey = mine }
+        }
         // H3: the row (and its ScrollViewReader) can disappear mid-flight — a pop while the
-        // deferred 450ms correction pass is still pending. Cancel rather than let it fire against
-        // a torn-down proxy.
+        // deferred verification pass (M3: `morphDuration + 0.05` s) is still pending. Cancel
+        // rather than let it fire against a torn-down row.
         .onDisappear { expansionScrollTask?.cancel() }
     }
 
@@ -5064,56 +5101,104 @@ struct CatalogRowView: View {
     /// focus rests on the card. With inline trailers off it is a straight pass-through to the same
     /// two cards, so the row is unchanged.
     private func card(for item: MetaPreview, proxy: ScrollViewProxy) -> some View {
-        InlineTrailerCard(item: item, enabled: inlineTrailersActive) { expanded in
+        InlineTrailerCard(item: item, enabled: inlineTrailersActive, onExpansionChange: { expanded in
             expansionChanged(itemId: item.id, expanded: expanded, proxy: proxy)
-        }
+        })
     }
 
     /// BUG-29: an inline-trailer expansion morphs the focused card wider **to the right** in place —
     /// focus never moves (it's still the same button), so tvOS never issues its usual focus-driven
-    /// scroll, and a card near a row's trailing edge grows straight off the visible strip. Ask the
-    /// `ScrollView` to bring the card back into view ourselves whenever it expands; a `nil` anchor
-    /// asks for the *minimal* scroll needed, so a card that already fits doesn't jump. Collapsing
-    /// needs no help — the row only ever overflows while a card is wide, never while it's back to
-    /// poster width.
+    /// scroll, and a card near a row's trailing edge grows straight off the visible strip. The row
+    /// has to scroll itself. Collapsing needs no help — the row only ever overflows while a card is
+    /// wide, never while it's back to poster width.
     ///
-    /// Deferred by one runloop hop so the scroll targets the tile's *expanded* geometry: `expanded`
-    /// flips the instant the morph starts (`InlineTrailerCardModel.setPhase`), not when it finishes,
-    /// so scrolling in the same tick would still measure the old, narrower frame. The morph itself
-    /// runs 0.35s (`InlineTrailerCardModel.morphAnimation`), so the deferred scroll still lands well
-    /// inside it and the two animate together visually.
+    /// beta.19-rc1 verdict (M3, BUG-133): rewritten as a HORIZONTAL-ONLY scroll that is DROPPED when
+    /// the tile already fits. The old version called `proxy.scrollTo(itemId)` twice (0 ms, 450 ms)
+    /// with a nil anchor (`.trailing` for the last card) at the card's `.id` Group, whose frame
+    /// carries the 88 pt pinned top reach — so whenever the proxy propagated to the enclosing
+    /// vertical rows `ScrollView` it could nudge the rows vertically mid-morph and re-arm the
+    /// settle corrector (signature: a `settle … armSrc=scroll` line 0.05–0.5 s after an
+    /// `expansionChanged fire` line, with no remote input). Now the target comes from
+    /// `RowMorphScroll.target` over the row's own geometry sample, and the scroll is a horizontal
+    /// `ScrollPosition.scrollTo(x:)`, which cannot touch the rows.
+    ///
+    /// Fires on the `.wide` edge (R2), i.e. when the width actually starts growing. Pass 1 runs on
+    /// the next main-actor turn (the geometry sample has usually caught up with the growth by
+    /// then; `contentAlreadyGrown` is MEASURED against the width before the edge, not assumed),
+    /// and the H3 task keeps one verification pass at `morphDuration + 0.05` s on the live sample.
+    ///
+    /// Path shipped: `ScrollPosition` (pending the Gate 1 simulator checks, §1.6.4). The proxy
+    /// fallback is behind `-debug.trailerMorphScrollProxy YES` (see `RowMorphScroll`).
     private func expansionChanged(itemId: String, expanded: Bool, proxy: ScrollViewProxy) {
-        guard expanded else { return }
-        // Device finding (BUG-29 round 2): a nil-anchor scrollTo at morph START is a no-op —
-        // the tile's pre-growth frame is still fully visible at that moment, so "minimal
-        // scroll" resolves to nothing and the tile then grows off the trailing edge anyway.
-        // Two-part fix: the LAST item deterministically needs its trailing edge pinned to the
-        // viewport (no geometry read needed), and every other item gets a correction pass
-        // AFTER the 0.35s morph settles, when scrollTo finally sees the expanded frame.
-        let anchor: UnitPoint? = itemId == section.items.last?.id ? .trailing : nil
-        // H3: supersede any still-pending correction pass from a previous expansion rather than
-        // letting both race the same proxy.
+        guard expanded, !posterStyle.landscapeCatalogRows,
+              let index = section.items.firstIndex(where: { $0.id == itemId }) else { return }
+        // H3: supersede any still-pending pass from a previous expansion rather than letting both
+        // race the same row.
         expansionScrollTask?.cancel()
-        if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged fire item=\(itemId)") }
+        let path = RowMorphScroll.useProxyFallback ? "proxy" : "position"
+        if CatalogGridProbe.enabled {
+            CatalogGridProbe.log("expansionChanged fire item=\(itemId) index=\(index) path=\(path)")
+        }
+        let widthBefore = hScroll.sample?.contentWidth
         expansionScrollTask = Task { @MainActor in
-            scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
-            try? await Task.sleep(nanoseconds: 450_000_000)
+            // The fallback scrolls once, at morph end only.
+            if !RowMorphScroll.useProxyFallback {
+                morphScrollPass(index: index, itemId: itemId, widthBefore: widthBefore, pass: 1, proxy: proxy)
+            }
+            try? await Task.sleep(nanoseconds: UInt64((InlineTrailerCardModel.morphDuration + 0.05) * 1_000_000_000))
             // H3: the row may have disappeared (or a newer expansion may have superseded this
-            // task) during the sleep — bail instead of scrolling a proxy that could be gone.
+            // task) during the sleep — bail instead of scrolling a row that could be gone.
             guard !Task.isCancelled else {
                 if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged cancelled skip item=\(itemId)") }
                 return
             }
-            scrollToExpanded(itemId, anchor: anchor, proxy: proxy)
+            morphScrollPass(index: index, itemId: itemId, widthBefore: widthBefore, pass: 2, proxy: proxy)
         }
     }
 
-    private func scrollToExpanded(_ itemId: String, anchor: UnitPoint?, proxy: ScrollViewProxy) {
-        if reduceMotion {
-            proxy.scrollTo(itemId, anchor: anchor)
+    /// One morph-scroll pass (M3): nothing when the tile fits, else a horizontal scroll to the
+    /// target. The sample lives in `hScroll` in raw scroll coordinates; `RowMorphScroll` works in
+    /// padded-content space (x = 0 at the scroll view's leading edge at rest), so the inset is added
+    /// going in and taken off coming out (critique #24; the rows carry no horizontal inset today).
+    private func morphScrollPass(index: Int, itemId: String, widthBefore: CGFloat?, pass: Int,
+                                 proxy: ScrollViewProxy) {
+        guard let sample = hScroll.sample else {
+            if CatalogGridProbe.enabled { CatalogGridProbe.log("expansionChanged pass=\(pass) nosample item=\(itemId)") }
+            return
+        }
+        let grown = widthBefore.map { sample.contentWidth > $0 + 1 } ?? false
+        let target = RowMorphScroll.target(index: index,
+                                           restingWidth: posterStyle.width,
+                                           expandedWidth: InlineTrailerCard.expandedWidth(posterStyle),
+                                           gap: Theme.Spacing.rowGap,
+                                           visibleMinX: sample.paddedVisibleMinX,
+                                           viewportWidth: sample.viewportWidth,
+                                           contentWidth: sample.paddedContentWidth,
+                                           insetLeading: sample.insetLeading,
+                                           contentAlreadyGrown: grown)
+        if CatalogGridProbe.enabled {
+            let targetText = target.map { String(format: "%.1f", $0) } ?? "fits"
+            CatalogGridProbe.log(String(format: "expansionChanged pass=%d item=%@ target=%@ minX=%.1f vw=%.1f cw=%.1f inset=%.1f grown=%d",
+                                        pass, itemId, targetText, sample.paddedVisibleMinX, sample.viewportWidth,
+                                        sample.paddedContentWidth, sample.insetLeading, grown ? 1 : 0))
+        }
+        guard let target else { return }
+        if RowMorphScroll.useProxyFallback {
+            // §1.6.4 fallback: the item-anchored scroll can reach the vertical rows, so tell the
+            // pinned settle corrector first (pinned Home only — `cardTopReach > 0` — so a Search
+            // row never touches Home's settle state).
+            if cardTopReach > 0 { PinnedRowSettle.noteExternalScroll(reason: "trailer-morph") }
+            if reduceMotion {
+                proxy.scrollTo(itemId, anchor: nil)
+            } else {
+                withAnimation(InlineTrailerCardModel.morphAnimation) { proxy.scrollTo(itemId, anchor: nil) }
+            }
         } else {
-            withAnimation(InlineTrailerCardModel.morphAnimation) {
-                proxy.scrollTo(itemId, anchor: anchor)
+            let offset = target - sample.insetLeading
+            if reduceMotion {
+                rowPosition.scrollTo(x: offset)
+            } else {
+                withAnimation(InlineTrailerCardModel.morphAnimation) { rowPosition.scrollTo(x: offset) }
             }
         }
     }
@@ -5121,11 +5206,28 @@ struct CatalogRowView: View {
     /// Play/pause handler for `item`'s focusable button, or `nil` when this card isn't the focused,
     /// currently-playing one — `.onPlayPauseCommand(perform: nil)` leaves the command to whoever
     /// else is listening instead of consuming it.
+    ///
+    /// beta.19-rc1 verdict (M3): "playing" is the row's own `rowPlayingKey` (see its doc), which the
+    /// card model AND the hero model both feed, so this works unchanged for inline playback and for
+    /// Trailer Location: Hero (cards `enabled: false`).
     private func muteToggle(for item: MetaPreview) -> (() -> Void)? {
-        guard focusedItemId == item.id,
-              trailerCoordinator.playingKey == TrailerResolutionCache.key(type: item.type, id: item.id)
-        else { return nil }
-        return { HeroTrailerAudioState.shared.toggleMuted() }
+        guard focusedItemId == item.id else { return nil }
+        let key = TrailerResolutionCache.key(type: item.type, id: item.id)
+        guard rowPlayingKey == key else { return nil }
+        return {
+            HeroTrailerAudioState.shared.toggleMuted()
+            #if DEBUG
+            // Same read `TrailerHeroPlayerView` seeds the player with.
+            let muted = (HeroTrailerAudioState.shared.muted.value_ as? KotlinBoolean)?.boolValue ?? true
+            InlineTrailerDebugLog.shared.note("event=mute muted=\(muted ? 1 : 0) key=\(key)")
+            #endif
+        }
+    }
+
+    /// M3: `key` when this row holds an item with that key, else nil. Pure (unit-tested).
+    nonisolated static func rowPlayingKey(_ key: String?, itemKeys: some Sequence<String>) -> String? {
+        guard let key else { return nil }
+        return itemKeys.contains(key) ? key : nil
     }
 }
 

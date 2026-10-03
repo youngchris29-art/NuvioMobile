@@ -182,16 +182,35 @@ final class TrailerResolutionCache {
 /// the card to `.expandedStatic` (P-1b), so a card that loses the race for the single extraction
 /// slot simply stays in `.dwelling` and quietly collapses — the refusal is decided before there is
 /// anything on screen to undo.
+///
+/// beta.19-rc1 verdict (M3, BUG-126): no longer an `ObservableObject`. The playing key used to be
+/// `@Published` and every mounted `CatalogRowView` observed this object, so ONE claim or release
+/// re-rendered EVERY row on Home, which is the row-to-row stutter class. The key now goes out
+/// through `playingKeySubject`; each row `.onReceive`s it and writes its own `@State` only when the
+/// key belongs to one of its own items, so only the affected row re-renders.
 @MainActor
-final class InlineTrailerCoordinator: ObservableObject {
+final class InlineTrailerCoordinator {
     static let shared = InlineTrailerCoordinator()
 
-    /// Cache key (`"type:id"`) of the card currently playing a trailer, or `nil` when nothing is.
+    /// Cache key (`"type:id"`) of the title whose trailer currently owns the single player slot, or
+    /// `nil` when nothing plays. Sent only when it CHANGES (so subscribers need no dedupe).
     ///
-    /// Published because the *row* — not the card — has to answer "is this focused item the one
-    /// playing?": tvOS delivers `.onPlayPauseCommand` to the focused view chain, which is the
-    /// `Button`/`NavigationLink` in `CatalogRowView`, never the card that is its label.
-    @Published private(set) var playingKey: String?
+    /// Producers — whoever calls `claimPlayback` / `releasePlayback`:
+    /// * an inline catalog card's model (the card's own key);
+    /// * Home's hero model (`HomeView.heroTrailerModel`). In Trailer Location: Hero every card is
+    ///   `InlineTrailerCard(enabled: false)` and the hero claims with the FOCUSED card's own key,
+    ///   which is what lets that card's row arm Play/Pause as the mute toggle;
+    /// * the Stage & Strip batch's background trailer, the same way.
+    ///
+    /// Consumers:
+    /// * each `CatalogRowView`, via `.onReceive` (the row, not the card, answers "is the focused
+    ///   item the one playing?": tvOS delivers `.onPlayPauseCommand` to the focused view chain,
+    ///   which is the row's `Button`/`NavigationLink`, never the card that is its label);
+    /// * `HomeView.heroTrailerHolding`'s plain read of `playingKey` on the carousel tick.
+    let playingKeySubject = CurrentValueSubject<String?, Never>(nil)
+
+    /// The current value of `playingKeySubject`, for plain reads (`HomeView.heroTrailerHolding`).
+    var playingKey: String? { playingKeySubject.value }
 
     private weak var activePlayer: InlineTrailerCardModel?
     private var extracting = false
@@ -234,7 +253,7 @@ final class InlineTrailerCoordinator: ObservableObject {
     func claimPlayback(_ owner: InlineTrailerCardModel, key: String) {
         if let activePlayer, activePlayer !== owner { activePlayer.relinquishPlayback() }
         activePlayer = owner
-        playingKey = key
+        if playingKeySubject.value != key { playingKeySubject.send(key) }
         if TrailerProbe.enabled {
             NSLog("[TrailerPipeline] claimPlayback key=%@", key)
         }
@@ -246,7 +265,7 @@ final class InlineTrailerCoordinator: ObservableObject {
                 NSLog("[TrailerPipeline] releasePlayback key=%@", playingKey)
             }
             activePlayer = nil
-            playingKey = nil
+            if playingKeySubject.value != nil { playingKeySubject.send(nil) }
         }
     }
 
@@ -328,18 +347,20 @@ final class InlineTrailerCoordinator: ObservableObject {
 
 // MARK: - Per-card state machine
 
-/// idle → dwelling (1s of held focus) → expandedStatic (landscape art, immediately) → playing, and
-/// back to idle the moment the reason to be expanded goes away.
+/// idle → dwelling (held focus until the rows rest, `TrailerStartGate`) → expandedStatic (landscape
+/// art, immediately) → playing, and back to idle the moment the reason to be expanded goes away.
 ///
 /// Every step fails soft and *silently*: there is never a spinner or a black tile, because the
 /// static landscape art is already on screen from the moment the card expands. Anything that ends
 /// the preview — no trailer, extraction failure, playback failure, or the trailer simply finishing —
 /// collapses the card back to its poster rather than parking it on static artwork.
 ///
-/// The phase drives *layout* now (portrait poster ⇄ landscape tile in the row), so every transition
-/// goes through `setPhase`, which wraps the mutation in a `withAnimation` transaction. That single
-/// transaction is what lets the enclosing `LazyHStack` slide the trailing neighbours aside in step
-/// with the card instead of snapping them.
+/// The phase used to drive *layout* directly (portrait poster ⇄ landscape tile in the row) through
+/// one 0.35 s `setPhase` transaction. beta.19-rc1 verdict (R2, BUG-133): for a catalog card
+/// (`hostsTile`) the visual is now `morphStage`, a separate staged choreography (in-place dissolve
+/// at the poster's width, THEN the width grows; shrink, THEN dissolve; abort = one frame), and
+/// `phase` keeps the pipeline meaning only (dwell / resolved / playing). The hero model
+/// (`hostsTile == false`) keeps today's phase-only behaviour exactly.
 @MainActor
 final class InlineTrailerCardModel: ObservableObject {
     enum Phase: Equatable {
@@ -349,17 +370,74 @@ final class InlineTrailerCardModel: ObservableObject {
         case playing(String)
     }
 
+    /// beta.19-rc1 verdict (R2, BUG-133): the catalog tile's visual stage.
+    /// `.none` poster only · `.reveal` tile drawn at the POSTER's width (dissolving in or out) ·
+    /// `.wide` tile at 16:9, neighbours pushed aside.
+    nonisolated enum MorphStage: Equatable, Sendable {
+        case none
+        case reveal
+        case wide
+    }
+
     @Published private(set) var phase: Phase = .idle
+    /// R2: see `MorphStage`. Always `.none` on the hero model.
+    @Published private(set) var morphStage: MorphStage = .none
+    /// R2: the decoded tile art, set BEFORE `.reveal` (so the first revealed frame is the picture,
+    /// never a shimmer — Steven's 0:53.5 empty frame) and cleared in the completion of the final
+    /// collapse transaction, token-guarded so a re-expansion during the collapse keeps it.
+    @Published private(set) var tileArt: InlineTileArt?
 
     /// Mirrors `accessibilityReduceMotion` from the hosting card. When set, the morph is an instant
     /// swap instead of an animated one.
     var prefersReducedMotion = false
 
+    /// beta.19-rc1 verdict (M3, BUG-133): which rest signal the dwell gate reads. The catalog card
+    /// assigns it from `EnvironmentValues.rowRestSource` before every dwell; `HomeView` assigns the
+    /// hero model's (W2-E).
+    var restSource: RowRestSource = .motionClock
+    /// R2: true for a catalog card (set in the card's `.onAppear`, BEFORE any `focusChanged(true…)`),
+    /// which owns a tile and runs the staged morph. False on the hero model: no art, no stages.
+    var hostsTile = false
+    /// R2: the tile art's candidates (banner, then poster), set by the catalog card in `.onAppear`.
+    /// nil on the hero model.
+    var tileArtSource: (primary: String?, fallback: String?)?
+
+    nonisolated static let morphDuration: TimeInterval = 0.35
     /// The morph curve. Slow enough to read as one object changing shape, short enough that a fast
-    /// D-pad hand never feels held up by it.
-    static let morphAnimation: Animation = .easeInOut(duration: 0.35)
+    /// D-pad hand never feels held up by it. R2: the WIDTH stage only (`.reveal ⇄ .wide`), and the
+    /// hero model's phase changes.
+    static let morphAnimation: Animation = .easeInOut(duration: morphDuration)
+    /// R2: the in-place dissolve (poster ⇄ tile at the poster's width). 0 would be a cut; tune on
+    /// device.
+    nonisolated static let revealDuration: TimeInterval = 0.12
+    /// R2: a focus loss this soon after the `.wide` edge aborts (one frame) instead of animating
+    /// the collapse. Device-tune item (critique #26): read the `[CatalogGridProbe]` lines around
+    /// `style=instant` and lower this if the row shows a second correcting motion after an abort.
+    nonisolated static let abortWindowIntoWide: TimeInterval = 0.2
+    /// R2: how long `beginMorph` waits for the tile art. NOT a request timeout — the fetch keeps
+    /// running to warm the cache (critique #6).
+    nonisolated static let artAwaitDeadline: TimeInterval = 1.0
+
+    #if DEBUG
+    /// R2 DEBUG knobs (critique #7), read once. They make the abort legs non-vacuous on the
+    /// simulator: `reset()` this many ms after the `.reveal` / `.wide` edge, and an override for
+    /// `abortWindowIntoWide` so an "instant" abort can land late enough to observe the pushed
+    /// layout first.
+    private static let abortAfterRevealMs = UserDefaults.standard.integer(forKey: "debug.trailerMorphAbortAfterRevealMs")
+    private static let abortAfterWideMs = UserDefaults.standard.integer(forKey: "debug.trailerMorphAbortAfterWideMs")
+    private static let abortWindowOverrideMs = UserDefaults.standard.integer(forKey: "debug.trailerAbortWindowMs")
+    #endif
+
+    /// `abortWindowIntoWide`, or the DEBUG `-debug.trailerAbortWindowMs` override.
+    static var effectiveAbortWindow: TimeInterval {
+        #if DEBUG
+        if abortWindowOverrideMs > 0 { return TimeInterval(abortWindowOverrideMs) / 1000 }
+        #endif
+        return abortWindowIntoWide
+    }
 
     /// Expanded covers both "showing static landscape art" and "playing" — the tile is the same one.
+    /// Pipeline meaning only on a catalog card since R2; the visual is `tileVisible`/`layoutExpanded`.
     var isExpanded: Bool {
         switch phase {
         case .idle, .dwelling: return false
@@ -367,14 +445,57 @@ final class InlineTrailerCardModel: ObservableObject {
         }
     }
 
+    /// R2: the card's LAYOUT width is the 16:9 tile's (drives `onExpansionChange` and the row scroll).
+    var layoutExpanded: Bool { morphStage == .wide }
+    /// R2: the tile is drawn (dissolving in, wide, or dissolving out).
+    var tileVisible: Bool { morphStage != .none }
+
     var playingURL: String? {
         if case let .playing(url) = phase { return url }
         return nil
     }
 
-    /// How long focus must rest on a card before it expands. Long enough that scrubbing across a row
-    /// with the D-pad expands nothing and issues zero requests.
-    private static let dwellSeconds: TimeInterval = 1.0
+    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    // R2 stage bookkeeping.
+    /// When `morphStage` last changed (systemUptime); nil at rest.
+    private var stageChangedAt: TimeInterval?
+    /// Identifies the current stage sequence. Bumped by `beginMorph` (a new expansion), an abort,
+    /// and the start of an animated collapse, so a stale scheduled step can never act. Deliberately
+    /// NOT `generation`: `collapse()` bumps `generation`, and a deferred collapse must let the
+    /// expansion it interrupted finish first (§2.2 "Deferred collapse").
+    private var morphToken = 0
+    /// An animated collapse (shrink → dissolve) is running; a focus loss lets it finish instead of
+    /// snapping the width back mid-shrink.
+    private var collapseInFlight = false
+    /// The pending `.reveal → .wide` step, or the pending shrink → dissolve step.
+    private var stageTask: Task<Void, Never>?
+    /// A collapse waiting for the expansion in flight to finish (§2.2).
+    private var deferTask: Task<Void, Never>?
+    private var stageAge: TimeInterval {
+        stageChangedAt.map { Self.now - $0 } ?? .greatestFiniteMagnitude
+    }
+
+    // R2 tile-art prefetch (critique #6).
+    private var artTask: Task<InlineTileArt?, Never>?
+    private var artToken = 0
+    private var artDone = false
+    private var artResult: InlineTileArt?
+
+    #if DEBUG
+    /// M3 gate telemetry for `debug_trailerTile` (seconds since focus; absolute uptime for
+    /// `gateFocusAt`). Plain stored values: the morph that follows publishes `morphStage`, which
+    /// re-renders the probe with them.
+    private(set) var gateFocusAt: TimeInterval?
+    private(set) var gateRestAt: TimeInterval?
+    private(set) var gateStartAt: TimeInterval?
+    private(set) var gateVia: String?
+    private(set) var gateDelay: TrailerStartDelay?
+    #endif
+
+    /// Probe spelling of this model's host.
+    private var hostTag: String { hostsTile ? "card" : "hero" }
+
     /// Meta comes from the shared repo's cache in the common case; this bounds the cold path so a
     /// slow addon can't leave a card resolving for the whole time the user sits on it.
     private static let metaTimeoutSeconds: TimeInterval = 5
@@ -460,21 +581,81 @@ final class InlineTrailerCardModel: ObservableObject {
         }
     }
 
+    /// beta.19-rc1 verdict (M3, BUG-133): the dwell is a REST GATE, not a 1 s wall clock from focus.
+    /// The old timer was blind to row motion, and the engine's row slide after a Down press takes
+    /// ~1.15 s to settle, so the morph started while the row was still sliding (Steven's video).
+    /// The loop polls `restSource` every `TrailerStartGate.poll` and asks the pure planner
+    /// (`TrailerStartGate.step`) whether to start: Automatic = rest + 1 s, a fixed N = max(focus + N,
+    /// rest), and with no rest at all the 3 s ceiling (`via=ceiling`). `restBegan` resets whenever
+    /// motion returns (a corrector nudge, a relayout). The generation/cancel discipline is
+    /// unchanged: any focus change or teardown bumps `generation` and the loop bails.
     private func startDwell(_ item: MetaPreview) {
         generation &+= 1
         let generationAtStart = generation
         dwellTask?.cancel()
         // Normally a no-op transition from `.idle`; routed through `setPhase` so the rare arrival on
         // an already-expanded card (a re-render that re-runs `onAppear`) still collapses smoothly.
+        // R2: on a catalog card the visual collapse is the stage's, by the same abort rule as a
+        // focus loss.
+        collapseStage(trigger: "redwell")
         setPhase(.dwelling)
+        let key = TrailerResolutionCache.key(type: item.type, id: item.id)
         dwellTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.dwellSeconds * 1_000_000_000))
-            guard !Task.isCancelled, let self, self.generation == generationAtStart else { return }
-            if TrailerProbe.enabled {
-                NSLog("[TrailerPipeline] dwell fired key=%@", TrailerResolutionCache.key(type: item.type, id: item.id))
+            // M4/FEAT-52: read once per dwell.
+            let delay = TrailerStartDelay.current()
+            let focusAt = InlineTrailerCardModel.now
+            var restBegan: TimeInterval?
+            while true {
+                guard !Task.isCancelled, let model = self, model.generation == generationAtStart else { return }
+                let now = InlineTrailerCardModel.now
+                if model.restSource.isAtRest() {
+                    restBegan = restBegan ?? now
+                } else {
+                    restBegan = nil
+                }
+                // R2 (critique #6): the tile-art prefetch starts at the first at-rest reading or
+                // `artPrefetchAfter` into the dwell — never at focus, so a horizontal scrub across a
+                // row fires no banner fetch per card it passes.
+                if model.hostsTile, model.artTask == nil,
+                   restBegan != nil || now - focusAt >= TrailerStartGate.artPrefetchAfter {
+                    model.startArtPrefetch()
+                }
+                let restAge = restBegan.map { now - $0 }
+                switch TrailerStartGate.step(delay: delay, focusAge: now - focusAt, restAge: restAge) {
+                case .start(let via):
+                    model.noteGateStart(key: key, delay: delay, focusAt: focusAt,
+                                        restAt: restBegan.map { $0 - focusAt }, startAt: now - focusAt, via: via)
+                    await model.expand(item)
+                    return
+                case .wait(let seconds):
+                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                }
             }
-            self.expand(item)
         }
+    }
+
+    /// M3 gate telemetry: the `[TrailerPipeline] gate` probe line, the `debug_trailerTile` fields
+    /// and the DEBUG `event=gate` line. `restAt`/`startAt` are seconds since focus.
+    private func noteGateStart(key: String, delay: TrailerStartDelay, focusAt: TimeInterval,
+                               restAt: TimeInterval?, startAt: TimeInterval, via: String) {
+        if TrailerProbe.enabled {
+            // Kept for log continuity: device-log readers grep the pre-gate spelling.
+            NSLog("[TrailerPipeline] dwell fired key=%@", key)
+            NSLog("[TrailerPipeline] gate key=%@ delay=%@ focusToRest=%.2f restToStart=%.2f via=%@ host=%@ src=%@",
+                  key, delay.rawValue, restAt ?? -1, restAt.map { startAt - $0 } ?? -1, via,
+                  hostTag, restSource.probeTag)
+        }
+        #if DEBUG
+        gateFocusAt = focusAt
+        gateRestAt = restAt
+        gateStartAt = startAt
+        gateVia = via
+        gateDelay = delay
+        let rest = restAt.map { String(format: "%.2f", $0) } ?? "-"
+        InlineTrailerDebugLog.shared.note(
+            "event=gate host=\(hostTag) key=\(key) delay=\(delay.rawValue) rest=\(rest) start=\(String(format: "%.2f", startAt)) via=\(via)"
+        )
+        #endif
     }
 
     /// Focus lost, or the card scrolled out of the row: back to the plain poster immediately. Any
@@ -493,7 +674,15 @@ final class InlineTrailerCardModel: ObservableObject {
     /// finished, abandoned, or superseded by a different key's `startResolution` (which
     /// overwrites `resolvingKey` and leaves this stale list orphaned but harmless, since
     /// `candidateTrailersKey` no longer matches `activeKey` for anything that reads it).
-    func reset() {
+    ///
+    /// beta.19-rc1 verdict (R2, BUG-133): on a catalog card the visual collapse follows the abort
+    /// rule (`InlineTrailerMorphPlan.collapseStyle`): focus lost during `.reveal`, or within
+    /// `abortWindowIntoWide` of the `.wide` edge, snaps everything to the poster in ONE frame (no
+    /// half-pushed neighbour sliding back, no ghost logo fading across the gap — Steven's 2:10.6
+    /// GIGN frame); later, the tile shrinks and then dissolves. `abortStages` forces the one-frame
+    /// path whatever the stage (the card's `.onDisappear`: a recycled cell must not come back
+    /// mid-collapse, and `tileArt` clears at once).
+    func reset(abortStages: Bool = false) {
         generation &+= 1
         dwellTask?.cancel()
         dwellTask = nil
@@ -506,6 +695,12 @@ final class InlineTrailerCardModel: ObservableObject {
             retriedAfterPlaybackFailureKey = nil
         }
         InlineTrailerCoordinator.shared.releasePlayback(self)
+        dropArtPrefetch()
+        if abortStages {
+            abortStage(trigger: "disappear")
+        } else {
+            collapseStage(trigger: "reset")
+        }
         setPhase(.idle)
     }
 
@@ -515,6 +710,7 @@ final class InlineTrailerCardModel: ObservableObject {
         guard playingURL != nil else { return }
         activeKey = nil
         setPhase(.idle)
+        collapseStage(trigger: "relinquish")
     }
 
     /// The player couldn't start (undecodable/stalled/404). Remember it *as a playback failure* and
@@ -592,6 +788,11 @@ final class InlineTrailerCardModel: ObservableObject {
 
     /// Drops everything this card owns and animates back to the resting poster, *without* arming a
     /// new dwell — focus hasn't moved, so re-blooming here would be a loop, not a feature.
+    ///
+    /// R2 (deferred collapse, BUG-133): the player goes at once, but on a catalog card whose
+    /// expansion is still in flight (`.reveal`, or `.wide` younger than `morphDuration`) the
+    /// visual collapse waits for the expansion to finish, then shrinks and dissolves — never a
+    /// reversal mid-growth (Steven's 4:34.7 Verity frame). A focus loss in between wins and aborts.
     private func collapse() {
         generation &+= 1
         dwellTask?.cancel()
@@ -599,11 +800,287 @@ final class InlineTrailerCardModel: ObservableObject {
         activeKey = nil
         InlineTrailerCoordinator.shared.releasePlayback(self)
         setPhase(.idle)
+        deferOrCollapseStage(trigger: "collapse")
+    }
+
+    // MARK: R2 staged morph
+
+    /// One morph entry point (R2). Every path that used to `setPhase(.expandedStatic)` to morph — the
+    /// cache-hit branch of `expand`, `resolve()` after `beginExtraction`, and `startPlayback`'s
+    /// refocus `.dwelling` branch — goes through here. Returns false when focus left (or the title
+    /// changed) during the art wait; the caller then does nothing visual.
+    ///
+    /// On a catalog card, in order: wait at most `artAwaitDeadline` for the tile art (the fetch keeps
+    /// running past it); re-check the key; set `phase = .expandedStatic` with no animation of its
+    /// own; set `tileArt`; run stage 1 (`.none → .reveal`, the in-place dissolve at the poster's
+    /// width) and schedule stage 2 (`.reveal → .wide`, the width) `revealDuration` later. No art
+    /// at all → the poster already in memory → failing that, the tile draws a flat surface, never a
+    /// shimmer. The hero model keeps today's single animated phase change.
+    private func beginMorph(key: String) async -> Bool {
+        guard activeKey == key else { return false }
+        guard hostsTile else {
+            setPhase(.expandedStatic)
+            return true
+        }
+        let generationAtStart = generation
+        if artTask == nil { startArtPrefetch() }
+        let waitStart = Self.now
+        // `artTask != nil`: no art source at all (nothing to wait for) skips the wait.
+        while artTask != nil, !artDone, Self.now - waitStart < Self.artAwaitDeadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            if Task.isCancelled || generation != generationAtStart || activeKey != key { return false }
+        }
+        guard generation == generationAtStart, activeKey == key else { return false }
+        let waitedMs = Int(((Self.now - waitStart) * 1000).rounded())
+        var art = artResult
+        var artFrom = art == nil ? "none" : "fetch"
+        if art == nil, let held = InlineTileArtLoader.inMemory(primary: tileArtSource?.primary,
+                                                                fallback: tileArtSource?.fallback) {
+            art = held
+            artFrom = "memory"
+        }
+
+        // A new sequence: supersedes any scheduled step, including a collapse still in flight
+        // (re-focus during a collapse — its completion must not clear the art set below).
+        morphToken &+= 1
+        let token = morphToken
+        stageTask?.cancel()
+        stageTask = nil
+        deferTask?.cancel()
+        deferTask = nil
+        collapseInFlight = false
+        if case .playing = phase {} else { phase = .expandedStatic }
+        if let art { tileArt = art }
+
+        if prefersReducedMotion {
+            // Reduce Motion: every stage change is instant.
+            stageChangedAt = Self.now
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { morphStage = .wide }
+            noteStage("wide", key: key, extra: "style=instant art=\(artFrom) artWaitMs=\(waitedMs)")
+            return true
+        }
+        switch morphStage {
+        case .none, .reveal:
+            stageChangedAt = Self.now
+            withAnimation(.easeOut(duration: Self.revealDuration)) { morphStage = .reveal }
+            noteStage("reveal", key: key, extra: "art=\(artFrom) artWaitMs=\(waitedMs)")
+            scheduleWide(token: token, key: key)
+            scheduleAbortKnob(after: .reveal, token: token)
+        case .wide:
+            // A deferred collapse had not started shrinking yet: the tile is already wide.
+            break
+        }
+        return true
+    }
+
+    /// Stage 2: `.reveal → .wide` `revealDuration` after stage 1, in `morphAnimation`. Guarded by
+    /// `morphToken` only — NOT by `activeKey`/`generation` — because a deferred collapse
+    /// (`collapse()` during `.reveal`) wants the expansion to finish before it shrinks.
+    private func scheduleWide(token: Int, key: String) {
+        stageTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(InlineTrailerCardModel.revealDuration * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.morphToken == token, self.morphStage == .reveal else { return }
+            self.stageChangedAt = InlineTrailerCardModel.now
+            withAnimation(InlineTrailerCardModel.morphAnimation) { self.morphStage = .wide }
+            self.noteStage("wide", key: key, extra: "")
+            self.scheduleAbortKnob(after: .wide, token: token)
+        }
+    }
+
+    /// The focus-loss collapse (reset, re-dwell, relinquish): abort in one frame or animate, by
+    /// `InlineTrailerMorphPlan.collapseStyle`. A collapse already animating is left to finish: it is
+    /// heading to `.none` anyway, and snapping its width back mid-shrink would hand the focus engine
+    /// a second correcting motion (the critique #26 class).
+    private func collapseStage(trigger: String) {
+        guard hostsTile, !collapseInFlight else { return }
+        switch InlineTrailerMorphPlan.collapseStyle(stage: morphStage, stageAge: stageAge,
+                                                     abortWindow: Self.effectiveAbortWindow) {
+        case .none:
+            if tileArt != nil { tileArt = nil }
+        case .abort:
+            abortStage(trigger: trigger)
+        case .animated:
+            startAnimatedCollapse(trigger: trigger)
+        }
+    }
+
+    /// The pipeline collapse (`collapse()`): defer while an expansion is in flight, else animate.
+    private func deferOrCollapseStage(trigger: String) {
+        guard hostsTile, !collapseInFlight else { return }
+        if let delay = InlineTrailerMorphPlan.deferredCollapseDelay(stage: morphStage, stageAge: stageAge) {
+            let token = morphToken
+            deferTask?.cancel()
+            deferTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.morphToken == token, !self.collapseInFlight else { return }
+                self.startAnimatedCollapse(trigger: trigger + "-deferred")
+            }
+            noteStage("defer", key: nil, extra: "ms=\(Int((delay * 1000).rounded())) trigger=\(trigger)")
+        } else if morphStage != .none {
+            startAnimatedCollapse(trigger: trigger)
+        } else if tileArt != nil {
+            tileArt = nil
+        }
+    }
+
+    /// Abort: everything to `.none` in ONE frame — width, tile, art, player, in-tile logo — inside a
+    /// transaction that also disables the implicit animations below it (the playing-URL fade, the
+    /// in-tile title's `.transition(.opacity)`), so nothing ghosts across the gap.
+    private func abortStage(trigger: String) {
+        guard hostsTile else { return }
+        let from = morphStage
+        morphToken &+= 1
+        stageTask?.cancel()
+        stageTask = nil
+        deferTask?.cancel()
+        deferTask = nil
+        collapseInFlight = false
+        stageChangedAt = nil
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            morphStage = .none
+            tileArt = nil
+            phase = .idle
+        }
+        guard from != .none else { return }
+        let stage = from == .wide ? "wide" : "reveal"
+        noteStage("abort", key: nil, extra: "style=instant stage=\(stage) trigger=\(trigger)")
+        if CatalogGridProbe.enabled {
+            CatalogGridProbe.log("morph abort style=instant stage=\(stage) trigger=\(trigger)")
+        }
+    }
+
+    /// Collapse 1 (`.wide → .reveal`: the width shrinks under an opaque tile, the video already
+    /// gone), then collapse 2 (`.reveal → .none`: the in-place dissolve back to the poster). The
+    /// poster is drawn under an opaque tile in every collapse frame (Steven's 0:54.8 empty slot),
+    /// and a lifted poster never peeks out from under a tile narrower than itself.
+    private func startAnimatedCollapse(trigger: String) {
+        guard hostsTile else { return }
+        guard morphStage != .none else {
+            if tileArt != nil { tileArt = nil }
+            return
+        }
+        morphToken &+= 1
+        let token = morphToken
+        stageTask?.cancel()
+        stageTask = nil
+        deferTask?.cancel()
+        deferTask = nil
+        if prefersReducedMotion {
+            stageChangedAt = nil
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                morphStage = .none
+                tileArt = nil
+            }
+            noteStage("dissolve", key: nil, extra: "style=instant trigger=\(trigger)")
+            return
+        }
+        collapseInFlight = true
+        if morphStage == .wide {
+            stageChangedAt = Self.now
+            withAnimation(Self.morphAnimation) { morphStage = .reveal }
+            noteStage("shrink", key: nil, extra: "style=animated trigger=\(trigger)")
+            stageTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(InlineTrailerCardModel.morphDuration * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.morphToken == token else { return }
+                self.dissolveStage(token: token, trigger: trigger)
+            }
+        } else {
+            dissolveStage(token: token, trigger: trigger)
+        }
+    }
+
+    private func dissolveStage(token: Int, trigger: String) {
+        stageChangedAt = Self.now
+        noteStage("dissolve", key: nil, extra: "style=animated trigger=\(trigger)")
+        withAnimation(.easeOut(duration: Self.revealDuration), completionCriteria: .logicallyComplete) {
+            morphStage = .none
+        } completion: { [weak self] in
+            self?.finishCollapse(token: token)
+        }
+        // Belt and braces: if the completion is never delivered (no view left depending on the
+        // stage), the art is still released and the in-flight latch still drops.
+        stageTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((InlineTrailerCardModel.revealDuration + 0.1) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.finishCollapse(token: token)
+        }
+    }
+
+    private func finishCollapse(token: Int) {
+        guard morphToken == token else { return }
+        collapseInFlight = false
+        guard morphStage == .none else { return }
+        stageChangedAt = nil
+        if tileArt != nil { tileArt = nil }
+    }
+
+    /// DEBUG abort knobs (critique #7): `reset()` n ms after the `.reveal` / `.wide` edge.
+    private func scheduleAbortKnob(after stage: MorphStage, token: Int) {
+        #if DEBUG
+        let ms = stage == .reveal ? Self.abortAfterRevealMs : Self.abortAfterWideMs
+        guard ms > 0 else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+            guard let self, self.morphToken == token, self.morphStage == stage else { return }
+            NSLog("[TrailerPipeline] morph knob=abortAfter%@ ms=%d", stage == .reveal ? "Reveal" : "Wide", ms)
+            self.reset()
+        }
+        #endif
+    }
+
+    /// `[TrailerPipeline] morph stage=…` (when the probe is on) and the DEBUG `event=…` line. The
+    /// stage's own fields follow the event name directly (`event=abort style=instant stage=reveal …`)
+    /// so a UI leg can match that prefix literally; `host=`/`key=` go last.
+    private func noteStage(_ stage: String, key: String?, extra: String) {
+        let keyText = key ?? activeKey ?? "-"
+        if TrailerProbe.enabled {
+            NSLog("[TrailerPipeline] morph stage=%@ key=%@ host=%@ %@", stage, keyText, hostTag, extra)
+        }
+        #if DEBUG
+        let fields = extra.isEmpty ? "" : " " + extra
+        InlineTrailerDebugLog.shared.note("event=\(stage)\(fields) host=\(hostTag) key=\(keyText)")
+        #endif
+    }
+
+    // MARK: R2 tile art
+
+    /// Starts the tile-art load (banner, then poster) with `.normal` admission and NO request
+    /// timeout, so a coalesced in-flight fetch shared with the hero or Detail is never failed early
+    /// (critique #6). The result lands in `artResult`; `beginMorph` waits on `artDone`.
+    private func startArtPrefetch() {
+        guard hostsTile, artTask == nil, let source = tileArtSource else { return }
+        artToken &+= 1
+        let token = artToken
+        artDone = false
+        artResult = nil
+        artTask = Task { [weak self] in
+            let art = await InlineTileArtLoader.load(primary: source.primary, fallback: source.fallback)
+            if let self, self.artToken == token {
+                self.artResult = art
+                self.artDone = true
+            }
+            return art
+        }
+    }
+
+    /// Focus left: forget this dwell's art. The load itself is not cancelled — `ArtworkStore`'s
+    /// shared work runs on and lands in the memory cache for the next dwell (or the hero/Detail).
+    private func dropArtPrefetch() {
+        artTask = nil
+        artToken &+= 1
+        artDone = false
+        artResult = nil
     }
 
     // MARK: Expansion + resolution
 
-    private func expand(_ item: MetaPreview) {
+    private func expand(_ item: MetaPreview) async {
         let key = TrailerResolutionCache.key(type: item.type, id: item.id)
         // Every skip below must leave `.idle`, not the `.dwelling` the timer fired from: a parked
         // `.dwelling` renders identically to idle on the card, but `phase != .idle` is also the
@@ -628,7 +1105,9 @@ final class InlineTrailerCardModel: ObservableObject {
             }
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolved key=%@", key) }
             activeKey = key
-            setPhase(.expandedStatic)
+            // R2: the morph goes through `beginMorph` (art first, then the staged reveal). False =
+            // focus left during the art wait; `reset()` already put the card back.
+            guard await beginMorph(key: key) else { return }
             startPlayback(url, key: key)
         case .unavailable:
             // Already known to have nothing to play: never morph at all, so a row full of
@@ -782,7 +1261,11 @@ final class InlineTrailerCardModel: ObservableObject {
         // actually held. Everything before this point in `resolve()` ran against `.dwelling`
         // (armed by `startResolution`, never touched by it); a title with nothing to play, or a
         // refused slot, never puts anything on screen to undo.
-        setPhase(.expandedStatic)
+        //
+        // beta.19-rc1 verdict (R2): the morph now goes through `beginMorph`, which awaits the tile
+        // art (≤ `artAwaitDeadline`) before it reveals anything. It runs INSIDE the ticket's
+        // scoped `defer` below, so every return across that await still releases the latch (the
+        // BUG-46/B4 invariant).
         // BUG-101: remembered so a later `playbackFailed` can retry the NEXT candidate — tagged
         // with `key` so a stale list from a previous title/resolve can never be mistaken for this
         // one's (see `candidateTrailersKey`'s doc comment).
@@ -800,6 +1283,13 @@ final class InlineTrailerCardModel: ObservableObject {
         // — still one logical extraction episode, just sequential across candidates instead of one.
         do {
             defer { InlineTrailerCoordinator.shared.endExtraction(extractionTicket) }
+            // R2: false with `activeKey` gone = focus left during the art wait: `reset()` already
+            // put the card back, so end the walk here (the function's own `defer` releases
+            // `resolvingKey`, exactly like the `guard activeKey == key` above). False with
+            // `activeKey` still on this key = a refocus re-armed it mid-wait: keep extracting —
+            // `startPlayback`'s `.dwelling` branch morphs when the result lands.
+            _ = await beginMorph(key: key)
+            guard activeKey == key else { return }
             if let result = await extractPlayableSource(candidates: rankedTrailers, startIndex: 0, key: key, ticket: extractionTicket) {
                 source = result.source
                 candidateIndex = result.index
@@ -988,19 +1478,37 @@ final class InlineTrailerCardModel: ObservableObject {
         guard activeKey == key else { return }
         switch phase {
         case .expandedStatic:
-            break
+            claimAndPlay(url, key: key)
         case .dwelling:
             // The refocus's own dwell timer is still pending — cancel it, or it re-enters
-            // `expand()` on a `.playing` card one second from now and replays the morph.
+            // `expand()` on a `.playing` card once its gate opens and replays the morph.
             generation &+= 1
             dwellTask?.cancel()
             dwellTask = nil
-            setPhase(.expandedStatic)
+            guard hostsTile else {
+                setPhase(.expandedStatic)
+                claimAndPlay(url, key: key)
+                return
+            }
+            // R2: a catalog card morphs through `beginMorph` (art, then the staged reveal) and only
+            // then claims and plays — same `activeKey` guard, and `beginMorph` captures the
+            // generation bumped just above, so a focus change during its art wait wins.
+            Task { [weak self] in
+                guard let self, await self.beginMorph(key: key) else { return }
+                guard self.activeKey == key, self.phase == .expandedStatic else { return }
+                self.claimAndPlay(url, key: key)
+            }
         default:
             return
         }
+    }
+
+    private func claimAndPlay(_ url: String, key: String) {
         InlineTrailerCoordinator.shared.claimPlayback(self, key: key)
         setPhase(.playing(url))
+        #if DEBUG
+        InlineTrailerDebugLog.shared.note("event=play host=\(hostTag) key=\(key)")
+        #endif
     }
 
     // MARK: Kotlin bridges (with Swift-side deadlines)
@@ -1060,6 +1568,118 @@ private final class ResumeLatch<T> {
     }
 }
 
+// MARK: - R2 morph plan (pure)
+
+/// beta.19-rc1 verdict (R2, BUG-133): the two collapse decisions, pure so
+/// `InlineTrailerMorphPlanTests` can pin them as a table.
+nonisolated enum InlineTrailerMorphPlan {
+    nonisolated enum CollapseStyle: Equatable, Sendable {
+        /// Nothing on screen.
+        case none
+        /// Everything to the poster in one frame (no animation, implicit ones disabled).
+        case abort
+        /// Shrink (if wide), then dissolve.
+        case animated
+    }
+
+    /// The focus-loss collapse (`reset()`): abort during `.reveal`, or within `abortWindow` of the
+    /// `.wide` edge — the width has barely moved, and animating it back is what slid card #2 back
+    /// across the gap with a ghost logo (Steven's 2:10.6 GIGN frame); later, animate.
+    static func collapseStyle(stage: InlineTrailerCardModel.MorphStage, stageAge: TimeInterval,
+                              abortWindow: TimeInterval = InlineTrailerCardModel.abortWindowIntoWide) -> CollapseStyle {
+        switch stage {
+        case .none: return .none
+        case .reveal: return .abort
+        case .wide: return stageAge < abortWindow ? .abort : .animated
+        }
+    }
+
+    /// The pipeline collapse (`collapse()`: playback failed or finished, nothing to play): how long
+    /// to wait for the expansion still in flight to finish before collapsing, or nil to collapse
+    /// now. `.reveal` waits out the rest of the dissolve plus the whole width stage; a `.wide`
+    /// younger than `morphDuration` waits out the width animation.
+    static func deferredCollapseDelay(stage: InlineTrailerCardModel.MorphStage, stageAge: TimeInterval) -> TimeInterval? {
+        switch stage {
+        case .none:
+            return nil
+        case .reveal:
+            return max(0, InlineTrailerCardModel.revealDuration - stageAge) + InlineTrailerCardModel.morphDuration
+        case .wide:
+            let remaining = InlineTrailerCardModel.morphDuration - stageAge
+            return remaining > 0 ? remaining : nil
+        }
+    }
+}
+
+// MARK: - R2 tile art
+
+/// The decoded art the tile reveals: the image, its measured baked-bar zoom (`ArtworkLetterbox`,
+/// the same crop `CachedAsyncImage(cropsBakedLetterboxBars:)` applied), and the URL it came from.
+nonisolated struct InlineTileArt: Sendable {
+    let image: UIImage
+    let barZoom: CGFloat
+    let url: String
+}
+
+/// beta.19-rc1 verdict (R2): loads the tile art BEFORE the reveal, so the first revealed frame is
+/// the picture (never a shimmer) and the bar crop is already applied (never animated in).
+///
+/// W1-A codes against today's `ArtworkStore` API: `cached(url)` → `fetch(url)` (`.normal`
+/// admission, no request timeout) for the primary (banner), then the fallback (poster). W2-D
+/// upgrades it after spec B's I1 lands (critique #3): the primary fetch passes the tile's pixel
+/// decode (`ArtworkDecodeRequest(size: .points(CGSize(width: expandedWidth, height: artworkHeight)),
+/// fill: true, scale: ArtworkDecodeMath.screenScale)`), and the poster fallback uses
+/// `ArtworkStore.cachedLargest(posterURL)` (any bucket, so the card's own decode is found).
+enum InlineTileArtLoader {
+    /// Candidate URLs in order: the primary first, blank and duplicate entries dropped.
+    nonisolated static func candidates(primary: String?, fallback: String?) -> [String] {
+        var out: [String] = []
+        for entry in [primary, fallback] {
+            guard let value = entry, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !out.contains(value) else { continue }
+            out.append(value)
+        }
+        return out
+    }
+
+    static func load(primary: String?, fallback: String?) async -> InlineTileArt? {
+        for candidate in candidates(primary: primary, fallback: fallback) {
+            guard let url = URL(string: candidate) else { continue }
+            let image: UIImage
+            if let hit = ArtworkStore.cached(url) {
+                image = hit
+            } else if let fetched = try? await ArtworkStore.fetch(url) {
+                image = fetched
+            } else {
+                continue
+            }
+            // Same key and call shape as `CachedAsyncImage`'s crop task, so the memo is shared.
+            let key = url.absoluteString
+            let zoom: CGFloat
+            if let memo = ArtworkLetterbox.cachedZoom(forKey: key) {
+                zoom = memo
+            } else {
+                zoom = await Task.detached(priority: .utility) {
+                    ArtworkLetterbox.zoom(for: image, cacheKey: key)
+                }.value
+            }
+            return InlineTileArt(image: image, barZoom: zoom, url: key)
+        }
+        return nil
+    }
+
+    /// `beginMorph`'s last resort when no art arrived inside the deadline: whichever candidate is
+    /// already decoded in memory (the poster is usually on screen), with its memoized zoom or none.
+    static func inMemory(primary: String?, fallback: String?) -> InlineTileArt? {
+        for candidate in candidates(primary: primary, fallback: fallback) {
+            guard let url = URL(string: candidate), let image = ArtworkStore.cached(url) else { continue }
+            let key = url.absoluteString
+            return InlineTileArt(image: image, barZoom: ArtworkLetterbox.cachedZoom(forKey: key) ?? 1, url: key)
+        }
+        return nil
+    }
+}
+
 // MARK: - BUG-92 tile geometry
 
 /// Pure, unit-testable geometry for the inline trailer tile's concentric focus band (BUG-92,
@@ -1100,15 +1720,19 @@ struct InlineTrailerCard: View {
     /// Master gate: the user's setting plus tvOS's "Reduce Autoplay". False ⇒ plain card, no state
     /// machine, no overlay, no modifiers.
     var enabled: Bool = true
-    /// BUG-29: fires whenever `model.isExpanded` flips, so the enclosing row can scroll itself to
-    /// keep the morphing tile on screen. Focus never moves during the morph (it's the same button,
-    /// just wider), so tvOS's automatic focus-driven scroll never fires on its own — the row has to
-    /// ask for it explicitly.
+    /// BUG-29: fires whenever the card's LAYOUT width changes edge, so the enclosing row can scroll
+    /// itself to keep the morphing tile on screen. Focus never moves during the morph (it's the same
+    /// button, just wider), so tvOS's automatic focus-driven scroll never fires on its own — the row
+    /// has to ask for it explicitly. beta.19-rc1 verdict (R2): fires on the `.wide` edge
+    /// (`model.layoutExpanded`), i.e. when the width actually starts growing, not when the
+    /// in-place dissolve begins.
     var onExpansionChange: ((Bool) -> Void)? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// beta.19-rc1 verdict (M3): the host's rest signal, handed to the model before every dwell.
+    @Environment(\.rowRestSource) private var rowRestSource
     @StateObject private var model = InlineTrailerCardModel()
     /// FEAT-14 (device finding, 2026-08-02): the accent focus ring lives on `PosterCard`, but the
     /// dwell-morph replaces that card's rendered surface with this landscape trailer tile — so
@@ -1132,6 +1756,12 @@ struct InlineTrailerCard: View {
         if let banner, !banner.isEmpty { return banner }
         let poster: String? = item.poster
         return poster
+    }
+
+    /// The expanded tile's width for a portrait row: a 16:9 tile at the poster's own height
+    /// (UX-4a). Shared with `CatalogRowView`'s morph-scroll math (M3).
+    static func expandedWidth(_ style: PosterStyle) -> CGFloat {
+        style.height * (16.0 / 9.0)
     }
 
     var body: some View {
@@ -1168,13 +1798,19 @@ struct InlineTrailerCard: View {
     /// out of — an inserted view would pop in at full landscape size and overlap its neighbour for
     /// the length of the transition. Its artwork/player are still gated on the phase, so an idle
     /// card loads nothing.
+    ///
+    /// beta.19-rc1 verdict (R2, BUG-133): the single 0.35 s cross-fade-while-growing is gone (it put
+    /// a translucent tile wider than the poster over a half-visible poster: Steven's doubled
+    /// "72 HEURES" at 1:31.2). Every visual edge is now an explicit `morphStage` transaction in the
+    /// model — dissolve at the poster's width, then grow; shrink, then dissolve; abort in one frame
+    /// — so the blanket `.animation(value:)` here was removed.
     private var expandingCard: some View {
         ZStack(alignment: .topLeading) {
             baseCard
                 // Only the portrait card is crossfaded out — in landscape rows the tile is the same
                 // shape and size as the artwork underneath, so there's nothing to morph and fading
                 // would just blink the row.
-                .opacity(fadesBaseCard && model.isExpanded ? 0 : 1)
+                .opacity(fadesBaseCard && model.tileVisible ? 0 : 1)
 
             expandedTile
         }
@@ -1186,19 +1822,34 @@ struct InlineTrailerCard: View {
         // a plain poster was). The explicit content shape keeps the whole label hit-testable in
         // both states without touching layout, focus or the tile's own non-interactivity.
         .contentShape(Rectangle())
-        .animation(reduceMotion ? nil : InlineTrailerCardModel.morphAnimation, value: model.isExpanded)
-        .onChange(of: isFocused) { _, focused in model.focusChanged(focused, item: item) }
+        .onChange(of: isFocused) { _, focused in
+            if focused { configureModel() }
+            model.focusChanged(focused, item: item)
+        }
         // A recycled cell can come back already focused (returning from Detail), which produces
         // no `onChange`.
         .onAppear {
-            model.prefersReducedMotion = reduceMotion
+            configureModel()
             if isFocused { model.focusChanged(true, item: item) }
         }
         .onChange(of: reduceMotion) { _, motion in model.prefersReducedMotion = motion }
-        .onDisappear { model.reset() }
+        // R2: a recycled cell must not come back mid-morph; the tile and its art go in one frame.
+        .onDisappear { model.reset(abortStages: true) }
         // BUG-29: notify the row on every expand/collapse edge, not just expand — a card that
         // collapses mid-scroll-request should still let the row know its width is back to normal.
-        .onChange(of: model.isExpanded) { _, expanded in onExpansionChange?(expanded) }
+        // R2: the WIDTH edge (`.wide`), which is when the row has something to scroll for.
+        .onChange(of: model.layoutExpanded) { _, wide in onExpansionChange?(wide) }
+    }
+
+    /// Everything the model needs from this host BEFORE a `focusChanged(true…)` (critique #25):
+    /// it owns a tile, where the tile art comes from (banner, then poster), and which rest signal
+    /// gates the dwell (M3; re-read before every dwell, since the host can change it).
+    private func configureModel() {
+        model.prefersReducedMotion = reduceMotion
+        model.hostsTile = true
+        let poster: String? = item.poster
+        model.tileArtSource = (primary: Self.landscapeArtworkURL(item), fallback: poster)
+        model.restSource = rowRestSource
     }
 
     /// The expanded card: landscape tile plus the title in the same slot the poster's title occupies,
@@ -1217,7 +1868,9 @@ struct InlineTrailerCard: View {
                     .frame(width: artworkWidth, alignment: .leading)
             }
         }
-        .opacity(model.isExpanded ? 1 : 0)
+        // R2: opacity follows the STAGE (dissolve in at `.reveal`, out on the way back to `.none`),
+        // animated by the model's stage transactions.
+        .opacity(model.tileVisible ? 1 : 0)
         // No focus scale of its own: the system `.borderless` lift moves the whole button label
         // (base card + this tile) as one object (HIG revamp).
         .allowsHitTesting(false)
@@ -1249,49 +1902,72 @@ struct InlineTrailerCard: View {
             cornerRadius: posterStyle.cornerRadius
         )
         return ZStack {
-            if model.isExpanded {
-                // BUG-59 (reveal-gate wave): with the video side bar-proof (measured zoom + the
-                // probe's reveal gate), this art — on screen from the morph until the video is
-                // revealed — is the only surface left that can put a black bar on the tile: TMDB
-                // backdrops are sometimes trailer stills with the bars baked in. Scanned once per
-                // URL, symmetric-bars-only (genuinely dark art is never cropped), clipped by this
-                // view's own `.clipShape` below exactly like the video zoom is.
-                CachedAsyncImage(string: Self.landscapeArtworkURL(item), cropsBakedLetterboxBars: true)
+            // BUG-59 (reveal-gate wave): with the video side bar-proof (measured zoom + the
+            // probe's reveal gate), this art — on screen from the morph until the video is
+            // revealed — is the only surface left that can put a black bar on the tile: TMDB
+            // backdrops are sometimes trailer stills with the bars baked in. Scanned once per
+            // URL, symmetric-bars-only (genuinely dark art is never cropped), clipped by this
+            // view's own `.clipShape` below exactly like the video zoom is.
+            //
+            // beta.19-rc1 verdict (R2, BUG-133): the art is DECODED before the reveal
+            // (`InlineTileArtLoader`, bar zoom measured up front), so the first revealed frame is
+            // the picture. The old `CachedAsyncImage` was inserted with the morph, ran its load in
+            // `.onAppear` and drew a shimmer on the first frame even for a cached image, then
+            // animated the bar-crop zoom in over 0.25 s (Steven's 0:53.5 empty dark frame). The art
+            // stays in the tree until the model clears `tileArt` at the end of the final collapse,
+            // so the poster is never uncovered by an empty slot mid-collapse (0:54.8).
+            if let art = model.tileArt {
+                Image(uiImage: art.image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .scaleEffect(art.barZoom)
+            } else if model.tileVisible {
+                // No art arrived inside `artAwaitDeadline` and the poster was not in memory either:
+                // a flat surface, never a shimmer.
+                Theme.Palette.surface
             }
 
-            if let url = model.playingURL {
-                // Removal is deliberately un-animated: focus loss must tear the player down at once
-                // (`dismantleUIView`), not linger through a crossfade.
-                // `loops: false` — the preview plays once and then the card collapses itself, rather
-                // than looping under a resting thumb forever.
-                TrailerHeroPlayer(
-                    urlString: url,
-                    // BUG-46/B2: the report says *why*, which is what decides whether this title is
-                    // remembered as broken (it usually isn't) — see `playbackFailed`.
-                    onFailure: { report in model.playbackFailed(report) },
-                    // BUG-59: the measured zoom is remembered per TITLE, not per playback URL.
-                    zoomKey: TrailerResolutionCache.key(type: item.type, id: item.id),
-                    loops: false,
-                    onPlaybackEnded: { model.playbackFinished() },
-                    // BUG-92 (beta.18): the hosted view's own CALayer now gets the tile's INNER
-                    // corner radius (`TrailerPlayerUIView` in TrailerHeroPlayerView.swift), so the
-                    // video is clipped by its own layer regardless of the SwiftUI `.clipShape` mask
-                    // below. That mask alone left a rectangular sliver of leaked video at the tile's
-                    // rounded corners on the first card of a row (nothing else clips it there — see
-                    // `RowLeadingEdgeClip`'s header). `geometry.radius` is the exact inner radius
-                    // this tile's own `.clipShape(RoundedRectangle(cornerRadius: geometry.radius))`
-                    // uses a few lines down, so the two can never disagree.
-                    cornerRadius: geometry.radius
-                )
-                // UX-9: no `.scaleEffect` here any more — the zoom over the baked-in letterbox bars
-                // is measured per stream and applied to the player layer (`TrailerLetterboxProbe`,
-                // floor `TrailerHeroPlayer.parityZoom`), so a bar-free source renders exactly as it
-                // did before. Still only the video surface, never the static artwork underneath:
-                // that is already sized to the tile, with no bars of its own to hide. Layout is
-                // untouched either way — both the old modifier and the layer transform are
-                // render-only, which is what keeps UX-4a's morph and BUG-29's scroll intact.
-                .transition(.asymmetric(insertion: .opacity, removal: .identity))
+            // R2: the playing-URL fade is scoped to the PLAYER alone. On the surface as a whole it
+            // also re-timed the tile's width on a collapse (the URL clears in the same update the
+            // shrink starts), so the art resized on a 0.25 s ease-out against the row's 0.35 s.
+            ZStack {
+                if let url = model.playingURL {
+                    // Removal is deliberately un-animated: focus loss must tear the player down at
+                    // once (`dismantleUIView`), not linger through a crossfade.
+                    // `loops: false` — the preview plays once and then the card collapses itself,
+                    // rather than looping under a resting thumb forever.
+                    TrailerHeroPlayer(
+                        urlString: url,
+                        // BUG-46/B2: the report says *why*, which is what decides whether this title
+                        // is remembered as broken (it usually isn't) — see `playbackFailed`.
+                        onFailure: { report in model.playbackFailed(report) },
+                        // BUG-59: the measured zoom is remembered per TITLE, not per playback URL.
+                        zoomKey: TrailerResolutionCache.key(type: item.type, id: item.id),
+                        loops: false,
+                        onPlaybackEnded: { model.playbackFinished() },
+                        // BUG-92 (beta.18): the hosted view's own CALayer now gets the tile's INNER
+                        // corner radius (`TrailerPlayerUIView` in TrailerHeroPlayerView.swift), so
+                        // the video is clipped by its own layer regardless of the SwiftUI
+                        // `.clipShape` mask below. That mask alone left a rectangular sliver of
+                        // leaked video at the tile's rounded corners on the first card of a row
+                        // (nothing else clips it there — see `RowLeadingEdgeClip`'s header).
+                        // `geometry.radius` is the exact inner radius this tile's own
+                        // `.clipShape(RoundedRectangle(cornerRadius: geometry.radius))` uses a few
+                        // lines down, so the two can never disagree.
+                        cornerRadius: geometry.radius
+                    )
+                    // UX-9: no `.scaleEffect` here any more — the zoom over the baked-in letterbox
+                    // bars is measured per stream and applied to the player layer
+                    // (`TrailerLetterboxProbe`, floor `TrailerHeroPlayer.parityZoom`), so a bar-free
+                    // source renders exactly as it did before. Still only the video surface, never
+                    // the static artwork underneath: that is already sized to the tile, with no bars
+                    // of its own to hide. Layout is untouched either way — both the old modifier and
+                    // the layer transform are render-only, which is what keeps UX-4a's morph and
+                    // BUG-29's scroll intact.
+                    .transition(.asymmetric(insertion: .opacity, removal: .identity))
+                }
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.playingURL)
         }
         // BUG-92: framed and clipped at the INSET size — a real resize, not a post-render scale —
         // so the video's aspect ratio and the ring's reserved band agree with each other. Corner
@@ -1369,9 +2045,14 @@ struct InlineTrailerCard: View {
         // fixed screen column against. Measured via a `.background` `GeometryReader`
         // (`TileFocusLift`'s `measuredSize` pattern in PosterCard.swift) rather than read inline,
         // so this diagnostic never influences the tile's own layout.
+        //
+        // beta.19-rc1 verdict (M3/R2): shown while the tile is VISIBLE (`tileVisible`), with five
+        // fields appended: ` stage=<reveal|wide> gate=<auto|1|2|3> gateRest=<s|-> gateStart=<s>
+        // via=<rest|ceiling>` — the gate's seconds-since-focus (test85: `gateStart − gateRest ≥
+        // 0.95` under Automatic; test88: `gate=2`, `gateStart ≥ 2.0`). W2-D appends ` ring=`.
         .overlay(alignment: .topLeading) {
-            if model.isExpanded {
-                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))")
+            if model.tileVisible {
+                Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))\(debugGateFields)")
                     .font(.system(size: 8))
                     .opacity(0.011)
                     .accessibilityIdentifier("debug_trailerTile")
@@ -1392,8 +2073,19 @@ struct InlineTrailerCard: View {
         // shadow whenever the band is reserved. Kept, unconditionally as before, in the
         // ring-off/zoom-on default so the shipped default look is byte-identical.
         .shadow(color: .black.opacity(ringBandActive ? 0 : 0.6), radius: ringBandActive ? 0 : 22, y: ringBandActive ? 0 : 10)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.playingURL)
     }
+
+    #if DEBUG
+    /// M3/R2 `debug_trailerTile` tail (append-only; leading space included).
+    private var debugGateFields: String {
+        let stage = model.morphStage == .wide ? "wide" : "reveal"
+        let gate = model.gateDelay?.rawValue ?? "-"
+        let rest = model.gateRestAt.map { String(format: "%.2f", $0) } ?? "-"
+        let start = model.gateStartAt.map { String(format: "%.2f", $0) } ?? "-"
+        let via = model.gateVia ?? "-"
+        return " stage=\(stage) gate=\(gate) gateRest=\(rest) gateStart=\(start) via=\(via)"
+    }
+    #endif
 
     /// One-decimal formatting for `debug_trailerTile` — matches `debug_ux6`'s "small, greppable,
     /// harness-readable" contract without dragging a `NumberFormatter` into a hot render path.
@@ -1408,10 +2100,12 @@ struct InlineTrailerCard: View {
     private var showsOverlayTitle: Bool { fadesBaseCard && posterStyle.showTitle }
 
     /// FEAT-18: the in-tile title/logo — only while the tile is up AND no caption is drawn under
-    /// it (Hide Labels on, in either row shape). `model.isExpanded` rather than `playingURL`: the
+    /// it (Hide Labels on, in either row shape). The tile's visibility rather than `playingURL`: the
     /// still landscape art that precedes the video is part of the same "trailer focus view", and
     /// gating on playback would make the title blink in a beat after the morph.
-    private var showsInTileTitle: Bool { model.isExpanded && !posterStyle.showTitle }
+    /// beta.19-rc1 verdict (R2): `model.tileVisible`, so the logo rides the stage — dissolving with
+    /// the tile, and gone in the same frame on an abort (no ghost logo across the gap, 2:10.6).
+    private var showsInTileTitle: Bool { model.tileVisible && !posterStyle.showTitle }
 
     /// UX-4a (Christian's spec, 2026-07-30): the poster KEEPS ITS HEIGHT and only grows
     /// WIDER when the trailer starts — a 16:9 tile at the poster's full height. The old
@@ -1419,9 +2113,11 @@ struct InlineTrailerCard: View {
     /// next to its portrait neighbours (tester photo); matching upstream Nuvio's behavior,
     /// the height never changes so the row never breathes vertically, and the width follows
     /// whatever Poster Size the user runs.
+    /// beta.19-rc1 verdict (R2): wide only at `.wide` — the `.reveal` stage dissolves at the
+    /// poster's own width, so the tile never grows while translucent.
     private var artworkWidth: CGFloat {
         if posterStyle.landscapeCatalogRows { return Theme.Size.landscapeWidth }
-        return model.isExpanded ? posterStyle.height * (16.0 / 9.0) : posterStyle.width
+        return model.layoutExpanded ? Self.expandedWidth(posterStyle) : posterStyle.width
     }
 
     /// Landscape rows are already the target geometry — no morph there, the trailer just

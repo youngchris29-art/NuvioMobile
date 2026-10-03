@@ -197,7 +197,12 @@ struct DetailCinematicHero<Actions: View>: View {
     private var logoSlot: some View {
         Group {
             if let logoURL, !logoURL.isEmpty {
-                CachedAsyncImage(string: logoURL, contentMode: .fit, failure: { titleFallback })
+                // beta.19-rc1 verdict (I1, BUG-134): the TMDB `original` logo (the data keeps w500),
+                // decoded for the slot it is drawn in; the w500 file is the automatic fallback.
+                CachedAsyncImage(string: logoURL, contentMode: .fit,
+                                 decodeSize: .points(width: DetailCinematicLayout.logoMaxWidth,
+                                                     height: DetailCinematicLayout.logoSlotHeight),
+                                 upgrade: .logo, failure: { titleFallback })
                     .frame(maxWidth: DetailCinematicLayout.logoMaxWidth,
                            maxHeight: DetailCinematicLayout.logoSlotHeight,
                            alignment: .bottomLeading)

@@ -1,7 +1,9 @@
+import Combine
 import CryptoKit
 import Foundation
 import Network
 import SharedCore
+import UIKit
 
 // UX-4c SABR follow-up: YouTube's SABR rollout means many videos (recent uploads especially) come
 // back from innertube with NO hlsManifestUrl and NO muxed formats beyond the 360p progressive —
@@ -17,15 +19,237 @@ import SharedCore
 // only ever upgrade quality. Server pattern mirrors RemoteSetupServer/LocalHLSServer; ports 8230+
 // so an active remux session (8190+) or setup server (8080+) never collides.
 
+// MARK: - Listener seam (beta.19-rc1 verdict, B2 / BUG-131)
+
+/// beta.19-rc1 verdict (B2): what a loopback listener reports. A plain mirror of `NWListener.State`
+/// so the lifecycle logic below can be driven by a fake in unit tests.
+nonisolated enum TrailerListenerState: Equatable, Sendable {
+    case setup
+    case waiting(String)
+    case ready
+    case failed(String)
+    case cancelled
+}
+
+/// beta.19-rc1 verdict (B2): the listener the server binds on 127.0.0.1. A protocol with methods (not
+/// settable handler properties) to stay clear of the SDK's `@Sendable` handler signatures. Callbacks
+/// arrive on `queue`, whatever thread the implementation uses internally.
+nonisolated protocol TrailerLoopbackListening: AnyObject, Sendable {
+    func start(queue: DispatchQueue,
+               onState: @escaping @Sendable (TrailerListenerState) -> Void,
+               onConnection: @escaping @Sendable (NWConnection) -> Void)
+    func cancel()
+}
+
+nonisolated enum NWTrailerLoopbackListenerError: Error {
+    case invalidPort
+}
+
+/// beta.19-rc1 verdict (B2): the real adapter, a thin `NWListener` wrapper bound to 127.0.0.1:port.
+/// `allowLocalEndpointReuse` is SO_REUSEADDR-class only (it does NOT allow a second LISTENING socket
+/// on a port), which is why a rebuild waits for the old listener's `.cancelled` and retries the same
+/// port a few times instead of assuming the bind succeeds at once.
+nonisolated final class NWTrailerLoopbackListener: TrailerLoopbackListening, @unchecked Sendable {
+    private let listener: NWListener
+
+    init(port: UInt16) throws {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            throw NWTrailerLoopbackListenerError.invalidPort
+        }
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
+        params.allowLocalEndpointReuse = true
+        listener = try NWListener(using: params)
+    }
+
+    func start(queue: DispatchQueue,
+               onState: @escaping @Sendable (TrailerListenerState) -> Void,
+               onConnection: @escaping @Sendable (NWConnection) -> Void) {
+        listener.stateUpdateHandler = { state in
+            switch state {
+            case .setup: onState(.setup)
+            case let .waiting(error): onState(.waiting(String(describing: error)))
+            case .ready: onState(.ready)
+            case let .failed(error): onState(.failed(String(describing: error)))
+            case .cancelled: onState(.cancelled)
+            @unknown default: onState(.setup)
+            }
+        }
+        listener.newConnectionHandler = { connection in onConnection(connection) }
+        listener.start(queue: queue)
+    }
+
+    func cancel() {
+        listener.cancel()
+    }
+
+    #if DEBUG
+    /// beta.19-rc1 verdict (B2) DEBUG fault knob: cancels the underlying `NWListener` with both
+    /// handlers detached, so the owner never hears about it. This is what H1 (silent socket
+    /// reclaim while suspended) looks like from the server's side.
+    func cancelSilently() {
+        listener.stateUpdateHandler = nil
+        listener.newConnectionHandler = nil
+        listener.cancel()
+    }
+    #endif
+}
+
+/// beta.19-rc1 verdict (B2): the three answers a trailer playback-URL request can come back with.
+/// `timedOut` is a transient (the URL is slow, not wrong): callers fall back to `progressive` when
+/// there is one and NEVER mark the title unavailable.
+nonisolated enum TrailerPlaybackURLOutcome: Equatable, Sendable {
+    /// Local repack master, or the progressive/HLS URL.
+    case playable(String)
+    /// No repack and no progressive URL for this source.
+    case nothingPlayable
+    /// No answer in time.
+    case timedOut(progressive: String?)
+
+    /// The legacy `String?` shape (Detail): a playable URL or nil.
+    var legacyURL: String? {
+        if case let .playable(url) = self { return url }
+        return nil
+    }
+}
+
+/// One-shot latch used by the outcome race and the health ping: the first `fire()` wins.
+nonisolated final class TrailerOneShotLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    /// `true` for exactly one caller.
+    func fire() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if fired { return false }
+        fired = true
+        return true
+    }
+
+    var isFired: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return fired
+    }
+}
+
+/// Per-connection bookkeeping for the live-connection counter and the header idle timeout.
+nonisolated final class TrailerConnectionTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+    private var headerSeen = false
+
+    /// `true` for the first call only (decrement the live counter exactly once).
+    func markClosed() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if closed { return false }
+        closed = true
+        return true
+    }
+
+    func markHeaderComplete() {
+        lock.lock(); headerSeen = true; lock.unlock()
+    }
+
+    var headerComplete: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return headerSeen
+    }
+}
+
+#if DEBUG
+/// beta.19-rc1 verdict (B2): `-debug.trailerListenerFault <mode>` (read once).
+nonisolated enum TrailerListenerFault: String, Sendable {
+    case off
+    /// On background, silently cancel the live `NWListener` (the class keeps its `port`). Reproduces H1;
+    /// the `.active` health ping must find it dead and the rebuild must recover.
+    case silent
+    /// As `silent`, but `.active` skips verification. Proves the knob reproduces the symptom.
+    case silentNoRebuild = "silent-norebuild"
+    /// As `silent`, and EVERY listener created after the background reports `.waiting` and never
+    /// `.ready`. Reproduces H2 and drives the attempt deadline.
+    case waiting
+}
+#endif
+
 nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     static let shared = TrailerLocalHLS()
 
-    private let listenerQueue = DispatchQueue(label: "media.nuvio.trailer-hls-listener")
+    /// beta.19-rc1 verdict (B2): injectable time. `schedule(delay, work)` runs `work` once after
+    /// `delay` seconds (default: `listenerQueue.asyncAfter`); tests pass a fake that fires on demand.
+    typealias Scheduler = @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
+    /// Calls `done(true)` when something on 127.0.0.1:port answers within 1 s, else `done(false)`.
+    typealias HealthCheck = @Sendable (UInt16, @escaping @Sendable (Bool) -> Void) -> Void
+    typealias Uptime = @Sendable () -> TimeInterval
+    /// The repack leg of a playback request: calls `finish(localURL or nil)` exactly once.
+    typealias RepackWork = (_ finish: @escaping @Sendable (String?) -> Void) -> Void
+
+    enum LifecycleEvent {
+        case background
+        case active
+    }
+
+    /// Per-attempt bind deadline: a start that neither reports `.ready` nor `.failed` in this long
+    /// resolves its waiters nil (progressive fallback) and moves on.
+    static let startDeadline: TimeInterval = 2.0
+    static let sameBindRetryDelay: TimeInterval = 0.1
+    static let sameBindRetries = 3
+    /// How long a rebuild waits for the retired listener's `.cancelled` before binding anyway.
+    static let retireWait: TimeInterval = 0.5
+    static let healthTimeout: TimeInterval = 1.0
+    /// A connection with no complete request header after this long is cancelled.
+    static let connectionHeaderTimeout: TimeInterval = 5.0
+    static let eagerRebuildBudget = 3
+    static let eagerRebuildWindow: TimeInterval = 60
+    static let slowRepackSeconds: TimeInterval = 6
+    /// ≥ 12 s: cuts only pathological repacks.
+    static let inlinePlaybackURLTimeout: TimeInterval = 12
+    static let portCount = 20
+
+    private let listenerFactory: @Sendable (UInt16) throws -> TrailerLoopbackListening
+    private let schedule: Scheduler
+    private let healthCheck: HealthCheck
+    private let uptime: Uptime
+    private let basePort: UInt16
+    private let observesLifecycle: Bool
+
+    private let listenerQueue: DispatchQueue
     private let connQueue = DispatchQueue(label: "media.nuvio.trailer-hls-conn")
     private let lock = NSLock()
-    private var listener: NWListener?
+
+    // Everything below is guarded by `lock`. Never call out (listener, waiters, schedule, NSLog,
+    // factory) while holding it; decide under the lock, act after unlocking.
+
+    /// The current candidate while a start is in flight, the ready listener after.
+    private var listener: TrailerLoopbackListening?
+    /// Identity of `listener` for its callbacks (a stale listener's events are ignored).
+    private var currentAttemptID: Int?
+    private var attemptSerial = 0
+    /// Non-nil only while the listener is `.ready`.
     private var port: UInt16?
-    private var startWaiters: [(UInt16?) -> Void] = []
+    private var startWaiters: [@Sendable (UInt16?) -> Void] = []
+    /// A start or rebuild is under way (replaces the old `!startWaiters.isEmpty` test).
+    private var startInFlight = false
+    /// Bumped at every start and every death; the log's `gen=`.
+    private var startGeneration = 0
+    private var portOrder: [UInt16] = []
+    private var portIndex = 0
+    private var preferredPort: UInt16?
+    private var samePortRetries = 0
+    /// The cancelled listener whose `.cancelled` a rebuild is waiting for.
+    private var retiring: TrailerLoopbackListening?
+    private var retiringID: Int?
+    private var rebuildToken: Int?
+    private var lastBoundPort: UInt16?
+    private var backgroundedSinceActive = false
+    private var eagerRebuilds: [TimeInterval] = []
+    private var liveConnections = 0
+    private var verifyInFlight = false
+    private var lifecycleObserversInstalled = false
+    private var cycleScheduled = false
+    #if DEBUG
+    private var faultWaitingArmed = false
+    #endif
+
     /// token → {master.m3u8, video.m3u8, audio.m3u8}. Playlists are a few KB; the cap only exists
     /// so a marathon browsing session can't grow this forever.
     ///
@@ -52,7 +276,53 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     /// Diagnostics: the video rung each token serves, kept in lockstep with `contentIdentities`.
     private var trackSummaries: [String: TrackSummary] = [:]
 
-    private init() {}
+    #if DEBUG
+    /// beta.19-rc1 verdict (B2): `-debug.trailerListenerFault silent|silent-norebuild|waiting`, read once.
+    private static let debugFault: TrailerListenerFault = {
+        let raw = UserDefaults.standard.string(forKey: "debug.trailerListenerFault")?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let fault = raw.flatMap(TrailerListenerFault.init(rawValue:)) ?? TrailerListenerFault.off
+        if fault != .off { NSLog("[TrailerRepack] listener fault knob=%@", fault.rawValue) }
+        return fault
+    }()
+
+    /// beta.19-rc1 verdict (B2): `-debug.trailerListenerLifecycleCycleAfterS <n>`, read once. n seconds
+    /// after the first `.ready`, the server runs a background→active cycle in-process (no `press(.home)`).
+    private static let debugCycleAfter: TimeInterval? = {
+        let value = UserDefaults.standard.object(forKey: "debug.trailerListenerLifecycleCycleAfterS")
+        let seconds: Double?
+        if let number = value as? NSNumber { seconds = number.doubleValue }
+        else if let text = value as? String { seconds = Double(text.trimmingCharacters(in: .whitespaces)) }
+        else { seconds = nil }
+        guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
+        NSLog("[TrailerRepack] listener cycle knob after=%.1fs", seconds)
+        return seconds
+    }()
+    #endif
+
+    /// beta.19-rc1 verdict (B2): `private init()` became an injectable one so the lifecycle can be driven
+    /// by fakes. The defaults are the real `NWListener` adapter, `listenerQueue.asyncAfter`, a real
+    /// NWConnection ping and `systemUptime`; `observesLifecycle: false` keeps tests off the app's
+    /// notification center (they call `noteLifecycle` themselves).
+    init(listenerFactory: @escaping @Sendable (UInt16) throws -> TrailerLoopbackListening = { try NWTrailerLoopbackListener(port: $0) },
+         schedule: Scheduler? = nil,
+         healthCheck: HealthCheck? = nil,
+         uptime: Uptime? = nil,
+         basePort: UInt16 = 8230,
+         observesLifecycle: Bool = true) {
+        let queue = DispatchQueue(label: "media.nuvio.trailer-hls-listener")
+        self.listenerQueue = queue
+        self.listenerFactory = listenerFactory
+        self.schedule = schedule ?? { delay, work in
+            queue.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+        self.healthCheck = healthCheck ?? { port, done in
+            TrailerLocalHLS.pingLoopback(port: port, queue: queue, done: done)
+        }
+        self.uptime = uptime ?? { ProcessInfo.processInfo.systemUptime }
+        self.basePort = basePort
+        self.observesLifecycle = observesLifecycle
+    }
 
     /// Sendable snapshot of a Kotlin `TrailerAdaptiveTrack` (KMP classes aren't Sendable; the
     /// repack pipeline hops queues).
@@ -98,21 +368,15 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
     /// The best AVPlayer URL for a resolved trailer source: a local byte-range HLS master when the
     /// extractor surfaced a repack-worthy demuxed pair (and the repack builds), else the
     /// progressive/HLS URL exactly as before, else nil. Completion on the main queue.
+    ///
+    /// beta.19-rc1 verdict (B2): the LEGACY shape, still used by Detail. It keeps its old semantics
+    /// exactly: no outer timeout (a slow repack is waited out). What changed underneath is the
+    /// loopback listener wait, which is now bounded by the 2 s attempt deadline, so a listener that
+    /// never reports back (H2) falls back to progressive instead of hanging this call forever.
     func playbackURL(for source: TrailerPlaybackSource, completion: @escaping @Sendable (String?) -> Void) {
-        let progressive: String? = (source.progressiveUrl?.isEmpty == false) ? source.progressiveUrl : nil
-        // BUG-81: this is the single choke point every trailer surface's playback URL comes out of,
-        // so it is where the YouTube video id gets attached to that URL. See
-        // `TrailerVideoIdRegistry` for why a side table rather than a threaded parameter.
-        let videoId = source.videoId
-        guard let video = source.adaptiveVideo, let audio = source.adaptiveAudio else {
-            TrailerVideoIdRegistry.register(videoId, forPlaybackURL: progressive)
-            DispatchQueue.main.async { completion(progressive) }
-            return
-        }
-        repack(video: Track(video), audio: Track(audio)) { local in
-            let url = local ?? progressive
-            TrailerVideoIdRegistry.register(videoId, forPlaybackURL: url)
-            DispatchQueue.main.async { completion(url) }
+        let inputs = sourceInputs(of: source)
+        resolveRaw(videoId: inputs.videoId, progressive: inputs.progressive, repack: inputs.repack) { outcome in
+            DispatchQueue.main.async { completion(outcome.legacyURL) }
         }
     }
 
@@ -120,6 +384,133 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             playbackURL(for: source) { continuation.resume(returning: $0) }
         }
+    }
+
+    /// beta.19-rc1 verdict (B2): the inline-trailer shape. Same URL as `playbackURL`, but with a
+    /// 12 s race so a pathological repack comes back as `.timedOut(progressive:)` (a transient, never
+    /// "unavailable") instead of parking the card's resolution forever. Completion on the main queue.
+    func playbackOutcome(for source: TrailerPlaybackSource,
+                         timeout: TimeInterval = TrailerLocalHLS.inlinePlaybackURLTimeout,
+                         completion: @escaping @Sendable (TrailerPlaybackURLOutcome) -> Void) {
+        let inputs = sourceInputs(of: source)
+        resolveTimed(videoId: inputs.videoId, progressive: inputs.progressive, timeout: timeout, repack: inputs.repack) { outcome in
+            DispatchQueue.main.async { completion(outcome) }
+        }
+    }
+
+    func playbackOutcome(for source: TrailerPlaybackSource) async -> TrailerPlaybackURLOutcome {
+        await withCheckedContinuation { continuation in
+            playbackOutcome(for: source) { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Primitive view of a `TrailerPlaybackSource` (Kotlin types stay out of the testable core).
+    private struct SourceInputs {
+        let videoId: String?
+        let progressive: String?
+        let repack: RepackWork?
+    }
+
+    private func sourceInputs(of source: TrailerPlaybackSource) -> SourceInputs {
+        let progressive: String? = (source.progressiveUrl?.isEmpty == false) ? source.progressiveUrl : nil
+        var work: RepackWork?
+        if let video = source.adaptiveVideo, let audio = source.adaptiveAudio {
+            let videoTrack = Track(video)
+            let audioTrack = Track(audio)
+            work = { [self] finish in repack(video: videoTrack, audio: audioTrack, completion: finish) }
+        }
+        // BUG-81: this is the single choke point every trailer surface's playback URL comes out of,
+        // so it is where the YouTube video id gets attached to that URL. See
+        // `TrailerVideoIdRegistry` for why a side table rather than a threaded parameter.
+        return SourceInputs(videoId: source.videoId, progressive: progressive, repack: work)
+    }
+
+    /// beta.19-rc1 verdict (B2): the core of both playback APIs, free of Kotlin types and of the
+    /// main-queue hop (callers add it), so unit tests drive it directly. No timeout. `repack == nil`
+    /// means the source has no repack-worthy demuxed pair.
+    func resolveRaw(videoId: String?, progressive: String?, repack: RepackWork?,
+                    completion: @escaping @Sendable (TrailerPlaybackURLOutcome) -> Void) {
+        guard let repack else {
+            TrailerVideoIdRegistry.register(videoId, forPlaybackURL: progressive)
+            completion(progressive.map(TrailerPlaybackURLOutcome.playable) ?? .nothingPlayable)
+            return
+        }
+        let uptime = self.uptime
+        let started = uptime()
+        repack { local in
+            let url = local ?? progressive
+            TrailerVideoIdRegistry.register(videoId, forPlaybackURL: url)
+            let elapsed = uptime() - started
+            if elapsed > TrailerLocalHLS.slowRepackSeconds {
+                NSLog("[TrailerRepack] playbackURL slow ms=%d", Int(elapsed * 1000))
+            }
+            completion(url.map(TrailerPlaybackURLOutcome.playable) ?? .nothingPlayable)
+        }
+    }
+
+    /// `resolveRaw` raced against `timeout`. The race is a one-shot latch: a repack that finishes
+    /// after the timeout is dropped (its playlists stay stored, which only warms a later request).
+    func resolveTimed(videoId: String?, progressive: String?, timeout: TimeInterval, repack: RepackWork?,
+                      completion: @escaping @Sendable (TrailerPlaybackURLOutcome) -> Void) {
+        Self.race(
+            timeout: timeout,
+            schedule: schedule,
+            work: { finish in resolveRaw(videoId: videoId, progressive: progressive, repack: repack, completion: finish) },
+            onTimeout: {
+                NSLog("[TrailerRepack] playbackURL timeout after=%.1fs fallback=%@", timeout, progressive == nil ? "none" : "progressive")
+                // The caller will play the progressive URL, so attach the video id to it now
+                // (the late repack, if it ever lands, registers its own local URL).
+                TrailerVideoIdRegistry.register(videoId, forPlaybackURL: progressive)
+                return .timedOut(progressive: progressive)
+            },
+            completion: completion
+        )
+    }
+
+    /// First of `work` (calls `finish` once) and the timeout wins; the loser is dropped. `work` runs
+    /// first and the timer is only armed when it did not already finish, so a synchronous answer
+    /// leaves no timer behind. Factored out so the race is testable with a fake scheduler.
+    static func race<T: Sendable>(timeout: TimeInterval,
+                                  schedule: Scheduler,
+                                  work: (_ finish: @escaping @Sendable (T) -> Void) -> Void,
+                                  onTimeout: @escaping @Sendable () -> T,
+                                  completion: @escaping @Sendable (T) -> Void) {
+        let latch = TrailerOneShotLatch()
+        work { value in
+            if latch.fire() { completion(value) }
+        }
+        guard !latch.isFired else { return }
+        schedule(timeout) {
+            if latch.fire() { completion(onTimeout()) }
+        }
+    }
+
+    /// The loopback port bound for the listener, or nil when it could not be started. Bounded by the
+    /// 2 s attempt deadline, never by a caller timeout.
+    func readyPort() async -> UInt16? {
+        await withCheckedContinuation { continuation in
+            ensureStarted { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// beta.19-rc1 verdict (B2): the URL to play for a CACHED playback URL. A loopback URL whose port
+    /// is the ready one comes back unchanged; one whose listener moved to a different port is REBASED
+    /// to the ready port when its token is still stored, so a port drift never forces a YouTube
+    /// re-extraction (BUG-46). nil when the token is gone or no listener is ready. Non-loopback URLs
+    /// (a googlevideo progressive/HLS URL) return unchanged.
+    func servableURL(_ urlString: String, readyPort: UInt16?) -> String? {
+        guard let url = URL(string: urlString), url.host == "127.0.0.1" else { return urlString }
+        guard let token = Self.token(inPlaybackURL: urlString), hasToken(token), let readyPort else { return nil }
+        if let current = url.port, current == Int(readyPort) { return urlString }
+        guard var components = URLComponents(string: urlString) else { return nil }
+        components.port = Int(readyPort)
+        return components.string
+    }
+
+    /// The port named in one of this server's playback URLs (loopback only).
+    static func port(inPlaybackURL urlString: String) -> UInt16? {
+        guard let url = URL(string: urlString), url.host == "127.0.0.1", let port = url.port else { return nil }
+        return UInt16(exactly: port)
     }
 
     /// BUG-46/B3: the token embedded in one of this server's playback URLs, or nil when `urlString`
@@ -449,6 +840,12 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         )
     }
 
+    /// Test seam: stores a placeholder playlist set under `token`, so `hasToken` / `servableURL` have a
+    /// real stored token to answer for without the sidx fetch a real repack needs.
+    func storeTokenForTesting(_ token: String) {
+        store(token: token, contentIdentity: nil, summary: nil, files: ["master.m3u8": Data("#EXTM3U\n".utf8)])
+    }
+
     private func store(token: String, contentIdentity: String?, summary: TrackSummary?, files: [String: Data]) {
         lock.lock()
         // A re-store is a refresh of an existing trailer, not a new entry: replace the files and
@@ -492,83 +889,531 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
 
     // MARK: - Loopback listener (playlists only; media bytes go straight to googlevideo)
 
-    private func ensureStarted(completion: @escaping @Sendable (UInt16?) -> Void) {
+    // beta.19-rc1 verdict (B2, BUG-131): the listener lifecycle. Before this the server cached `port`
+    // with no liveness check and no deadline, ignored `.waiting`, and only noticed a death if a
+    // `.failed`/`.cancelled` callback happened to arrive. Two shapes of the same symptom (Steven's
+    // video: every inline trailer dead after a trip to Infuse, until relaunch):
+    //   H1  silent death: the socket is reclaimed while the app is suspended, no callback, `port`
+    //       stays set, repacks hand out URLs on a dead port (-1004 / start watchdog).
+    //   H2  start hang: a (re)start goes `.waiting` or never reports, so the waiters never resolve.
+    // Fix shape: a per-attempt start deadline (H2); verify-then-rebuild on foreground, on a
+    // connection-class playback failure, and after any state event past `.ready` (H1); rebuilds wait
+    // for the old socket to cancel and retry the SAME port, so cached loopback URLs stay valid; a
+    // budgeted eager rebuild so a flapping listener cannot loop.
+
+    /// Resolves with the bound port, or nil when no listener could be bound within the attempt
+    /// deadline(s). A ready port answers at once; liveness is verified on foreground and after a
+    /// connection-class playback failure, not per call.
+    func ensureStarted(completion: @escaping @Sendable (UInt16?) -> Void) {
         lock.lock()
-        if let port {
+        if let ready = port {
             lock.unlock()
-            completion(port)
+            completion(ready)
             return
         }
-        let alreadyStarting = !startWaiters.isEmpty
         startWaiters.append(completion)
+        if startInFlight {
+            lock.unlock()
+            return
+        }
+        beginStartLocked()
         lock.unlock()
-        guard !alreadyStarting else { return }
-        attemptStart(portOffset: 0)
+        installLifecycleObserversIfNeeded()
+        attemptStart()
     }
 
-    private func resolveStart(_ boundPort: UInt16?) {
+    /// Caller holds `lock`.
+    private func beginStartLocked() {
+        startInFlight = true
+        startGeneration += 1
+        preferredPort = lastBoundPort
+        portOrder = Self.portOrder(base: basePort, count: Self.portCount, preferred: preferredPort)
+        portIndex = 0
+        samePortRetries = 0
+    }
+
+    /// Bind order for one start: the last port this server was ready on first (cached loopback URLs
+    /// name it), then the rest of the range in order.
+    static func portOrder(base: UInt16, count: Int, preferred: UInt16?) -> [UInt16] {
+        let all = (0..<count).map { UInt16(truncatingIfNeeded: Int(base) + $0) }
+        guard let preferred, all.contains(preferred) else { return all }
+        return [preferred] + all.filter { $0 != preferred }
+    }
+
+    /// Creates and starts the candidate at `portOrder[portIndex]`. Each candidate has its own 2 s
+    /// deadline. Calls out only with `lock` released.
+    private func attemptStart() {
+        while true {
+            lock.lock()
+            guard startInFlight, currentAttemptID == nil, port == nil else {
+                lock.unlock()
+                return
+            }
+            guard portIndex < portOrder.count else {
+                let waiters = startWaiters
+                startWaiters = []
+                startInFlight = false
+                lock.unlock()
+                logListener("exhausted")
+                waiters.forEach { $0(nil) }
+                return
+            }
+            let candidatePort = portOrder[portIndex]
+            let generation = startGeneration
+            attemptSerial += 1
+            let attemptID = attemptSerial
+            let prefer = preferredPort
+            lock.unlock()
+
+            let candidate: TrailerLoopbackListening
+            do {
+                candidate = try listenerFactory(candidatePort)
+            } catch {
+                lock.lock()
+                if startGeneration == generation { portIndex += 1 }
+                lock.unlock()
+                logListener("failed", "port=\(candidatePort) err=factory retry=0")
+                continue
+            }
+
+            lock.lock()
+            guard startInFlight, startGeneration == generation, currentAttemptID == nil, port == nil else {
+                lock.unlock()
+                candidate.cancel()
+                return
+            }
+            listener = candidate
+            currentAttemptID = attemptID
+            lock.unlock()
+
+            logListener("start", "port=\(candidatePort) prefer=\(prefer.map { String($0) } ?? "-")")
+            schedule(Self.startDeadline) { [weak self] in
+                self?.attemptDeadlineFired(attemptID: attemptID, generation: generation)
+            }
+            startCandidate(candidate, attemptID: attemptID, port: candidatePort)
+            return
+        }
+    }
+
+    private func startCandidate(_ candidate: TrailerLoopbackListening, attemptID: Int, port candidatePort: UInt16) {
+        #if DEBUG
         lock.lock()
-        port = boundPort
+        let waitingFault = faultWaitingArmed
+        lock.unlock()
+        if waitingFault {
+            // `-debug.trailerListenerFault waiting`: the listener is never started and only ever
+            // reports `.waiting`, so the attempt deadline is what decides.
+            handleListenerState(.waiting("debug fault"), attemptID: attemptID, port: candidatePort)
+            return
+        }
+        #endif
+        candidate.start(
+            queue: listenerQueue,
+            onState: { [weak self] state in
+                self?.handleListenerState(state, attemptID: attemptID, port: candidatePort)
+            },
+            onConnection: { [weak self] connection in
+                guard let self else { connection.cancel(); return }
+                self.accept(connection)
+            }
+        )
+    }
+
+    /// Every state event of every listener this server ever created lands here. Stale listeners
+    /// (replaced, timed out, retired) are ignored, except the retired listener's `.cancelled`,
+    /// which releases a rebuild that is waiting on it.
+    private func handleListenerState(_ state: TrailerListenerState, attemptID: Int, port boundPort: UInt16) {
+        lock.lock()
+        if retiringID == attemptID {
+            if state == .cancelled {
+                retiring = nil
+                retiringID = nil
+                let waitingToken = rebuildToken
+                rebuildToken = nil
+                lock.unlock()
+                if waitingToken != nil { attemptStart() }
+            } else {
+                lock.unlock()
+            }
+            return
+        }
+        guard currentAttemptID == attemptID else {
+            lock.unlock()
+            return
+        }
+        let isReady = port != nil
+        switch state {
+        case .setup:
+            lock.unlock()
+
+        case .ready:
+            if isReady {
+                lock.unlock()
+                return
+            }
+            port = boundPort
+            lastBoundPort = boundPort
+            samePortRetries = 0
+            startInFlight = false
+            let waiters = startWaiters
+            startWaiters = []
+            lock.unlock()
+            logListener("ready", "port=\(boundPort) waiters=\(waiters.count)")
+            waiters.forEach { $0(boundPort) }
+            #if DEBUG
+            scheduleDebugCycleIfNeeded()
+            #endif
+
+        case let .waiting(error):
+            lock.unlock()
+            if isReady {
+                markDead(attemptID: attemptID, reason: "waiting")
+            } else {
+                // Before ready: path evaluation can still settle. The attempt deadline decides.
+                logListener("waiting", "port=\(boundPort) err=\(error)")
+            }
+
+        case .failed, .cancelled:
+            if isReady {
+                lock.unlock()
+                markDead(attemptID: attemptID, reason: state == .cancelled ? "cancelled" : "failed")
+                return
+            }
+            // A bind failure (or an un-requested cancel) before ready. The preferred port is
+            // retried a few times at 100 ms (an old socket can still be closing); anything else
+            // moves to the next port at once.
+            let failedCandidate = listener
+            listener = nil
+            currentAttemptID = nil
+            let retryNumber: Int
+            if boundPort == preferredPort, samePortRetries < Self.sameBindRetries {
+                samePortRetries += 1
+                retryNumber = samePortRetries
+            } else {
+                portIndex += 1
+                retryNumber = 0
+            }
+            let generation = startGeneration
+            lock.unlock()
+            let reason: String
+            if case let .failed(error) = state { reason = error } else { reason = "cancelled" }
+            logListener("failed", "port=\(boundPort) err=\(reason) retry=\(retryNumber)")
+            failedCandidate?.cancel()
+            if retryNumber > 0 {
+                schedule(Self.sameBindRetryDelay) { [weak self] in
+                    self?.retrySamePort(generation: generation)
+                }
+            } else {
+                attemptStart()
+            }
+        }
+    }
+
+    private func retrySamePort(generation: Int) {
+        lock.lock()
+        let proceed = startInFlight && startGeneration == generation && currentAttemptID == nil && port == nil
+        lock.unlock()
+        if proceed { attemptStart() }
+    }
+
+    /// The attempt deadline: the candidate neither bound nor failed in 2 s. Its CURRENT waiters get
+    /// nil (their playback falls back to progressive at once); the next port is tried under a fresh
+    /// deadline so a later caller still finds a listener. A late `.ready` from the cancelled
+    /// candidate is ignored (its attempt ID is no longer current).
+    private func attemptDeadlineFired(attemptID: Int, generation: Int) {
+        lock.lock()
+        guard startInFlight, startGeneration == generation, currentAttemptID == attemptID, port == nil else {
+            lock.unlock()
+            return
+        }
+        let stuck = listener
+        let stuckPort = portIndex < portOrder.count ? portOrder[portIndex] : 0
+        listener = nil
+        currentAttemptID = nil
+        portIndex += 1
         let waiters = startWaiters
         startWaiters = []
         lock.unlock()
-        waiters.forEach { $0(boundPort) }
+        logListener("start-timeout", "port=\(stuckPort) waiters=\(waiters.count)")
+        stuck?.cancel()
+        waiters.forEach { $0(nil) }
+        attemptStart()
     }
 
-    private func attemptStart(portOffset: UInt16) {
-        guard portOffset < 20, let nwPort = NWEndpoint.Port(rawValue: 8230 + portOffset) else {
-            resolveStart(nil)
+    /// The ready listener is dead (a state event past `.ready`, or a failed health check). Clears the
+    /// port and, when the eager-rebuild budget allows (3 per 60 s), rebuilds at once, preferring the
+    /// same port; otherwise the next `ensureStarted` starts lazily.
+    /// `attemptID` pins the verdict to the listener it was reached for.
+    private func markDead(attemptID: Int?, reason: String) {
+        lock.lock()
+        guard let current = currentAttemptID, attemptID == nil || attemptID == current, let deadPort = port else {
+            lock.unlock()
             return
         }
-        let params = NWParameters.tcp
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
-        let candidate: NWListener
-        do {
-            candidate = try NWListener(using: params)
-        } catch {
-            attemptStart(portOffset: portOffset + 1)
+        let dead = listener
+        listener = nil
+        port = nil
+        currentAttemptID = nil
+        let now = uptime()
+        eagerRebuilds.removeAll { now - $0 > Self.eagerRebuildWindow }
+        let eager = eagerRebuilds.count < Self.eagerRebuildBudget
+        var rebuildTokenValue = 0
+        if eager {
+            eagerRebuilds.append(now)
+            beginStartLocked()   // bumps the generation; the port order prefers `lastBoundPort`
+            retiring = dead
+            retiringID = current
+            rebuildTokenValue = startGeneration
+            rebuildToken = rebuildTokenValue
+        } else {
+            startGeneration += 1
+        }
+        let token = rebuildTokenValue
+        lock.unlock()
+        logListener("dead", "port=\(deadPort) reason=\(reason)")
+        guard eager else {
+            dead?.cancel()
+            logListener("budget", "port=\(deadPort) rebuilds=\(Self.eagerRebuildBudget)/\(Int(Self.eagerRebuildWindow))s lazy=1")
             return
         }
-        lock.lock(); listener = candidate; lock.unlock()
+        logListener("rebuild", "reason=\(reason) prefer=\(deadPort)")
+        dead?.cancel()
+        schedule(Self.retireWait) { [weak self] in
+            self?.rebuildWaitElapsed(token: token)
+        }
+    }
 
-        candidate.stateUpdateHandler = { [weak self] state in
+    /// 0.5 s passed without the retired listener's `.cancelled`: bind anyway.
+    private func rebuildWaitElapsed(token: Int) {
+        lock.lock()
+        guard rebuildToken == token else {
+            lock.unlock()
+            return
+        }
+        rebuildToken = nil
+        retiring = nil
+        retiringID = nil
+        lock.unlock()
+        logListener("retire-timeout")
+        attemptStart()
+    }
+
+    /// Pings the ready listener (`HEAD /_ping`, any bytes back within 1 s = alive). Dead → the
+    /// listener is marked dead and rebuilt. One check at a time.
+    func verifyListener(reason: String) {
+        lock.lock()
+        guard let checkedPort = port, let attemptID = currentAttemptID, !verifyInFlight else {
+            lock.unlock()
+            return
+        }
+        verifyInFlight = true
+        lock.unlock()
+        let started = uptime()
+        healthCheck(checkedPort) { [weak self] alive in
             guard let self else { return }
+            self.lock.lock()
+            self.verifyInFlight = false
+            self.lock.unlock()
+            let ms = Int((self.uptime() - started) * 1000)
+            self.logListener("health", "port=\(checkedPort) alive=\(alive ? 1 : 0) ms=\(ms) reason=\(reason)")
+            if !alive { self.markDead(attemptID: attemptID, reason: reason) }
+        }
+    }
+
+    /// App lifecycle. `.active` after a background verifies the listener FIRST (the socket usually
+    /// survives, and a needless rebuild is what could strand a cached loopback URL); only a dead
+    /// verdict rebuilds. `.active` without a prior background does nothing.
+    func noteLifecycle(_ event: LifecycleEvent) {
+        switch event {
+        case .background:
+            lock.lock()
+            backgroundedSinceActive = true
+            lock.unlock()
+            #if DEBUG
+            applyDebugBackgroundFault(Self.debugFault)
+            #endif
+        case .active:
+            lock.lock()
+            let wasBackgrounded = backgroundedSinceActive
+            backgroundedSinceActive = false
+            let hasReadyPort = port != nil
+            lock.unlock()
+            guard wasBackgrounded, hasReadyPort else { return }
+            #if DEBUG
+            if Self.debugFault == .silentNoRebuild {
+                logListener("verify-skipped", "reason=active fault=silent-norebuild")
+                return
+            }
+            #endif
+            verifyListener(reason: "active")
+        }
+    }
+
+    /// Registers the foreground/background observers once, the first time the server starts.
+    private func installLifecycleObserversIfNeeded() {
+        guard observesLifecycle else { return }
+        lock.lock()
+        let first = !lifecycleObserversInstalled
+        lifecycleObserversInstalled = true
+        lock.unlock()
+        guard first else { return }
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { Self.addLifecycleObservers(for: self) }
+        }
+    }
+
+    @MainActor
+    private static func addLifecycleObservers(for server: TrailerLocalHLS?) {
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { [weak server] _ in
+            server?.noteLifecycle(.background)
+        }
+        center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { [weak server] _ in
+            server?.noteLifecycle(.active)
+        }
+    }
+
+    /// Real health check: connect to 127.0.0.1:port, send `HEAD /_ping`, any reply = alive.
+    static func pingLoopback(port: UInt16, queue: DispatchQueue, done: @escaping @Sendable (Bool) -> Void) {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            done(false)
+            return
+        }
+        let connection = NWConnection(host: .ipv4(.loopback), port: nwPort, using: .tcp)
+        let latch = TrailerOneShotLatch()
+        let finish: @Sendable (Bool) -> Void = { alive in
+            guard latch.fire() else { return }
+            connection.cancel()
+            done(alive)
+        }
+        connection.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                self.resolveStart(8230 + portOffset)
-            case .failed, .cancelled:
-                candidate.cancel()
-                self.lock.lock()
-                let isCurrent = self.listener === candidate
-                if isCurrent { self.listener = nil }
-                let hadPort = self.port != nil
-                if isCurrent { self.port = nil }
-                self.lock.unlock()
-                // A bind failure during startup tries the next port; a later listener death just
-                // clears state so the next repack re-binds.
-                if isCurrent && !hadPort { self.attemptStart(portOffset: portOffset + 1) }
+                let request = Data("HEAD /_ping HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8)
+                connection.send(content: request, completion: .contentProcessed { error in
+                    if error != nil { finish(false) }
+                })
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 256) { data, _, _, error in
+                    finish(error == nil && data?.isEmpty == false)
+                }
+            case .failed, .waiting, .cancelled:
+                // A refused loopback connect parks in `.waiting` on NWConnection: nothing is listening.
+                finish(false)
             default:
                 break
             }
         }
-        candidate.newConnectionHandler = { [weak self] connection in
-            guard let self else { connection.cancel(); return }
-            connection.start(queue: self.connQueue)
-            self.receive(connection: connection, buffer: Data())
-        }
-        candidate.start(queue: listenerQueue)
+        connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + TrailerLocalHLS.healthTimeout) { finish(false) }
     }
 
-    private func receive(connection: NWConnection, buffer: Data) {
+    // MARK: - Probe lines and DEBUG fault knobs
+
+    /// `[TrailerRepack] listener <event> <detail> gen=N conns=N`. Unconditional (a device log must
+    /// carry these without the probe knob). Never call with `lock` held.
+    private func logListener(_ event: String, _ detail: String = "") {
+        lock.lock()
+        let generation = startGeneration
+        let conns = liveConnections
+        lock.unlock()
+        let line = (detail.isEmpty ? event : "\(event) \(detail)") + " gen=\(generation) conns=\(conns)"
+        NSLog("[TrailerRepack] listener %@", line)
+        #if DEBUG
+        let isRebuild = event == "rebuild"
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { TrailerListenerDebug.shared.note(line, isRebuild: isRebuild) }
+        }
+        #endif
+    }
+
+    #if DEBUG
+    /// `silent` / `silent-norebuild` / `waiting` on a background: cancel the live `NWListener` with its
+    /// handlers detached, keeping `port`. `waiting` also arms the never-ready fault for every listener
+    /// created afterwards (without the kill, nothing would be created after the background at all).
+    private func applyDebugBackgroundFault(_ fault: TrailerListenerFault) {
+        guard fault != .off else { return }
+        lock.lock()
+        let live = port != nil ? listener : nil
+        let livePort = port
+        if fault == .waiting { faultWaitingArmed = true }
+        lock.unlock()
+        if let real = live as? NWTrailerLoopbackListener {
+            real.cancelSilently()
+            logListener("fault", "mode=\(fault.rawValue) silent-cancel port=\(livePort.map { String($0) } ?? "-")")
+        } else {
+            logListener("fault", "mode=\(fault.rawValue) no-real-listener")
+        }
+    }
+
+    private func scheduleDebugCycleIfNeeded() {
+        guard let after = Self.debugCycleAfter else { return }
+        lock.lock()
+        let first = !cycleScheduled
+        cycleScheduled = true
+        lock.unlock()
+        guard first else { return }
+        schedule(after) { [weak self] in
+            self?.runDebugLifecycleCycle()
+        }
+    }
+
+    /// In-process background→active cycle (`-debug.trailerListenerLifecycleCycleAfterS`), so a UI leg
+    /// needs no `press(.home)` / `activate()`. With no fault knob it applies the `silent` fault itself.
+    private func runDebugLifecycleCycle() {
+        logListener("debug-cycle", "begin")
+        noteLifecycle(.background)
+        if Self.debugFault == .off { applyDebugBackgroundFault(.silent) }
+        // The cancel lands asynchronously; let the socket actually close so the foreground ping sees
+        // the death the way it would after a real suspend.
+        schedule(0.5) { [weak self] in
+            self?.noteLifecycle(.active)
+        }
+    }
+    #endif
+
+    // MARK: - Connections
+
+    private func accept(_ connection: NWConnection) {
+        lock.lock()
+        liveConnections += 1
+        lock.unlock()
+        let tracker = TrailerConnectionTracker()
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed:
+                connection.cancel()
+                if tracker.markClosed() { self?.connectionClosed() }
+            case .cancelled:
+                if tracker.markClosed() { self?.connectionClosed() }
+            default:
+                break
+            }
+        }
+        connection.start(queue: connQueue)
+        receive(connection: connection, buffer: Data(), tracker: tracker)
+        // A connection that never completes its request header is cancelled.
+        schedule(Self.connectionHeaderTimeout) {
+            if !tracker.headerComplete { connection.cancel() }
+        }
+    }
+
+    private func connectionClosed() {
+        lock.lock()
+        liveConnections = max(0, liveConnections - 1)
+        lock.unlock()
+    }
+
+    private func receive(connection: NWConnection, buffer: Data, tracker: TrailerConnectionTracker) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { connection.cancel(); return }
             var buffer = buffer
             if let data { buffer.append(data) }
             if error != nil || buffer.count > 32 * 1024 { connection.cancel(); return }
             guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
-                if isComplete { connection.cancel() } else { self.receive(connection: connection, buffer: buffer) }
+                if isComplete { connection.cancel() } else { self.receive(connection: connection, buffer: buffer, tracker: tracker) }
                 return
             }
+            tracker.markHeaderComplete()
             guard let head = String(data: buffer[..<headerEnd.lowerBound], encoding: .utf8) else {
                 self.send(status: "400 Bad Request", body: Data(), on: connection)
                 return
@@ -586,6 +1431,11 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
         }
         let path = requestLine[1].split(separator: "?", maxSplits: 1).first.map(String.init) ?? requestLine[1]
         let comps = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        // beta.19-rc1 verdict (B2): the health ping answers before any playlist lookup.
+        if comps.count == 1, comps[0] == "_ping" {
+            send(status: "204 No Content", body: Data(), on: connection, isHead: true)
+            return
+        }
         lock.lock()
         let body = comps.count == 2 ? playlists[comps[0]]?[comps[1]] : nil
         let stored = tokenOrder.count
@@ -630,7 +1480,7 @@ nonisolated final class TrailerLocalHLS: @unchecked Sendable {
 ///
 /// Process-local and bounded; nothing is persisted. A cold launch starts empty and re-extraction
 /// re-registers, which is exactly the flow the persisted zoom cache is verified against.
-enum TrailerVideoIdRegistry {
+nonisolated enum TrailerVideoIdRegistry {
     /// Matches `TrailerLocalHLS.maxTokens` / `TrailerResolutionCache.capacity`: one entry per
     /// distinct trailer URL, evicted on the same scale as the stores it shadows.
     private static let capacity = 200
@@ -666,5 +1516,32 @@ enum TrailerVideoIdRegistry {
         defer { lock.unlock() }
         ids.removeAll()
         order.removeAll()
+    }
+}
+
+/// beta.19-rc1 verdict (B2): DEBUG harness sink for the listener lifecycle. Every `[TrailerRepack]
+/// listener …` probe line is mirrored here (on the main queue) so a UI leg can read the lifecycle off
+/// an accessibility label instead of a device log. A leaf view renders it (`debug_trailerListener`);
+/// nothing in a release build writes to it.
+///
+/// `last` is the newest event, `recent` the newest few joined with " | " (a `rebuild` is usually
+/// followed by `start`/`ready` lines within a second, so an oracle that wants "a rebuild happened"
+/// reads `rebuilds` or `recent`, not `last`).
+@MainActor
+final class TrailerListenerDebug: ObservableObject {
+    static let shared = TrailerListenerDebug()
+
+    @Published private(set) var last = "-"
+    @Published private(set) var recent = "-"
+    private(set) var rebuilds = 0
+    private var history: [String] = []
+
+    func note(_ line: String, isRebuild: Bool) {
+        // `rebuilds` first: `last` is the publisher a leaf view re-renders on.
+        if isRebuild { rebuilds += 1 }
+        history.append(line)
+        if history.count > 6 { history.removeFirst() }
+        recent = history.joined(separator: " | ")
+        last = line
     }
 }

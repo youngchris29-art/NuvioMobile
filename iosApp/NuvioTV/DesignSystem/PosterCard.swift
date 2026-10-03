@@ -911,6 +911,16 @@ struct PosterCard: View {
 
     private var resolvedWidth: CGFloat { width ?? style.width }
     private var resolvedHeight: CGFloat { height ?? style.height }
+
+    /// beta.19-rc1 verdict (I1, BUG-134; critique #22): the decode request a poster card of this size
+    /// draws with. Defined once so a prefetch that warms the card's bitmap before the card exists (the
+    /// folder page's reveal, the Home row-poster prewarm) asks for exactly what the card will ask for:
+    /// `.points`, fill, at the display scale. `CachedAsyncImage` builds the same request from
+    /// `decodeSize: .points(width:height:)`, `contentMode == .fill` and its `displayScale`.
+    nonisolated static func decodeRequest(width: CGFloat, height: CGFloat, scale: CGFloat) -> ArtworkDecodeRequest {
+        ArtworkDecodeRequest(size: .points(width: width, height: height), fill: true, scale: scale).normalized
+    }
+
     private var titleVisible: Bool { showTitle ?? style.showTitle }
     private var focusMode: CardFocusMode {
         .resolve(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus)
@@ -951,7 +961,13 @@ struct PosterCard: View {
     var body: some View {
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match LandscapeCard and expandedTile
-            CachedAsyncImage(string: imageURL, fallback: fallbackImageURL)
+            // beta.19-rc1 verdict (I1, BUG-134): decoded for the size the card is drawn at (points ×
+            // displayScale, the request `PosterCard.decodeRequest` also builds for prefetches) and asked
+            // for as the larger rendition of the same picture (TMDB w780, metahub `large`) with the
+            // original URL as the automatic fallback. The ring and rail colour lookups below still pass
+            // the ORIGINAL urls: the store's lookup covers the whole family of renditions.
+            CachedAsyncImage(string: imageURL, fallback: fallbackImageURL,
+                             decodeSize: .points(width: resolvedWidth, height: resolvedHeight), upgrade: .poster)
                 // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
                 // the image lands. No animation (the image's own fade is running); a store hit is already on the
                 // rail via `depthRailTintResolved`, so it writes no state.
@@ -1162,7 +1178,11 @@ struct LandscapeCard: View {
         let inset = ringInset(accentFocusRing: accentFocusRing, noZoomOnFocus: noZoomOnFocus) // BUG-64 / 2026-08-30 no-zoom investigation
         VStack(alignment: .leading, spacing: Theme.Spacing.md) { // UX-5: artwork↔title gap increased to match PosterCard and expandedTile
             ZStack(alignment: .bottom) {
-                CachedAsyncImage(string: imageURL, fallback: fallbackImageURL)
+                // beta.19-rc1 verdict (I1, BUG-134): decoded for the size the card is drawn at (no URL
+                // upgrade: landscape art is a backdrop or a still, whose larger renditions are not
+                // known to be sharper).
+                CachedAsyncImage(string: imageURL, fallback: fallbackImageURL,
+                                 decodeSize: .points(width: width, height: height))
                     // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
                     // the image lands. No animation (the image's own fade is running); a store hit is already on the
                     // rail via `depthRailTintResolved`, so it writes no state.
