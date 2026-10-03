@@ -368,12 +368,18 @@ private struct SettingsDisclosureRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Theme.Spacing.lg) {
+            // D11 V2 (Gate 2 sim pass, `g2-pane-4-detailpage-row.png`): the shared kit chrome, so
+            // this row sits on the same rest platter as every row around it (and the platter fades
+            // out on focus exactly like theirs). Trailing glyph stays the up/down disclosure
+            // chevron, in the kit's trailing-value size and `.secondary`.
+            SettingsRowChrome {
                 SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
-                Spacer()
+            } trailing: {
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(SettingsRowFont.title)
+                    .font(SettingsRowFont.subtitle)
+                    .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
         }
     }

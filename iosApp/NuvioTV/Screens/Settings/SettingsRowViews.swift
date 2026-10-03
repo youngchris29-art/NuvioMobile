@@ -36,9 +36,13 @@ import SharedCore
 //   platter, so it never paints anything over, under or instead of the focus platter. Nothing here
 //   uses `listRowBackground` (on tvOS that slot is where the cell's own focus state can live).
 // - V3 section headers are small uppercase letter-spaced captions in `.secondary`.
-// - V4 picker / link rows end in `value ›` in `.secondary`. The `Menu { Picker }` stays; its
-//   native grey pill is retinted to the rest-platter fill (`SettingsRowChromeMetrics`), so the
-//   picker row and every other row read as one family at rest.
+// - V4 picker / link rows end in `value ›` in `.secondary`. The `Menu { Picker }` stays with its
+//   NATIVE, untinted pill; the shared rest fill (`SettingsRowChromeMetrics.restFill`) is matched to
+//   that pill instead, so the picker row and every other row read as one family at rest. (Gate 2
+//   sim pass: a `.tint` on the Menu also dimmed its FOCUSED pill to grey, see `tintsMenuPill`.)
+// - Link rows hide the system disclosure chevron (`navigationLinkIndicatorVisibility(.hidden)`):
+//   the kit draws its own `›` inside the platter, and the system one sat outside it, so the row
+//   showed two chevrons and a platter that stopped short.
 
 /// The three type-scale tokens the kit uses, named by role so a future scale change is one edit.
 /// All three resolve to `Theme.Font` semantic tokens — no `Font.system(size:)` anywhere (HIG
@@ -128,15 +132,18 @@ enum SettingsRowChromeMetrics {
     static let verticalInset: CGFloat = 14
     /// Close to the system list focus platter's corner (≈28 pt in the Wave 0 capture).
     static let cornerRadius: CGFloat = 28
-    /// Mockup `.s-row`: white at ~6 % over the background.
-    static let restFill = Color.white.opacity(0.06)
-    /// V4: retint the native `Menu` label pill to `restFill`. `.tint` is the one lever tvOS gives
-    /// for that pill (the 2026-08-25 app-root accent tint repainted it into solid accent bars,
-    /// memory `settings-theme-accent`). The picker label pins its own ink (`SettingsPlatterInk`)
-    /// so a tint can never colour the text. If screenshots show the focused picker row losing its
-    /// white platter, set this to `false`: the pill then stays native grey and only the value
-    /// treatment changes.
-    static let tintsMenuPill = true
+    /// Mockup `.s-row` asks for white at ~6 %; this is ~9.5 % so it MATCHES the native `Menu`
+    /// label pill, which we can no longer retint (see `tintsMenuPill`). Measured on the sim: the
+    /// native pill is ≈ rgb(36,37,37) over the rgb(13,13,13) pane background, i.e. white ≈ 9.7 %;
+    /// the old 6 % fill rendered rgb(28,28,28), visibly darker than a picker row beside it.
+    static let restFill = Color.white.opacity(0.095)
+    /// V4: retint the native `Menu` label pill to `restFill`. OFF since the Gate 2 sim pass
+    /// (`g2-pane-7-subtitles-row.png`): with the tint on, the FOCUSED picker row rendered a
+    /// light-grey platter (≈ rgb(201,201,201)) instead of the white system focus platter every
+    /// other row gets — the tint reaches the focused pill too, and a `.tint` cannot be scoped to
+    /// the rest state from outside the Menu. The rest fill above is matched to the native pill
+    /// instead. Leave this `false`; flipping it back reintroduces the grey focus platter.
+    static let tintsMenuPill = false
 }
 
 /// V2 — the subtle rounded fill every kit row carries at rest.
@@ -576,8 +583,9 @@ struct SettingsPickerRow<T: Hashable>: View {
             // reaches the text.
             .modifier(SettingsPlatterInk())
         }
-        // V2/V4: the native pill, retinted to the rest-platter fill (no extra `SettingsRestPlatter`
-        // here — the pill already is this row's platter, with the same insets).
+        // V2/V4: the native pill IS this row's platter (same insets; `restFill` is matched to its
+        // colour), so no extra `SettingsRestPlatter` here. Untinted (`tintsMenuPill` is false), so
+        // the focused pill is the stock white platter.
         .modifier(SettingsMenuPillTint())
     }
 }
@@ -671,6 +679,11 @@ struct SettingsLinkRow<Destination: View>: View {
                 SettingsTrailingValue(value: nil)
             }
         }
+        // Gate 2 sim pass (`g2-pane-1-services-row.png`): inside a `List` the system adds its own
+        // disclosure chevron OUTSIDE the label, so the row showed two chevrons and the rest
+        // platter stopped short of the row's trailing edge. Hide the system one; the kit's `›`
+        // inside the platter is the only chevron, and the label (with its platter) spans the row.
+        .navigationLinkIndicatorVisibility(.hidden)
     }
 }
 
