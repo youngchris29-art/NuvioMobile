@@ -24,7 +24,11 @@ struct SettingsPaneScaffold<Content: View>: View {
     let category: SettingsCategory
     @ViewBuilder let content: () -> Content
 
-    @StateObject private var explainer = SettingsExplainerModel()
+    /// `@State`, not `@StateObject`: the scaffold OWNS the model but must not observe it, or every
+    /// focus move would re-render the whole pane including the `List` (review r1). Only
+    /// `SettingsPaneExplainer` (`@ObservedObject`) subscribes; rows reach the same instance
+    /// through the environment without observing it.
+    @State private var explainer = SettingsExplainerModel()
     /// FEAT-7: "Minimal" drops the explainer column, so the List takes the full width.
     @AppStorage("settings_style") private var settingsStyle = "default"
 

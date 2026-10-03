@@ -1,10 +1,33 @@
 import SwiftUI
 
-/// FEAT-35: the one focus target `DetailView` asks the engine to land on first (`.defaultFocus`).
-/// The synopsis teaser can be focusable and sits above Play, so without this the engine's
-/// top-leading default would land on the teaser.
+/// FEAT-35: `.play` is the one focus target `DetailView` asks the engine to land on first
+/// (`.defaultFocus`). The synopsis teaser can be focusable and sits above Play, so without this the
+/// engine's top-leading default would land on the teaser. The other cases only give each hero
+/// target an identity so a move between them reads as user input (review r1 #2).
 nonisolated enum DetailHeroFocus: Hashable {
     case play
+    case startOver
+    case trailer
+    case watched
+    case library
+    case shuffle
+    case teaser
+}
+
+/// Review r1 #2: the series Play button mounts only once the meta and primary action land, after
+/// `.defaultFocus` has already run, so `DetailView` claims it once, late, under these rules.
+nonisolated enum DetailLatePlayFocus {
+    /// A focus change between two different hero targets can only come from the user.
+    static func isUserMove(old: DetailHeroFocus?, new: DetailHeroFocus?) -> Bool {
+        guard let old, let new else { return false }
+        return old != new
+    }
+
+    static func shouldClaim(isCinematic: Bool, alreadyClaimed: Bool, userInteracted: Bool,
+                            userMovedInHero: Bool, heroHasFocus: Bool, currentFocus: DetailHeroFocus?) -> Bool {
+        guard isCinematic, !alreadyClaimed, !userInteracted, !userMovedInHero, heroHasFocus else { return false }
+        return currentFocus != .play
+    }
 }
 
 /// FEAT-35 (Detail revamp "Cinematic Clean", Christian's pick 2026-10-02): the first screen of the
@@ -26,7 +49,8 @@ struct DetailCinematicHero<Actions: View>: View {
     let meta: DetailMetaLineModel
     let ratings: [DetailRatingEntry]
     /// The ratings strip's slot is laid out (reserved, possibly still empty) only while this is on:
-    /// the Ratings section toggle, the MDBList gate, and a usable IMDb id.
+    /// the Ratings section toggle and the MDBList gate, both known before first paint
+    /// (`DetailRatings.reservesSlot`).
     let ratingsGateOn: Bool
     /// The Ratings section toggle alone (D10: OFF also hides the meta line's IMDb ★).
     let ratingsSectionOn: Bool
@@ -36,6 +60,8 @@ struct DetailCinematicHero<Actions: View>: View {
     let credits: DetailCreditsText
     /// Correction F8: owned by `DetailView` (it also pauses the background trailer).
     @Binding var showSynopsisSheet: Bool
+    /// `DetailView`'s hero focus state; the teaser binds `.teaser` (identity only, review r1 #2).
+    var heroFocus: FocusState<DetailHeroFocus?>.Binding
     /// Runs before the sheet opens (counts as interacting; withdraws a leaving trailer bridge).
     let onOpenSynopsis: () -> Void
     @ViewBuilder let actions: () -> Actions
@@ -54,8 +80,21 @@ struct DetailCinematicHero<Actions: View>: View {
         DetailSynopsisTeaser.resolvedSlotHeight(measuredFourLineHeight: measuredFourLineHeight,
                                                 lineHeight: synopsisLineHeight)
     }
-    private var synopsisTruncated: Bool {
+    /// The measurement's answer. It can flip after the teaser was focused (a late overview, a
+    /// re-measure), so the rendered form follows `synopsisTruncated` below instead.
+    private var measuredTruncated: Bool {
         DetailSynopsisTeaser.isTruncated(fullTextHeight: measuredSynopsisHeight, slotHeight: synopsisSlotHeight)
+    }
+    /// Review r1 #10: whether the teaser renders as the focusable button. Becomes true as soon as
+    /// the measurement says so, but only goes back to plain text while the teaser is NOT focused,
+    /// so a re-measure never pulls the focused button out from under the user.
+    @State private var synopsisTruncated = false
+
+    private func syncSynopsisTruncated() {
+        let next = DetailSynopsisTeaser.rendersAsButton(measuredTruncated: measuredTruncated,
+                                                       currentlyButton: synopsisTruncated,
+                                                       teaserFocused: heroFocus.wrappedValue == .teaser)
+        if synopsisTruncated != next { synopsisTruncated = next }
     }
 
     var body: some View {
@@ -73,6 +112,8 @@ struct DetailCinematicHero<Actions: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .bottomLeading)
+        .onChange(of: measuredTruncated, initial: true) { _, _ in syncSynopsisTruncated() }
+        .onChange(of: heroFocus.wrappedValue) { _, _ in syncSynopsisTruncated() }
         #if DEBUG
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height.rounded() }, action: { height in
             measuredHeroHeight = height
@@ -229,6 +270,7 @@ struct DetailCinematicHero<Actions: View>: View {
                     teaserText
                 }
                 .buttonStyle(.borderless)
+                .focused(heroFocus, equals: .teaser)
                 .accessibilityHint(String(localized: "Shows the full synopsis"))
                 .accessibilityIdentifier("detail_synopsis_teaser")
             } else {

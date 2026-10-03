@@ -3403,40 +3403,6 @@
         }
       }
     },
-    "Add a free TMDB API key to enrich titles with cast profiles, studios & networks, collections, and better artwork. Create one at themoviedb.org → Settings → API (v3 auth). Titles you open after enabling will be enriched.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Füge einen kostenlosen TMDB-API-Schlüssel hinzu, um Titel mit Cast-Profilen, Studios & Netzwerken, Sammlungen und besseren Grafiken zu erweitern. Erstelle einen unter themoviedb.org → Settings → API (v3 auth). Titel, die du nach dem Aktivieren öffnest, werden erweitert."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Añade una clave API gratuita de TMDB para enriquecer títulos con perfiles de reparto, estudios y redes, colecciones y mejor arte. Crea una en themoviedb.org → Settings → API (v3 auth). Los títulos que abras después de habilitar se enriquecerán."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ajoutez une clé API TMDB gratuite pour enrichir les titres avec des fiches de casting, studios et chaînes, collections, et de meilleurs visuels. Créez-en une sur themoviedb.org → Settings → API (v3 auth). Les titres que vous ouvrirez après activation seront enrichis."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Aggiungi una chiave API TMDB gratuita per arricchire i titoli con profili del cast, studi e reti, collezioni e illustrazioni migliori. Creane una su themoviedb.org → Impostazioni → API (autenticazione v3). I titoli che apri dopo l'abilitazione saranno arricchiti."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thêm API key TMDB miễn phí để bổ sung hồ sơ diễn viên, hãng phim & kênh, bộ sưu tập và ảnh đẹp hơn. Tạo key tại themoviedb.org → Settings → API (v3 auth). Các phim mở sau khi bật sẽ được bổ sung."
-          }
-        }
-      }
-    },
     "Add a raised edge highlight and a glossy top sheen to cards for a little more depth.": {
       "localizations": {
         "de": {
@@ -3505,7 +3471,6 @@
         }
       }
     },
-    "Add one in Settings → Content Sources → Addons.": {},
     "Add one in the Add-ons tab.": {
       "localizations": {
         "de": {
@@ -6328,40 +6293,6 @@
         }
       }
     },
-    "Badge packs add quality / HDR / audio-channel chips to stream results. Import a pack by its JSON URL — packs imported on the Nuvio mobile app sync here automatically. Tip: Remote Setup (Advanced) lets you paste the URL from a phone browser.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Badge-Pakete fügen Qualitäts-, HDR- und Audio-Kanal-Chips zu Stream-Ergebnissen hinzu. Importiere ein Paket über seine JSON-URL – Pakete, die in der mobilen Nuvio-App importiert werden, werden hier automatisch synchronisiert. Tipp: Remote Setup (Erweitert) ermöglicht das Einfügen der URL aus einem Phone-Browser."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Los paquetes de insignias añaden chips de calidad / HDR / canal de audio a los resultados de stream. Importa un paquete por su URL JSON — los paquetes importados en la app móvil de Nuvio se sincronizan aquí automáticamente. Consejo: Remote Setup (Avanzado) te permite pegar la URL desde un navegador de teléfono."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Les packs de badges ajoutent des badges de qualité / HDR / canaux audio aux résultats de streams. Importez un pack via son URL JSON — les packs importés depuis l'app mobile Nuvio se synchronisent automatiquement ici. Astuce : la Configuration à distance (Avancé) permet de coller l'URL depuis un navigateur de téléphone."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "I pacchetti badge aggiungono chip di qualità / HDR / canale audio ai risultati dei flussi. Importa un pacchetto tramite il suo URL JSON — i pacchetti importati nell'app mobile Nuvio si sincronizzano automaticamente qui. Suggerimento: la configurazione remota (avanzata) ti permette di incollare l'URL da un browser mobile."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Gói huy hiệu thêm nhãn chất lượng / HDR / kênh âm thanh vào kết quả luồng. Nhập gói bằng URL JSON — gói đã nhập trên ứng dụng Nuvio di động tự động đồng bộ về đây. Mẹo: Thiết lập từ xa (Nâng cao) cho phép dán URL từ trình duyệt điện thoại."
-          }
-        }
-      }
-    },
     "Badges Above Title": {
       "localizations": {
         "de": {
@@ -7684,40 +7615,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chọn nội dung hiển thị ở đầu Trang chủ và những danh mục xuất hiện dưới dạng hàng, theo thứ tự nào. Bản xem trước trailer khi chọn cũng được đặt ở đây."
-          }
-        }
-      }
-    },
-    "Choose where your library and watch progress are saved. Connect Trakt, Simkl, or MDBList in Account & Services first to use them as a source — otherwise this Apple TV falls back to its local/Nuvio option automatically.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wähle, wo deine Bibliothek und dein Wiedergabefortschritt gespeichert werden. Verbinde zuerst Trakt, Simkl oder MDBList unter „Konto & Dienste“, um sie als Quelle zu nutzen — sonst greift dieses Apple TV automatisch auf seine lokale/Nuvio-Option zurück."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Elige dónde se guardan tu biblioteca y tu progreso de visualización. Conecta primero Trakt, Simkl o MDBList en Cuenta y servicios para usarlos como fuente; de lo contrario, este Apple TV vuelve automáticamente a su opción local/Nuvio."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choisissez où enregistrer votre bibliothèque et votre progression de visionnage. Connectez d'abord Trakt, Simkl ou MDBList dans Compte et services pour les utiliser comme source — sinon cette Apple TV revient automatiquement à son option locale/Nuvio."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Scegli dove salvare la tua libreria e i progressi di visione. Connetti prima Trakt, Simkl o MDBList in Account e servizi per usarli come sorgente — altrimenti questa Apple TV torna automaticamente all'opzione locale/Nuvio."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chọn nơi lưu thư viện và tiến độ xem. Kết nối Trakt, Simkl hoặc MDBList trong Tài khoản & dịch vụ trước để dùng làm nguồn — nếu không, Apple TV này sẽ tự động dùng tùy chọn cục bộ/Nuvio."
           }
         }
       }
@@ -9117,40 +9014,6 @@
         }
       }
     },
-    "Connect MDBList in Account & Services, or enter a key.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verbinde MDBList unter Konto & Dienste oder gib einen Schlüssel ein."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Conecta MDBList en Cuenta y servicios, o introduce una clave."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connectez MDBList dans Compte et services, ou saisissez une clé."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connetti MDBList in Account e servizi, oppure inserisci una chiave."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kết nối MDBList trong Tài khoản & dịch vụ, hoặc nhập một key."
-          }
-        }
-      }
-    },
     "Connect MDBList in Services, or enter a key.": {
       "localizations": {
         "de": {
@@ -9351,40 +9214,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hãy kết nối tài khoản trong Cài đặt"
-          }
-        }
-      }
-    },
-    "Connect one in Settings → Account & Services → Debrid, or turn on “Resolve Streams with Debrid”.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connect one in Settings → Account & Services → Debrid, or turn on “Resolve Streams with Debrid”."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connect one in Settings → Account & Services → Debrid, or turn on “Resolve Streams with Debrid”."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connectez-en un dans Paramètres → Compte et services → Debrid, ou activez « Résoudre les streams avec Debrid »."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connetti uno in Impostazioni → Account e servizi → Debrid, o attiva \"Risolvi flussi con Debrid\"."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kết nối trong Cài đặt → Tài khoản & dịch vụ → Debrid, hoặc bật “Phân giải luồng bằng Debrid”."
           }
         }
       }
@@ -11842,25 +11671,25 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Écran méta"
+            "value": "Page de détails"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pantalla meta"
+            "value": "Página de detalles"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Meta-Bildschirm"
+            "value": "Detailseite"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Schermata Meta"
+            "value": "Pagina dei dettagli"
           }
         },
         "vi": {
@@ -17760,31 +17589,31 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Apparence"
+            "value": "Disposition"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Apariencia"
+            "value": "Diseño"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Erscheinungsbild"
+            "value": "Layout"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aspetto"
+            "value": "Layout"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Giao diện"
+            "value": "Bố cục"
           }
         }
       }
@@ -18418,19 +18247,19 @@
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Apparence"
+            "value": "Style"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aspetto"
+            "value": "Stile"
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Giao diện"
+            "value": "Phong cách"
           }
         }
       }
@@ -19349,40 +19178,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lượt đánh giá tối thiểu"
-          }
-        }
-      }
-    },
-    "Missing provider credentials — reconnect in Settings → Debrid.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Anmeldedaten des Anbieters fehlen – verbinde dich erneut in Einstellungen → Debrid."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Faltan credenciales del proveedor — reconecta en Configuración → Debrid."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Identifiants du fournisseur manquants — reconnectez-vous dans Paramètres → Debrid."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Credenziali fornitore mancanti — riconnetti in Impostazioni → Debrid."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Thiếu thông tin đăng nhập nhà cung cấp — kết nối lại trong Cài đặt → Debrid."
           }
         }
       }
@@ -20477,36 +20272,36 @@
         }
       }
     },
-    "No playable streams. Install a streaming addon, or connect a debrid account in Settings to play torrent results.": {
+    "No playable streams. Install a streaming addon, or connect a debrid account in Settings → Services → Debrid to play torrent results.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Keine abspielbar Streams. Installiere ein Streaming-Add-on, oder verbinde ein Debrid-Konto in den Einstellungen, um Torrent-Ergebnisse abzuspielen."
+            "value": "Keine abspielbaren Streams. Installiere ein Streaming-Add-on oder verbinde ein Debrid-Konto unter Einstellungen → Dienste → Debrid, um Torrent-Ergebnisse abzuspielen."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "No hay streams reproducibles. Instala un complemento de streaming o conecta una cuenta debrid en Configuración para reproducir resultados de torrent."
+            "value": "No hay streams reproducibles. Instala un complemento de streaming o conecta una cuenta debrid en Ajustes → Servicios → Debrid para reproducir resultados de torrent."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aucun stream lisible. Installez un addon de streaming, ou connectez un compte debrid dans Paramètres pour lire les résultats torrent."
+            "value": "Aucun stream lisible. Installez un addon de streaming, ou connectez un compte debrid dans Réglages → Services → Debrid pour lire les résultats torrent."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Nessun flusso riproducibile. Installa un addon di streaming o connetti un account debrid in Impostazioni per riprodurre i risultati torrent."
+            "value": "Nessun flusso riproducibile. Installa un addon di streaming o collega un account debrid in Impostazioni → Servizi → Debrid per riprodurre i risultati torrent."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Không có luồng phát được. Cài addon phát trực tuyến, hoặc kết nối tài khoản debrid trong Cài đặt để phát kết quả torrent."
+            "value": "Không có luồng phát được. Cài addon phát trực tuyến, hoặc kết nối tài khoản debrid trong Cài đặt → Dịch vụ → Debrid để phát kết quả torrent."
           }
         }
       }
@@ -24980,7 +24775,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Jugador"
+            "value": "Reproductor"
           }
         },
         "it": {
@@ -30950,40 +30745,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hiện hàng danh mục Trang chủ & Tìm kiếm dưới dạng thẻ rộng 16:9"
-          }
-        }
-      }
-    },
-    "Show IMDb, Rotten Tomatoes, Metacritic, Trakt and Letterboxd scores in a title's Details. Connect MDBList in Account & Services, or add a free API key from mdblist.com → Preferences → API Access. Titles you open afterwards will show the ratings.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zeige IMDb-, Rotten-Tomatoes-, Metacritic-, Trakt- und Letterboxd-Bewertungen in den Details eines Titels an. Verbinde MDBList unter Konto & Dienste oder füge einen kostenlosen API-Schlüssel von mdblist.com → Preferences → API Access hinzu. Titel, die du danach öffnest, zeigen die Bewertungen an."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Muestra las calificaciones de IMDb, Rotten Tomatoes, Metacritic, Trakt y Letterboxd en los detalles del título. Conecta MDBList en Cuenta y servicios, o añade una clave API gratuita de mdblist.com → Preferences → API Access. Los títulos que abras después mostrarán las calificaciones."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Affichez les notes IMDb, Rotten Tomatoes, Metacritic, Trakt et Letterboxd dans les détails d'un titre. Connectez MDBList dans Compte et services, ou ajoutez une clé API gratuite depuis mdblist.com → Preferences → API Access. Les titres que vous ouvrirez ensuite afficheront les notes."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostra le valutazioni di IMDb, Rotten Tomatoes, Metacritic, Trakt e Letterboxd nei dettagli di un titolo. Collega MDBList in Account e servizi, oppure aggiungi una chiave API gratuita da mdblist.com → Preferences → API Access. I titoli che aprirai dopo mostreranno le valutazioni."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hiển thị điểm IMDb, Rotten Tomatoes, Metacritic, Trakt và Letterboxd trong phần thông tin của một tiêu đề. Kết nối MDBList trong Tài khoản & dịch vụ, hoặc thêm khóa API miễn phí từ mdblist.com → Preferences → API Access. Các tiêu đề bạn mở sau đó sẽ hiển thị điểm."
           }
         }
       }
@@ -37825,40 +37586,6 @@
         }
       }
     },
-    "This stream needs a debrid account. Connect one in Settings → Debrid.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dieser Stream benötigt ein Debrid-Konto. Verbinde einen in Einstellungen → Debrid."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Este stream necesita una cuenta debrid. Conecta una en Configuración → Debrid."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ce stream nécessite un compte debrid. Connectez-en un dans Paramètres → Debrid."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Questo flusso ha bisogno di un account debrid. Connetti uno in Impostazioni → Debrid."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Luồng này cần tài khoản debrid. Kết nối trong Cài đặt → Debrid."
-          }
-        }
-      }
-    },
     "This stream needs a debrid account. Connect one in Settings → Services → Debrid.": {
       "localizations": {
         "de": {
@@ -41805,40 +41532,6 @@
         }
       }
     },
-    "Your %@ session has expired. Reconnect in Settings → Account & Services → Debrid.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Deine %@-Sitzung ist abgelaufen. Verbinde dich erneut unter Einstellungen → Konto & Dienste → Debrid."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tu sesión de %@ ha caducado. Vuelve a conectar en Ajustes → Cuenta y servicios → Debrid."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Votre session %@ a expiré. Reconnectez-vous dans Paramètres → Compte et services → Debrid."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "La tua sessione %@ è scaduta. Riconnettiti in Impostazioni → Account e servizi → Debrid."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Phiên %@ của bạn đã hết hạn. Kết nối lại trong Cài đặt → Tài khoản & dịch vụ → Debrid."
-          }
-        }
-      }
-    },
     "Your %@ session has expired. Reconnect in Settings → Services → Debrid.": {
       "localizations": {
         "de": {
@@ -42243,40 +41936,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "api.nuvio.tv là máy chủ chính thức và đã được chọn."
-          }
-        }
-      }
-    },
-    "api.nuvio.tv is the official server. Use “Use Official Server” in Settings to switch back.": {
-      "localizations": {
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "api.nuvio.tv ist der offizielle Server. Verwende „Offiziellen Server verwenden“ in den Einstellungen, um zurückzuwechseln."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "api.nuvio.tv es el servidor oficial. Usa “Usar servidor oficial” en Ajustes para volver."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "api.nuvio.tv est le serveur officiel. Utilisez « Utiliser le serveur officiel » dans les Paramètres pour revenir en arrière."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "api.nuvio.tv è il server ufficiale. Usa “Usa server ufficiale” nelle Impostazioni per tornare indietro."
-          }
-        },
-        "vi": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "api.nuvio.tv là máy chủ chính thức. Dùng “Dùng máy chủ chính thức” trong Cài đặt để chuyển về."
           }
         }
       }

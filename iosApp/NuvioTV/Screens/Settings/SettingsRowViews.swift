@@ -461,12 +461,10 @@ struct SettingsSwitchToggleStyle: ToggleStyle {
                 SettingsSwitchGlyph(isOn: configuration.isOn)
             }
         }
-        .accessibilityRepresentation {
-            Toggle(isOn: configuration.$isOn) {
-                configuration.label
-            }
-            .toggleStyle(.automatic)
-        }
+        // Review round 1 / UI legs: an `accessibilityRepresentation` Toggle exposed an EMPTY value
+        // (XCUITest read "", so VoiceOver had no state either). The Button carries the state itself.
+        .accessibilityValue(configuration.isOn ? Text("On") : Text("Off"))
+        .accessibilityAddTraits(.isToggle)
     }
 }
 
@@ -604,10 +602,13 @@ struct SettingsPickerRow<T: Hashable>: View {
 /// content does not take focus); every pane that uses it also carries at least one focusable row,
 /// which is the BUG-47 requirement.
 ///
-/// FEAT-50: `focusable: true` makes the row an INERT focus stop (`.focusable()`, Select does
-/// nothing — the same pattern the About pane's readout anchor uses). It exists for panes whose
-/// rows are all read-only values (the new About pane): without it such a pane has no focusable
-/// row, which breaks BUG-47 and leaves the explainer nothing to describe.
+/// FEAT-50: `focusable: true` makes the row an INERT focus stop: a no-op `Button` (Select does
+/// nothing) whose label is the kit chrome. It exists for panes whose rows are all read-only
+/// values (the new About pane): without it such a pane has no focusable row, which breaks BUG-47
+/// and leaves the explainer nothing to describe. Review r1 (`g2-pane-8-about-row.png`): the
+/// earlier bare `.focusable()` took focus but drew no platter, so the explainer named a row that
+/// did not look focused. As a Button label it gets the system focus platter, the label ink flip
+/// and the rest-platter fade, like every other kit row.
 struct SettingsValueRow: View {
     let title: String
     let value: String
@@ -634,7 +635,13 @@ struct SettingsValueRow: View {
 
     var body: some View {
         if focusable {
-            content.focusable()
+            Button(action: {}) {
+                SettingsRowChrome {
+                    SettingsRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, descriptionID: descriptionID)
+                } trailing: {
+                    SettingsTrailingValue(value: value, showsChevron: false)
+                }
+            }
         } else {
             content
         }

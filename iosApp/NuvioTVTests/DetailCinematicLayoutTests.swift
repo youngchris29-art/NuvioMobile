@@ -86,13 +86,25 @@ final class DetailCinematicLayoutTests: XCTestCase {
         XCTAssertEqual(DetailRatings.formatted(source: "unknown", value: 72.4), "72")
     }
 
-    func testUsableImdbId() {
-        XCTAssertTrue(DetailRatings.hasUsableImdbId(metaId: "tt0111161", fallbackId: nil, imdbId: nil))
-        XCTAssertTrue(DetailRatings.hasUsableImdbId(metaId: "tmdb:278", fallbackId: "tmdb:278", imdbId: "tt0111161"))
-        XCTAssertTrue(DetailRatings.hasUsableImdbId(metaId: nil, fallbackId: "tt0944947:1:1", imdbId: nil))
-        XCTAssertFalse(DetailRatings.hasUsableImdbId(metaId: "tmdb:278", fallbackId: "kitsu:1", imdbId: ""))
-        XCTAssertFalse(DetailRatings.hasUsableImdbId(metaId: nil, fallbackId: nil, imdbId: nil))
-        XCTAssertFalse(DetailRatings.hasUsableImdbId(metaId: "tt", fallbackId: nil, imdbId: nil))
+    /// Review r1 #1: the slot is decided from settings alone, so it is the same before the meta
+    /// load (no `tt…` id yet for a `tmdb:`/`kitsu:` item) as after it.
+    func testRatingsSlotReservedFromSettingsOnly() {
+        XCTAssertTrue(DetailRatings.reservesSlot(sectionRatings: true, mdbListActive: true))
+        XCTAssertFalse(DetailRatings.reservesSlot(sectionRatings: false, mdbListActive: true))
+        XCTAssertFalse(DetailRatings.reservesSlot(sectionRatings: true, mdbListActive: false))
+        XCTAssertFalse(DetailRatings.reservesSlot(sectionRatings: false, mdbListActive: false))
+    }
+
+    /// Review r1 #1: pre-meta (slot reserved, no ratings yet) the ★ still shows; once MDBList fills
+    /// the reserved slot the ★ steps aside; a title that never gets ratings keeps the ★.
+    func testImdbStarWithReservedSlotBeforeAndAfterMeta() {
+        let gate = DetailRatings.reservesSlot(sectionRatings: true, mdbListActive: true)
+        // Pre-meta: preview's imdbRating, no ratings list yet.
+        XCTAssertTrue(DetailRatings.showsImdbStar(sectionRatings: true, ratingsGateOn: gate, ratingCount: 0, imdbRating: "8.1"))
+        // MDBList emission lands.
+        XCTAssertFalse(DetailRatings.showsImdbStar(sectionRatings: true, ratingsGateOn: gate, ratingCount: 4, imdbRating: "8.1"))
+        // Pre-meta with no rating at all: nothing to show.
+        XCTAssertFalse(DetailRatings.showsImdbStar(sectionRatings: true, ratingsGateOn: gate, ratingCount: 0, imdbRating: nil))
     }
 
     /// D10: Ratings OFF hides the ★; ON shows it only while the strip is off or empty.
@@ -106,6 +118,14 @@ final class DetailCinematicLayoutTests: XCTestCase {
     }
 
     // MARK: - Synopsis teaser
+
+    /// Review r1 #10: the button form never leaves the tree while it holds focus.
+    func testTeaserButtonLatchWhileFocused() {
+        XCTAssertTrue(DetailSynopsisTeaser.rendersAsButton(measuredTruncated: true, currentlyButton: false, teaserFocused: false))
+        XCTAssertTrue(DetailSynopsisTeaser.rendersAsButton(measuredTruncated: false, currentlyButton: true, teaserFocused: true))
+        XCTAssertFalse(DetailSynopsisTeaser.rendersAsButton(measuredTruncated: false, currentlyButton: true, teaserFocused: false))
+        XCTAssertFalse(DetailSynopsisTeaser.rendersAsButton(measuredTruncated: false, currentlyButton: false, teaserFocused: true))
+    }
 
     func testSynopsisTruncation() {
         XCTAssertEqual(DetailSynopsisTeaser.slotHeight(lineHeight: 30), 120)
@@ -150,6 +170,16 @@ final class DetailCinematicLayoutTests: XCTestCase {
         let crewInCast = DetailCredits.make(cast: ["X", "W", "A", "B", "C"], director: ["X"], writer: ["W"], isSeries: false)
         XCTAssertEqual(crewInCast.castNames, "A, B, C")
 
+        // Review r1 #6: only the leading crew run is dropped; an actor-director billed in the cast
+        // proper keeps their place.
+        let actorDirector = DetailCredits.make(cast: ["X", "A", "X", "B"], director: ["X"], writer: [], isSeries: false)
+        XCTAssertEqual(actorDirector.castNames, "A, X, B")
+        let noPrepend = DetailCredits.make(cast: ["A", "W", "B"], director: [], writer: ["W"], isSeries: false)
+        XCTAssertEqual(noPrepend.castNames, "A, W, B")
+        // Director prepended, then the same person top-billed as an actor.
+        let starDirector = DetailCredits.make(cast: ["X", "X", "A"], director: ["X"], writer: [], isSeries: false)
+        XCTAssertEqual(starDirector.castNames, "X, A")
+
         XCTAssertEqual(DetailCredits.make(cast: [], director: ["X"], writer: [], isSeries: true).crewLabel, .createdBy)
         XCTAssertEqual(DetailCredits.make(cast: [], director: ["X", "Y", "Z"], writer: [], isSeries: false).crewNames, "X, Y")
 
@@ -183,6 +213,58 @@ final class DetailCinematicLayoutTests: XCTestCase {
                                                    movieEntryPositionMs: 5_000, movieEntryResumable: false))
         XCTAssertFalse(DetailStartOver.isAvailable(isSeries: false, seriesResumePositionMs: nil,
                                                    movieEntryPositionMs: nil, movieEntryResumable: true))
+    }
+
+    /// Review r1 #3: percentage-only progress (Trakt/Simkl, `lastPositionMs == 0`) offers Start Over.
+    func testStartOverPercentOnlyProgress() {
+        // Movie: fraction only.
+        XCTAssertTrue(DetailStartOver.isAvailable(isSeries: false, seriesResumePositionMs: nil,
+                                                  movieEntryPositionMs: 0, movieEntryFraction: 0.42,
+                                                  movieEntryResumable: true))
+        // Movie: fraction but finished.
+        XCTAssertFalse(DetailStartOver.isAvailable(isSeries: false, seriesResumePositionMs: nil,
+                                                   movieEntryPositionMs: 0, movieEntryFraction: 0.95,
+                                                   movieEntryResumable: false))
+        // Movie: nothing saved.
+        XCTAssertFalse(DetailStartOver.isAvailable(isSeries: false, seriesResumePositionMs: nil,
+                                                   movieEntryPositionMs: 0, movieEntryFraction: 0,
+                                                   movieEntryResumable: true))
+        // Series: no resume position, but the primary action's episode has a resumable fraction.
+        XCTAssertTrue(DetailStartOver.isAvailable(isSeries: true, seriesResumePositionMs: nil,
+                                                  seriesEntryFraction: 0.3, seriesEntryResumable: true,
+                                                  movieEntryPositionMs: nil, movieEntryResumable: false))
+        XCTAssertFalse(DetailStartOver.isAvailable(isSeries: true, seriesResumePositionMs: nil,
+                                                   seriesEntryFraction: 0.3, seriesEntryResumable: false,
+                                                   movieEntryPositionMs: nil, movieEntryResumable: false))
+        XCTAssertFalse(DetailStartOver.isAvailable(isSeries: true, seriesResumePositionMs: nil,
+                                                   seriesEntryFraction: 0, seriesEntryResumable: true,
+                                                   movieEntryPositionMs: nil, movieEntryResumable: false))
+    }
+
+    // MARK: - Late Play focus (review r1 #2)
+
+    func testLatePlayFocusUserMove() {
+        XCTAssertFalse(DetailLatePlayFocus.isUserMove(old: nil, new: .watched))
+        XCTAssertFalse(DetailLatePlayFocus.isUserMove(old: .watched, new: nil))
+        XCTAssertFalse(DetailLatePlayFocus.isUserMove(old: .watched, new: .watched))
+        XCTAssertTrue(DetailLatePlayFocus.isUserMove(old: .watched, new: .library))
+        XCTAssertTrue(DetailLatePlayFocus.isUserMove(old: .teaser, new: .watched))
+    }
+
+    func testLatePlayFocusClaim() {
+        func claim(cinematic: Bool = true, claimed: Bool = false, interacted: Bool = false, moved: Bool = false,
+                   inHero: Bool = true, focus: DetailHeroFocus? = .watched) -> Bool {
+            DetailLatePlayFocus.shouldClaim(isCinematic: cinematic, alreadyClaimed: claimed, userInteracted: interacted,
+                                            userMovedInHero: moved, heroHasFocus: inHero, currentFocus: focus)
+        }
+        XCTAssertTrue(claim())
+        XCTAssertTrue(claim(focus: .teaser))
+        XCTAssertFalse(claim(cinematic: false))
+        XCTAssertFalse(claim(claimed: true))
+        XCTAssertFalse(claim(interacted: true))
+        XCTAssertFalse(claim(moved: true))
+        XCTAssertFalse(claim(inHero: false))
+        XCTAssertFalse(claim(focus: .play))
     }
 
     // MARK: - Dim ramp

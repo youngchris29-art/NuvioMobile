@@ -157,8 +157,8 @@ final class DetailViewModel: ObservableObject {
         return isMdbListRatingsActive(MdbListSettingsRepository.shared.uiState.value_ as? MdbListSettings)
     }
 
-    /// `MdbListMetadataService.shouldFetchForMeta`'s settings half (its id half is checked by the
-    /// view, see `DetailRatings.hasUsableImdbId`).
+    /// `MdbListMetadataService.shouldFetchForMeta`'s settings half. The view reserves the strip's
+    /// slot from this alone (`DetailRatings.reservesSlot`, review r1 #1), not from the id half.
     private static func isMdbListRatingsActive(_ settings: MdbListSettings?) -> Bool {
         guard let settings else { return false }
         return settings.isActive && !settings.enabledProvidersInPriorityOrder().isEmpty
@@ -565,8 +565,20 @@ final class DetailViewModel: ObservableObject {
     /// movies look up the title's own entry the way the stream picker's resume path does.
     private func computeHasResumableProgress() -> Bool {
         if let meta, EpisodesSection.isSeriesLike(meta) {
+            let resumeMs = seriesAction?.resumePositionMs?.int64Value
+            // Review r1 #3: a percentage-only entry (Trakt/Simkl) leaves `resumePositionMs` nil, so
+            // read the primary action's own episode entry too. Skipped when the position decides.
+            var episodeEntry: WatchProgressEntry?
+            if (resumeMs ?? 0) <= 0, let action = seriesAction {
+                episodeEntry = WatchProgressRepository.shared.progressForVideo(
+                    videoId: action.videoId, parentMetaId: id,
+                    seasonNumber: action.seasonNumber, episodeNumber: action.episodeNumber
+                )
+            }
             return DetailStartOver.isAvailable(isSeries: true,
-                                               seriesResumePositionMs: seriesAction?.resumePositionMs?.int64Value,
+                                               seriesResumePositionMs: resumeMs,
+                                               seriesEntryFraction: episodeEntry?.progressFraction,
+                                               seriesEntryResumable: episodeEntry?.isResumable ?? false,
                                                movieEntryPositionMs: nil, movieEntryResumable: false)
         }
         if meta == nil, preview.type == "series" { return false }
@@ -576,6 +588,7 @@ final class DetailViewModel: ObservableObject {
         )
         return DetailStartOver.isAvailable(isSeries: false, seriesResumePositionMs: nil,
                                            movieEntryPositionMs: entry?.lastPositionMs,
+                                           movieEntryFraction: entry?.progressFraction,
                                            movieEntryResumable: entry?.isResumable ?? false)
     }
 

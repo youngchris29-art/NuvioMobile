@@ -274,7 +274,7 @@ final class StreamsViewModel: ObservableObject {
         case "StreamFetchFailed":
             return (String(localized: "Stream lookup failed."), nil)
         default:
-            return (String(localized: "No playable streams. Install a streaming addon, or connect a debrid account in Settings to play torrent results."), nil)
+            return (String(localized: "No playable streams. Install a streaming addon, or connect a debrid account in Settings \u{2192} Services \u{2192} Debrid to play torrent results."), nil)
         }
     }
 

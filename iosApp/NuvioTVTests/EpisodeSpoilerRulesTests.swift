@@ -14,6 +14,35 @@ final class EpisodeSpoilerRulesTests: XCTestCase {
         XCTAssertFalse(EpisodeSpoilerRules.isAired(released: "abcd-ef-ghij", todayIsoDate: today))
     }
 
+    /// Review r1 #5: a full timestamp is an instant compared against `now`, not its UTC date prefix
+    /// against the local date.
+    func testIsAiredFullTimestamp() {
+        // 2026-10-02 12:00 UTC.
+        let now = Date(timeIntervalSince1970: 1_790_942_400)
+        // Later the same UTC day: not aired yet, although its date prefix equals today.
+        XCTAssertFalse(EpisodeSpoilerRules.isAired(released: "2026-10-02T20:00:00Z", todayIsoDate: today, now: now))
+        XCTAssertFalse(EpisodeSpoilerRules.isAired(released: "2026-10-02T20:00:00.000Z", todayIsoDate: today, now: now))
+        // Earlier the same day: aired.
+        XCTAssertTrue(EpisodeSpoilerRules.isAired(released: "2026-10-02T01:00:00Z", todayIsoDate: today, now: now))
+        XCTAssertTrue(EpisodeSpoilerRules.isAired(released: "2026-10-02T01:00:00.123Z", todayIsoDate: today, now: now))
+        // Tomorrow's UTC date but already past as an instant (01:00 on the 3rd at +14:00 = 11:00 UTC on the 2nd).
+        XCTAssertTrue(EpisodeSpoilerRules.isAired(released: "2026-10-03T01:00:00+14:00", todayIsoDate: today, now: now))
+        // No zone designator: falls back to the date prefix.
+        XCTAssertTrue(EpisodeSpoilerRules.isAired(released: "2026-10-02T23:00:00", todayIsoDate: today, now: now))
+        XCTAssertFalse(EpisodeSpoilerRules.isAired(released: "2026-10-03T00:00:00", todayIsoDate: today, now: now))
+        // Bare date keeps the date path whatever the time.
+        XCTAssertTrue(EpisodeSpoilerRules.isAired(released: "2026-10-02", todayIsoDate: today, now: now))
+    }
+
+    func testAiredUnwatchedCountUsesNowForTimestamps() {
+        let now = Date(timeIntervalSince1970: 1_790_942_400)
+        let eps = [
+            facts(1, 1, "2026-10-02T01:00:00Z"),
+            facts(1, 2, "2026-10-02T20:00:00Z"),
+        ]
+        XCTAssertEqual(EpisodeSpoilerRules.airedUnwatchedCount(eps, watchedKeys: [], todayIsoDate: today, now: now), 1)
+    }
+
     private func facts(_ s: Int?, _ e: Int?, _ released: String?) -> EpisodeSpoilerRules.EpisodeFacts {
         .init(season: s, episode: e, released: released)
     }

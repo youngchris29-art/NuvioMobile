@@ -501,6 +501,12 @@ struct DetailView: View {
     /// FEAT-35: true while focus is anywhere inside the Cinematic hero (read by the hero-return
     /// scroll in W2-A, so a focus loss to a push or cover never scrolls the page).
     @FocusState private var heroHasFocus: Bool
+    /// Review r1 #2: one-shot latch for the late Play claim (`claimLatePlayFocusIfNeeded`).
+    @State private var didClaimLatePlayFocus = false
+    /// Review r1 #2: focus moved between two hero targets this visit. `onMoveCommand` only sees
+    /// moves the focus engine did not consume, so a press from Watched to Library never sets
+    /// `userInteracted`; this catches it.
+    @State private var userMovedInHero = false
     /// BUG-96 (Codex r1 P2): the anchor scroll is not animated under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// BUG-96: each row's top in the scroll content's coordinate space (layout-only changes).
@@ -1029,6 +1035,14 @@ struct DetailView: View {
         .onChange(of: userInteracted) { _, interacted in
             if interacted { cancelAutoPlayTrailer() }
         }
+        .onChange(of: heroFocus) { old, new in
+            if DetailLatePlayFocus.isUserMove(old: old, new: new) { userMovedInHero = true }
+        }
+        // Review r1 #2: the series Play button only mounts once `seriesAction` and `meta` land, so
+        // `.defaultFocus` (which runs once) had no target and focus settled on another button.
+        .onChange(of: isSeries && model.seriesAction != nil && model.meta != nil) { _, mounted in
+            if mounted { claimLatePlayFocusIfNeeded() }
+        }
         .sheet(isPresented: $showShuffleSheet, onDismiss: {
             if let route = pendingShuffleRoute {
                 pendingShuffleRoute = nil
@@ -1528,10 +1542,10 @@ struct DetailView: View {
     /// so every closure, label and identifier is shared with Classic.
     private var cinematicHero: some View {
         let ratings = DetailRatings.ordered((model.meta?.externalRatings ?? []).map { DetailRatingInput($0) })
-        // Correction F4: reserve the strip's slot only when MDBList can fetch for this title.
-        let imdbId: String? = model.meta?.imdbId
-        let ratingsGateOn = sectionRatings && model.mdbListRatingsActive
-            && DetailRatings.hasUsableImdbId(metaId: model.meta?.id, fallbackId: preview.id, imdbId: imdbId)
+        // Review r1 #1: the reserved slot comes from settings alone (no meta-dependent id check),
+        // so it never appears after first paint.
+        let ratingsGateOn = DetailRatings.reservesSlot(sectionRatings: sectionRatings,
+                                                       mdbListActive: model.mdbListRatingsActive)
         let year: String? = model.meta?.releaseInfo ?? preview.releaseInfo
         let runtime: String? = model.meta?.runtime
         let ageRating: String? = model.meta?.ageRating
@@ -1553,6 +1567,7 @@ struct DetailView: View {
                 isSeries: isSeries
             ),
             showSynopsisSheet: $showSynopsisSheet,
+            heroFocus: $heroFocus,
             onOpenSynopsis: {
                 userInteracted = true
                 withdrawTrailerBridgeIfLeaving()
@@ -1943,6 +1958,7 @@ struct DetailView: View {
                         )
                     }
                 )
+                .focused($heroFocus, equals: .trailer)
             }
 
             compactActionButtonStyle(
@@ -1960,6 +1976,8 @@ struct DetailView: View {
                 }
             )
             .tint(model.isWatched ? Theme.Palette.accent : nil)
+            // Review r1 #2: identity only (a move between hero buttons is user input).
+            .focused($heroFocus, equals: .watched)
 
             compactActionButtonStyle(
                 Button {
@@ -1976,6 +1994,7 @@ struct DetailView: View {
                 }
             )
             .tint(model.isSaved ? Theme.Palette.accent : nil)
+            .focused($heroFocus, equals: .library)
 
             // Episode shuffle: series only, and only while the global switch is on. Last in the
             // row so the existing buttons keep their positions. Accent tint = on for this show,
@@ -2002,6 +2021,7 @@ struct DetailView: View {
                     }
                 )
                 .tint(model.shuffleSettings.enabled ? Theme.Palette.accent : nil)
+                .focused($heroFocus, equals: .shuffle)
             }
         }
     }
@@ -2011,6 +2031,27 @@ struct DetailView: View {
     /// credits. Classic keeps FEAT-9's setting for every button, exactly as before.
     private func usesIconOnlyLabel(primary: Bool) -> Bool {
         detailLayout == .cinematic ? !primary : actionIconsOnly
+    }
+
+    /// Review r1 #2: once, when the series Play button first mounts, move focus onto it — Cinematic
+    /// only, only while focus is still in the hero where the engine first put it and the user has
+    /// not pressed anything. Re-checked after one runloop turn so the new button is focusable.
+    private func claimLatePlayFocusIfNeeded() {
+        func shouldClaim() -> Bool {
+            DetailLatePlayFocus.shouldClaim(isCinematic: detailLayout == .cinematic,
+                                            alreadyClaimed: didClaimLatePlayFocus,
+                                            userInteracted: userInteracted,
+                                            userMovedInHero: userMovedInHero,
+                                            heroHasFocus: heroHasFocus,
+                                            currentFocus: heroFocus)
+        }
+        guard shouldClaim() else { return }
+        Task { @MainActor in
+            await Task.yield()
+            guard shouldClaim() else { return }
+            didClaimLatePlayFocus = true
+            heroFocus = .play
+        }
     }
 
     /// FEAT-35: Start Over sits in the row only in Cinematic, and only when there is a saved
@@ -2041,6 +2082,7 @@ struct DetailView: View {
             }
         )
         .disabled(!model.isPlayEnabled)
+        .focused($heroFocus, equals: .startOver)
         .accessibilityIdentifier("detail_start_over")
     }
 

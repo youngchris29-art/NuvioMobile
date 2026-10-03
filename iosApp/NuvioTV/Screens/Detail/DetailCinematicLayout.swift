@@ -115,14 +115,14 @@ nonisolated enum DetailRatings {
         }
     }
 
-    /// Correction F4: the strip's slot is reserved only when MDBList could actually fetch for this
-    /// title — the same "has a `tt…` id somewhere" rule as `MdbListMetadataService.shouldFetchForMeta`
-    /// (meta id, the request's fallback id, or the meta's `imdb_id`).
-    static func hasUsableImdbId(metaId: String?, fallbackId: String?, imdbId: String?) -> Bool {
-        [metaId, fallbackId, imdbId].contains { value in
-            guard let value, !value.isEmpty else { return false }
-            return value.range(of: "tt\\d+", options: .regularExpression) != nil
-        }
+    /// Review r1 #1 (supersedes correction F4's id rule): the strip's slot is decided from settings
+    /// alone — the Ratings section toggle and the MDBList gate (`DetailViewModel.mdbListRatingsActive`,
+    /// seeded synchronously) — so it is fixed before the first paint. F4 also required a `tt…` id,
+    /// but for `tmdb:`/`kitsu:` items that id only arrives with the meta load, which inserted the
+    /// 44 pt slot into the bottom-anchored column after first paint (logo and meta jumped). A title
+    /// that never gets ratings keeps an empty reserved slot; that is the accepted cost.
+    static func reservesSlot(sectionRatings: Bool, mdbListActive: Bool) -> Bool {
+        sectionRatings && mdbListActive
     }
 
     /// D10: the meta line's IMDb ★ shows only with the Ratings section ON and the MDBList strip off
@@ -165,6 +165,14 @@ nonisolated enum DetailSynopsisTeaser {
         return measuredFourLineHeight.rounded(.up)
     }
 
+    /// Review r1 #10: the teaser turns into the focusable button as soon as the measurement says
+    /// the text is truncated, but turns back into plain text only while it is not focused (a
+    /// focused view that leaves the tree drops focus to wherever the engine picks).
+    static func rendersAsButton(measuredTruncated: Bool, currentlyButton: Bool, teaserFocused: Bool) -> Bool {
+        if measuredTruncated { return true }
+        return currentlyButton && teaserFocused
+    }
+
     /// The truncation decision against the resolved slot (the measured four-line height), so the
     /// teaser becomes focusable exactly when the full text needs more than the slot shows.
     static func isTruncated(fullTextHeight: CGFloat, slotHeight: CGFloat) -> Bool {
@@ -189,7 +197,9 @@ nonisolated struct DetailCreditsText: Equatable {
 }
 
 nonisolated enum DetailCredits {
-    /// "With" = the first three cast names, skipping crew names (TMDB prepends crew to `cast`).
+    /// "With" = the first three cast names after the LEADING run of crew names that TMDB prepends
+    /// to `cast` (review r1 #6: the skip stops at the first non-crew name, so an actor who also
+    /// directs or writes keeps their billing further down the list).
     /// The crew line = the first two directors; series read "Created by", because TMDB maps a show's
     /// `createdBy` into `director` and `MetaDetails` has no creator field (P1 §M conflict 2).
     static func make(cast: [String], director: [String], writer: [String], isSeries: Bool) -> DetailCreditsText {
@@ -198,7 +208,10 @@ nonisolated enum DetailCredits {
         }
         let directors = clean(director)
         let crew = Set(directors + clean(writer))
-        let castNames = clean(cast).filter { !crew.contains($0) }.prefix(3)
+        // Each crew name is skipped once: a director who also stars right after the prepended
+        // block (["Eastwood", "Eastwood", …]) keeps the actor entry.
+        var skipped = Set<String>()
+        let castNames = clean(cast).drop(while: { crew.contains($0) && skipped.insert($0).inserted }).prefix(3)
         let crewNames = directors.prefix(2)
         return DetailCreditsText(
             castNames: castNames.isEmpty ? nil : castNames.joined(separator: ", "),
@@ -233,12 +246,20 @@ nonisolated enum DetailMetaLine {
 // MARK: - Start Over
 
 nonisolated enum DetailStartOver {
-    /// Series: the primary action carries a resume position. Movie: a saved, not-yet-finished
-    /// position.
-    static func isAvailable(isSeries: Bool, seriesResumePositionMs: Int64?, movieEntryPositionMs: Int64?,
+    /// Series: the primary action carries a resume position, or the primary action's episode has a
+    /// resumable entry with progress (review r1 #3: Trakt/Simkl rows carry only a percentage, which
+    /// Play already resumes). Movie: a not-yet-finished entry with a saved position or a progress
+    /// fraction (percentage-only rows have `lastPositionMs == 0`).
+    static func isAvailable(isSeries: Bool, seriesResumePositionMs: Int64?,
+                            seriesEntryFraction: Float? = nil, seriesEntryResumable: Bool = false,
+                            movieEntryPositionMs: Int64?, movieEntryFraction: Float? = nil,
                             movieEntryResumable: Bool) -> Bool {
-        if isSeries { return (seriesResumePositionMs ?? 0) > 0 }
-        return (movieEntryPositionMs ?? 0) > 0 && movieEntryResumable
+        if isSeries {
+            if (seriesResumePositionMs ?? 0) > 0 { return true }
+            return seriesEntryResumable && (seriesEntryFraction ?? 0) > 0
+        }
+        guard movieEntryResumable else { return false }
+        return (movieEntryPositionMs ?? 0) > 0 || (movieEntryFraction ?? 0) > 0
     }
 }
 

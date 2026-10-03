@@ -54,6 +54,9 @@ struct DetailAboutSection: View {
     /// `DetailView` passes `focusedRow == .about`.
     let isFocused: Bool
 
+    /// Review r1 #7: the platter snaps instead of fading under Reduce Motion.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     static let labelColumnWidth: CGFloat = 220
     static let valueMaxWidth: CGFloat = 1100
 
@@ -83,7 +86,7 @@ struct DetailAboutSection: View {
                 .focusable()
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("detail_about")
-                .animation(.easeInOut(duration: 0.15), value: isFocused)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: isFocused)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .focusSection()

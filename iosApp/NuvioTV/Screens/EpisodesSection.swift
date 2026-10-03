@@ -21,6 +21,29 @@ struct EpisodesSection: View {
     @State private var selectedSeason: Int?
     @State private var episodeForStreams: EpisodeRoute?
     @FocusState private var focusedEpisodeId: String?
+    /// Review r1 #4: the "N aired unwatched" count, cached per (meta, season, watched keys) so a
+    /// Left/Right press (a body evaluation) does not re-read the date and re-parse every episode.
+    /// A reference held in `@State`: filling it never invalidates the view.
+    @State private var airedCountCache = AiredUnwatchedCountCache()
+
+    private func airedUnwatchedCount(season: Int?, episodes: [MetaVideo]) -> Int {
+        airedCountCache.count(
+            key: AiredUnwatchedCountCache.Key(meta: ObjectIdentifier(meta), season: season,
+                                              episodeCount: episodes.count, watchedKeys: watchedEpisodeKeys)
+        ) { todayIsoDate in
+            EpisodeSpoilerRules.airedUnwatchedCount(
+                episodes.map {
+                    EpisodeSpoilerRules.EpisodeFacts(
+                        season: $0.season?.value,
+                        episode: $0.episode?.value,
+                        released: $0.released
+                    )
+                },
+                watchedKeys: watchedEpisodeKeys,
+                todayIsoDate: todayIsoDate
+            )
+        }
+    }
 
     var body: some View {
         let grouped = Self.groupedEpisodes(meta.videos)
@@ -90,17 +113,7 @@ struct EpisodesSection: View {
             HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
                 Text(String(localized: "Episodes")).font(Theme.Font.screenTitle)
                 if hideSpoilers, let label = EpisodeSpoilerRules.airedUnwatchedLabel(
-                    count: EpisodeSpoilerRules.airedUnwatchedCount(
-                        episodes.map {
-                            EpisodeSpoilerRules.EpisodeFacts(
-                                season: $0.season?.value,
-                                episode: $0.episode?.value,
-                                released: $0.released
-                            )
-                        },
-                        watchedKeys: watchedEpisodeKeys,
-                        todayIsoDate: CurrentDateProvider.shared.todayIsoDate()
-                    ),
+                    count: airedUnwatchedCount(season: current, episodes: episodes),
                     settingOn: hideSpoilers
                 ) {
                     Text(label)
@@ -513,5 +526,27 @@ private struct SeasonPosterCard: View {
         }
         .accessibilityLabel(label)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+/// Review r1 #4: see `EpisodesSection.airedCountCache`. Today's date is read once per Detail visit
+/// (the section's lifetime), the count once per key.
+final class AiredUnwatchedCountCache {
+    struct Key: Equatable {
+        let meta: ObjectIdentifier
+        let season: Int?
+        let episodeCount: Int
+        let watchedKeys: Set<String>
+    }
+
+    private var key: Key?
+    private var cached = 0
+    private lazy var todayIsoDate: String = CurrentDateProvider.shared.todayIsoDate()
+
+    func count(key: Key, compute: (String) -> Int) -> Int {
+        if let existing = self.key, existing == key { return cached }
+        cached = compute(todayIsoDate)
+        self.key = key
+        return cached
     }
 }
