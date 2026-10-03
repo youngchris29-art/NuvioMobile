@@ -59,7 +59,7 @@ final class DetailScrollProbeTests: XCTestCase {
         app.launch()
         // Session restore + profile fetch can take well past 15 s on a cold sim launch (same wait
         // `TrailerSoakTests.launchToHome`/`NuvioTVUITests.launchToHome` use).
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
             if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }

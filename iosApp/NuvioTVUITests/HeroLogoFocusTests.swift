@@ -74,7 +74,7 @@ final class HeroLogoFocusTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += extraArguments
         app.launch()
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90),
                       "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
@@ -109,6 +109,136 @@ final class HeroLogoFocusTests: XCTestCase {
         remote.press(.select)
         pause(2)
         press(.down, times: 1)
+    }
+
+    // MARK: - Settings root navigation (detail-settings-revamp W3-C, FEAT-50)
+    //
+    // Settings is a `NavigationStack`: a root `List` of ten categories (`settings_root_list`, each
+    // row `settings_category_<raw>`) and one pushed pane per category (`settings_pane_<raw>`).
+    // Select on a root row pushes the pane and focus lands on the pane's FIRST focusable row; Menu
+    // inside a pane pops back to the root with focus on the category just left. There is no
+    // sidebar and no Right-into-the-pane step any more. Duplicated per file (house rule: every UI
+    // test file owns its helpers).
+
+    /// The fixed root order, mirroring `SettingsCategory.allCases` (SettingsView.swift).
+    private static let settingsRootOrder: [(title: String, raw: String)] = [
+        ("Account & Profiles", "accountProfiles"), ("Services", "services"), ("Appearance", "appearance"),
+        ("Home Screen", "homeScreen"), ("Detail Page", "detailPage"), ("Player", "player"),
+        ("Sources", "sources"), ("Subtitles & Audio", "subtitlesAudio"), ("About", "about"),
+        ("Developer", "developer"),
+    ]
+
+    /// Whether the Settings ROOT list is on screen (a pushed pane removes it from the tree).
+    private func settingsRootPresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_root_list"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_category_'"))
+                .firstMatch.exists
+    }
+
+    /// Whether a pushed Settings pane is on screen.
+    private func settingsPanePresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_pane_title"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_pane_'"))
+                .firstMatch.exists
+    }
+
+    /// Identifier + label of every element that reports focus, from ONE snapshot (a List row's
+    /// focus can sit on its wrapping Cell or on the inner Button; reading both in one pass avoids
+    /// the per-element `hasFocus` sweep).
+    private func focusedNodes(_ app: XCUIApplication) -> [(identifier: String, label: String)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(identifier: String, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { out.append((node.identifier, node.label)) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// The title of the focused Settings ROOT row, or nil. Detected by the row's identifier
+    /// (`settings_category_<raw>`) or by a focused element whose label begins with a category
+    /// title (corrections F9).
+    private func focusedSettingsRootTitle(_ app: XCUIApplication) -> String? {
+        let nodes = focusedNodes(app)
+        for node in nodes where node.identifier.hasPrefix("settings_category_") {
+            let raw = String(node.identifier.dropFirst("settings_category_".count))
+            if let entry = Self.settingsRootOrder.first(where: { $0.raw == raw }) { return entry.title }
+        }
+        for node in nodes {
+            if let entry = Self.settingsRootOrder.first(where: { node.label.hasPrefix($0.title) }) { return entry.title }
+        }
+        return nil
+    }
+
+    /// Opens the Settings tab and makes sure the ROOT list is showing: pops any pane the persisted
+    /// path left open (Menu only while a pane is up and the root is absent — Menu AT the root
+    /// reveals the sidebar or leaves the app). Returns whether the root is on screen.
+    @discardableResult
+    private func enterSettingsRoot(_ app: XCUIApplication) -> Bool {
+        openTab(app, named: "Settings")
+        pause(0.8)
+        for _ in 0..<3 where !settingsRootPresent(app) && settingsPanePresent(app) {
+            remote.press(.menu)
+            pause(1.2)
+        }
+        return settingsRootPresent(app)
+    }
+
+    /// With the root showing, puts focus on the root row `title` WITHOUT pushing it.
+    ///
+    /// Arrival is detected by identifier / focused label; when detection never fires the walk falls
+    /// back to the fixed root order: Down ×12 parks on the LAST row (Down from the last row does
+    /// nothing), then Up by the distance. (Up ×12 to the tab bar then Down is NOT deterministic:
+    /// Down from the tab bar lands on the root's preferred row, which is the last category opened,
+    /// not the first.) Returns whether arrival was DETECTED (false after a blind fallback).
+    @discardableResult
+    private func focusSettingsRootRow(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let index = Self.settingsRootOrder.firstIndex(where: { $0.title == title }) else {
+            XCTFail("focusSettingsRootRow: unknown category '\(title)'")
+            return false
+        }
+        if focusedSettingsRootTitle(app) == title { return true }
+        for _ in 0..<10 {
+            remote.press(.down)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        for _ in 0..<10 {
+            remote.press(.up)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        press(.down, times: 12, gap: 0.4)
+        press(.up, times: Self.settingsRootOrder.count - 1 - index, gap: 0.6)
+        pause(0.6)
+        return focusedSettingsRootTitle(app) == title
+    }
+
+    /// Opens Settings, returns to the root, focuses the category `title` and pushes it. Returns
+    /// whether `settings_pane_<raw>` appeared.
+    @discardableResult
+    private func openSettingsCategory(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let entry = Self.settingsRootOrder.first(where: { $0.title == title }) else {
+            XCTFail("openSettingsCategory: unknown category '\(title)'")
+            return false
+        }
+        guard enterSettingsRoot(app) else {
+            XCTFail("openSettingsCategory(\(title)): the Settings root list never appeared")
+            return false
+        }
+        focusSettingsRootRow(app, named: title)
+        remote.press(.select)
+        pause(1.5)
+        return app.descendants(matching: .any)["settings_pane_\(entry.raw)"].waitForExistence(timeout: 4)
+    }
+
+    /// Settings › Developer (the probe readouts moved here from About in the revamp).
+    @discardableResult
+    private func openDeveloper(_ app: XCUIApplication) -> Bool {
+        openSettingsCategory(app, named: "Developer")
     }
 
     /// Reads the `hero_probe_lines`/`hero_probe_blob` ring buffer (`AboutSettingsPane.swift`).
@@ -163,14 +293,13 @@ final class HeroLogoFocusTests: XCTestCase {
         return tokens.count > 1 ? String(tokens[1]) : nil
     }
 
-    /// Navigates Settings → About and reads the probe buffer.
+    /// Navigates Settings → Developer (About until the revamp) and reads the probe buffer.
     @discardableResult
     private func readHeroProbeAboutPane(_ app: XCUIApplication, shotPrefix: String) -> [String] {
-        openTab(app, named: "Settings")
-        let about = app.buttons["About"]
-        _ = moveFocus(.down, until: about, max: 8)
-        press(.right, times: 1)
-        pause(1.5)
+        // Revamp (FEAT-50): the probe readouts moved from About into the Developer pane, reached
+        // root → push (no sidebar, no Right step).
+        XCTAssertTrue(openDeveloper(app), "Settings › Developer pane did not open")
+        pause(1.0)
         XCTContext.runActivity(named: "\(shotPrefix)_about_probe") { activity in
             let attachment = XCTAttachment(screenshot: app.screenshot())
             attachment.name = "\(shotPrefix)_about_probe"

@@ -207,7 +207,7 @@ final class NuvioTVUITests: XCTestCase {
         if extraArguments.isEmpty && !forceFreshLaunch && app.state == .runningForeground {
             app.activate()
             pause(2)
-            let chris = app.buttons["Chris"]
+            let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
             if chris.waitForExistence(timeout: 8) {
                 if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
                 remote.press(.select)
@@ -265,7 +265,7 @@ final class NuvioTVUITests: XCTestCase {
         app.launch()
         // Session restore + profile fetch can take well past 15s on a cold sim launch; a short wait
         // silently dropped the suite onto the sign-in screen and every screenshot was of AuthView.
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         XCTAssertTrue(chris.waitForExistence(timeout: 90), "profile picker never appeared — is the sim session still signed in?")
         if chris.exists {
             if !chris.hasFocus { press(.left, times: 3, gap: 0.5) }
@@ -284,31 +284,6 @@ final class NuvioTVUITests: XCTestCase {
             pause(0.7)
         }
         return element.exists && element.hasFocus
-    }
-
-    /// Moves focus to a Settings SIDEBAR category row by name. beta.15 §C5 root-cause finding
-    /// (confirmed via `app.debugDescription`, not guessed): the native List wraps every sidebar
-    /// row in a `Cell` that carries the real "Focused" accessibility trait — `app.buttons[name]`
-    /// (the label this harness has always queried) NEVER reports `hasFocus`, only the
-    /// wrapping Cell does. `moveFocus(until: app.buttons["Appearance"], max: 10)` therefore never
-    /// detects arrival and silently burns its whole press budget, overshooting to wherever that
-    /// many Down presses land — in one captured run that was "About" (the LAST category) while
-    /// aiming for "Appearance" (2 rows down), because the sidebar has 7 categories and category
-    /// walks that target something other than the first/last row in the walked direction were
-    /// landing on the wrong pane's content entirely (test04/test16's real failure mode: they were
-    /// asserting About's debug rows, not Appearance's). Checks `app.cells[title]` in addition to
-    /// the button so arrival is actually detected.
-    @discardableResult
-    private func moveToSidebarRow(_ app: XCUIApplication, _ direction: XCUIRemote.Button, named title: String, max: Int = 12) -> Bool {
-        let button = app.buttons[title]
-        let cell = app.cells[title]
-        func focused() -> Bool { button.hasFocus || (cell.exists && cell.hasFocus) }
-        for _ in 0..<max {
-            if button.exists && focused() { return true }
-            remote.press(direction)
-            pause(0.7)
-        }
-        return button.exists && focused()
     }
 
     /// From Home content, walk up to the tab bar, right to the wanted tab, and enter it.
@@ -366,6 +341,136 @@ final class NuvioTVUITests: XCTestCase {
         remote.press(.select)
         pause(2)
         press(.down, times: 1)
+    }
+
+    // MARK: - Settings root navigation (detail-settings-revamp W3-C, FEAT-50)
+    //
+    // Settings is a `NavigationStack`: a root `List` of ten categories (`settings_root_list`, each
+    // row `settings_category_<raw>`) and one pushed pane per category (`settings_pane_<raw>`).
+    // Select on a root row pushes the pane and focus lands on the pane's FIRST focusable row; Menu
+    // inside a pane pops back to the root with focus on the category just left. There is no
+    // sidebar and no Right-into-the-pane step any more. Duplicated per file (house rule: every UI
+    // test file owns its helpers).
+
+    /// The fixed root order, mirroring `SettingsCategory.allCases` (SettingsView.swift).
+    private static let settingsRootOrder: [(title: String, raw: String)] = [
+        ("Account & Profiles", "accountProfiles"), ("Services", "services"), ("Appearance", "appearance"),
+        ("Home Screen", "homeScreen"), ("Detail Page", "detailPage"), ("Player", "player"),
+        ("Sources", "sources"), ("Subtitles & Audio", "subtitlesAudio"), ("About", "about"),
+        ("Developer", "developer"),
+    ]
+
+    /// Whether the Settings ROOT list is on screen (a pushed pane removes it from the tree).
+    private func settingsRootPresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_root_list"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_category_'"))
+                .firstMatch.exists
+    }
+
+    /// Whether a pushed Settings pane is on screen.
+    private func settingsPanePresent(_ app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)["settings_pane_title"].exists
+            || app.descendants(matching: .any)
+                .matching(NSPredicate(format: "identifier BEGINSWITH 'settings_pane_'"))
+                .firstMatch.exists
+    }
+
+    /// Identifier + label of every element that reports focus, from ONE snapshot (a List row's
+    /// focus can sit on its wrapping Cell or on the inner Button; reading both in one pass avoids
+    /// the per-element `hasFocus` sweep).
+    private func focusedNodes(_ app: XCUIApplication) -> [(identifier: String, label: String)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(identifier: String, label: String)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.hasFocus { out.append((node.identifier, node.label)) }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// The title of the focused Settings ROOT row, or nil. Detected by the row's identifier
+    /// (`settings_category_<raw>`) or by a focused element whose label begins with a category
+    /// title (corrections F9).
+    private func focusedSettingsRootTitle(_ app: XCUIApplication) -> String? {
+        let nodes = focusedNodes(app)
+        for node in nodes where node.identifier.hasPrefix("settings_category_") {
+            let raw = String(node.identifier.dropFirst("settings_category_".count))
+            if let entry = Self.settingsRootOrder.first(where: { $0.raw == raw }) { return entry.title }
+        }
+        for node in nodes {
+            if let entry = Self.settingsRootOrder.first(where: { node.label.hasPrefix($0.title) }) { return entry.title }
+        }
+        return nil
+    }
+
+    /// Opens the Settings tab and makes sure the ROOT list is showing: pops any pane the persisted
+    /// path left open (Menu only while a pane is up and the root is absent — Menu AT the root
+    /// reveals the sidebar or leaves the app). Returns whether the root is on screen.
+    @discardableResult
+    private func enterSettingsRoot(_ app: XCUIApplication) -> Bool {
+        openTab(app, named: "Settings")
+        pause(0.8)
+        for _ in 0..<3 where !settingsRootPresent(app) && settingsPanePresent(app) {
+            remote.press(.menu)
+            pause(1.2)
+        }
+        return settingsRootPresent(app)
+    }
+
+    /// With the root showing, puts focus on the root row `title` WITHOUT pushing it.
+    ///
+    /// Arrival is detected by identifier / focused label; when detection never fires the walk falls
+    /// back to the fixed root order: Down ×12 parks on the LAST row (Down from the last row does
+    /// nothing), then Up by the distance. (Up ×12 to the tab bar then Down is NOT deterministic:
+    /// Down from the tab bar lands on the root's preferred row, which is the last category opened,
+    /// not the first.) Returns whether arrival was DETECTED (false after a blind fallback).
+    @discardableResult
+    private func focusSettingsRootRow(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let index = Self.settingsRootOrder.firstIndex(where: { $0.title == title }) else {
+            XCTFail("focusSettingsRootRow: unknown category '\(title)'")
+            return false
+        }
+        if focusedSettingsRootTitle(app) == title { return true }
+        for _ in 0..<10 {
+            remote.press(.down)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        for _ in 0..<10 {
+            remote.press(.up)
+            pause(0.6)
+            if focusedSettingsRootTitle(app) == title { return true }
+        }
+        press(.down, times: 12, gap: 0.4)
+        press(.up, times: Self.settingsRootOrder.count - 1 - index, gap: 0.6)
+        pause(0.6)
+        return focusedSettingsRootTitle(app) == title
+    }
+
+    /// Opens Settings, returns to the root, focuses the category `title` and pushes it. Returns
+    /// whether `settings_pane_<raw>` appeared.
+    @discardableResult
+    private func openSettingsCategory(_ app: XCUIApplication, named title: String) -> Bool {
+        guard let entry = Self.settingsRootOrder.first(where: { $0.title == title }) else {
+            XCTFail("openSettingsCategory: unknown category '\(title)'")
+            return false
+        }
+        guard enterSettingsRoot(app) else {
+            XCTFail("openSettingsCategory(\(title)): the Settings root list never appeared")
+            return false
+        }
+        focusSettingsRootRow(app, named: title)
+        remote.press(.select)
+        pause(1.5)
+        return app.descendants(matching: .any)["settings_pane_\(entry.raw)"].waitForExistence(timeout: 4)
+    }
+
+    /// Settings › Developer (the probe readouts moved here from About in the revamp).
+    @discardableResult
+    private func openDeveloper(_ app: XCUIApplication) -> Bool {
+        openSettingsCategory(app, named: "Developer")
     }
 
     /// Types `text` on the tvOS full-screen system keyboard by walking to each letter key in turn
@@ -586,28 +691,34 @@ final class NuvioTVUITests: XCTestCase {
     /// Run explicitly via -only-testing when a repro session left the profile hero-off.
     func test00zRestoreShowHeroOn() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        press(.down, times: 1)   // Home Screen category (activates on focus)
-        pause(1.5)
-        // Enter the pane, then walk UP until the FOCUSED row is Show Hero (the pane's first row;
-        // entering can land focus on any row — the previous attempt selected whatever had focus
-        // and collaterally toggled Trailers on Focus OFF). 26.5 reports hasFocus reliably.
-        press(.right, times: 1)
-        pause(1.0)
-        func focusedButton() -> XCUIElement {
-            app.buttons.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        // Revamp (FEAT-50): push the Home Screen pane from the Settings root. The push lands on
+        // the pane's FIRST row, which is now "Upcoming Episodes" — Show Hero sits one row below
+        // it — so walk DOWN to Show Hero (Up as the fallback), never selecting an unverified row:
+        // the attempt before this walk existed selected whatever had focus and collaterally
+        // toggled Trailers on Focus OFF.
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
+        // The focused row: its wrapping Cell (composed "Title, …, On/Off" label) or the inner
+        // control, via the union helper. A toggle's state is on `.value` for the control and at
+        // the end of the Cell's composed label, so read both.
+        func focusedLabel() -> String { focusedButton(app)?.label ?? "" }
+        func focusedIsOff() -> Bool {
+            guard let row = focusedButton(app) else { return false }
+            return (row.value as? String) == "Off" || (row.value as? String) == "0" || row.label.hasSuffix(", Off") || row.label.hasSuffix("Off")
         }
         for _ in 0..<6 {
-            if focusedButton().label.contains("Show Hero") { break }
+            if focusedLabel().contains("Show Hero") { break }
+            press(.down, times: 1)
+            pause(0.8)
+        }
+        for _ in 0..<6 {
+            if focusedLabel().contains("Show Hero") { break }
             press(.up, times: 1)
             pause(0.8)
         }
         shot(app, "00z_before_toggle")
-        XCTAssertTrue(focusedButton().label.contains("Show Hero"),
-                      "focus must be on the Show Hero row before toggling, got: \(focusedButton().label)")
-        if focusedButton().label.contains("Off") {
+        XCTAssertTrue(focusedLabel().contains("Show Hero"),
+                      "focus must be on the Show Hero row before toggling, got: \(focusedLabel())")
+        if focusedLabel().contains("Show Hero"), focusedIsOff() {
             remote.press(.select)
             pause(2.0)
         }
@@ -615,10 +726,15 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Hero Sources"].waitForExistence(timeout: 6),
                       "Show Hero must be ON (Hero Sources group renders only then)")
 
-        // Repair the collateral from the previous attempt: Trailers on Focus back ON.
-        press(.down, times: 1)
-        pause(0.8)
-        if focusedButton().label.contains("Trailers on Focus"), focusedButton().label.contains("Off") {
+        // Repair the collateral from the previous attempt: Trailers on Focus back ON. It sits a
+        // few rows below Show Hero once the hero group is expanded (Nuvio-Style Hero, Hero
+        // Sources), so walk to it by label instead of a fixed count.
+        for _ in 0..<5 {
+            if focusedLabel().contains("Trailers on Focus") { break }
+            press(.down, times: 1)
+            pause(0.8)
+        }
+        if focusedLabel().contains("Trailers on Focus"), focusedIsOff() {
             remote.press(.select)
             pause(1.5)
         }
@@ -635,72 +751,46 @@ final class NuvioTVUITests: XCTestCase {
         openTab(app, named: "Settings")
         shot(app, "04a_settings")
 
-        // Appearance category → the two Detail-page toggle rows. ("Trailers on Focus" lives in
-        // the Home Screen category, not here — asserted in the 04c step below.)
-        //
-        // beta.15 §C5, two stacked root-cause findings from an `app.debugDescription`
-        // investigation (not guessed):
-        // (1) `moveFocus(until: app.buttons["Appearance"], ...)` never detects arrival — the
-        //     sidebar's native-List "Focused" trait lives on the row's wrapping `Cell`, not the
-        //     inner Button this harness queries by label — so it silently burns its whole press
-        //     budget and can overshoot past the intended category entirely (a captured run
-        //     landed on "About", the LAST category, while aiming for "Appearance" two rows down).
-        //     Fixed via `moveToSidebarRow`, which also checks a same-labeled Cell.
-        // (2) the detail pane is a real native `List`: unlike the pre-C1 hand-rolled ScrollView
-        //     (which rendered every row up front), a List only mounts rows near the current focus
-        //     — a bare existence check for a row several sections down (Auto-Play Trailer /
-        //     Poster in Detail Background, both in the Poster Style section, well past Theme)
-        //     fails even with a generous `waitForExistence` because nothing ever scrolls it into
-        //     view. Entering the pane (press Right) and walking to each row with
-        //     `walkToRowByTreeIndex` (the existing hop-to-last-materialized-row technique) fixes
-        //     this instead of assuming the row is already on screen.
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        shot(app, "04b_appearance")
-        let appearanceSidebarX = appearance.frame.maxX
+        // Revamp (FEAT-50): the two Detail-page rows moved from Appearance into their own
+        // "Detail Page" pane. Settings is a root list + pushed panes now: `openSettingsCategory`
+        // pushes the pane and focus lands on its first row (no sidebar, no Right). The pane is
+        // still a lazy native `List`, so each row is reached with `walkToRowByTreeIndex` (the
+        // hop-to-last-materialised-row walk) rather than assumed to be on screen. "Poster in
+        // Detail Background" (Layout section) sits above "Auto-Play Trailer on Detail" (Trailers
+        // section), so walk them in that order — both walks only move down.
+        XCTAssertTrue(openSettingsCategory(app, named: "Detail Page"), "Settings › Detail Page pane did not open")
+        shot(app, "04b_detail_page")
         func rowExists(_ prefix: String) -> Bool {
             app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).firstMatch.exists
         }
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Auto-Play Trailer on Detail", sidebarMaxX: appearanceSidebarX, category: "Appearance")
-        XCTAssertTrue(rowExists("Auto-Play Trailer on Detail"), "Auto-Play Trailer row missing")
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Poster in Detail Background", sidebarMaxX: appearanceSidebarX, category: "Appearance")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Poster in Detail Background", sidebarMaxX: 0, category: "Detail Page")
         XCTAssertTrue(rowExists("Poster in Detail Background"), "Poster in Detail Background row missing")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Auto-Play Trailer on Detail", sidebarMaxX: 0, category: "Detail Page")
+        XCTAssertTrue(rowExists("Auto-Play Trailer on Detail"), "Auto-Play Trailer row missing")
 
-        // "Home Screen" category (the Home Rows *section* lives inside it) sits directly below
-        // Appearance in the sidebar, and categories activate on FOCUS.
-        //
-        // beta.15 §C5 finding (from a captured screenshot, not guessed): `press(.left, times: 1)`
-        // + `moveToSidebarRow(down, named: "Home Screen", max: 4)` overshot all the way to
-        // "About" (the LAST category — the detail pane in "04c_home_rows" showed About's Commit/
-        // tvOS/Device/Source rows) even though the same helper correctly stopped at "Appearance"
-        // moments earlier in this same test. The Cell-focus detection this helper relies on is
-        // not consistently reliable turn-to-turn, so rather than trust it for a NON-terminal,
-        // small-distance move, anchor at a known EXTREME position first (Up until Account &
-        // Services — a no-op past the top, so it lands there regardless of whether detection
-        // fires) and then walk the sidebar's fixed, never-reordered category list by a plain
-        // press COUNT, which needs no focus detection to be correct.
-        press(.left, times: 1)
-        pause(1)
-        _ = moveToSidebarRow(app, .up, named: "Account & Services", max: 10)
-        pause(0.5)
-        let homeScreen = app.buttons["Home Screen"]
-        press(.down, times: 3, gap: 0.6) // Account & Services → Playback → Appearance → Home Screen
+        // Home Screen leg: Menu pops back to the root with focus on Detail Page (index 4); Home
+        // Screen is the row directly above it (index 3), then Select pushes it.
+        remote.press(.menu)
         pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4)
+                      || app.descendants(matching: .any)["settings_category_homeScreen"].exists,
+                      "Menu from the Detail Page pane must pop back to the Settings root")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Detail Page", "pop must return focus to the Detail Page row")
+        press(.up, times: 1)
+        pause(0.8)
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Home Screen", "Up from Detail Page must land on Home Screen")
+        remote.press(.select)
+        pause(1.5)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4),
+                      "Select on Home Screen must push its pane")
         shot(app, "04c_home_rows")
-        let homeScreenSidebarX = homeScreen.frame.maxX
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Show Hero", sidebarMaxX: homeScreenSidebarX, category: "Home Screen")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Show Hero", sidebarMaxX: 0, category: "Home Screen")
         XCTAssertTrue(rowExists("Show Hero"), "Show Hero row missing")
         // Hero Sources is a disclosure Button (SettingsDisclosureRow) directly below "Nuvio-Style
         // Hero", not a toggle — its composed label is "Hero Sources, <summary>".
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Hero Sources", sidebarMaxX: homeScreenSidebarX, category: "Home Screen")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Hero Sources", sidebarMaxX: 0, category: "Home Screen")
         XCTAssertTrue(rowExists("Hero Sources"), "Hero Sources group missing")
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Trailers on Focus", sidebarMaxX: homeScreenSidebarX, category: "Home Screen")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Trailers on Focus", sidebarMaxX: 0, category: "Home Screen")
         XCTAssertTrue(rowExists("Trailers on Focus"), "Trailers on Focus row missing")
         shot(app, "04d_hero_sources_list")
     }
@@ -753,16 +843,10 @@ final class NuvioTVUITests: XCTestCase {
         pause(3) // let row artwork decode
         shot(app, "07a_cards_baseline")
 
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // Into the content pane: Corners → "Round" (28pt — the biggest visual jump from the
         // default 12).
-        press(.right, times: 1)
-        pause(1)
         let round = app.buttons["Round"]
         if !moveFocus(.down, until: round, max: 16) { _ = moveFocus(.up, until: round, max: 16) }
         if round.exists && round.hasFocus {
@@ -837,13 +921,7 @@ final class NuvioTVUITests: XCTestCase {
         pause(3)
         shot(app, "09a_cards_depth_should_be_on")
 
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         let square = app.buttons["Square"]
         if moveFocus(.down, until: square, max: 16) {
@@ -897,13 +975,7 @@ final class NuvioTVUITests: XCTestCase {
     /// pane, card depth second).
     func test12ResetAppearanceDefaults() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         let resets = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Reset to Defaults'"))
         // Poster style reset.
         let posterReset = resets.element(boundBy: 0)
@@ -927,13 +999,7 @@ final class NuvioTVUITests: XCTestCase {
     /// and a focused ON toggle row. Restores the Ocean theme at the end (theme syncs per profile).
     func test13WhiteThemeContrast() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         // The theme swatches are the pane's FIRST row — walk RIGHT along it to White.
         let white = app.buttons["White"]
         _ = moveFocus(.right, until: white, max: 8)
@@ -943,25 +1009,34 @@ final class NuvioTVUITests: XCTestCase {
         }
         shot(app, "13a_white_theme_applied")
 
-        // The money shot pre-fix: walk focus back to the SIDEBAR — the focused row is always the
-        // selected category, whose label was raw accent (white on the white platter).
-        press(.left, times: 8, gap: 0.6)
-        pause(1)
-        shot(app, "13b_sidebar_focused_selected")
+        // The money shot pre-fix was the focused + selected category row (raw accent label on
+        // the white platter). Revamp: there is no sidebar; Menu pops the pane back to the
+        // Settings root with focus on the Appearance row, which is that same surface now.
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "13b_root_category_focused")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "Menu from Appearance must pop to the root with focus on Appearance")
 
-        // Back into the pane: focus an ON toggle row (Auto-Play Trailer defaults on for this
-        // profile) so the checkmark renders on the white platter.
-        press(.right, times: 1)
-        pause(1)
-        let autoPlay = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Auto-Play Trailer'")).firstMatch
-        _ = moveFocus(.down, until: autoPlay, max: 16)
+        // Back into the pane (Select re-pushes it, landing on the swatches), then focus a toggle
+        // row so the switch renders on the white platter. Auto-Play Trailer moved to the Detail
+        // Page pane in the revamp; Accent Focus Ring is the Appearance toggle directly below the
+        // swatches.
+        remote.press(.select)
+        pause(1.5)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4), "Select on Appearance must re-push the pane")
+        press(.down, times: 1)
         pause(1)
         shot(app, "13c_toggle_row_focused")
 
-        // Restore the Ocean theme (the account's real setting): back up to the swatch row,
-        // then walk left along it.
+        // Restore the Ocean theme (the account's real setting): climb to the swatch row (it
+        // reports focus; Up past it goes to the tab bar, so stop on it), then walk along it.
         let ocean = app.buttons["Ocean"]
-        press(.up, times: 4, gap: 0.6)
+        let swatches = ["Crimson", "Ocean", "Violet", "Emerald", "Amber", "Rose", "White"]
+        for _ in 0..<6 {
+            if swatches.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            remote.press(.up)
+            pause(0.6)
+        }
         if !moveFocus(.left, until: ocean, max: 8) { _ = moveFocus(.right, until: ocean, max: 8) }
         if ocean.exists && ocean.hasFocus {
             remote.press(.select)
@@ -979,13 +1054,7 @@ final class NuvioTVUITests: XCTestCase {
         // fresh launch (repo state truth)" — forceFreshLaunch makes that literal, and makes the
         // test independent of test10's end state (which fed it the springboard escape in-suite).
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         let medium = app.buttons["Medium"]
         _ = moveFocus(.down, until: medium, max: 10)
         pause(1)
@@ -1092,17 +1161,11 @@ final class NuvioTVUITests: XCTestCase {
         // guarantees the sidebar-default Settings entry this test's walk assumes.
         let app = launchToHome(forceFreshLaunch: true)
 
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         // FEAT-14: opt-in "Accent Focus Ring" toggle (default OFF), Theme section — the first
-        // section in the pane, so content-pane focus (the press(.right, 1) above lands on the
-        // theme swatches row) reaches it in a single Down press. Screenshot + existence/label
-        // check only — do NOT select it, this test asserts the OFF default, not the ON behavior.
+        // section in the pane, so the push (which lands on the theme swatches row) reaches it in
+        // a single Down press. Screenshot + existence/label check only — do NOT select it, this
+        // test asserts the OFF default, not the ON behavior.
         // beta.15 §C5: SettingsToggleRow is now a real `Toggle` whose resolved element type is
         // ambiguous between `.switch` and `.toggle` on this SDK (see focusedButton's comment) —
         // looked up via `descendants(matching: .any)` rather than either type-scoped query. The
@@ -1112,38 +1175,42 @@ final class NuvioTVUITests: XCTestCase {
         let accentRing = app.descendants(matching: .any).matching(
             NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'")
         ).firstMatch
-        _ = moveFocus(.down, until: accentRing, max: 8)
+        press(.down, times: 1)
         pause(1)
         shot(app, "16c_accent_ring_toggle_default_off")
         XCTAssertTrue(accentRing.exists, "FEAT-14 Accent Focus Ring toggle must exist in the Theme section")
+        // Scan every same-labelled candidate (Cell / Button / Switch / StaticText): `firstMatch`
+        // can be the bare StaticText, which carries no value at all (g3 run: "got: Optional()").
+        let ringCandidates = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'"))
+            .allElementsBoundByIndex
+            .map { "t\($0.elementType.rawValue):v=<\(String(describing: $0.value))>:l=<\($0.label.suffix(16))>" }
+            .joined(separator: " | ")
         XCTAssertEqual(
-            toggleState(accentRing), false,
-            "Accent Focus Ring must default OFF, got: \(String(describing: accentRing.value)) / label: \(accentRing.label)"
+            toggleState(app: app, labelPrefix: "Accent Focus Ring"), false,
+            "Accent Focus Ring must default OFF — candidates: \(ringCandidates)"
         )
 
         let renamed = app.descendants(matching: .any).matching(
             NSPredicate(format: "label BEGINSWITH 'Hide Hero Artwork'")
         ).firstMatch
-        _ = moveFocus(.down, until: renamed, max: 16)
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Hide Hero Artwork", sidebarMaxX: 0, category: "Appearance")
         pause(1)
         shot(app, "16a_hero_toggle_renamed")
         XCTAssertTrue(renamed.waitForExistence(timeout: 4), "renamed BUG-24 toggle must exist in Appearance")
 
-        press(.left, times: 1)
-        pause(1)
-        let contentSources = app.buttons["Content Sources"]
-        if !moveToSidebarRow(app, .down, named: "Content Sources", max: 10) {
-            _ = moveToSidebarRow(app, .up, named: "Content Sources", max: 10)
-        }
-        remote.press(.select)
+        // Search Sources leg (FEAT-10). Revamp: "Content Sources" is now the "Sources" pane, and
+        // the Search section sits behind ~15 focusable rows (Auto-Play, source Filters, TMDB,
+        // MDBList, Library & Watch Progress), so walk to its first row by label instead of a
+        // fixed Down count. Menu pops Appearance back to the root first.
+        remote.press(.menu)
         pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        // Walk down far enough to bring the Search Sources section into view (it sits below
-        // the TMDB and MDBList sections).
-        press(.down, times: 10, gap: 0.6)
+        XCTAssertTrue(openSettingsCategory(app, named: "Sources"), "Settings › Sources pane did not open")
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Recent Searches", sidebarMaxX: 0, category: "Sources")
         pause(1)
         shot(app, "16b_search_sources_section")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Recent Searches'")).firstMatch.exists,
+                      "Recent Searches row (Search Sources section) missing from the Sources pane")
         XCTAssertTrue(app.state == .runningForeground)
     }
 
@@ -1171,16 +1238,16 @@ final class NuvioTVUITests: XCTestCase {
         pause(8)
         ux6Probe(app, "17a_detail_opened")
         shot(app, "17a_detail_top")
-        // beta.18 verdict (BUG-127): the synopsis lives on its own panel now.
-        // The hero-CTA path does not open a Detail on every fixture state (the first beta.18 run
-        // stayed on Home: `debug_ux6 MISSING`), so the panel is asserted only when the page did
-        // open; test33 carries the reliable panel proof.
+        // FEAT-35 (Cinematic, the default layout): the synopsis is the hero's four-line teaser
+        // (`detail_synopsis_teaser`), not the beta.18 panel (`detail_synopsis_panel` is Classic
+        // only — test80). The hero-CTA path does not open a Detail on every fixture state (the
+        // first beta.18 run stayed on Home: `debug_ux6 MISSING`), so the teaser is asserted only
+        // when the page did open; test33 carries the reliable proof.
         if app.staticTexts["debug_ux6"].exists {
-            let panelShown = app.descendants(matching: .any)["detail_synopsis_panel"].waitForExistence(timeout: 5)
-                || app.descendants(matching: .any)["detail_synopsis_text"].waitForExistence(timeout: 2)
-            XCTAssertTrue(panelShown, "detail_synopsis_panel missing on Detail (title may have no overview)")
+            let teaserShown = app.descendants(matching: .any)["detail_synopsis_teaser"].waitForExistence(timeout: 5)
+            XCTAssertTrue(teaserShown, "detail_synopsis_teaser missing on a Cinematic Detail (title may have no overview)")
         }
-        shot(app, "17c_synopsis_panel")
+        shot(app, "17c_synopsis_teaser")
 
         press(.down, times: 4, gap: 1.0)
         pause(1.5)
@@ -1203,39 +1270,41 @@ final class NuvioTVUITests: XCTestCase {
     /// focus positions and this harness already accepts duplication over shared helpers).
     func test18FocusedSettingsRowLegibility() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // Accent Focus Ring toggle (Theme section, top of pane) — one Down press from the
-        // swatches row that content-pane focus lands on. Real `Toggle` = `.switch` (C5).
-        let accentRing = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label BEGINSWITH 'Accent Focus Ring'")
-        ).firstMatch
-        _ = moveFocus(.down, until: accentRing, max: 8)
+        // swatches row the push lands on. Revamp: toggle rows report focus only on their Cell, so
+        // a `moveFocus(until:)` on the label could overshoot; use the fixed one-row step.
+        press(.down, times: 1)
         pause(1)
         shot(app, "18a_row_focused_dark")
 
-        // Back up to the swatch row, then right along it to White (test13's walk).
-        press(.up, times: 4, gap: 0.6)
+        // Back up to the swatch row (Up from the swatches leaves for the tab bar, so climb one row
+        // at a time and stop on a focused swatch), then along it to White (test13's walk).
+        let swatches = ["Crimson", "Ocean", "Violet", "Emerald", "Amber", "Rose", "White"]
+        func climbToSwatches() {
+            for _ in 0..<6 {
+                if swatches.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { return }
+                remote.press(.up)
+                pause(0.6)
+            }
+        }
+        climbToSwatches()
         let white = app.buttons["White"]
         if !moveFocus(.right, until: white, max: 8) { _ = moveFocus(.left, until: white, max: 8) }
         if white.exists && white.hasFocus {
             remote.press(.select)
-            pause(2.5) // theme change rebuilds the tree (.id flip)
+            pause(2.5) // theme change rebuilds the tree (.id flip); the pane survives (path restore)
         }
 
-        // Refocus the same toggle row under the new theme.
-        _ = moveFocus(.down, until: accentRing, max: 8)
+        // Refocus the same toggle row under the new theme (focus returns to the pressed swatch).
+        climbToSwatches()
+        press(.down, times: 1)
         pause(1)
         shot(app, "18b_row_focused_white")
 
         // Restore Ocean (the account's real setting) so later tests aren't affected.
-        press(.up, times: 4, gap: 0.6)
+        climbToSwatches()
         let ocean = app.buttons["Ocean"]
         if !moveFocus(.left, until: ocean, max: 8) { _ = moveFocus(.right, until: ocean, max: 8) }
         if ocean.exists && ocean.hasFocus {
@@ -1849,18 +1918,16 @@ final class NuvioTVUITests: XCTestCase {
     /// about color itself (the measurement is done on the exported PNGs).
     func test25HomeScreenPaneContrast() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let homeScreen = app.buttons["Home Screen"]
-        _ = moveToSidebarRow(app, .down, named: "Home Screen", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
 
         // Fixed press counts, no hasFocus: `SettingsToggleRow` buttons do not report focus to
         // XCUITest even on 26.5 (the first probe run walked straight past both toggles to the
-        // Catalogs row) — itself a data point for BUG-45's focus-propagation hypothesis. The
-        // pane's first focusable row is the Show Hero toggle; one Down is Nuvio-Style Hero.
+        // Catalogs row) — itself a data point for BUG-45's focus-propagation hypothesis.
+        // Revamp: the push lands on the pane's FIRST row, which is now "Upcoming Episodes"; Show
+        // Hero is one Down below it and Nuvio-Style Hero one further (it renders only while Show
+        // Hero is on — the fixture's default).
+        press(.down, times: 1)
+        pause(1)
         shot(app, "25a_show_hero_focused")
         press(.down, times: 1)
         pause(1)
@@ -2123,7 +2190,7 @@ final class NuvioTVUITests: XCTestCase {
     }
 
     /// Cold-launches Home with the release-safe `debug.homeHeroProbe` knob(s) set, reads the
-    /// `hero_probe_blob` off Settings › About, and fails loudly (never silently skips) if the
+    /// `hero_probe_blob` off Settings › Developer, and fails loudly (never silently skips) if the
     /// buffer produced no readable lines - see `heroProbeLines`'s doc for why that can happen
     /// independent of whether `HomeHeroProbe` actually logged anything.
     @discardableResult
@@ -2138,16 +2205,15 @@ final class NuvioTVUITests: XCTestCase {
         return (app, lines)
     }
 
-    /// Navigates to Settings › About (from wherever Home currently has focus) and reads the
+    /// Navigates to Settings › Developer (from wherever Home currently has focus) and reads the
     /// `hero_probe_blob`. Split out from `launchAndReadHeroProbe` so Leg C can read it a second
     /// time mid-session, after navigating away and back, without a fresh launch.
     @discardableResult
     private func readHeroProbeAboutPane(_ app: XCUIApplication, shotPrefix: String) -> [String] {
-        openTab(app, named: "Settings")
-        let about = app.buttons["About"]
-        _ = moveFocus(.down, until: about, max: 8)
-        press(.right, times: 1)
-        pause(1.5)
+        // Revamp: the probe readouts moved from About into the Developer pane; the Hero Paint
+        // Diagnostics block is that pane's first section, so the blob is on screen on push.
+        XCTAssertTrue(openDeveloper(app), "\(shotPrefix): Settings › Developer pane did not open")
+        pause(1.0)
         shot(app, "\(shotPrefix)_about_probe")
         let lines = heroProbeLines(app)
         if lines.isEmpty {
@@ -2427,14 +2493,8 @@ final class NuvioTVUITests: XCTestCase {
         // Appearance toggle inside ONE launch so both measurements are of the same card (two
         // launches focused different cards and the first version of this test skipped itself).
         let app = launchToHome(extraArguments: ["-no_zoom_on_focus", "YES"], forceFreshLaunch: true)
-        let appearance = app.buttons["Appearance"]
         func openAppearance() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-            remote.press(.select)
-            pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         }
         func focusedPosterShot(_ name: String) throws -> (CGRect, UIImage) {
             openTab(app, named: "Home")
@@ -2452,7 +2512,7 @@ final class NuvioTVUITests: XCTestCase {
             return (card.frame, screenshot.image)
         }
         openAppearance()
-        let sidebarX = appearance.frame.maxX
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: false, sidebarMaxX: sidebarX, category: "Appearance")
         let (frameOff, imageOff) = try focusedPosterShot("32a_ring_off")
         openAppearance()
@@ -2545,11 +2605,11 @@ final class NuvioTVUITests: XCTestCase {
         }
         guard found else { throw XCTSkip("no multi-season series found in the first five rows — nothing to verify") }
         shot(app, "33b_detail_episodes")
-        // beta.18 verdict (BUG-127): this leg reliably lands on a Detail page (test17's hero-CTA
-        // path does not on the fixture), so the synopsis panel's presence is proven here.
-        let panelShown = app.descendants(matching: .any)["detail_synopsis_panel"].waitForExistence(timeout: 5)
-            || app.descendants(matching: .any)["detail_synopsis_text"].waitForExistence(timeout: 2)
-        XCTAssertTrue(panelShown, "detail_synopsis_panel missing on an opened series Detail")
+        // This leg reliably lands on a Detail page (test17's hero-CTA path does not on the
+        // fixture), so the synopsis's presence is proven here. FEAT-35: Cinematic (the default)
+        // shows it as the hero teaser; the Classic panel has its own leg (test80).
+        let teaserShown = app.descendants(matching: .any)["detail_synopsis_teaser"].waitForExistence(timeout: 5)
+        XCTAssertTrue(teaserShown, "detail_synopsis_teaser missing on an opened series Detail (Cinematic)")
         if anyPoster.count == 0 {
             throw XCTSkip("season selector rendered as text chips — no TMDB season posters for this title (useSeasonPosters off or none returned)")
         }
@@ -2577,14 +2637,8 @@ final class NuvioTVUITests: XCTestCase {
     }
 
     private func restoreAppearanceBaseline(_ app: XCUIApplication) throws {
-        let appearance = app.buttons["Appearance"]
-        openTab(app, named: "Settings")
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        let sidebarX = appearance.frame.maxX
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         // Theme → Ocean (swatches report focus; selecting the already-selected theme is a no-op).
         let ocean = app.buttons["Ocean"]
         let swatches = ["Crimson", "Ocean", "Violet", "Emerald", "Amber", "Rose", "White"]
@@ -2593,13 +2647,15 @@ final class NuvioTVUITests: XCTestCase {
             remote.press(.up)
             pause(0.4)
         }
-        // Right FIRST: Ocean is the 2nd swatch, and Left from Crimson leaves the row for the
-        // sidebar (whose focus SWITCHES panes) — the recording of the 2026-08-16 failure.
+        // Right FIRST (kept from the sidebar era, harmless now: Left from Crimson used to leave
+        // the row for the sidebar, the recording of the 2026-08-16 failure).
         if !moveFocus(.right, until: ocean, max: 6) { _ = moveFocus(.left, until: ocean, max: 6) }
         if ocean.exists && ocean.hasFocus {
             remote.press(.select)
-            pause(2.5) // theme change re-identifies the tree; focus may land back on the sidebar
-            if appearance.hasFocus { press(.right, times: 1); pause(1) }
+            pause(2.5) // theme change re-identifies the tree; the path restore keeps the pane
+            if !app.descendants(matching: .any)["settings_pane_appearance"].exists {
+                XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Appearance pane lost after the theme change and could not be reopened")
+            }
         }
         try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: false, sidebarMaxX: sidebarX, category: "Appearance")
         try ensureToggleRow(app, labelPrefix: "No Zoom on Focus", on: false, sidebarMaxX: sidebarX, category: "Appearance")
@@ -2610,24 +2666,61 @@ final class NuvioTVUITests: XCTestCase {
 
     // MARK: - UX-8: Hide Discover toggle round-trip
 
-    /// Settings → Content Sources → "Hide Discover" ON ⇒ the Search tab must show NO Discover
+    /// Settings → Sources (was Content Sources) → "Hide Discover" ON ⇒ the Search tab must show NO Discover
     /// header; OFF again ⇒ it must come back (test19's existence check, inverted then restored).
     /// Toggle rows never report focus (test25), so `ensureToggleRow` walks by counted rows and
     /// asserts the row's accessibility value flipped — a mis-landed walk fails loudly.
     func test29HideDiscoverToggle() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        let contentSources = app.buttons["Content Sources"]
+        // Revamp: "Content Sources" is the "Sources" pane now, reached root → push.
         func openContentSources() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Content Sources", max: 10)
-            remote.press(.select)
-            pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            XCTAssertTrue(openSettingsCategory(app, named: "Sources"), "Settings › Sources pane did not open")
         }
+        // Search Sources order (SourcesSettingsPane `searchSourcesSection`): Recent Searches, Hide
+        // Discover, then one toggle per search-capable catalog. The tree-index walk overshot into
+        // Plugins on the 10-02 g4 run (Select landed on another row), so: tree-walk only to the
+        // section's FIRST row, then step by FOCUSED LABEL onto Hide Discover and assert focus is on
+        // it before any Select.
+        func focusedLabels() -> [String] { focusedNodes(app).map(\.label) }
+        func hideDiscoverFocused() -> Bool { focusedLabels().contains { $0.hasPrefix("Hide Discover") } }
+        func setHideDiscover(_ on: Bool) throws {
+            try walkToRowByTreeIndex(app, targetLabelPrefix: "Recent Searches", sidebarMaxX: 0, category: "Sources")
+            for _ in 0..<4 where !hideDiscoverFocused() {
+                remote.press(.down)
+                pause(0.7)
+            }
+            for _ in 0..<6 where !hideDiscoverFocused() {
+                remote.press(.up)
+                pause(0.7)
+            }
+            guard hideDiscoverFocused() else {
+                XCTFail("focus never landed on the Hide Discover row — focused: \(focusedLabels()); not pressing Select blind")
+                return
+            }
+            guard let before = toggleState(app: app, labelPrefix: "Hide Discover") else {
+                XCTFail("Hide Discover state unreadable")
+                return
+            }
+            if before != on {
+                remote.press(.select)
+                pause(1.5)
+            }
+            XCTAssertEqual(toggleState(app: app, labelPrefix: "Hide Discover"), on,
+                           "toggle 'Hide Discover' did not end up \(on ? "ON" : "OFF") (was \(before))")
+        }
+
+        // Always leave the synced profile with Hide Discover OFF, even when an assert below fails.
+        var restoreNeeded = false
+        defer {
+            if restoreNeeded {
+                openContentSources()
+                try? setHideDiscover(false)
+            }
+        }
+
         openContentSources()
-        let sidebarX = contentSources.frame.maxX
-        try ensureToggleRow(app, labelPrefix: "Hide Discover", on: true, sidebarMaxX: sidebarX, category: "Content Sources")
+        restoreNeeded = true
+        try setHideDiscover(true)
         shot(app, "29a_hide_discover_on")
 
         openTab(app, named: "Search")
@@ -2637,7 +2730,8 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Discover"].exists, "Discover header still on Search with Hide Discover ON")
 
         openContentSources()
-        try ensureToggleRow(app, labelPrefix: "Hide Discover", on: false, sidebarMaxX: sidebarX, category: "Content Sources")
+        try setHideDiscover(false)
+        restoreNeeded = false
         openTab(app, named: "Search")
         pause(2.5)
         shot(app, "29c_search_with_discover_again")
@@ -2657,17 +2751,11 @@ final class NuvioTVUITests: XCTestCase {
     func test28InlineTrailerTitleOverlayWithHiddenLabels() throws {
         let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-debug.trailerProbe", "YES"], forceFreshLaunch: true)
         try restoreAppearanceBaseline(app) // portrait rows, no ring — the reporter's row shape
-        let appearance = app.buttons["Appearance"]
         func openAppearance() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-            remote.press(.select)
-            pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         }
         openAppearance()
-        let sidebarX = appearance.frame.maxX
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         try ensureToggleRow(app, labelPrefix: "Hide Titles", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         shot(app, "28a_hide_titles_toggled_on")
 
@@ -2698,14 +2786,8 @@ final class NuvioTVUITests: XCTestCase {
     /// top→bottom, `composeApp/.../CardDepthEffect.kt`).
     func test27CardDepthCoverageAB() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        let appearance = app.buttons["Appearance"]
         func openAppearance() {
-            openTab(app, named: "Settings")
-            _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-            remote.press(.select)
-            pause(1.5)
-            press(.right, times: 1)
-            pause(1)
+            XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         }
         // Chip rows keep the column you arrive in — walk to the row, then Left/Right by chip
         // (chips DO report focus).
@@ -2727,7 +2809,7 @@ final class NuvioTVUITests: XCTestCase {
 
         try restoreAppearanceBaseline(app) // Ocean, portrait rows, everything OFF — a known start
         openAppearance()
-        let sidebarX = appearance.frame.maxX
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         try ensureToggleRow(app, labelPrefix: "Accent Focus Ring", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         try ensureToggleRow(app, labelPrefix: "No Zoom on Focus", on: true, sidebarMaxX: sidebarX, category: "Appearance")
         shot(app, "27a_ring_and_nozoom_on")
@@ -2764,8 +2846,9 @@ final class NuvioTVUITests: XCTestCase {
 
     /// Moves focus to the pane row whose label starts with `targetLabelPrefix` — a row that does
     /// NOT report focus to XCUITest (SettingsToggleRow, test25) — by COUNTING ROWS in the AX
-    /// tree. Precondition: focus is on the pane's FIRST row (just pressed Right from the
-    /// sidebar). Rows are grouped by frame.minY (chip rows hold several buttons side by side but
+    /// tree. Precondition: focus is on the pane's FIRST row (just pushed from the Settings root by
+    /// `openSettingsCategory`; revamp: there is no sidebar, so callers pass `sidebarMaxX: 0` and
+    /// every Cell with minX > 20 is a pane row — the explainer column has no Cells). Rows are grouped by frame.minY (chip rows hold several buttons side by side but
     /// are ONE row for Down/Up), so Downs = row-index distance. Lazy culling means the target
     /// may not be in the tree from the top: then hop to the LAST materialised row (its label is
     /// known and it is on-screen after the hop, so it is re-findable), re-capture, repeat.
@@ -2812,19 +2895,21 @@ final class NuvioTVUITests: XCTestCase {
             return r.firstIndex(where: { row in abs(row[0].frame.minY - y) < 6 })
         }
         var anchorLabel: String? = nil // set after a hop; looked up with lastIndex (hops only go down)
-        if focusedButton(app).map(inPane) != true {
+        if settingsRootPresent(app) || focusedButton(app).map(inPane) != true {
             for _ in 0..<24 {
-                if let f = focusedButton(app), tabNames.contains(f.label) {
-                    remote.press(.down); pause(0.8)
+                // Revamp (FEAT-50): focus sitting on the Settings ROOT list (a pane was popped, or
+                // never pushed) is recovered by pushing `category` again. Root category rows are
+                // cells too, so this check must run before the "in pane" break below.
+                if settingsRootPresent(app) {
+                    guard openSettingsCategory(app, named: category) else {
+                        XCTFail("walkToRowByTreeIndex: could not re-open '\(category)' from the Settings root")
+                        break
+                    }
                     if let g = focusedButton(app), inPane(g) { break }
                     continue
                 }
-                if let f = focusedButton(app), f.frame.minX <= sidebarMaxX + 20 {
-                    if f.label != category {
-                        if !moveToSidebarRow(app, .down, named: category, max: 8) { _ = moveToSidebarRow(app, .up, named: category, max: 8) }
-                        pause(1)
-                    }
-                    remote.press(.right); pause(0.8)
+                if let f = focusedButton(app), tabNames.contains(f.label) {
+                    remote.press(.down); pause(0.8)
                     if let g = focusedButton(app), inPane(g) { break }
                     continue
                 }
@@ -2890,13 +2975,35 @@ final class NuvioTVUITests: XCTestCase {
     /// with no usable `.value`. nil when neither shape is recognized (caller should treat that as
     /// "unknown", not silently OFF).
     private func toggleState(_ element: XCUIElement) -> Bool? {
+        // Revamp (D11 V1): the switch-styled row is a Button carrying `.accessibilityValue("On"/"Off")`
+        // plus the toggle trait, so the value can surface on a Button, a Cell or a Switch, and a
+        // Switch-typed element may report "1"/"0". Accept all of them.
         if let value = element.value as? String {
-            if value == "On" { return true }
-            if value == "Off" { return false }
+            if value == "On" || value == "1" { return true }
+            if value == "Off" || value == "0" { return false }
+        }
+        if let number = element.value as? NSNumber, element.elementType == .switch || element.elementType == .toggle {
+            return number.boolValue
         }
         let label = element.label
         if label.hasSuffix(", On") { return true }
         if label.hasSuffix(", Off") { return false }
+        return nil
+    }
+
+    /// Every element whose label starts with `labelPrefix` (the Cell, the Button / Switch, the bare
+    /// StaticText — the same row surfaces several times), scanned for a readable On/Off state:
+    /// a real `.value` first, then a Cell's composed ", On"/", Off" label. nil when none is readable.
+    private func toggleState(app: XCUIApplication, labelPrefix: String) -> Bool? {
+        let matches = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
+            .allElementsBoundByIndex
+        for e in matches {
+            if let value = e.value as? String, ["On", "Off", "1", "0"].contains(value) {
+                return value == "On" || value == "1"
+            }
+        }
+        for e in matches { if let state = toggleState(e) { return state } }
         return nil
     }
 
@@ -2917,16 +3024,7 @@ final class NuvioTVUITests: XCTestCase {
         // "Off" — a silent wrong answer that pressed Select on a toggle it had not actually read.
         // Scan the candidates instead, prefer the one with a real value, and treat unreadable as
         // a loud failure.
-        func readState() -> Bool? {
-            let matches = app.descendants(matching: .any)
-                .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
-                .allElementsBoundByIndex
-            for e in matches where (e.value as? String) == "On" || (e.value as? String) == "Off" {
-                return (e.value as? String) == "On"
-            }
-            for e in matches { if let s = toggleState(e) { return s } }
-            return nil
-        }
+        func readState() -> Bool? { toggleState(app: app, labelPrefix: labelPrefix) }
         func describeCandidates() -> String {
             app.descendants(matching: .any)
                 .matching(NSPredicate(format: "label BEGINSWITH %@", labelPrefix))
@@ -3018,7 +3116,7 @@ final class NuvioTVUITests: XCTestCase {
 
     // MARK: - Self-hosted server discovery (review step, non-destructive)
 
-    /// Settings → Account & Services → "Connect to a Self-Hosted Server" → type the URL of a
+    /// Settings → Account & Profiles → "Connect to a Self-Hosted Server" → type the URL of a
     /// loopback stub serving `/.well-known/nuvio` → "Check Server" → the REVIEW step must show
     /// the discovered backend. Also exercises the typed-error path (the official host is
     /// refused with the "already selected" copy) and that Back returns to the entry step.
@@ -3031,20 +3129,25 @@ final class NuvioTVUITests: XCTestCase {
         defer { stub.stop() }
 
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let account = app.buttons["Account & Services"]
-        if !(account.exists && account.hasFocus) { _ = moveToSidebarRow(app, .up, named: "Account & Services", max: 8) }
-        remote.press(.select)
-        pause(1.2)
-        press(.right, times: 1)
-        pause(1)
-        let sidebarX = account.frame.maxX
+        // Revamp: "Account & Services" split into "Account & Profiles" (Account, Server, Remote
+        // Setup) and "Services"; the Server section lives in the former.
+        XCTAssertTrue(openSettingsCategory(app, named: "Account & Profiles"), "Settings › Account & Profiles pane did not open")
+        let sidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
         shot(app, "35a_account_pane")
+        // The FA87 guest fixture runs an anonymous session: the Account section then offers
+        // "Sign In to Nuvio" instead of "Sign Out". Record which, so the closing check asserts the
+        // session the test STARTED with is untouched (signed in stays signed in, guest stays guest).
+        let signOutRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sign Out'")).firstMatch
+        let signInRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sign In to Nuvio'")).firstMatch
+        _ = signOutRow.waitForExistence(timeout: 4) || signInRow.waitForExistence(timeout: 2)
+        let startedSignedIn = signOutRow.exists
+        let startedAsGuest = !startedSignedIn && signInRow.exists
 
-        // The Server section sits right under Account; walk there by tree index.
-        try walkToRowByTreeIndex(app, targetLabelPrefix: "Connect to a Self-Hosted Server", sidebarMaxX: sidebarX, category: "Account & Services")
+        // The Server section sits right under Account (the "Server" value row is not focusable,
+        // so the link row is one Down from Sign In / Sign Out); walk there by tree index.
+        try walkToRowByTreeIndex(app, targetLabelPrefix: "Connect to a Self-Hosted Server", sidebarMaxX: sidebarX, category: "Account & Profiles")
         let connectRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Connect to a Self-Hosted Server'")).firstMatch
-        guard connectRow.exists else { XCTFail("Server section row missing from Account & Services"); return }
+        guard connectRow.exists else { XCTFail("Server section row missing from Account & Profiles"); return }
         remote.press(.select)
         pause(1.5)
 
@@ -3143,8 +3246,16 @@ final class NuvioTVUITests: XCTestCase {
         remote.press(.menu) // dismiss the cover
         pause(1.5)
         XCTAssertTrue(app.state == .runningForeground)
-        // Still signed in: the Account & Services pane's Sign Out row must still be around.
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sign Out'")).firstMatch.waitForExistence(timeout: 6), "the non-destructive flow must leave the account signed in")
+        // Session untouched: the Account & Profiles pane's Sign Out row (signed-in fixture) or
+        // Sign In to Nuvio row (guest fixture) must still be around.
+        if startedSignedIn {
+            XCTAssertTrue(signOutRow.waitForExistence(timeout: 6), "the non-destructive flow must leave the account signed in")
+        } else if startedAsGuest {
+            XCTAssertTrue(signInRow.waitForExistence(timeout: 6), "the non-destructive flow must leave the guest session as it was (Sign In to Nuvio row gone)")
+            throw XCTSkip("the fixture is an anonymous guest session (Account offers \"Sign In to Nuvio\"), so the signed-in half of this check cannot run; the discovery review flow and the guest-session check above did run")
+        } else {
+            throw XCTSkip("could not tell whether the fixture started signed in (neither Sign Out nor Sign In to Nuvio was found in Account & Profiles)")
+        }
     }
 
 
@@ -3161,13 +3272,7 @@ final class NuvioTVUITests: XCTestCase {
     /// passing vacuously.
     func test26ThemeSwatchFocusedLabelLegible() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // Violet is neither the account's selected theme (Ocean) nor an edge swatch, so its
         // at-rest label is textSecondary and the focused read is purely the isFocused branch.
@@ -3222,13 +3327,7 @@ final class NuvioTVUITests: XCTestCase {
     /// the measured platter instead and skips loudly if no platter is ever seen.
     func test36AppearanceToggleRowFocusedContrast() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        let appearance = app.buttons["Appearance"]
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
 
         // beta.15 §C5: real `Toggle` = `.switch` element, not `.button`.
         let ringRow = app.descendants(matching: .any).matching(
@@ -3565,56 +3664,78 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(posterApp.state == .runningForeground, "app must survive the poster-location leg")
     }
 
-    // MARK: - beta.15 §C5: native-List Settings focus graph
+    // MARK: - FEAT-50: Settings root / pane / pop focus graph
 
-    /// Sanity check for the SettingsView.swift focus-graph doc comment (two-pane split, C1–C3
-    /// native-List conversion): default focus lands in the sidebar (never the detail pane), Right
-    /// enters the detail list on a real focusable row, and Menu backs out one level at a time
-    /// without ever exiting the app. Existence-driven throughout (27.0-class runtimes never
-    /// report `hasFocus` reliably — see the tvOS UI sim-verification field notes) rather than
-    /// asserting on `hasFocus` directly.
+    /// Sanity check for the SettingsView.swift / SettingsRootView.swift focus-graph doc comments
+    /// (detail-settings-revamp, FEAT-50 "Native Split + Explainer"): Settings opens on the ROOT
+    /// list with focus on a category row, Down walks the ten categories to Developer (the last
+    /// row), Select pushes a pane, Menu pops back to the root with focus on the category just left,
+    /// and Menu at the root (tabs mode) never exits the app straight from the pane.
     func test40SettingsFocusGraph() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
+        // Not `openTab`: its trailing Down (the "step into content" move every other tab needs)
+        // overshoots here. The 10-02 evidence capture (`g1-settings-root.png`) shows the Settings
+        // tab's Select already landing focus in the root list, so that Down moved focus from
+        // Account & Profiles to Services before the default could be read. Walk to the tab and
+        // Select by hand; press Down only if focus is still on the tab bar afterwards.
+        let tabNames = ["Home", "Search", "Library", "Add-ons", "Settings", "Profile"]
+        for _ in 0..<40 {
+            if tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) { break }
+            remote.press(.up)
+            pause(0.35)
+        }
+        let settingsTab = app.buttons["Settings"]
+        if !moveFocus(.right, until: settingsTab, max: 6) { _ = moveFocus(.left, until: settingsTab, max: 8) }
+        remote.press(.select)
+        pause(2)
+        if focusedSettingsRootTitle(app) == nil, tabNames.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) {
+            press(.down, times: 1)
+        }
         shot(app, "40a_settings_default_focus")
 
-        // Default focus: the sidebar's first category (Account & Services) must exist, and the
-        // walk must NOT already be inside the detail pane — i.e. a sidebar category button is
-        // reachable without ever having pressed Right. `openTab` itself presses Down once after
-        // Select (its standard "step into content" move), so re-affirm the sidebar landing here
-        // rather than trusting that alone.
-        let accountServices = app.buttons["Account & Services"]
-        XCTAssertTrue(accountServices.waitForExistence(timeout: 6), "sidebar's first category (Account & Services) must exist on Settings entry")
+        // Root on entry: the list and its first category row exist (a cold launch has no path).
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 6),
+                      "Settings must open on the root list (settings_root_list)")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_category_accountProfiles"].exists,
+                      "the root's first category row (settings_category_accountProfiles) must exist on entry")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Account & Profiles",
+                       "cold entry must focus the first category (the root's preferred row with no last category)")
 
-        // Walk down the sidebar to About (6 categories below Account & Services: Playback,
-        // Appearance, Home Screen, Content Sources, Advanced, About).
-        let about = app.buttons["About"]
-        _ = moveFocus(.down, until: about, max: 8)
-        pause(1)
-        shot(app, "40b_sidebar_about")
-        XCTAssertTrue(about.exists, "About sidebar row must exist after walking Down x6 from the top")
+        // Down ×9 walks every category to the last one, Developer (headers are not focusable).
+        press(.down, times: 9, gap: 0.7)
+        pause(0.8)
+        shot(app, "40b_root_developer")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Developer", "Down ×9 from Account & Profiles must land on Developer")
 
-        // Right enters the detail pane on About's first focusable row (SettingsValueRow rows are
-        // NOT focusable by design — About's pane doc/kit note guarantees at least one focusable
-        // control, e.g. a link or action row, per the BUG-47 requirement). Existence-driven: after
-        // Right, SOME element beyond the sidebar's right edge must hold focus or at least exist
-        // freshly-mounted near the top of the detail list.
-        press(.right, times: 1)
-        pause(1)
-        shot(app, "40c_detail_first_row")
-        XCTAssertTrue(app.state == .runningForeground, "app must still be foreground after entering the About detail pane")
+        // Up ×1: About.
+        press(.up, times: 1)
+        pause(0.8)
+        XCTAssertEqual(focusedSettingsRootTitle(app), "About", "Up from Developer must land on About")
 
-        // Menu: pops the detail selection back toward the sidebar / tab bar, one level at a time.
-        // It must never exit the app to the springboard — the Settings tab bar button must still
-        // exist afterward (tabs stay in the AX tree even off-screen at negative Y, per
-        // launchToHome's own recovery-dance comment; `.exists` alone is the correct check here
-        // since this assertion only cares that the app is still showing SOME reachable UI, not
-        // that the bar is scrolled into view).
+        // Select pushes the About pane.
+        remote.press(.select)
+        pause(1.5)
+        shot(app, "40c_about_pane")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_about"].waitForExistence(timeout: 4),
+                      "Select on About must push settings_pane_about")
+        XCTAssertFalse(app.descendants(matching: .any)["settings_root_list"].exists,
+                       "the root list must leave the screen while a pane is pushed")
+
+        // Menu pops back to the root, focus on About (pop focus return).
         remote.press(.menu)
         pause(1.5)
-        shot(app, "40d_after_menu")
-        XCTAssertTrue(app.state == .runningForeground, "Menu from the Settings detail pane must not exit the app")
-        XCTAssertTrue(app.buttons["Settings"].exists, "Settings tab bar button must still exist after Menu — the app must not have been kicked to the springboard")
+        shot(app, "40d_after_menu_pop")
+        XCTAssertTrue(app.state == .runningForeground, "Menu from a Settings pane must not exit the app")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4),
+                      "Menu from the About pane must pop to the root list")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "About", "the pop must return focus to the About row")
+
+        // Menu at the root (tabs mode) moves focus to the tab bar; the app must still be up.
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "40e_after_root_menu")
+        XCTAssertTrue(app.state == .runningForeground, "the first Menu at the Settings root must not exit the app")
+        XCTAssertTrue(app.buttons["Settings"].exists, "Settings tab bar button must still exist after Menu at the root")
     }
 
     // MARK: - P-1d: forced no-trailer must never bloom the poster
@@ -3740,7 +3861,7 @@ final class NuvioTVUITests: XCTestCase {
         app.launchArguments += ["-debug.collectionsSeedJsonB64", seedB64]
         app.launch()
 
-        let chris = app.buttons["Chris"]
+        let chris = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Chris")).firstMatch
         let continueAsGuest = app.buttons["Continue as Guest"]
         guard chris.waitForExistence(timeout: 20) || continueAsGuest.waitForExistence(timeout: 20) else {
             XCTFail("app never reached a profile gate (Chris picker or Welcome) after launch")
@@ -4101,59 +4222,50 @@ final class NuvioTVUITests: XCTestCase {
     /// same discipline as test12/test13.
     func test43ThemePickerKeepsCategoryAndTintsSettings() throws {
         let app = launchToHome()
-        openTab(app, named: "Settings")
-        moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
         shot(app, "43a_appearance_before")
 
-        // Right enters the detail pane and lands on the swatch row (the pane's first row).
-        press(.right, times: 1)
-        pause(1)
+        // The push lands on the swatch row (the pane's first focusable row).
         let emerald = app.buttons["Emerald"]
         XCTAssertTrue(moveFocus(.right, until: emerald, max: 8), "must be able to reach the Emerald swatch")
         remote.press(.select)
         pause(3) // the .id() remount
 
         // Defect 1: the swatch row must still be on screen. Pre-fix this was the Account &
-        // Services pane (Sign Out / Server / Connect Trakt) and every swatch was gone.
-        // Defect 2 also shows here: the sidebar's category glyphs are emerald in this capture.
+        // Services pane (Sign Out / Server / Connect Trakt) and every swatch was gone. Revamp
+        // (FEAT-50): the Settings path (`[.appearance]`) is owned by ContentView above the `.id`
+        // boundary, so the rebuilt stack must come back on the Appearance PANE, not the root.
         shot(app, "43b_after_theme_change")
         XCTAssertTrue(
             app.buttons["Crimson"].waitForExistence(timeout: 6),
-            "the Appearance pane must survive a theme change — a swatch press that lands the user back on Account & Services reads as 'the picker did nothing'"
+            "the Appearance pane must survive a theme change — a swatch press that lands the user back on the Settings root reads as 'the picker did nothing'"
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["settings_pane_appearance"].exists,
+            "the Settings path must be restored to the Appearance pane after the theme remount"
         )
 
         // Defect 2, close up: walk down to the picker rows — the focused one wears the white
-        // platter with platter-flipped text (`SettingsAccentTint` hands the colour back to
-        // `.primary`), the ones at rest carry the theme accent on their trailing value. Capture
-        // only, no assertion: where focus lands after the `.id` remount is not deterministic
-        // (observed both ways on 2026-08-25 — sometimes still on the pressed swatch, sometimes back
-        // on the sidebar via `prefersDefaultFocus`), so this walk is best-effort framing.
+        // platter with platter-flipped text, the ones at rest carry their `value ›`. Capture only,
+        // no assertion on where focus lands after the `.id` remount (not deterministic).
         press(.down, times: 3, gap: 0.7)
         shot(app, "43c_picker_rows_focused_and_at_rest")
-        press(.left, times: 1, gap: 0.9)
-        pause(0.8)
-        shot(app, "43d_sidebar_focused")
+        // Revamp: no sidebar to step Left into — Menu pops to the root, focus on Appearance.
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "43d_root_appearance_focused")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "Menu from the Appearance pane must pop to the root with focus on Appearance")
 
         // Restore CRIMSON — profile-scoped, and it syncs to the real account, so this test must not
         // leave the fixture on Emerald.
         //
-        // Do it from a COLD RELAUNCH rather than walking back. There is no reliable route into the
-        // swatch row once focus has left it (three failure modes, all observed 2026-08-25): walking
-        // UP from a detail row skips the horizontal swatch `ScrollView` and exits to the tab bar;
-        // Left from a detail row goes to the SIDEBAR (focus graph) rather than along the row; and
-        // Right from the sidebar re-enters on the row that last had focus, which a category switch
-        // does not clear. A fresh launch has no such memory: Right from the sidebar lands on the
-        // pane's FIRST row — the swatch row — and Crimson is the leftmost swatch, so walking left
-        // always reaches it.
+        // Do it from a COLD RELAUNCH rather than walking back (2026-08-25: there was no reliable
+        // route back into the horizontal swatch `ScrollView` once focus had left it). A fresh
+        // launch has no path and no focus memory: the push lands on the pane's FIRST row — the
+        // swatch row — and Crimson is the leftmost swatch, so walking left always reaches it.
         let relaunched = launchToHome(forceFreshLaunch: true)
-        openTab(relaunched, named: "Settings")
-        moveToSidebarRow(relaunched, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(2)
-        press(.right, times: 1)
-        pause(1.5)
+        XCTAssertTrue(openSettingsCategory(relaunched, named: "Appearance"), "Settings › Appearance pane did not open after the relaunch")
+        pause(0.5)
         XCTAssertTrue(
             moveFocus(.left, until: relaunched.buttons["Crimson"], max: 8),
             "must be able to restore the fixture's CRIMSON theme"
@@ -4164,6 +4276,7 @@ final class NuvioTVUITests: XCTestCase {
 
         // Third theme change of the run, and the pane still holds.
         XCTAssertTrue(relaunched.buttons["Emerald"].waitForExistence(timeout: 6), "still on the Appearance pane")
+        XCTAssertTrue(relaunched.descendants(matching: .any)["settings_pane_appearance"].exists, "the path still holds the Appearance pane after the restore")
         XCTAssertTrue(relaunched.state == .runningForeground)
     }
 
@@ -4185,14 +4298,8 @@ final class NuvioTVUITests: XCTestCase {
     /// enabled" count changes), not the header's own collapse action.
     func test45CatalogsGroupFocusReachesExpandedRows() throws {
         let app = launchToHome(forceFreshLaunch: true)
-        openTab(app, named: "Settings")
-        let homeScreen = app.buttons["Home Screen"]
-        _ = moveToSidebarRow(app, .down, named: "Home Screen", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1)
-        pause(1)
-        let homeScreenSidebarX = homeScreen.frame.maxX
+        XCTAssertTrue(openSettingsCategory(app, named: "Home Screen"), "Settings › Home Screen pane did not open")
+        let homeScreenSidebarX: CGFloat = 0 // revamp: no sidebar; every pane cell is a row
 
         // Step 1: loud prerequisite failure, not a silent pass — the fixture must have at least
         // one add-on with catalogs installed, or "Catalogs" never renders at all.
@@ -7091,19 +7198,18 @@ final class NuvioTVUITests: XCTestCase {
     /// label-based walk (`walkToRowByTreeIndex`) cannot find it, and a lazy List will not have
     /// materialised a row this far down without focus actually having stepped through it. Counted
     /// directly off `AppearanceSettingsPane.body`'s literal order: swatches -> Accent Focus Ring
-    /// (1) -> No Zoom on Focus (2) -> Settings Style (3) -> Navigation (4) -> Typeface (5).
+    /// (1) -> No Zoom on Focus (2) -> OLED True Black (3, rc13 FEAT-38) -> Settings Style (4) ->
+    /// Navigation (5) -> Typeface (6) — the same order `FixtureSetupTests` counts Size at 7 from.
+    /// (The conditional "Ring Takes Poster Color" / "Depth Takes Poster Color" rows are absent at
+    /// the fixture baseline: ring, No Zoom and Card Depth all OFF.)
     func test53TypefaceOpenSans() throws {
         let app = launchToHome(extraArguments: ["-ui_font", "openSans"], forceFreshLaunch: true)
         pause(1.5)
         shot(app, "53a_home_open_sans")
 
-        openTab(app, named: "Settings")
-        _ = moveToSidebarRow(app, .down, named: "Appearance", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1) // lands on the swatch row, test43's proven anchor
-        pause(1)
-        press(.down, times: 5, gap: 0.6)
+        XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
+        // (revamp: the push already lands on the pane's first row, the swatches — no Right step)
+        press(.down, times: 6, gap: 0.6)
         pause(0.8)
 
         let typefaceRowExists = app.buttons["appearance_row_typeface"].waitForExistence(timeout: 4)
@@ -7129,7 +7235,7 @@ final class NuvioTVUITests: XCTestCase {
     /// the same `fitem=` `nuvio-folder://` oracle `test31HeroCommitsOnce`'s Leg C uses off the
     /// `debug_hero` probe, since this fixture's Home may or may not have a collection row at all —
     /// so `CollectionRowView`'s `onChange(of: focusedFolderId)` has something to arm the sampler
-    /// with, then reads `collection_frame_blob` back from the About pane. The `frames=`/`dropped=`/
+    /// with, then reads `collection_frame_blob` back from the Developer pane (About until the revamp). The `frames=`/`dropped=`/
     /// `p95=` numbers themselves are a device harvest for a human to read off the attachment/shot,
     /// not something this test judges pass/fail on.
     func test54CollectionFrameProbeDriver() throws {
@@ -7167,16 +7273,14 @@ final class NuvioTVUITests: XCTestCase {
         press(.right, times: 1, gap: 0.5)
         pause(0.8)
 
-        openTab(app, named: "Settings")
-        _ = moveToSidebarRow(app, .down, named: "About", max: 10)
-        remote.press(.select)
-        pause(1.5)
-        press(.right, times: 1) // lands on "Hero Paint Diagnostics", the pane's first focusable row
+        // Revamp: the probe readouts moved from About into the Developer pane; the push lands on
+        // "Hero Paint Diagnostics", the pane's first focusable row.
+        XCTAssertTrue(openDeveloper(app), "Settings › Developer pane did not open")
         pause(1)
 
         // Walk down until the readout itself is on screen, rather than a fixed count: the toggle
-        // that gates it (`Collection Frame Probe`) sits several focusable rows into the "About"
-        // section, behind a few non-focusable `SettingsValueRow`s that don't consume a D-pad stop
+        // that gates it (`Collection Frame Probe`) sits several focusable rows into the Developer
+        // pane's "Diagnostics" section, behind a few non-focusable `SettingsValueRow`s that don't consume a D-pad stop
         // — see `AppearanceSettingsPane`'s Down-count comment above for why a fixed count is used
         // there but not here (here, the STOP CONDITION is the target itself existing, so an
         // over-shoot is simply a few harmless extra presses at the bottom of the pane, not a wrong
@@ -7196,7 +7300,7 @@ final class NuvioTVUITests: XCTestCase {
             shot(app, "54x_about_no_blob")
             let f = focusedButton(app)
             print("[test54] no blob; focused=\(f.map { "\($0.identifier)|\($0.label)|\($0.frame)" } ?? "nil") toggles=\(app.switches.count + app.descendants(matching: .toggle).count) cells=\(app.cells.count)")
-            throw XCTSkip("collection_frame_blob never appeared on the About pane — cannot read the frame-timing harvest")
+            throw XCTSkip("collection_frame_blob never appeared on the Developer pane — cannot read the frame-timing harvest")
         }
         let attachment = XCTAttachment(string: text)
         attachment.name = "54a_frame_probe_text"
@@ -7837,11 +7941,25 @@ final class NuvioTVUITests: XCTestCase {
             "-debug.openDeepLink", "nuviotv://title?id=tt2661044&type=series&name=The%20100",
             "-home_upcoming_row_enabled", "NO",
             "-debug.trailerProbe", "YES",
-            "-debug.trailerForceNoTrailer", "YES"
+            "-debug.trailerForceNoTrailer", "YES",
+            "-debug.detailScrollProbe", "YES"
         ], forceFreshLaunch: true)
 
         let anyPoster = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'season_poster_'"))
-        let topBlockLabels = ["Mark Watched", "Watched", "Add to Library", "In Library"]
+        // FEAT-35 (Cinematic hero, D9): the top block is the hero now. Its focus targets are the
+        // icon-only secondaries (which keep these accessibility labels), Start Over (only with
+        // saved progress), the Play/Resume/Up Next button (label prefix) and, when the synopsis is
+        // truncated, the teaser button.
+        let topBlockLabels = ["Mark Watched", "Watched", "Add to Library", "In Library", "Start Over"]
+        let topBlockPrefixes = ["Play", "Resume", "Up Next"]
+        func topBlockHasFocus() -> Bool {
+            focusedNodes(app).contains { node in
+                topBlockLabels.contains(node.label)
+                    || topBlockPrefixes.contains(where: { node.label.hasPrefix($0) })
+                    || node.identifier == "detail_synopsis_teaser"
+                    || node.identifier == "detail_start_over"
+            }
+        }
 
         // The debug hook fires ~1 s after the profile gate is passed and `launchToHome` already
         // waits out Home's own catalog fan-out, but the deep-linked Detail page still has its own
@@ -7862,7 +7980,8 @@ final class NuvioTVUITests: XCTestCase {
         // this loop still fails fast via the single-Up-press check below if focus itself regresses.
         var detailReached = false
         for _ in 0..<90 {
-            if anyPoster.firstMatch.exists || topBlockLabels.contains(where: { app.buttons[$0].exists }) {
+            if anyPoster.firstMatch.exists || topBlockLabels.contains(where: { app.buttons[$0].exists })
+                || app.descendants(matching: .any)["detail_hero"].exists {
                 detailReached = true
                 break
             }
@@ -7896,13 +8015,27 @@ final class NuvioTVUITests: XCTestCase {
         var landedInTopBlock = false
         for _ in 0..<4 {
             pause(0.25)
-            if topBlockLabels.contains(where: { app.buttons[$0].exists && app.buttons[$0].hasFocus }) {
+            if topBlockHasFocus() {
                 landedInTopBlock = true
                 break
             }
         }
         shot(app, "68c_after_up_from_last_poster")
-        XCTAssertTrue(landedInTopBlock, "Up from the last season poster should reach the top block (Mark Watched / Add to Library) within 1 s, not stay on the shelf or go nowhere")
+        XCTAssertTrue(landedInTopBlock, "Up from the last season poster should reach the top block (the Cinematic hero: Play/Resume, Start Over, Mark Watched, Add to Library or the synopsis teaser) within 1 s, not stay on the shelf or go nowhere")
+
+        // FEAT-35: landing in the hero from any row restores the page top (DetailRowAnchor
+        // `heroReturn`): the scroll dim returns to 0, or the probe notes the hero-return pass.
+        if landedInTopBlock {
+            var heroRestored = false
+            var lastProbe = ""
+            for _ in 0..<8 {
+                pause(0.25)
+                let probe = app.staticTexts["debug_ux6"]
+                lastProbe = probe.exists ? probe.label : ""
+                if lastProbe.contains("dark=0 ") || lastProbe.contains("hero-return") { heroRestored = true; break }
+            }
+            XCTAssertTrue(heroRestored, "Up into the hero must restore the top (debug_ux6 dark=0 or anchor=hero-return within 2 s), got: \(lastProbe)")
+        }
         XCTAssertTrue(app.state == .runningForeground)
     }
 
@@ -8072,10 +8205,20 @@ final class NuvioTVUITests: XCTestCase {
             format: "label BEGINSWITH 'Play' OR label BEGINSWITH 'Resume' OR label BEGINSWITH 'Up Next'")).firstMatch
         if playButton.exists, app.buttons["Watched"].exists {
             shot(app, "\(shotPrefix)_fixture_marked_watched")
-            press(.right, times: 1, gap: 1.0)
+            // FEAT-35 (Cinematic, D9): the row is Play/Resume, Start Over (only with saved
+            // progress), Watch Trailer (absent here: trailers are forced off), then Watched. The
+            // secondaries are icon-only but keep their accessibility labels.
+            press(.right, times: app.buttons["Start Over"].exists ? 2 : 1, gap: 1.0)
+            guard app.buttons["Watched"].hasFocus else {
+                throw XCTSkip("focus not on Watched after the Right walk — not un-marking blind (the Select would hit another action)")
+            }
             remote.press(.select)
             _ = app.buttons["Mark Watched"].waitForExistence(timeout: 5)
-            press(.left, times: 1, gap: 1.0)
+            // Back to Play/Resume: Left ×3 reaches the leftmost button from any secondary.
+            press(.left, times: 3, gap: 0.8)
+            guard playButton.exists, playButton.hasFocus else {
+                throw XCTSkip("focus did not return to Play/Resume after un-marking Watched")
+            }
         }
         shot(app, "\(shotPrefix)_detail_on_play")
         return app
@@ -8232,5 +8375,338 @@ final class NuvioTVUITests: XCTestCase {
         pause(1)
         shot(app, "73b_home_after_down")
         XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    // MARK: - Detail + Settings revamp (FEAT-35 Cinematic Detail, FEAT-50 Settings) — W3-C legs
+
+    /// Deep-links straight into one title's Detail page (the `-debug.openDeepLink` DEBUG hook test68
+    /// proved out) with trailers forced off, so no auto-play trailer cover buries the page, and
+    /// waits up to 45 s for the page: the Cinematic hero (`detail_hero`), or, for Classic, the
+    /// action row. Throws `XCTSkip` when the page never appears (network / fixture, not the layout).
+    private func launchDetail(id: String, type: String, name: String, layout: String = "cinematic",
+                              extra: [String] = []) throws -> XCUIApplication {
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name
+        let app = launchToHome(extraArguments: [
+            "-debug.openDeepLink", "nuviotv://title?id=\(id)&type=\(type)&name=\(encoded)",
+            "-detail_layout", layout,
+            "-home_upcoming_row_enabled", "NO",
+            "-debug.trailerProbe", "YES",
+            "-debug.trailerForceNoTrailer", "YES",
+        ] + extra, forceFreshLaunch: true)
+        let actionLabels = ["Mark Watched", "Watched", "Add to Library", "In Library"]
+        for _ in 0..<90 {
+            if app.descendants(matching: .any)["detail_hero"].exists
+                || actionLabels.contains(where: { app.buttons[$0].exists }) {
+                return app
+            }
+            pause(0.5)
+        }
+        throw XCTSkip("the -debug.openDeepLink hook never produced a Detail page for \(name) within 45 s — network or fixture issue, not the layout")
+    }
+
+    /// The Detail page's hidden `debug_detail_hero` probe (Cinematic, DEBUG builds):
+    /// `debug_detail_hero h=… logo=180 syn=… trunc=0|1 ratings=… reserved=…`.
+    private func detailHeroProbe(_ app: XCUIApplication) -> String {
+        let probe = app.staticTexts["debug_detail_hero"]
+        if probe.exists { return probe.label }
+        return probeBlobLabel(app, identifier: "debug_detail_hero") ?? ""
+    }
+
+    private func ux6Label(_ app: XCUIApplication) -> String {
+        let probe = app.staticTexts["debug_ux6"]
+        return probe.exists ? probe.label : ""
+    }
+
+    /// Whether the focused element is the Play / Resume / Up Next button (the primary action keeps
+    /// its label in Cinematic, D9).
+    private func playHasFocus(_ app: XCUIApplication) -> Bool {
+        focusedNodes(app).contains { node in
+            ["Play", "Resume", "Up Next"].contains(where: { node.label.hasPrefix($0) })
+        }
+    }
+
+    /// Visible section-title-sized static texts BELOW the Cinematic hero (the hero's own subtree is
+    /// skipped, as are the invisible debug probes): what "the first row peeks" is measured on.
+    private func belowHeroTitleFrames(_ app: XCUIApplication) -> [(label: String, frame: CGRect)] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [(String, CGRect)] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.identifier == "detail_hero" { return }
+            if node.elementType == .staticText, !node.label.isEmpty,
+               !node.label.hasPrefix("debug_"), !node.identifier.hasPrefix("debug_") {
+                let f = node.frame
+                if f.height >= 24, f.height <= 80, f.width >= 60 { out.append((node.label, f)) }
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
+    }
+
+    /// FEAT-35 Cinematic landing (P1 §L test77): focus lands on Play; the logo slot is a fixed
+    /// 180 pt (± 1) and does not move between 2 s and 8 s (the meta line, ratings strip and
+    /// synopsis settle without changing anything above the bottom-anchored stack, corrections F3);
+    /// the probe reports `logo=180`; and the first section row peeks above the bottom edge.
+    func test77CinematicLanding() throws {
+        let app = try launchDetail(id: "tt15239678", type: "movie", name: "Dune")
+        let logoSlot = app.descendants(matching: .any)["detail_logo_slot"]
+        XCTAssertTrue(logoSlot.waitForExistence(timeout: 6), "detail_logo_slot missing — is the Cinematic layout on?")
+        pause(2)
+        let logoAt2s = logoSlot.frame
+        shot(app, "77a_landing_2s")
+        pause(6)
+        let logoAt8s = logoSlot.frame
+        shot(app, "77b_landing_8s")
+        let probe = detailHeroProbe(app)
+        let attachment = XCTAttachment(string: "logo@2s=\(logoAt2s) logo@8s=\(logoAt8s) probe=\(probe)")
+        attachment.name = "77_logo_and_probe"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        XCTAssertEqual(logoAt2s.height, 180, accuracy: 1, "logo slot must be 180 pt at 2 s, got \(logoAt2s)")
+        XCTAssertEqual(logoAt8s.height, 180, accuracy: 1, "logo slot must be 180 pt at 8 s, got \(logoAt8s)")
+        XCTAssertEqual(logoAt2s.minY, logoAt8s.minY, accuracy: 1, "the logo slot moved between 2 s and 8 s (\(logoAt2s.minY) → \(logoAt8s.minY)) — something above it changed height after first paint")
+        XCTAssertTrue(probe.contains("logo=180"), "debug_detail_hero must report logo=180, got: '\(probe)'")
+
+        // First row peeks: a section-title-sized text below the hero sits in the bottom 200 pt.
+        let peeking = belowHeroTitleFrames(app).filter { $0.frame.minY > 1080 - 200 && $0.frame.minY < 1080 }
+        XCTAssertFalse(peeking.isEmpty, "no section title peeks into the bottom 200 pt under the hero — saw \(belowHeroTitleFrames(app).map { "\($0.label)@\(Int($0.frame.minY))" }.prefix(12))")
+
+        // Default focus on Play (corrections F18: `.defaultFocus` on the outermost ZStack). A
+        // disabled Play button cannot take focus, so that part is skipped, not failed, on a fixture
+        // with no stream source for this title.
+        if app.buttons["Playback unavailable"].exists {
+            throw XCTSkip("Play is disabled (\"Playback unavailable\": no add-on or plugin can serve Dune on this guest fixture) — cannot check that default focus lands on Play; the logo/peek checks above ran")
+        }
+        XCTAssertTrue(playHasFocus(app), "default focus must land on Play in Cinematic — focused: \(focusedNodes(app).map { "\($0.identifier)|\($0.label)" })")
+    }
+
+    /// FEAT-35 synopsis sheet (P1 §L test78): on a title whose synopsis overflows four lines, Up
+    /// from the action row focuses the teaser, Select opens `detail_synopsis_sheet`, and Menu closes
+    /// it with Detail still up.
+    func test78SynopsisSheetOpenClose() throws {
+        let app = try launchDetail(id: "tt0903747", type: "series", name: "Breaking Bad")
+        pause(4) // meta + measurement settle
+        let probe = detailHeroProbe(app)
+        if probe.contains("trunc=0") {
+            throw XCTSkip("Breaking Bad's synopsis fits four lines here (debug_detail_hero: \(probe)) — the teaser is plain text, no sheet to open")
+        }
+        XCTAssertTrue(probe.contains("trunc=1"), "debug_detail_hero must report trunc=0 or trunc=1, got: '\(probe)'")
+        func teaserFocused() -> Bool { focusedNodes(app).contains { $0.identifier == "detail_synopsis_teaser" } }
+        for _ in 0..<3 where !teaserFocused() {
+            remote.press(.up)
+            pause(0.8)
+        }
+        shot(app, "78a_teaser_focused")
+        XCTAssertTrue(teaserFocused(), "Up from the action row must focus the synopsis teaser — focused: \(focusedNodes(app).map { "\($0.identifier)|\($0.label)" })")
+        remote.press(.select)
+        let sheet = app.descendants(matching: .any)["detail_synopsis_sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 4), "Select on the teaser must open detail_synopsis_sheet")
+        pause(1)
+        shot(app, "78b_sheet_open")
+        remote.press(.menu)
+        pause(2)
+        shot(app, "78c_after_menu")
+        XCTAssertFalse(sheet.exists, "Menu must close the synopsis sheet")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_hero"].exists, "Detail must still be up after the sheet closes (one Menu press = one level)")
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// FEAT-35 hero exit / return (P1 §L test79, corrections F6/F7/F10): Down from the hero to the
+    /// first row anchors it in one blended motion (`anchor=… hero-exit`); Up back into the hero
+    /// restores the page top (`hero-return`, dim 0) and the logo slot is back where it landed.
+    func test79UpFromFirstRowRestoresTop() throws {
+        let app = try launchDetail(id: "tt15239678", type: "movie", name: "Dune",
+                                   extra: ["-debug.detailScrollProbe", "YES"])
+        let logoSlot = app.descendants(matching: .any)["detail_logo_slot"]
+        XCTAssertTrue(logoSlot.waitForExistence(timeout: 6), "detail_logo_slot missing — is the Cinematic layout on?")
+        pause(4)
+        let landingMinY = logoSlot.frame.minY
+        shot(app, "79a_landing")
+        // A truncated synopsis teaser sits ABOVE the action row; Down from it stays in the hero.
+        if focusedNodes(app).contains(where: { $0.identifier == "detail_synopsis_teaser" }) {
+            press(.down, times: 1)
+        }
+
+        remote.press(.down)
+        var exitProbe = ""
+        for _ in 0..<12 {
+            pause(0.25)
+            exitProbe = ux6Label(app)
+            if exitProbe.contains("hero-exit") { break }
+        }
+        shot(app, "79b_first_row")
+        XCTAssertTrue(exitProbe.contains("hero-exit"), "Down from the hero must anchor the first row with a hero-exit pass — debug_ux6: '\(exitProbe)'")
+
+        remote.press(.up)
+        var returnProbe = ""
+        var restored = false
+        for _ in 0..<12 {
+            pause(0.25)
+            returnProbe = ux6Label(app)
+            if returnProbe.contains("hero-return") && returnProbe.contains("dark=0 ") { restored = true; break }
+        }
+        pause(0.8) // let the hero-return motion finish before reading the logo frame
+        shot(app, "79c_back_to_hero")
+        XCTAssertTrue(restored, "Up from the first row must restore the top (anchor=hero-return … and dark=0) — debug_ux6: '\(returnProbe)'")
+        XCTAssertEqual(logoSlot.frame.minY, landingMinY, accuracy: 8, "the logo slot did not return to its landing position (\(landingMinY) → \(logoSlot.frame.minY))")
+    }
+
+    /// FEAT-35 Classic invariant (P1 §L test80, §J): `-detail_layout classic` keeps today's page —
+    /// the beta.18 synopsis panel — and none of the Cinematic-only pieces (teaser, About section,
+    /// Start Over).
+    func test80ClassicStillShowsSynopsisPanel() throws {
+        let app = try launchDetail(id: "tt15239678", type: "movie", name: "Dune", layout: "classic")
+        pause(4)
+        shot(app, "80a_classic")
+        XCTAssertTrue(app.descendants(matching: .any)["detail_synopsis_panel"].waitForExistence(timeout: 8),
+                      "Classic must still show detail_synopsis_panel")
+        XCTAssertFalse(app.descendants(matching: .any)["detail_hero"].exists, "the Cinematic hero (detail_hero) must not render in Classic")
+        XCTAssertFalse(app.descendants(matching: .any)["detail_synopsis_teaser"].exists, "the Cinematic teaser must not render in Classic")
+        XCTAssertFalse(app.descendants(matching: .any)["detail_about"].exists, "the Cinematic About section must not render in Classic")
+        XCTAssertFalse(app.buttons["Start Over"].exists || app.descendants(matching: .any)["detail_start_over"].exists,
+                       "Start Over is Cinematic-only and must not render in Classic")
+    }
+
+    /// FEAT-50 root push / pop (P2 §I new test 1): for Services, Detail Page and Developer, Select
+    /// on the root row pushes `settings_pane_<raw>` and Menu pops back to the root with focus on the
+    /// same category.
+    func test81SettingsRootPushPopReturnsFocus() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        for (title, raw) in [("Services", "services"), ("Detail Page", "detailPage"), ("Developer", "developer")] {
+            XCTAssertTrue(openSettingsCategory(app, named: title), "Select on \(title) must push settings_pane_\(raw)")
+            shot(app, "81_\(raw)_pane")
+            XCTAssertFalse(app.descendants(matching: .any)["settings_root_list"].exists, "the root list must leave the screen while \(title) is pushed")
+            remote.press(.menu)
+            pause(1.5)
+            XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4),
+                          "Menu from \(title) must pop to the root list")
+            XCTAssertFalse(app.descendants(matching: .any)["settings_pane_\(raw)"].exists, "settings_pane_\(raw) must be gone after the pop")
+            XCTAssertEqual(focusedSettingsRootTitle(app), title, "the pop must return focus to the \(title) row")
+            shot(app, "81_\(raw)_popped")
+        }
+        XCTAssertTrue(app.state == .runningForeground)
+    }
+
+    /// FEAT-50 explainer follows focus (P2 §I new test 2): at the root the explainer title tracks the
+    /// focused category; inside Home Screen it describes the focused row, not the category summary;
+    /// and the Minimal settings style has no explainer at all.
+    func test82SettingsExplainerFollowsFocus() throws {
+        let app = launchToHome(forceFreshLaunch: true)
+        XCTAssertTrue(enterSettingsRoot(app), "the Settings root never appeared")
+        let explainerTitle = app.staticTexts["settings_explainer_title"]
+        let explainerBody = app.staticTexts["settings_explainer_body"]
+        func titleBecomes(_ expected: [String]) -> String {
+            var last = ""
+            for _ in 0..<12 {
+                last = explainerTitle.exists ? explainerTitle.label : ""
+                if expected.contains(last) { break }
+                pause(0.25)
+            }
+            return last
+        }
+
+        // Root: Services, then one Down to Appearance.
+        focusSettingsRootRow(app, named: "Services")
+        XCTAssertEqual(titleBecomes(["Services"]), "Services", "the root explainer must name the focused category")
+        shot(app, "82a_root_services")
+        press(.down, times: 1)
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "Down from Services must land on Appearance")
+        XCTAssertEqual(titleBecomes(["Appearance"]), "Appearance", "the root explainer must follow focus to Appearance")
+
+        // Home Screen pane: the first row's own description replaces the category summary.
+        focusSettingsRootRow(app, named: "Home Screen")
+        _ = titleBecomes(["Home Screen"])
+        let summary = explainerBody.exists ? explainerBody.label : ""
+        remote.press(.select)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_homeScreen"].waitForExistence(timeout: 4), "Home Screen pane did not push")
+        XCTAssertEqual(titleBecomes(["Upcoming Episodes"]), "Upcoming Episodes", "on the pane's first row the explainer must describe Upcoming Episodes")
+        let rowBody = explainerBody.exists ? explainerBody.label : ""
+        XCTAssertFalse(rowBody.isEmpty, "the explainer body is empty on the Upcoming Episodes row")
+        XCTAssertNotEqual(rowBody, summary, "the explainer body still shows the Home Screen summary on a focused row")
+        shot(app, "82b_home_upcoming")
+        press(.down, times: 1)
+        let next = titleBecomes(["Show Hero", "Refresh Add-ons"])
+        XCTAssertTrue(["Show Hero", "Refresh Add-ons"].contains(next), "Down from Upcoming Episodes must move the explainer to Show Hero (or Refresh Add-ons with no catalogs), got '\(next)'")
+        shot(app, "82c_home_next_row")
+
+        // Minimal style: no explainer column at the root.
+        let minimal = launchToHome(extraArguments: ["-settings_style", "minimal"], forceFreshLaunch: true)
+        XCTAssertTrue(enterSettingsRoot(minimal), "the Settings root never appeared (Minimal)")
+        pause(1)
+        shot(minimal, "82d_minimal_root")
+        XCTAssertFalse(minimal.staticTexts["settings_explainer_title"].exists, "Minimal settings style must not show the explainer")
+        // Leave the next test a default-style app (the style was only a launch argument).
+        _ = launchToHome(forceFreshLaunch: true)
+    }
+
+    /// FEAT-50 Developer readouts (P2 §I new test 3): with the release-safe `-debug.*` probes on,
+    /// the readouts that moved from About into Developer are still reachable — the hero probe blob
+    /// and the collection frame probe block.
+    func test83DeveloperReadoutsReachable() throws {
+        let app = launchToHome(extraArguments: ["-debug.collectionFrameProbe", "YES", "-debug.homeHeroProbe", "YES"],
+                               forceFreshLaunch: true)
+        pause(6) // let the hero probe log the launch
+        XCTAssertTrue(openDeveloper(app), "Settings › Developer pane did not open")
+        pause(1)
+        func heroReadout() -> Bool {
+            probeBlobLabel(app, identifier: "hero_probe_blob").map { !$0.isEmpty } == true
+                || app.descendants(matching: .any)["hero_probe_lines"].exists
+        }
+        let heroSeen = heroReadout()
+        shot(app, "83a_developer_top")
+        var collectionSeen = app.descendants(matching: .any)["collection_frame_probe_lines"].exists
+        for _ in 0..<30 where !collectionSeen {
+            remote.press(.down)
+            pause(0.5)
+            collectionSeen = app.descendants(matching: .any)["collection_frame_probe_lines"].exists
+        }
+        shot(app, "83b_developer_collection_probe")
+        XCTAssertTrue(heroSeen, "hero_probe_blob / hero_probe_lines missing at the top of the Developer pane with -debug.homeHeroProbe YES")
+        XCTAssertTrue(collectionSeen, "collection_frame_probe_lines never appeared in the Developer pane with -debug.collectionFrameProbe YES")
+        _ = launchToHome(forceFreshLaunch: true)
+    }
+
+    /// FEAT-50 sidebar mode (corrections F11): with `-sidebar_style sidebar`, Menu inside a pane pops
+    /// back to the Settings root (`settings_root_list`) and does NOT reveal the sidebar
+    /// (`sidebar_item_Search` only exists while the panel is expanded).
+    func test84SidebarModePaneMenuPopsToRoot() throws {
+        let app = launchToHome(extraArguments: ["-sidebar_style", "sidebar"], forceFreshLaunch: true)
+        defer { _ = launchToHome(forceFreshLaunch: true) } // the style was only a launch argument
+        pause(1.5)
+        // Sidebar mode has no tab bar, and since rc8 (BUG-98) the panel reveals on Menu ONLY, so
+        // `openTab`'s Up-climb never reaches it (the 10-02 g3 run climbed into Home's hero and its
+        // final Select opened a Detail page). Use test52's proven route instead: Menu at rest on
+        // Home reveals the panel with focus on `sidebar_item_Home`, Down to Settings, Select.
+        let homeRow = app.buttons["sidebar_item_Home"]
+        remote.press(.menu)
+        pause(1.0)
+        guard homeRow.waitForExistence(timeout: 4), homeRow.hasFocus else {
+            XCTFail("Menu at rest on Home did not reveal + focus sidebar_item_Home in sidebar mode")
+            return
+        }
+        let settingsRow = app.buttons["sidebar_item_Settings"]
+        XCTAssertTrue(moveFocus(.down, until: settingsRow, max: 6), "could not focus sidebar_item_Settings")
+        remote.press(.select)
+        pause(2.5)
+        var rootUp = false
+        for _ in 0..<8 where !rootUp { rootUp = settingsRootPresent(app); if !rootUp { pause(0.5) } }
+        XCTAssertTrue(rootUp, "the Settings root did not appear after selecting sidebar_item_Settings")
+        focusSettingsRootRow(app, named: "Appearance")
+        remote.press(.select)
+        XCTAssertTrue(app.descendants(matching: .any)["settings_pane_appearance"].waitForExistence(timeout: 4),
+                      "Settings › Appearance pane did not open in sidebar mode")
+        pause(1)
+        shot(app, "84a_sidebar_mode_pane")
+        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists, "precondition: the sidebar must be collapsed inside the pane")
+        remote.press(.menu)
+        pause(1.5)
+        shot(app, "84b_after_menu")
+        XCTAssertTrue(app.state == .runningForeground, "Menu inside a pane must not leave the app in sidebar mode")
+        XCTAssertTrue(app.descendants(matching: .any)["settings_root_list"].waitForExistence(timeout: 4),
+                      "Menu inside a pane must pop to the Settings root in sidebar mode")
+        XCTAssertFalse(app.descendants(matching: .any)["sidebar_item_Search"].exists,
+                       "Menu inside a pane must not reveal the sidebar (the pop wins)")
+        XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "the pop must return focus to the Appearance row")
     }
 }
