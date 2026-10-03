@@ -134,4 +134,68 @@ final class RevampEvidenceTests: XCTestCase {
         pause(2)
         shot("settings-after-pop")
     }
+
+    private func openSettings(_ app: XCUIApplication) {
+        let settings = app.buttons["Settings"]
+        press(.up, times: 6, gap: 0.4)
+        for _ in 0..<8 where !(settings.exists && settings.hasFocus) {
+            remote.press(.right)
+            pause(0.5)
+        }
+        remote.press(.select)
+        pause(3)
+        press(.down)
+        pause(1.5)
+    }
+
+    func testSettingsEveryPane() {
+        let app = launch([])
+        pause(8)
+        openSettings(app)
+        // Anchor on the first category, then walk the fixed root order.
+        // Up×12 parks focus on the tab bar; one Down lands on the first category.
+        press(.up, times: 12, gap: 0.3)
+        press(.down)
+        pause(1)
+        shot("settings-root-top")
+        let names = ["account", "services", "appearance", "homescreen", "detailpage",
+                     "player", "sources", "subtitles", "about", "developer"]
+        for (index, name) in names.enumerated() {
+            remote.press(.select)
+            pause(2.5)
+            shot("pane-\(index)-\(name)-top")
+            press(.down, times: 2, gap: 0.8)
+            shot("pane-\(index)-\(name)-row")
+            if index == 0 { tree(app, "pane-account-tree") }
+            remote.press(.menu)
+            pause(2)
+            if index == 0 { shot("pane-0-after-pop") }
+            press(.down)
+            pause(0.8)
+        }
+    }
+
+    func testDetailHeroMotion() {
+        let app = launch(["-debug.openDeepLink", "nuviotv://title?id=tt15239678&type=movie&name=Dune"])
+        pause(14)
+        shot("motion-landing")
+        press(.down)
+        pause(2.5)
+        shot("motion-down-from-hero")
+        press(.up)
+        pause(2.5)
+        shot("motion-up-back-to-hero")
+        press(.up)
+        pause(1.5)
+        shot("motion-teaser-focused")
+        remote.press(.select)
+        pause(2.5)
+        shot("motion-synopsis-sheet")
+        remote.press(.menu)
+        pause(2)
+        press(.down, times: 14, gap: 1.0)
+        pause(2)
+        shot("motion-bottom-about")
+        tree(app, "motion-bottom-tree")
+    }
 }

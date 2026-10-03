@@ -20,8 +20,7 @@ final class SettingsDescriptionsTests: XCTestCase {
         XCTAssertEqual(Set(raws).count, raws.count)
     }
 
-    func testNoPlaceholderCopy() throws {
-        try XCTSkipIf(true, "enabled by W3-A once every description has real copy")
+    func testNoPlaceholderCopy() {
         for id in SettingsDescriptionID.allCases {
             XCTAssertNotEqual(String(localized: SettingsDescriptions.text(for: id)), "TODO", "\(id)")
         }
@@ -38,7 +37,6 @@ final class SettingsDescriptionsTests: XCTestCase {
     }
 
     func testEveryIDIsUsedAndOnlyKnownIDsAreUsed() throws {
-        try XCTSkipIf(true, "enabled once W2 + W3-A have wired every row (whoever finishes the wiring removes this)")
         let used = try usedCaseNames()
         let known = Set(SettingsDescriptionID.allCases.map { String(describing: $0) })
         XCTAssertEqual(known.subtracting(used).sorted(), [], "ids with copy but no row")
