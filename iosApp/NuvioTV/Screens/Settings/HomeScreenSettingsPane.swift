@@ -447,6 +447,11 @@ private struct HeroSourceRow: View {
                 dimmed: !interactive
             )
         }
+        // D11 V1/V2 (Gate 2 sim pass): the same style `SettingsToggleRow` applies, so an expanded
+        // hero source shows the capsule switch, sits on the rest platter with the kit insets, and
+        // keeps the system focus platter. The label (and its `\.isFocused` dimming read) stays
+        // inside the style's Button label, so the Wave 9 r3 reasoning above still holds.
+        .toggleStyle(SettingsSwitchToggleStyle())
         // Kept from `SettingsToggleRow`: the UITest harness's state-aware toggle helper reads this
         // exact value, and it is a friendlier VoiceOver value than "1"/"0".
         .accessibilityValue(item.heroSourceEnabled ? Text("On") : Text("Off"))
@@ -498,12 +503,16 @@ private struct CatalogSettingRow: View {
 
     var body: some View {
         Button(action: onToggle) {
-            HStack(spacing: Theme.Spacing.lg) {
+            // D11 V1/V2 (Gate 2 sim pass): the kit row chrome (rest platter, kit insets) and the
+            // kit's capsule switch glyph in place of the old checkmark circle, so an expanded
+            // catalog reads like every toggle row around it. Still one Button (the reorder
+            // context menu needs it); the glyph is decorative, state stays in the accessibility
+            // value below.
+            SettingsRowChrome {
                 SettingsRowLabel(title: item.displayTitle, subtitle: item.addonName, descriptionID: .homeCatalog)
                     .opacity(item.enabled ? 1 : 0.55)
-                Spacer()
-                Image(systemName: item.enabled ? "checkmark.circle.fill" : "circle")
-                    .rowAccentTint(item.enabled)
+            } trailing: {
+                SettingsSwitchGlyph(isOn: item.enabled)
             }
         }
         .contextMenu {

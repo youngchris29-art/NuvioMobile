@@ -180,24 +180,31 @@ struct SettingsRestPlatter: ViewModifier {
     }
 }
 
-/// Pins the ink of content whose control may carry a `.tint` (the retinted `Menu` pill, V4):
-/// `Color.primary` resolved against the INHERITED scheme at rest, and against `.light` on the
-/// platter — the same device-proven flip `SettingsAccentTint` uses. Hierarchical `.secondary`
-/// children (row subtitles, the trailing value) then resolve relative to `Color.primary`, never
-/// relative to the tint. Not applied to Toggle / Button / NavigationLink rows: those keep the
-/// system's own label inversion untouched.
+/// Ink for the `Menu` picker row's label (V4).
+///
+/// Gate 2 sim pass, second round (`g2-pane-6-sources-row.png`): with the pill tint already off,
+/// the FOCUSED picker row still rendered a light-grey (≈ rgb 201) platter where every Toggle /
+/// Button / NavigationLink row gets the white system platter. The one thing left that only the
+/// picker row did was this modifier pinning `Color.primary` and forcing `.light` on the label off
+/// the Menu's OWN focus (`\.isFocused`). The Menu draws its focused pill and flips its label
+/// itself, exactly like the other kit rows, so on its own focus this is now a no-op: no
+/// foreground pin, the inherited scheme written straight back.
+///
+/// What it still does is the BUG-65 container half: inside a custom container that publishes
+/// `settingsRowIsFocused` / `settingsRowPlatterActive`, the system never flips the children, so
+/// the label (including the trailing `value ›`, which sits outside `SettingsRowLabel`'s own flip)
+/// resolves against `.light` there. Both keys default false, so in a native settings `List` this
+/// modifier changes nothing.
 struct SettingsPlatterInk: ViewModifier {
-    @Environment(\.isFocused) private var isFocused
     @Environment(\.settingsRowIsFocused) private var rowFocused
     @Environment(\.settingsRowPlatterActive) private var platterActive
     @Environment(\.colorScheme) private var inheritedScheme
 
-    private var onPlatter: Bool { isFocused || rowFocused || platterActive }
+    private var onContainerPlatter: Bool { rowFocused || platterActive }
 
     func body(content: Content) -> some View {
         content
-            .foregroundStyle(Color.primary)
-            .environment(\.colorScheme, onPlatter ? .light : inheritedScheme)
+            .environment(\.colorScheme, onContainerPlatter ? .light : inheritedScheme)
     }
 }
 
@@ -573,14 +580,15 @@ struct SettingsPickerRow<T: Hashable>: View {
             // `LabeledContent` stays so the Menu's accessible label/value are unchanged (UI tests
             // and VoiceOver read title + value, the chevron is hidden).
             LabeledContent {
-                // V4: `value ›` in `.secondary` (was the accent value). Platter-flipped through
-                // `SettingsPlatterInk` below.
+                // V4: `value ›` in `.secondary` (was the accent value). Inherits the Menu's own
+                // label ink, like the title.
                 SettingsTrailingValue(value: label(selection.wrappedValue))
             } label: {
                 SettingsRowLabel(title: title, subtitle: subtitle, descriptionID: descriptionID)
             }
-            // The Menu pill may carry the rest-fill tint; pin the label's ink so the tint never
-            // reaches the text.
+            // Container-only scheme flip (BUG-65); on the Menu's own focus the system's label
+            // inversion is left alone so the focused pill is the stock white platter. See
+            // `SettingsPlatterInk`.
             .modifier(SettingsPlatterInk())
         }
         // V2/V4: the native pill IS this row's platter (same insets; `restFill` is matched to its
