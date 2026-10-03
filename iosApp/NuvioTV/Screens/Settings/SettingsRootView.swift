@@ -10,12 +10,27 @@ import SwiftUI
 ///
 /// ## Focus graph (written before the code, per the tvOS skill's workflow)
 ///
-/// **Default focus.** The `List` is a `.focusScope(rootFocus)`; the row for `lastCategory` (the
-/// category the user last opened, `Account & Profiles` on a cold mount) carries
-/// `.prefersDefaultFocus(true, in: rootFocus)`. Entering the tab, popping back from a pane, and
-/// popping after a theme remount all land on that row. There is no `@FocusState` write on appear:
-/// the scope's default is the only mechanism, so tvOS's own focus memory still wins where the
-/// system wants it to.
+/// **Default focus.** The target row is `lastCategory` (the category the user last opened,
+/// `Account & Profiles` when nothing has been opened this launch). Entering the tab, popping back
+/// from a pane, and popping after a theme remount all land on it.
+///
+/// UI legs showed `.focusScope` + `.prefersDefaultFocus` is NOT honoured by a freshly built tvOS
+/// `List` (test40: cold entry + Down landed on "Services"; test43: pop after the theme `.id()`
+/// remount landed on "Account & Profiles"); only the plain push → pop (test81) worked, through
+/// the system's own focus memory. So the root uses a `@FocusState` (`focusedCategory`) with two
+/// layers:
+/// 1. `.defaultFocus($focusedCategory, target)` on the `List` for automatic focus placement.
+/// 2. A ONE-SHOT landing correction (`landingCorrectionArmed`). It is armed when the root becomes
+///    visible with an empty path (`onAppear`: cold entry / tab switch back) and when the path
+///    empties (a pop, including the pop after a remount, where the root was rebuilt hidden). The
+///    FIRST focus report that lands on a row after arming disarms it, and if that landing is not
+///    the target, focus is moved to the target once (deliberately no direct write on pop: during
+///    the transition the rows are not focusable and a recorded write would disarm the correction
+///    early). On a plain pop the system's memory and the
+///    target are the same row (`lastCategory` is set by the Select that pushed), so nothing moves.
+///    After the first landing nothing ever writes focus again: no repeated forcing, no stealing
+///    focus after user input. Arming does not pull focus out of the tab bar or sidebar: it only
+///    acts once focus enters the list on its own.
 ///
 /// **List.** Up / Down walk the ten categories across the four groups (headers are not
 /// focusable). Up from the first row leaves upward to the tab bar; Down from the last does
@@ -41,8 +56,17 @@ struct SettingsRootView: View {
     @Binding var lastCategory: SettingsCategory?
 
     @AppStorage("settings_style") private var settingsStyle = "default"
-    @StateObject private var focusModel = SettingsRootFocusModel()
-    @Namespace private var rootFocus
+    /// `@State`, not `@StateObject`: owned but not observed, so a focus move re-renders only
+    /// `SettingsRootExplainer` (`@ObservedObject`), never this body and its `List` (review r1).
+    @State private var focusModel = SettingsRootFocusModel()
+    /// Which category row holds focus (nil = focus is outside the list). Read by this body, so a
+    /// focus move re-renders the root (ten rows, cheap); the explainer model stays unobserved here.
+    @FocusState private var focusedCategory: SettingsCategory?
+    /// One-shot "correct the next landing" flag; see the focus graph above.
+    @State private var landingCorrectionArmed = false
+
+    /// The row focus should land on when it enters the list without system focus memory.
+    private var focusTarget: SettingsCategory { lastCategory ?? .accountProfiles }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -69,7 +93,30 @@ struct SettingsRootView: View {
         .onAppear {
             // Seed the explainer so a remount or a pop shows the category focus will land on,
             // before the first focus report arrives.
-            focusModel.didFocus(lastCategory ?? .accountProfiles)
+            focusModel.didFocus(focusTarget)
+            // Cold entry, tab switch back, or a pop: correct the first landing in the list once.
+            // Not armed while a pane is on top (the remount rebuilds this root hidden; the path
+            // emptying below arms it then).
+            if path.isEmpty, focusedCategory == nil {
+                landingCorrectionArmed = true
+            }
+        }
+        .onChange(of: path.isEmpty) { wasEmpty, isEmpty in
+            guard isEmpty, !wasEmpty else { return }
+            // A pop (plain, or after a theme remount). Arm the landing correction only. No direct
+            // focus write here: while the pop transition runs the rows are not focusable yet, and a
+            // write that SwiftUI records anyway would report itself as the "landing" and disarm the
+            // correction before the focus engine's real landing arrives.
+            landingCorrectionArmed = true
+        }
+        .onChange(of: focusedCategory) { _, landed in
+            guard landingCorrectionArmed, let landed else { return }
+            // First landing on a row since arming: disarm for good, then correct it at most once.
+            landingCorrectionArmed = false
+            let target = focusTarget
+            if landed != target {
+                focusedCategory = target
+            }
         }
     }
 
@@ -92,7 +139,7 @@ struct SettingsRootView: View {
                             }
                             .modifier(SettingsRootRowFocusReporter(category: category, model: focusModel))
                         }
-                        .prefersDefaultFocus(category == (lastCategory ?? .accountProfiles), in: rootFocus)
+                        .focused($focusedCategory, equals: category)
                         // Keeps `app.buttons["Appearance"]` etc. resolving at the root.
                         .accessibilityLabel(Text(category.title))
                         .accessibilityHint(Text(category.subtitle))
@@ -101,7 +148,7 @@ struct SettingsRootView: View {
                 }
             }
         }
-        .focusScope(rootFocus)
+        .defaultFocus($focusedCategory, focusTarget)
         .environment(\.settingsUsesNativeList, true)
         .accessibilityIdentifier("settings_root_list")
     }
