@@ -82,6 +82,8 @@ final class SearchViewModel: ObservableObject {
     /// more value to a callback AFTER `stop()` returns, driving `@Published` mutations into a view
     /// mid-pop. One flag for all four watchers — they're always started and stopped together.
     private var stopped = false
+    /// S1 W1: what to show while the next query loads. See `SearchRowsHold`.
+    private var rowsHold = SearchRowsHold()
 
     func start() {
         guard !started else { return }
@@ -92,7 +94,14 @@ final class SearchViewModel: ObservableObject {
             guard let self, !self.stopped else { return }
             guard let state = emitted as? SearchUiState else { return }
             self.isLoading = state.isLoading
-            self.sections = state.sections
+            // S1 W1: keep the previous query's rows while the next one loads (`SearchRowsHold`);
+            // the repository starts every search with empty sections.
+            self.sections = self.rowsHold.rows(
+                current: self.sections,
+                incoming: state.sections,
+                isLoading: state.isLoading,
+                now: ProcessInfo.processInfo.systemUptime
+            )
             let settledEmpty = state.sections.isEmpty && !state.isLoading
             // KMP exports enum entries all-lowercase (like DiscoverEmptyStateReason.requestfailed).
             // Manifest failure = RequestFailed while no enabled add-on has a manifest at all.
@@ -180,6 +189,7 @@ final class SearchViewModel: ObservableObject {
             // discoverSources, which permanently kills the Discover section here since
             // nothing ever re-arms it. Use `.clear()`, which only resets search state. (BUG-33(2))
             SearchRepository.shared.clear()
+            rowsHold.reset()
             sections = []
             emptyMessage = nil
             searchError = nil

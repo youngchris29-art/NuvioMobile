@@ -9269,3 +9269,61 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertEqual(focusedSettingsRootTitle(app), "Appearance", "the pop must return focus to the Appearance row")
     }
 }
+
+// MARK: - S1 W1 (2026-10-04): Search on the system search field
+
+extension NuvioTVUITests {
+    /// S1 acceptance (`docs/search-s1-native-search-plan-2026-10-04.md`): results while typing with
+    /// no submit, no keyboard or search field over Detail, the query kept on Back, and the query
+    /// saved to Recent Searches because a result was opened from it.
+    ///
+    /// Wave 0 facts this relies on: the field is `app.searchFields` (never `textFields`);
+    /// `openTab("Search")` ends with a Down that lands in the inline keyboard; `app.typeText` types
+    /// into it; FA87 runs the LINEAR keyboard, so Down leaves the keyboard for the results (Grid
+    /// needs Right instead); an empty field's `value` is the prompt plus a keyboard hint.
+    func test92SearchLiveResults() throws {
+        let query = "severance"
+        let app = launchToHome(forceFreshLaunch: true)
+        openTab(app, named: "Search")
+        pause(2)
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "Search must show the system search field")
+        XCTAssertEqual(app.textFields.count, 0, "today's TextField must be gone")
+        let chip = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", query)).firstMatch
+        if chip.exists {
+            throw XCTSkip("'\(query)' is already a Recent Search on this fixture; the saved-on-open check would be vacuous")
+        }
+
+        app.typeText(query)
+        pause(1)
+        XCTAssertEqual(field.value as? String, query, "typing must reach the system field")
+        // No submit: rows must arrive while the keyboard is still up.
+        let result = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", query)).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 15), "results must appear while typing, without a submit")
+        shot(app, "test92-typed")
+
+        let grid = app.keyboards.firstMatch.exists && app.keyboards.firstMatch.frame.width < 900
+        if grid { press(.right, times: 7, gap: 0.5) } else { press(.down, times: 1) }
+        pause(1)
+        remote.press(.select)
+        pause(5)
+        shot(app, "test92-detail")
+        XCTAssertEqual(app.keyboards.count, 0, "no keyboard over Detail (the old .searchable ban's bug)")
+        XCTAssertEqual(app.searchFields.count, 0, "no search field over Detail")
+
+        remote.press(.menu)
+        pause(3)
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertEqual(field.value as? String, query, "the query must survive Back")
+        shot(app, "test92-back")
+
+        // Back to the keyboard and clear the field: the Recent chip must be there now.
+        if grid { press(.left, times: 7, gap: 0.5) } else { press(.up, times: 1) }
+        pause(1)
+        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: query.count + 2))
+        pause(2)
+        XCTAssertNotEqual(field.value as? String, query, "the field must clear")
+        shot(app, "test92-cleared")
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "opening a result must save the query to Recent Searches")
+    }
+}

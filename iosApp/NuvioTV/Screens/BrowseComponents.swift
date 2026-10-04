@@ -4924,9 +4924,8 @@ struct EntityRoute: Hashable {
 /// One horizontal catalog (e.g. "Popular Movies", or a search-result group) as a focus-scrollable row
 /// of poster cards.
 ///
-/// By default each card is a `NavigationLink` to the title's detail screen (used on Home). Pass
-/// `onSelect` to instead handle taps manually — Search uses this to dismiss the keyboard before
-/// navigating.
+/// By default each card is a `NavigationLink` to the title's detail screen (Home and Search). Pass
+/// `onSelect` to handle taps manually instead.
 struct CatalogRowView: View {
     /// BUG-13: the Home fetch trims each row to `HOME_CATALOG_PREVIEW_FETCH_LIMIT` items
     /// (HomeRepository.kt) while `availableItemCount` keeps the addon's real first-page count. Rows

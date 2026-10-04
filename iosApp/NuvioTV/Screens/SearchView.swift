@@ -1,68 +1,37 @@
 import SwiftUI
 import SharedCore
+import Combine
 
-/// Search screen. Uses a plain `TextField` rather than `.searchable` — on tvOS `.searchable` inside a
-/// `TabView` leaves a persistent keyboard panel that bleeds over results and pushed screens. A
-/// `TextField` instead opens tvOS's self-contained full-screen keyboard which dismisses on commit,
-/// then shows results inline. Results push the detail screen via a normal NavigationLink.
+/// Search screen, on tvOS's system search field (`.searchable`): results update under the keyboard
+/// as you type (FEAT-37), with Siri dictation, typing from an iPhone and the viewer's own Linear or
+/// Grid keyboard. Until S1 (2026-10-04) Search used a plain `TextField` because `.searchable` was
+/// believed to leave its keyboard over pushed screens and other tabs; the 2026-10-04 spike and S1
+/// Wave 0 found no such bleed on tvOS 26.5 or 27.2 with the structure below, and found the three
+/// ways to get it wrong (`docs/search-s1-native-search-plan-2026-10-04.md` in the outer repo):
+///
+/// - `.searchable` sits on the results `ScrollView`, inside THIS tab's own `NavigationStack`. On
+///   the `TabView` it makes tvOS wrap the whole tab shell in the search controller; inside a second,
+///   nested `NavigationStack` the result links stop pushing.
+/// - The typed text lives in `SearchQueryBox`, never in `@State`. With `@State`, every results
+///   update re-applied a stale binding to the system field and typing from an iPhone flickered
+///   between the old and new text (31 backward steps in 75 changes, on the Apple TV).
+/// - `SearchFieldLayer`, which carries `.searchable`, observes only the query box, and
+///   `SearchViewOwner` never publishes, so results updates re-run only `SearchContent`.
+///
+/// The inline keyboard has no Search/Done key, so a query joins Recent Searches when something is
+/// opened from it (`SearchHistoryOnOpen`) or on the iPhone keyboard's return key.
 ///
 /// While the query is empty the screen doubles as **Discover**: recent-search chips plus shared
 /// `SearchRepository.discoverUiState`-driven browsing (type → catalog → genre → paginated grid).
 struct SearchView: View {
-    @StateObject private var model = SearchViewModel()
-    @State private var query = ""
-    @Environment(\.posterStyle) private var posterStyle
-
-    private var gridColumns: [GridItem] {
-        [GridItem(
-            .adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap),
-            spacing: Theme.Spacing.rowGap
-        )]
-    }
+    @StateObject private var owner = SearchViewOwner()
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ZStack {
                 Theme.Palette.background.ignoresSafeArea()
-
-                ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                        HStack(spacing: Theme.Spacing.md) {
-                            Image(systemName: "magnifyingglass")
-                                .foregroundStyle(Theme.Palette.textSecondary)
-                            TextField("Search movies & shows", text: $query)
-                                .textFieldStyle(.plain)
-                                .font(Theme.Font.body)
-                                .foregroundStyle(Theme.Palette.textPrimary)
-                                .onSubmit { model.recordSearch(query) }
-                        }
-                        .padding(Theme.Spacing.lg)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-
-                        if queryIsEmpty {
-                            historyChips
-                            // UX-8: the user can hide the whole Discover section (synced per
-                            // profile) — the page is then the search field + recent searches.
-                            if !model.hideDiscover {
-                                discoverSection
-                            }
-                        } else {
-                            searchResults
-                        }
-                    }
-                    .padding(Theme.Spacing.screen)
-                }
-                .scrollClipDisabled()
-                // beta.19-rc1 verdict (M3, BUG-133): Search has no settle corrector, so its rows'
-                // inline trailers gate on `RowsMotionClock` (`RowRestSource.motionClock`, the
-                // default); this stamps it while the results scroll vertically.
-                .rowsMotionStamp(.vertical)
-                .reportsScrollToTabBar(tab: "Search")
-                // FEAT-30: in sidebar mode Menu summons the floating sidebar instead of
-                // suspending the app; a second Menu (with focus now in the sidebar) falls through
-                // to the system default and exits, so the exit convention survives one step
-                // further in. Structurally absent in tabs mode — see `SidebarMenuRevealModifier`.
-                .sidebarMenuReveal()
+                SearchFieldLayer(model: owner.model, queryBox: owner.queryBox)
             }
             .navigationDestination(for: TitleRoute.self) { route in
                 DetailView(preview: route.preview)
@@ -77,11 +46,89 @@ struct SearchView: View {
                 EntityBrowseView(route: route)
             }
         }
-        .onChange(of: query) { _, newValue in
-            model.queryChanged(newValue)
+        // Recent Searches on intent: anything opened from a query saves it (see `SearchHistoryOnOpen`).
+        .onChange(of: path.count) { oldCount, newCount in
+            if let query = owner.historyOnOpen.pathChanged(from: oldCount, to: newCount, query: owner.queryBox.text) {
+                owner.model.recordSearch(query)
+            }
         }
-        .onAppear { model.start() }
-        .onDisappear { model.stop() }
+        .onAppear { owner.model.start() }
+        .onDisappear { owner.model.stop() }
+    }
+}
+
+/// The typed text, observed only by `SearchFieldLayer` (and read by `SearchContent` through a
+/// binding). Never `@State`: see `SearchView`.
+final class SearchQueryBox: ObservableObject {
+    @Published var text = ""
+}
+
+/// Owns Search's state for the life of the tab. Deliberately publishes nothing, so `SearchView`'s
+/// body never re-runs on a results update.
+final class SearchViewOwner: ObservableObject {
+    let model = SearchViewModel()
+    let queryBox = SearchQueryBox()
+    var historyOnOpen = SearchHistoryOnOpen()
+}
+
+/// Carries the system search field. Observes only the query box, so results updates never re-apply
+/// `.searchable`'s text binding (the iPhone-keyboard flicker; see `SearchView`).
+private struct SearchFieldLayer: View {
+    let model: SearchViewModel
+    @ObservedObject var queryBox: SearchQueryBox
+
+    var body: some View {
+        SearchContent(model: model, query: $queryBox.text)
+            .searchable(text: $queryBox.text, prompt: Text("Search movies & shows"))
+            // The iPhone keyboard's return key. The remote's inline keyboard has none.
+            .onSubmit(of: .search) { model.recordSearch(queryBox.text) }
+            .onChange(of: queryBox.text) { _, newValue in
+                model.queryChanged(newValue)
+            }
+    }
+}
+
+/// The page under the search field: Recent Searches and Discover while the query is empty, the
+/// results otherwise. Observes the model.
+private struct SearchContent: View {
+    @ObservedObject var model: SearchViewModel
+    @Binding var query: String
+    @Environment(\.posterStyle) private var posterStyle
+
+    private var gridColumns: [GridItem] {
+        [GridItem(
+            .adaptive(minimum: posterStyle.width + Theme.Spacing.rowGap),
+            spacing: Theme.Spacing.rowGap
+        )]
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                if queryIsEmpty {
+                    historyChips
+                    // UX-8: the user can hide the whole Discover section (synced per
+                    // profile) — the page is then the search field + recent searches.
+                    if !model.hideDiscover {
+                        discoverSection
+                    }
+                } else {
+                    searchResults
+                }
+            }
+            .padding(Theme.Spacing.screen)
+        }
+        .scrollClipDisabled()
+        // beta.19-rc1 verdict (M3, BUG-133): Search has no settle corrector, so its rows'
+        // inline trailers gate on `RowsMotionClock` (`RowRestSource.motionClock`, the
+        // default); this stamps it while the results scroll vertically.
+        .rowsMotionStamp(.vertical)
+        .reportsScrollToTabBar(tab: "Search")
+        // FEAT-30: in sidebar mode Menu summons the floating sidebar instead of
+        // suspending the app; a second Menu (with focus now in the sidebar) falls through
+        // to the system default and exits, so the exit convention survives one step
+        // further in. Structurally absent in tabs mode — see `SidebarMenuRevealModifier`.
+        .sidebarMenuReveal()
     }
 
     private var queryIsEmpty: Bool {
@@ -92,7 +139,9 @@ struct SearchView: View {
 
     @ViewBuilder
     private var searchResults: some View {
-        if model.isLoading {
+        // While a search loads over the previous query's rows (`SearchRowsHold`), the rows stay
+        // and "Searching…" doesn't show.
+        if model.isLoading && model.sections.isEmpty {
             HStack(spacing: Theme.Spacing.md) {
                 ProgressView()
                 Text("Searching\u{2026}")
@@ -225,7 +274,7 @@ struct SearchView: View {
                 // Upstream 085e8dc6: RequestFailed with NO catalog options means an add-on MANIFEST
                 // failed (SearchRepository.refreshDiscover's early return), not a catalog page —
                 // say so and offer the honest recovery (re-fetch the manifests) instead of
-                // "try another genre". The root TextField keeps this screen focusable regardless.
+                // "try another genre".
                 if reason == DiscoverEmptyStateReason.requestfailed, discover.catalogOptions.isEmpty {
                     VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                         Text(widen(discover.errorMessage) ?? String(localized: "Couldn't load your add-ons."))
