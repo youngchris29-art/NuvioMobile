@@ -46,9 +46,12 @@ struct DeveloperSettingsPane: View {
     /// row's subtitle. Default ON; the key name matches the `-debug.bug66ContentScrollView NO`
     /// launch argument the UI test uses for the OFF leg.
     @AppStorage(TabBarContentScrollLink.defaultsKey) private var tabBarScrollLink = true
+    /// beta.19-rc1 verdict (T1, BUG-66): which fix leg runs for a half-shown tab bar
+    /// (`TabBarRestFix`: 0 off, 1 relink, 2 top-rest snap). Launch-latched there, hence "Relaunch".
+    @AppStorage(TabBarRestFix.defaultsKey) private var tabBarRestFix = 0
 
     // beta.19-rc1 verdict (F, FEAT-54): the BUG-118 "Row Edge Fade" A/B (`debug.rowEdgeFade`) left
-    // this pane. It is the Appearance setting `row_edge_fade` now (Soft by default), and
+    // this pane. It is the Appearance setting `row_edge_fade` now (Off by default), and
     // `RowEdgeFadeSetting.migrateLegacy` carries an explicit old "Off" across at launch.
 
     /// BUG-30/66/62 (beta.14): same release-safe pattern as the hero probe above, but the readout
@@ -633,6 +636,24 @@ struct DeveloperSettingsPane: View {
                         subtitle: String(localized: "BUG-66: Home tells the tab bar which scroll view to follow. Relaunch after changing"),
                         isOn: $tabBarScrollLink,
                         descriptionID: .devTabBarScrollLink
+                    )
+
+                    // beta.19-rc1 verdict (T1, BUG-66): the two fix legs ship OFF (the 2026-10-04
+                    // device session never got the bar to half-show on Christian's Apple TV), so a
+                    // tester who does see it picks a leg here instead of a launch argument.
+                    SettingsPickerRow(
+                        title: String(localized: "Tab Bar Rest Fix (A/B)"),
+                        subtitle: String(localized: "BUG-66: try if the tab bar stays half shown on Home. Relaunch after changing"),
+                        selection: $tabBarRestFix,
+                        options: [0, 1, 2],
+                        descriptionID: .devTabBarRestFix,
+                        label: { leg in
+                            switch leg {
+                            case 1: return String(localized: "Relink")
+                            case 2: return String(localized: "Snap to Top")
+                            default: return String(localized: "Off")
+                            }
+                        }
                     )
                 }
             }

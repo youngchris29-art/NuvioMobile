@@ -1144,8 +1144,8 @@ object TmdbMetadataService {
             writer = writers,
             releaseInfo = releaseInfo,
             lastAirDate = lastAirDate,
-            rating = details.voteAverage,
-            runtimeMinutes = details.runtime ?: details.episodeRunTime.firstOrNull(),
+            rating = tmdbKnownVoteAverage(details.voteAverage),
+            runtimeMinutes = tmdbKnownRuntimeMinutes(details.runtime, details.episodeRunTime),
             ageRating = response.fourth.ageRating,
             status = details.status?.trim()?.takeIf(String::isNotBlank),
             countries = details.productionCountries
@@ -1273,7 +1273,7 @@ object TmdbMetadataService {
                                 thumbnail = buildImageUrl(episode.stillPath, "w500"),
                                 seasonPoster = buildImageUrl(details.posterPath, TmdbImageSizes.POSTER),
                                 airDate = episode.airDate?.trim()?.takeIf(String::isNotBlank),
-                                runtimeMinutes = episode.runtime,
+                                runtimeMinutes = episode.runtime?.takeIf { it > 0 },
                             )
                         }
                         .toMap()
@@ -1989,6 +1989,16 @@ private val defaultLanguageRegions = mapOf(
     "pt" to "PT",
     "es" to "ES",
 )
+
+// Fork deviation (device session 2026-10-04): TMDB answers 0 for a runtime or vote average it does
+// not know yet (an unreleased film), and the formatters below turned that into "0m" and "0.0" on
+// the Detail meta line. Zero means unknown here, so it maps to null and the add-on's own value (or
+// nothing) shows instead. A series' first non-zero episode run time still stands in for a missing
+// film runtime, as before. Upstream-report candidate (the phone app shows the same "0m").
+internal fun tmdbKnownRuntimeMinutes(runtime: Int?, episodeRunTime: List<Int>): Int? =
+    runtime?.takeIf { it > 0 } ?: episodeRunTime.firstOrNull { it > 0 }
+
+internal fun tmdbKnownVoteAverage(voteAverage: Double?): Double? = voteAverage?.takeIf { it > 0.0 }
 
 private fun Double.formatRating(): String =
     if (this == 0.0) {

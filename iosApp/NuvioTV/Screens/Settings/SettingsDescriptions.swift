@@ -191,6 +191,7 @@ enum SettingsDescriptionID: String, CaseIterable {
     case devNoZoomReach = "dev.noZoomReach"
     case devShortRowFloor = "dev.shortRowFloor"
     case devTabBarScrollLink = "dev.tabBarScrollLink"
+    case devTabBarRestFix = "dev.tabBarRestFix"
 }
 
 enum SettingsDescriptions {
@@ -227,7 +228,7 @@ enum SettingsDescriptions {
         case .appearanceDepthPosterColor: return LocalizedStringResource("Tints each card's depth edge with its poster's main color as the artwork loads. Off by default.")
         case .appearanceNoZoomOnFocus: return LocalizedStringResource("Stops cards from growing when focused. They keep their size and show focus with a highlight and shadow. Off by default.")
         case .appearanceOledBlack: return LocalizedStringResource("Makes the app background pure black, which suits OLED screens. Cards keep their own colors so they still stand out.")
-        case .appearanceRowEdgeFade: return LocalizedStringResource("Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Soft by default.")
+        case .appearanceRowEdgeFade: return LocalizedStringResource("Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Off by default.")
         case .appearanceSettingsStyle: return LocalizedStringResource("Default shows an icon beside each Settings category. Minimal removes the icons and tightens the rows so more fit on screen.")
         case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Sidebar hides it and shows a floating panel that opens when you press Menu. Default: Top Tabs.")
         case .appearanceTypeface: return LocalizedStringResource("Chooses the font used across the app. Default: the Apple TV system font.")
@@ -367,6 +368,7 @@ enum SettingsDescriptions {
         case .devNoZoomReach: return LocalizedStringResource("An A/B switch that reserves extra room for row titles when No Zoom on Focus is on, to test titles that fade or bounce.")
         case .devShortRowFloor: return LocalizedStringResource("An A/B switch that makes short rows such as Continue Watching rest at the same height as poster rows.")
         case .devTabBarScrollLink: return LocalizedStringResource("An A/B switch that tells the tab bar which scroll view on Home to follow. Relaunch after changing it.")
+        case .devTabBarRestFix: return LocalizedStringResource("An A/B switch for a tab bar that stays half shown on Home. Relink reconnects the tab bar to Home's rows once they first come to rest. Snap to Top moves the first row fully back to the top when it rests a few points low. Relaunch after changing it.")
         }
     }
 
@@ -385,6 +387,7 @@ enum SettingsDescriptions {
         case .devTrailerLetterbox: return LocalizedStringResource("Takes effect on next launch.")
         case .devCollectionAB: return LocalizedStringResource("Takes effect on next launch.")
         case .devTabBarScrollLink: return LocalizedStringResource("Takes effect on next launch.")
+        case .devTabBarRestFix: return LocalizedStringResource("Takes effect on next launch.")
         default: return nil
         }
     }

@@ -4986,7 +4986,7 @@ struct CatalogRowView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// beta.19-rc1 verdict (F, FEAT-54): the same live `row_edge_fade` setting
-    /// `RowEdgeEffectStyleModifier` reads (Appearance → Row Edge Fade, Soft by default). In Soft the
+    /// `RowEdgeEffectStyleModifier` reads (Appearance → Row Edge Fade, Off by default). In Soft the
     /// row's own soft mask owns the leading edge, so the BUG-92 leading clip opens wide instead of
     /// cutting it hard; System and Off keep the clip at `leadingEdgeAllowance`.
     @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue

@@ -480,4 +480,17 @@ final class FirstPlayAutoPlayControllerTests: XCTestCase {
                                                  debridEnabled: true, activeResolverProviderId: "torbox"),
                        "a plain HTTP link carries no cache evidence")
     }
+
+    // MARK: - Pick log (device session 2026-10-04)
+
+    /// The `[AutoPlay] pick` line carries the four rank facts so a device log shows why a link won.
+    func testRankSummaryPrintsTheRankFactsInOrder() {
+        typealias Policy = FirstPlayAutoPlayController.Policy
+        XCTAssertEqual(Policy.rankSummary(resolution: 2160, dynamicRange: 1, cached: 1, size: 58_200_000_000),
+                       "res=2160 hdr=1 cached=1 size=58.2GB")
+        XCTAssertEqual(Policy.rankSummary(resolution: 1080, dynamicRange: 0, cached: 0, size: 2_460_000_000),
+                       "res=1080 hdr=0 cached=0 size=2.5GB")
+        XCTAssertEqual(Policy.rankSummary(resolution: 0, dynamicRange: 0, cached: 0, size: 0),
+                       "res=- hdr=0 cached=0 size=-", "unknown resolution and size print a dash")
+    }
 }

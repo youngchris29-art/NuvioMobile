@@ -113,6 +113,9 @@ final class FirstPlayAutoPlayController: ObservableObject {
         var resolve: @MainActor (StreamItem) async throws -> ResolveOutcome
         var resolveDeadline: TimeInterval = 20
         var searchDeadline: TimeInterval = 40
+        /// The `[AutoPlay] pick` line's ranking facts for a candidate (`Policy.rankSummary`), so a
+        /// device log shows why a link came first. Empty in tests unless a test sets it.
+        var rankSummary: (StreamItem) -> String = { _ in "" }
     }
 
     @Published private(set) var phase: Phase = .idle
@@ -248,7 +251,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 attemptsUsed += 1
                 // Key only: the add-on id embeds the manifest URL, which can hold a debrid API key
                 // (a URL key's first part already names the add-on, as a digest).
-                autoPlayLog("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey)")
+                autoPlayLog("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey) \(deps.rankSummary(candidate.stream))")
                 succeed(candidate, resolved: candidate.stream, url: url)
                 return
             }
@@ -260,7 +263,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
             }
             attemptsUsed += 1
             phase = .resolving(attempt: attemptsUsed)
-            autoPlayLog("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey)")
+            autoPlayLog("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey) \(deps.rankSummary(candidate.stream))")
             beginResolve(candidate)
             return
         }
@@ -437,6 +440,15 @@ final class FirstPlayAutoPlayController: ObservableObject {
             return .external(playerId: playerId)
         }
 
+        /// `res=2160 hdr=1 cached=1 size=58.2GB`: the four `StreamQualityRank.Key` fields in rank
+        /// order (`hdr` covers every HDR flavour and Dolby Vision, one tier). An unknown resolution or
+        /// size prints `-`. Facts only, nothing that names the link.
+        static func rankSummary(resolution: Int32, dynamicRange: Int32, cached: Int32, size: Int64) -> String {
+            let res = resolution > 0 ? String(resolution) : "-"
+            let gb = size > 0 ? String(format: "%.1fGB", Double(size) / 1_000_000_000) : "-"
+            return "res=\(res) hdr=\(dynamicRange) cached=\(cached) size=\(gb)"
+        }
+
         /// Overlay text for a phase; nil hides the overlay.
         static func overlayMessage(for phase: Phase) -> String? {
             switch phase {
@@ -496,6 +508,12 @@ extension FirstPlayAutoPlayController.Dependencies {
                     stream: stream, season: kotlinSeason, episode: kotlinEpisode
                 )
                 return FirstPlayAutoPlayController.outcome(from: result)
+            },
+            rankSummary: { stream in
+                let key = StreamQualityRank.shared.key(stream: stream)
+                return FirstPlayAutoPlayController.Policy.rankSummary(
+                    resolution: key.resolution, dynamicRange: key.dynamicRange, cached: key.cached, size: key.size
+                )
             }
         )
     }

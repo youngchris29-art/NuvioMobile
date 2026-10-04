@@ -41,7 +41,7 @@ object MetaDetailsParser {
             releaseInfo = meta.string("releaseInfo"),
             lastAirDate = meta.string("lastAirDate"),
             status = meta.string("status"),
-            imdbRating = meta.string("imdbRating"),
+            imdbRating = knownImdbRating(meta.string("imdbRating")),
             ageRating = meta.ageRating(),
             runtime = meta.string("runtime"),
             genres = meta.stringList("genres"),

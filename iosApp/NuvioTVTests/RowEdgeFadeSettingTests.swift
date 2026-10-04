@@ -3,7 +3,7 @@ import SwiftUI
 @testable import NuvioTV
 
 /// beta.19-rc1 verdict (F, FEAT-54): the `row_edge_fade` setting that replaced the BUG-118 Developer
-/// A/B (`debug.rowEdgeFade`), its migration (only an explicit old "Off" survives), and the two
+/// A/B (`debug.rowEdgeFade`), its migration (explicit Soft, Automatic and Off choices carry across, Hard does not), and the two
 /// environment values rows read their geometry from. Every test uses its own throwaway
 /// `UserDefaults` suite, never `.standard`.
 final class RowEdgeFadeSettingTests: XCTestCase {
@@ -40,23 +40,27 @@ final class RowEdgeFadeSettingTests: XCTestCase {
         }
     }
 
-    /// Christian 2026-10-03: only an explicit old "Off" (3) carries across; Hard (0), Soft (1) and
-    /// System (2) land on the new default. The legacy key is removed either way.
-    func testMigrationKeepsOnlyOff() {
-        for legacy in 0...3 {
+    /// Christian 2026-10-04 (Off became the default): Soft (1), Automatic (2, now System) and Off (3)
+    /// carry across as explicit choices; Hard (0) and anything unknown land on the default without
+    /// writing the key. The legacy key is removed either way.
+    func testMigrationCarriesExplicitChoices() {
+        let expected: [Int: String?] = [0: nil, 1: "soft", 2: "system", 3: "off", 7: nil]
+        for (legacy, carried) in expected {
             withDefaults { defaults in
                 defaults.set(legacy, forKey: RowEdgeFadeSetting.legacyKey)
                 RowEdgeFadeSetting.migrateLegacy(defaults)
                 XCTAssertNil(defaults.object(forKey: RowEdgeFadeSetting.legacyKey), "legacy=\(legacy)")
-                if legacy == 3 {
-                    XCTAssertEqual(defaults.string(forKey: RowEdgeFadeSetting.defaultsKey), "off")
-                    XCTAssertEqual(RowEdgeFadeSetting.current(defaults), .off)
-                } else {
-                    XCTAssertNil(defaults.object(forKey: RowEdgeFadeSetting.defaultsKey), "legacy=\(legacy)")
-                    XCTAssertEqual(RowEdgeFadeSetting.current(defaults), RowEdgeFadeSetting.defaultValue, "legacy=\(legacy)")
-                }
+                XCTAssertEqual(defaults.string(forKey: RowEdgeFadeSetting.defaultsKey), carried, "legacy=\(legacy)")
+                XCTAssertEqual(RowEdgeFadeSetting.current(defaults),
+                               carried.map { RowEdgeFadeSetting(rawValue: $0)! } ?? RowEdgeFadeSetting.defaultValue,
+                               "legacy=\(legacy)")
             }
         }
+    }
+
+    /// The F.5 frame-time gate (Living Room Apple TV, 2026-10-04) made Off the default.
+    func testDefaultIsOff() {
+        XCTAssertEqual(RowEdgeFadeSetting.defaultValue, .off)
     }
 
     func testMigrationNeverOverwritesNewKey() {

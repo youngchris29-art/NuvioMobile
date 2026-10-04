@@ -63,7 +63,7 @@ struct AppearanceSettingsPane: View {
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
     /// beta.19-rc1 verdict (F, FEAT-54): the row edge fade, promoted from the Developer pane's
     /// BUG-118 A/B. Device-local, live: every row's `RowEdgeEffectStyleModifier` reads the same key,
-    /// so a change applies at once. Soft by default (`RowEdgeFadeSetting.defaultValue`).
+    /// so a change applies at once. Off by default (`RowEdgeFadeSetting.defaultValue`).
     @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue
 
     private static let settingsStyleOptions: [(value: String, label: String)] = [

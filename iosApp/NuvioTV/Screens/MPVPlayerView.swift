@@ -95,6 +95,9 @@ final class MPVTVPlayerViewController: UIViewController {
 
     private var metalLayer = TVMetalLayer()
     private var mpv: OpaquePointer?
+    /// The wakeup callback's context (see `MPVWakeupRelay`). Set in `setupMpv`, never touched in
+    /// `deinit`, and kept until the controller goes, which is after `destroyPlayer` unset the callback.
+    private var wakeupRelay: MPVWakeupRelay?
     private var lastDrawableSize: CGSize = .zero
     private let eventQueue = DispatchQueue(label: "mpv-events", qos: .userInitiated)
     private let context: PlaybackContext
@@ -486,10 +489,9 @@ final class MPVTVPlayerViewController: UIViewController {
         mpv_observe_property(mpv, ObservedProp.videoH.rawValue, "video-params/h", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.aid.rawValue, "aid", MPV_FORMAT_INT64)
 
-        mpv_set_wakeup_callback(mpv, { ctx in
-            let vc = unsafeBitCast(ctx, to: MPVTVPlayerViewController.self)
-            vc.readEvents()
-        }, UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()))
+        let relay = MPVWakeupRelay { [weak self] in self?.readEvents() }
+        wakeupRelay = relay
+        mpv_set_wakeup_callback(mpv, MPVWakeupRelay.callback, relay.context)
     }
 
     // MARK: - Preferred audio language
@@ -1658,6 +1660,10 @@ final class MPVTVPlayerViewController: UIViewController {
     private func destroyPlayer() {
         guard let ctx = mpv else { return }
         mpv = nil
+        // mpv invokes the wakeup callback under the lock this call takes, so once it returns no
+        // callback is running and none can start: shutdown's last wakeup never reaches the relay
+        // (and the relay already turns one that slips in earlier into a no-op).
+        mpv_set_wakeup_callback(ctx, nil, nil)
         mpv_terminate_destroy(ctx)
     }
 

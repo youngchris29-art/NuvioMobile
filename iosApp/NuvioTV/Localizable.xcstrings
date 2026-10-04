@@ -4221,6 +4221,40 @@
         }
       }
     },
+    "An A/B switch for a tab bar that stays half shown on Home. Relink reconnects the tab bar to Home's rows once they first come to rest. Snap to Top moves the first row fully back to the top when it rests a few points low. Relaunch after changing it.": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ein A/B-Schalter für eine Tab-Leiste, die auf der Startseite halb sichtbar bleibt. „Neu verknüpfen“ verbindet die Tab-Leiste erneut mit den Reihen der Startseite, sobald sie zum ersten Mal zur Ruhe kommen. „Nach oben einrasten“ schiebt die erste Reihe ganz nach oben zurück, wenn sie ein paar Punkte zu tief liegen bleibt. Nach der Änderung neu starten."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruptor A/B para una barra de pestañas que se queda a medio mostrar en Inicio. «Volver a vincular» conecta de nuevo la barra de pestañas con las filas de Inicio cuando se detienen por primera vez. «Ajustar arriba» devuelve la primera fila del todo arriba cuando se detiene unos puntos más abajo. Vuelve a abrir la app tras cambiarlo."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un commutateur A/B pour une barre d’onglets qui reste à moitié visible sur l’accueil. « Relier à nouveau » reconnecte la barre d’onglets aux rangées de l’accueil dès qu’elles s’arrêtent pour la première fois. « Caler en haut » ramène la première rangée tout en haut quand elle s’arrête quelques points trop bas. Relancez l’app après modification."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un interruttore A/B per una barra delle schede che resta visibile a metà in Home. «Ricollega» ricollega la barra delle schede alle righe di Home appena si fermano per la prima volta. «Aggancia in alto» riporta la prima riga del tutto in alto quando si ferma qualche punto più in basso. Riavvia dopo la modifica."
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Công tắc A/B cho thanh tab cứ hiện một nửa trên Trang chủ. “Liên kết lại” nối lại thanh tab với các hàng của Trang chủ khi chúng dừng lần đầu. “Kéo về đầu” đưa hàng đầu tiên về hẳn trên cùng khi nó dừng thấp hơn vài điểm. Khởi chạy lại sau khi thay đổi."
+          }
+        }
+      }
+    },
     "An A/B switch for how collection rows animate, to test choppy focus movement. 0 is the normal behavior.": {
       "localizations": {
         "de": {
@@ -6019,6 +6053,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "BUG-66: Trang chủ cho thanh tab biết nên theo dõi vùng cuộn nào. Khởi chạy lại sau khi thay đổi"
+          }
+        }
+      }
+    },
+    "BUG-66: try if the tab bar stays half shown on Home. Relaunch after changing": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-66: ausprobieren, wenn die Tab-Leiste auf der Startseite halb sichtbar bleibt. Nach der Änderung neu starten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-66: pruébalo si la barra de pestañas se queda a medio mostrar en Inicio. Vuelve a abrir la app tras cambiarlo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-66 : à essayer si la barre d’onglets reste à moitié visible sur l’accueil. Relancez l’app après modification"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-66: prova se la barra delle schede resta visibile a metà in Home. Riavvia dopo la modifica"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BUG-66: thử nếu thanh tab cứ hiện một nửa trên Trang chủ. Khởi chạy lại sau khi thay đổi"
           }
         }
       }
@@ -14286,36 +14354,36 @@
         }
       }
     },
-    "Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Soft by default.": {
+    "Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Off by default.": {
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Blendet die linken und rechten Ränder der Reihen aus, damit Poster, die über den Bildschirmrand hinausragen, mit dem Hintergrund verschmelzen. Der linke Rand blendet erst aus, nachdem eine Reihe gescrollt wurde. Standardmäßig Weich."
+            "value": "Blendet die linken und rechten Ränder der Reihen aus, damit Poster, die über den Bildschirmrand hinausragen, mit dem Hintergrund verschmelzen. Der linke Rand blendet erst aus, nachdem eine Reihe gescrollt wurde. Standardmäßig Aus."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Desvanece los bordes izquierdo y derecho de las filas para que los pósteres que se salen de la pantalla se fundan con el fondo. El borde izquierdo solo se desvanece después de desplazar la fila. Suave por defecto."
+            "value": "Desvanece los bordes izquierdo y derecho de las filas para que los pósteres que se salen de la pantalla se fundan con el fondo. El borde izquierdo solo se desvanece después de desplazar la fila. Desactivado por defecto."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Estompe les bords gauche et droit des rangées pour que les affiches qui dépassent de l’écran se fondent dans l’arrière-plan. Le bord gauche ne s’estompe qu’une fois la rangée défilée. Doux par défaut."
+            "value": "Estompe les bords gauche et droit des rangées pour que les affiches qui dépassent de l’écran se fondent dans l’arrière-plan. Le bord gauche ne s’estompe qu’une fois la rangée défilée. Désactivé par défaut."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sfuma i bordi sinistro e destro delle righe in modo che i poster che escono dallo schermo si fondano con lo sfondo. Il bordo sinistro sfuma solo dopo che una riga è stata fatta scorrere. Morbido per impostazione predefinita."
+            "value": "Sfuma i bordi sinistro e destro delle righe in modo che i poster che escono dallo schermo si fondano con lo sfondo. Il bordo sinistro sfuma solo dopo che una riga è stata fatta scorrere. Off per impostazione predefinita."
           }
         },
         "vi": {
           "stringUnit": {
             "state": "translated",
-            "value": "Làm mờ mép trái và phải của các hàng để poster tràn ra ngoài màn hình hòa vào nền. Mép trái chỉ mờ sau khi hàng đã cuộn. Mặc định là Nhẹ."
+            "value": "Làm mờ mép trái và phải của các hàng để poster tràn ra ngoài màn hình hòa vào nền. Mép trái chỉ mờ sau khi hàng đã cuộn. Mặc định là Tắt."
           }
         }
       }
@@ -27452,6 +27520,40 @@
         }
       }
     },
+    "Relink": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neu verknüpfen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volver a vincular"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relier à nouveau"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ricollega"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liên kết lại"
+          }
+        }
+      }
+    },
     "Remembers what you search for and shows it on the Search screen. Off hides past searches and stops saving new ones. On by default.": {
       "localizations": {
         "de": {
@@ -33507,6 +33609,40 @@
         }
       }
     },
+    "Snap to Top": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach oben einrasten"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajustar arriba"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Caler en haut"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggancia in alto"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kéo về đầu"
+          }
+        }
+      }
+    },
     "Soft": {
       "localizations": {
         "de": {
@@ -36258,6 +36394,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Chẩn đoán hình học thanh tab · trang %lld/%lld"
+          }
+        }
+      }
+    },
+    "Tab Bar Rest Fix (A/B)": {
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab-Leisten-Ruhekorrektur (A/B)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Corrección de reposo de la barra de pestañas (A/B)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Correctif au repos de la barre d’onglets (A/B)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Correzione a riposo barra schede (A/B)"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sửa thanh tab khi dừng (A/B)"
           }
         }
       }

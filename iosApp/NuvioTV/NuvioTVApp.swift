@@ -78,9 +78,9 @@ struct NuvioTVApp: App {
         UserDefaults.standard.register(defaults: [PlayerTuning.nativeDVKey: true])
 
         // beta.19-rc1 verdict (F, FEAT-54): the BUG-118 Developer A/B `debug.rowEdgeFade` became the
-        // Appearance setting `row_edge_fade` (Soft by default). Only an explicit old "Off" carries
-        // across; the legacy key is removed, and an existing `row_edge_fade` is never overwritten.
-        // Before any row reads the setting.
+        // Appearance setting `row_edge_fade` (Off by default). An explicit old Soft, Automatic or Off
+        // carries across (`legacySetting`), Hard does not; the legacy key is removed, and an existing
+        // `row_edge_fade` is never overwritten. Before any row reads the setting.
         RowEdgeFadeSetting.migrateLegacy(UserDefaults.standard)
 
         // beta.19-rc1 verdict (F): `-debug.frameSamplerSteadyS N` opens a frame-timing window every
