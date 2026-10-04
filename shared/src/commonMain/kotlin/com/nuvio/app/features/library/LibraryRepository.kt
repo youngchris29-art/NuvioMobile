@@ -579,9 +579,12 @@ object LibraryRepository {
                 null
             } catch (error: Throwable) {
                 log.e(error) { "Failed to remove item=${item.id} type=${item.type} from list=$listKey" }
-                if (provider?.providerId == TrackingProviderId.MDBLIST && error !is IllegalArgumentException) {
+                val isPlainRequireFailure = error::class == IllegalArgumentException::class
+                if (provider?.providerId == TrackingProviderId.MDBLIST && !isPlainRequireFailure) {
                     // MDBList's auth and sync failures carry enum names or HTTP codes; its
                     // `require` failures ("This list is no longer available") are already copy.
+                    // Exactly `require`'s class: subclasses (Ktor's illegal-header exception, whose
+                    // message holds the header value, i.e. the bearer token) stay mapped.
                     error.localizedMdbListMessage()
                 } else {
                     error.message?.trim().orEmpty()
