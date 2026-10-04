@@ -420,14 +420,89 @@ class CustomPosterUrlResolverTest {
         assertNull(CustomPosterUrlResolver.resolve("   ", ids, "movie"))
     }
 
+    // Upstream 6ce99ef2: a pattern with no placeholder is not a pattern. It used to come back
+    // unchanged, which put the same image on every poster; now it falls back to the original art.
+    // (Upstream left its own copy of this test asserting the old behaviour.)
     @Test
-    fun resolve_pattern_without_any_placeholders_returns_as_is() {
+    fun resolve_pattern_without_any_placeholders_returns_null() {
         val ids = CustomPosterUrlResolver.extractIds("tt0137523")
-        val url = CustomPosterUrlResolver.resolve(
-            "https://example.com/static-poster.jpg",
+        assertNull(CustomPosterUrlResolver.resolve("https://example.com/static-poster.jpg", ids, "movie"))
+        assertNull(
+            CustomPosterUrlResolver.resolve(
+                "https://api.ratingposterdb.com/key/imdb/poster-default/tt0137523.jpg",
+                ids, "movie"
+            )
+        )
+    }
+
+    @Test
+    fun resolve_pattern_with_unclosed_or_uppercase_braces_is_not_a_placeholder() {
+        val ids = CustomPosterUrlResolver.extractIds("tt0137523")
+        assertNull(CustomPosterUrlResolver.resolve("https://example.com/{}/poster.jpg", ids, "movie"))
+        assertNull(CustomPosterUrlResolver.resolve("https://example.com/{IMDB_ID}.jpg", ids, "movie"))
+    }
+
+    // -- URL-encoded patterns (upstream 6ce99ef2) --
+
+    @Test
+    fun resolve_decodes_percent_encoded_braces() {
+        val ids = CustomPosterUrlResolver.extractIds("tt0137523")
+        val encoded = CustomPosterUrlResolver.resolve(
+            "https://example.com/imdb/poster/%7Bimdb_id%7D.jpg",
             ids, "movie"
         )
-        assertEquals("https://example.com/static-poster.jpg", url)
+        val plain = CustomPosterUrlResolver.resolve(
+            "https://example.com/imdb/poster/{imdb_id}.jpg",
+            ids, "movie"
+        )
+        assertEquals("https://example.com/imdb/poster/tt0137523.jpg", encoded)
+        assertEquals(plain, encoded)
+    }
+
+    @Test
+    fun resolve_decodes_lowercase_percent_encoding() {
+        val ids = CustomPosterUrlResolver.extractIds("tt0137523")
+        val url = CustomPosterUrlResolver.resolve(
+            "https://example.com/%7bid_type%7d/%7btyped_id%7d.jpg",
+            ids, "movie"
+        )
+        assertEquals("https://example.com/imdb/tt0137523.jpg", url)
+    }
+
+    @Test
+    fun resolve_decodes_encoded_pipe_and_optional_forms() {
+        val kitsu = CustomPosterUrlResolver.extractIds("kitsu:7442")
+        assertEquals(
+            "https://example.com/7442.jpg",
+            CustomPosterUrlResolver.resolve("https://example.com/%7Bimdb_id%7Ckitsu_id%7D.jpg", kitsu, "series")
+        )
+        val imdb = CustomPosterUrlResolver.extractIds("tt0137523")
+        assertEquals(
+            "https://example.com/tt0137523.jpg?k=",
+            CustomPosterUrlResolver.resolve("https://example.com/%7Bimdb_id%7D.jpg?k=%7Bkitsu_id?%7D", imdb, "movie")
+        )
+        // The declared types don't include IMDb, so no request is made.
+        assertNull(CustomPosterUrlResolver.resolve("https://example.com/%7Bkitsu_id%7Cmal_id%7D.jpg", imdb, "movie"))
+    }
+
+    @Test
+    fun resolve_encoded_RPDB_pattern_keeps_the_TMDB_fallback() {
+        val ids = ContentIds(id = "tmdb:1396", tmdbId = "1396")
+        val url = CustomPosterUrlResolver.resolve(
+            "https://api.ratingposterdb.com/key/imdb/poster-default/%7Bimdb_id%7D.jpg",
+            ids, "series"
+        )
+        assertEquals("https://api.ratingposterdb.com/key/tmdb/poster-default/series-1396.jpg", url)
+    }
+
+    @Test
+    fun resolve_leaves_other_percent_escapes_alone() {
+        val ids = CustomPosterUrlResolver.extractIds("tt0137523")
+        val url = CustomPosterUrlResolver.resolve(
+            "https://example.com/my%20posters/{imdb_id}.jpg?lang=en%2Cfr",
+            ids, "movie"
+        )
+        assertEquals("https://example.com/my%20posters/tt0137523.jpg?lang=en%2Cfr", url)
     }
 
     @Test
