@@ -3812,6 +3812,36 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground, "app must survive the forced-no-trailer dwell window")
     }
 
+    // MARK: - Seeded collections (beta.19-rc1 verdict, C)
+
+    /// beta.19-rc1 verdict (C, BUG-135): the folder-page seed — one pinned collection with one
+    /// folder of two Cinemeta catalogs plus the All tab (three chips). The source's `addonId` is
+    /// Cinemeta's manifest id (`CollectionCatalogResolver.kt` also falls back to type + catalog id).
+    ///
+    /// Gate 2 fix: the folder carries a `heroBackdropUrl` (a stable metahub background) because a
+    /// focused folder reaches the Home hero, and so the `debug_hero` probe's `fitem=nuvio-folder://…`
+    /// that test69 walks by, only when it has a backdrop or a title logo
+    /// (`HomeView.folderHeroPreview`, BUG-38). No `titleLogoUrl`: the folder page must keep its TEXT
+    /// title, which test69 reads as a `staticText`. The backdrop is never drawn on the folder page
+    /// itself (BUG-38 round three), so it changes nothing test69 measures.
+    private static let folderProbeSeedJson = """
+    [{"id":"zzfolderprobe-collection","title":"ZZFolderProbe","pinToTop":true,"showAllTab":true,"folders":[{"id":"zzfolderprobe-folder","title":"ZZFolderProbeFolder","hideTitle":false,"heroBackdropUrl":"https://images.metahub.space/background/medium/tt0111161/img","sources":[{"provider":"addon","addonId":"com.linvo.cinemeta","type":"movie","catalogId":"top"},{"provider":"addon","addonId":"com.linvo.cinemeta","type":"series","catalogId":"top"}]}]}]
+    """
+
+    /// beta.19-rc1 verdict (C, BUG-135): a fresh launch to Home with `json` imported as the active
+    /// profile's collections through the DEBUG-only `-debug.collectionsSeedJsonB64` knob
+    /// (`HomeViewModel.applyCollectionsSeedIfRequested`). The import REPLACES and persists the
+    /// profile's collections, so a test using this re-seeds `"[]"` in its `defer` (the FA87
+    /// fixture has none of its own). No harness guard: the app refuses the seed on a signed-in
+    /// cloud account (`[CollectionsSeed] imported=false refused=signedIn`), so the worst case on a
+    /// real account is a skipped test, never synced test data.
+    private func launchToHomeWithSeededCollections(_ json: String, extraArguments: [String] = []) -> XCUIApplication {
+        let b64 = Data(json.utf8).base64EncodedString()
+        return launchToHome(extraArguments: ["-debug.collectionsSeedJsonB64", b64] + extraArguments,
+                            forceFreshLaunch: true)
+    }
+
+
     // MARK: - H-2: the folder page is logo-only, never the parent collection's title
 
     /// Seeds ONE collection via the DEBUG-only `-debug.collectionsSeedJsonB64` knob
@@ -7722,23 +7752,27 @@ final class NuvioTVUITests: XCTestCase {
                         "the settle line lost `rearm=` — it is append-only by contract. Full line: \(landedLine)")
     }
 
-    /// beta.18 verdict (FEAT-40 follow-up): the header is no longer pinned for the whole scroll — it
-    /// exits upward (and fades) once the grid scrolls, and returns at the top. Contract: the
-    /// pre-scroll gap holds; after 6 Downs `folder_header` is absent OR sits wholly above its old
-    /// top, and `folder_header_state` reads `scrolled=1`; pressing Up until `scrolled=0` puts the
-    /// frame back where it was.
+    /// beta.19-rc1 verdict (C, BUG-135): the folder page title RISES AND STAYS. As the grid scrolls,
+    /// the title logo moves from its rest slot (top 32, 150 tall) to a compact one (top 12, 64 tall)
+    /// over the first 106 pt, the tab chips and the opaque band behind them pin under it, and the
+    /// grid fades in once its first posters are warm (≤ 0.45 s) instead of flashing shimmers
+    /// (`FolderHeaderGeometry`, `FolderDetailView` in `CollectionsUI.swift`).
     ///
-    /// FEAT-40 (rc13, "official Nuvio" folder header ask): the folder page header
-    /// (`CollectionsUI.swift` `FolderDetailView.header` — the centred `TitleLogoHeader` + Edit
-    /// Filters button) moved OUTSIDE the `ScrollView` into its own pinned `VStack` slot, instead of
-    /// being the scroll content's first child the way the old inline title row was. Walks Home
-    /// exactly like test56/test57 (Down until the hero probe's `fitem` names a `nuvio-folder://`
-    /// tile), opens it, reads the header's `folder_header` AX frame, scrolls the grid, and asserts
-    /// the frame never moved.
-    func test69FolderHeaderExitsOnScrollAndReturns() throws {
-        let app = launchToHome(forceFreshLaunch: true)
+    /// Seeded, so it runs on the FA87 guest fixture (whose Home has no collection row of its own):
+    /// `launchToHomeWithSeededCollections` imports one pinned collection with one folder of two
+    /// Cinemeta catalogs plus the All tab (three chips), and the `defer` re-seeds `[]`. The seed is
+    /// refused at the source on a signed-in cloud account (`HomeViewModel.collectionsSeedRefusal`),
+    /// in which case the walk finds no folder and the test skips with that reason.
+    ///
+    /// XCUITest frames ignore `.offset`/`.scaleEffect` (the header's `.visualEffect`), so the rise
+    /// is read from `folder_header_state` (`scrolled= phase= chip= reveal=`) and from screenshot
+    /// pixels; the `folder_header` AX frame is compared only at rest, where it equals what is drawn.
+    func test69FolderHeaderRisesAndStays() throws {
+        let folderTitle = "ZZFolderProbeFolder"
+        let app = launchToHomeWithSeededCollections(Self.folderProbeSeedJson)
         defer {
-            let restored = launchToHome(forceFreshLaunch: true)
+            // The import REPLACED this profile's collections; put back the fixture's (none).
+            let restored = launchToHomeWithSeededCollections("[]")
             XCTAssertTrue(restored.state == .runningForeground)
         }
         pause(1.5)
@@ -7767,6 +7801,16 @@ final class NuvioTVUITests: XCTestCase {
             namedSnapshot(identifier)?.frame
         }
 
+        func headerState() -> String {
+            let state = app.staticTexts["folder_header_state"]
+            return state.exists ? state.label : ""
+        }
+
+        func stateToken(_ key: String) -> String? {
+            Self.probeToken(headerState(), key: key)
+        }
+
+        // 1. Walk Down to the seeded folder tile.
         var folderFound = false
         var lastFocusedItem = ""
         var stalledPresses = 0
@@ -7784,140 +7828,145 @@ final class NuvioTVUITests: XCTestCase {
             if stalledPresses >= 5 { break }
         }
         guard folderFound else {
-            throw XCTSkip("no folder/collection tile focused within 45 Down presses on this profile's Home")
+            let rowShown = app.staticTexts["ZZFolderProbe"].exists
+            throw XCTSkip(rowShown
+                ? "the seeded collection row is on Home but its folder tile never reported focus through debug_hero fitem= within 45 Down presses"
+                : "seeded collection not on Home — seed refused (signed-in cloud account?) or not imported; see the [CollectionsSeed] log line")
         }
+
+        // 2. Open it.
         remote.press(.select)
-        pause(2)
-        shot(app, "69a_folder_page_before_scroll")
+
+        // 3. The grid is held back only until its first posters are warm. Its items come from the
+        // network first (the gate starts when they land), so wait for the first tile to exist,
+        // then expect `reveal=1` within 1.5 s.
+        let firstTile = app.descendants(matching: .any)["folder_grid_first_tile"]
+        guard firstTile.waitForExistence(timeout: 30) else {
+            guard !app.staticTexts["Nothing here yet."].exists else {
+                throw XCTSkip("the seeded folder resolved no items (Cinemeta catalogs unavailable?) — nothing to scroll")
+            }
+            XCTFail("folder_grid_first_tile never appeared within 30 s of opening the seeded folder")
+            return
+        }
+        var revealed = false
+        let revealStart = Date()
+        repeat {
+            if stateToken("reveal") == "1" { revealed = true; break }
+            pause(0.1)
+        } while Date().timeIntervalSince(revealStart) < 1.5
+        if !revealed { revealed = stateToken("reveal") == "1" }
+        XCTAssertTrue(revealed, "the grid's reveal gate did not open within 1.5 s of the first tile existing (state: \(headerState()))")
+        pause(0.5)
+        shot(app, "69a_folder_page_phase0")
+        XCTAssertEqual(stateToken("scrolled"), "0", "page opened scrolled (state: \(headerState()))")
+        XCTAssertEqual(stateToken("phase"), "0", "page opened with the header already rising (state: \(headerState()))")
+        XCTAssertTrue(app.staticTexts[folderTitle].exists, "the folder's title ('\(folderTitle)') is not on the page")
 
         guard let headerBefore = namedFrame("folder_header") else {
-            XCTFail("no folder_header element on screen — the FA87 run confirmed this node materialises here, so its absence is a regression, not a fixture gap")
+            XCTFail("no folder_header element on screen — the header container carries this identifier")
             return
         }
-        guard !app.staticTexts["Nothing here yet."].exists else {
-            throw XCTSkip("the fixture's folder has no items — nothing to scroll for this test")
-        }
+        XCTAssertEqual(headerBefore.midX, 960, accuracy: 40, "header is not centred on the screen")
 
-        // Codex P2 (rc13 round 2): default tvOS focus lands on the first grid tile the instant the
-        // page appears, so THIS is where the header-fade overpaint bug actually reproduces — before
-        // any scrolling, not after. Check it here, while the tile is guaranteed materialised (a
-        // `LazyVGrid` item scrolled 6 rows past the viewport top may already be deallocated by the
-        // time a post-scroll query runs, which is why a post-scroll version of this same check
-        // would be flaky in either direction). `Theme.Spacing.lg + heroPinnedRowFocusLiftAllowance
-        // + Theme.Spacing.sm` (`CollectionsUI.swift` `body`'s `.padding(.top, ...)`) is exactly the
-        // padding that keeps this true; a regression there fails here first.
-        //
-        // Gate (Codex P3 rc13 round 3): that "default focus lands on the first tile" premise only
-        // holds when the folder has ONE tab — `model.tabs.count > 1` renders a `TabChip` row (a
-        // `ForEach` of plain `Button`s, no accessibility identifiers of their own) ABOVE the grid,
-        // and the tvOS focus engine prefers the topmost-leftmost focusable element on first paint,
-        // which is the first chip, not the first tile. The overpaint bug this block guards is a
-        // focus-LIFT effect (`heroPinnedRowFocusLiftAllowance`) applied only to whatever tile is
-        // actually focused, so measuring an unfocused tile's frame would silently pass regardless
-        // of the fix. `TabChip` carries no identifier to count directly, so the tile's own
-        // `hasFocus` (read off the same snapshot as its frame, not a separate slow sweep) stands in
-        // for "a chip row stole initial focus": if the tile isn't focused yet, press Down once —
-        // the natural way this test already walked onto the page — to move focus off the chip row
-        // and onto the tile, then re-read the frame the assertion actually checks.
-        guard var firstTileSnapshot = namedSnapshot("folder_grid_first_tile") else {
-            XCTFail("no folder_grid_first_tile element on screen — the focused first-row tile should always materialise on initial load")
+        // 4. The first tile clears the header's bottom fade. Three chips mean the first focus lands
+        // on a chip (`chip=` in the probe; `hasFocus` does not report on every runtime), so one
+        // Down moves it to the first grid row, where the focus lift applies.
+        if stateToken("chip") != "-" {
+            press(.down, times: 1)
+            pause(0.6)
+        }
+        guard let firstTileBefore = namedFrame("folder_grid_first_tile") else {
+            XCTFail("folder_grid_first_tile disappeared after moving focus into the grid")
             return
         }
-        if !firstTileSnapshot.hasFocus {
-            press(.down, times: 1)
-            pause(0.5)
-            guard let refocused = namedSnapshot("folder_grid_first_tile") else {
-                XCTFail("folder_grid_first_tile disappeared after moving focus off the tab chip row")
-                return
-            }
-            firstTileSnapshot = refocused
-        }
-        let firstTileBefore = firstTileSnapshot.frame
-        // 24 pt is the header's own fade clearance (`CollectionsUI.swift`), 20 pt the tile's
-        // focus-lift transform on top of it — together the floor a regression must clear. Assert
-        // the GAP, not just non-overlap: `firstTileBefore.minY >= headerBefore.maxY` alone passed
-        // on the pre-fix geometry too (the lifted top sat at `maxY + 4`).
+        // The header frame ends `gap` (16) below its band's fade; the grid adds lift (20) + `sm`
+        // (12) above the first row. So the AX gap is 32 without the focus transform and 12 with
+        // it; anything below 12 means a focused first-row card reaches into the fade.
         let gap = firstTileBefore.minY - headerBefore.maxY
-        XCTAssertGreaterThanOrEqual(gap, 36,
-                                     "first tile must clear the 24 pt header fade plus the 20 pt focus lift " +
-                                     "(measured gap \(gap); pre-fix geometry gives 4 or 24 depending on whether " +
-                                     "AX frames carry the focus transform)")
-        let gapAttachment = XCTAttachment(string: "folder_header maxY=\(headerBefore.maxY), " +
-                                           "folder_grid_first_tile minY=\(firstTileBefore.minY), gap=\(gap)")
+        XCTAssertGreaterThanOrEqual(gap, 12,
+                                    "first tile must clear the header's bottom fade with its focus lift (measured gap \(gap); expected 32, or 12 if AX frames carry the lift)")
+        let gapAttachment = XCTAttachment(string: "folder_header \(headerBefore) folder_grid_first_tile \(firstTileBefore) gap=\(gap) state=\(headerState())")
+        gapAttachment.name = "69_rest_geometry"
         gapAttachment.lifetime = .keepAlways
         add(gapAttachment)
 
-        press(.down, times: 6, gap: 0.7)
-        pause(1)
-        shot(app, "69b_folder_page_after_scroll")
-
-        // beta.18 verdict (FEAT-40 follow-up): the header exits upward on scroll. A fully faded
-        // node may drop out of the AX tree entirely, so absence is as good as a frame wholly above
-        // the old top (never over the grid).
-        func headerStateLabel() -> String {
-            let state = app.staticTexts["folder_header_state"]
-            return state.exists ? state.label : ""
+        // 5. Scroll the grid: six Downs, one at a time, catching a mid-rise screenshot if a press
+        // leaves the header part way.
+        var midShot = false
+        for _ in 0..<6 {
+            press(.down, times: 1, gap: 0.7)
+            if !midShot, let phase = stateToken("phase").flatMap({ Int($0) }), (1...3).contains(phase) {
+                shot(app, "69b_folder_page_phase\(phase)")
+                midShot = true
+            }
         }
-        // Premise: the grid must actually have scrolled. A fixture folder with fewer than three
-        // grid rows never leaves offset 0 on six Downs (the old frame-stability oracle passed
-        // trivially there), so read the first tile: if it has not moved up, the page cannot show
-        // an exit and the leg is a skip, not a failure.
+        pause(1)
+        shot(app, "69c_folder_page_phase4")
+
+        // Premise: the grid must actually have scrolled. A folder too short to scroll never leaves
+        // offset 0 on six Downs.
         let firstTileAfter = namedFrame("folder_grid_first_tile")
         let gridMoved = firstTileAfter.map { $0.minY < firstTileBefore.minY - 50 } ?? true
-        let stateAfter = headerStateLabel()
-        let premise = XCTAttachment(string: "first tile before minY=\(firstTileBefore.minY) after=\(String(describing: firstTileAfter?.minY)) state=\(stateAfter) header=\(String(describing: namedFrame("folder_header")))")
+        let premise = XCTAttachment(string: "first tile before minY=\(firstTileBefore.minY) after=\(String(describing: firstTileAfter?.minY)) state=\(headerState())")
         premise.name = "69_scroll_premise"
         premise.lifetime = .keepAlways
         add(premise)
-        try XCTSkipUnless(gridMoved, "fixture folder is too short to scroll on six Downs (first tile minY unchanged); the exit cannot be exercised here")
-        XCTAssertEqual(stateAfter, "scrolled=1", "folder_header_state must read scrolled=1 after scrolling the grid")
-        // The exited header LEAVES the view tree (review r3: an offset/faded header kept its AX
-        // node and frame, and `.accessibilityHidden` did not drop it for XCUITest either), so the
-        // oracle is absence; a node caught mid-transition must at least be above the old top.
-        if let headerAfter = namedFrame("folder_header") {
-            XCTAssertLessThanOrEqual(headerAfter.maxY, headerBefore.minY + 2,
-                                     "header must exit upward on scroll, never sit over the grid (after maxY=\(headerAfter.maxY), before minY=\(headerBefore.minY))")
-        }
+        try XCTSkipUnless(gridMoved, "the seeded folder is too short to scroll on six Downs (first tile minY unchanged)")
+        XCTAssertEqual(stateToken("scrolled"), "1", "folder_header_state must read scrolled=1 after scrolling the grid (state: \(headerState()))")
+        XCTAssertEqual(stateToken("phase"), "4", "the header must be fully compact after scrolling the grid (state: \(headerState()))")
+        XCTAssertTrue(app.staticTexts[folderTitle].exists, "the title left the view tree on scroll — it must rise and stay")
 
-        // Back to the top: Up until the state clears (a row per press, so at most a handful), then
-        // the header must be exactly where it started.
+        // 6. Pixels. Page-relative bands (the header's rest top is the page top): the compact
+        // title at y ∈ [12, 76], the gap between it and the chips at y ∈ [78, 90] (opaque band —
+        // grid cards pass UNDER it), the pinned chips from y = 92.
+        let window = app.windows.firstMatch.frame.size
+        let pageTop = headerBefore.minY
+        let image = XCUIScreen.main.screenshot().image
+        let background = try pixelRGB(in: image, at: CGPoint(x: 40, y: pageTop + 40), windowSize: window)
+        let titleInk = try fractionDiffering(in: image,
+                                             pointRect: CGRect(x: 660, y: pageTop + 12, width: 600, height: 64),
+                                             windowSize: window, from: background, threshold: 40)
+        let bandLeak = try fractionDiffering(in: image,
+                                             pointRect: CGRect(x: 100, y: pageTop + 78, width: 1720, height: 12),
+                                             windowSize: window, from: background, threshold: 40)
+        let chipInk = try fractionDiffering(in: image,
+                                            pointRect: CGRect(x: 140, y: pageTop + 100, width: 960, height: 32),
+                                            windowSize: window, from: background, threshold: 40)
+        let pixels = XCTAttachment(string: "background=\(background) titleInk=\(titleInk) bandLeak=\(bandLeak) chipInk=\(chipInk) pageTop=\(pageTop)")
+        pixels.name = "69_compact_pixels"
+        pixels.lifetime = .keepAlways
+        add(pixels)
+        XCTAssertGreaterThanOrEqual(titleInk, 0.01, "no title in the compact slot (y 12–76 pt, centre ±300) after scrolling — the title must rise and stay (ink fraction \(titleInk))")
+        XCTAssertLessThan(bandLeak, 0.01, "grid content shows through the opaque band between the compact title and the chips (fraction \(bandLeak))")
+        XCTAssertGreaterThanOrEqual(chipInk, 0.01, "no chip capsules in the pinned chip band (y 100–132 pt) after scrolling (ink fraction \(chipInk))")
+
+        // 7. Back up: Up until a chip holds focus (one grid row per press).
         var upPresses = 0
-        while headerStateLabel() != "scrolled=0" && upPresses < 8 {
+        while stateToken("chip") == "-" && upPresses < 14 {
             press(.up, times: 1, gap: 0.7)
-            pause(0.5)
+            pause(0.3)
             upPresses += 1
         }
-        XCTAssertEqual(headerStateLabel(), "scrolled=0", "folder_header_state must return to scrolled=0 within 8 Up presses (took \(upPresses))")
-        pause(0.6)
-        shot(app, "69c_folder_page_back_at_top")
+        XCTAssertNotEqual(stateToken("chip"), "-", "Up from the grid never reached the tab chips within 14 presses (state: \(headerState()))")
+
+        // 8. Revealing a chip scrolls back to the top on its own (its layout frame sits at the top
+        // of the content); no further Up, which could leave the page for the tab bar.
+        var atTop = false
+        for _ in 0..<20 {
+            if stateToken("scrolled") == "0", stateToken("phase") == "0" { atTop = true; break }
+            pause(0.1)
+        }
+        XCTAssertTrue(atTop, "focusing a chip did not bring the page back to the top (state: \(headerState()))")
+        pause(0.5)
+        shot(app, "69d_folder_page_back_at_top")
         if let headerReturned = namedFrame("folder_header") {
             XCTAssertEqual(headerReturned.minY, headerBefore.minY, accuracy: 2, "header top did not return after scrolling back up")
             XCTAssertEqual(headerReturned.maxY, headerBefore.maxY, accuracy: 2, "header bottom did not return after scrolling back up")
             XCTAssertEqual(headerReturned.midX, headerBefore.midX, accuracy: 2, "header drifted horizontally")
         } else {
-            XCTFail("folder_header did not reappear after scrolling back to the top")
+            XCTFail("folder_header is missing after scrolling back to the top")
         }
-        XCTAssertEqual(headerBefore.midX, 960, accuracy: 40, "header is not centred on the screen")
-
-        // Codex P2 (rc13): the header staying at a fixed frame isn't the whole contract — before
-        // the opaque-background + `.zIndex(1)` fix, a scrolled-past poster's focus lift painted
-        // straight over the header while the AX frame above stayed unchanged (frame geometry
-        // doesn't know about paint order).
-        //
-        // Codex P2 (rc13 round 2): the first attempt at a post-scroll signal — `app.otherElements
-        // ["folder_header"]`, checking `.exists` then `.isHittable` — failed on the FIRST run, and
-        // not on `isHittable`: `.exists` itself came back false, even though `namedFrame` above (a
-        // raw `app.snapshot()` walk matching on `node.identifier` alone, ignoring element type)
-        // found this exact identifier moments earlier for `headerAfter`. `otherElements` only
-        // matches nodes XCUITest classifies as `XCUIElementTypeOther`; this view's `.background(...
-        // ).overlay(...).zIndex(1)` chain apparently no longer bridges to that type, so the
-        // type-scoped query silently missed a node that unambiguously exists. `isHittable` was
-        // also the wrong oracle regardless — it only proves some element is frontmost at a point,
-        // not that the identified node specifically is unobscured. Rather than chase a second,
-        // possibly-flaky post-scroll tile-frame lookup (the first tile may be long unloaded 6 rows
-        // in), the frame-equality assertions just above already cover the scroll-time contract this
-        // block originally wanted: the header's frame is provably unchanged, and the pre-scroll
-        // overpaint check above already guards the fade-clearance regression class end to end.
+        XCTAssertTrue(app.staticTexts[folderTitle].exists, "the title is missing after scrolling back to the top")
     }
 
     // MARK: - BUG-117: Up from the last season poster must reach the top block
@@ -8039,90 +8088,297 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
-    // MARK: - BUG-118: row edge fade A/B sim spike
+    // MARK: - BUG-118 → FEAT-54: the row edge fade setting
 
-    /// Evidence-gathering spike (rc13, W2-A): screenshots the SAME catalog row at scroll offset 0,
-    /// after 3 Rights and after 12 Rights, for each `debug.rowEdgeFade` leg (0=hard, 1=soft,
-    /// 2=automatic/today's un-set behavior — see `RowEdgeEffectStyleModifier`'s header for the
-    /// full BUG-118 argument). The screenshots turned out to be a dead end as a sim oracle — the
-    /// nine captured for this test are byte-identical leg-to-leg at each offset, confirmed by MD5
-    /// (`scrollEdgeEffectStyle` renders no visible difference on this simulator/OS build) — so the
-    /// one thing left to assert here is that the launch-arg override actually reaches the row's
-    /// own `@AppStorage`, via the hidden `row_edge_fade_probe` text `RowEdgeEffectStyleModifier`
-    /// attaches to every row it modifies.
+    /// rc13 (W2-A) began this as an evidence spike for the BUG-118 Developer A/B; the screenshots
+    /// showed the three SYSTEM styles render byte-identical on the simulator. beta.19-rc1 verdict
+    /// (F, FEAT-54): the A/B is now the Appearance setting `row_edge_fade` (soft / system / off,
+    /// Soft by default), and Soft is an eased mask that ramps over 250 pt from the bezel inward
+    /// (`EdgeFadeCurve`, `RowEdgeFade.rampLength`). Per leg (`-row_edge_fade <leg>`) this checks
+    /// that the setting reaches the row's own `@AppStorage` (the hidden `row_edge_fade_probe`
+    /// reads `mode=<leg>`), then compares Soft against Off pixel by pixel on the SAME row in the
+    /// SAME state:
+    ///
+    /// - at rest, trailing edge: 310 pt from the bezel Soft equals Off; 180 pt from it Soft
+    ///   differs (alpha ≈ 0.86); the 4 pt column is reported only (the Home hero's art can sit
+    ///   behind the row at the right edge, so "≈ background" has no fixed colour there);
+    /// - after 12 Rights, leading edge: the 4 pt column is plain background; 140 pt in is partly
+    ///   faded (alpha ≈ 0.61, darker than Off); 280 pt in equals Off;
+    /// - both states: the row band from 260 pt to 1660 pt equals Off, and (when this runtime
+    ///   reports focus) the focused card's crop equals Off apart from its outer 20 pt.
+    ///
+    /// Same state (Gate 2 fix): a first run compared the Soft leg focused on card 0 against an Off
+    /// leg whose two Downs had landed mid-row on another card, with another hero. Nothing persists
+    /// focus or row offsets between launches; the landing card depends on the x the focus engine
+    /// carries down from the row above, and on which rows have loaded by the time of each press.
+    /// So every leg now presses Left to card 0 of whatever row it reached, and the legs after the
+    /// first walk Down/Up until card 0 is the SAME title the first leg found (`debug_hero` `fitem=`),
+    /// then press Right exactly 12 times from there. The focused title is recorded for both phases
+    /// of every leg, and a leg in a different state fails loudly instead of comparing different
+    /// posters. Comparisons stay inside the compared row's own band (its probe top to the next
+    /// row's), so neither the hero nor the neighbouring rows enter them.
     func test70RowEdgeFadeSpike() throws {
         defer {
             let restored = launchToHome(forceFreshLaunch: true)
             XCTAssertTrue(restored.state == .runningForeground)
         }
 
-        let legs: [(mode: Int, name: String)] = [(0, "hard"), (1, "soft"), (2, "auto")]
-        for leg in legs {
+        struct LegCapture {
+            let rest: UIImage
+            let scrolled: UIImage
+            let probeTops: [CGFloat]
+            let window: CGSize
+            let restItem: String
+            let scrolledItem: String
+            /// The focused card's frame after the 12 Rights, when this runtime reports focus.
+            let scrolledFocusFrame: CGRect?
+        }
+        var captures: [String: LegCapture] = [:]
+        /// Card 0 of the compared row, fixed by the first leg.
+        var targetFirstItem: String?
+
+        for leg in ["soft", "system", "off"] {
             let app = launchToHome(
-                extraArguments: ["-debug.rowEdgeFade", "\(leg.mode)", "-home_upcoming_row_enabled", "NO"],
+                extraArguments: ["-row_edge_fade", leg,
+                                 "-home_upcoming_row_enabled", "NO",
+                                 "-inline_trailers_enabled", "NO",
+                                 "-hero_trailer_autoplay", "NO"],
                 forceFreshLaunch: true
             )
             openTab(app, named: "Home")
-            // Row 2 (one Down from the hero) — same "skip the hero row" convention other legs use
-            // so the hero's own focus/reveal behavior never confuses what is being screenshotted.
+            pause(2) // the rows' catalogs settle before any walk
+
+            func focusedItem() -> String {
+                let probe = app.staticTexts["debug_hero"]
+                return probe.exists ? (probeField(probe.label, "fitem") ?? "-") : "-"
+            }
+            /// Card 0 of the focused row: the row is at offset 0 again and the first card holds focus.
+            func toCardZero() {
+                press(.left, times: 15, gap: 0.3)
+                pause(1)
+            }
+
+            // Row 2 (one Down from the hero) — the "skip the hero row" convention other legs use so
+            // the hero's own focus/reveal behavior never confuses what is being screenshotted.
             press(.down, times: 2, gap: 0.6)
             pause(1)
+            toCardZero()
 
-            // `.firstMatch`, not the bare subscript: every row this modifier attaches to mounts
-            // its own copy of this identifier (four rows can be on screen at once), and reading
-            // `.label` off an ambiguous multi-element query fails the snapshot resolution outright
-            // rather than just picking one.
-            let probe = app.staticTexts.matching(identifier: "row_edge_fade_probe").firstMatch
-            XCTAssertTrue(probe.waitForExistence(timeout: 10), "[\(leg.name)] row_edge_fade_probe missing — RowEdgeEffectStyleModifier did not mount on this row")
-            XCTAssertEqual(Self.probeValue(probe.label, key: "mode"), leg.mode, "[\(leg.name)] -debug.rowEdgeFade \(leg.mode) did not reach the row's @AppStorage (\(probe.label))")
-            shot(app, "bug118-\(leg.name)-0")
-
-            press(.right, times: 3, gap: 0.4)
-            pause(0.6)
-            shot(app, "bug118-\(leg.name)-3")
-
-            press(.right, times: 9, gap: 0.4)
-            pause(0.6)
-            shot(app, "bug118-\(leg.name)-12")
-
-            if leg.mode == 1 {
-                // beta.18 verdict (BUG-118 R3): Soft fade ramps over the whole margin to the
-                // physical screen edge and the mask owns the leading clip, so the extreme columns
-                // inside the focused row's band must read as plain background, while a column
-                // inside the row frame (x ~ 163) must not.
-                // The probe is a 4 pt overlay at the row's TOP-trailing corner, so its midY is the
-                // row's top edge (the first run clamped it into the hero band and read the backdrop
-                // at x=1916). Scan a column under that edge instead: the row's posters live in the
-                // next ~280 pt. The extreme columns must stay dark across the whole span (the
-                // ramps end at the bezel) while a column inside the row frame carries artwork.
-                let window = app.windows.firstMatch.frame
-                let top = probe.frame.minY
-                try XCTSkipIf(top < 160 || top > window.height - 300,
-                              "[soft] probe row top \(top) is outside the usable band; cannot sample")
-                let image = XCUIScreen.main.screenshot().image
-                func columnMax(_ x: CGFloat) throws -> Int {
-                    var peak = 0
-                    for dy in stride(from: 12, through: 400, by: 8) {
-                        let rgb = try pixelRGB(in: image, at: CGPoint(x: x, y: top + CGFloat(dy)), windowSize: window.size)
-                        peak = max(peak, rgb.max() ?? 0)
+            if let target = targetFirstItem {
+                // Rows load asynchronously, so two Downs can land on a different row than in the
+                // first leg. Walk Down (Down from card 0 lands on the next row's card 0), then Up,
+                // until card 0 is the first leg's title. Stop going Up when focus leaves the rows
+                // (`fitem=-`): Left in the hero would page its carousel.
+                var found = focusedItem() == target
+                if !found {
+                    for _ in 0..<6 where !found {
+                        press(.down, times: 1, gap: 0.8)
+                        toCardZero()
+                        found = focusedItem() == target
                     }
-                    return peak
                 }
-                let left = try columnMax(4)
-                let right = try columnMax(1916)
-                let inside = try columnMax(139 + 24)
-                // The trailing column is reported, not asserted: on this fixture the folder hero's
-                // backdrop paints behind the row at the right edge, and after 12 Rights the last
-                // card ends inside the frame, so there is nothing for the trailing ramp to fade.
-                // The leading edge is the side Steven photographed.
-                let report = XCTAttachment(string: "soft columns: x=4 max=\(left) x=1916 max=\(right) x=163 max=\(inside) top=\(top)")
-                report.name = "bug118-soft-columns"
-                report.lifetime = .keepAlways
-                add(report)
-                XCTAssertLessThanOrEqual(left, 28, "[soft] the leading edge column (x=4) still carries artwork (max channel \(left)); the fade does not reach the bezel")
-                XCTAssertGreaterThan(inside, 60, "[soft] a column inside the row frame (x=163) reads as background (max channel \(inside)); row content missing or the fade swallowed it")
+                if !found {
+                    for _ in 0..<12 where !found {
+                        press(.up, times: 1, gap: 0.8)
+                        if focusedItem() == "-" { break }
+                        toCardZero()
+                        found = focusedItem() == target
+                    }
+                }
+                guard found else {
+                    shot(app, "bug118-\(leg)-lost")
+                    XCTFail("[\(leg)] could not reach the compared row's card 0 (\(target)); focus is on \(focusedItem())")
+                    return
+                }
+            } else {
+                let first = focusedItem()
+                guard first != "-", !first.hasPrefix("nuvio-folder://") else {
+                    throw XCTSkip("two Downs from the hero did not land on a catalog row (fitem=\(first)); cannot pick a row to compare")
+                }
+                targetFirstItem = first
+            }
+            pause(2) // the hero follows the focused title; let its art and text land
+
+            // `.firstMatch` for the label (every row mounts its own copy of this identifier, and
+            // reading `.label` off an ambiguous query fails the snapshot resolution outright).
+            let probes = app.staticTexts.matching(identifier: "row_edge_fade_probe")
+            let probe = probes.firstMatch
+            XCTAssertTrue(probe.waitForExistence(timeout: 10), "[\(leg)] row_edge_fade_probe missing — RowEdgeEffectStyleModifier did not mount on this row")
+            XCTAssertEqual(Self.probeToken(probe.label, key: "mode"), leg, "[\(leg)] -row_edge_fade \(leg) did not reach the row's @AppStorage (\(probe.label))")
+            XCTAssertGreaterThan(Self.probeValue(probe.label, key: "ramp") ?? 0, 0, "[\(leg)] probe carries no ramp length (\(probe.label))")
+            let restItem = focusedItem()
+            let rest = XCUIScreen.main.screenshot().image
+            shot(app, "bug118-\(leg)-0")
+
+            press(.right, times: 12, gap: 0.4)
+            pause(2.5)
+            let scrolledItem = focusedItem()
+            let scrolled = XCUIScreen.main.screenshot().image
+            shot(app, "bug118-\(leg)-12")
+
+            let probeTops = probes.allElementsBoundByIndex.map { $0.frame.minY }
+            captures[leg] = LegCapture(rest: rest, scrolled: scrolled, probeTops: probeTops,
+                                       window: app.windows.firstMatch.frame.size,
+                                       restItem: restItem, scrolledItem: scrolledItem,
+                                       scrolledFocusFrame: focusedCardFrame(app))
+        }
+
+        guard let soft = captures["soft"], let off = captures["off"] else {
+            XCTFail("a leg did not capture")
+            return
+        }
+        let window = soft.window
+        let states = XCTAttachment(string: captures.keys.sorted().map { leg in
+            "\(leg): rest=\(captures[leg]!.restItem) scrolled=\(captures[leg]!.scrolledItem) focusFrame=\(String(describing: captures[leg]!.scrolledFocusFrame))"
+        }.joined(separator: "\n"))
+        states.name = "bug118-leg-states"
+        states.lifetime = .keepAlways
+        add(states)
+        // The legs must be in the same state, or the pixels compare different posters.
+        guard soft.restItem == off.restItem, soft.scrolledItem == off.scrolledItem else {
+            XCTFail("Soft and Off did not reach the same state (rest \(soft.restItem) vs \(off.restItem), scrolled \(soft.scrolledItem) vs \(off.scrolledItem)); pixel comparison skipped")
+            return
+        }
+
+        /// The band of the row whose probe sits at `top`: from just under its probe to just above
+        /// the next row's probe (at most 388 pt), so neither the hero above nor the next row enter.
+        func bandRect(top: CGFloat, x: CGFloat, width: CGFloat, probeTops: [CGFloat]) -> CGRect {
+            let next = probeTops.filter { $0 > top + 50 }.min()
+            let bottom = min(top + 400, (next ?? .greatestFiniteMagnitude) - 4)
+            return CGRect(x: x, y: top + 12, width: width, height: max(8, bottom - (top + 12)))
+        }
+
+        // Which row was compared. Preferred: the row holding the focused card (its probe is the
+        // lowest one at or above the card's top). Fallback when this runtime reports no focus: the
+        // usable band that changed most between rest and 12 Rights, measured on its LEFT part only
+        // (x 140–600), where the Nuvio-style hero art never sits.
+        var chosenTop: CGFloat?
+        var method = "focus"
+        if let card = soft.scrolledFocusFrame {
+            chosenTop = soft.probeTops.filter { $0 <= card.minY + 4 && $0 >= card.minY - 200 }.max()
+        }
+        if chosenTop == nil {
+            method = "change"
+            var bestChange = 0.0
+            for candidate in soft.probeTops where candidate >= 160 && candidate <= window.height - 300 {
+                let band = bandRect(top: candidate, x: 140, width: 460, probeTops: soft.probeTops)
+                let change = try meanAbsDiff(soft.rest, soft.scrolled, pointRect: band, windowSize: window)
+                if change > bestChange { bestChange = change; chosenTop = candidate }
+            }
+            if bestChange <= 1.0 / 255 { chosenTop = nil }
+        }
+        let rowChoice = XCTAttachment(string: "method=\(method) soft probe tops=\(soft.probeTops) off probe tops=\(off.probeTops) chosen=\(String(describing: chosenTop))")
+        rowChoice.name = "bug118-row-choice"
+        rowChoice.lifetime = .keepAlways
+        add(rowChoice)
+        guard let top = chosenTop else {
+            throw XCTSkip("could not tell which row was scrolled; cannot compare legs")
+        }
+        try XCTSkipUnless(off.probeTops.contains { abs($0 - top) <= 2 },
+                          "Off has no row at the Soft row's height (\(top)); the legs laid out differently and cannot be compared pixel by pixel")
+
+        let rowBand = bandRect(top: top, x: 0, width: window.width, probeTops: soft.probeTops)
+        /// A 40 pt strip of the row band centred on `x`: wider than the 28 pt gap between cards, so
+        /// it always overlaps some artwork.
+        func strip(_ x: CGFloat) -> CGRect {
+            CGRect(x: x - 20, y: rowBand.minY, width: 40, height: rowBand.height)
+        }
+        /// Mean absolute difference (0…1 per channel) of one strip between two screenshots.
+        func stripDiff(_ a: UIImage, _ b: UIImage, x: CGFloat) throws -> Double {
+            try meanAbsDiff(a, b, pointRect: strip(x), windowSize: window, downsample: 2)
+        }
+        /// Mean luma (0…1) of one strip.
+        func stripLuma(_ image: UIImage, x: CGFloat) throws -> Double {
+            let px = try rgbaPixels(image, pointRect: strip(x), windowSize: window, downsample: 2)
+            var sum = 0.0
+            var count = 0
+            var i = 0
+            while i + 2 < px.count {
+                sum += (0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])) / 255
+                count += 1
+                i += 4
+            }
+            return count == 0 ? 0 : sum / Double(count)
+        }
+        /// Brightest channel along one column of the row band (the bezel columns).
+        func bandColumnMax(_ image: UIImage, x: CGFloat) throws -> Int {
+            var peak = 0
+            var y = rowBand.minY
+            while y < rowBand.maxY {
+                let rgb = try pixelRGB(in: image, at: CGPoint(x: x, y: y), windowSize: window)
+                peak = max(peak, rgb.max() ?? 0)
+                y += 8
+            }
+            return peak
+        }
+
+        let tolerance = 3.0 / 255
+        let w = window.width
+
+        // At rest, trailing edge (d = distance from the right bezel).
+        let restD310 = try stripDiff(soft.rest, off.rest, x: w - 310)
+        let restD180 = try stripDiff(soft.rest, off.rest, x: w - 180)
+        let restD4Soft = try bandColumnMax(soft.rest, x: w - 4)
+        let restD4Off = try bandColumnMax(off.rest, x: w - 4)
+        // After 12 Rights, leading edge.
+        let scrolledD4Soft = try bandColumnMax(soft.scrolled, x: 4)
+        let scrolledD140 = try stripDiff(soft.scrolled, off.scrolled, x: 140)
+        let scrolledD140SoftLuma = try stripLuma(soft.scrolled, x: 140)
+        let scrolledD140OffLuma = try stripLuma(off.scrolled, x: 140)
+        let scrolledD280 = try stripDiff(soft.scrolled, off.scrolled, x: 280)
+        // The middle of the row (d ≥ 260 from both bezels) in both states.
+        let middle = CGRect(x: 260, y: rowBand.minY, width: w - 520, height: rowBand.height)
+        let restMiddle = try meanAbsDiff(soft.rest, off.rest, pointRect: middle, windowSize: window)
+        let scrolledMiddle = try meanAbsDiff(soft.scrolled, off.scrolled, pointRect: middle, windowSize: window)
+        // The focused card apart from its outer 20 pt, when the runtime reports focus.
+        var focusedCard: Double?
+        if let card = soft.scrolledFocusFrame {
+            let inner = card.insetBy(dx: 20, dy: 20)
+            if inner.width > 20, inner.height > 20 {
+                focusedCard = try meanAbsDiff(soft.scrolled, off.scrolled, pointRect: inner, windowSize: window, downsample: 2)
             }
         }
+
+        let report = XCTAttachment(string: """
+            row top=\(top) band=\(rowBand) method=\(method)
+            rest trailing: d310 diff=\(restD310) d180 diff=\(restD180) d4 max soft=\(restD4Soft) off=\(restD4Off)
+            scrolled leading: d4 max soft=\(scrolledD4Soft) d140 diff=\(scrolledD140) luma soft=\(scrolledD140SoftLuma) off=\(scrolledD140OffLuma) d280 diff=\(scrolledD280)
+            middle diff rest=\(restMiddle) scrolled=\(scrolledMiddle) focusedCard=\(String(describing: focusedCard))
+            """)
+        report.name = "bug118-soft-vs-off"
+        report.lifetime = .keepAlways
+        add(report)
+
+        XCTAssertLessThanOrEqual(restD310, tolerance, "[soft] 310 pt from the trailing bezel must equal Off (the ramp ends at 250); diff \(restD310)")
+        XCTAssertGreaterThan(restD180, 2.0 / 255, "[soft] 180 pt from the trailing bezel must be faded (alpha ≈ 0.86), so differ from Off; diff \(restD180)")
+        XCTAssertLessThanOrEqual(scrolledD4Soft, 28, "[soft] the leading edge column (x=4) still carries artwork after scrolling (max channel \(scrolledD4Soft)); the fade does not reach the bezel")
+        XCTAssertGreaterThan(scrolledD140, 2.0 / 255, "[soft] 140 pt from the leading bezel must be partly faded (alpha ≈ 0.61), so differ from Off; diff \(scrolledD140)")
+        XCTAssertLessThan(scrolledD140SoftLuma, scrolledD140OffLuma, "[soft] 140 pt from the leading bezel must be darker than Off (luma \(scrolledD140SoftLuma) vs \(scrolledD140OffLuma))")
+        XCTAssertLessThanOrEqual(scrolledD280, tolerance, "[soft] 280 pt from the leading bezel must equal Off; diff \(scrolledD280)")
+        XCTAssertLessThan(restMiddle, tolerance, "[soft] the row between 260 pt from each bezel must equal Off at rest; diff \(restMiddle)")
+        XCTAssertLessThan(scrolledMiddle, tolerance, "[soft] the row between 260 pt from each bezel must equal Off after scrolling; diff \(scrolledMiddle)")
+        if let focusedCard {
+            XCTAssertLessThan(focusedCard, tolerance, "[soft] the focused card (apart from its outer 20 pt) must equal Off; diff \(focusedCard)")
+        }
+    }
+
+    /// beta.19-rc1 verdict (F): the frame of the focused CARD (a focused element sized like a
+    /// poster or landscape card), or nil when this runtime does not report focus — the tvOS 27.0
+    /// simulator runtime never sets `hasFocus`, so callers need a fallback.
+    private func focusedCardFrame(_ app: XCUIApplication) -> CGRect? {
+        guard let root = try? app.snapshot() else { return nil }
+        var found: CGRect?
+        func walk(_ node: XCUIElementSnapshot) {
+            guard found == nil else { return }
+            let f = node.frame
+            if node.hasFocus, f.width >= 150, f.width <= 760, f.height >= 150, f.height <= 760 {
+                found = f
+                return
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return found
     }
 
     /// RGB (0-255) of one point (window point space) in a full-screen screenshot.
@@ -8140,6 +8396,77 @@ final class NuvioTVUITests: XCTestCase {
         else { throw XCTSkip("could not build a bitmap context") }
         ctx.draw(px, in: CGRect(x: 0, y: 0, width: 1, height: 1))
         return [Int(buf[0]), Int(buf[1]), Int(buf[2])]
+    }
+
+    /// beta.19-rc1 verdict (F/C): RGBA bytes of one window-point rect of a full-screen screenshot,
+    /// drawn at 1/`downsample` of its pixel size (CoreGraphics averages while it scales).
+    private func rgbaPixels(_ image: UIImage, pointRect: CGRect, windowSize: CGSize,
+                            downsample: Int = 1) throws -> [UInt8] {
+        guard let cg = image.cgImage, windowSize.width > 0 else {
+            throw XCTSkip("screenshot has no CGImage / zero window size")
+        }
+        let scale = CGFloat(cg.width) / windowSize.width
+        let px = CGRect(
+            x: pointRect.minX * scale, y: pointRect.minY * scale,
+            width: pointRect.width * scale, height: pointRect.height * scale
+        ).integral.intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !px.isEmpty, let cropped = cg.cropping(to: px) else {
+            throw XCTSkip("rect \(pointRect) is off-screen")
+        }
+        let factor = max(1, downsample)
+        let w = max(1, cropped.width / factor)
+        let h = max(1, cropped.height / factor)
+        var buffer = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn: Bool = buffer.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(
+                data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { throw XCTSkip("could not build a bitmap context") }
+        return buffer
+    }
+
+    /// beta.19-rc1 verdict (F): mean absolute per-channel difference (0…1) between two full-screen
+    /// screenshots over one window-point rect. Large rects are compared at 1/4 size by default.
+    private func meanAbsDiff(_ a: UIImage, _ b: UIImage, pointRect: CGRect, windowSize: CGSize,
+                             downsample: Int = 4) throws -> Double {
+        let pa = try rgbaPixels(a, pointRect: pointRect, windowSize: windowSize, downsample: downsample)
+        let pb = try rgbaPixels(b, pointRect: pointRect, windowSize: windowSize, downsample: downsample)
+        guard pa.count == pb.count, !pa.isEmpty else {
+            throw XCTSkip("the two screenshots crop to different sizes; cannot compare")
+        }
+        var sum = 0
+        var channels = 0
+        var i = 0
+        while i + 2 < pa.count {
+            sum += abs(Int(pa[i]) - Int(pb[i])) + abs(Int(pa[i + 1]) - Int(pb[i + 1])) + abs(Int(pa[i + 2]) - Int(pb[i + 2]))
+            channels += 3
+            i += 4
+        }
+        return channels == 0 ? 0 : Double(sum) / Double(channels) / 255
+    }
+
+    /// beta.19-rc1 verdict (C): the fraction of pixels in one window-point rect whose largest
+    /// channel difference from `reference` (RGB 0-255) is above `threshold`.
+    private func fractionDiffering(in image: UIImage, pointRect: CGRect, windowSize: CGSize,
+                                   from reference: [Int], threshold: Int) throws -> Double {
+        guard reference.count >= 3 else { throw XCTSkip("reference colour needs three channels") }
+        let px = try rgbaPixels(image, pointRect: pointRect, windowSize: windowSize)
+        var hits = 0
+        var total = 0
+        var i = 0
+        while i + 2 < px.count {
+            let d = max(abs(Int(px[i]) - reference[0]), abs(Int(px[i + 1]) - reference[1]), abs(Int(px[i + 2]) - reference[2]))
+            if d > threshold { hits += 1 }
+            total += 1
+            i += 4
+        }
+        return total == 0 ? 0 : Double(hits) / Double(total)
     }
 
     // MARK: - Orivio batch (2026-10-01): hold menus, first-play auto mode, external-player return

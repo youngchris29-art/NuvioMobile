@@ -39,6 +39,13 @@ struct HomeScreenSettingsPane: View {
     /// hero banner. Only meaningful while `inlineTrailersEnabled` is on. Local-only, not synced.
     @AppStorage("trailer_playback_location") private var trailerPlaybackLocation = "poster"
 
+    /// beta.19-rc1 verdict (M4, FEAT-52 "Trailer Start Delay"): how long a focus-dwelled trailer waits
+    /// before it starts. Same device-local `@AppStorage` pattern as the three trailer keys above (no
+    /// Kotlin, no sync); the value is `TrailerStartDelay.rawValue` ("auto" | "1" | "2" | "3") and
+    /// `TrailerStartDelay.current()` reads it once per dwell. Default Automatic = the rows have
+    /// stopped moving, plus one second.
+    @AppStorage(TrailerStartDelay.storageKey) private var trailerStartDelay = TrailerStartDelay.automatic.rawValue
+
     /// 2026-08-30 fix: replaces the `isExpanded` that used to live inside the now-deleted
     /// `HeroSourcesGroup`/`HomeCatalogsGroup`. Plain `@State`, same behavior as before — no
     /// persistence, so both sections start collapsed on every (re)visit to Settings.
@@ -204,6 +211,13 @@ struct HomeScreenSettingsPane: View {
                     descriptionID: .homeHeroTrailerAutoplay
                 )
 
+                // beta.19-rc1 verdict (M4, FEAT-52): only while a trailer can actually start on a dwell
+                // — the poster/hero preview on focus, or the hero's own autoplay. With both off there is
+                // nothing for the delay to delay. Sits right after the two switches that enable it.
+                if inlineTrailersEnabled || heroTrailerAutoplay {
+                    trailerStartDelayRow
+                }
+
                 SettingsToggleRow(
                     title: String(localized: "Show Catalog Type in Titles"),
                     subtitle: model.showCatalogType
@@ -275,6 +289,21 @@ struct HomeScreenSettingsPane: View {
         guard trailerPlaybackLocation == "hero" else { return false }
         if !model.heroEnabled { return true }
         return heroNuvioStyle && model.catalogs.contains(where: { $0.heroSourceEnabled })
+    }
+
+    /// FEAT-52 "Trailer Start Delay": Automatic (the rows stop moving, then one second) or a fixed
+    /// 1 / 2 / 3 s counted from focus, never before the rows stop. The description is the kit's
+    /// focused-row explainer (`SettingsDescriptions.homeTrailerStartDelay`).
+    @ViewBuilder
+    private var trailerStartDelayRow: some View {
+        SettingsPickerRow(
+            title: String(localized: "Trailer Start Delay"),
+            selection: Binding(get: { TrailerStartDelay(rawValue: trailerStartDelay) ?? .automatic },
+                               set: { trailerStartDelay = $0.rawValue }),
+            options: TrailerStartDelay.allCases,
+            descriptionID: .homeTrailerStartDelay,
+            label: { $0.label }
+        )
     }
 
     /// Dependent chip row shown only while "Trailers on Focus" is on: picks whether the muted

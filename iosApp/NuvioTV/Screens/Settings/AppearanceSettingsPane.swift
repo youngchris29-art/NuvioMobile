@@ -61,6 +61,10 @@ struct AppearanceSettingsPane: View {
     /// scale). Same independent-read pattern as the ring above; the cards resolve both keys into a
     /// single `CardFocusMode`.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// beta.19-rc1 verdict (F, FEAT-54): the row edge fade, promoted from the Developer pane's
+    /// BUG-118 A/B. Device-local, live: every row's `RowEdgeEffectStyleModifier` reads the same key,
+    /// so a change applies at once. Soft by default (`RowEdgeFadeSetting.defaultValue`).
+    @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue
 
     private static let settingsStyleOptions: [(value: String, label: String)] = [
         ("default", String(localized: "Default")),
@@ -182,16 +186,37 @@ struct AppearanceSettingsPane: View {
                 )
             }
 
-            // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
-            // turns the zoom off outright — the card holds its size and marks focus with the
-            // ring (or a highlight border when the ring is off) and a shadow instead. Default
-            // OFF, so the stock focus motion is unchanged for everyone else.
-            SettingsToggleRow(
-                title: String(localized: "No Zoom on Focus"),
-                subtitle: String(localized: "Focused cards keep their size \u{2014} highlight and shadow only"),
-                isOn: $noZoomOnFocus,
-                descriptionID: .appearanceNoZoomOnFocus
-            )
+            // F (beta.19-rc1 verdict): No Zoom and Row Edge Fade share one `Group` so this
+            // section's builder keeps the ten direct children it had. The Group adds no layout of its
+            // own: a `Section` flattens it into two rows.
+            Group {
+                // BUG-36 (tester ask, twice): focus on a card lifts and zooms it slightly. This
+                // turns the zoom off outright — the card holds its size and marks focus with the
+                // ring (or a highlight border when the ring is off) and a shadow instead. Default
+                // OFF, so the stock focus motion is unchanged for everyone else.
+                SettingsToggleRow(
+                    title: String(localized: "No Zoom on Focus"),
+                    subtitle: String(localized: "Focused cards keep their size \u{2014} highlight and shadow only"),
+                    isOn: $noZoomOnFocus,
+                    descriptionID: .appearanceNoZoomOnFocus
+                )
+
+                // F (Steven beta.19-rc1 verdict, 2026-10-03; FEAT-54): how the left and right edges
+                // of rows fade. Soft is the app-drawn eased fade (default), System is tvOS's own
+                // scroll-edge effect, Off draws none. An unknown stored value reads as the default,
+                // so the picker always shows one of the three.
+                SettingsPickerRow(
+                    title: String(localized: "Row Edge Fade"),
+                    selection: Binding(
+                        get: { RowEdgeFadeSetting.resolve(rowEdgeFade) },
+                        set: { rowEdgeFade = $0.rawValue }
+                    ),
+                    options: RowEdgeFadeSetting.allCases,
+                    descriptionID: .appearanceRowEdgeFade,
+                    label: { $0.label }
+                )
+                .accessibilityIdentifier("appearance_row_edge_fade")
+            }
 
             // FEAT-38: pure black background for OLED screens. Backed by
             // `ThemeSettingsRepository.amoledEnabled` (profile-scoped, synced) via

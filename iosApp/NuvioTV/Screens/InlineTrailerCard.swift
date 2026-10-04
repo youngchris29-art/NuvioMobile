@@ -398,9 +398,9 @@ final class InlineTrailerCardModel: ObservableObject {
     /// R2: true for a catalog card (set in the card's `.onAppear`, BEFORE any `focusChanged(true…)`),
     /// which owns a tile and runs the staged morph. False on the hero model: no art, no stages.
     var hostsTile = false
-    /// R2: the tile art's candidates (banner, then poster), set by the catalog card in `.onAppear`.
-    /// nil on the hero model.
-    var tileArtSource: (primary: String?, fallback: String?)?
+    /// R2: the tile art's candidates (banner, then poster) and the tile's resting size, set by the
+    /// catalog card in `.onAppear`. nil on the hero model.
+    var tileArtSource: InlineTileArtSource?
 
     nonisolated static let morphDuration: TimeInterval = 0.35
     /// The morph curve. Slow enough to read as one object changing shape, short enough that a fast
@@ -727,6 +727,19 @@ final class InlineTrailerCardModel: ObservableObject {
     /// * three failures inside a minute is a shared-resource storm, so the negative entries those
     ///   failures wrote are purged outright rather than left to expire one by one.
     func playbackFailed(_ report: TrailerFailureReport) {
+        // beta.19-rc1 verdict (B2, BUG-131): a connection-class failure (a start-watchdog timeout, or
+        // an NSURLErrorDomain item error such as -1004) of a LOOPBACK repack URL with no HTTP status
+        // is what a dead listener looks like — the app was suspended and the socket reclaimed with no
+        // callback. Ask the server to ping itself now (alive → nothing; dead → rebuild), BEFORE the
+        // BUG-101 retry below starts its own `playbackOutcome` (its `Task` runs after this method
+        // returns), so the retry finds the rebuilt listener or the 2 s attempt deadline. A 404 from the
+        // listener itself, or any HTTP status, is the evicted-token path and not this one.
+        if report.httpStatus == nil,
+           let failedURL = report.urlString,
+           TrailerLocalHLS.port(inPlaybackURL: failedURL) != nil,
+           report.cause.isConnectionClass {
+            TrailerLocalHLS.shared.verifyListener(reason: "playback")
+        }
         var retrying = false
         if let activeKey {
             let isLoopback404 = report.httpStatus == 404
@@ -1060,7 +1073,7 @@ final class InlineTrailerCardModel: ObservableObject {
         artDone = false
         artResult = nil
         artTask = Task { [weak self] in
-            let art = await InlineTileArtLoader.load(primary: source.primary, fallback: source.fallback)
+            let art = await InlineTileArtLoader.load(source)
             if let self, self.artToken == token {
                 self.artResult = art
                 self.artDone = true
@@ -1093,18 +1106,44 @@ final class InlineTrailerCardModel: ObservableObject {
         }
 
         switch TrailerResolutionCache.shared.entry(for: key) {
-        case let .resolved(url, _):
+        case let .resolved(cachedURL, _):
+            var url = cachedURL
+            activeKey = key
             // BUG-46/B3: a local repack URL is only as good as the token behind it. Checking here
             // costs a dictionary lookup and turns "AVPlayer 404s, the card dies" into "re-resolve,
             // exactly like a cache miss" — no round trip, no failure, no negative cache entry.
-            if let token = TrailerLocalHLS.token(inPlaybackURL: url), !TrailerLocalHLS.shared.hasToken(token) {
-                if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolvedStaleToken key=%@", key) }
-                TrailerResolutionCache.shared.invalidate(key: key)
-                startResolution(item, key: key)
-                return
+            //
+            // beta.19-rc1 verdict (B2, BUG-131): the token alone is not enough. The URL also names
+            // the loopback PORT it was minted against, and the listener behind it can have died or
+            // moved while the app was suspended (Steven's 4:34.7 Verity: a cache-hit morph, then an
+            // AVPlayer failure 0.4 s later against a dead port, then a 45 s `.transient`).
+            // `readyPort()` starts or re-verifies the listener (bounded by its 2 s attempt deadline);
+            // `servableURL` then returns the URL unchanged when its port is the ready one, REBASES it
+            // onto the ready port when only the port moved and the token is still stored (no YouTube
+            // re-extraction), and nil when the token is gone or no listener could be bound — which is
+            // "re-resolve, exactly like a cache miss". A non-loopback URL passes through untouched.
+            if TrailerLocalHLS.token(inPlaybackURL: url) != nil {
+                let generationAtStart = generation
+                let ready = await TrailerLocalHLS.shared.readyPort()
+                // Focus can leave during the await: `reset()` bumped `generation` and cleared `activeKey`.
+                guard generation == generationAtStart, activeKey == key else { return }
+                guard let servable = TrailerLocalHLS.shared.servableURL(url, readyPort: ready) else {
+                    if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolvedStale key=%@", key) }
+                    TrailerResolutionCache.shared.invalidate(key: key)
+                    startResolution(item, key: key)
+                    return
+                }
+                if servable != url {
+                    // Rebased onto the live port: remember it, so the next dwell skips this hop.
+                    if TrailerProbe.enabled {
+                        NSLog("[TrailerPipeline] expand branch=resolvedRebased key=%@ port=%d", key,
+                              Int(TrailerLocalHLS.port(inPlaybackURL: servable) ?? 0))
+                    }
+                    TrailerResolutionCache.shared.store(.resolved(servable, Date()), for: key)
+                    url = servable
+                }
             }
             if TrailerProbe.enabled { NSLog("[TrailerPipeline] expand branch=resolved key=%@", key) }
-            activeKey = key
             // R2: the morph goes through `beginMorph` (art first, then the staged reveal). False =
             // focus left during the art wait; `reset()` already put the card back.
             guard await beginMorph(key: key) else { return }
@@ -1299,17 +1338,41 @@ final class InlineTrailerCardModel: ObservableObject {
         // AVPlayer-friendly URL only — a local byte-range HLS repackage of the demuxed 1080p pair
         // when the extractor surfaced one (SABR fallback), else the progressive/HLS URL.
         // Adaptive-VP9/AV1-only results collapse the card.
-        let playable: String?
+        //
+        // beta.19-rc1 verdict (B2, BUG-131): `playbackOutcome` (12 s race, see `TrailerLocalHLS`) tells
+        // "nothing playable" from "no answer in time". A timeout is a TRANSIENT — play the progressive
+        // URL when there is one (without caching it), else a 45 s `.transient` — and never the 20-minute
+        // `.unavailable` that a title with no trailer earns. (Before this, a listener that never
+        // reported back parked this function forever with `resolvingKey` latched.)
+        let outcome: TrailerPlaybackURLOutcome?
         if let source {
-            playable = await TrailerLocalHLS.shared.playbackURL(for: source)
+            outcome = await TrailerLocalHLS.shared.playbackOutcome(for: source)
         } else {
-            playable = nil
+            outcome = nil
         }
         guard languageStillCurrent() else { abandonExpansion(key: key); return }
-        if let playable, !playable.isEmpty {
-            TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
-            startPlayback(playable, key: key)
-            return
+        if let outcome {
+            switch InlineTrailerResolveOutcome.action(for: outcome) {
+            case .storeResolvedAndPlay:
+                if let playable = InlineTrailerResolveOutcome.playbackURL(for: outcome) {
+                    TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
+                    startPlayback(playable, key: key)
+                }
+                return
+            case .playUncached:
+                if let progressive = InlineTrailerResolveOutcome.playbackURL(for: outcome) {
+                    if TrailerProbe.enabled { NSLog("[TrailerPipeline] resolve outcome=timedOut fallback=progressive key=%@", key) }
+                    startPlayback(progressive, key: key)
+                }
+                return
+            case .storeTransient:
+                if TrailerProbe.enabled { NSLog("[TrailerPipeline] resolve outcome=timedOut fallback=none key=%@", key) }
+                TrailerResolutionCache.shared.store(.transient(Date()), for: key, causeSite: "playbackURLTimeout")
+                abandonExpansion(key: key)
+                return
+            case .tryNextCandidate:
+                break   // falls through to the BUG-101 Finding 3 hand-off below
+            }
         }
         guard source != nil else {
             // No candidate's YouTube extraction produced anything at all — the budget is already
@@ -1432,16 +1495,34 @@ final class InlineTrailerCardModel: ObservableObject {
                 return
             }
             self.candidateIndex = result.index
-            let playable = await TrailerLocalHLS.shared.playbackURL(for: result.source)
+            // beta.19-rc1 verdict (B2, BUG-131): the same outcome mapping as `resolve()` — a timeout
+            // is a transient, never "this candidate is dead", so it does NOT recurse to the next one.
+            let outcome = await TrailerLocalHLS.shared.playbackOutcome(for: result.source)
             guard self.activeKey == key else {
                 self.releaseResolutionOwnership(for: key)
                 return
             }
-            if let playable, !playable.isEmpty {
+            switch InlineTrailerResolveOutcome.action(for: outcome) {
+            case .storeResolvedAndPlay:
                 self.releaseResolutionOwnership(for: key)
-                TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
-                self.startPlayback(playable, key: key)
+                if let playable = InlineTrailerResolveOutcome.playbackURL(for: outcome) {
+                    TrailerResolutionCache.shared.store(.resolved(playable, Date()), for: key)
+                    self.startPlayback(playable, key: key)
+                }
                 return
+            case .playUncached:
+                self.releaseResolutionOwnership(for: key)
+                if let progressive = InlineTrailerResolveOutcome.playbackURL(for: outcome) {
+                    self.startPlayback(progressive, key: key)
+                }
+                return
+            case .storeTransient:
+                self.releaseResolutionOwnership(for: key)
+                TrailerResolutionCache.shared.store(.transient(Date()), for: key, causeSite: "playbackURLTimeout")
+                self.abandonExpansion(key: key)
+                return
+            case .tryNextCandidate:
+                break   // Finding 3: keep walking, below
             }
             // Finding 3 (BUG-101 follow-up): same dead end as `resolve()`'s initial walk — this
             // candidate's extraction succeeded but its repack didn't. Keep walking within the same
@@ -1611,6 +1692,91 @@ nonisolated enum InlineTrailerMorphPlan {
     }
 }
 
+// MARK: - R1 tile tint (pure)
+
+/// beta.19-rc1 verdict (R1, BUG-132; Steven's 72 Heures / Elize frames: a pink or gold ring turned
+/// white the moment the trailer tile replaced the poster card). Which colour the tile's focus ring
+/// wears — pure, so `InlineTrailerTileTintTests` can pin the table without a hosting view.
+nonisolated enum InlineTrailerTileTint {
+    nonisolated enum RingSource: String, Equatable, Sendable {
+        /// The poster's own colour (`ArtworkColorStore`) — "Focus Ring Takes Poster Color" on, a ring
+        /// can draw, and the art has a colour.
+        case poster
+        /// The accent ring's colour (`Theme.Palette.focusRingColor`): the setting is off, or the art is
+        /// grey (no colour), with the accent ring on.
+        case accent
+        /// No Zoom's neutral still ring (`stillHighlight`) with the accent ring off.
+        case still
+        /// No ring: not focused, or zoom on with the accent ring off.
+        case none
+    }
+
+    /// - Parameters:
+    ///   - settingOn: `focus_ring_poster_color`.
+    ///   - accentRing: `accent_focus_ring`.
+    ///   - noZoom: `no_zoom_on_focus`.
+    ///   - focused: the card holds focus (the tile draws a ring only then).
+    ///   - hasPosterColor: the store has a colour for the poster's art (nil for grey art).
+    ///
+    /// The accent ring takes precedence over No Zoom's still ring, as in `PosterCard` (the still
+    /// ring is suppressed when the accent ring is on).
+    static func ringSource(settingOn: Bool, accentRing: Bool, noZoom: Bool, focused: Bool,
+                           hasPosterColor: Bool) -> RingSource {
+        guard focused else { return .none }
+        let wearsPosterColor = settingOn && hasPosterColor
+        if accentRing { return wearsPosterColor ? .poster : .accent }
+        if noZoom { return wearsPosterColor ? .poster : .still }
+        return .none
+    }
+}
+
+// MARK: - B2 playback-URL outcome (pure)
+
+/// beta.19-rc1 verdict (B2, BUG-131): what the card does with a `TrailerPlaybackURLOutcome`. The old
+/// `String?` could not tell "this source has nothing playable" (try the next ranked candidate) from
+/// "the repack took too long" (a transient: play the progressive URL when there is one, never mark
+/// the title unavailable). An empty URL counts as absent, exactly as the old `!playable.isEmpty`
+/// checks did.
+nonisolated enum InlineTrailerResolveOutcome {
+    nonisolated enum Action: Equatable, Sendable {
+        /// `.playable`: store `.resolved(url)` and play it.
+        case storeResolvedAndPlay
+        /// `.timedOut` with a progressive URL: play it WITHOUT storing it (the repack may still land
+        /// and a later dwell should get the better URL), no negative entry.
+        case playUncached
+        /// `.timedOut` with no progressive URL: store `.transient` (45 s) and collapse. Never
+        /// `.unavailable` — the title is not trailer-less, the answer was just slow.
+        case storeTransient
+        /// `.nothingPlayable`: the existing BUG-101 Finding 3 hand-off to the next ranked candidate.
+        case tryNextCandidate
+    }
+
+    static func action(for outcome: TrailerPlaybackURLOutcome) -> Action {
+        switch outcome {
+        case .playable(let url):
+            return url.isEmpty ? .tryNextCandidate : .storeResolvedAndPlay
+        case .timedOut(let progressive):
+            return (progressive?.isEmpty ?? true) ? .storeTransient : .playUncached
+        case .nothingPlayable:
+            return .tryNextCandidate
+        }
+    }
+
+    /// The URL to hand `startPlayback` for `.storeResolvedAndPlay` / `.playUncached`; nil otherwise.
+    static func playbackURL(for outcome: TrailerPlaybackURLOutcome) -> String? {
+        switch action(for: outcome) {
+        case .storeResolvedAndPlay:
+            if case .playable(let url) = outcome { return url }
+            return nil
+        case .playUncached:
+            if case .timedOut(let progressive) = outcome { return progressive }
+            return nil
+        case .storeTransient, .tryNextCandidate:
+            return nil
+        }
+    }
+}
+
 // MARK: - R2 tile art
 
 /// The decoded art the tile reveals: the image, its measured baked-bar zoom (`ArtworkLetterbox`,
@@ -1621,15 +1787,32 @@ nonisolated struct InlineTileArt: Sendable {
     let url: String
 }
 
+/// beta.19-rc1 verdict (R2, BUG-133 / I1, BUG-134): what the tile-art loader needs from the card —
+/// the candidates (banner, then poster) and the tile's resting size in POINTS, so the banner can be
+/// decoded at the size the tile is drawn at (points × display scale, rounded up to a bucket) instead
+/// of the old fixed 1920 px cap.
+nonisolated struct InlineTileArtSource: Equatable, Sendable {
+    /// `InlineTrailerCard.landscapeArtworkURL(item)`: the banner, or the poster when there is none.
+    var primary: String?
+    /// The item's poster. A candidate equal to this string is loaded as a POSTER (see
+    /// `InlineTileArtLoader.Role`), wherever it sits in the list.
+    var fallback: String?
+    /// The 16:9 tile's drawn size in points: the landscape card in landscape rows, else the poster's
+    /// height × 16/9 wide by the poster's height tall. The focus-ring band is not subtracted: the
+    /// bucket rounding absorbs it.
+    var tileSize: CGSize
+}
+
 /// beta.19-rc1 verdict (R2): loads the tile art BEFORE the reveal, so the first revealed frame is
 /// the picture (never a shimmer) and the bar crop is already applied (never animated in).
 ///
-/// W1-A codes against today's `ArtworkStore` API: `cached(url)` → `fetch(url)` (`.normal`
-/// admission, no request timeout) for the primary (banner), then the fallback (poster). W2-D
-/// upgrades it after spec B's I1 lands (critique #3): the primary fetch passes the tile's pixel
-/// decode (`ArtworkDecodeRequest(size: .points(CGSize(width: expandedWidth, height: artworkHeight)),
-/// fill: true, scale: ArtworkDecodeMath.screenScale)`), and the poster fallback uses
-/// `ArtworkStore.cachedLargest(posterURL)` (any bucket, so the card's own decode is found).
+/// I1 (critique #3): written against spec B's decode API. The BANNER is looked up and fetched with
+/// the tile's pixel decode (`ArtworkDecodeRequest(.points(tile), fill, screenScale)`): a bucket-aware
+/// hit when a decode that big already exists, else a `.normal`-admission fetch with no request
+/// timeout (a coalesced fetch shared with the hero or Detail is never failed early). The POSTER
+/// fallback looks in memory first with `ArtworkStore.cachedLargest` (any bucket of any rendition, so
+/// the decode the row's card already made is found even though the card drew the `w780` / metahub
+/// `large` variant of this URL) and only fetches when nothing at all is cached.
 enum InlineTileArtLoader {
     /// Candidate URLs in order: the primary first, blank and duplicate entries dropped.
     nonisolated static func candidates(primary: String?, fallback: String?) -> [String] {
@@ -1642,16 +1825,61 @@ enum InlineTileArtLoader {
         return out
     }
 
-    static func load(primary: String?, fallback: String?) async -> InlineTileArt? {
-        for candidate in candidates(primary: primary, fallback: fallback) {
-            guard let url = URL(string: candidate) else { continue }
+    /// How one candidate is decoded and looked up.
+    nonisolated enum Role: Equatable, Sendable {
+        /// A 16:9 backdrop / banner: decoded to cover the tile.
+        case banner
+        /// The portrait poster: decoded to cover the tile, so its LONG side is 1.5 × the tile width.
+        case poster
+    }
+
+    nonisolated struct Step: Equatable, Sendable {
+        let url: String
+        let role: Role
+    }
+
+    /// `candidates(primary:fallback:)` with each entry's role. A candidate equal to `fallback` (the
+    /// poster) is a `.poster` even when it is also the primary (an item with no banner), so
+    /// `candidates`' de-duplication cannot turn a poster into a banner.
+    nonisolated static func steps(primary: String?, fallback: String?) -> [Step] {
+        candidates(primary: primary, fallback: fallback).map { url in
+            Step(url: url, role: url == fallback ? .poster : .banner)
+        }
+    }
+
+    /// The decode a candidate of `role` needs to cover a `tile` of the given size (points) at `scale`.
+    /// A poster covering a 16:9 tile is drawn `tile.width` wide and 1.5 × that tall, so asking for
+    /// `.points(width, width × 1.5)` makes the unknown-source estimate (`max(W, H)`) the poster's long
+    /// side; once a decode has recorded the source size, `ArtworkDecodeMath` refines it per aspect.
+    nonisolated static func request(for role: Role, tile: CGSize, scale: CGFloat) -> ArtworkDecodeRequest {
+        let height = role == .poster ? tile.width * 1.5 : tile.height
+        return ArtworkDecodeRequest(size: .points(width: tile.width, height: height), fill: true, scale: scale)
+            .normalized
+    }
+
+    static func load(_ source: InlineTileArtSource) async -> InlineTileArt? {
+        let scale = ArtworkDecodeMath.screenScale
+        for step in steps(primary: source.primary, fallback: source.fallback) {
+            guard let url = URL(string: step.url) else { continue }
+            let request = request(for: step.role, tile: source.tileSize, scale: scale)
             let image: UIImage
-            if let hit = ArtworkStore.cached(url) {
-                image = hit
-            } else if let fetched = try? await ArtworkStore.fetch(url) {
-                image = fetched
-            } else {
-                continue
+            switch step.role {
+            case .banner:
+                if let hit = ArtworkStore.cached(url, decode: request) {
+                    image = hit
+                } else if let fetched = try? await ArtworkStore.fetch(url, decode: request, admission: .normal, timeout: nil) {
+                    image = fetched
+                } else {
+                    continue
+                }
+            case .poster:
+                if let hit = ArtworkStore.cachedLargest(url) {
+                    image = hit
+                } else if let fetched = try? await ArtworkStore.fetch(url, decode: request, admission: .normal, timeout: nil) {
+                    image = fetched
+                } else {
+                    continue
+                }
             }
             // Same key and call shape as `CachedAsyncImage`'s crop task, so the memo is shared.
             let key = url.absoluteString
@@ -1669,7 +1897,8 @@ enum InlineTileArtLoader {
     }
 
     /// `beginMorph`'s last resort when no art arrived inside the deadline: whichever candidate is
-    /// already decoded in memory (the poster is usually on screen), with its memoized zoom or none.
+    /// already decoded in memory at ANY size (`ArtworkStore.cached` is the family-wide largest, so the
+    /// poster the row's card drew is found whichever rendition it drew), with its memoized zoom or none.
     static func inMemory(primary: String?, fallback: String?) -> InlineTileArt? {
         for candidate in candidates(primary: primary, fallback: fallback) {
             guard let url = URL(string: candidate), let image = ArtworkStore.cached(url) else { continue }
@@ -1742,6 +1971,21 @@ struct InlineTrailerCard: View {
     /// Read for the neutral still ring below (Codex 2026-08-29 round 6) — same key/pattern as
     /// `PosterCard`'s copy.
     @AppStorage("no_zoom_on_focus") private var noZoomOnFocus = false
+    /// beta.19-rc1 verdict (R1, BUG-132): the morph replaced the poster card with this tile, and the
+    /// tile read neither FEAT-46 key, so a pink or gold ring turned white (and the depth rail
+    /// disappeared) the moment the trailer started — Steven's 72 Heures / Elize frames. Same keys,
+    /// same independent-read pattern, same `ArtworkColorStore` as `PosterCard` (Appearance owns the
+    /// toggles).
+    @AppStorage("focus_ring_poster_color") private var ringTakesPosterColor = false
+    @AppStorage("depth_rail_poster_color") private var depthTakesPosterColor = false
+    @Environment(\.cardDepthStyle) private var depthStyle
+    /// R1: the last colour `ArtworkColorStore` answered for this card's art. Written at most once per
+    /// tile reveal (`sampleTileColors`, on the `tileVisible` true edge), never per frame; it is the
+    /// re-render trigger for a colour sampled after the tile appeared and the fallback if the store
+    /// has since evicted the entry. The store peek in `posterTint` covers the normal case (the base
+    /// `PosterCard` already sampled on focus gain).
+    @State private var posterRingTint: Color?
+    @State private var depthRailTint: Color?
     #if DEBUG
     /// BUG-92 (beta.18 follow-up): the tile's own frame origin in `.global` space, fed to
     /// `debug_trailerTile`'s `x=` field — see that overlay's doc comment for why `.global` and not
@@ -1762,6 +2006,84 @@ struct InlineTrailerCard: View {
     /// (UX-4a). Shared with `CatalogRowView`'s morph-scroll math (M3).
     static func expandedWidth(_ style: PosterStyle) -> CGFloat {
         style.height * (16.0 / 9.0)
+    }
+
+    // MARK: R1 poster colour (ring + depth rail)
+
+    /// The art the BASE card shows, in the base card's own order, so the tile asks the store about
+    /// exactly the picture the poster rail / ring colour was sampled from
+    /// (`BrowseComponents.PosterCardView`: `[poster, rawPosterUrl]`; landscape rows'
+    /// `LandscapeCard`: the landscape art alone).
+    private var tintSources: [String?] {
+        let poster: String? = item.poster
+        if posterStyle.landscapeCatalogRows { return [Self.landscapeArtworkURL(item)] }
+        let raw: String? = item.rawPosterUrl
+        return [poster, raw]
+    }
+
+    /// `PosterCard.samplesPosterColor`: the setting is on AND a ring can draw (the accent ring, or No
+    /// Zoom's still ring). With neither, the focused card only lifts and there is nothing to colour.
+    private var samplesPosterColor: Bool {
+        ringTakesPosterColor && (accentFocusRing || noZoomOnFocus)
+    }
+
+    /// `PosterCard.posterTint`: nil unless sampling AND focused. Store peek first (a read, never a
+    /// write), so the colour the poster card sampled on focus gain is on the tile's ring from its
+    /// first frame; `posterRingTint` covers a colour that lands after the tile did.
+    private var posterTint: Color? {
+        guard samplesPosterColor, isFocused else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: tintSources) ?? posterRingTint
+    }
+
+    /// `PosterCard.samplesDepthColor`.
+    private var samplesDepthColor: Bool {
+        depthTakesPosterColor && depthStyle.isEnabled(for: .posters)
+    }
+
+    /// `PosterCard.depthRailTintResolved`: store peek first, then the local state.
+    private var depthRailTintResolved: Color? {
+        guard samplesDepthColor else { return nil }
+        return ArtworkColorStore.shared.cachedColor(for: tintSources, use: .rail) ?? depthRailTint
+    }
+
+    /// Which colour the tile's ring wears right now (pure table in `InlineTrailerTileTint`).
+    private var tileRingSource: InlineTrailerTileTint.RingSource {
+        InlineTrailerTileTint.ringSource(
+            settingOn: ringTakesPosterColor,
+            accentRing: accentFocusRing,
+            noZoom: noZoomOnFocus,
+            focused: isFocused,
+            hasPosterColor: posterTint != nil
+        )
+    }
+
+    /// The ring's stroke colour for `tileRingSource`; nil = no ring.
+    private var tileRingColor: Color? {
+        switch tileRingSource {
+        case .poster: return posterTint
+        case .accent: return Theme.Palette.focusRingColor
+        case .still: return stillHighlight
+        case .none: return nil
+        }
+    }
+
+    /// R1: on the `tileVisible` true edge, when the store peek in `posterTint` / `depthRailTintResolved`
+    /// missed (the base card never sampled this art, or the entry was evicted), ask the store ONCE and
+    /// keep the answer. Mirrors `PosterCard`'s focus-gain sample, which is where this normally lands
+    /// first — so in practice both peeks hit and nothing below runs.
+    private func sampleTileColors() {
+        let sources = tintSources
+        if samplesPosterColor, ArtworkColorStore.shared.cachedColor(for: sources) == nil {
+            ArtworkColorStore.shared.color(for: sources) { color in
+                guard posterRingTint != color else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { posterRingTint = color }
+            }
+        }
+        if samplesDepthColor, ArtworkColorStore.shared.cachedColor(for: sources, use: .rail) == nil {
+            ArtworkColorStore.shared.color(for: sources, use: .rail) { color in
+                if depthRailTint != color { depthRailTint = color }
+            }
+        }
     }
 
     var body: some View {
@@ -1839,6 +2161,10 @@ struct InlineTrailerCard: View {
         // collapses mid-scroll-request should still let the row know its width is back to normal.
         // R2: the WIDTH edge (`.wide`), which is when the row has something to scroll for.
         .onChange(of: model.layoutExpanded) { _, wide in onExpansionChange?(wide) }
+        // beta.19-rc1 verdict (R1, BUG-132): see `sampleTileColors`.
+        .onChange(of: model.tileVisible) { _, visible in
+            if visible { sampleTileColors() }
+        }
     }
 
     /// Everything the model needs from this host BEFORE a `focusChanged(true…)` (critique #25):
@@ -1848,7 +2174,12 @@ struct InlineTrailerCard: View {
         model.prefersReducedMotion = reduceMotion
         model.hostsTile = true
         let poster: String? = item.poster
-        model.tileArtSource = (primary: Self.landscapeArtworkURL(item), fallback: poster)
+        // I1 (critique #3): the tile's resting size, so the loader decodes the banner at the size the
+        // tile is drawn at. Same numbers as `artworkWidth` / `artworkHeight` at `.wide`.
+        let tile = posterStyle.landscapeCatalogRows
+            ? CGSize(width: Theme.Size.landscapeWidth, height: Theme.Size.landscapeHeight)
+            : CGSize(width: Self.expandedWidth(posterStyle), height: posterStyle.height)
+        model.tileArtSource = InlineTileArtSource(primary: Self.landscapeArtworkURL(item), fallback: poster, tileSize: tile)
         model.restSource = rowRestSource
     }
 
@@ -1917,10 +2248,23 @@ struct InlineTrailerCard: View {
             // stays in the tree until the model clears `tileArt` at the end of the final collapse,
             // so the poster is never uncovered by an empty slot mid-collapse (0:54.8).
             if let art = model.tileArt {
+                // beta.19-rc1 verdict (R1, BUG-132): the tile had no `nuvioCardDepth`, so the sheen
+                // (and, once focus left, the rail) the poster wore vanished at the morph. Hung on the
+                // ART only — framed and clipped to the inset rect first, exactly like `PosterCard`'s
+                // artwork, so the overlay traces the picture and not the fill-overflowed image view —
+                // with the inset radius `geometry.radius` the surface's own clip uses. The video
+                // covers it while playing. BUG-110: a focused card draws no rail (the modifier reads
+                // `\.isFocused`), so the rail shows during the collapse dissolve, like the poster it
+                // turns back into. `depthRailTintResolved` is nil unless "Depth Takes Poster Color".
                 Image(uiImage: art.image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .scaleEffect(art.barZoom)
+                    .frame(width: geometry.rect.width, height: geometry.rect.height)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: geometry.radius))
+                    .nuvioCardDepth(RoundedRectangle(cornerRadius: geometry.radius),
+                                    surface: .posters, railTint: depthRailTintResolved)
             } else if model.tileVisible {
                 // No art arrived inside `artAwaitDeadline` and the poster was not in memory either:
                 // a flat surface, never a shimmer.
@@ -2017,17 +2361,19 @@ struct InlineTrailerCard: View {
         // BUG-92: drawn at the OUTER frame (unchanged from before this fix), which is now exactly
         // the reserved `band` outside the inset content above — so the ring lands in the vacated
         // margin around the video instead of over it, concentric with the inset's rounded corner.
+        //
+        // beta.19-rc1 verdict (R1, BUG-132): the colour comes from `tileRingSource` (the pure table in
+        // `InlineTrailerTileTint`): the poster's own colour when "focus ring takes the poster's
+        // colour" is on and the art has one (accent ring or No Zoom's still ring, exactly
+        // `PosterCard`'s rule), else what each branch drew before — the accent colour, or the
+        // neutral still ring (Codex 2026-08-29 round 6: with No Zoom on and the ring off, the faded
+        // base card left this surface with NO focus indication, so it draws the same neutral ring
+        // `TileFocusLift` does). The accent branch's 4 pt and the still branch's `ringWidth` are the
+        // same number.
         .overlay {
-            if accentFocusRing && isFocused {
+            if let ringColor = tileRingColor {
                 RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
-                    .strokeBorder(Theme.Palette.focusRingColor, lineWidth: 4)
-            } else if noZoomOnFocus && isFocused {
-                // No-zoom + ring OFF (Codex 2026-08-29 round 6): with the system focus effect
-                // now genuinely disabled (the real BUG-64 fix) and the base card faded to 0
-                // under the expanded tile, this surface had NO focus indication left in that
-                // settings combination. Neutral still ring, same look as TileFocusLift's.
-                RoundedRectangle(cornerRadius: posterStyle.cornerRadius)
-                    .strokeBorder(stillHighlight, lineWidth: ringWidth)
+                    .strokeBorder(ringColor, lineWidth: ringWidth)
             }
         }
         #if DEBUG
@@ -2049,7 +2395,7 @@ struct InlineTrailerCard: View {
         // beta.19-rc1 verdict (M3/R2): shown while the tile is VISIBLE (`tileVisible`), with five
         // fields appended: ` stage=<reveal|wide> gate=<auto|1|2|3> gateRest=<s|-> gateStart=<s>
         // via=<rest|ceiling>` — the gate's seconds-since-focus (test85: `gateStart − gateRest ≥
-        // 0.95` under Automatic; test88: `gate=2`, `gateStart ≥ 2.0`). W2-D appends ` ring=`.
+        // 0.95` under Automatic; test88: `gate=2`, `gateStart ≥ 2.0`) — then R1's ` ring=`.
         .overlay(alignment: .topLeading) {
             if model.tileVisible {
                 Text("debug_trailerTile outer=\(Self.debugFmt(artworkWidth))x\(Self.debugFmt(artworkHeight)) inner=\(Self.debugFmt(geometry.rect.width))x\(Self.debugFmt(geometry.rect.height)) band=\(Self.debugFmt(band)) rOut=\(Self.debugFmt(posterStyle.cornerRadius)) rIn=\(Self.debugFmt(geometry.radius)) x=\(Self.debugFmt(debugTileGlobalOriginX))\(debugGateFields)")
@@ -2083,7 +2429,9 @@ struct InlineTrailerCard: View {
         let rest = model.gateRestAt.map { String(format: "%.2f", $0) } ?? "-"
         let start = model.gateStartAt.map { String(format: "%.2f", $0) } ?? "-"
         let via = model.gateVia ?? "-"
-        return " stage=\(stage) gate=\(gate) gateRest=\(rest) gateStart=\(start) via=\(via)"
+        // R1: `ring=<poster|accent|still|none>` — test87 reads `poster` with the poster-colour
+        // setting on (and skips on `accent`: grey art legitimately keeps the accent colour).
+        return " stage=\(stage) gate=\(gate) gateRest=\(rest) gateStart=\(start) via=\(via) ring=\(tileRingSource.rawValue)"
     }
     #endif
 

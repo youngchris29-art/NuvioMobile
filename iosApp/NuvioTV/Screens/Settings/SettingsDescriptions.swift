@@ -50,6 +50,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case appearanceDepthPosterColor = "appearance.depthPosterColor"
     case appearanceNoZoomOnFocus = "appearance.noZoomOnFocus"
     case appearanceOledBlack = "appearance.oledBlack"
+    // beta.19-rc1 verdict (F, FEAT-54): the row edge fade, promoted from the Developer A/B.
+    case appearanceRowEdgeFade = "appearance.rowEdgeFade"
     case appearanceSettingsStyle = "appearance.settingsStyle"
     case appearanceNavigation = "appearance.navigation"
     case appearanceTypeface = "appearance.typeface"
@@ -82,6 +84,8 @@ enum SettingsDescriptionID: String, CaseIterable {
     case homeTrailersOnFocus = "home.trailersOnFocus"
     case homeTrailerLocation = "home.trailerLocation"
     case homeHeroTrailerAutoplay = "home.heroTrailerAutoplay"
+    // beta.19-rc1 verdict (M4, FEAT-52): the row lives in HomeScreenSettingsPane (spec A, W2-D).
+    case homeTrailerStartDelay = "home.trailerStartDelay"
     case homeCatalogType = "home.catalogType"
     case homeCatalogs = "home.catalogs"
     case homeCatalog = "home.catalog"
@@ -185,7 +189,6 @@ enum SettingsDescriptionID: String, CaseIterable {
     case devRowSettle = "dev.rowSettle"
     case devTabBarGeometry = "dev.tabBarGeometry"
     case devNoZoomReach = "dev.noZoomReach"
-    case devRowEdgeFade = "dev.rowEdgeFade"
     case devShortRowFloor = "dev.shortRowFloor"
     case devTabBarScrollLink = "dev.tabBarScrollLink"
 }
@@ -224,6 +227,7 @@ enum SettingsDescriptions {
         case .appearanceDepthPosterColor: return LocalizedStringResource("Tints each card's depth edge with its poster's main color as the artwork loads. Off by default.")
         case .appearanceNoZoomOnFocus: return LocalizedStringResource("Stops cards from growing when focused. They keep their size and show focus with a highlight and shadow. Off by default.")
         case .appearanceOledBlack: return LocalizedStringResource("Makes the app background pure black, which suits OLED screens. Cards keep their own colors so they still stand out.")
+        case .appearanceRowEdgeFade: return LocalizedStringResource("Fades the left and right edges of rows so posters that run off the screen blend into the background. The left edge fades only after a row has scrolled. Soft by default.")
         case .appearanceSettingsStyle: return LocalizedStringResource("Default shows an icon beside each Settings category. Minimal removes the icons and tightens the rows so more fit on screen.")
         case .appearanceNavigation: return LocalizedStringResource("Top Tabs keeps the tab bar across the top of the screen. Sidebar hides it and shows a floating panel that opens when you press Menu. Default: Top Tabs.")
         case .appearanceTypeface: return LocalizedStringResource("Chooses the font used across the app. Default: the Apple TV system font.")
@@ -256,6 +260,7 @@ enum SettingsDescriptions {
         case .homeTrailersOnFocus: return LocalizedStringResource("Plays a muted trailer preview after you rest on a poster for a moment. Off by default.")
         case .homeTrailerLocation: return LocalizedStringResource("Chooses whether the preview plays inside the poster or in the top banner. The banner only works with the Nuvio-style hero. Default: Poster.")
         case .homeHeroTrailerAutoplay: return LocalizedStringResource("Lets the top banner play its trailer by itself without waiting for focus. Off by default.")
+        case .homeTrailerStartDelay: return LocalizedStringResource("Sets how long trailers on posters and in the hero wait before they start. Automatic waits until the rows stop moving, then one second. Default: Automatic.")
         case .homeCatalogType: return LocalizedStringResource("Adds the type to row names, so a row reads Popular - Movies instead of just Popular. On by default.")
         case .homeCatalogs: return LocalizedStringResource("Opens the list of catalogs that make up your Home rows. Switch each on or off and move them up or down to set the order.")
         case .homeCatalog: return LocalizedStringResource("Turns this row on or off on Home. Use the arrows to move it up or down.")
@@ -298,7 +303,8 @@ enum SettingsDescriptions {
         case .playerPreloadNextEpisode: return LocalizedStringResource("Starts looking for the next episode's sources about 30 seconds before the Up Next card appears, so playback starts sooner. Off by default.")
 
         // Sources
-        case .sourcesAutoPlayBest: return LocalizedStringResource("A plain press of Play starts the first source in your list. Hold Play to choose a source yourself. Off by default.")
+        // beta.19-rc1 verdict (A): Best is now a real ranking (shared `StreamQualityRank`, W3-A).
+        case .sourcesAutoPlayBest: return LocalizedStringResource("A plain press of Play starts the best source found so far: highest resolution, then HDR or Dolby Vision, then cached, then file size. Your source filters still apply. Hold Play to choose a source yourself. Off by default.")
         case .sourcesAutoPlayCachedOnly: return LocalizedStringResource("Auto-play only starts a link your debrid service already has cached. Otherwise it shows the source list. Off by default.")
         case .sourcesSort: return LocalizedStringResource("Sets the order of sources in the list, for every add-on. Default keeps each add-on's own order.")
         case .sourcesMinResolution: return LocalizedStringResource("Hides sources below this resolution. Sources with no resolution tag are kept.")
@@ -359,7 +365,6 @@ enum SettingsDescriptions {
         case .devRowSettle: return LocalizedStringResource("Records where each Home row comes to rest as you scroll. Turn it on only when asked, then relaunch.")
         case .devTabBarGeometry: return LocalizedStringResource("Records the tab bar's position as you move through Home and other tabs. Turn it on only when asked, then relaunch.")
         case .devNoZoomReach: return LocalizedStringResource("An A/B switch that reserves extra room for row titles when No Zoom on Focus is on, to test titles that fade or bounce.")
-        case .devRowEdgeFade: return LocalizedStringResource("Chooses how the left and right edges of rows fade out. This is for comparing looks when asked.")
         case .devShortRowFloor: return LocalizedStringResource("An A/B switch that makes short rows such as Continue Watching rest at the same height as poster rows.")
         case .devTabBarScrollLink: return LocalizedStringResource("An A/B switch that tells the tab bar which scroll view on Home to follow. Relaunch after changing it.")
         }

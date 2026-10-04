@@ -4804,10 +4804,11 @@ struct CatalogRowView: View {
     /// governs whether that scroll animates (see `expansionChanged(for:expanded:proxy:)`).
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// beta.18 verdict (BUG-118, R3): the same live `debug.rowEdgeFade` knob
-    /// `RowEdgeEffectStyleModifier` reads (default 2; 1 = Soft). In Soft the row's own soft mask
-    /// owns the leading edge, so the BUG-92 leading clip opens wide instead of cutting it hard.
-    @AppStorage("debug.rowEdgeFade") private var rowEdgeFadeMode: Int = 2
+    /// beta.19-rc1 verdict (F, FEAT-54): the same live `row_edge_fade` setting
+    /// `RowEdgeEffectStyleModifier` reads (Appearance → Row Edge Fade, Soft by default). In Soft the
+    /// row's own soft mask owns the leading edge, so the BUG-92 leading clip opens wide instead of
+    /// cutting it hard; System and Off keep the clip at `leadingEdgeAllowance`.
+    @AppStorage(RowEdgeFadeSetting.defaultsKey) private var rowEdgeFade = RowEdgeFadeSetting.defaultValue.rawValue
 
     /// tvOS Accessibility ▸ Motion ▸ Auto-Play Video Previews. When the user has turned previews off
     /// system-wide, the row must render exactly as it did before this feature existed.
@@ -5018,9 +5019,12 @@ struct CatalogRowView: View {
                     // card's vertical lift, the row's reach band, or the inline trailer's rightward
                     // morph (UX-4a). See `RowLeadingEdgeClip`.
                     //
-                    // beta.18 verdict (BUG-118, R3): in Soft the mask owns the leading edge; 400 =
-                    // RowLeadingEdgeClip.softModeAllowance once W2-F lands.
-                    .clipShape(RowLeadingEdgeClip(allowance: rowEdgeFadeMode == 1 ? RowLeadingEdgeClip.softModeAllowance : leadingEdgeAllowance))
+                    // beta.18 verdict (BUG-118, R3): in Soft the mask owns the leading edge, so the
+                    // clip opens to `softModeAllowance` (beta.19-rc1 verdict F: Soft is the
+                    // `row_edge_fade` setting's default).
+                    .clipShape(RowLeadingEdgeClip(allowance: RowEdgeFadeSetting.resolve(rowEdgeFade) == .soft
+                                                  ? RowLeadingEdgeClip.softModeAllowance
+                                                  : leadingEdgeAllowance))
                 }
                 .scrollClipDisabled()
                 // beta.19-rc1 verdict (M3, BUG-133): the row's horizontal geometry, into a reference
@@ -5078,7 +5082,14 @@ struct CatalogRowView: View {
         .pinnedRowUpFallbackTarget(rowKey: section.key,
                                    firstId: section.items.first?.id,
                                    focus: $focusedItemId)
-        .onChange(of: focusedItemId) { _, newId in
+        .onChange(of: focusedItemId) { oldId, newId in
+            // beta.19-rc1 verdict (F, FEAT-54 frame-time gate): one frame-timing window per
+            // HORIZONTAL step inside this row (no-op unless `debug.collectionFrameProbe` is on).
+            // Both ids non-nil = a step within the row; a row hop (one side nil) is already armed by
+            // Home's own row-focus handler, so arming here too would cut that window short.
+            if oldId != nil, newId != nil {
+                CollectionFocusFrameSampler.shared.arm(rowKey: "h:\(section.key)", gif: false)
+            }
             onItemFocusChange?(newId.flatMap { id in section.items.first { $0.id == id } })
         }
         // beta.19-rc1 verdict (M3, BUG-126): see `rowPlayingKey`. The subject is a

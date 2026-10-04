@@ -835,9 +835,17 @@ final class HomeViewModel: ObservableObject {
     /// plists and drops raw JSON) — `-debug.collectionsSeedJson` with raw JSON is accepted too
     /// for hand use. The payload is imported ONCE per launch, right after
     /// `CollectionRepository.initialize()`, so a folder with a tmdb DISCOVER source exists without
-    /// a signed-in account. In a signed-in session the next foreground pull may overwrite it
-    /// (remote wins) — use in guest mode. Invalid JSON is rejected by the shared `validateJson`
-    /// (logged, nothing imported).
+    /// a signed-in account. Invalid JSON is rejected by the shared `validateJson` (logged, nothing
+    /// imported).
+    ///
+    /// beta.19-rc1 verdict (C, BUG-135): the import REPLACES and persists the active profile's
+    /// collections, and a signed-in cloud account would sync that upward. So the seed is refused
+    /// at the source unless the session is signed out or an anonymous guest
+    /// (`collectionsSeedRefusal`). That replaces test42's harness guard, which checked the profile
+    /// NAME ("Chris") and so skipped on the FA87 fixture, whose "Chris" is a LOCAL guest profile;
+    /// the UI tests' seed helper (`launchToHomeWithSeededCollections`) relies on this guard alone.
+    /// A refusal does not latch, so a later Home start in the same launch tries again (an auth state
+    /// that was still loading can settle).
     private static var didApplyCollectionsSeed = false
     private func applyCollectionsSeedIfRequested() {
         guard !Self.didApplyCollectionsSeed else { return }
@@ -848,6 +856,10 @@ final class HomeViewModel: ObservableObject {
             if seed.isEmpty { NSLog("[CollectionsSeed] imported=false error=base64 payload did not decode") }
         }
         guard !seed.isEmpty else { return }
+        if let refusal = Self.collectionsSeedRefusal(authState: AuthRepository.shared.state.value_) {
+            NSLog("[CollectionsSeed] imported=false refused=%@", refusal)
+            return
+        }
         let json = seed
         Self.didApplyCollectionsSeed = true
         let validation = CollectionRepository.shared.validateJson(jsonString: json)
@@ -863,6 +875,19 @@ final class HomeViewModel: ObservableObject {
         } else {
             NSLog("[CollectionsSeed] imported=false result=%@", String(describing: result))
         }
+    }
+
+    /// beta.19-rc1 verdict (C, BUG-135): nil when the debug collections seed may import — signed
+    /// out, or an anonymous guest session (the `isCloudAccount` test `ProfilesViewModel` uses,
+    /// inverted). Otherwise the refusal token for the log: `signedIn` for a real cloud account,
+    /// `authLoading` while the session is still being restored (or any state this build does not
+    /// know).
+    static func collectionsSeedRefusal(authState: Any?) -> String? {
+        if authState is AuthStateUnauthenticated { return nil }
+        if let authed = authState as? AuthStateAuthenticated {
+            return authed.isAnonymous ? nil : "signedIn"
+        }
+        return "authLoading"
     }
     #endif
 

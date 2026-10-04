@@ -709,7 +709,12 @@ struct FolderTile: View {
                 // expanded GIF frame array on the main thread). That teardown/rebuild, not the
                 // animation, is the 700–830 ms per-step main-thread hang the tester measured.
                 if let cover, !cover.isEmpty {
-                    CachedAsyncImage(string: cover)
+                    // beta.19-rc1 verdict (I1, BUG-134): decoded for the tile's drawn size (points ×
+                    // displayScale) instead of the old fixed 1920 px cap. The tile's own width
+                    // (`tileWidth`: 16:9 for a landscape folder), not the row's poster width, so a
+                    // landscape cover is not decoded for a square. No URL upgrade: folder covers
+                    // are the user's own art on arbitrary hosts.
+                    CachedAsyncImage(string: cover, decodeSize: .points(width: tileWidth, height: tileHeight))
                         // beta.18 verdict (FEAT-46 corrected / FEAT-40 follow-up): sample the rail colour once per URL when
                         // the image lands. No animation (the image's own fade is running); a store hit is already on the
                         // rail via `depthRailTintResolved`, so it writes no state.
@@ -1104,25 +1109,110 @@ final class FolderDetailViewModel: ObservableObject {
     }
 }
 
+/// C (Steven beta.19-rc1 verdict, 2026-10-03; BUG-135): the folder page header's geometry. Pure, so
+/// `FolderHeaderGeometryTests` pins it without a view host.
+///
+/// The header (title logo + tab chips) sits at the top of the grid's scroll content. As the grid
+/// scrolls by `s`, the logo rises from `restTop` to `compactTop` and shrinks from `logoSlot` to
+/// `compactLogoSlot` over the first `riseDistance` points; the chips and the opaque band behind
+/// them move with the content until `s == riseDistance`, then pin at the compact position. Every
+/// moving piece reads `s` from its own `GeometryProxy` inside its own `.visualEffect`, so nothing
+/// writes view state per scroll frame (BUG-19/BUG-41).
+///
+/// Both blocks are one `VStack(spacing: gap)` of [logo slot, chips?] then a `gap` and a `fade`:
+///   full    Bf = restTop + logoSlot + [gap + chips] + gap + fade
+///   compact Bc = compactTop + compactLogoSlot + [gap + chips] + gap + fade
+/// so `Bf − Bc == riseDistance` whatever the chip row's height.
+nonisolated enum FolderHeaderGeometry {
+    /// T: the logo's top at rest (today's header top, rc14 device round 2).
+    static let restTop: CGFloat = Theme.Spacing.screen - Theme.Spacing.lg - Theme.Spacing.xxs   // 32
+    /// Lf: the full logo slot.
+    static let logoSlot: CGFloat = Theme.Size.heroLogoSlotHeight                                 // 150
+    /// Tc: the logo's top once compact.
+    static let compactTop: CGFloat = Theme.Spacing.sm                                            // 12
+    /// Lc: the compact logo slot.
+    static let compactLogoSlot: CGFloat = 64
+    /// g: logo → chips, chips → fade.
+    static let gap: CGFloat = Theme.Spacing.md                                                   // 16
+    /// F: the band's fade under the chips (`EdgeFadeCurve`, background colour → clear).
+    static let fade: CGFloat = 36
+    /// The bottom-of-page fade (outside the scroll view).
+    static let bottomFade: CGFloat = 60
+    /// R: how far the grid scrolls while the header rises. (T − Tc) + (Lf − Lc).
+    static var riseDistance: CGFloat { (restTop - compactTop) + (logoSlot - compactLogoSlot) }  // 106
+    /// The named coordinate space on the scroll CONTENT; `s` = a piece's minY in this space minus
+    /// its minY in the scroll view's visible space.
+    static let contentSpace = "folderContent"
+
+    /// 0 at rest, 1 once the header is compact.
+    static func progress(scrolled s: CGFloat) -> CGFloat {
+        guard riseDistance > 0, s.isFinite else { return s > 0 ? 1 : 0 }
+        return min(max(s / riseDistance, 0), 1)
+    }
+
+    static func logoScale(scrolled s: CGFloat) -> CGFloat {
+        let p = progress(scrolled: s)
+        return 1 + (compactLogoSlot / logoSlot - 1) * p
+    }
+
+    /// The logo's offset on top of the content's own scroll: it cancels the scroll (`+ s`) and
+    /// moves from `restTop` to `compactTop`. Overscroll (s ≤ 0) moves it with the content.
+    static func logoOffsetY(scrolled s: CGFloat) -> CGFloat {
+        guard s > 0 else { return 0 }
+        let p = progress(scrolled: s)
+        return (restTop + (compactTop - restTop) * p) - restTop + s
+    }
+
+    /// The chips' and band's offset: zero while the header rises, then cancels the scroll.
+    static func pinnedOffsetY(scrolled s: CGFloat) -> CGFloat {
+        max(0, s - riseDistance)
+    }
+
+    /// 0…4, for the DEBUG probe only.
+    static func phase(scrolled s: CGFloat) -> Int {
+        Int(progress(scrolled: s) * 4)
+    }
+}
+
 /// A collection folder's contents: tab chips (one per source + "All") over an adaptive paginated
 /// poster grid. All view modes render as the tabbed grid on tvOS (v1 simplification). Pushed within
 /// the Home stack, so `TitleRoute` resolves against the ancestor's destination.
+///
+/// C (Steven beta.19-rc1 verdict, 2026-10-03; BUG-135, a regression from build 133's R4): the
+/// header used to LEAVE the view tree once the grid scrolled, inside a clipped fixed-height slot
+/// with a 0.3 s move + fade, which read as a 1–2-frame cut on hardware; the tab chips were the
+/// scroll content's first child, so they scrolled away on the next press and came back in steps;
+/// and every poster flashed its grey shimmer for 0.25–0.5 s on open. Now the title rises and
+/// stays (compact, centred), the chips pin under it, and the grid is held back for at most 0.45 s
+/// while its first posters warm. See `FolderHeaderGeometry`.
 struct FolderDetailView: View {
     @StateObject private var model: FolderDetailViewModel
 
     @Environment(\.posterStyle) private var posterStyle
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
     /// Drives the TMDB filter editor cover for the selected tab's tmdb source.
     @State private var editing: FolderDetailViewModel.EditableSource?
-    /// beta.18 verdict (FEAT-40 follow-up, Steven: "the folder logo should leave when you scroll, like
-    /// the official app"): true once the grid has scrolled past its top (content offset > 8 pt).
-    /// Derived through a Bool transform in `onScrollGeometryChange`, so it writes once per crossing,
-    /// not per scroll frame. Drives the header's exit (offset + fade) and `Edit Filters`' enablement.
+    /// True once the grid has scrolled past its top (content offset > 8 pt). Derived through a Bool
+    /// transform in `onScrollGeometryChange`, so it writes once per crossing, not per scroll frame.
+    /// C: drives only `Edit Filters` (fade + disabled) and the probe now; the header itself is
+    /// driven by `.visualEffect`.
     @State private var gridScrolled = false
-    /// The header slot's height, measured while the content is shown and kept while it is gone.
-    @State private var headerHeight: CGFloat?
+    /// C: the grid stays covered until its first posters are warm (≤ 0.45 s), instead of every card
+    /// flashing its shimmer. One write per load; reset without animation on a tab change.
+    @State private var gridRevealed = false
+    /// C (probe only): which tab chip holds focus.
+    @FocusState private var focusedChip: Int?
+    #if DEBUG
+    /// C (probe only): `FolderHeaderGeometry.phase`, from an Int transform (5 buckets).
+    @State private var headerPhase = 0
+    #endif
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// C: how many posters the reveal warms (the first rows at any Poster Size) and how long it
+    /// waits for them.
+    private static let revealPrefetchCount = 12
+    private static let revealTimeout: TimeInterval = 0.45
 
     init(route: FolderRoute) {
         _model = StateObject(wrappedValue: FolderDetailViewModel(route: route))
@@ -1132,136 +1222,75 @@ struct FolderDetailView: View {
         [GridItem(.adaptive(minimum: posterStyle.width), spacing: Theme.Spacing.xl)]
     }
 
+    private var hasChips: Bool { model.tabs.count > 1 }
+
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             Theme.Palette.background.ignoresSafeArea()
 
-            // FEAT-40 (rc13): `header` is now a fixed sibling above the scroll, not the ScrollView
-            // content's first child — see `header`'s doc for why, and for what replaced the old
-            // inline `HStack(title, Spacer, Edit Filters)` this VStack used to open with.
             VStack(spacing: 0) {
-                header
+                // C: the COMPACT block's footprint, layout only. The scroll view starts below it,
+                // so the focus engine reveals grid rows under the pinned title and chips, never
+                // beneath them. Its chip row is a hidden, disabled copy that only lends its height.
+                // `fixedSize` so the greedy scroll view below can never stretch the hidden chip
+                // row: the ghost must be exactly as tall as the real block minus `riseDistance`.
+                compactGhost
+                    .fixedSize(horizontal: false, vertical: true)
 
                 // BUG-38 round three: the folder's backdrop is NOT painted behind this page any
                 // more (it shipped that way in beta.14; the reporter found it made the page text
                 // unreadable depending on the image). The logo-as-title stays; the backdrop moved
                 // to the Home hero, which follows the focused folder tile.
                 ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                        if model.tabs.count > 1 {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: Theme.Spacing.md) {
-                                    ForEach(Array(model.tabs.enumerated()), id: \.offset) { index, tab in
-                                        TabChip(
-                                            label: tab.label,
-                                            isSelected: index == model.selectedTabIndex
-                                        ) {
-                                            model.selectTab(index)
-                                        }
-                                    }
-                                }
-                                .padding(.vertical, Theme.Spacing.sm)
-                            }
-                        }
+                    VStack(alignment: .leading, spacing: 0) {
+                        // C: laid out `riseDistance` tall and bottom-aligned, so the header's full
+                        // height overflows UP by exactly the compact block above: at rest it draws
+                        // from the top of the page. `zIndex(1)` keeps it (and its opaque band)
+                        // painted over the grid cards passing under it (the Codex P2 rc13
+                        // paint-order rule: a VStack paints in declaration order).
+                        header
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(height: FolderHeaderGeometry.riseDistance, alignment: .bottom)
+                            .zIndex(1)
 
-                        if model.items.isEmpty {
-                            if model.isLoading || model.tabIsLoading {
-                                HStack(spacing: Theme.Spacing.md) {
-                                    ProgressView()
-                                    Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
-                                }
-                                .padding(.top, Theme.Spacing.xl)
-                            } else {
-                                VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                                    Text("Nothing here yet.")
-                                        .font(Theme.Font.body)
-                                        .foregroundStyle(Theme.Palette.textSecondary)
-                                    // BUG-47 class: a pushed screen with no focusable content strands
-                                    // focus on the ancestor tab bar, where Menu exits the app instead
-                                    // of popping. The Edit Filters button anchors focus when present;
-                                    // otherwise keep a Go Back control here (same as CatalogGridView).
-                                    if model.editableSource == nil {
-                                        Button("Go Back") { dismiss() }
-                                            .buttonStyle(.bordered)
-                                    }
-                                }
-                                .padding(.top, Theme.Spacing.xl)
-                            }
-                        } else {
-                            LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
-                                ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                                    NavigationLink(value: TitleRoute(preview: item)) {
-                                        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
-                                    }
-                                    .cardFocusButtonStyle()
-                                    .posterButtonShape()
-                                    .titleHoldMenu(preview: item)
-                                    .onAppear { model.itemAppeared(at: index) }
-                                    // rc13 UI test69 (`FolderHeaderStaysPinnedWhileGridScrolls`):
-                                    // only the first tile needs an identifier — the test reads its
-                                    // frame to prove it never overlaps the pinned header above,
-                                    // which is the actual overpaint regression the header's fade
-                                    // exists to guard against.
-                                    .accessibilityIdentifier(index == 0 ? "folder_grid_first_tile" : "")
-                                }
-                            }
-
-                            if model.canLoadMore || model.tabIsLoading {
-                                HStack {
-                                    Spacer()
-                                    ProgressView()
-                                    Spacer()
-                                }
-                                .padding(.vertical, Theme.Spacing.lg)
-                            }
-                        }
+                        gridContent
                     }
-                    // FEAT-40 (rc13): the header used to be this VStack's own first child, so the
-                    // single `.padding(Theme.Spacing.screen)` this content used to carry gave it
-                    // its top inset too. Now that the header is a pinned sibling ABOVE the
-                    // ScrollView (with its own `Theme.Spacing.screen` top padding, see `header`),
-                    // this content keeps `Theme.Spacing.screen` on the other three sides.
-                    //
-                    // Codex P2 (rc13 round 2): a flat `Theme.Spacing.lg` top inset here was not
-                    // clearance for the header's fade — it walked the first grid row straight INTO
-                    // it. `header`'s bottom gradient (`.overlay(alignment: .bottom)` + `.offset(y:
-                    // 24)`) starts flush with the header's own bottom edge and spans 24pt downward
-                    // from there, not below a 24pt gap. With only `Theme.Spacing.lg` (24pt) of
-                    // padding, a focused first-row tile — which lifts UP by
-                    // `Theme.Size.heroPinnedRowFocusLiftAllowance` (20pt, `PosterCard.swift`'s
-                    // `cardFocusLiftRise`; every card class rises this exact amount when focused,
-                    // ring or no ring) — landed its lifted top edge at 24 − 20 = 4pt below the
-                    // header: deep inside the fade's opaque end, before the user has scrolled at
-                    // all. The padding now reserves the fade band (24pt) plus the lift (20pt) plus
-                    // `Theme.Spacing.sm` (12pt) for the card's own drop shadow blurring above its
-                    // frame (`PosterCard`'s `radius: 22, y: 10` shadow), so a lifted, shadowed
-                    // first-row tile clears the header's fade with margin to spare. test69
-                    // (`FolderHeaderStaysPinnedWhileGridScrolls`) checks this via
-                    // `folder_grid_first_tile`'s frame against the header's — this padding change
-                    // doesn't touch the header's own frame, only the grid content's inset, so the
-                    // header-frame-stability half of that test is unaffected.
-                    .padding(.horizontal, Theme.Spacing.screen)
-                    .padding(.bottom, Theme.Spacing.screen)
-                    // rc14 (Steven rc13 verdict, 2026-09-30): +md here pairs with the header's -md
-                    // top padding below — the logo moves up 16 pt, this first poster row stays put.
-                    .padding(.top, Theme.Spacing.lg + Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm + Theme.Spacing.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .coordinateSpace(.named(FolderHeaderGeometry.contentSpace))
                 }
                 .scrollClipDisabled()
-                // beta.18 verdict (FEAT-40 follow-up): the one scroll signal this page has. A Bool
-                // transform, so SwiftUI only calls `action` when the answer flips.
+                // The one Bool this page derives from scrolling (Edit Filters + probe). SwiftUI
+                // only calls `action` when the answer flips.
                 .onScrollGeometryChange(for: Bool.self, of: { geometry in
                     geometry.contentOffset.y > 8
                 }, action: { _, scrolled in
                     gridScrolled = scrolled
                 })
+                #if DEBUG
+                // C (probe only): five buckets, so at most four writes per rise.
+                .onScrollGeometryChange(for: Int.self, of: { geometry in
+                    FolderHeaderGeometry.phase(scrolled: geometry.contentOffset.y + geometry.contentInsets.top)
+                }, action: { _, phase in
+                    headerPhase = phase
+                })
+                #endif
             }
 
+            editFiltersOverlay
+
+            // C: the bottom edge fades into the background instead of cutting cards off at the
+            // bezel. Outside the scroll view, never hit-tested.
+            LinearGradient(stops: EdgeFadeCurve.stops(rising: true, color: Theme.Palette.background),
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: FolderHeaderGeometry.bottomFade)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+
             #if DEBUG
-            // beta.18 verdict: invisible, harness-readable header state for test69
-            // (`folder_header_state`, `scrolled=0|1`) — same hidden-Text pattern as HomeView's
-            // `debug_*` labels.
-            Text("scrolled=\(gridScrolled ? 1 : 0)")
+            // Invisible, harness-readable header state for test69 (`folder_header_state`) — same
+            // hidden-Text pattern as HomeView's `debug_*` labels. C: XCUITest frames ignore
+            // `.offset`/`.scaleEffect`, so the rise is asserted through this label and pixels.
+            Text("scrolled=\(gridScrolled ? 1 : 0) phase=\(headerPhase) chip=\(focusedChip.map { String($0) } ?? "-") reveal=\(gridRevealed ? 1 : 0)")
                 .font(.system(size: 8))
                 .opacity(0.011)
                 .allowsHitTesting(false)
@@ -1270,6 +1299,16 @@ struct FolderDetailView: View {
         }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+        // C: a new tab hides the grid at once (no fade-out), then the task below reveals it when
+        // the new tab's first posters are warm.
+        .onChange(of: model.selectedTabIndex) { _, _ in
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { gridRevealed = false }
+        }
+        .task(id: GridRevealKey(tab: model.selectedTabIndex, hasItems: !model.items.isEmpty)) {
+            await revealGridWhenWarm()
+        }
         // House pattern for full-screen flows (`ProfileEditTarget`, DetailView's players). On
         // dismiss — Save, Cancel, or Menu — re-run initialize: the repository's retained-inputs
         // guard refetches only when the folder actually changed.
@@ -1278,129 +1317,269 @@ struct FolderDetailView: View {
         }
     }
 
-    /// FEAT-40 (rc13, "official Nuvio" folder header ask): pinned OUTSIDE the `ScrollView`, in its
-    /// own slot in the page's outer `VStack`, so it stays on screen for the whole grid scroll
-    /// instead of riding away with the content the way the old inline `HStack(title, Spacer, Edit
-    /// Filters)` — this page's ScrollView content's first child — used to. The title now renders
-    /// through the shared `TitleLogoHeader` (promoted from this file's own `FolderHeroTitle`; see
-    /// the comment where that struct used to sit, just above `TabChip`), CENTRED and at the larger
-    /// `Theme.Font.hero` / `Theme.Size.heroLogoSlotHeight` rather than the small pinned-hero-sized
-    /// leading title it rendered before. The Edit Filters button floats in its OWN full-width,
-    /// trailing-aligned `HStack` layered behind the centred title (not a `Spacer()` between the
-    /// two, which would have shoved the title off-center whenever the button is present) so the
-    /// title stays centred on the page regardless of whether the button shows.
-    ///
-    /// H-2: the parent collection's title ("Genres", "Services de Streaming") stays removed — a
-    /// tvOS-only invention a tester flagged 2026-08-22 — so this header is logo/title-only, same
-    /// as it was before this restructure.
-    /// BUG-38 round three: the folder's backdrop is still not painted behind this page (see the
-    /// comment on the `ScrollView` above); this pinned header carries no backdrop of its own.
-    ///
-    /// Non-focusable except the Edit Filters button: `TitleLogoHeader` only ever renders `Text` or
-    /// `Image`, neither a tvOS focus target, so Up from the tab chips below still reaches the
-    /// button when it's present, and Down from the button returns to the chips — no new focus
-    /// section is needed for a header this shallow.
-    ///
-    /// Codex P2 (rc13): being a preceding sibling of the `ScrollView` is not enough to stay pinned
-    /// ABOVE it — the grid keeps `.scrollClipDisabled()` (so a focused first-row tile's lift can
-    /// still bleed sideways past the grid's own bounds), and a plain VStack paints its children in
-    /// declaration order, so once the grid scrolls past the viewport top its cards (and their
-    /// focus lift) drew straight across this header. Fixed with an opaque background pinned to the
-    /// top safe-area edge plus a higher `.zIndex` than the ScrollView's default 0 — the same
-    /// zIndex-for-paint-order pattern this file already uses for lifted grid tiles (see
-    /// `liftedTileZIndex` below). The bottom-edge gradient is a cosmetic fade for cards passing
-    /// underneath, not a layout element — it overlays past this view's own bottom edge and cannot
-    /// change the frame `test69FolderHeaderStaysPinnedWhileGridScrolls` asserts is stable.
-    ///
-    /// Codex P2 (rc13 round 2): that fade band starts flush with this view's OWN bottom edge and
-    /// spans 24pt downward from there — not below a 24pt gap, which is what the ScrollView
-    /// content's old `Theme.Spacing.lg` top padding assumed. So a focused first-row tile's 20pt
-    /// focus lift (`Theme.Size.heroPinnedRowFocusLiftAllowance`) carried it into the fade's opaque
-    /// end before any scrolling happened at all — a static overlap, not the scroll-time paint-order
-    /// bug this `.zIndex`/background fix addresses. See the content padding's own comment in
-    /// `body` (`.padding(.top, Theme.Spacing.lg + Theme.Size.heroPinnedRowFocusLiftAllowance +
-    /// Theme.Spacing.sm)`) for the fix — it reserves fade + lift + shadow clearance instead.
-    /// beta.18 verdict (FEAT-40 follow-up, review r3): the header content LEAVES the view tree
-    /// once the grid scrolls, inside a slot that keeps the height it measured while shown, so the
-    /// grid never reflows and the exited header is gone for real (an offset + opacity header kept
-    /// its accessibility node and frame, which both the harness and VoiceOver would still report).
-    /// Move-up + fade transition, 0.3 s; `reduceMotion` fades only.
-    private var header: some View {
-        ZStack(alignment: .top) {
-            if !gridScrolled {
-                headerContent
-                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
-                        if height > 0, headerHeight != height { headerHeight = height }
-                    }
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: headerHeight, alignment: .top)
-        .clipped()
-        .zIndex(1)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: gridScrolled)
-    }
+    // MARK: - Grid
 
-    private var headerContent: some View {
-        ZStack {
-            TitleLogoHeader(
-                title: model.folderTitle,
-                logoUrl: model.titleLogoUrl,
-                // rc14 device round 2: `.top` (horizontally centred, pinned to the slot's top) —
-                // see the header's top-padding note below.
-                alignment: .top,
-                textFont: Theme.Font.hero,
-                slotHeight: Theme.Size.heroLogoSlotHeight
-            )
-            .frame(maxWidth: .infinity)
-
-            // On-device TMDB Discover filter editing for the selected tmdb tab (upstream
-            // 0fc4616b's exclusion filters + the existing include fields). Only shown for
-            // filter-consuming sources; doubles as the empty state's focus anchor (BUG-47) when
-            // the source currently matches nothing.
-            if let source = model.editableSource {
-                HStack {
-                    Spacer()
-                    Button {
-                        editing = source
-                    } label: {
-                        Label("Edit Filters", systemImage: "line.3.horizontal.decrease.circle")
-                            .font(Theme.Font.meta)
+    private var gridContent: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            if model.items.isEmpty {
+                if model.isLoading || model.tabIsLoading {
+                    HStack(spacing: Theme.Spacing.md) {
+                        ProgressView()
+                        Text("Loading\u{2026}").foregroundStyle(Theme.Palette.textSecondary)
                     }
-                    .buttonStyle(.bordered)
-                    // beta.18 verdict (FEAT-40 follow-up): while the header is scrolled away the
-                    // button is invisible; disabled so it cannot take focus from Up on the first grid
-                    // row. Re-enables when the grid returns to the top.
-                    .disabled(gridScrolled)
-                    .accessibilityIdentifier("folder.editFilters")
+                    .padding(.top, Theme.Spacing.xl)
+                } else {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+                        Text("Nothing here yet.")
+                            .font(Theme.Font.body)
+                            .foregroundStyle(Theme.Palette.textSecondary)
+                        // BUG-47 class: a pushed screen with no focusable content strands focus
+                        // on the ancestor tab bar, where Menu exits the app instead of popping.
+                        // The Edit Filters button anchors focus when present; otherwise keep a Go
+                        // Back control here (same as CatalogGridView).
+                        if model.editableSource == nil {
+                            Button("Go Back") { dismiss() }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.top, Theme.Spacing.xl)
+                }
+            } else {
+                LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
+                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                        NavigationLink(value: TitleRoute(preview: item)) {
+                            PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
+                        }
+                        .cardFocusButtonStyle()
+                        .posterButtonShape()
+                        .titleHoldMenu(preview: item)
+                        .onAppear { model.itemAppeared(at: index) }
+                        // UI test69: only the first tile needs an identifier — the test reads its
+                        // frame to prove it clears the header's bottom fade.
+                        .accessibilityIdentifier(index == 0 ? "folder_grid_first_tile" : "")
+                    }
+                }
+                // C: the reveal gate. A cover in the page colour rather than `.opacity(0)` on the
+                // grid, so the grid stays focusable while it is held back (a zero-opacity view can
+                // be skipped when tvOS picks the first focus, and a pushed page with nothing
+                // focusable strands focus on the tab bar — the BUG-47 class). It overhangs the grid
+                // by `xl` so a focused first card's lift and shadow are covered too, and fades out
+                // once the first posters are warm.
+                .overlay {
+                    Theme.Palette.background
+                        .padding(-Theme.Spacing.xl)
+                        .opacity(gridRevealed ? 0 : 1)
+                        .allowsHitTesting(false)
+                }
+
+                if model.canLoadMore || model.tabIsLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .padding(.vertical, Theme.Spacing.lg)
                 }
             }
         }
         .padding(.horizontal, Theme.Spacing.screen)
-        // rc14 (Steven rc13 verdict, 2026-09-30): "logo too close to the posters, move it up a
-        // little" — 16 pt less top padding; the content's top padding in `body` gained the same 16.
-        // rc14 device round 2 (Christian: "the logo still isn't high enough"): 44 → 32, and the
-        // logo is TOP-aligned inside its 150pt slot (it was centred, so a short wordmark sat up to
-        // 45pt lower than the slot's top) — see the `alignment: .top` on `TitleLogoHeader` above.
-        // The grid does not move.
-        .padding(.top, Theme.Spacing.screen - Theme.Spacing.lg - Theme.Spacing.xxs)
-        .background(Theme.Palette.background.ignoresSafeArea(edges: .top))
-        .overlay(alignment: .bottom) {
-            LinearGradient(
-                colors: [Theme.Palette.background, Theme.Palette.background.opacity(0)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 24)
-            .offset(y: 24)
-            .allowsHitTesting(false)
+        .padding(.bottom, Theme.Spacing.screen)
+        // C: the header (with its own bottom fade and gap) is the scroll content's first child, so
+        // the grid only needs room for a focused first-row card's lift plus its shadow's reach
+        // above the frame. At rest the first row sits within a few points of rc14's.
+        .padding(.top, Theme.Size.heroPinnedRowFocusLiftAllowance + Theme.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Reveal gate (C)
+
+    private struct GridRevealKey: Equatable {
+        let tab: Int
+        let hasItems: Bool
+    }
+
+    /// C: warm exactly what the first posters will ask for (the card's head URL at the card's
+    /// decode bucket, `PosterCard.decodeRequest`, critique #22), wait at most `revealTimeout`, then
+    /// fade the grid in. A no-op while the tab has no items or once the grid is shown.
+    private func revealGridWhenWarm() async {
+        guard !model.items.isEmpty, !gridRevealed else { return }
+        let decode = PosterCard.decodeRequest(width: posterStyle.width, height: posterStyle.height, scale: displayScale)
+        let urls = model.items.prefix(Self.revealPrefetchCount).compactMap { Self.revealPrefetchURL(poster: $0.poster) }
+        await ArtworkStore.prefetchAndWait(urls, decode: decode, timeout: Self.revealTimeout)
+        guard !Task.isCancelled else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { gridRevealed = true }
+    }
+
+    /// The first URL a `PosterCard` asks for: the larger rendition of its poster when one is known
+    /// (`ArtworkURLUpgrade`, role `.poster`), else the poster itself. A card without a poster URL
+    /// draws a flat surface and loads nothing, so there is nothing to warm.
+    private static func revealPrefetchURL(poster: String?) -> URL? {
+        guard let poster, !poster.isEmpty, let url = URL(string: poster) else { return nil }
+        return ArtworkURLUpgrade.upgraded(url, role: .poster) ?? url
+    }
+
+    // MARK: - Header (C)
+
+    /// FEAT-40 (rc13, "official Nuvio" folder header ask) → beta.18 verdict R4 → C (beta.19-rc1
+    /// verdict): the centred title logo (or the folder's name in `Theme.Font.hero` when it has no
+    /// logo) over the tab chips, on an opaque band in the page colour that fades out under the
+    /// chips. It is the scroll content's first child; `.visualEffect` makes the logo rise and shrink
+    /// to the compact slot and pins the chips and band once the grid has scrolled `riseDistance`.
+    ///
+    /// H-2: the parent collection's title ("Genres", "Services de Streaming") stays removed — a
+    /// tvOS-only invention a tester flagged 2026-08-22 — so this header is logo/title-only.
+    /// BUG-38 round three: no backdrop on this page.
+    ///
+    /// The title stays in the view tree the whole time (VoiceOver and the harness keep it), and
+    /// `folder_header` is this container: at rest its frame is exactly what is drawn.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+            VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+                logoSlot
+                    .visualEffect { content, proxy in
+                        let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                            - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                        return content
+                            .scaleEffect(FolderHeaderGeometry.logoScale(scrolled: s), anchor: .top)
+                            .offset(y: FolderHeaderGeometry.logoOffsetY(scrolled: s))
+                    }
+                    .padding(.top, FolderHeaderGeometry.restTop)
+
+                if hasChips {
+                    chipsRow(bindsFocus: true)
+                        // F (FEAT-54): the chips row fades at the screen edges like every other row.
+                        .rowEdgeEffectStyle()
+                        .padding(.horizontal, Theme.Spacing.screen)
+                        .visualEffect { content, proxy in
+                            let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                                - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                            return content.offset(y: FolderHeaderGeometry.pinnedOffsetY(scrolled: s))
+                        }
+                }
+            }
+            // The band: opaque page colour from 600 pt above the header (it covers cards that have
+            // scrolled up past the screen top) down to the chips' bottom (the logo slot's bottom
+            // with one tab), then a `fade`-tall eased fade to clear. A background of the logo +
+            // chips block, so it sizes itself to them; it pins with the chips.
+            .background(alignment: .top) {
+                VStack(spacing: 0) {
+                    Theme.Palette.background
+                    LinearGradient(stops: EdgeFadeCurve.stops(rising: false, color: Theme.Palette.background),
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: FolderHeaderGeometry.fade)
+                }
+                .padding(.top, -600)
+                .padding(.bottom, -FolderHeaderGeometry.fade)
+                .allowsHitTesting(false)
+                .visualEffect { content, proxy in
+                    let s = proxy.frame(in: .named(FolderHeaderGeometry.contentSpace)).minY
+                        - proxy.frame(in: .scrollView(axis: .vertical)).minY
+                    return content.offset(y: FolderHeaderGeometry.pinnedOffsetY(scrolled: s))
+                }
+            }
+
+            Color.clear.frame(height: FolderHeaderGeometry.fade)
         }
-        // rc13 UI test69 (`FolderHeaderExitsOnScrollAndReturns`): reads this frame before scrolling
-        // the grid, expects the node ABSENT after the scroll, and the same frame again after
-        // returning to the top. If the device pass shows recycled cards popping into the vacated
-        // band, the follow-up is a top-only mask on the ScrollView.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // rc13 UI test69 → C: the real header container. At rest its (layout) frame equals what is
+        // drawn; while scrolled, XCUITest still reports the layout frame (it ignores the
+        // `.visualEffect` offsets), so test69 reads the rise from `folder_header_state` and pixels.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("folder_header")
+    }
+
+    /// The compact block's footprint (see `body`): the same stack as `header` with the compact logo
+    /// slot, so `header`'s height minus this one is exactly `riseDistance`.
+    private var compactGhost: some View {
+        VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+            VStack(alignment: .leading, spacing: FolderHeaderGeometry.gap) {
+                Color.clear.frame(height: FolderHeaderGeometry.compactTop + FolderHeaderGeometry.compactLogoSlot)
+                if hasChips {
+                    // Critique #22: layout only. Hidden and disabled so it can never take focus,
+                    // and without `rowEdgeEffectStyle` (it draws nothing to fade).
+                    chipsRow(bindsFocus: false)
+                        .padding(.horizontal, Theme.Spacing.screen)
+                        .hidden()
+                        .disabled(true)
+                        .accessibilityHidden(true)
+                }
+            }
+            Color.clear.frame(height: FolderHeaderGeometry.fade)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .allowsHitTesting(false)
+    }
+
+    /// The full-size logo slot: `TitleLogoHeader` centred and pinned to the top of a fixed
+    /// `logoSlot`-tall frame (rc14 device round 2: top-aligned so a short wordmark sits as high as
+    /// a tall one). A folder without a logo shows its name in the same slot, so the geometry does
+    /// not depend on whether a logo exists.
+    private var logoSlot: some View {
+        TitleLogoHeader(
+            title: model.folderTitle,
+            logoUrl: model.titleLogoUrl,
+            alignment: .top,
+            textFont: Theme.Font.hero,
+            slotHeight: Theme.Size.heroLogoSlotHeight,
+            // beta.19-rc1 verdict (I1 row 9b, BUG-134): decoded for the slot it is drawn in instead
+            // of the old fixed 1920 px cap. No URL upgrade: folder logos are the user's own art.
+            decodeSize: .points(width: 1200, height: Theme.Size.heroLogoSlotHeight)
+        )
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, Theme.Spacing.screen)
+        .frame(maxWidth: .infinity)
+        .frame(height: FolderHeaderGeometry.logoSlot, alignment: .top)
+    }
+
+    /// The tab chips. `bindsFocus` is true only for the real row in `header`; the compact ghost's
+    /// copy (critique #22) must never carry the focus binding.
+    private func chipsRow(bindsFocus: Bool) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Spacing.md) {
+                ForEach(Array(model.tabs.enumerated()), id: \.offset) { index, tab in
+                    let chip = TabChip(label: tab.label, isSelected: index == model.selectedTabIndex) {
+                        model.selectTab(index)
+                    }
+                    if bindsFocus {
+                        chip.focused($focusedChip, equals: index)
+                    } else {
+                        chip
+                    }
+                }
+            }
+            .padding(.vertical, Theme.Spacing.sm)
+        }
+        // F: a focused chip's lift and shadow are not clipped, and the edge fade can reach the bezel.
+        .scrollClipDisabled()
+    }
+
+    /// On-device TMDB Discover filter editing for the selected tmdb tab (upstream 0fc4616b's
+    /// exclusion filters + the existing include fields). Only shown for filter-consuming sources;
+    /// doubles as the empty state's focus anchor (BUG-47) when the source currently matches nothing.
+    ///
+    /// C: an overlay at the page's top-trailing corner, level with the logo's rest position, no
+    /// longer part of the header. It fades on the `gridScrolled` crossing and is disabled while
+    /// the grid is scrolled, so Up from the first grid row cannot land on an invisible button.
+    @ViewBuilder
+    private var editFiltersOverlay: some View {
+        if let source = model.editableSource {
+            HStack {
+                Spacer()
+                Button {
+                    editing = source
+                } label: {
+                    Label("Edit Filters", systemImage: "line.3.horizontal.decrease.circle")
+                        .font(Theme.Font.meta)
+                }
+                .buttonStyle(.bordered)
+                .disabled(gridScrolled)
+                .accessibilityIdentifier("folder.editFilters")
+            }
+            .padding(.top, FolderHeaderGeometry.restTop)
+            .padding(.trailing, Theme.Spacing.screen)
+            .opacity(gridScrolled ? 0 : 1)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: gridScrolled)
+        }
     }
 }
 
@@ -1412,7 +1591,7 @@ struct FolderDetailView: View {
 // parameters so `FolderDetailView`'s header (centred, larger, pinned above the grid) and
 // `StreamPickerView`'s header (FEAT-42, unchanged leading/screenTitle/pinned layout) share one
 // implementation instead of two copies. See that file for the Codex round-1 fixes it carries
-// forward; `FolderDetailView.header` above is the only call site left in this file.
+// forward; `FolderDetailView.logoSlot` above is the only call site left in this file.
 
 private extension Optional where Wrapped == String {
     /// Blank/whitespace-only payload URLs count as absent — the rule every other cover/logo

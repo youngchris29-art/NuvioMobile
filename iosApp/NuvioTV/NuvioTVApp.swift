@@ -77,6 +77,16 @@ struct NuvioTVApp: App {
         // sees the same default without its own fallback logic.
         UserDefaults.standard.register(defaults: [PlayerTuning.nativeDVKey: true])
 
+        // beta.19-rc1 verdict (F, FEAT-54): the BUG-118 Developer A/B `debug.rowEdgeFade` became the
+        // Appearance setting `row_edge_fade` (Soft by default). Only an explicit old "Off" carries
+        // across; the legacy key is removed, and an existing `row_edge_fade` is never overwritten.
+        // Before any row reads the setting.
+        RowEdgeFadeSetting.migrateLegacy(UserDefaults.standard)
+
+        // beta.19-rc1 verdict (F): `-debug.frameSamplerSteadyS N` opens a frame-timing window every
+        // N s for the Soft-vs-Off frame-time gate. Inert unless that knob is set.
+        CollectionFocusFrameSampler.shared.startSteadyWindowsIfConfigured()
+
         // FEAT-11: seed the shared hero-trailer audio state from the user's configured default
         // (PlaybackSettingsPane's "Trailer Sound by Default" toggle, same `trailer_audio_default_on`
         // key) so the very first trailer of a launch already respects it — DetailView otherwise
