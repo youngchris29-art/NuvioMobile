@@ -368,6 +368,10 @@ struct LibraryView: View {
             sourceChip(String(localized: "Saved"), isActive: !showingCloud) { showingCloud = false }
             sourceChip(String(localized: "Debrid Cloud"), isActive: showingCloud) { showingCloud = true }
         }
+        // One focus section as wide as the screen: the focus engine only searches straight up, so
+        // without it Up from the Sort pill (or anything right of these two chips) found nothing.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .focusSection()
     }
 
     private func sourceChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
