@@ -13,7 +13,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlin.math.roundToInt
 
 private const val BASE_URL = "https://api.trakt.tv"
 private const val RELATED_LIMIT = 20
