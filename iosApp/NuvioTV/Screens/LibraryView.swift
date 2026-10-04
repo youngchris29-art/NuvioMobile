@@ -1,9 +1,20 @@
 import SwiftUI
 import SharedCore
 
-/// The Library tab: a focusable poster grid of the titles saved via "Add to Library" (tap opens
-/// detail; long-press removes), plus — when a debrid provider with cloud support is connected —
-/// a "Debrid Cloud" source listing the provider's cloud files for direct playback.
+/// The Library tab: the titles saved in the active library (the local Nuvio library, or the
+/// Trakt / Simkl / MDBList library picked in Settings), plus — when a debrid provider with cloud
+/// support is connected — a "Debrid Cloud" source listing the provider's cloud files for direct
+/// playback.
+///
+/// Library L1 (2026-10-04, `docs/library-l1-grid-plan-2026-10-04.md` in the outer repo):
+/// - header: title, a count line ("31 movies · 17 series") and a source badge (TRAKT / SIMKL /
+///   MDBLIST);
+/// - one control row: a List pill (the provider's lists), type segments (only with more than one
+///   type), a Sort pill, and the smart filters Unwatched / In Progress / Watched (only the ones
+///   that would change the grid);
+/// - cards with a watched tick or a progress bar;
+/// - a hold menu with Mark as Watched / Unwatched and a list-aware Remove;
+/// - real loading, failed (with Retry), empty and no-match states.
 struct LibraryView: View {
     @StateObject private var model = LibraryViewModel()
     @StateObject private var cloud = CloudLibraryViewModel()
@@ -25,9 +36,7 @@ struct LibraryView: View {
 
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                        Text("Library")
-                            .font(Theme.Font.screenTitle)
-                            .foregroundStyle(Theme.Palette.textPrimary)
+                        header
 
                         if cloud.hasConnectedProvider {
                             sourceChips
@@ -35,26 +44,8 @@ struct LibraryView: View {
 
                         if showingCloud && cloud.hasConnectedProvider {
                             cloudContent
-                        } else if model.items.isEmpty {
-                            emptyState
                         } else {
-                            sortChips
-                            LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
-                                ForEach(model.items, id: \.id) { item in
-                                    NavigationLink(value: TitleRoute(preview: item.toMetaPreview())) {
-                                        PosterCard(title: item.name, imageURL: item.poster, fallbackImageURL: item.rawPosterUrl)
-                                    }
-                                    .cardFocusButtonStyle()
-                                    .posterButtonShape()
-                                    .contextMenu {
-                                        Button(role: .destructive) {
-                                            model.remove(item)
-                                        } label: {
-                                            Label("Remove from Library", systemImage: "trash")
-                                        }
-                                    }
-                                }
-                            }
+                            savedContent
                         }
                     }
                     .padding(Theme.Spacing.screen)
@@ -97,28 +88,249 @@ struct LibraryView: View {
         }
     }
 
-    // MARK: - Sort (shared LibraryDisplaySettingsRepository — persisted + profile-scoped)
+    // MARK: - Header
 
-    private var sortChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Spacing.md) {
-                ForEach(model.availableSortOptions, id: \.name) { option in
-                    sourceChip(Self.sortLabel(option), isActive: option == model.sortOption) {
-                        model.setSort(option)
-                    }
+    private var showsSavedChrome: Bool {
+        !(showingCloud && cloud.hasConnectedProvider)
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
+            Text("Library")
+                .font(Theme.Font.screenTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+
+            if showsSavedChrome {
+                if model.content == .grid, !model.countLine.isEmpty {
+                    Text(model.countLine)
+                        .font(Theme.Font.meta)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                }
+                if let badge = LibraryGridPolicy.sourceBadge(sourceModeName: model.sourceModeName) {
+                    Text(badge)
+                        .font(Theme.Font.caption)
+                        .tracking(2)
+                        .foregroundStyle(Theme.Palette.textSecondary)
+                        .padding(.horizontal, Theme.Spacing.xs)
+                        .padding(.vertical, Theme.Spacing.xxs)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: Theme.Spacing.xs)
+                                .stroke(Theme.Palette.textSecondary, lineWidth: 1)
+                        }
+                        .accessibilityLabel(Text(model.providerName ?? badge))
                 }
             }
-            .padding(.vertical, 4)
         }
     }
 
-    private static func sortLabel(_ option: LibrarySortOption) -> String {
-        if option == .default_ { return String(localized: "Trakt Order") }
-        if option == .addedDesc { return String(localized: "Recently Added") }
-        if option == .addedAsc { return String(localized: "Oldest First") }
-        if option == .titleAsc { return String(localized: "A\u{2013}Z") }
-        if option == .titleDesc { return String(localized: "Z\u{2013}A") }
-        return option.name
+    // MARK: - Saved library
+
+    @ViewBuilder
+    private var savedContent: some View {
+        switch model.content {
+        case .loading:
+            loadingState
+        case .failed(let message):
+            failedState(message: message)
+        case .empty:
+            // A provider list can be empty while its other lists aren't: keep the pills so the
+            // viewer can move on instead of being stuck on an empty list.
+            if model.sections.count > 1 {
+                controls
+                messageState(
+                    systemImage: "list.bullet",
+                    title: LibraryGridPolicy.emptyListTitle(listTitle: model.selectedSectionTitle ?? ""),
+                    message: nil
+                )
+            } else {
+                messageState(
+                    systemImage: "books.vertical",
+                    title: LibraryGridPolicy.emptyTitle(providerName: model.providerName),
+                    message: LibraryGridPolicy.emptyMessage(providerName: model.providerName)
+                )
+            }
+        case .noMatches:
+            controls
+            noMatchesState
+        case .grid:
+            controls
+            grid
+        }
+    }
+
+    private var grid: some View {
+        LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
+            ForEach(model.entries) { entry in
+                NavigationLink(value: TitleRoute(preview: entry.item.toMetaPreview())) {
+                    PosterCard(title: entry.item.name, imageURL: entry.item.poster, fallbackImageURL: entry.item.rawPosterUrl)
+                        // Inside the label, so the badges lift with the card on focus. Sized to
+                        // the artwork, which sits at the top of the card above the title.
+                        .overlay(alignment: .top) {
+                            LibraryCardBadges(state: entry.state)
+                                .frame(width: posterStyle.width, height: posterStyle.height)
+                        }
+                }
+                .cardFocusButtonStyle()
+                .posterButtonShape()
+                .libraryHoldMenu(preview: entry.item.toMetaPreview()) {
+                    Button(role: .destructive) {
+                        model.remove(entry)
+                    } label: {
+                        Label(LibraryGridPolicy.removeLabel(listTitle: model.selectedSectionTitle),
+                              systemImage: "trash")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Control row (List · type · Sort · smart filters)
+
+    private var controls: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Spacing.md) {
+                if model.sections.count > 1 {
+                    listMenu
+                }
+                if model.types.count > 1 {
+                    sourceChip(String(localized: "All"), isActive: model.selectedType == nil) {
+                        model.selectType(nil)
+                    }
+                    ForEach(model.types, id: \.self) { type in
+                        sourceChip(LibraryGridPolicy.typeLabel(type), isActive: model.selectedType == type) {
+                            model.selectType(type)
+                        }
+                    }
+                }
+                if !model.availableSortOptions.isEmpty {
+                    sortMenu
+                }
+                ForEach(model.visibleSmartFilters, id: \.self) { filter in
+                    sourceChip(filter.title, isActive: model.activeSmartFilters.contains(filter)) {
+                        model.toggleSmartFilter(filter)
+                    }
+                }
+            }
+            .padding(.vertical, Theme.Spacing.xs)
+        }
+        .focusSection()
+    }
+
+    /// The provider's lists (Trakt watchlist and lists, Simkl statuses, MDBList lists) as a native
+    /// `Menu { Picker }`, the same control Settings uses for its choice rows.
+    private var listMenu: some View {
+        Menu {
+            Picker(String(localized: "List"), selection: Binding(
+                get: { model.selectedSectionKey ?? "" },
+                set: { model.selectSection($0) }
+            )) {
+                ForEach(model.sections, id: \.type) { section in
+                    Text(section.displayTitle).tag(section.type)
+                }
+            }
+        } label: {
+            pillLabel(model.selectedSectionTitle ?? String(localized: "List"), systemImage: "list.bullet")
+        }
+        .accessibilityIdentifier("library.listPicker")
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            Picker(String(localized: "Sort"), selection: Binding(
+                get: { model.effectiveSortOption },
+                set: { model.setSort($0) }
+            )) {
+                ForEach(model.availableSortOptions, id: \.name) { option in
+                    Text(model.sortLabel(option)).tag(option)
+                }
+            }
+        } label: {
+            pillLabel(model.sortLabel(model.effectiveSortOption), systemImage: "arrow.up.arrow.down")
+        }
+        .accessibilityIdentifier("library.sortPicker")
+    }
+
+    private func pillLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            Image(systemName: systemImage)
+            Text(title)
+            Image(systemName: "chevron.down")
+                .font(Theme.Font.caption)
+        }
+        .font(Theme.Font.meta)
+        .padding(.horizontal, Theme.Spacing.xs)
+    }
+
+    // MARK: - States
+
+    private var loadingState: some View {
+        HStack(spacing: Theme.Spacing.md) {
+            ProgressView()
+            Text("Loading your library\u{2026}")
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+        }
+        .padding(.top, Theme.Spacing.lg)
+    }
+
+    /// Mobile's failed card: what failed, the provider's message, and Retry. Retry is the one
+    /// focusable here, so focus lands on it.
+    private func failedState(message: String) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text(LibraryGridPolicy.failedTitle(providerName: model.providerName))
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            Text(message)
+                .font(Theme.Font.body)
+                .foregroundStyle(Theme.Palette.textSecondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+            Button {
+                model.retry()
+            } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xs)
+            }
+            .buttonStyle(.chip)
+        }
+        .padding(.top, Theme.Spacing.lg)
+    }
+
+    private var noMatchesState: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text(LibraryGridPolicy.noMatchesTitle)
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            Button {
+                model.clearSmartFilters()
+            } label: {
+                Label("Clear Filters", systemImage: "xmark.circle")
+                    .font(Theme.Font.meta)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.xs)
+            }
+            .buttonStyle(.chip)
+        }
+        .padding(.top, Theme.Spacing.lg)
+    }
+
+    private func messageState(systemImage: String, title: String, message: String?) -> some View {
+        VStack(spacing: Theme.Spacing.md) {
+            Image(systemName: systemImage)
+                .font(Theme.Font.hero)
+                .foregroundStyle(Theme.Palette.textSecondary)
+            Text(title)
+                .font(Theme.Font.sectionTitle)
+                .foregroundStyle(Theme.Palette.textPrimary)
+            if let message {
+                Text(message)
+                    .font(Theme.Font.body)
+                    .foregroundStyle(Theme.Palette.textSecondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, Theme.Spacing.sectionGap)
     }
 
     // MARK: - Source switcher (Saved / Debrid Cloud)
@@ -189,20 +401,39 @@ struct LibraryView: View {
             filePicker = CloudFilePickerRoute(item: item)
         }
     }
+}
 
-    private var emptyState: some View {
-        VStack(spacing: Theme.Spacing.md) {
-            Image(systemName: "books.vertical")
-                .font(Theme.Font.hero)
-                .foregroundStyle(Theme.Palette.textSecondary)
-            Text("Your library is empty")
-                .font(Theme.Font.sectionTitle)
-                .foregroundStyle(Theme.Palette.textPrimary)
-            Text("Add movies and shows with the + button on a title\u{2019}s page.")
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.textSecondary)
+/// Library L1: the watched tick (top trailing) and the progress bar (bottom) over a card's
+/// artwork. Decoration only: not focusable, not hit-tested, hidden from VoiceOver (the hold menu's
+/// "Mark as Unwatched" label already says a title is watched).
+struct LibraryCardBadges: View {
+    let state: LibraryGridPolicy.WatchState
+
+    var body: some View {
+        ZStack {
+            if state.isWatched {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(Theme.Font.sectionTitle)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Theme.Palette.accentText, Theme.Palette.accent)
+                    .shadow(color: .black.opacity(0.5), radius: 4)
+                    .padding(Theme.Spacing.sm)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            } else if let progress = state.progress {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.3))
+                        Capsule()
+                            .fill(Theme.Palette.accent)
+                            .frame(width: geometry.size.width * progress)
+                    }
+                    .frame(height: 6)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+                .padding(Theme.Spacing.sm)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, Theme.Spacing.sectionGap)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }

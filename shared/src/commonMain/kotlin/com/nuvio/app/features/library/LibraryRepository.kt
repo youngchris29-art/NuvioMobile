@@ -520,6 +520,48 @@ object LibraryRepository {
         applyMembershipChanges(item, desiredMembership)
     }
 
+    /**
+     * Fork (tvOS Library L1, 2026-10-04): the Library grid's "Remove from <list>" hold action.
+     *
+     * Non-suspending and failure-contained, like [toggleSaved]. [removeFromList] rethrows the first
+     * provider failure (mobile wraps it in `runCatching`), and a Kotlin exception that escapes a
+     * suspend call into Swift without `@Throws` terminates the app, so tvOS must not call
+     * [removeFromList] directly. A failure shows the same toast [toggleSaved] shows.
+     */
+    fun removeFromListAsync(item: LibraryItem, listKey: String) {
+        syncScope.launch {
+            try {
+                removeFromList(item, listKey)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log.e(error) { "Failed to remove item=${item.id} type=${item.type} from list=$listKey" }
+                ToastControllerProvider.controller.show(
+                    error.message?.takeIf { it.isNotBlank() }
+                        ?: resourceString("Failed to update Trakt lists", StringKey.trakt_lists_update_failed),
+                )
+            }
+        }
+    }
+
+    /**
+     * Fork (tvOS Library L1, 2026-10-04): the Library screen's Retry after a failed provider or
+     * server load. The same pull mobile's `retryLibraryLoad` runs, wrapped so nothing can escape
+     * into Swift ([pullFromServer] already logs its own sync failures; this only adds the guard).
+     */
+    fun retryLoadAsync() {
+        val profileId = ProfileRepository.activeProfileId
+        syncScope.launch {
+            try {
+                pullFromServer(profileId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log.e(error) { "Library retry failed profile=$profileId" }
+            }
+        }
+    }
+
     private fun pushToServer(
         snapshot: LibraryLocalSnapshot,
         delayMs: Long = pushDebounceMs,

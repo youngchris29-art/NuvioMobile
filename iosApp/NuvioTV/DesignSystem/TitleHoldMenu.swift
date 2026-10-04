@@ -9,8 +9,11 @@ import SharedCore
 /// - Continue Watching cards: the action list in `TitleHoldMenuPolicy.continueWatchingActions`,
 ///   rendered by `ContinueWatchingRow`.
 ///
-/// Deliberately NOT attached to the Library tab (it already ships its own Remove menu), Detail
-/// rails, Person rails, the Upcoming row, or episode cards.
+/// - Library grid (Library L1, 2026-10-04): `libraryHoldMenu(preview:extra:)`, the watched action
+///   followed by the grid's own list-aware remove. The library toggle is left out there: on a
+///   Trakt / Simkl / MDBList list `toggleSaved` flips the provider's watchlist, not that list.
+///
+/// Deliberately NOT attached to Detail rails, Person rails, the Upcoming row, or episode cards.
 ///
 /// Every wording / ordering / state decision lives in `TitleHoldMenuPolicy` as pure functions so
 /// `TitleHoldMenuPolicyTests` can pin them; the views below only render what the policy says.
@@ -158,6 +161,35 @@ extension View {
     func titleHoldMenu(preview: MetaPreview) -> some View {
         modifier(TitleHoldMenuModifier(preview: preview))
     }
+
+    /// Library L1: the Library grid's hold menu. The watched action first, then `extra` (the
+    /// grid's remove, which knows which list is open). Place it AFTER `.posterButtonShape()`.
+    func libraryHoldMenu<Extra: View>(
+        preview: MetaPreview,
+        @ViewBuilder extra: @escaping () -> Extra
+    ) -> some View {
+        modifier(LibraryHoldMenuModifier(preview: preview, extra: extra))
+    }
+}
+
+/// `TitleHoldMenuModifier` without the library toggle, plus the caller's items. Same revision
+/// bump, so the next hold re-reads the watched state after an action.
+private struct LibraryHoldMenuModifier<Extra: View>: ViewModifier {
+    let preview: MetaPreview
+    let extra: () -> Extra
+    @State private var revision = 0
+
+    func body(content: Content) -> some View {
+        content.contextMenu {
+            TitleHoldMenuItems(preview: preview, revision: revision, includesLibraryAction: false) {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    revision &+= 1
+                }
+            }
+            extra()
+        }
+    }
 }
 
 private struct TitleHoldMenuModifier: ViewModifier {
@@ -193,6 +225,8 @@ private struct TitleHoldMenuItems: View {
     let preview: MetaPreview
     /// Only here so a bump from `TitleHoldMenuModifier` changes this view's inputs.
     let revision: Int
+    /// False on the Library grid, which brings its own list-aware remove (Library L1).
+    var includesLibraryAction = true
     let didAct: () -> Void
 
     var body: some View {
@@ -206,12 +240,14 @@ private struct TitleHoldMenuItems: View {
         // never became one (Orivio's split). Log-only, keys nothing but the title id.
         let _ = NSLog("[HoldMenu] menu built id=%@", preview.id)
 
-        Button {
-            performLibraryAction(labelIsSaved: isSaved)
-            didAct()
-        } label: {
-            Label(TitleHoldMenuPolicy.libraryLabel(isSaved: isSaved),
-                  systemImage: TitleHoldMenuPolicy.libraryIcon(isSaved: isSaved))
+        if includesLibraryAction {
+            Button {
+                performLibraryAction(labelIsSaved: isSaved)
+                didAct()
+            } label: {
+                Label(TitleHoldMenuPolicy.libraryLabel(isSaved: isSaved),
+                      systemImage: TitleHoldMenuPolicy.libraryIcon(isSaved: isSaved))
+            }
         }
 
         Button {
