@@ -251,7 +251,7 @@ final class FirstPlayAutoPlayController: ObservableObject {
                 attemptsUsed += 1
                 // Key only: the add-on id embeds the manifest URL, which can hold a debrid API key
                 // (a URL key's first part already names the add-on, as a digest).
-                autoPlayLog("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey) \(deps.rankSummary(candidate.stream))")
+                autoPlayLog("[AutoPlay] pick #\(attemptsUsed) direct key=\(candidate.streamKey)\(rankSuffix(candidate))")
                 succeed(candidate, resolved: candidate.stream, url: url)
                 return
             }
@@ -263,10 +263,16 @@ final class FirstPlayAutoPlayController: ObservableObject {
             }
             attemptsUsed += 1
             phase = .resolving(attempt: attemptsUsed)
-            autoPlayLog("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey) \(deps.rankSummary(candidate.stream))")
+            autoPlayLog("[AutoPlay] pick #\(attemptsUsed) resolving key=\(candidate.streamKey)\(rankSuffix(candidate))")
             beginResolve(candidate)
             return
         }
+    }
+
+    /// " res=… hdr=… cached=… size=…" for a pick line, or nothing when no rank facts are wired.
+    private func rankSuffix(_ candidate: Candidate) -> String {
+        let facts = deps.rankSummary(candidate.stream)
+        return facts.isEmpty ? "" : " " + facts
     }
 
     private func beginResolve(_ candidate: Candidate) {

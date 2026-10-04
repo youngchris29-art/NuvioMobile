@@ -406,7 +406,7 @@ object TmdbCollectionSourceResolver {
             },
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 
@@ -424,7 +424,7 @@ object TmdbCollectionSourceResolver {
             rawReleaseDate = releaseDate,
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 
@@ -453,7 +453,7 @@ object TmdbCollectionSourceResolver {
             },
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 
@@ -482,7 +482,7 @@ object TmdbCollectionSourceResolver {
             },
             popularity = popularity,
             voteCount = voteCount,
-            imdbRating = voteAverage?.let { ((it * 10).roundToInt() / 10.0).toString() },
+            imdbRating = voteAverage?.takeIf { it > 0.0 }?.let { ((it * 10).roundToInt() / 10.0).toString() },
         )
     }
 

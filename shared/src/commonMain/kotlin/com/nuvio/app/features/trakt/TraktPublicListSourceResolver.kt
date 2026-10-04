@@ -309,8 +309,9 @@ object TraktPublicListSourceResolver {
     }
 }
 
-private fun Double.formatRating(): String =
-    ((this * 10).roundToInt() / 10.0).toString()
+// Fork deviation (device session 2026-10-04, review r4): an unrated 0 is no rating, as for TMDB.
+private fun Double.formatRating(): String? =
+    if (this <= 0.0) null else ((this * 10).roundToInt() / 10.0).toString()
 
 @Serializable
 private data class PublicTraktSearchResultDto(

@@ -1991,8 +1991,8 @@ private val defaultLanguageRegions = mapOf(
 )
 
 // Fork deviation (device session 2026-10-04): TMDB answers 0 for a runtime or vote average it does
-// not know yet (an unreleased film), and the formatters below turned that into "0m" and "0.0" on
-// the Detail meta line. Zero means unknown here, so it maps to null and the add-on's own value (or
+// not know yet (an unreleased film), and the formatters turned that into "0m" and "0.0" on the
+// Detail meta line. Zero means unknown here, so it maps to null and the add-on's own value (or
 // nothing) shows instead. A series' first non-zero episode run time still stands in for a missing
 // film runtime, as before. Upstream-report candidate (the phone app shows the same "0m").
 internal fun tmdbKnownRuntimeMinutes(runtime: Int?, episodeRunTime: List<Int>): Int? =
@@ -2000,12 +2000,11 @@ internal fun tmdbKnownRuntimeMinutes(runtime: Int?, episodeRunTime: List<Int>): 
 
 internal fun tmdbKnownVoteAverage(voteAverage: Double?): Double? = voteAverage?.takeIf { it > 0.0 }
 
-private fun Double.formatRating(): String =
-    if (this == 0.0) {
-        "0.0"
-    } else {
-        (kotlin.math.round(this * 10.0) / 10.0).toString()
-    }
+// Same fork deviation, for every caller (review r4 P2-1: More Like This and collection parts
+// reached Detail as a preview with "0.0" and the meta line fell back to it): an unrated 0 is no
+// rating at all.
+internal fun Double.formatRating(): String? =
+    if (this <= 0.0) null else (kotlin.math.round(this * 10.0) / 10.0).toString()
 
 private fun Int.formatRuntime(): String = "${this}m"
 

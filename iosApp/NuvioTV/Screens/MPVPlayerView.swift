@@ -146,7 +146,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Main thread: bumped for every seek the app issues (`issueSeek`); a completion is only
     /// reported to `skipPlanner` for the latest one.
     private var seekGeneration = 0
-    // Engine-confirmed seek completion — `eventQueue` only (see `issueSeek` / `readEvents`).
+    // Engine-confirmed seek completion — `eventQueue` only (see `issueSeek` / `drainEvents`).
     /// Issued to mpv, but mpv has not reported starting it yet (MPV_EVENT_SEEK).
     private var awaitingSeekStartGeneration: Int?
     /// mpv reported starting this seek; the next MPV_EVENT_PLAYBACK_RESTART confirms it. A restart
@@ -489,7 +489,7 @@ final class MPVTVPlayerViewController: UIViewController {
         mpv_observe_property(mpv, ObservedProp.videoH.rawValue, "video-params/h", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, ObservedProp.aid.rawValue, "aid", MPV_FORMAT_INT64)
 
-        let relay = MPVWakeupRelay { [weak self] in self?.readEvents() }
+        let relay = MPVWakeupRelay(queue: eventQueue) { [weak self] in self?.drainEvents() }
         wakeupRelay = relay
         mpv_set_wakeup_callback(mpv, MPVWakeupRelay.callback, relay.context)
     }
@@ -1430,7 +1430,7 @@ final class MPVTVPlayerViewController: UIViewController {
         // Arrow seeks are deliberate: a segment they start or land in is never auto-skipped. The
         // cached position is stale while another seek is in flight — mpv's relative seek then
         // starts from that seek's target, so the estimate does too (nil = unknown). The planner
-        // marks the position mpv actually lands on, reported by `readEvents`.
+        // marks the position mpv actually lands on, reported by `drainEvents`.
         let base: Double?
         if let inFlight = skipPlanner.seekInFlight {
             base = inFlight.targetSec
@@ -1448,7 +1448,7 @@ final class MPVTVPlayerViewController: UIViewController {
     /// Every seek the app issues goes through here. Main thread: the skip planner is told first,
     /// so no tick can act on the pre-seek position. `eventQueue`: the command runs off-main (held-
     /// arrow timers must not park the main thread on the core lock) and the seek is tracked for its
-    /// engine-confirmed completion (MPV_EVENT_SEEK, then MPV_EVENT_PLAYBACK_RESTART — `readEvents`).
+    /// engine-confirmed completion (MPV_EVENT_SEEK, then MPV_EVENT_PLAYBACK_RESTART — `drainEvents`).
     private func issueSeek(kind: SkipSegmentPlanner.SeekKind, targetSec: Double?, fromSec: Double? = nil,
                            args: [String?]) {
         guard mpv != nil else { return }
@@ -1669,76 +1669,76 @@ final class MPVTVPlayerViewController: UIViewController {
 
     // MARK: - Event loop
 
-    private func readEvents() {
-        eventQueue.async { [weak self] in
-            guard let self, let mpv = self.mpv else { return }
-            while true {
-                guard let ev = mpv_wait_event(mpv, 0) else { break }
-                let id = ev.pointee.event_id
-                if id == MPV_EVENT_NONE { break }
-                if id == MPV_EVENT_SHUTDOWN { return }
-                if id == MPV_EVENT_FILE_LOADED {
-                    self.fileLoadedUptime = ProcessInfo.processInfo.systemUptime
-                    let loadedAt = self.fileLoadedUptime
-                    self.alangTrace("file-loaded alang=\(self.getString("alang") ?? "-") aid=\(self.getString("aid") ?? "-")")
-                    // Read on eventQueue (never the main thread — see the property-cache note).
-                    let loadedDuration = self.getDouble("duration")
-                    DispatchQueue.main.async {
-                        self.noteMediaLoaded(at: loadedAt)
-                        // Auto flows: a stub clip is a failed source, not an episode — no resume,
-                        // no scrobble, no subtitle fetch.
-                        if self.rejectPlaceholderClip(durationSec: loadedDuration) { return }
-                        self.applyPendingResume(actualDurationSec: loadedDuration)
-                        self.onFileLoaded()
+    /// Runs on `eventQueue`: `MPVWakeupRelay` hops here for every mpv wakeup, so the controller is
+    /// only ever loaded off mpv's own threads (see the relay). Drains every queued event.
+    private func drainEvents() {
+        guard let mpv = self.mpv else { return }
+        while true {
+            guard let ev = mpv_wait_event(mpv, 0) else { break }
+            let id = ev.pointee.event_id
+            if id == MPV_EVENT_NONE { break }
+            if id == MPV_EVENT_SHUTDOWN { return }
+            if id == MPV_EVENT_FILE_LOADED {
+                self.fileLoadedUptime = ProcessInfo.processInfo.systemUptime
+                let loadedAt = self.fileLoadedUptime
+                self.alangTrace("file-loaded alang=\(self.getString("alang") ?? "-") aid=\(self.getString("aid") ?? "-")")
+                // Read on eventQueue (never the main thread — see the property-cache note).
+                let loadedDuration = self.getDouble("duration")
+                DispatchQueue.main.async {
+                    self.noteMediaLoaded(at: loadedAt)
+                    // Auto flows: a stub clip is a failed source, not an episode — no resume,
+                    // no scrobble, no subtitle fetch.
+                    if self.rejectPlaceholderClip(durationSec: loadedDuration) { return }
+                    self.applyPendingResume(actualDurationSec: loadedDuration)
+                    self.onFileLoaded()
+                }
+                self.refreshTracksAsync()
+            }
+            // Engine-confirmed seek completion for `skipPlanner` (see `issueSeek`): our seek
+            // started (SEEK), then playback restarted after it (PLAYBACK_RESTART). A restart
+            // with no seek of ours started — start of playback, a track switch — is ignored.
+            if id == MPV_EVENT_SEEK, let generation = self.awaitingSeekStartGeneration {
+                self.awaitingSeekStartGeneration = nil
+                self.startedSeekGeneration = generation
+            }
+            if id == MPV_EVENT_PLAYBACK_RESTART, let generation = self.startedSeekGeneration {
+                self.startedSeekGeneration = nil
+                // Read on eventQueue (never the main thread — see the property-cache note).
+                var timePos = Double.nan
+                let ok = mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &timePos) >= 0
+                let landed = ok ? timePos : .nan
+                DispatchQueue.main.async {
+                    // A newer seek was issued meanwhile: this is not its completion.
+                    guard generation == self.seekGeneration else { return }
+                    self.skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
+                    // The cache may still hold the pre-seek position (its property-change event
+                    // can trail this one): the next UI tick must see where the seek landed.
+                    // Written HERE, after the planner heard the completion (a lock-guarded cache
+                    // write, no mpv call): a UI tick between an earlier eventQueue write and
+                    // this block would evaluate the landing before it is marked deliberate.
+                    if landed.isFinite { self.updateProps { $0.position = landed } }
+                }
+            }
+            if id == MPV_EVENT_PROPERTY_CHANGE, let data = ev.pointee.data {
+                let prop = UnsafePointer<mpv_event_property>(OpaquePointer(data)).pointee
+                self.handlePropertyChange(userdata: ev.pointee.reply_userdata, prop: prop)
+            }
+            if id == MPV_EVENT_END_FILE, let data = ev.pointee.data {
+                let endFile = UnsafePointer<mpv_event_end_file>(OpaquePointer(data)).pointee
+                if endFile.reason == MPV_END_FILE_REASON_ERROR {
+                    let message = String(cString: mpv_error_string(endFile.error))
+                    print("[MPV] End file error: \(message)")
+                    // This block runs on `eventQueue`; the report is a main-thread affair.
+                    DispatchQueue.main.async { [weak self] in
+                        self?.reportEndFileError(message)
                     }
-                    self.refreshTracksAsync()
                 }
-                // Engine-confirmed seek completion for `skipPlanner` (see `issueSeek`): our seek
-                // started (SEEK), then playback restarted after it (PLAYBACK_RESTART). A restart
-                // with no seek of ours started — start of playback, a track switch — is ignored.
-                if id == MPV_EVENT_SEEK, let generation = self.awaitingSeekStartGeneration {
-                    self.awaitingSeekStartGeneration = nil
-                    self.startedSeekGeneration = generation
-                }
-                if id == MPV_EVENT_PLAYBACK_RESTART, let generation = self.startedSeekGeneration {
-                    self.startedSeekGeneration = nil
-                    // Read on eventQueue (never the main thread — see the property-cache note).
-                    var timePos = Double.nan
-                    let ok = mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &timePos) >= 0
-                    let landed = ok ? timePos : .nan
-                    DispatchQueue.main.async {
-                        // A newer seek was issued meanwhile: this is not its completion.
-                        guard generation == self.seekGeneration else { return }
-                        self.skipPlanner.seekCompleted(atSec: landed, now: ProcessInfo.processInfo.systemUptime)
-                        // The cache may still hold the pre-seek position (its property-change event
-                        // can trail this one): the next UI tick must see where the seek landed.
-                        // Written HERE, after the planner heard the completion (a lock-guarded cache
-                        // write, no mpv call): a UI tick between an earlier eventQueue write and
-                        // this block would evaluate the landing before it is marked deliberate.
-                        if landed.isFinite { self.updateProps { $0.position = landed } }
-                    }
-                }
-                if id == MPV_EVENT_PROPERTY_CHANGE, let data = ev.pointee.data {
-                    let prop = UnsafePointer<mpv_event_property>(OpaquePointer(data)).pointee
-                    self.handlePropertyChange(userdata: ev.pointee.reply_userdata, prop: prop)
-                }
-                if id == MPV_EVENT_END_FILE, let data = ev.pointee.data {
-                    let endFile = UnsafePointer<mpv_event_end_file>(OpaquePointer(data)).pointee
-                    if endFile.reason == MPV_END_FILE_REASON_ERROR {
-                        let message = String(cString: mpv_error_string(endFile.error))
-                        print("[MPV] End file error: \(message)")
-                        // This block runs on `eventQueue`; the report is a main-thread affair.
-                        DispatchQueue.main.async { [weak self] in
-                            self?.reportEndFileError(message)
-                        }
-                    }
-                }
-                if id == MPV_EVENT_LOG_MESSAGE,
-                   let msg = UnsafeMutablePointer<mpv_event_log_message>(OpaquePointer(ev.pointee.data)) {
-                    let level = String(cString: msg.pointee.level!)
-                    let text = String(cString: msg.pointee.text!)
-                    print("[MPV] \(level): \(text)", terminator: "")
-                }
+            }
+            if id == MPV_EVENT_LOG_MESSAGE,
+               let msg = UnsafeMutablePointer<mpv_event_log_message>(OpaquePointer(ev.pointee.data)) {
+                let level = String(cString: msg.pointee.level!)
+                let text = String(cString: msg.pointee.text!)
+                print("[MPV] \(level): \(text)", terminator: "")
             }
         }
     }

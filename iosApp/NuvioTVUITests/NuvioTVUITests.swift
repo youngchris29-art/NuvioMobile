@@ -8226,7 +8226,7 @@ final class NuvioTVUITests: XCTestCase {
     /// rc13 (W2-A) began this as an evidence spike for the BUG-118 Developer A/B; the screenshots
     /// showed the three SYSTEM styles render byte-identical on the simulator. beta.19-rc1 verdict
     /// (F, FEAT-54): the A/B is now the Appearance setting `row_edge_fade` (soft / system / off,
-    /// Soft by default), and Soft is an eased mask that ramps over 250 pt from the bezel inward
+    /// Off by default since the 2026-10-04 F.5 gate), and Soft is an eased mask that ramps over 250 pt from the bezel inward
     /// (`EdgeFadeCurve`, `RowEdgeFade.rampLength`). Per leg (`-row_edge_fade <leg>`) this checks
     /// that the setting reaches the row's own `@AppStorage` (the hidden `row_edge_fade_probe`
     /// reads `mode=<leg>`), then compares Soft against Off pixel by pixel on the SAME row in the

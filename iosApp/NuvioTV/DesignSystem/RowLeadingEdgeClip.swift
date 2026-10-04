@@ -117,9 +117,9 @@ struct RowLeadingEdgeClip: Shape {
     /// beta.18 verdict (BUG-118, R3): in Row Edge Fade Soft the app-drawn `RowSoftEdgeMask` owns
     /// the leading edge (it reproduces BUG-92's rest-state cut itself), so the clip is pushed far
     /// enough out (400 pt) that it never cuts anything the mask has not already handled.
-    /// beta.19-rc1 verdict (F, FEAT-54): Soft is the Appearance setting `row_edge_fade` now, and
-    /// the default — `CatalogRowView` picks this allowance when `RowEdgeFadeSetting` resolves to
-    /// `.soft`. 400 still clears the mask's leading margin (≤ 140 pt standard) with room to spare.
+    /// beta.19-rc1 verdict (F, FEAT-54): Soft is an option of the Appearance setting `row_edge_fade`
+    /// now (Off is the default since the F.5 frame-time gate) — `CatalogRowView` picks this allowance
+    /// when `RowEdgeFadeSetting` resolves to `.soft`. 400 still clears the mask's leading margin (≤ 140 pt standard) with room to spare.
     nonisolated static let softModeAllowance: CGFloat = 400
 
     static func allowance(posterWidth: CGFloat, liftScale: CGFloat, ringWidth: CGFloat,

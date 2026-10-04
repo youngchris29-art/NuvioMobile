@@ -52,7 +52,8 @@ struct DeveloperSettingsPane: View {
 
     // beta.19-rc1 verdict (F, FEAT-54): the BUG-118 "Row Edge Fade" A/B (`debug.rowEdgeFade`) left
     // this pane. It is the Appearance setting `row_edge_fade` now (Off by default), and
-    // `RowEdgeFadeSetting.migrateLegacy` carries an explicit old "Off" across at launch.
+    // `RowEdgeFadeSetting.migrateLegacy` carries an explicit old Soft, Automatic or Off across at launch
+    // (Hard follows the default).
 
     /// BUG-30/66/62 (beta.14): same release-safe pattern as the hero probe above, but the readout
     /// is a live in-memory snapshot (`TabBarProbe`) rather than a persisted log — see that type's

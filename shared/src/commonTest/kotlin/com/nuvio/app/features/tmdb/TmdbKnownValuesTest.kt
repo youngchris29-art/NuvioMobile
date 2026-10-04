@@ -31,4 +31,13 @@ class TmdbKnownValuesTest {
         assertNull(tmdbKnownVoteAverage(null))
         assertEquals(6.2, tmdbKnownVoteAverage(6.2))
     }
+
+    /** Review r4 P2-1: previews (More Like This, collection parts) format the vote themselves. */
+    @Test
+    fun theVoteFormatterGivesNoRatingForZero() {
+        assertNull(0.0.formatRating())
+        assertNull((-1.0).formatRating())
+        assertEquals("6.2", 6.2.formatRating())
+        assertEquals("7.5", 7.46.formatRating())
+    }
 }
