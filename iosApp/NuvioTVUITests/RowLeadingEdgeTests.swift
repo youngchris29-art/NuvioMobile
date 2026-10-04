@@ -89,6 +89,9 @@ final class RowLeadingEdgeTests: XCTestCase {
             "-trailer_playback_location", "poster",
             "-no_zoom_on_focus", noZoom ? "YES" : "NO",
             "-accent_focus_ring", "NO",
+            // beta.19-rc1 verdict (M3/M4): pin the legacy ~1 s-from-focus start (the gate is rest
+            // based now; a fixed N counts from focus, never before the rows stop).
+            "-trailer_start_delay", "1",
         ]
     }
 

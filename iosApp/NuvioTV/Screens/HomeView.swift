@@ -380,7 +380,17 @@ struct HomeView: View {
     /// gap-fill (the resolver keeps the committed artwork and never repaints for it).
     private func presentHero() {
         let target = displayHero
+        // beta.19-rc1 verdict (I1, BUG-134): the form decides how large the post-commit sharpen
+        // decodes the backdrop. Set before `present` so the commit it may cause plans with it.
+        heroResolver.setSharpenForm(heroSharpenForm)
         heroResolver.present(target, isFolder: target.map(isCollectionHero) ?? false)
+    }
+
+    /// beta.19-rc1 verdict (I1, BUG-134): which form the hero backdrop is drawn in, for the
+    /// resolver's post-commit sharpen (`HeroSharpen`): the same test `HomeHeroBackdrop(nuvioStyle:)`
+    /// is given. Nuvio-style decodes the 1250 pt panel (the 3072 bucket), classic decodes full bleed.
+    private var heroSharpenForm: HeroSharpen.Form {
+        (heroNuvioStyle || focusHeroActive) ? .nuvio : .classic
     }
 
     /// beta.19-rc1 verdict (M5, BUG-138): freezes the hero focus model while anything covers Home —
@@ -1131,6 +1141,11 @@ struct HomeView: View {
             // artwork; without this trigger a late synopsis would never reach the panel at all.
             .onChange(of: heroPayloadSignature) { _, _ in
                 presentHero()
+            }
+            // beta.19-rc1 verdict (I1, BUG-134): Nuvio-style flipped (or the focus panel came or
+            // went) under a hero that stays: the resolver re-checks its sharpen against the new form.
+            .onChange(of: heroSharpenForm) { _, form in
+                heroResolver.setSharpenForm(form)
             }
             // Wave H: the artwork layer's fade (see `heroArtOpacity`). Opacity only — never the
             // implicit animation on the Group that used to interpolate the artwork's frame too.
@@ -3742,6 +3757,23 @@ final class HeroArtResolver: ObservableObject {
     /// starting a resolve at all.
     private var targetResolveStartedAt: Date?
 
+    // beta.19-rc1 verdict (I1, BUG-134): the post-commit sharpen (`HeroSharpen`). None of these is
+    // `@Published`: they decide what to fetch, never what to draw, so nothing re-renders on them.
+
+    /// The form the presented backdrop is drawn in. `HomeView` sets it (`setSharpenForm`).
+    private(set) var sharpenForm: HeroSharpen.Form = .classic
+    /// The URL the presented backdrop bitmap was decoded from. nil when there is no backdrop, and for
+    /// the poster stand-in: a different picture, which is never sharpened.
+    private var presentedBackdropURL: URL?
+    /// The URL the presented logo bitmap was decoded from (nil = the text wordmark). The `.pending`
+    /// path learns it from `TitleLogoStore.awaitLogoURL` (`HeroPresentArtWait.logoURL`).
+    private var presentedLogoURL: URL?
+    /// The dwell, then the fetch, for the hero on screen. Cancelled by any `present` that moves the
+    /// hero to another identity; not counted by `isIdle`, so it never holds the carousel tick.
+    private var sharpenTask: Task<Void, Never>?
+    /// Bumped by every schedule and cancel. A sharpen whose generation moved adopts nothing.
+    private var sharpenGeneration = 0
+
     var isIdle: Bool { resolveTask == nil }
 
     /// rc12 (Codex Finding A): the ABSOLUTE deadline rule for a resolve that is restarted for the
@@ -3850,7 +3882,11 @@ final class HeroArtResolver: ObservableObject {
         guard let target else {
             targetIdentity = nil
             targetResolveStartedAt = nil
+            // beta.19-rc1 verdict (I1, BUG-134): no hero, nothing to sharpen.
+            cancelSharpen()
             guard presented != nil else { return }
+            presentedBackdropURL = nil
+            presentedLogoURL = nil
             // FEAT-42: reset together with `presented`, in the same transaction — see
             // `presentedLogoSource`'s doc comment on why the two may never disagree.
             withAnimation(.easeInOut(duration: 0.3)) {
@@ -3879,6 +3915,11 @@ final class HeroArtResolver: ObservableObject {
             let refreshed = HeroPresentation(item: target, backdrop: current.backdrop,
                                              logo: current.logo, identity: identity,
                                              logoInk: current.logoInk)
+            // beta.19-rc1 verdict (I1, BUG-134): a gap-fill keeps the artwork, so it keeps a
+            // pending sharpen as well. A hero the target has come BACK to (A → B → A before B
+            // committed, which cancelled A's sharpen) arms one again; `HeroSharpen.plan` makes a
+            // re-arm on a hero that is already sharp a no-op (`sharpen none`).
+            if sharpenTask == nil { scheduleSharpen(identity: identity) }
             guard refreshed != current else { return }
             // `same=1` means REPAINT: the probe line the photo contract forbids on a healthy
             // launch.
@@ -3914,6 +3955,10 @@ final class HeroArtResolver: ObservableObject {
             presented = refreshed   // deliberately unanimated: a gap-fill must not move anything
             return
         }
+
+        // beta.19-rc1 verdict (I1, BUG-134): the hero is moving to another identity, so the one on
+        // screen no longer sharpens (the commit below arms the newcomer's own).
+        cancelSharpen()
 
         let backdropURL = heroBackdropURL(for: target).flatMap { URL(string: $0) }
         // FEAT-42 (decision b′): resolver-side lookup, no payload merge. `logoPlan` decides in
@@ -3994,7 +4039,8 @@ final class HeroArtResolver: ObservableObject {
                    logoSource: inked.logo != nil ? "cached" : "text",
                    logoOrigin: inked.logo != nil ? planLogoOrigin : .none,
                    logoInk: inked.ink,
-                   waitedMs: 0)
+                   waitedMs: 0,
+                   backdropURL: backdropURL, logoURL: logoURL)
             return
         }
 
@@ -4039,7 +4085,7 @@ final class HeroArtResolver: ObservableObject {
                 // `HeroPresentArtWaitTests.testStalledBackdropResumesAtTheDeadlineWithTheCachedLogo`),
                 // so the image reaching here is read off this closure's own local, never off `wait`.
                 if wait.hitDeadline, let image {
-                    self?.adoptLateBackdrop(image, identity: identity, startedAt: started)
+                    self?.adoptLateBackdrop(image, identity: identity, startedAt: started, url: backdropURL)
                 }
             }
         }
@@ -4084,9 +4130,15 @@ final class HeroArtResolver: ObservableObject {
         // flight and the same `deadline` covers both. Starting it only after the miss would push
         // a cold poster past the budget on exactly the titles that need it. `.head` for the same
         // reason the other two are: the hero is what the whole screen is waiting on.
+        // beta.19-rc1 verdict (I1, BUG-134): the same URL and the same download as before, decoded
+        // into the poster prewarm's 896 px bucket (`HeroCommitCoordinator.posterPixelsDecode`) so
+        // the entry also serves the row's poster card. The lookup above (`cached`, any bucket, any
+        // rendition) already finds the card's own decode when the row drew it first.
         if needsPosterFallback, let posterFallbackURL {
             Task { @MainActor in
-                let image = try? await ArtworkStore.fetch(posterFallbackURL, admission: .head)
+                let image = try? await ArtworkStore.fetch(posterFallbackURL,
+                                                          decode: HeroCommitCoordinator.posterPixelsDecode,
+                                                          admission: .head)
                 wait.resolvePosterFallback(image)
             }
         }
@@ -4126,7 +4178,11 @@ final class HeroArtResolver: ObservableObject {
                             ? "text" : Self.source(cached: cachedLogo, resolved: logo, empty: "text"),
                         logoOrigin: logo != nil ? planLogoOrigin : .none,
                         logoInk: inked.ink,
-                        waitedMs: Int(Date().timeIntervalSince(started) * 1000))
+                        waitedMs: Int(Date().timeIntervalSince(started) * 1000),
+                        // beta.19-rc1 verdict (I1): the poster stand-in is not the backdrop's
+                        // picture, so it records no backdrop URL and is never sharpened.
+                        backdropURL: wait.usedPosterFallback ? nil : backdropURL,
+                        logoURL: wait.logoURL ?? logoURL)
             // 2026-09-08 finding: a backdrop that lands during the deadline hand-off ITSELF — after
             // `deadlineElapsed()` above already finished the wait, but before this task's `commit`
             // just above runs — is lost by both existing paths. `resolveBackdrop`'s own `!finished`
@@ -4141,7 +4197,7 @@ final class HeroArtResolver: ObservableObject {
             // is a hand-off race, not the common case); a second call here is harmless because
             // `presentedBackdrop == nil` fails after the first adoption commits one.
             if backdrop == nil, let late = wait.lateBackdrop {
-                self.adoptLateBackdrop(late, identity: identity, startedAt: started)
+                self.adoptLateBackdrop(late, identity: identity, startedAt: started, url: backdropURL)
             }
         }
     }
@@ -4207,19 +4263,183 @@ final class HeroArtResolver: ObservableObject {
     /// transaction, `.transaction { $0.animation = nil }`), and the hero region's own
     /// insert/remove at the nil boundary keeps its fade. Dropping it is a separate, device-checked
     /// change.
+    ///
+    /// beta.19-rc1 verdict (I1, BUG-134): `backdropURL` / `logoURL` are where the two bitmaps were
+    /// decoded from (nil for the poster stand-in and for the text wordmark), kept for the post-commit
+    /// sharpen, which every commit arms (`scheduleSharpen`).
     private func commit(item: MetaPreview, backdrop: UIImage?, logo: UIImage?, identity: String,
                         backdropSource: String, logoSource: String, logoOrigin: HeroLogoSource,
-                        logoInk: HeroLogoInk, waitedMs: Int) {
+                        logoInk: HeroLogoInk, waitedMs: Int, backdropURL: URL?, logoURL: URL?) {
         logPresent(identity: identity, backdrop: backdropSource, logo: logoSource,
                    logoOrigin: logoOrigin, logoInk: logoInk, waitedMs: waitedMs, same: false)
         let next = HeroPresentation(item: item, backdrop: backdrop, logo: logo, identity: identity,
                                     logoInk: logoInk)
         guard next != presented else { return }
+        presentedBackdropURL = backdrop != nil ? backdropURL : nil
+        presentedLogoURL = logo != nil ? logoURL : nil
         // FEAT-42: set in the SAME transaction as `presented` — see `presentedLogoSource`'s doc
         // comment.
         withAnimation(.easeInOut(duration: 0.3)) {
             presented = next
             presentedLogoSource = logoOrigin
+        }
+        scheduleSharpen(identity: identity)
+    }
+
+    // MARK: beta.19-rc1 verdict (I1, BUG-134): post-commit sharpen
+
+    /// `HomeView` reports the hero form (`heroSharpenForm`). A change under a hero that stays re-arms
+    /// its sharpen: a classic hero needs a larger bitmap than a Nuvio-style one, and the plan skips a
+    /// bitmap that is already large enough.
+    func setSharpenForm(_ form: HeroSharpen.Form) {
+        guard form != sharpenForm else { return }
+        sharpenForm = form
+        guard let identity = presented?.identity, targetIdentity == identity, resolveTask == nil else { return }
+        scheduleSharpen(identity: identity)
+    }
+
+    /// Arms the sharpen for the hero just committed: after `HeroSharpen.dwell` on the same identity,
+    /// `runSharpen`. Replaces any sharpen already armed or running.
+    ///
+    /// Timeline (warm cache): the commit lands at t0 (the art cross-fades t0 → t0 + 0.3, the text
+    /// swaps by t0 + 0.24); at t0 + 0.6 the plan runs and, when the bitmap on screen is short of what
+    /// the form draws, the sharper file is fetched with no deadline; when it lands (the backdrop and
+    /// the logo both, or `fetchCeiling`), `adoptSharpened` cross-fades the backdrop to it over 0.3 s
+    /// and swaps the logo bitmap in place. A `present` for another identity before then cancels it.
+    private func scheduleSharpen(identity: String) {
+        cancelSharpen()
+        let generation = sharpenGeneration
+        sharpenTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(HeroSharpen.dwell * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.sharpenGeneration == generation else { return }
+            await self.runSharpen(identity: identity, generation: generation)
+        }
+    }
+
+    private func cancelSharpen() {
+        sharpenTask?.cancel()
+        sharpenTask = nil
+        sharpenGeneration &+= 1
+    }
+
+    /// Plans from the bitmaps on screen (`HeroSharpen.plan` / `logoPlan`), fetches the backdrop and
+    /// the logo concurrently with `.normal` admission, no deadline and no request timeout (the hero is
+    /// already painted, so nothing waits on these and the six-slot gate's `.head` front stays for the
+    /// fetches that do), waits at most `HeroSharpen.fetchCeiling` for both, then hands whatever
+    /// landed to `adoptSharpened`. A sharpened file stays in `ArtworkStore`, so presenting this hero
+    /// again in the session commits the sharp bitmap straight from the cache (`cached` returns the
+    /// largest decode of any rendition) and the next plan finds nothing to do.
+    private func runSharpen(identity: String, generation: Int) async {
+        defer { if sharpenGeneration == generation { sharpenTask = nil } }
+        // TODO(I1): skip under a "Reduce Data" setting once tvOS has one (there is none today).
+        guard let presented, presented.identity == identity, targetIdentity == identity,
+              resolveTask == nil else { return }
+        let scale = ArtworkDecodeMath.screenScale
+        let form = sharpenForm
+        let backdropSize = HeroSharpen.pixelSize(of: presented.backdrop)
+        let logoSize = HeroSharpen.pixelSize(of: presented.logo)
+        let backdropFrom = presented.backdrop != nil ? presentedBackdropURL : nil
+        let logoFrom = presented.logo != nil ? presentedLogoURL : nil
+        let sourceSize = backdropFrom.flatMap { ArtworkStore.recordedSourceSize($0) }
+        let backdropPlan = backdropFrom.flatMap {
+            HeroSharpen.plan(backdropURL: $0, presentedPixelSize: backdropSize, form: form,
+                             scale: scale, sourceSize: sourceSize)
+        }
+        let logoPlan = logoFrom.flatMap {
+            HeroSharpen.logoPlan(logoURL: $0, presentedPixelSize: logoSize, scale: scale)
+        }
+        guard backdropPlan != nil || logoPlan != nil else {
+            HeroSharpen.log("none item=\(identity) form=\(form.rawValue) bd=\(HeroSharpen.sizeToken(backdropSize)) "
+                            + "logo=\(HeroSharpen.sizeToken(logoSize))")
+            return
+        }
+        HeroSharpen.log("start item=\(identity) form=\(form.rawValue) "
+                        + "bd=\(HeroSharpen.urlToken(from: backdropFrom, plan: backdropPlan)) "
+                        + "req=\(HeroSharpen.requestBucket(backdropPlan, aspect: sourceSize ?? backdropSize)) "
+                        + "logo=\(HeroSharpen.urlToken(from: logoFrom, plan: logoPlan)) "
+                        + "lreq=\(HeroSharpen.requestBucket(logoPlan, aspect: logoSize))")
+        let started = Date()
+        // The same first-terminal-event wait `present` resolves with, here bounded by the ceiling
+        // instead of the swap deadline, and with no poster stand-in.
+        let wait = HeroPresentArtWait(backdrop: nil, logo: nil,
+                                      needsBackdrop: backdropPlan != nil, needsLogo: logoPlan != nil)
+        if let backdropPlan {
+            Task { @MainActor in
+                let image = try? await ArtworkStore.fetch(backdropPlan.url, decode: backdropPlan.request)
+                wait.resolveBackdrop(image)
+            }
+        }
+        if let logoPlan {
+            Task { @MainActor in
+                let image = try? await ArtworkStore.fetch(logoPlan.url, decode: logoPlan.request)
+                wait.resolveLogo(image, url: logoPlan.url)
+            }
+        }
+        let ceiling = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(HeroSharpen.fetchCeiling * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            wait.deadlineElapsed()
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                wait.attach(continuation)
+            }
+        } onCancel: {
+            Task { @MainActor in wait.cancelWait() }
+        }
+        ceiling.cancel()
+        guard !Task.isCancelled, sharpenGeneration == generation else { return }
+        adoptSharpened(backdrop: wait.backdrop, logo: wait.logo, identity: identity,
+                       backdropURL: backdropPlan?.url, logoURL: logoPlan?.url,
+                       timedOut: wait.hitDeadline, startedAt: started)
+    }
+
+    /// Adopts a sharpened backdrop and/or logo onto the hero on screen: a same-identity update of
+    /// `presented`, built from the LIVE presentation's item (a gap-fill that landed during the fetch
+    /// is kept, as in `adoptLateBackdrop`) and its live `logoInk` (the same picture at a higher
+    /// resolution has the same ink; spec P-A §9.2 item 2). `presentedLogoSource` is unchanged: the
+    /// logo still comes from the same place.
+    ///
+    /// On screen: `HeroCrossfadeImage` cross-fades the backdrop in place (0.3 s, two versions of one
+    /// picture, same aspect, same crop); `HeroTextLayer`'s `TextSwapModel` sees the same identity and
+    /// takes the update as a silent gap-fill, so the title, meta line and synopsis do not move and the
+    /// logo bitmap is replaced in the same slot at the same geometry.
+    ///
+    /// Not routed through `commit`: that logs a `present` line, and the probe oracles read a second
+    /// `present` for one item with nothing between as a double paint (test62). The sharpen logs its
+    /// own `sharpen adopt` line, and `HeroCrossfadeImage` logs its cross-fade as `sharpen paint`.
+    private func adoptSharpened(backdrop: UIImage?, logo: UIImage?, identity: String,
+                                backdropURL: URL?, logoURL: URL?, timedOut: Bool, startedAt: Date) {
+        let waitedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        guard HeroSharpen.shouldAdoptSharpened(targetIdentity: targetIdentity,
+                                               presentedIdentity: presented?.identity,
+                                               resolveTaskIsNil: resolveTask == nil,
+                                               identity: identity),
+              let presented else {
+            HeroSharpen.log("skip item=\(identity) reason=superseded ms=\(waitedMs)")
+            return
+        }
+        let sharpBackdrop = HeroSharpen.adoptable(backdrop, over: presented.backdrop)
+        let sharpLogo = HeroSharpen.adoptable(logo, over: presented.logo)
+        guard sharpBackdrop != nil || sharpLogo != nil else {
+            HeroSharpen.log("skip item=\(identity) reason=\(timedOut ? "timeout" : "nogain") "
+                            + "bd=\(HeroSharpen.sizeToken(HeroSharpen.pixelSize(of: backdrop))) ms=\(waitedMs)")
+            return
+        }
+        let next = HeroPresentation(item: presented.item,
+                                    backdrop: sharpBackdrop ?? presented.backdrop,
+                                    logo: sharpLogo ?? presented.logo,
+                                    identity: identity,
+                                    logoInk: presented.logoInk)
+        if let sharpBackdrop {
+            HeroSharpen.noteAdopted(sharpBackdrop)
+            presentedBackdropURL = backdropURL
+        }
+        if sharpLogo != nil { presentedLogoURL = logoURL }
+        HeroSharpen.log("adopt item=\(identity) bd=\(HeroSharpen.adoptToken(from: presented.backdrop, to: sharpBackdrop)) "
+                        + "logo=\(HeroSharpen.adoptToken(from: presented.logo, to: sharpLogo)) ms=\(waitedMs)")
+        withAnimation(.easeInOut(duration: 0.3)) {
+            self.presented = next
         }
     }
 
@@ -4256,7 +4476,7 @@ final class HeroArtResolver: ObservableObject {
     /// resolve started with. Committing the stale captured item instead would rewind that text, and
     /// because the identity is unchanged, `commit`'s `same=0` line would make the rollback invisible
     /// to the photo oracle: nothing would look wrong that flags this class of regression.
-    private func adoptLateBackdrop(_ image: UIImage, identity: String, startedAt: Date) {
+    private func adoptLateBackdrop(_ image: UIImage, identity: String, startedAt: Date, url: URL?) {
         guard HeroArtResolver.shouldAdoptLateBackdrop(
             targetIdentity: targetIdentity, presentedIdentity: presented?.identity,
             presentedBackdrop: presented?.backdrop, resolveTaskIsNil: resolveTask == nil,
@@ -4270,7 +4490,10 @@ final class HeroArtResolver: ObservableObject {
                logoSource: presented.logo != nil ? "cached" : "text",
                logoOrigin: presentedLogoSource,
                logoInk: presented.logoInk,   // beta.19-rc1 verdict (M5): carried, never re-sampled
-               waitedMs: Int(Date().timeIntervalSince(startedAt) * 1000))
+               waitedMs: Int(Date().timeIntervalSince(startedAt) * 1000),
+               // beta.19-rc1 verdict (I1): the late image is the resolve's own backdrop URL; the
+               // logo's URL is carried like its bitmap.
+               backdropURL: url, logoURL: presentedLogoURL)
     }
 
     /// FEAT-42 repair path: `logoPlan`'s metahub guess (step 4) 404'd for `target`. Kicks a real
@@ -5478,7 +5701,14 @@ struct HeroCrossfadeImage: View {
             return
         }
         paintCount += 1
-        if HomeHeroProbe.enabled {
+        if HomeHeroProbe.enabled, imageDriven, current != nil, identity == paintedIdentity,
+           HeroSharpen.isAdopted(image) {
+            // beta.19-rc1 verdict (I1, BUG-134): the resolver's post-commit sharpen, a sharper
+            // version of the picture already on screen. Logged as its own console line, not as
+            // `paint … same=1`: that token is the repaint signature the photo contract forbids
+            // (test31, test62), and this is the one same-item repaint that is intended.
+            HeroSharpen.log("paint item=\(identity)")
+        } else if HomeHeroProbe.enabled {
             // Wave H adds `url=` and `same=`. Both sit BEFORE `item=`, which stays last: the
             // harness parses the item id as "everything after `item=`" (NuvioTVUITests test31), so
             // appending past it would silently make that oracle unparseable. No existing field is

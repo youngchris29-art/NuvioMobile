@@ -95,6 +95,10 @@ final class TrailerSoakTests: XCTestCase {
             // domain (same trick as `-inline_trailers_enabled`; plain `@AppStorage` key, always
             // wins reads) pins the pre-Upcoming layout the down×4 walks were written against.
             "-home_upcoming_row_enabled", "NO",
+            // beta.19-rc1 verdict (M3/M4): the dwell is a rest gate now (Automatic = rows stopped +
+            // 1 s). Pin the legacy "about 1 s from focus" cadence these walks' `gap: 1.4` waits were
+            // written against (a fixed N counts from focus, never before the rows stop).
+            "-trailer_start_delay", "1",
         ]
     }
 

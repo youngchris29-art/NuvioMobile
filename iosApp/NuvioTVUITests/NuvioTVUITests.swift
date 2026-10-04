@@ -569,7 +569,10 @@ final class NuvioTVUITests: XCTestCase {
     func test01InlineTrailerDwell() throws {
         // Trailers on Focus is opt-in (default OFF since 05dd8ecd) — force it via the argument
         // domain so this test never depends on the sim's stored settings.
-        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES"])
+        // beta.19-rc1 verdict (M3/M4): the dwell is now a rest gate (Automatic = rows stopped + 1 s).
+        // `-trailer_start_delay 1` pins the legacy "about 1 s from focus" cadence this walk's
+        // screenshot timings were written against (a fixed N counts from focus, never before rest).
+        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-trailer_start_delay", "1"])
         shot(app, "01a_home")
 
         // Hero → Continue Watching → Streaming → first *movies* catalog row (portrait cards, the
@@ -2647,7 +2650,7 @@ final class NuvioTVUITests: XCTestCase {
             guard let glass = token("glass") else { return nil }
             return (glass, token("scrolling") ?? 0)
         }
-        let classic = launchToHome(extraArguments: ["-detail_layout", "classic", "-debug.trailerForceNoTrailer", "YES"],
+        let classic = launchToHome(extraArguments: ["-detail_layout", "classic", "-debug.trailerProbe", "YES", "-debug.trailerForceNoTrailer", "YES"],
                                    forceFreshLaunch: true)
         press(.down, times: 3)          // hero → CW → Streaming → first catalog row
         press(.left, times: 6, gap: 0.3)
@@ -2805,7 +2808,8 @@ final class NuvioTVUITests: XCTestCase {
     /// Compare 28b (still art + overlay) / 28c (playing + overlay) — the bottom-left of the wide
     /// tile must carry a logo or the title text over a dark foot scrim.
     func test28InlineTrailerTitleOverlayWithHiddenLabels() throws {
-        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-debug.trailerProbe", "YES"], forceFreshLaunch: true)
+        // beta.19-rc1 verdict (M3/M4): pinned to the legacy ~1 s-from-focus start (see test01).
+        let app = launchToHome(extraArguments: ["-inline_trailers_enabled", "YES", "-debug.trailerProbe", "YES", "-trailer_start_delay", "1"], forceFreshLaunch: true)
         try restoreAppearanceBaseline(app) // portrait rows, no ring — the reporter's row shape
         func openAppearance() {
             XCTAssertTrue(openSettingsCategory(app, named: "Appearance"), "Settings › Appearance pane did not open")
@@ -3555,6 +3559,10 @@ final class NuvioTVUITests: XCTestCase {
                 // stored settings have Autoplay Hero Trailer on would otherwise satisfy the
                 // phase assertion with the carousel's own attempt. Forced off for both legs.
                 "-hero_trailer_autoplay", "NO",
+                // beta.19-rc1 verdict (M3/M4): the baseline below must land inside the dwell, so the
+                // start delay is pinned to the legacy ~1 s-from-focus value (a fixed N counts from
+                // focus, never before the rows stop; Automatic would be rest + 1 s).
+                "-trailer_start_delay", "1",
             ]
         }
 
@@ -3815,6 +3823,9 @@ final class NuvioTVUITests: XCTestCase {
             // Deterministic row geometry (test37's trick): removes the Upcoming row so the
             // down×4 walk below has a stable target.
             "-home_upcoming_row_enabled", "NO",
+            // beta.19-rc1 verdict (M3/M4): pin the gate to the legacy ~1 s-from-focus start so it
+            // fires well inside this test's 10 s window (rest + 3 s ceiling + 1 s at the latest).
+            "-trailer_start_delay", "1",
         ], forceFreshLaunch: true)
 
         // Same down×4 walk as test01/test37 to a resting portrait poster in the first movies row.
@@ -8264,7 +8275,11 @@ final class NuvioTVUITests: XCTestCase {
         /// Card 0 of the compared row, fixed by the first leg.
         var targetFirstItem: String?
 
-        for leg in ["soft", "system", "off"] {
+        // Gate 3 (main session): the FIRST launch after a cold start rests the pinned rows ~14 pt
+        // lower than every later launch, whatever the fade (Off-first then Soft-second rest shots
+        // are pixel-identical, shift 0). A throwaway "off" leg absorbs that; its capture is
+        // overwritten by the measured "off" leg at the end, and it still fixes the target row.
+        for leg in ["off", "soft", "system", "off"] {
             let app = launchToHome(
                 extraArguments: ["-row_edge_fade", leg,
                                  "-home_upcoming_row_enabled", "NO",

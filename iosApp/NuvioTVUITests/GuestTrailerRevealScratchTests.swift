@@ -61,6 +61,9 @@ final class GuestTrailerRevealScratchTests: XCTestCase {
             "-debug.trailerProbe", "YES",
             "-debug.trailerSmokeVideoId", "rNZ0xKaCdus",
             "-debug.resetTrailerZoomStore", "YES",
+            // beta.19-rc1 verdict (M3/M4): pin the legacy ~1 s-from-focus start the `gap: 1.4`
+            // waits below assume (the gate is rest based now; Automatic = rows stopped + 1 s).
+            "-trailer_start_delay", "1",
         ]
         app.launch()
 

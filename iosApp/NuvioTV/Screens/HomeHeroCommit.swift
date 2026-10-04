@@ -24,6 +24,18 @@ protocol HeroCommitArtworkFetching {
     @MainActor func cachedImage(_ url: URL?) -> UIImage?
     @MainActor func fetchImage(_ url: URL) async throws -> UIImage
     @MainActor func prefetchImages(_ urls: [URL])
+    /// beta.19-rc1 verdict (I1, BUG-134): a prefetch that names the decode each URL is warmed at, so
+    /// the row-poster prewarm leaves in memory exactly the entry the poster card will look up (its
+    /// upgraded URL at its own bucket) instead of a 1920 px `.legacy` decode of the original URL.
+    @MainActor func prefetchItems(_ items: [ArtworkPrefetchItem])
+}
+
+extension HeroCommitArtworkFetching {
+    /// beta.19-rc1 verdict (I1): forwards to `prefetchImages`, so a fetcher that predates the typed
+    /// form (`HeroCommitCoordinatorTests`' stub) compiles and records the URLs unchanged.
+    @MainActor func prefetchItems(_ items: [ArtworkPrefetchItem]) {
+        prefetchImages(items.map { $0.url })
+    }
 }
 
 /// Default fetcher: routes straight to `ArtworkStore`.
@@ -43,6 +55,7 @@ struct ArtworkStoreHeroFetcher: HeroCommitArtworkFetching {
         try await ArtworkStore.fetch(url, admission: .head)
     }
     @MainActor func prefetchImages(_ urls: [URL]) { ArtworkStore.prefetch(urls) }
+    @MainActor func prefetchItems(_ items: [ArtworkPrefetchItem]) { ArtworkStore.prefetch(items) }
 }
 
 /// One head-art prewarm outcome, reported on the `commit` probe line.
@@ -346,7 +359,11 @@ final class HeroCommitCoordinator {
         // Deliverable 4: first 4 catalog rows x first 7 items' posters. Fire-and-forget, same as
         // the carousel prefetch below — the commit itself must wait on nothing but the HEAD's own
         // backdrop + logo.
-        let rowPosterURLs = rowPosterPrewarmURLs(sections: state.sections)
+        // beta.19-rc1 verdict (I1, BUG-134): warmed as the URL and decode the poster card will ask
+        // for (its upgraded `w780` / metahub `large` head at the card's own bucket), so the first
+        // Home paint finds the card's entry in memory instead of re-decoding a `.legacy` one.
+        let rowPosterItems = Self.rowPosterPrewarmItems(sections: state.sections,
+                                                        decode: Self.rowPosterDecode())
 
         // The other 7 hero items' backdrop + logo (fire-and-forget; whatever lands, lands in
         // ArtworkStore's cache for the carousel's own later `HeroArtResolver.present` calls, so
@@ -362,9 +379,11 @@ final class HeroCommitCoordinator {
         }
 
         // One turn behind the head's own fetches (see the ORDER note above), never ahead of them.
-        if !rowPosterURLs.isEmpty || !carouselURLs.isEmpty {
+        // The carousel stays on `prefetchImages` (`.legacy`, today's URLs and sizes): those are the
+        // bytes the hero's 400 ms swap deadline waits on (I1, critique #2).
+        if !rowPosterItems.isEmpty || !carouselURLs.isEmpty {
             Task { @MainActor in
-                if !rowPosterURLs.isEmpty { fetcher.prefetchImages(rowPosterURLs) }
+                if !rowPosterItems.isEmpty { fetcher.prefetchItems(rowPosterItems) }
                 if !carouselURLs.isEmpty { fetcher.prefetchImages(carouselURLs) }
             }
         }
@@ -400,18 +419,50 @@ final class HeroCommitCoordinator {
         return allOK ? .ready(waitedMs: waitedMs) : .failed(waitedMs: waitedMs)
     }
 
-    /// Deliverable 4: first 4 catalog rows x first 7 items' posters. Returns the URLs rather than
+    /// Deliverable 4: first 4 catalog rows x first 7 items' posters. Returns the items rather than
     /// prefetching them itself so `prepare(_:)` controls WHEN they are issued (Codex r3, P2: after
     /// the head's own two fetches, never before them).
-    private func rowPosterPrewarmURLs(sections: [HomeCatalogSection]) -> [URL] {
-        var urls: [URL] = []
+    static func rowPosterPrewarmItems(sections: [HomeCatalogSection],
+                                      decode: ArtworkDecodeRequest) -> [ArtworkPrefetchItem] {
+        var items: [ArtworkPrefetchItem] = []
         for section in sections.prefix(4) {
             for item in section.items.prefix(7) {
-                guard let poster = item.poster, !poster.isEmpty, let url = URL(string: poster) else { continue }
-                urls.append(url)
+                guard let url = rowPosterPrewarmURL(poster: item.poster) else { continue }
+                items.append(ArtworkPrefetchItem(url: url, decode: decode))
             }
         }
-        return urls
+        return items
+    }
+
+    /// beta.19-rc1 verdict (I1, BUG-134): the first URL a Home row's `PosterCard` asks for — the
+    /// larger rendition of its poster when one is known (`ArtworkURLUpgrade`, role `.poster`: TMDB
+    /// `w780`, metahub `large`), else the poster itself (a custom poster service, an add-on CDN). The
+    /// card's own fallback chain (the original URL, then `rawPosterUrl`) is unchanged; warming its
+    /// head is what lets the first frame show the card's image without a fetch.
+    static func rowPosterPrewarmURL(poster: String?) -> URL? {
+        guard let poster, !poster.isEmpty, let url = URL(string: poster) else { return nil }
+        return ArtworkURLUpgrade.upgraded(url, role: .poster) ?? url
+    }
+
+    /// beta.19-rc1 verdict (I1, BUG-134; spec P-B §I1.7): the decode the poster prewarm (and the
+    /// hero's poster stand-in) uses when the card's own size is unknown. 896 px is the bucket of the
+    /// largest poster style at scale 2, so an entry warmed here serves every card request (a larger
+    /// decode serves a smaller request, `ArtworkDecodeMath.servingOrder`).
+    static let posterPixelsDecode = ArtworkDecodeRequest(size: .pixels(896), fill: true, scale: 1).normalized
+
+    /// beta.19-rc1 verdict (I1, BUG-134; critique #22): the request a Home row's poster card builds,
+    /// `PosterCard.decodeRequest` at the live poster style (`PosterCardStyleRepository`, the same
+    /// source `PosterStyleModel` publishes into the environment) and the screen scale. Falls back to
+    /// `posterPixelsDecode` when the style has not loaded.
+    static func rowPosterDecode() -> ArtworkDecodeRequest {
+        let state = PosterCardStyleRepository.shared.uiState.value_ as? PosterCardStyleUiState
+        return rowPosterDecode(style: state.map(PosterStyle.init(from:)), scale: ArtworkDecodeMath.screenScale)
+    }
+
+    /// Pure half of `rowPosterDecode()` (unit-tested in `HeroSharpenTests`).
+    static func rowPosterDecode(style: PosterStyle?, scale: CGFloat) -> ArtworkDecodeRequest {
+        guard let style else { return posterPixelsDecode }
+        return PosterCard.decodeRequest(width: style.width, height: style.height, scale: scale)
     }
 }
 
@@ -540,4 +591,182 @@ enum HomeHeroOffArgs {
         NSLog("[HomeHero] heroOff present=YES honored=%@", honored ? "YES" : "NO (debug.homeHeroProbe off)")
         return honored
     }()
+}
+
+// MARK: - Post-commit hero sharpen (beta.19-rc1 verdict, I1, BUG-134)
+
+/// beta.19-rc1 verdict (I1, BUG-134): the Home hero sharpens after it commits, never before.
+///
+/// Steven's 4K Apple TV showed a soft hero. Every hero fetch decodes at most 1920 px (`.legacy`) and
+/// TMDB backdrops arrive as `w1280`, so a full-bleed hero was drawn from a bitmap two to three times
+/// smaller than the 3840 px it fills. Fetching the bigger file up front would put more bytes inside
+/// the deadlines the hero commit protocol lives on (the 400 ms swap, the 1.5 s launch and folder
+/// budgets; critique #2), so every one of those fetches, every hero prefetch and the launch head keep
+/// today's URLs and sizes. Instead, once a hero has stayed committed for `dwell`, `HeroArtResolver`
+/// fetches the sharper rendition of the SAME picture with no deadline (TMDB `original`, or the same
+/// file decoded at the size the hero form draws) and adopts it as a same-identity update: the
+/// backdrop cross-fades between two versions of one picture and the text does not move
+/// (`TextSwapModel` treats a same-identity presentation as a silent gap-fill). The title logo
+/// sharpens the same way, from TMDB `original` at the slot size, while the data keeps `w500` so the
+/// deadline-bound logo fetch is unchanged.
+///
+/// This type is the policy: what to fetch, at what decode, and whether an arrival may be adopted.
+/// The pure parts are unit-tested in `HeroSharpenTests`; the resolver (`HomeView.swift`) does the
+/// wiring (`scheduleSharpen` → `runSharpen` → `adoptSharpened`).
+enum HeroSharpen {
+    /// The form the hero backdrop is drawn in (the same test as `HomeHeroBackdrop.nuvioStyle`).
+    nonisolated enum Form: String, Equatable {
+        /// Nuvio-style, or the Show Hero OFF focus panel: a right-anchored 1250 × 820 pt panel.
+        case nuvio
+        /// Classic: full width (1920 pt) × 820 pt, so a 16:9 picture is drawn 3840 px wide at 4K.
+        case classic
+    }
+
+    /// One fetch: the URL and the decode the result is adopted at.
+    nonisolated struct Plan: Equatable {
+        let url: URL
+        let request: ArtworkDecodeRequest
+    }
+
+    /// How long a committed hero must stay the same identity before it sharpens. A row walk (one hop
+    /// every 0.3–0.5 s) never starts a fetch; a hero the viewer stops on sharpens within about a second.
+    static let dwell: TimeInterval = 0.6
+    /// The longest the adoption waits for both fetches; whatever has landed by then is adopted.
+    static let fetchCeiling: TimeInterval = 20
+    /// A bitmap at least this fraction of what the form draws is sharp enough: nothing is fetched.
+    static let adequateFraction: CGFloat = 0.9
+
+    /// The backdrop decode for a hero form at `scale`. Nuvio: the 1250 × 820 pt panel, fill (a 16:9
+    /// picture needs 2915 px on its long side at scale 2, the 3072 bucket, 21 MB decoded). Classic:
+    /// full bleed (3840 px at scale 2, 33 MB).
+    static func backdropRequest(form: Form, scale: CGFloat) -> ArtworkDecodeRequest {
+        switch form {
+        case .nuvio:
+            return ArtworkDecodeRequest(size: .points(width: Theme.Size.heroNuvioArtworkWidth,
+                                                      height: Theme.Size.heroBackdropHeight),
+                                        fill: true, scale: scale).normalized
+        case .classic:
+            return ArtworkDecodeRequest(size: .fullBleed, fill: true, scale: scale).normalized
+        }
+    }
+
+    /// The logo decode: the classic slot (`heroLogoMaxWidth` × `heroLogoSlotHeight`, the largest a
+    /// title logo is drawn in any hero form), fit.
+    static func logoRequest(scale: CGFloat) -> ArtworkDecodeRequest {
+        ArtworkDecodeRequest(size: .points(width: Theme.Size.heroLogoMaxWidth,
+                                           height: Theme.Size.heroLogoSlotHeight),
+                             fill: false, scale: scale).normalized
+    }
+
+    /// What, if anything, sharpens the presented backdrop.
+    /// - `backdropURL`: the URL the bitmap on screen was decoded from (never the poster stand-in).
+    /// - `presentedPixelSize`: that bitmap's pixel size. `sourceSize`: the source size an earlier
+    ///   decode of `backdropURL` recorded (`ArtworkStore.recordedSourceSize`), nil when unknown.
+    ///
+    /// nil when the bitmap is already at least `adequateFraction` of what the form draws. Otherwise
+    /// the larger rendition on the same CDN (TMDB `w1280` → `original`) when there is one; else the
+    /// same file decoded at the form's size, but only when its source holds meaningfully more pixels
+    /// than the bitmap (a metahub background whose source is 1920 px has nothing to add).
+    static func plan(backdropURL: URL, presentedPixelSize: CGSize?, form: Form, scale: CGFloat,
+                     sourceSize: CGSize? = nil) -> Plan? {
+        let request = backdropRequest(form: form, scale: scale)
+        let presentedLong = longSide(presentedPixelSize)
+        // Same picture, same aspect: the recorded source when there is one, else the bitmap itself.
+        let needed = ArtworkDecodeMath.neededLongSide(request, source: sourceSize ?? presentedPixelSize)
+        guard presentedLong < adequateFraction * needed else { return nil }
+        if let larger = ArtworkURLUpgrade.upgraded(backdropURL, role: .backdrop), larger != backdropURL {
+            return Plan(url: larger, request: request)
+        }
+        if let sourceSize, longSide(sourceSize) * adequateFraction <= presentedLong { return nil }
+        return Plan(url: backdropURL, request: request)
+    }
+
+    /// What, if anything, sharpens the presented title logo: only a larger rendition (TMDB `w500` →
+    /// `original`; an SVG never, `ArtworkURLUpgrade` keeps those). Decoding the same file again never
+    /// helps a logo: its `.legacy` decode is already the whole source up to 1920 px, more than the
+    /// slot draws.
+    static func logoPlan(logoURL: URL, presentedPixelSize: CGSize?, scale: CGFloat) -> Plan? {
+        let request = logoRequest(scale: scale)
+        let needed = ArtworkDecodeMath.neededLongSide(request, source: presentedPixelSize)
+        guard longSide(presentedPixelSize) < adequateFraction * needed else { return nil }
+        guard let larger = ArtworkURLUpgrade.upgraded(logoURL, role: .logo), larger != logoURL else { return nil }
+        return Plan(url: larger, request: request)
+    }
+
+    /// The adoption guard, twin of `HeroArtResolver.shouldAdoptLateBackdrop`: the hero the fetch was
+    /// planned for is still the target AND still on screen, and no resolve is in flight (a newer
+    /// `present` owns the hero then).
+    nonisolated static func shouldAdoptSharpened(targetIdentity: String?, presentedIdentity: String?,
+                                                 resolveTaskIsNil: Bool, identity: String) -> Bool {
+        guard targetIdentity == identity else { return false }
+        guard presentedIdentity == identity else { return false }
+        return resolveTaskIsNil
+    }
+
+    /// The arrival to adopt for one slot, or nil. Never into an empty slot (a logo landing where the
+    /// text wordmark is drawn is the late Text→Image swap BUG-90 forbids), never the bitmap already
+    /// on screen (a memory hit hands back the same instance), never a smaller one.
+    static func adoptable(_ candidate: UIImage?, over current: UIImage?) -> UIImage? {
+        guard let candidate, let current, candidate !== current else { return nil }
+        return longSide(pixelSize(of: candidate)) > longSide(pixelSize(of: current)) ? candidate : nil
+    }
+
+    /// A bitmap's size in pixels (`ArtworkStore` decodes at scale 1, so the `CGImage` is the truth).
+    static func pixelSize(of image: UIImage?) -> CGSize? {
+        guard let image else { return nil }
+        if let cgImage = image.cgImage { return CGSize(width: cgImage.width, height: cgImage.height) }
+        return CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+    }
+
+    private static func longSide(_ size: CGSize?) -> CGFloat {
+        guard let size else { return 0 }
+        return max(size.width, size.height)
+    }
+
+    // MARK: Probe
+
+    /// Bitmaps a sharpen adopted, held weakly and compared by pointer. `HeroCrossfadeImage` reads it
+    /// to log the cross-fade as `sharpen paint` instead of `paint … same=1`: that token means "art
+    /// already on screen for this item was repainted", which the photo contract forbids (test31,
+    /// test62), and a sharpen is the one same-item repaint that is intended.
+    private static let adoptedBitmaps = NSHashTable<UIImage>(options: [.weakMemory, .objectPointerPersonality])
+
+    static func noteAdopted(_ image: UIImage) { adoptedBitmaps.add(image) }
+    static func isAdopted(_ image: UIImage) -> Bool { adoptedBitmaps.contains(image) }
+
+    /// `-debug.homeHeroProbe YES` → `[HomeHero] sharpen <none|start|adopt|skip|paint> item=<type:id> …`.
+    /// Console only, NOT the About pane's ring buffer: that buffer's 24-line launch head is the photo
+    /// contract's evidence, and a sharpen lands 0.6 s after the first commit, inside that head.
+    static func log(_ line: @autoclosure () -> String) {
+        guard HomeHeroProbe.enabled else { return }
+        NSLog("[HomeHero] sharpen %@", line())
+    }
+
+    /// `<w>x<h>`, or `-`.
+    static func sizeToken(_ size: CGSize?) -> String {
+        guard let size else { return "-" }
+        return "\(Int(size.width))x\(Int(size.height))"
+    }
+
+    /// `<from>><to>` for the probe: the CDN size segments (`w1280>original`), `>same` for a re-decode
+    /// of the same file, `-` without a plan.
+    static func urlToken(from: URL?, plan: Plan?) -> String {
+        guard let plan else { return "-" }
+        let fromSegment = from.map { ArtworkURLUpgrade.sizeSegment($0) } ?? "-"
+        let toSegment = plan.url == from ? "same" : ArtworkURLUpgrade.sizeSegment(plan.url)
+        return "\(fromSegment)>\(toSegment)"
+    }
+
+    /// The bucket a plan decodes into (`req=`), with the picture's aspect when known.
+    static func requestBucket(_ plan: Plan?, aspect: CGSize?) -> String {
+        guard let plan else { return "-" }
+        let needed = ArtworkDecodeMath.neededLongSide(plan.request, source: aspect)
+        return String(ArtworkDecodeMath.bucket(for: needed))
+    }
+
+    /// `<in>><out>` pixel sizes of one adopted slot, `-` when the slot was not replaced.
+    static func adoptToken(from current: UIImage?, to adopted: UIImage?) -> String {
+        guard let adopted else { return "-" }
+        return "\(sizeToken(pixelSize(of: current)))>\(sizeToken(pixelSize(of: adopted)))"
+    }
 }

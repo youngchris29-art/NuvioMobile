@@ -456,6 +456,13 @@ enum ArtworkStore {
         return ArtworkDecodeMath.storeBucket(needed: needed, sourceLongSide: source.map { max($0.width, $0.height) })
     }
 
+    /// beta.19-rc1 verdict (I1, BUG-134): the source pixel size an earlier decode of `url` recorded,
+    /// nil when none has run (or the entry was evicted). The Home hero's post-commit sharpen reads it
+    /// to tell whether decoding the same file again could add pixels (`HeroSharpen.plan`).
+    nonisolated static func recordedSourceSize(_ url: URL) -> CGSize? {
+        sourceSizes.object(forKey: url as NSURL)?.cgSizeValue
+    }
+
     /// Running pool sizes for the artwork probe.
     nonisolated static func poolTotals() -> (smallBytes: Int, smallCount: Int, largeBytes: Int, largeCount: Int) {
         memory.totals()
