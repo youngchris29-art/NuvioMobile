@@ -274,4 +274,10 @@ nonisolated enum LibraryGridPolicy {
         guard let providerName else { return String(localized: "Couldn\u{2019}t remove the title") }
         return String(localized: "Couldn\u{2019}t update \(providerName)")
     }
+
+    /// The failed alert's body: the provider's message, or a generic line when it gave none.
+    static func removeFailedMessage(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? String(localized: "Something went wrong. Try again.") : trimmed
+    }
 }

@@ -151,4 +151,20 @@ final class LibraryGridPolicyTests: XCTestCase {
             smartFiltersActive: smartFiltersActive
         )
     }
+
+    // MARK: - Remove confirmation and failure
+
+    func testRemoveConfirmationNamesTheList() {
+        XCTAssertEqual(Policy.removeConfirmationTitle(listTitle: "Completed"), "Remove from Completed?")
+        XCTAssertEqual(Policy.removeConfirmationTitle(listTitle: "  "), "Remove from Library?")
+        XCTAssertEqual(Policy.removeConfirmationTitle(listTitle: nil), "Remove from Library?")
+        XCTAssertTrue(Policy.removeConfirmationMessage(providerName: "Simkl").hasPrefix("Simkl also clears"))
+    }
+
+    func testRemoveFailureCopy() {
+        XCTAssertEqual(Policy.removeFailedTitle(providerName: "MDBList"), "Couldn\u{2019}t update MDBList")
+        XCTAssertEqual(Policy.removeFailedTitle(providerName: nil), "Couldn\u{2019}t remove the title")
+        XCTAssertEqual(Policy.removeFailedMessage("  HTTP 429 \n"), "HTTP 429")
+        XCTAssertEqual(Policy.removeFailedMessage(""), "Something went wrong. Try again.")
+    }
 }

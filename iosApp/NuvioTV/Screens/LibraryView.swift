@@ -196,10 +196,13 @@ struct LibraryView: View {
                 .cardFocusButtonStyle()
                 .posterButtonShape()
                 .libraryHoldMenu(preview: entry.item.toMetaPreview()) {
+                    // Read once, when the menu is built: the label and the action name one list.
+                    let listKey = model.selectedSectionKey
+                    let listTitle = model.selectedSectionTitle
                     Button(role: .destructive) {
-                        model.requestRemove(entry)
+                        model.requestRemove(entry, listKey: listKey, listTitle: listTitle)
                     } label: {
-                        Label(LibraryGridPolicy.removeLabel(listTitle: model.selectedSectionTitle),
+                        Label(LibraryGridPolicy.removeLabel(listTitle: listTitle),
                               systemImage: "trash")
                     }
                 }

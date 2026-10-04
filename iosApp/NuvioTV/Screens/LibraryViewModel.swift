@@ -166,8 +166,11 @@ final class LibraryViewModel: ObservableObject {
     /// The local library has no lists (`selectedSectionKey` is always nil there), so it keeps
     /// `toggleSaved`, guarded like the catalog hold menu (`labelStillMatchesLiveState`): a menu
     /// built before the title was removed elsewhere must not re-add it.
-    func requestRemove(_ entry: LibraryGridEntry) {
-        guard let key = selectedSectionKey else {
+    ///
+    /// `listKey` / `listTitle` are what the menu showed, read when it was built, so a sync that
+    /// changes the open list while the menu is up can't make the action disagree with its label.
+    func requestRemove(_ entry: LibraryGridEntry, listKey: String?, listTitle: String?) {
+        guard let key = listKey else {
             if LibraryRepository.shared.isSaved(id: entry.item.id, type: entry.item.type) {
                 LibraryRepository.shared.toggleSaved(item: entry.item)
             }
@@ -176,16 +179,11 @@ final class LibraryViewModel: ObservableObject {
         let removal = LibraryPendingRemoval(
             item: entry.item,
             listKey: key,
-            listTitle: selectedSectionTitle,
+            listTitle: listTitle,
             providerName: providerName
         )
         if LibraryRepository.shared.removalNeedsConfirmation(item: entry.item, listKey: key) {
-            // After the context menu's own dismissal (the beat the hold menu waits too), so the
-            // alert isn't presented while the menu is still leaving.
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 400_000_000)
-                self?.pendingRemoval = removal
-            }
+            pendingRemoval = removal
         } else {
             performRemoval(removal, confirmed: false)
         }
@@ -208,7 +206,7 @@ final class LibraryViewModel: ObservableObject {
         ) { [weak self] message in
             // Called off the main thread; nil = removed.
             guard let message else { return }
-            Task { @MainActor in self?.actionError = message }
+            Task { @MainActor in self?.actionError = LibraryGridPolicy.removeFailedMessage(message) }
         }
     }
 

@@ -17,6 +17,7 @@ import com.nuvio.app.features.library.sync.consumeCursorPages
 import com.nuvio.app.features.library.sync.libraryDeltaPageSize
 import com.nuvio.app.features.library.sync.librarySnapshotPageSize
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
+import com.nuvio.app.features.mdblist.localizedMdbListMessage
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tracking.TrackingLibraryProvider
 import com.nuvio.app.features.tracking.TrackingLibraryTab
@@ -42,6 +43,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -542,9 +544,10 @@ object LibraryRepository {
      * throws) would abort a Trakt removal, and every remove would refresh all of them.
      *
      * Non-suspending and failure-contained, like [toggleSaved]: a Kotlin exception that escapes a
-     * suspend call into Swift without `@Throws` terminates the app. [onFinished] gets nil on success
-     * or the failure's message, off the main thread. tvOS shows it itself: the shared toast
-     * controller is a no-op there.
+     * suspend call into Swift without `@Throws` terminates the app. [onFinished] gets, off the main
+     * thread, nil when the title was removed (or the remove was abandoned because the profile or
+     * account changed), else the failure's message: MDBList's mapped to its own copy, possibly empty
+     * when the provider gave none. tvOS shows it itself: the shared toast controller is a no-op there.
      */
     fun removeFromListAsync(
         item: LibraryItem,
@@ -555,9 +558,9 @@ object LibraryRepository {
         ensureLoaded()
         val profileId = localState.snapshot().token.profileId
         syncScope.launch {
+            val provider = libraryProviderOwning(listKey)
             val failure = try {
-                val provider = libraryProviderOwning(listKey)
-                    ?: error("No connected library has the list $listKey")
+                checkNotNull(provider) { "No connected library has the list $listKey" }
                 provider.applyMembership(
                     profileId = profileId,
                     item = item,
@@ -566,11 +569,19 @@ object LibraryRepository {
                 )
                 null
             } catch (error: CancellationException) {
-                throw error
+                // MDBList throws its own CancellationException when the profile or account changes
+                // mid-write ("MDBList profile changed"); syncScope itself is never cancelled. That
+                // remove is abandoned for a profile the viewer has left: nothing to report.
+                if (!isActive) throw error
+                log.w { "Abandoned remove item=${item.id} from list=$listKey: ${error.message}" }
+                null
             } catch (error: Throwable) {
                 log.e(error) { "Failed to remove item=${item.id} type=${item.type} from list=$listKey" }
-                error.message?.takeIf { it.isNotBlank() }
-                    ?: resourceString("Failed to update Trakt lists", StringKey.trakt_lists_update_failed)
+                if (provider?.providerId == TrackingProviderId.MDBLIST) {
+                    error.localizedMdbListMessage()
+                } else {
+                    error.message?.trim().orEmpty()
+                }
             }
             publish()
             onFinished(failure)
