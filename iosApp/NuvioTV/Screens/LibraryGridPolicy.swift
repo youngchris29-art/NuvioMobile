@@ -5,11 +5,14 @@ import Foundation
 ///
 /// `LibraryViewModel` feeds it plain values (no SharedCore types), so `LibraryGridPolicyTests`
 /// can pin every decision without a Kotlin runtime. The view only renders what this says.
-enum LibraryGridPolicy {
+///
+/// `nonisolated` (like `PlayerEngineRouter`): pure rules over Sendable values, so the test target
+/// can build and compare them without the app's default MainActor isolation getting in the way.
+nonisolated enum LibraryGridPolicy {
     // MARK: - Watch state
 
     /// A title's watch state as the grid sees it.
-    struct WatchState: Equatable {
+    nonisolated struct WatchState: Equatable, Sendable {
         /// A movie's own marker, or a series that is fully watched (or marked at title level):
         /// the same test the hold menu's "Mark as Unwatched" label uses.
         var isWatched: Bool
@@ -23,7 +26,9 @@ enum LibraryGridPolicy {
     }
 
     /// Below this a position is a misclick or a probe; at or above `progressCeiling` it reads as
-    /// done. Either way no bar is drawn and the title isn't "In Progress".
+    /// done. Either way no bar is drawn and the title isn't "In Progress". In practice the shared
+    /// completion rule (`WatchProgressEntry.isEffectivelyCompleted`, from 90 %) ends bars first:
+    /// the ceiling is a backstop for an entry that reports a position but no completion.
     static let progressFloor = 0.02
     static let progressCeiling = 0.97
 
@@ -37,7 +42,7 @@ enum LibraryGridPolicy {
     // MARK: - Smart filters
 
     /// VortX's smart filters (Short is left out: library items carry no runtime).
-    enum SmartFilter: String, CaseIterable, Hashable {
+    nonisolated enum SmartFilter: String, CaseIterable, Hashable, Sendable {
         case unwatched
         case inProgress
         case watched
@@ -97,9 +102,10 @@ enum LibraryGridPolicy {
 
     // MARK: - Header
 
-    /// The count line under the title, e.g. "31 movies · 17 series". `kinds` are the shared
-    /// projection's type keys (`mediaCategory ?? type`, lowercased), one per visible title.
-    /// Empty when there is nothing to count.
+    /// The count line under the title, e.g. "31 movies · 17 series". `kinds` are each visible
+    /// title's `mediaCategory ?? type`, in any case or spelling (`normalizedKind` folds them).
+    /// Empty when there is nothing to count. (Plural forms are hand-made for English; the
+    /// translation pass should turn each noun into one plural-variant key.)
     static func countLine(kinds: [String]) -> String {
         var movies = 0
         var series = 0
@@ -190,7 +196,7 @@ enum LibraryGridPolicy {
 
     // MARK: - What the screen shows
 
-    enum Content: Equatable {
+    nonisolated enum Content: Equatable, Sendable {
         /// First load, or a load still running with nothing to show yet.
         case loading
         /// A load failed and there is nothing cached to show. Offers Retry.
@@ -229,14 +235,7 @@ enum LibraryGridPolicy {
         guard let providerName else {
             return String(localized: "Add movies and shows with the + button on a title\u{2019}s page.")
         }
-        return String(localized: "Titles you add to your \(providerName) watchlist or lists show up here.")
-    }
-
-    /// A provider list that is empty while the provider has other lists.
-    static func emptyListTitle(listTitle: String) -> String {
-        let trimmed = listTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return String(localized: "Nothing in this list yet") }
-        return String(localized: "Nothing in \(trimmed) yet")
+        return String(localized: "Titles you save on \(providerName) show up here.")
     }
 
     static var noMatchesTitle: String {

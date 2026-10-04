@@ -6,6 +6,7 @@ import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.coroutines.uncaughtCoroutineLogger
 import com.nuvio.app.core.i18n.StringKey
 import com.nuvio.app.core.i18n.resourceString
+import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.poster.CustomPosterScreen
 import com.nuvio.app.core.poster.CustomPosterUrlRepository
 import com.nuvio.app.core.poster.withCustomPosterUrls
@@ -546,10 +547,12 @@ object LibraryRepository {
 
     /**
      * Fork (tvOS Library L1, 2026-10-04): the Library screen's Retry after a failed provider or
-     * server load. The same pull mobile's `retryLibraryLoad` runs, wrapped so nothing can escape
-     * into Swift ([pullFromServer] already logs its own sync failures; this only adds the guard).
+     * server load. Mobile's `retryLibraryLoad`: force a network-status refresh, then pull, wrapped
+     * so nothing can escape into Swift ([pullFromServer] already logs its own sync failures; this
+     * only adds the guard).
      */
     fun retryLoadAsync() {
+        NetworkStatusRepository.requestRefresh(force = true)
         val profileId = ProfileRepository.activeProfileId
         syncScope.launch {
             try {

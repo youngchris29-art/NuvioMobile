@@ -140,11 +140,16 @@ final class LibraryViewModel: ObservableObject {
     /// The hold menu's remove. With a provider list open it removes the title from THAT list.
     /// `toggleSaved` would flip the provider's default list instead (the watchlist), which on any
     /// other list would add the title to the watchlist rather than remove it. The local library has
-    /// no lists, so it keeps `toggleSaved`, which removes a saved title.
+    /// no lists (`selectedSectionKey` is always nil there), so it keeps `toggleSaved`, guarded like
+    /// the catalog hold menu (`labelStillMatchesLiveState`): a menu built before the title was
+    /// removed elsewhere must not re-add it.
+    ///
+    /// Known gap: on Simkl, removing a title that has watch history or a rating is refused by the
+    /// provider's destructive-removal guard; the shared wrapper shows that as a toast.
     func remove(_ entry: LibraryGridEntry) {
         if let key = selectedSectionKey {
             LibraryRepository.shared.removeFromListAsync(item: entry.item, listKey: key)
-        } else {
+        } else if LibraryRepository.shared.isSaved(id: entry.item.id, type: entry.item.type) {
             LibraryRepository.shared.toggleSaved(item: entry.item)
         }
     }

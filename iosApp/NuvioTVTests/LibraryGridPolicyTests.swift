@@ -123,8 +123,7 @@ final class LibraryGridPolicyTests: XCTestCase {
         XCTAssertEqual(Policy.emptyTitle(providerName: nil), "Your library is empty")
         XCTAssertEqual(Policy.emptyTitle(providerName: "Simkl"), "Your Simkl library is empty")
         XCTAssertEqual(Policy.failedTitle(providerName: "Trakt"), "Couldn\u{2019}t load your Trakt library")
-        XCTAssertEqual(Policy.emptyListTitle(listTitle: "Plan to Watch"), "Nothing in Plan to Watch yet")
-        XCTAssertEqual(Policy.emptyListTitle(listTitle: " "), "Nothing in this list yet")
+        XCTAssertEqual(Policy.emptyMessage(providerName: "Simkl"), "Titles you save on Simkl show up here.")
     }
 
     func testRemoveLabelNamesTheOpenList() {

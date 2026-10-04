@@ -12,7 +12,7 @@ import SharedCore
 /// - one control row: a List pill (the provider's lists), type segments (only with more than one
 ///   type), a Sort pill, and the smart filters Unwatched / In Progress / Watched (only the ones
 ///   that would change the grid);
-/// - cards with a watched tick or a progress bar;
+/// - cards with a watched tick or a progress bar (`PosterCard.watchBadge`);
 /// - a hold menu with Mark as Watched / Unwatched and a list-aware Remove;
 /// - real loading, failed (with Retry), empty and no-match states.
 struct LibraryView: View {
@@ -114,7 +114,7 @@ struct LibraryView: View {
                         .padding(.horizontal, Theme.Spacing.xs)
                         .padding(.vertical, Theme.Spacing.xxs)
                         .overlay {
-                            RoundedRectangle(cornerRadius: Theme.Spacing.xs)
+                            RoundedRectangle(cornerRadius: Theme.Radius.chip)
                                 .stroke(Theme.Palette.textSecondary, lineWidth: 1)
                         }
                         .accessibilityLabel(Text(model.providerName ?? badge))
@@ -133,22 +133,13 @@ struct LibraryView: View {
         case .failed(let message):
             failedState(message: message)
         case .empty:
-            // A provider list can be empty while its other lists aren't: keep the pills so the
-            // viewer can move on instead of being stuck on an empty list.
-            if model.sections.count > 1 {
-                controls
-                messageState(
-                    systemImage: "list.bullet",
-                    title: LibraryGridPolicy.emptyListTitle(listTitle: model.selectedSectionTitle ?? ""),
-                    message: nil
-                )
-            } else {
-                messageState(
-                    systemImage: "books.vertical",
-                    title: LibraryGridPolicy.emptyTitle(providerName: model.providerName),
-                    message: LibraryGridPolicy.emptyMessage(providerName: model.providerName)
-                )
-            }
+            // Every provider drops empty lists from its sections (Trakt, Simkl and MDBList alike),
+            // so `.empty` only happens with no lists at all: there is nothing to switch to.
+            messageState(
+                systemImage: "books.vertical",
+                title: LibraryGridPolicy.emptyTitle(providerName: model.providerName),
+                message: LibraryGridPolicy.emptyMessage(providerName: model.providerName)
+            )
         case .noMatches:
             controls
             noMatchesState
@@ -162,13 +153,12 @@ struct LibraryView: View {
         LazyVGrid(columns: columns, spacing: Theme.Spacing.xl) {
             ForEach(model.entries) { entry in
                 NavigationLink(value: TitleRoute(preview: entry.item.toMetaPreview())) {
-                    PosterCard(title: entry.item.name, imageURL: entry.item.poster, fallbackImageURL: entry.item.rawPosterUrl)
-                        // Inside the label, so the badges lift with the card on focus. Sized to
-                        // the artwork, which sits at the top of the card above the title.
-                        .overlay(alignment: .top) {
-                            LibraryCardBadges(state: entry.state)
-                                .frame(width: posterStyle.width, height: posterStyle.height)
-                        }
+                    PosterCard(
+                        title: entry.item.name,
+                        imageURL: entry.item.poster,
+                        fallbackImageURL: entry.item.rawPosterUrl,
+                        watchBadge: PosterWatchBadge(isWatched: entry.state.isWatched, progress: entry.state.progress)
+                    )
                 }
                 .cardFocusButtonStyle()
                 .posterButtonShape()
@@ -400,40 +390,5 @@ struct LibraryView: View {
         } else if !files.isEmpty {
             filePicker = CloudFilePickerRoute(item: item)
         }
-    }
-}
-
-/// Library L1: the watched tick (top trailing) and the progress bar (bottom) over a card's
-/// artwork. Decoration only: not focusable, not hit-tested, hidden from VoiceOver (the hold menu's
-/// "Mark as Unwatched" label already says a title is watched).
-struct LibraryCardBadges: View {
-    let state: LibraryGridPolicy.WatchState
-
-    var body: some View {
-        ZStack {
-            if state.isWatched {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(Theme.Font.sectionTitle)
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(Theme.Palette.accentText, Theme.Palette.accent)
-                    .shadow(color: .black.opacity(0.5), radius: 4)
-                    .padding(Theme.Spacing.sm)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            } else if let progress = state.progress {
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.3))
-                        Capsule()
-                            .fill(Theme.Palette.accent)
-                            .frame(width: geometry.size.width * progress)
-                    }
-                    .frame(height: 6)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                }
-                .padding(Theme.Spacing.sm)
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }

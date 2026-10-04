@@ -873,6 +873,9 @@ struct PosterCard: View {
     var width: CGFloat? = nil
     var height: CGFloat? = nil
     var showTitle: Bool? = nil
+    /// Library L1 (2026-10-04): a watched tick or a progress bar on the artwork. nil (every call
+    /// site but the Library grid) draws nothing, and the overlay below then holds no view.
+    var watchBadge: PosterWatchBadge? = nil
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.posterStyle) private var style
@@ -1020,6 +1023,17 @@ struct PosterCard: View {
                 // `DebugAXIdentifier` for why the probe has to publish this rect as well as the
                 // rail's.
                 .modifier(DebugAXIdentifier("poster_card"))
+                // Library L1: the watched tick / progress bar. Here, before the ring overlay and
+                // `CardArtworkFocusLift`, so it lifts and scales with the artwork in every focus
+                // mode (an overlay on the whole card stays at base geometry and the lifted artwork
+                // covers it, the FEAT-14 finding). Inside the ring band like LandscapeCard's bar.
+                .overlay {
+                    if let watchBadge {
+                        PosterWatchBadgeView(badge: watchBadge)
+                            .clipShape(RoundedRectangle(cornerRadius: max(0, style.cornerRadius - inset)))
+                            .padding(inset)
+                    }
+                }
                 // FEAT-14 (final): the ring is drawn on the artwork, inside its own clip bounds —
                 // same inside-strokeBorder treatment as the trailer surface's ring in
                 // `InlineTrailerCard`. See the file-level comment above for why this replaced the
@@ -1368,5 +1382,46 @@ struct CardAirDatePill: View {
             .padding(.horizontal, Theme.Spacing.sm)
             .padding(.vertical, Theme.Spacing.xxs)
             .background(Color.black.opacity(0.65), in: Capsule())
+    }
+}
+
+/// Library L1 (2026-10-04): watch state drawn on a poster's artwork (`PosterCard.watchBadge`).
+struct PosterWatchBadge: Equatable {
+    var isWatched: Bool
+    /// 0...1. Drawn only when the title isn't watched.
+    var progress: Double?
+}
+
+/// The watched tick (top trailing) or the progress bar (bottom edge, LandscapeCard's bar: 6 pt,
+/// `Palette.progress` over a 25 % white track). Decoration only: never focusable, never
+/// hit-tested, hidden from VoiceOver (the hold menu's "Mark as Unwatched" already says it).
+struct PosterWatchBadgeView: View {
+    let badge: PosterWatchBadge
+
+    var body: some View {
+        ZStack {
+            if badge.isWatched {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(Theme.Font.sectionTitle)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(Theme.Palette.background, Color.white)
+                    .shadow(color: .black.opacity(0.5), radius: 4)
+                    .padding(Theme.Spacing.sm)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            } else if let progress = badge.progress {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Color.white.opacity(0.25))
+                        Rectangle()
+                            .fill(Theme.Palette.progress)
+                            .frame(width: geo.size.width * min(max(progress, 0), 1))
+                    }
+                }
+                .frame(height: 6)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
