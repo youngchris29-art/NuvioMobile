@@ -546,8 +546,9 @@ object LibraryRepository {
      * Non-suspending and failure-contained, like [toggleSaved]: a Kotlin exception that escapes a
      * suspend call into Swift without `@Throws` terminates the app. [onFinished] gets, off the main
      * thread, nil when the title was removed (or the remove was abandoned because the profile or
-     * account changed), else the failure's message: MDBList's mapped to its own copy, possibly empty
-     * when the provider gave none. tvOS shows it itself: the shared toast controller is a no-op there.
+     * account changed), else the failure's message: MDBList's auth and sync failures mapped to its own
+     * copy, other messages as thrown (possibly empty, which tvOS shows as a generic line). tvOS
+     * shows it itself: the shared toast controller is a no-op there.
      */
     fun removeFromListAsync(
         item: LibraryItem,
@@ -560,7 +561,8 @@ object LibraryRepository {
         syncScope.launch {
             val provider = libraryProviderOwning(listKey)
             val failure = try {
-                checkNotNull(provider) { "No connected library has the list $listKey" }
+                // The list went away between the menu and the tap: the MDBList writer's own words.
+                checkNotNull(provider) { "This list is no longer available" }
                 provider.applyMembership(
                     profileId = profileId,
                     item = item,
@@ -577,7 +579,9 @@ object LibraryRepository {
                 null
             } catch (error: Throwable) {
                 log.e(error) { "Failed to remove item=${item.id} type=${item.type} from list=$listKey" }
-                if (provider?.providerId == TrackingProviderId.MDBLIST) {
+                if (provider?.providerId == TrackingProviderId.MDBLIST && error !is IllegalArgumentException) {
+                    // MDBList's auth and sync failures carry enum names or HTTP codes; its
+                    // `require` failures ("This list is no longer available") are already copy.
                     error.localizedMdbListMessage()
                 } else {
                     error.message?.trim().orEmpty()
