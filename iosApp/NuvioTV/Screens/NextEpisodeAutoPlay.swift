@@ -675,6 +675,14 @@ final class NextEpisodeEngine: ObservableObject {
         let effectivePlugins: Set<String> = manualAutoSelect ? [] : settings.streamAutoPlaySelectedPlugins
         let effectiveRegex = manualAutoSelect ? "" : settings.streamAutoPlayRegex
         let preferredBingeGroup: String? = settings.streamAutoPlayPreferBingeGroup ? context.bingeGroup : nil
+        // beta.19-rc1 verdict (A, BUG-136): "Auto-Play Best Source" (the user's own FIRST_STREAM
+        // mode) ranks the streams that arrived by quality, the same as the stream picker's
+        // first-play walk. The mobile-parity forced first-stream (MANUAL mode with the next-episode
+        // or binge-group toggles) keeps list order. Kotlin default arguments do not bridge to
+        // Swift, so the ranking is passed explicitly.
+        let ranking: StreamAutoPlayRanking = (effectiveMode == StreamAutoPlayMode.firstStream && !manualAutoSelect)
+            ? StreamAutoPlayPlatform.shared.firstStreamRanking
+            : StreamAutoPlayRanking.listOrder
 
         if bingeGroupOnly && preferredBingeGroup == nil { return nil }
 
@@ -698,7 +706,8 @@ final class NextEpisodeEngine: ObservableObject {
             preferBingeGroupInSelection: settings.streamAutoPlayPreferBingeGroup,
             bingeGroupOnly: bingeGroupOnly || bingeGroupOnlyManualMode,
             debridEnabled: debrid.canResolvePlayableLinks,
-            activeResolverProviderId: { let id: String? = debrid.activeResolverProviderId; return id }()
+            activeResolverProviderId: { let id: String? = debrid.activeResolverProviderId; return id }(),
+            ranking: ranking
         )
     }
 

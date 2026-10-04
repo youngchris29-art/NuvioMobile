@@ -58,4 +58,50 @@ final class DetailAboutRowsTests: XCTestCase {
         XCTAssertEqual(make(director: [], writer: [], studios: [], networks: [], country: nil, language: nil,
                             status: nil, awards: nil, ratings: []), [])
     }
+
+    // MARK: - Status values (beta.19-rc1 verdict, D1, BUG-137)
+
+    /// Steven's French screenshot read "Statut Released" / "Statut Ended": the label translated, the
+    /// value did not. Every known TMDB / add-on status word maps to a `String(localized:)` key, in
+    /// any case and with surrounding whitespace. Compared through `String(localized:)` so the test
+    /// holds in any test-runner language.
+    func testStatusKnownValuesMap() {
+        let expected: [(raw: String, key: String)] = [
+            ("Released", String(localized: "Released")),
+            ("released", String(localized: "Released")),
+            ("  RELEASED  ", String(localized: "Released")),
+            ("Ended", String(localized: "Ended")),
+            ("Returning Series", String(localized: "Returning Series")),
+            ("returning series", String(localized: "Returning Series")),
+            ("Continuing", String(localized: "Continuing")),
+            ("Canceled", String(localized: "Canceled")),
+            ("Cancelled", String(localized: "Canceled")),
+            ("In Production", String(localized: "In Production")),
+            ("Planned", String(localized: "Planned")),
+            ("Post Production", String(localized: "Post Production")),
+            ("Rumored", String(localized: "Rumored")),
+            ("Pilot", String(localized: "Pilot")),
+        ]
+        for (raw, key) in expected {
+            XCTAssertEqual(DetailStatusText.localized(raw), key, "status '\(raw)'")
+        }
+        // And it reaches the Status row of the About table.
+        let row = make(status: "Ended").first { $0.label == String(localized: "Status") }
+        XCTAssertEqual(row?.value, String(localized: "Ended"))
+    }
+
+    /// An add-on's own wording is shown as given (trimmed), never dropped or rewritten.
+    func testStatusUnknownPassesThrough() {
+        XCTAssertEqual(DetailStatusText.localized("Hiatus"), "Hiatus")
+        XCTAssertEqual(DetailStatusText.localized("  On Hold "), "On Hold")
+        XCTAssertEqual(make(status: "Hiatus").first { $0.label == String(localized: "Status") }?.value, "Hiatus")
+    }
+
+    func testStatusNilAndBlank() {
+        XCTAssertNil(DetailStatusText.localized(nil))
+        XCTAssertNil(DetailStatusText.localized(""))
+        XCTAssertNil(DetailStatusText.localized("   \n "))
+        XCTAssertFalse(make(status: "  ").contains { $0.label == String(localized: "Status") },
+                       "a blank status must not produce a Status row")
+    }
 }

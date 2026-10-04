@@ -360,6 +360,9 @@ object StreamsRepository {
                     bingeGroupOnly = bingeGroupOnly,
                     debridEnabled = debridSettings.canResolvePlayableLinks,
                     activeResolverProviderId = debridSettings.activeResolverProviderId,
+                    // beta.19-rc1 verdict (A, BUG-136): tvOS ranks FIRST_STREAM by quality;
+                    // mobile stays on list order (StreamAutoPlayPlatform).
+                    ranking = StreamAutoPlayPlatform.firstStreamRanking,
                 )
 
             fun settleAutoPlay(evaluation: StreamAutoPlayEvaluation) {

@@ -2376,6 +2376,64 @@ enum PinnedRowSettle {
         offsetY <= 0.5 && margin > bandHigh
     }
 
+    /// T1 leg 2 (Steven beta.19-rc1 verdict, 2026-10-03; BUG-66 residual): Steven's Tab Bar
+    /// Geometry pane read `y=-13 st=part` at rest. A linked tab bar moves 1:1 with the rows'
+    /// offset, so one reading (H1) is that the FIRST row rested a few points below the true top.
+    /// With `TabBarRestFix.leg == 2` the settle corrector scrolls that row back to offset 0, after
+    /// which the next settle lands on `topRestExempt` like any rest at the true top.
+    ///
+    /// The first row is recognised from its own frame: its top in CONTENT coordinates
+    /// (`rowTop + offsetY`) is the rows list's top inset, `heroPinnedRowsHeadroom` (8). `topSnapMax`
+    /// keeps the snap to "a few points": a deeper first-row rest is the up-walk deep park, which the
+    /// ordinary corrector and the Up-into-hero reveal own. Pure, for `PinnedRowTopSnapTests`.
+    nonisolated static let topSnapMax: CGFloat = 48
+
+    nonisolated static func topSnapApplies(leg: Int, offsetY: CGFloat, rowContentTop: CGFloat,
+                                           headroom: CGFloat) -> Bool {
+        leg == 2 && offsetY > 0.5 && offsetY <= topSnapMax && rowContentTop <= headroom + 1
+    }
+
+    /// T1 leg 2: why an applicable top snap does not fire this settle, or nil when it may. The
+    /// snap is planned BEFORE the band verdict (the rest it fixes is usually inside the band), so
+    /// it checks the corrector's brakes itself instead of inheriting them from the branches below:
+    ///  - `knob`: `debug.pinnedSettleDisarm`, a corrector that never engages;
+    ///  - `undone`: the engine already put a top snap back this session (`topSnapLatched`), so the
+    ///    first row's deep rest is the engine's own reveal and a snap would only bob;
+    ///  - `returned`: this settle found the last correction pulled back or dropped;
+    ///  - `disarmed`: the MISS latch or the walk direction's pull-back brake;
+    ///  - `budget`: the row's wall-clock window is spent (a snap spends it like any correction);
+    ///  - `bound`: moving the row down by `offsetY` would push the focused card's lockup past the
+    ///    fold (`bottomRoom`, the bound every downward correction obeys).
+    nonisolated static func topSnapHold(knobDisarmed: Bool, latched: Bool, returned: Bool,
+                                        disarmed: Bool, budgetSpent: Bool,
+                                        bottomRoom: CGFloat, offsetY: CGFloat) -> String? {
+        if knobDisarmed { return "knob" }
+        if latched { return "undone" }
+        if returned { return "returned" }
+        if disarmed { return "disarmed" }
+        if budgetSpent { return "budget" }
+        if bottomRoom < offsetY - 0.5 { return "bound" }
+        return nil
+    }
+
+    /// T1 leg 2: the snap fires on the SECOND of two consecutive settles that read the same
+    /// first-row offset. A focus move from the hero into row 1 arms its settle through the epoch
+    /// (`invalidateEpoch`, `settleDelay` after the focus change), and a reveal of a few points moves
+    /// in steps too small for `noteScroll` to call motion, so that first settle can land while the
+    /// engine's own scroll is still running. Snapping then would race the reveal (and an engine
+    /// tail that wins reads as an undone snap). The first applicable settle records a candidate and
+    /// asks for one re-check; the re-check, `settleSeq` exactly one later on the same row within
+    /// ±0.5 pt, fires. Pure, for `PinnedRowTopSnapTests`.
+    nonisolated struct TopSnapCandidate: Equatable, Sendable {
+        var seq: Int
+        var rowKey: String
+        var offsetY: CGFloat
+
+        func confirms(seq: Int, rowKey: String, offsetY: CGFloat) -> Bool {
+            seq == self.seq &+ 1 && rowKey == self.rowKey && abs(offsetY - self.offsetY) <= 0.5
+        }
+    }
+
     /// rc14 (BUG-121): how many settle re-checks a late rest gets before the ordinary correction
     /// path runs. Review r1 P2: the caller's chain budget (`PinnedRowSettleRevealModifier
     /// .maxSettleHops`, 3) bounds the whole chain, so this must leave at least one hop for the
@@ -2731,8 +2789,22 @@ enum PinnedRowSettle {
     ///
     /// `progress` (2026-09-30) is sampled by `noteScroll` while the correction is outstanding, so
     /// the detector can tell a pull-back from a correction that never applied (`DROPPED`).
+    ///
+    /// `isTopSnap` (T1 leg 2): this correction was a top-rest snap. A snap is judged by its own
+    /// rule (`settlePlan`, "TOPSNAP-UNDONE") and never by the pull-back detector, so it cannot
+    /// spend the walk direction's pull-back budget that the ordinary corrector depends on. Always
+    /// false at legs 0 and 1.
     nonisolated(unsafe) private static var lastCorrection: (rowKey: String, fromMargin: CGFloat, at: Date,
-                                                            progress: CorrectionProgress)?
+                                                            progress: CorrectionProgress, isTopSnap: Bool)?
+    /// T1 leg 2: set when the engine undid a top snap (the first row went back below the top on
+    /// the same row epoch). From then on leg 2 holds (`topSnapHold` → `undone`) until a poster-size
+    /// regime change, so a first row the engine itself parks deep is snapped at most once instead
+    /// of bobbing on every horizontal move.
+    nonisolated(unsafe) private static var topSnapLatched = false
+    /// T1 leg 2: the settle that first saw an applicable top snap, waiting for its confirming
+    /// re-check (`TopSnapCandidate`). Valid only for the very next settle (`settleSeq` + 1), so it
+    /// needs no clearing anywhere else.
+    nonisolated(unsafe) private static var topSnapCandidate: TopSnapCandidate?
     /// Session totals, not host-scoped: a device that pulls corrections back does it everywhere.
     /// BUG-112 (Item B) scopes the brake itself per WALK DIRECTION rather than dropping the
     /// session-wide framing entirely — see `PullBackLedger`.
@@ -2984,6 +3056,8 @@ enum PinnedRowSettle {
         pullBackFrom = 0
         correctionsFired.removeAll()
         lastCorrection = nil
+        // T1 leg 2: an undone top snap is evidence about the old regime's first-row rest too.
+        topSnapLatched = false
         // Siblings: an outstanding verification promises an offset measured under the OLD layout
         // (landing it would be judged against content that no longer exists — a false MISS, and two
         // of those are the session disarm this function just cleared), an in-flight window belongs
@@ -3629,7 +3703,10 @@ enum PinnedRowSettle {
         // re-issued.
         var pulledBack = false
         var dropped: CorrectionProgress?
+        // T1 leg 2: `!last.isTopSnap` — a top snap is judged by its own rule just below, never
+        // here. Always true at legs 0 and 1, where no correction is a top snap.
         if let last = lastCorrection,
+           !last.isTopSnap,
            last.rowKey == m.rowKey,
            abs(m.margin - last.fromMargin) <= pullBackTolerance,
            Date().timeIntervalSince(last.at) < 2 {
@@ -3639,6 +3716,26 @@ enum PinnedRowSettle {
             case .pulledBack: pulledBack = true
             case .dropped: dropped = last.progress
             }
+        }
+        // T1 leg 2 (Steven beta.19-rc1 verdict, 2026-10-03): did the engine undo a top snap? The
+        // snap stays `lastCorrection` for the whole row epoch (a horizontal move does not end it),
+        // so a first row back below the true top on a LATER settle of the same row counts too,
+        // however long after the snap it came: that is the engine's own reveal re-parking the row,
+        // and snapping again would bob it on every move. Latch leg 2 off instead (`topSnapLatched`)
+        // and leave the rest to the ordinary path. Never while the snap's own scroll is still
+        // animating: a mid-flight offset is not a rest.
+        var topSnapNote = ""
+        if let last = lastCorrection, last.isTopSnap, last.rowKey == m.rowKey,
+           !(nudgeDeadline.map { Date() < $0 } ?? false),
+           sample.offsetY > 0.5 {
+            lastCorrection = nil
+            topSnapLatched = true
+            topSnapNote = " topSnapUndone=1"
+            NSLog("[HomeScrollProbe] settle %@",
+                  "TOPSNAP-UNDONE row=\(m.rowKey) y=\(Int(sample.offsetY.rounded()))"
+                    + " firedY=\(Int(last.progress.firedY.rounded()))"
+                    + " moved=\(Int(last.progress.maxProgress.rounded()))"
+                    + " — the first row went back below the top after a top snap; leg 2 holds for this session")
         }
 
         let cap = maxSlideCapForReport
@@ -3693,6 +3790,8 @@ enum PinnedRowSettle {
         // restRange for a uniform row and the floored label's for a shaped last row. A separate
         // statement so the long concatenation above does not grow.
         line += restLawFields(m)
+        // T1 leg 2: empty unless this settle found a top snap undone (see above).
+        line += topSnapNote
 
         // The correction target is a legibility BAND, not a point (Wave G, BUG-87). Both edges are
         // real constraints that the row's own geometry supplies, and every margin between them is
@@ -3875,6 +3974,86 @@ enum PinnedRowSettle {
             if standDownRow == m.rowKey { standDownRow = nil }
             if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 topRest=1") }
             return Plan(report: line + " nudge=0 topRest=1", targetY: nil)
+        }
+
+        // T1 leg 2 (Steven beta.19-rc1 verdict, 2026-10-03; BUG-66 residual): the top-rest snap.
+        // OFF unless `-debug.tabBarRestFix 2` (`TabBarRestFix.leg`). The FIRST row resting a few
+        // points below the true top (`topSnapApplies`) is scrolled back to offset 0, so a tab bar
+        // that follows the rows' offset 1:1 comes back fully on screen. Planned here, before the
+        // band verdict, because that rest is usually INSIDE the band (offset 13 puts the title at
+        // margin 43 against `bandHi` 48) and the in-band branch below would close it untouched.
+        // At offset 0 the first row's title sits at margin 56, above `bandHi` (never more than 48),
+        // so the next settle is the `topRest=1` exemption and the snap does not chain.
+        //
+        // A settle decision on a focused row like every other correction here: never a scroll fired
+        // by a focus change, and it needs a focused row (`state=nofocus` above returns first), so a
+        // half-shown bar while focus sits on the hero is leg 1's case, not this one's. The brakes
+        // the branches below would apply are checked by `topSnapHold`; a held snap falls through to
+        // the ordinary path unchanged, with `topSnapHeld=<why>` on the line. An unheld snap fires
+        // only once two consecutive settles agree on the offset (`TopSnapCandidate`), so it never
+        // races the engine's own reveal.
+        if PinnedRowSettle.topSnapApplies(leg: TabBarRestFix.leg,
+                                          offsetY: sample.offsetY,
+                                          rowContentTop: m.rowTop + sample.offsetY,
+                                          headroom: Theme.Size.heroPinnedRowsHeadroom) {
+            // Same rule as the ordinary path: never stack a correction on one still animating.
+            if let deadline = nudgeDeadline, Date() < deadline {
+                return Plan(report: line + " nudge=0 inflight=1",
+                            targetY: nil,
+                            retryAfter: max(deadline.timeIntervalSinceNow, 0) + 0.05)
+            }
+            let snapBottomRoom = m.viewportHeight - m.protectedBottom
+            let hold = PinnedRowSettle.topSnapHold(
+                knobDisarmed: disarmedByKnob,
+                latched: topSnapLatched,
+                returned: pulledBack || dropped != nil,
+                disarmed: disarmed || pullBack.disarmed,
+                budgetSpent: correctionsInWindow(m.rowKey) >= maxCorrectionsPerWindow,
+                bottomRoom: snapBottomRoom,
+                offsetY: sample.offsetY)
+            let confirmed = topSnapCandidate?.confirms(seq: settleSeq, rowKey: m.rowKey,
+                                                       offsetY: sample.offsetY) ?? false
+            topSnapCandidate = nil
+            if let hold {
+                line += " topSnapHeld=\(hold)"
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] settle %@",
+                          "topSnap held=\(hold) row=\(m.rowKey) y=\(Int(sample.offsetY.rounded()))"
+                            + " bound=\(Int(snapBottomRoom.rounded()))")
+                }
+            } else if !confirmed {
+                // First sighting: record it and re-check one `settleDelay` later (`TopSnapCandidate`).
+                // A retry plan, so no rest decision is announced and the title stays held for it.
+                // If the chain's hop budget runs out first, `abandonChain` ends it with no snap.
+                topSnapCandidate = TopSnapCandidate(seq: settleSeq, rowKey: m.rowKey, offsetY: sample.offsetY)
+                if HomeGeometryProbe.enabled {
+                    NSLog("[HomeScrollProbe] settle %@", line + " nudge=0 topSnapConfirm=1")
+                }
+                return Plan(report: line + " nudge=0 topSnapConfirm=1",
+                            targetY: nil,
+                            retryAfter: settleDelay)
+            } else {
+                // The ordinary correction tail (below), with the target pinned to the true top: the
+                // verification, the in-flight window and the row's wall-clock budget all apply, and
+                // `lastCorrection` marks it as a snap so the engine undoing it latches leg 2 off
+                // instead of spending the pull-back ledger.
+                let target: CGFloat = 0
+                consecutiveNudges += 1
+                nudgeDeadline = Date().addingTimeInterval(nudgeDuration + 0.2)
+                pendingVerification = Verification(expectedY: target, contentHeight: sample.contentHeight)
+                let firedAt = Date()
+                correctionsFired[m.rowKey, default: []].append(firedAt)
+                lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt,
+                                  progress: CorrectionProgress(firedY: sample.offsetY, targetY: target),
+                                  isTopSnap: true)
+                // Signed like the ordinary `nudge=`: positive moves the row DOWN.
+                line += " nudge=\(Int((sample.offsetY - target).rounded()))"
+                    + " bound=\(Int(snapBottomRoom.rounded()))"
+                    + " n=\(consecutiveNudges)"
+                    + " topSnap=1"
+                if HomeGeometryProbe.enabled { NSLog("[HomeScrollProbe] settle %@", line) }
+                return Plan(report: line, targetY: target)
+            }
         }
 
         // A rest inside the band needs nothing. The epoch closes for the `n=` counter's sake, but
@@ -4100,7 +4279,8 @@ enum PinnedRowSettle {
         let firedAt = Date()
         correctionsFired[m.rowKey, default: []].append(firedAt)
         lastCorrection = (rowKey: m.rowKey, fromMargin: m.margin, at: firedAt,
-                          progress: CorrectionProgress(firedY: sample.offsetY, targetY: target))
+                          progress: CorrectionProgress(firedY: sample.offsetY, targetY: target),
+                          isTopSnap: false)
         // `nudge` stays signed in the log: positive moved the row DOWN toward the clip edge,
         // negative pulled it UP. A device trace can read the direction straight off the line.
         line += " nudge=\(Int((sample.offsetY - target).rounded())) bound=\(Int(bottomRoom.rounded()))"

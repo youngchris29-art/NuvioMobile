@@ -2581,6 +2581,11 @@ final class NuvioTVUITests: XCTestCase {
     /// the same walk test17 uses), scrolls to the Episodes section and looks for the poster
     /// selector (`season_poster_<n>` identifiers). Skips loudly when the opened title is not a
     /// multi-season series or TMDB season posters are off, rather than failing on data.
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): a second, Classic-layout leg (`-detail_layout classic`)
+    /// proves that scrolling never changes the chips' glass — `debug_ux6`'s `glass=` is read before a
+    /// Down scroll, during it and 1 s after, and must be 0 each time. That leg runs even when the
+    /// Cinematic leg has nothing to check on posters; the poster skip is thrown last.
     func test33SeasonPosterRow() throws {
         let app = launchToHome(forceFreshLaunch: true)
         press(.down, times: 3)          // hero → CW → Streaming → first catalog row
@@ -2610,15 +2615,66 @@ final class NuvioTVUITests: XCTestCase {
         // shows it as the hero teaser; the Classic panel has its own leg (test80).
         let teaserShown = app.descendants(matching: .any)["detail_synopsis_teaser"].waitForExistence(timeout: 5)
         XCTAssertTrue(teaserShown, "detail_synopsis_teaser missing on an opened series Detail (Cinematic)")
+        // beta.19-rc1 verdict (D2): a title without season posters no longer ends the test here; the
+        // Classic glass leg below does not need them, so the skip is deferred to the very end.
+        var posterSkip: String?
         if anyPoster.count == 0 {
-            throw XCTSkip("season selector rendered as text chips — no TMDB season posters for this title (useSeasonPosters off or none returned)")
+            posterSkip = "season selector rendered as text chips — no TMDB season posters for this title (useSeasonPosters off or none returned)"
+        } else {
+            // The Down walk lands on the episode row (below the selector); the selector is one Up away.
+            if !moveFocus(.up, until: anyPoster.firstMatch, max: 3) { _ = moveFocus(.down, until: anyPoster.firstMatch, max: 3) }
+            pause(1)
+            shot(app, "33c_season_posters_focused")
+            XCTAssertGreaterThanOrEqual(anyPoster.count, 2, "poster selector should show one card per season")
         }
-        // The Down walk lands on the episode row (below the selector); the selector is one Up away.
-        if !moveFocus(.up, until: anyPoster.firstMatch, max: 3) { _ = moveFocus(.down, until: anyPoster.firstMatch, max: 3) }
-        pause(1)
-        shot(app, "33c_season_posters_focused")
-        XCTAssertGreaterThanOrEqual(anyPoster.count, 2, "poster selector should show one card per season")
         XCTAssertTrue(app.state == .runningForeground)
+
+        // Classic leg (beta.19-rc1 verdict, D2, BUG-140): one glass rule, scrolling never changes glass.
+        // The chips and Classic's synopsis panel used to go flat while the page scrolled and snap back
+        // ~150 ms after it stopped (Steven's video, 3:39.9). `debug_ux6`'s `glass=` is 1 exactly when
+        // the chips are flat (`chipGlassFlat`), so it must read 0 before a Down scroll, right after
+        // each Down press (during it) and 1 s after; on the base build the "during" read is `glass=1`.
+        // Trailers are forced off, so the one other reason for `glass=1` (a live background trailer)
+        // cannot be true. Which title opens does not matter: any Classic Detail page scrolls.
+        func glassProbe(_ a: XCUIApplication) -> (glass: Int, scrolling: Int)? {
+            let probe = a.staticTexts["debug_ux6"]
+            guard probe.waitForExistence(timeout: 4) else { return nil }
+            let label = probe.label
+            func token(_ name: String) -> Int? {
+                guard let r = label.range(of: "\(name)=") else { return nil }
+                return Int(label[r.upperBound...].prefix { $0.isNumber })
+            }
+            guard let glass = token("glass") else { return nil }
+            return (glass, token("scrolling") ?? 0)
+        }
+        let classic = launchToHome(extraArguments: ["-detail_layout", "classic", "-debug.trailerForceNoTrailer", "YES"],
+                                   forceFreshLaunch: true)
+        press(.down, times: 3)          // hero → CW → Streaming → first catalog row
+        press(.left, times: 6, gap: 0.3)
+        pause(1.0)
+        remote.press(.select)
+        pause(7)
+        shot(classic, "33d_classic_detail_opened")
+        guard let classicBefore = glassProbe(classic) else {
+            throw XCTSkip("the Classic walk did not open a Detail page (debug_ux6 absent) — nothing to measure")
+        }
+        var glassReads: [(name: String, glass: Int, scrolling: Int)] = [("before the scroll", classicBefore.glass, classicBefore.scrolling)]
+        for i in 1...3 {
+            remote.press(.down)
+            if let during = glassProbe(classic) { glassReads.append(("during Down \(i)", during.glass, during.scrolling)) }
+        }
+        pause(1.0)
+        if let after = glassProbe(classic) { glassReads.append(("1 s after the scroll", after.glass, after.scrolling)) }
+        shot(classic, "33e_classic_after_scroll")
+        add(XCTAttachment(string: glassReads.map { "\($0.name): glass=\($0.glass) scrolling=\($0.scrolling)" }.joined(separator: "\n")))
+        for read in glassReads {
+            XCTAssertEqual(read.glass, 0, "Classic chips went flat \(read.name) (glass=\(read.glass), scrolling=\(read.scrolling)) — scrolling must never change glass")
+        }
+        if !glassReads.contains(where: { $0.scrolling == 1 }) {
+            add(XCTAttachment(string: "NOTE: no read landed inside the scroll latch (scrolling=1 never seen), so this run held glass constant but did not catch a scroll in flight; the base build's glass=1 would also have been missed. Re-run if the attachment above is all zeros."))
+        }
+        XCTAssertTrue(classic.state == .runningForeground)
+        if let posterSkip { throw XCTSkip(posterSkip) }
     }
 
     // MARK: - Appearance baseline restore (state-aware; safe to run any time)
@@ -7868,6 +7924,49 @@ final class NuvioTVUITests: XCTestCase {
         }
         XCTAssertEqual(headerBefore.midX, 960, accuracy: 40, "header is not centred on the screen")
 
+        // Where the header is DRAWN. XCUITest frames ignore the `.visualEffect` that moves the
+        // title and pins the chips, and the `folder_header` container reports the union of its
+        // children, which includes the band's 600 pt overhang above the page (Gate 2 rerun:
+        // `(80, -443, 1760, 933)`), so neither gives screen positions once the grid scrolls. The
+        // title's own AX frame does, AT REST (s = 0, no effect applied): it is top-aligned in its
+        // slot, `restTop` below the page top. Everything else follows from
+        // `FolderHeaderGeometry`'s numbers (restated here; the UI test target cannot import the
+        // app): compact title slot [12, 76], band gap [78, 90], pinned chips from 92.
+        let restTop: CGFloat = 32, compactTop: CGFloat = 12, compactLogoSlot: CGFloat = 64, logoSlot: CGFloat = 150
+        let titleElement = app.staticTexts[folderTitle]
+        guard titleElement.exists else {
+            XCTFail("the title ('\(folderTitle)') is not on the page; pixel checks place the page top from it")
+            return
+        }
+        let titleRestFrame = titleElement.frame
+        let pageTop = titleRestFrame.minY - restTop
+        let window = app.windows.firstMatch.frame.size
+        guard pageTop >= 0, pageTop <= 400 else {
+            XCTFail("could not place the page top from the title's rest frame (\(titleRestFrame)); pixel checks need it")
+            return
+        }
+        let restImage = XCUIScreen.main.screenshot().image
+        let background = try pixelRGB(in: restImage, at: CGPoint(x: 40, y: pageTop + 40), windowSize: window)
+        /// The first 2 pt slice (from the top of the title lane) with title ink: the drawn title's
+        /// top edge. The lane is the union of the rest and compact slots, centre ±400 pt; the
+        /// chips only enter it once pinned, below the compact title.
+        func inkTop(_ image: UIImage) throws -> CGFloat? {
+            var y = pageTop + compactTop - 4
+            while y < pageTop + restTop + logoSlot {
+                let ink = try fractionDiffering(in: image, pointRect: CGRect(x: 560, y: y, width: 800, height: 2),
+                                                windowSize: window, from: background, threshold: 40)
+                if ink >= 0.01 { return y }
+                y += 2
+            }
+            return nil
+        }
+        let restInkTop = try inkTop(restImage)
+        XCTAssertNotNil(restInkTop, "no title ink in the title lane at rest — the page-top estimate (\(pageTop)) or the header layout is off")
+        if let restInkTop {
+            XCTAssertTrue((pageTop + restTop - 4)...(pageTop + restTop + 40) ~= restInkTop,
+                          "at rest the title's ink starts at \(restInkTop), expected just under its slot top \(pageTop + restTop)")
+        }
+
         // 4. The first tile clears the header's bottom fade. Three chips mean the first focus lands
         // on a chip (`chip=` in the probe; `hasFocus` does not report on every runtime), so one
         // Down moves it to the first grid row, where the focus lift applies.
@@ -7891,17 +7990,36 @@ final class NuvioTVUITests: XCTestCase {
         add(gapAttachment)
 
         // 5. Scroll the grid: six Downs, one at a time, catching a mid-rise screenshot if a press
-        // leaves the header part way.
+        // leaves the header part way. After every press the drawn title must still be in its lane
+        // and must only ever move UP (no jump down, no cut, no gap where it vanishes): the
+        // regression this replaces removed the header from the tree on the first press.
         var midShot = false
-        for _ in 0..<6 {
+        var inkTops: [CGFloat] = restInkTop.map { [$0] } ?? []
+        var stepLog: [String] = ["rest inkTop=\(String(describing: restInkTop))"]
+        for step in 1...6 {
             press(.down, times: 1, gap: 0.7)
-            if !midShot, let phase = stateToken("phase").flatMap({ Int($0) }), (1...3).contains(phase) {
-                shot(app, "69b_folder_page_phase\(phase)")
+            let phase = stateToken("phase")
+            if !midShot, let p = phase.flatMap({ Int($0) }), (1...3).contains(p) {
+                shot(app, "69b_folder_page_phase\(p)")
                 midShot = true
             }
+            let top = try inkTop(XCUIScreen.main.screenshot().image)
+            stepLog.append("down\(step) phase=\(phase ?? "-") inkTop=\(String(describing: top))")
+            guard let top else {
+                XCTFail("after Down \(step) the title has no ink anywhere in its lane — it vanished instead of rising (phase \(phase ?? "-"))")
+                continue
+            }
+            if let previous = inkTops.last {
+                XCTAssertLessThanOrEqual(top, previous + 3, "after Down \(step) the title jumped DOWN (\(previous) → \(top)); it may only rise")
+            }
+            inkTops.append(top)
         }
         pause(1)
         shot(app, "69c_folder_page_phase4")
+        let steps = XCTAttachment(string: "pageTop=\(pageTop)\n" + stepLog.joined(separator: "\n"))
+        steps.name = "69_title_track"
+        steps.lifetime = .keepAlways
+        add(steps)
 
         // Premise: the grid must actually have scrolled. A folder too short to scroll never leaves
         // offset 0 on six Downs.
@@ -7916,15 +8034,19 @@ final class NuvioTVUITests: XCTestCase {
         XCTAssertEqual(stateToken("phase"), "4", "the header must be fully compact after scrolling the grid (state: \(headerState()))")
         XCTAssertTrue(app.staticTexts[folderTitle].exists, "the title left the view tree on scroll — it must rise and stay")
 
-        // 6. Pixels. Page-relative bands (the header's rest top is the page top): the compact
-        // title at y ∈ [12, 76], the gap between it and the chips at y ∈ [78, 90] (opaque band —
-        // grid cards pass UNDER it), the pinned chips from y = 92.
-        let window = app.windows.firstMatch.frame.size
-        let pageTop = headerBefore.minY
+        // 6. Pixels, compact state, at the drawn positions `FolderHeaderGeometry` gives (page
+        // top from the title's rest frame above): the compact title at y ∈ [12, 76], the gap
+        // between it and the chips at y ∈ [78, 90] (opaque band — grid cards pass UNDER it), the
+        // pinned chips from y = 92.
         let image = XCUIScreen.main.screenshot().image
-        let background = try pixelRGB(in: image, at: CGPoint(x: 40, y: pageTop + 40), windowSize: window)
+        let compactInkTop = try inkTop(image)
+        XCTAssertNotNil(compactInkTop, "no title ink in the title lane once compact")
+        if let compactInkTop {
+            XCTAssertTrue((pageTop + compactTop - 4)...(pageTop + compactTop + 30) ~= compactInkTop,
+                          "the compact title's ink starts at \(compactInkTop), expected just under the compact slot top \(pageTop + compactTop)")
+        }
         let titleInk = try fractionDiffering(in: image,
-                                             pointRect: CGRect(x: 660, y: pageTop + 12, width: 600, height: 64),
+                                             pointRect: CGRect(x: 660, y: pageTop + compactTop, width: 600, height: compactLogoSlot),
                                              windowSize: window, from: background, threshold: 40)
         let bandLeak = try fractionDiffering(in: image,
                                              pointRect: CGRect(x: 100, y: pageTop + 78, width: 1720, height: 12),
@@ -7932,7 +8054,7 @@ final class NuvioTVUITests: XCTestCase {
         let chipInk = try fractionDiffering(in: image,
                                             pointRect: CGRect(x: 140, y: pageTop + 100, width: 960, height: 32),
                                             windowSize: window, from: background, threshold: 40)
-        let pixels = XCTAttachment(string: "background=\(background) titleInk=\(titleInk) bandLeak=\(bandLeak) chipInk=\(chipInk) pageTop=\(pageTop)")
+        let pixels = XCTAttachment(string: "background=\(background) titleInk=\(titleInk) bandLeak=\(bandLeak) chipInk=\(chipInk) pageTop=\(pageTop) compactInkTop=\(String(describing: compactInkTop))")
         pixels.name = "69_compact_pixels"
         pixels.lifetime = .keepAlways
         add(pixels)
@@ -8132,6 +8254,11 @@ final class NuvioTVUITests: XCTestCase {
             let scrolledItem: String
             /// The focused card's frame after the 12 Rights, when this runtime reports focus.
             let scrolledFocusFrame: CGRect?
+            /// Gate 2 rerun: the cards' artwork boxes (`poster_artwork` / `landscape_card` under
+            /// `-debug.cardGeometryProbe YES`) and the focused card, in each state.
+            let restArt: [CGRect]
+            let restFocusFrame: CGRect?
+            let scrolledArt: [CGRect]
         }
         var captures: [String: LegCapture] = [:]
         /// Card 0 of the compared row, fixed by the first leg.
@@ -8142,7 +8269,10 @@ final class NuvioTVUITests: XCTestCase {
                 extraArguments: ["-row_edge_fade", leg,
                                  "-home_upcoming_row_enabled", "NO",
                                  "-inline_trailers_enabled", "NO",
-                                 "-hero_trailer_autoplay", "NO"],
+                                 "-hero_trailer_autoplay", "NO",
+                                 // Publishes every card's artwork box (DEBUG, launch-latched; no
+                                 // visual change): the comparisons only read pixels inside them.
+                                 "-debug.cardGeometryProbe", "YES"],
                 forceFreshLaunch: true
             )
             openTab(app, named: "Home")
@@ -8209,18 +8339,23 @@ final class NuvioTVUITests: XCTestCase {
             let restItem = focusedItem()
             let rest = XCUIScreen.main.screenshot().image
             shot(app, "bug118-\(leg)-0")
+            let restArt = artworkFrames(app)
+            let restFocusFrame = focusedCardFrame(app)
 
             press(.right, times: 12, gap: 0.4)
             pause(2.5)
             let scrolledItem = focusedItem()
             let scrolled = XCUIScreen.main.screenshot().image
             shot(app, "bug118-\(leg)-12")
+            let scrolledArt = artworkFrames(app)
 
             let probeTops = probes.allElementsBoundByIndex.map { $0.frame.minY }
             captures[leg] = LegCapture(rest: rest, scrolled: scrolled, probeTops: probeTops,
                                        window: app.windows.firstMatch.frame.size,
                                        restItem: restItem, scrolledItem: scrolledItem,
-                                       scrolledFocusFrame: focusedCardFrame(app))
+                                       scrolledFocusFrame: focusedCardFrame(app),
+                                       restArt: restArt, restFocusFrame: restFocusFrame,
+                                       scrolledArt: scrolledArt)
         }
 
         guard let soft = captures["soft"], let off = captures["off"] else {
@@ -8283,23 +8418,6 @@ final class NuvioTVUITests: XCTestCase {
         func strip(_ x: CGFloat) -> CGRect {
             CGRect(x: x - 20, y: rowBand.minY, width: 40, height: rowBand.height)
         }
-        /// Mean absolute difference (0…1 per channel) of one strip between two screenshots.
-        func stripDiff(_ a: UIImage, _ b: UIImage, x: CGFloat) throws -> Double {
-            try meanAbsDiff(a, b, pointRect: strip(x), windowSize: window, downsample: 2)
-        }
-        /// Mean luma (0…1) of one strip.
-        func stripLuma(_ image: UIImage, x: CGFloat) throws -> Double {
-            let px = try rgbaPixels(image, pointRect: strip(x), windowSize: window, downsample: 2)
-            var sum = 0.0
-            var count = 0
-            var i = 0
-            while i + 2 < px.count {
-                sum += (0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])) / 255
-                count += 1
-                i += 4
-            }
-            return count == 0 ? 0 : sum / Double(count)
-        }
         /// Brightest channel along one column of the row band (the bezel columns).
         func bandColumnMax(_ image: UIImage, x: CGFloat) throws -> Int {
             var peak = 0
@@ -8314,52 +8432,151 @@ final class NuvioTVUITests: XCTestCase {
 
         let tolerance = 3.0 / 255
         let w = window.width
+        let screen = CGRect(origin: .zero, size: window)
+
+        // Gate 2 rerun: the first comparison over whole bands failed at REST (middle 0.094, d310
+        // 0.025) while the two rest shots looked identical: the pinned hero's backdrop shows
+        // faintly behind and between the cards, and its state differs in time between launches.
+        // So every equality / difference check below reads only pixels INSIDE the compared row's
+        // card artwork (its `poster_artwork` boxes), inset 4 pt for the ring band and 24 pt on the
+        // focused card for its lift and ring. A fade that dims the middle of the row still changes
+        // those pixels, so the checks can still fail.
+        func rowArt(_ frames: [CGRect], focus: CGRect?) -> [CGRect] {
+            frames
+                .filter { $0.midY >= rowBand.minY && $0.midY <= rowBand.maxY }
+                .map { frame -> CGRect in
+                    let focused = focus.map { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) } ?? false
+                    return frame.insetBy(dx: focused ? 24 : 4, dy: focused ? 24 : 4)
+                }
+                .map { $0.intersection(screen) }
+                .filter { !$0.isNull && $0.width >= 2 && $0.height >= 2 }
+        }
+        let restArt = rowArt(soft.restArt, focus: soft.restFocusFrame)
+        let scrolledArt = rowArt(soft.scrolledArt, focus: soft.scrolledFocusFrame)
+        guard !restArt.isEmpty, !scrolledArt.isEmpty else {
+            throw XCTSkip("no card artwork boxes in the compared row (rest \(restArt.count), scrolled \(scrolledArt.count)) — `-debug.cardGeometryProbe YES` did not arm (Release build?)")
+        }
+        /// Mean absolute difference (0…1 per channel) over the artwork pixels inside `region`,
+        /// weighted by area; nil when no artwork falls inside it.
+        func artDiff(_ a: UIImage, _ b: UIImage, region: CGRect, art: [CGRect]) throws -> Double? {
+            var sum = 0.0
+            var area = 0.0
+            for box in art {
+                let r = box.intersection(region)
+                guard !r.isNull, r.width >= 2, r.height >= 2 else { continue }
+                let weight = Double(r.width * r.height)
+                sum += try meanAbsDiff(a, b, pointRect: r, windowSize: window, downsample: 2) * weight
+                area += weight
+            }
+            return area > 0 ? sum / area : nil
+        }
+        /// Mean luma (0…1) over the artwork pixels inside `region`; nil when there are none.
+        func artLuma(_ image: UIImage, region: CGRect, art: [CGRect]) throws -> Double? {
+            var sum = 0.0
+            var count = 0
+            for box in art {
+                let r = box.intersection(region)
+                guard !r.isNull, r.width >= 2, r.height >= 2 else { continue }
+                let px = try rgbaPixels(image, pointRect: r, windowSize: window, downsample: 2)
+                var i = 0
+                while i + 2 < px.count {
+                    sum += (0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])) / 255
+                    count += 1
+                    i += 4
+                }
+            }
+            return count > 0 ? sum / Double(count) : nil
+        }
+        /// The artwork-only diff of the strip centred on `x` (40 pt, widened to 80 pt when a card
+        /// gap swallows the narrow one).
+        func stripArtDiff(_ a: UIImage, _ b: UIImage, x: CGFloat, art: [CGRect]) throws -> Double? {
+            if let d = try artDiff(a, b, region: strip(x), art: art) { return d }
+            return try artDiff(a, b, region: CGRect(x: x - 40, y: rowBand.minY, width: 80, height: rowBand.height), art: art)
+        }
 
         // At rest, trailing edge (d = distance from the right bezel).
-        let restD310 = try stripDiff(soft.rest, off.rest, x: w - 310)
-        let restD180 = try stripDiff(soft.rest, off.rest, x: w - 180)
+        let restD310 = try stripArtDiff(soft.rest, off.rest, x: w - 310, art: restArt)
+        let restD180 = try stripArtDiff(soft.rest, off.rest, x: w - 180, art: restArt)
         let restD4Soft = try bandColumnMax(soft.rest, x: w - 4)
         let restD4Off = try bandColumnMax(off.rest, x: w - 4)
         // After 12 Rights, leading edge.
         let scrolledD4Soft = try bandColumnMax(soft.scrolled, x: 4)
-        let scrolledD140 = try stripDiff(soft.scrolled, off.scrolled, x: 140)
-        let scrolledD140SoftLuma = try stripLuma(soft.scrolled, x: 140)
-        let scrolledD140OffLuma = try stripLuma(off.scrolled, x: 140)
-        let scrolledD280 = try stripDiff(soft.scrolled, off.scrolled, x: 280)
+        let scrolledD140 = try stripArtDiff(soft.scrolled, off.scrolled, x: 140, art: scrolledArt)
+        let scrolledD140SoftLuma = try artLuma(soft.scrolled, region: strip(140), art: scrolledArt)
+        let scrolledD140OffLuma = try artLuma(off.scrolled, region: strip(140), art: scrolledArt)
+        let scrolledD280 = try stripArtDiff(soft.scrolled, off.scrolled, x: 280, art: scrolledArt)
         // The middle of the row (d ≥ 260 from both bezels) in both states.
         let middle = CGRect(x: 260, y: rowBand.minY, width: w - 520, height: rowBand.height)
-        let restMiddle = try meanAbsDiff(soft.rest, off.rest, pointRect: middle, windowSize: window)
-        let scrolledMiddle = try meanAbsDiff(soft.scrolled, off.scrolled, pointRect: middle, windowSize: window)
+        let restMiddle = try artDiff(soft.rest, off.rest, region: middle, art: restArt)
+        let scrolledMiddle = try artDiff(soft.scrolled, off.scrolled, region: middle, art: scrolledArt)
         // The focused card apart from its outer 20 pt, when the runtime reports focus.
         var focusedCard: Double?
         if let card = soft.scrolledFocusFrame {
-            let inner = card.insetBy(dx: 20, dy: 20)
-            if inner.width > 20, inner.height > 20 {
+            let inner = card.insetBy(dx: 20, dy: 20).intersection(screen)
+            if !inner.isNull, inner.width > 20, inner.height > 20 {
                 focusedCard = try meanAbsDiff(soft.scrolled, off.scrolled, pointRect: inner, windowSize: window, downsample: 2)
             }
         }
 
+        func fmt(_ value: Double?) -> String { value.map { String(format: "%.5f", $0) } ?? "nil" }
         let report = XCTAttachment(string: """
-            row top=\(top) band=\(rowBand) method=\(method)
-            rest trailing: d310 diff=\(restD310) d180 diff=\(restD180) d4 max soft=\(restD4Soft) off=\(restD4Off)
-            scrolled leading: d4 max soft=\(scrolledD4Soft) d140 diff=\(scrolledD140) luma soft=\(scrolledD140SoftLuma) off=\(scrolledD140OffLuma) d280 diff=\(scrolledD280)
-            middle diff rest=\(restMiddle) scrolled=\(scrolledMiddle) focusedCard=\(String(describing: focusedCard))
+            row top=\(top) band=\(rowBand) method=\(method) art boxes rest=\(restArt.count) scrolled=\(scrolledArt.count)
+            rest trailing: d310 diff=\(fmt(restD310)) d180 diff=\(fmt(restD180)) d4 max soft=\(restD4Soft) off=\(restD4Off)
+            scrolled leading: d4 max soft=\(scrolledD4Soft) d140 diff=\(fmt(scrolledD140)) luma soft=\(fmt(scrolledD140SoftLuma)) off=\(fmt(scrolledD140OffLuma)) d280 diff=\(fmt(scrolledD280))
+            middle diff rest=\(fmt(restMiddle)) scrolled=\(fmt(scrolledMiddle)) focusedCard=\(fmt(focusedCard))
             """)
         report.name = "bug118-soft-vs-off"
         report.lifetime = .keepAlways
         add(report)
 
-        XCTAssertLessThanOrEqual(restD310, tolerance, "[soft] 310 pt from the trailing bezel must equal Off (the ramp ends at 250); diff \(restD310)")
-        XCTAssertGreaterThan(restD180, 2.0 / 255, "[soft] 180 pt from the trailing bezel must be faded (alpha ≈ 0.86), so differ from Off; diff \(restD180)")
+        /// A check whose region held no card artwork cannot judge anything: fail loudly rather than
+        /// pass vacuously.
+        func value(_ v: Double?, _ what: String) -> Double? {
+            if v == nil { XCTFail("[soft] no card artwork under \(what); the check could not run") }
+            return v
+        }
+        if let v = value(restD310, "d310 at rest") {
+            XCTAssertLessThanOrEqual(v, tolerance, "[soft] 310 pt from the trailing bezel must equal Off (the ramp ends at 250); diff \(v)")
+        }
+        if let v = value(restD180, "d180 at rest") {
+            XCTAssertGreaterThan(v, 2.0 / 255, "[soft] 180 pt from the trailing bezel must be faded (alpha ≈ 0.86), so differ from Off; diff \(v)")
+        }
         XCTAssertLessThanOrEqual(scrolledD4Soft, 28, "[soft] the leading edge column (x=4) still carries artwork after scrolling (max channel \(scrolledD4Soft)); the fade does not reach the bezel")
-        XCTAssertGreaterThan(scrolledD140, 2.0 / 255, "[soft] 140 pt from the leading bezel must be partly faded (alpha ≈ 0.61), so differ from Off; diff \(scrolledD140)")
-        XCTAssertLessThan(scrolledD140SoftLuma, scrolledD140OffLuma, "[soft] 140 pt from the leading bezel must be darker than Off (luma \(scrolledD140SoftLuma) vs \(scrolledD140OffLuma))")
-        XCTAssertLessThanOrEqual(scrolledD280, tolerance, "[soft] 280 pt from the leading bezel must equal Off; diff \(scrolledD280)")
-        XCTAssertLessThan(restMiddle, tolerance, "[soft] the row between 260 pt from each bezel must equal Off at rest; diff \(restMiddle)")
-        XCTAssertLessThan(scrolledMiddle, tolerance, "[soft] the row between 260 pt from each bezel must equal Off after scrolling; diff \(scrolledMiddle)")
+        if let v = value(scrolledD140, "d140 after scrolling") {
+            XCTAssertGreaterThan(v, 2.0 / 255, "[soft] 140 pt from the leading bezel must be partly faded (alpha ≈ 0.61), so differ from Off; diff \(v)")
+        }
+        if let softLuma = value(scrolledD140SoftLuma, "d140 luma (soft)"), let offLuma = value(scrolledD140OffLuma, "d140 luma (off)") {
+            XCTAssertLessThan(softLuma, offLuma, "[soft] 140 pt from the leading bezel must be darker than Off (luma \(softLuma) vs \(offLuma))")
+        }
+        if let v = value(scrolledD280, "d280 after scrolling") {
+            XCTAssertLessThanOrEqual(v, tolerance, "[soft] 280 pt from the leading bezel must equal Off; diff \(v)")
+        }
+        if let v = value(restMiddle, "the middle of the row at rest") {
+            XCTAssertLessThan(v, tolerance, "[soft] the cards between 260 pt from each bezel must equal Off at rest; diff \(v)")
+        }
+        if let v = value(scrolledMiddle, "the middle of the row after scrolling") {
+            XCTAssertLessThan(v, tolerance, "[soft] the cards between 260 pt from each bezel must equal Off after scrolling; diff \(v)")
+        }
         if let focusedCard {
             XCTAssertLessThan(focusedCard, tolerance, "[soft] the focused card (apart from its outer 20 pt) must equal Off; diff \(focusedCard)")
         }
+    }
+
+    /// beta.19-rc1 verdict (F, Gate 2 rerun): every card artwork box on screen, published by
+    /// `DebugAXIdentifier` under `-debug.cardGeometryProbe YES` (`poster_artwork` is the inset
+    /// picture of a portrait card, `landscape_card` the box of a 16:9 one). Empty when the probe
+    /// is not armed.
+    private func artworkFrames(_ app: XCUIApplication) -> [CGRect] {
+        guard let root = try? app.snapshot() else { return [] }
+        var out: [CGRect] = []
+        func walk(_ node: XCUIElementSnapshot) {
+            if node.identifier == "poster_artwork" || node.identifier == "landscape_card" {
+                out.append(node.frame)
+            }
+            node.children.forEach(walk)
+        }
+        walk(root)
+        return out
     }
 
     /// beta.19-rc1 verdict (F): the frame of the focused CARD (a focused element sized like a

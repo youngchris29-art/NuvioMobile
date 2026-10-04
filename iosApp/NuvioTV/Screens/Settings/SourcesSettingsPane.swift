@@ -11,11 +11,13 @@ struct SourcesSettingsPane: View {
 
     var body: some View {
         Group {
-            // Orivio batch, item 1: Detail's Play button honours this (a plain press starts the
-            // first source in the Sources order; hold Play opens the list instead).
+            // Orivio batch, item 1: Detail's Play button honours this (a plain press starts a
+            // source by itself; hold Play opens the list instead). beta.19-rc1 verdict (A,
+            // BUG-136): "best" is now a real ranking among the sources that arrived (resolution,
+            // then HDR / Dolby Vision, then cached, then file size), not the first one in the list.
             SettingsSection(
                 String(localized: "Auto-Play Source"),
-                footer: String(localized: "Play starts the first source in your Sources order by itself. Hold Play to choose one.")
+                footer: String(localized: "Play starts the best source that has arrived: highest resolution first, then HDR or Dolby Vision, then cached links, then the largest file. Hold Play to choose one.")
             ) {
                 SettingsToggleRow(
                     title: String(localized: "Auto-Play Best Source"),

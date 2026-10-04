@@ -21,19 +21,21 @@ final class DetailScrimTests: XCTestCase {
         XCTAssertEqual(DetailScrim.panelFlatFill, 0.55, accuracy: 1e-9)
     }
 
-    /// All 8 combinations: flat when any input is true (same rule as the chips).
+    /// All 4 combinations: flat when either input is true, and always exactly what the chips do.
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): scrolling is not an input — the synopsis panel stays glass
+    /// while the page scrolls, like the chips (it used to flatten with them, 8 rows).
     func testPanelFlatTruthTable() {
         for trailer in [false, true] {
-            for scrolling in [false, true] {
-                for glassOff in [false, true] {
-                    let expected = trailer || scrolling || glassOff
-                    XCTAssertEqual(
-                        DetailScrim.panelUsesFlatFill(trailerActive: trailer, scrolling: scrolling, glassDisabled: glassOff),
-                        expected, "trailer=\(trailer) scrolling=\(scrolling) glassDisabled=\(glassOff)")
-                    XCTAssertEqual(
-                        DetailScrim.panelUsesFlatFill(trailerActive: trailer, scrolling: scrolling, glassDisabled: glassOff),
-                        DetailView.chipGlassFlat(trailerActive: trailer, scrolling: scrolling, glassDisabled: glassOff))
-                }
+            for glassOff in [false, true] {
+                let expected = trailer || glassOff
+                XCTAssertEqual(
+                    DetailScrim.panelUsesFlatFill(trailerActive: trailer, glassDisabled: glassOff),
+                    expected, "trailer=\(trailer) glassDisabled=\(glassOff)")
+                XCTAssertEqual(
+                    DetailScrim.panelUsesFlatFill(trailerActive: trailer, glassDisabled: glassOff),
+                    DetailView.chipGlassFlat(trailerActive: trailer, glassDisabled: glassOff),
+                    "panel and chips must follow one rule: trailer=\(trailer) glassDisabled=\(glassOff)")
             }
         }
     }

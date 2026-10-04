@@ -28,22 +28,31 @@ import UIKit
 /// Diagnostics") and a distinct persisted key (`debug.tabBarStateProbe`) so the two features never
 /// collide — same About pane, two different rows, two different photographable protocols.
 ///
-/// Line format (beta.18 verdict, BUG-66 — renamed short keys so a whole line fits the pane's
-/// one-line `lineLimit` with the `<N>ms ` stamp; worst case
-/// `12345ms y=-1431 h=999 a=1.00 hid=1 tbh=1 st=part sel=5 trk=other sd=1 sdt=1111 m=cls r=attach`
-/// is 93 characters, `composeLine` clamps `y`/`h`/`sel` so it cannot grow past 95):
+/// Line format (beta.18 verdict, BUG-66 — short keys; T1, Steven beta.19-rc1 verdict, 2026-10-03,
+/// added `off=`/`ins=` and the pane now wraps each line on two lines). Worst case with the
+/// `<N>ms ` stamp:
+/// `12345ms y=-9999 h=999 a=1.00 hid=1 tbh=1 st=part off=-9999 ins=-999 sel=5 trk=other sd=1 sdt=1111 m=cls r=attach`
+/// is 112 characters (`maxStampedLineLength`); `composeLine` clamps `y`/`h`/`off`/`ins`/`sel`, so
+/// it cannot grow past that whatever UIKit reports:
 ///     y=<bar minY in window> h=<height> a=<alpha> hid=<isHidden 0/1> tbh=<isTabBarHidden 0/1>
-///     st=<exp|min|part|unk> sel=<selectedIndex> trk=<rows|none|other|novc> sd=<selected tab's
-///     latch 0/1> sdt=<Home/Search/Library/Add-ons latches, 0/1/- each> m=<cls|sb> r=<reason>
+///     st=<exp|min|part|unk> off=<rows contentOffset.y|-> ins=<rows adjustedContentInset.top|->
+///     sel=<selectedIndex> trk=<rows|none|other|novc> sd=<selected tab's latch 0/1>
+///     sdt=<Home/Search/Library/Add-ons latches, 0/1/- each> m=<cls|sb> r=<reason>
 /// Reasons: `arm`, `tick` (2 s, duplicates dropped), `down`/`up` (a tab's hysteresis crossing),
 /// `attach` (`TabBarContentScrollLink` made its first link for a mount), `tab` (selection change)
-/// and `tab2` (0.6 s later, once the switch has settled), `pop` (immersive depth back to 0).
+/// and `tab2` (0.6 s later, once the switch has settled), `pop` (immersive depth back to 0),
+/// `relink` (T1 leg 1 dropped and remade the link after the first rest).
 /// `trk` is what the SELECTED tab's controller reports for `contentScrollView(for: .top)` (its
 /// `topViewController`'s when it is a navigation controller and reports nil itself), compared by
 /// identity with `TabBarContentScrollLink.homeRowsScrollView`; `novc` = no selected controller.
-/// NSLog-only extras per logged sample: `ins=` (the linked rows scroll view's
-/// `adjustedContentInset.top`) and `svh=` (its height); one NSLog on the first sample carries the
-/// controller chain and the legacy `tabBarObservedScrollView`.
+/// `off`/`ins` (T1) are read off `TabBarContentScrollLink.homeRowsScrollView`, raw (not
+/// inset-corrected), and are `-` while Home's rows are not linked (another tab, a pushed page,
+/// sidebar mode). A linked bar moves 1:1 with the tracked offset, so `st=part off=13` reads "the
+/// rows rested 13 pt deep" (H1) and `st=part off=0` reads "the baseline itself is off" (H2).
+/// Because the tick dedupe below compares the whole line minus `r=`, a tick now also logs when the
+/// rows' offset changed since the last logged line; at rest nothing changes and ticks stay quiet.
+/// NSLog-only extra per logged sample: `svh=` (the rows scroll view's height); one NSLog on the
+/// first sample carries the controller chain and the legacy `tabBarObservedScrollView`.
 /// `t=<ms since arm>` is realized as the standard `<N>ms ` prefix `log(_:)` stamps on every line —
 /// the same convention `PinnedRowSettleProbe.log` uses.
 ///
@@ -94,8 +103,10 @@ enum TabBarStateProbe {
     nonisolated(unsafe) private static var scrolledDownByTab: [Int: Bool] = [:]
     /// An `attach` that landed before the armer had a window; replayed right after `arm`.
     nonisolated(unsafe) private static var pendingAttach = false
+    /// T1: a `relink` that landed before the armer had a window; replayed right after `arm`.
+    nonisolated(unsafe) private static var pendingRelink = false
     nonisolated(unsafe) private static var loggedControllerChain = false
-    /// NSLog dedupe for the `ins=`/`svh=` extras (the pane line has its own dedupe).
+    /// NSLog dedupe for the console line plus its `svh=` extra (the pane line has its own dedupe).
     nonisolated(unsafe) private static var lastNSLogged: String?
     /// Composed state of the last logged bar sample (everything but `reason`), so a `tick` that
     /// repeats it is dropped instead of flooding the ring buffer (device, 2026-09-30: 41 of 41 lines
@@ -172,6 +183,10 @@ enum TabBarStateProbe {
             pendingAttach = false
             sample(reason: "attach")
         }
+        if pendingRelink {
+            pendingRelink = false
+            sample(reason: "relink")
+        }
         let ticker = Timer(timeInterval: 2.0, repeats: true) { _ in
             MainActor.assumeIsolated {
                 TabBarStateProbe.sample(reason: "tick")
@@ -217,6 +232,18 @@ enum TabBarStateProbe {
         sample(reason: "attach")
     }
 
+    /// T1 (Steven beta.19-rc1 verdict, 2026-10-03): leg 1 of `TabBarRestFix` dropped and remade
+    /// the link after the first rest. One sample right after, so the pane shows the bar's state
+    /// under the fresh link (`r=relink`). Deferred to `arm` like `noteAttached` when no window yet.
+    static func noteRelinked() {
+        guard enabled else { return }
+        guard armedWindow != nil else {
+            pendingRelink = true
+            return
+        }
+        sample(reason: "relink")
+    }
+
     /// beta.18 verdict (BUG-66): the shell's `selectedTab` changed (`ContentView`). Samples now and
     /// again 0.6 s later, when UIKit has finished whatever re-search the switch triggered.
     static func noteTabSelected(_ tab: Int) {
@@ -248,10 +275,16 @@ enum TabBarStateProbe {
         (0...3).map { latches[$0].map { $0 ? "1" : "0" } ?? "-" }.joined()
     }
 
-    /// Pure, for the unit test: one pane line (without the `<N>ms ` stamp). `y`, `h` and `sel` are
-    /// clamped so the line keeps its length bound whatever UIKit reports.
+    /// T1: the longest line `composeLine` can produce, with a five-digit `<N>ms ` stamp in front
+    /// (see the type doc). The Developer pane shows each line on up to two lines.
+    nonisolated static let maxStampedLineLength = 112
+
+    /// Pure, for the unit test: one pane line (without the `<N>ms ` stamp). `y`, `h`, `off`, `ins`
+    /// and `sel` are clamped so the line keeps its length bound whatever UIKit reports. `offset` and
+    /// `inset` (T1) are nil while Home's rows are not linked, and print as `-`.
     nonisolated static func composeLine(minY: CGFloat, height: CGFloat, alpha: CGFloat,
                                         isHidden: Bool, tabBarHidden: Bool, state: String,
+                                        offset: CGFloat?, inset: CGFloat?,
                                         selectedIndex: Int?, tracked: String,
                                         selectedScrolledDown: Bool, latchBits: String,
                                         sidebar: Bool, reason: String) -> String {
@@ -260,9 +293,20 @@ enum TabBarStateProbe {
         let sel: String
         if let selectedIndex, (0...9).contains(selectedIndex) { sel = "\(selectedIndex)" } else { sel = "-" }
         return "y=\(y) h=\(h) a=\(String(format: "%.2f", min(max(alpha, 0), 1))) "
-            + "hid=\(isHidden ? 1 : 0) tbh=\(tabBarHidden ? 1 : 0) st=\(state) sel=\(sel) "
+            + "hid=\(isHidden ? 1 : 0) tbh=\(tabBarHidden ? 1 : 0) st=\(state) "
+            + "off=\(clampedField(offset, limit: 9999)) ins=\(clampedField(inset, limit: 999)) "
+            + "sel=\(sel) "
             + "trk=\(tracked) sd=\(selectedScrolledDown ? 1 : 0) sdt=\(latchBits) "
             + "m=\(sidebar ? "sb" : "cls") r=\(reason)"
+    }
+
+    /// T1: a rounded point value clamped to ±`limit`, or `-` for nil (rows not linked) and for a
+    /// non-finite reading. Clamped in floating point before the `Int` conversion, so no reading
+    /// can trap the conversion.
+    nonisolated static func clampedField(_ value: CGFloat?, limit: Int) -> String {
+        guard let value, value.isFinite else { return "-" }
+        let bound = CGFloat(limit)
+        return String(Int(min(max(value.rounded(), -bound), bound)))
     }
 
     /// Walks the armed window's controller tree for the first `UITabBar` (same recursive shape as
@@ -336,16 +380,18 @@ enum TabBarStateProbe {
                   observed.map { $0 === rows ? "rows" : String(describing: type(of: $0)) } ?? "nil")
         }
 
+        // T1: the rows' raw offset and top inset ride on the pane line now (`off=`/`ins=`).
         let line = composeLine(minY: minY, height: h, alpha: alpha, isHidden: bar.isHidden,
                                tabBarHidden: tabController.isTabBarHidden, state: state,
+                               offset: rows?.contentOffset.y, inset: rows?.adjustedContentInset.top,
                                selectedIndex: selectedIndex, tracked: tracked,
                                selectedScrolledDown: selectedLatch,
                                latchBits: latchBits(scrolledDownByTab), sidebar: sidebar,
                                reason: reason)
         // Dedupe key = everything but the reason.
         let composed = line.components(separatedBy: " r=").first ?? line
-        let extras = "ins=\(rows.map { Int($0.adjustedContentInset.top.rounded()) }.map(String.init) ?? "-") "
-            + "svh=\(rows.map { Int($0.bounds.height.rounded()) }.map(String.init) ?? "-")"
+        // T1: `ins=` moved onto the pane line; the console keeps only the height here.
+        let extras = "svh=\(rows.map { Int($0.bounds.height.rounded()) }.map(String.init) ?? "-")"
         if reason != "tick" || composed + extras != lastNSLogged {
             lastNSLogged = composed + extras
             NSLog("[TabBarStateProbe] %@ %@", line, extras)

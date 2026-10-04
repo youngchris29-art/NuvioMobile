@@ -8,6 +8,10 @@ import XCTest
 /// photographs), and the `TabBarScrollSample` hysteresis, whose crossings must not move with the
 /// top inset (classic 157, pinned 0). The UIKit association itself is device/UI-test territory
 /// (`TabBarScrollLinkTests` in the UI target).
+///
+/// T1 (Steven beta.19-rc1 verdict, 2026-10-03; BUG-66 residual): the pane line's new `off=`/`ins=`
+/// fields, the `-debug.tabBarRestFix` knob (default leg 0), and leg 1's relink wait
+/// (`TabBarRestFix.RelinkWait`). Leg 2's predicates are in `PinnedRowTopSnapTests`.
 @MainActor
 final class TabBarContentScrollLinkTests: XCTestCase {
 
@@ -52,28 +56,33 @@ final class TabBarContentScrollLinkTests: XCTestCase {
 
     // MARK: - composeLine
 
-    private static let keys = ["y", "h", "a", "hid", "tbh", "st", "sel", "trk", "sd", "sdt", "m", "r"]
+    private static let keys = ["y", "h", "a", "hid", "tbh", "st", "off", "ins", "sel", "trk", "sd",
+                               "sdt", "m", "r"]
 
+    /// One line with every field at its widest. `maxStampedLineLength` is quoted against a
+    /// five-digit `<N>ms ` stamp, and this IS the worst case, so the two must agree exactly.
     func testComposeLineFitsThePaneAtTheExtremes() {
         let line = TabBarStateProbe.composeLine(
-            minY: -1431, height: 999, alpha: 1, isHidden: true, tabBarHidden: true, state: "part",
+            minY: -9999, height: 999, alpha: 1, isHidden: true, tabBarHidden: true, state: "part",
+            offset: -9999, inset: -999,
             selectedIndex: 5, tracked: "other", selectedScrolledDown: true, latchBits: "1111",
             sidebar: false, reason: "attach")
-        // The pane stamps `<N>ms ` in front; the budget is quoted against a five-digit stamp.
-        XCTAssertLessThanOrEqual(("12345ms " + line).count, 95, line)
+        XCTAssertEqual(("12345ms " + line).count, TabBarStateProbe.maxStampedLineLength, line)
 
         // Clamps keep the bound even for values UIKit should never report.
         let wild = TabBarStateProbe.composeLine(
             minY: -123_456, height: 12_345, alpha: 7, isHidden: true, tabBarHidden: true, state: "part",
+            offset: -123_456, inset: -12_345,
             selectedIndex: Int.max, tracked: "other", selectedScrolledDown: true,
-            latchBits: "1111", sidebar: false, reason: "attach")
-        XCTAssertLessThanOrEqual(("12345ms " + wild).count, 95, wild)
+            latchBits: "1111", sidebar: false, reason: "relink")
+        XCTAssertLessThanOrEqual(("12345ms " + wild).count, TabBarStateProbe.maxStampedLineLength, wild)
         XCTAssertTrue(wild.contains("sel=- "), wild)
     }
 
     func testComposeLineCarriesEveryKeyOnce() {
         let line = TabBarStateProbe.composeLine(
             minY: 46, height: 140, alpha: 1, isHidden: false, tabBarHidden: false, state: "exp",
+            offset: 12, inset: 0,
             selectedIndex: 0, tracked: "rows", selectedScrolledDown: false, latchBits: "0---",
             sidebar: true, reason: "tab2")
         let tokens = line.split(separator: " ").map(String.init)
@@ -84,6 +93,128 @@ final class TabBarContentScrollLinkTests: XCTestCase {
         XCTAssertEqual(tokens.count, Self.keys.count, line)
         XCTAssertTrue(line.contains("sel=0 trk=rows"), line)
         XCTAssertTrue(line.hasSuffix("m=sb r=tab2"), line)
+    }
+
+    // MARK: - T1: off= / ins=
+
+    /// The two new fields sit right after `st=`, rounded to whole points — the decision table
+    /// reads `st=part off≈13 ins=0` straight off a photo.
+    func testComposeLineCarriesOffsetAndInset() {
+        let line = TabBarStateProbe.composeLine(
+            minY: -13, height: 140, alpha: 1, isHidden: false, tabBarHidden: false, state: "part",
+            offset: 13.4, inset: -0.25,
+            selectedIndex: 0, tracked: "rows", selectedScrolledDown: false, latchBits: "0---",
+            sidebar: false, reason: "tick")
+        XCTAssertTrue(line.contains(" st=part off=13 ins=0 sel=0 "), line)
+    }
+
+    /// Home's rows not linked (another tab, a pushed page, sidebar mode): both fields read `-`.
+    func testComposeLineDashesWithoutRows() {
+        let line = TabBarStateProbe.composeLine(
+            minY: 46, height: 140, alpha: 1, isHidden: false, tabBarHidden: false, state: "exp",
+            offset: nil, inset: nil,
+            selectedIndex: 1, tracked: "other", selectedScrolledDown: false, latchBits: "0---",
+            sidebar: false, reason: "tab2")
+        XCTAssertTrue(line.contains(" st=exp off=- ins=- sel=1 "), line)
+    }
+
+    func testComposeLineClamps() {
+        XCTAssertEqual(TabBarStateProbe.clampedField(50_000, limit: 9999), "9999")
+        XCTAssertEqual(TabBarStateProbe.clampedField(-50_000, limit: 9999), "-9999")
+        XCTAssertEqual(TabBarStateProbe.clampedField(5000, limit: 999), "999")
+        XCTAssertEqual(TabBarStateProbe.clampedField(-5000, limit: 999), "-999")
+        XCTAssertEqual(TabBarStateProbe.clampedField(1431.6, limit: 9999), "1432")
+        XCTAssertEqual(TabBarStateProbe.clampedField(nil, limit: 9999), "-")
+        // A reading no UIKit build should produce still cannot trap the Int conversion.
+        XCTAssertEqual(TabBarStateProbe.clampedField(.nan, limit: 9999), "-")
+        XCTAssertEqual(TabBarStateProbe.clampedField(.infinity, limit: 999), "-")
+
+        let line = TabBarStateProbe.composeLine(
+            minY: 0, height: 140, alpha: 1, isHidden: false, tabBarHidden: false, state: "exp",
+            offset: 123_456, inset: -5000,
+            selectedIndex: 0, tracked: "rows", selectedScrolledDown: false, latchBits: "----",
+            sidebar: false, reason: "tick")
+        XCTAssertTrue(line.contains(" off=9999 ins=-999 "), line)
+    }
+
+    // MARK: - T1: the -debug.tabBarRestFix knob
+
+    func testRestFixLegDefaultsToZero() {
+        XCTAssertEqual(TabBarRestFix.resolveLeg(freshDefaults()), 0)
+    }
+
+    /// The launch argument lands as a String in the argument domain; `integer(forKey:)` converts it.
+    func testRestFixLegReadsLaunchArgumentStrings() {
+        let d = freshDefaults()
+        d.set("1", forKey: TabBarRestFix.defaultsKey)
+        XCTAssertEqual(TabBarRestFix.resolveLeg(d), 1)
+        d.set("2", forKey: TabBarRestFix.defaultsKey)
+        XCTAssertEqual(TabBarRestFix.resolveLeg(d), 2)
+        d.set(2, forKey: TabBarRestFix.defaultsKey)
+        XCTAssertEqual(TabBarRestFix.resolveLeg(d), 2)
+    }
+
+    /// A typo never enables a leg.
+    func testRestFixLegOutOfRangeIsZero() {
+        let d = freshDefaults()
+        for raw in ["3", "-1", "abc", "0"] {
+            d.set(raw, forKey: TabBarRestFix.defaultsKey)
+            XCTAssertEqual(TabBarRestFix.resolveLeg(d), 0, raw)
+        }
+    }
+
+    // MARK: - T1 leg 1: the relink wait
+
+    private let dt = TabBarRestFix.pollInterval
+
+    func testRelinkWaitsForFocusFirst() {
+        var gate = TabBarRestFix.RelinkWait()
+        for _ in 0..<5 {
+            XCTAssertEqual(gate.poll(focused: false, restPending: false, dt: dt), .wait)
+        }
+        XCTAssertFalse(gate.focusSeen)
+    }
+
+    /// The poll that first sees focus is not a rest poll; the next two quiet ones relink.
+    func testRelinkAfterFocusThenTwoQuietPolls() {
+        var gate = TabBarRestFix.RelinkWait()
+        XCTAssertEqual(gate.poll(focused: true, restPending: false, dt: dt), .wait)
+        XCTAssertEqual(gate.poll(focused: true, restPending: false, dt: dt), .wait)
+        XCTAssertEqual(gate.poll(focused: true, restPending: false, dt: dt), .relink(reason: "firstRest"))
+    }
+
+    func testRelinkQuietCountResetsWhileARestIsPending() {
+        var gate = TabBarRestFix.RelinkWait()
+        XCTAssertEqual(gate.poll(focused: true, restPending: true, dt: dt), .wait)
+        XCTAssertEqual(gate.poll(focused: true, restPending: false, dt: dt), .wait)
+        XCTAssertEqual(gate.poll(focused: true, restPending: true, dt: dt), .wait)
+        XCTAssertEqual(gate.poll(focused: true, restPending: false, dt: dt), .wait)
+        XCTAssertEqual(gate.poll(focused: true, restPending: false, dt: dt), .relink(reason: "firstRest"))
+    }
+
+    /// A corrector that stays busy for the whole 6 s ceiling still gets its relink, named.
+    func testRelinkTimesOutWhileTheRestStaysPending() {
+        var gate = TabBarRestFix.RelinkWait()
+        XCTAssertEqual(gate.poll(focused: true, restPending: true, dt: dt), .wait)
+        let restPolls = Int((TabBarRestFix.restWaitCap / dt).rounded())  // 24, exact in binary
+        for _ in 1..<restPolls {
+            XCTAssertEqual(gate.poll(focused: true, restPending: true, dt: dt), .wait)
+        }
+        XCTAssertEqual(gate.poll(focused: true, restPending: true, dt: dt), .relink(reason: "restTimeout"))
+    }
+
+    /// No focus within the cap: the wait moves on and says so in the reason.
+    func testRelinkFocusCapFallsThrough() {
+        var gate = TabBarRestFix.RelinkWait()
+        let focusPolls = Int((TabBarRestFix.focusWaitCap / dt).rounded())  // 16
+        for _ in 0..<focusPolls {
+            XCTAssertEqual(gate.poll(focused: false, restPending: false, dt: dt), .wait)
+        }
+        XCTAssertTrue(gate.focusSeen)
+        XCTAssertTrue(gate.focusTimedOut)
+        XCTAssertEqual(gate.poll(focused: false, restPending: false, dt: dt), .wait)
+        XCTAssertEqual(gate.poll(focused: false, restPending: false, dt: dt),
+                       .relink(reason: "firstRestNoFocus"))
     }
 
     func testLatchBits() {

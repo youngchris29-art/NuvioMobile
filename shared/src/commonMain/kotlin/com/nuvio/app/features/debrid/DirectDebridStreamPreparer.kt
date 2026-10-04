@@ -4,7 +4,10 @@ import co.touchlab.kermit.Logger
 import com.nuvio.app.features.player.PlayerSettingsUiState
 import com.nuvio.app.features.streams.AddonStreamGroup
 import com.nuvio.app.features.streams.StreamAutoPlayMode
+import com.nuvio.app.features.streams.StreamAutoPlayPlatform
+import com.nuvio.app.features.streams.StreamAutoPlayRanking
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
+import com.nuvio.app.features.streams.StreamQualityRank
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.epochMs
 import kotlinx.coroutines.CancellationException
@@ -70,14 +73,20 @@ object DirectDebridStreamPreparer {
         installedAddonNames: Set<String>,
     ): List<StreamItem> {
         if (limit <= 0) return emptyList()
-        val candidates = streams
+        // beta.19-rc1 verdict (A, BUG-136): with Auto-Play Best Source on (tvOS), the walk tries
+        // streams best first, so the links prepared ahead of time follow that order too.
+        val ranking = StreamAutoPlayPlatform.firstStreamRanking
+        val ranksBest = playerSettings.streamAutoPlayMode == StreamAutoPlayMode.FIRST_STREAM &&
+            ranking == StreamAutoPlayRanking.BEST_QUALITY
+        val unrankedCandidates = streams
             .filter { stream ->
                 stream.playableDirectUrl == null &&
                     stream.isAddonDebridCandidate &&
                     (stream.isDirectDebridStream || stream.isCachedDebridTorrentStream)
             }
             .distinctBy { it.preparationKey() }
-        if (candidates.isEmpty()) return emptyList()
+        if (unrankedCandidates.isEmpty()) return emptyList()
+        val candidates = if (ranksBest) StreamQualityRank.rankBest(unrankedCandidates) else unrankedCandidates
 
         val prioritized = mutableListOf<StreamItem>()
         val autoPlaySelection = StreamAutoPlaySelector.selectAutoPlayStream(
@@ -88,6 +97,8 @@ object DirectDebridStreamPreparer {
             installedAddonNames = installedAddonNames,
             selectedAddons = playerSettings.streamAutoPlaySelectedAddons,
             selectedPlugins = playerSettings.streamAutoPlaySelectedPlugins,
+            // beta.19-rc1 verdict (A, BUG-136): prepare the link auto-play will actually pick.
+            ranking = ranking,
         )
         if (autoPlaySelection?.let { it.isAddonDebridCandidate && (it.isDirectDebridStream || it.isCachedDebridTorrentStream) } == true) {
             candidates.firstOrNull { it.preparationKey() == autoPlaySelection.preparationKey() }

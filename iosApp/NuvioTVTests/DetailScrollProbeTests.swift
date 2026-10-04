@@ -1,11 +1,15 @@
 import XCTest
 @testable import NuvioTV
 
-/// BUG-41 (beta.18, Wave W6): unit coverage for the two pure pieces backing "flatten Liquid Glass
-/// while the description page is actively scrolling" — `ScrollingLatch` (the debounce arithmetic
-/// behind `ScrollDimModel.isScrolling`, `DetailView.swift`) and `DetailView.chipGlassFlat(...)`
-/// (the truth table deciding whether `metaChip`/parental-guide chips render flat material instead
-/// of `.glassEffect`).
+/// BUG-41 (beta.18, Wave W6): unit coverage for the two pure pieces behind the Detail page's scroll
+/// diagnostics and chip glass — `ScrollingLatch` (the debounce arithmetic behind
+/// `ScrollDimModel.isScrolling`, `DetailView.swift`) and `DetailView.chipGlassFlat(...)` (the truth
+/// table deciding whether `metaChip`/parental-guide chips render flat material instead of
+/// `.glassEffect`).
+///
+/// beta.19-rc1 verdict (D2, BUG-140): the page no longer flattens glass while it scrolls, so
+/// `ScrollingLatch` now only feeds the `debug_ux6` probe's `scrolling=` token and `chipGlassFlat`
+/// has two inputs (a live background trailer, the `DetailScrollAB` glass legs).
 ///
 /// Both are exercised as pure functions of fabricated inputs — no `Task.sleep`, no `DetailView`
 /// instance, no simulator. `ScrollDimModel` itself (the stateful `Task`-based timer wiring that
@@ -69,42 +73,41 @@ final class DetailScrollProbeTests: XCTestCase {
 
     // MARK: - DetailView.chipGlassFlat truth table
 
-    /// All 8 combinations of the three inputs — `chipGlassFlat` is a plain OR, but this pins the
-    /// exact truth table down (not just "at least one true → true") so a future edit that
-    /// accidentally ANDs one branch, or drops one entirely, fails loudly here instead of only
-    /// showing up as a subtle on-device glass/flat mismatch.
+    /// All 4 combinations of the two inputs — `chipGlassFlat` is a plain OR, but this pins the exact
+    /// truth table down (not just "at least one true → true") so a future edit that accidentally
+    /// ANDs one branch, or drops one entirely, fails loudly here instead of only showing up as a
+    /// subtle on-device glass/flat mismatch.
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): scrolling is not an input any more. The old
+    /// scrolling-only row is deleted rather than replaced by a signature check (which would prove
+    /// nothing); the glass-stays-constant-while-scrolling proof is the test33 Classic leg, which
+    /// reads `debug_ux6`'s `glass=` before, during and after a scroll.
     func testChipGlassFlatTruthTable() {
-        let cases: [(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool, expected: Bool)] = [
-            (false, false, false, false),
-            (true,  false, false, true),
-            (false, true,  false, true),
-            (false, false, true,  true),
-            (true,  true,  false, true),
-            (true,  false, true,  true),
-            (false, true,  true,  true),
-            (true,  true,  true,  true),
+        let cases: [(trailerActive: Bool, glassDisabled: Bool, expected: Bool)] = [
+            (false, false, false),
+            (true,  false, true),
+            (false, true,  true),
+            (true,  true,  true),
         ]
         for testCase in cases {
             let actual = DetailView.chipGlassFlat(
                 trailerActive: testCase.trailerActive,
-                scrolling: testCase.scrolling,
                 glassDisabled: testCase.glassDisabled
             )
             XCTAssertEqual(
                 actual, testCase.expected,
-                "chipGlassFlat(trailerActive: \(testCase.trailerActive), scrolling: \(testCase.scrolling), glassDisabled: \(testCase.glassDisabled)) should be \(testCase.expected), was \(actual)"
+                "chipGlassFlat(trailerActive: \(testCase.trailerActive), glassDisabled: \(testCase.glassDisabled)) should be \(testCase.expected), was \(actual)"
             )
         }
     }
 
-    /// Named restatement of the one row of the table this whole wave exists to add: scrolling
-    /// alone (no trailer, no A/B leg) must flatten the chips.
-    func testScrollingAloneFlattensChips() {
-        XCTAssertTrue(DetailView.chipGlassFlat(trailerActive: false, scrolling: true, glassDisabled: false))
+    /// The rest state this whole rule cares about: nothing active, glass stays glass.
+    func testRestStateKeepsGlass() {
+        XCTAssertFalse(DetailView.chipGlassFlat(trailerActive: false, glassDisabled: false))
     }
 
-    /// The rest state this wave cares just as much about: nothing active, glass stays glass.
-    func testRestStateKeepsGlass() {
-        XCTAssertFalse(DetailView.chipGlassFlat(trailerActive: false, scrolling: false, glassDisabled: false))
+    /// A live background trailer is the one steady state that flattens the chips (BUG-41 item 4).
+    func testBackgroundTrailerFlattensChips() {
+        XCTAssertTrue(DetailView.chipGlassFlat(trailerActive: true, glassDisabled: false))
     }
 }

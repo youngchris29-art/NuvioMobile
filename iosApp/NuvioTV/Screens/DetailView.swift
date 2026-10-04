@@ -58,9 +58,13 @@ private final class ScrollDimModel: ObservableObject {
     /// BUG-41 (beta.18): debounced "the user is actively scrolling right now" flag — true the
     /// instant a scroll-geometry change is observed, false again ~150ms after the last one
     /// (`ScrollingLatch.defaultIdle`). Lives here, not a plain `@State` on `DetailView`, for the
-    /// same reason `value` does: writing it every scroll frame must invalidate only the small
-    /// views that actually read it (the chip glass/flat swap — see `DetailView.chipGlassFlat`),
-    /// not the whole `DetailView.body`.
+    /// same reason `value` does: writing it every scroll frame must not be a `@State` write on
+    /// the whole `DetailView.body`.
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): nothing in the page's look reads this any more. Until
+    /// then the chip glass/flat swap (`DetailView.chipGlassFlat`) and Classic's synopsis panel
+    /// followed it, so the glass popped flat on every scroll and back ~150 ms after it stopped
+    /// (Steven's video, 3:39.9). It now only feeds the `scrolling=` token of the `debug_ux6` probe.
     @Published var isScrolling: Bool = false
     /// BUG-96 diagnostic: the last anchor decision (`row=… h=… vh=… k=…`), surfaced on the
     /// `debug_ux6` probe so a UI leg can read it off the accessibility tree (the tvOS 27 runtime
@@ -1312,18 +1316,6 @@ struct DetailView: View {
     /// reasoning).
     private var trailerLayerVisible: Bool { isTrailerActive && !trailerDimmedOut }
 
-    /// BUG-41 leg 2/3/4 + "flatten while a trailer plays" (item 4) + "flatten while scrolling"
-    /// (beta.18, item 2): whether the top-block chips (`metaChip`, parental-guide) should render
-    /// flat translucent material instead of `.glassEffect`. Mirrors `detailChipBackground`'s own
-    /// condition (the only other reader — see `Self.chipGlassFlat` below); also folded into the
-    /// `debug_ux6` diagnostic's `glass=` token.
-    ///
-    /// Deliberately NOT unified with `actionRow`'s `GlassEffectContainer`/button-style swap
-    /// (`DetailScrollAB.buttonGlassDisabled`, leg 4 only): that enum's own doc comment records it
-    /// as an intentionally SEPARATE knob so legs 2/3 can isolate "chips only" from leg 4's "chips +
-    /// buttons" for the A/B attribution question BUG-41 is still mid-answering on-device. Folding
-    /// `dimModel.isScrolling` in here would silently make ordinary (leg 0) scrolling flatten the
-    /// action row too, widening that experiment's scope as a side effect of this fix.
     /// BUG-96: one anchor pass. Codex r1 (P2): geometry is read HERE, at fire time — the row's
     /// content-space top and the live top inset — never captured before the wait (a parental-guide
     /// row inserting asynchronously moves every row below it). Gated on the page being visible and
@@ -1430,22 +1422,46 @@ struct DetailView: View {
         return true
     }
 
+    /// beta.19-rc1 verdict (D2, BUG-140): ONE glass rule for the page — scrolling never changes
+    /// glass. This says whether the top-block chips (`metaChip`, the parental-guide chips) and
+    /// Classic's synopsis panel render flat translucent material instead of `.glassEffect`, and it
+    /// is true for exactly two reasons:
+    ///   - a background trailer is live behind them (`isTrailerActive`, BUG-41 item 4: re-sampling a
+    ///     playing video frame every render is real GPU work for a barely visible effect), a steady
+    ///     state rather than a scroll transition; or
+    ///   - `DetailScrollAB` leg 2/3/4, the on-device A/B for BUG-41's attribution question.
+    /// Until this change it also followed `dimModel.isScrolling`, so the chips and the panel went
+    /// flat on every scroll and snapped back about 150 ms after it stopped (Steven's video, 3:39.9),
+    /// while the action buttons never changed. "Neither flat" was chosen over "both flat" because
+    /// flattening the buttons means swapping the button style of a FOCUSED button (an identity
+    /// change) or replacing the system glass focus look. Mirrors `detailChipBackground`'s own
+    /// condition; also folded into the `debug_ux6` diagnostic's `glass=` token.
+    ///
+    /// Deliberately NOT unified with `actionRow`'s `GlassEffectContainer`/button-style swap
+    /// (`DetailScrollAB.buttonGlassDisabled`, leg 4 only): that enum's own doc comment records it
+    /// as an intentionally SEPARATE knob so legs 2/3 can isolate "chips only" from leg 4's "chips +
+    /// buttons" for the A/B attribution question BUG-41 is still mid-answering on-device.
     private var chipGlassFlat: Bool {
-        Self.chipGlassFlat(trailerActive: isTrailerActive, scrolling: dimModel.isScrolling, glassDisabled: DetailScrollAB.glassDisabled)
+        Self.chipGlassFlat(trailerActive: isTrailerActive, glassDisabled: DetailScrollAB.glassDisabled)
     }
 
     /// Pure truth table backing `chipGlassFlat` above, extracted so `DetailScrollProbeTests` can
-    /// exhaustively cover all 8 combinations without standing up a `DetailView`/`DetailViewModel`.
+    /// exhaustively cover all 4 combinations without standing up a `DetailView`/`DetailViewModel`.
     /// `nonisolated` for the same reason as `ScrollingLatch.isScrolling`: no instance/actor state
     /// involved, so tests can call it directly with no `@MainActor` hop.
-    nonisolated static func chipGlassFlat(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
-        trailerActive || scrolling || glassDisabled
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): the `scrolling:` input is gone — scrolling never changes
+    /// glass (see the property above).
+    nonisolated static func chipGlassFlat(trailerActive: Bool, glassDisabled: Bool) -> Bool {
+        trailerActive || glassDisabled
     }
 
     /// beta.18 verdict (BUG-127): the synopsis panel flattens under exactly the same rule as the
-    /// chips (BUG-41), so the truth table is shared and testable via `DetailScrim`.
-    nonisolated static func panelUsesFlatFill(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
-        chipGlassFlat(trailerActive: trailerActive, scrolling: scrolling, glassDisabled: glassDisabled)
+    /// chips (BUG-41), so the truth table is shared and testable via `DetailScrim`. beta.19-rc1
+    /// verdict (D2, BUG-140): that now includes the new rule — the panel stops flattening while the
+    /// page scrolls, like the chips.
+    nonisolated static func panelUsesFlatFill(trailerActive: Bool, glassDisabled: Bool) -> Bool {
+        chipGlassFlat(trailerActive: trailerActive, glassDisabled: glassDisabled)
     }
 
     /// The poster-backdrop layer only earns its keep when it would show something the plain
@@ -1467,9 +1483,18 @@ struct DetailView: View {
             // rc14 (Steven rc13 verdict, 2026-09-30): try the larger rendition first (sharper on a
             // 4K panel); the original URL is the fallback if that file does not exist. No fallback
             // when the URL had no larger rendition to ask for (it would just repeat the same fetch).
+            //
+            // beta.19-rc1 verdict (I1, BUG-134): decoded at screen resolution (3840 px wide on a 4K
+            // Apple TV) instead of the old fixed 1920 px cap, which stretched a 1920 px bitmap 2× on
+            // a 4K panel (Steven's Oak Street pair). The URL chain above is unchanged. A pushed
+            // Detail stack would otherwise pin one ~33 MB bitmap per page outside the cache, so the
+            // image is released while this view is off screen and reloaded (normally a memory hit)
+            // when it returns.
             CachedAsyncImage(
                 string: backgroundUrl.map(DetailBackdropURL.upgraded),
-                fallback: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 }
+                fallback: backgroundUrl.flatMap { DetailBackdropURL.upgraded($0) == $0 ? nil : $0 },
+                decodeSize: .fullBleed,
+                releasesWhenHidden: true
             )
                 .frame(width: geo.size.width, height: geo.size.height)
                 .clipped()
@@ -1485,7 +1510,14 @@ struct DetailView: View {
     /// backdrop underneath instead of showing a hard seam.
     private var posterBackdropLayer: some View {
         GeometryReader { geo in
-            CachedAsyncImage(string: posterUrl)
+            // beta.19-rc1 verdict (I1, BUG-134): this layer fills 40 % of the screen, so it asks for
+            // the larger poster file (TMDB `original`, metahub `large`; the given URL is the
+            // automatic fallback) and decodes it for the size it is drawn at. A zero-sized first
+            // GeometryReader pass normalizes to the old decode, so it never decodes a tiny bucket
+            // and reloads.
+            CachedAsyncImage(string: posterUrl,
+                             decodeSize: .points(width: geo.size.width * 0.4, height: geo.size.height),
+                             upgrade: .posterLarge)
                 .frame(width: geo.size.width * 0.4, height: geo.size.height, alignment: .trailing)
                 .clipped()
                 .mask(
@@ -1684,7 +1716,12 @@ struct DetailView: View {
             // every scroll-triggered re-render were one of the choppiness suspects. The failure
             // builder keeps the title-text fallback a plain AsyncImage gave on a bad logo URL; the
             // shimmer-during-load is the one deliberate visual delta from before (see report).
-            CachedAsyncImage(string: logoUrl, contentMode: .fit, failure: {
+            //
+            // beta.19-rc1 verdict (I1, BUG-134): Classic's logo asks for the TMDB `original` file
+            // (the data keeps w500; the w500 file is the automatic fallback) and decodes it for the
+            // 600×180 box it is drawn in, instead of upscaling a 500 px logo about 2.4× on 4K.
+            CachedAsyncImage(string: logoUrl, contentMode: .fit,
+                             decodeSize: .points(width: 600, height: 180), upgrade: .logo, failure: {
                 Text(title).font(Theme.Font.hero).foregroundStyle(Theme.Palette.textPrimary)
             })
             .frame(maxWidth: 600, maxHeight: 180, alignment: .leading)
@@ -1739,14 +1776,19 @@ struct DetailView: View {
     /// below so the two don't duplicate the conditional. `actionRow`'s buttons/container are a
     /// separate swap (leg 4 / `DetailScrollAB.buttonGlassDisabled`) and are untouched by this one.
     ///
-    /// BUG-41 (beta.18): glass returns the instant `chipGlassFlat` flips back to false — most
-    /// commonly `dimModel.isScrolling` clearing ~150ms after the user stops scrolling — and the
-    /// hybrid HIG contract (`docs/design/hig-hybrid-contract.md`) treats glass as this page's
-    /// RESTING-state material, so that return should read as "it was there all along," not a
-    /// visible pop/morph back in. `.transaction { $0.animation = nil }` forces a nil transaction on
-    /// this specific swap regardless of any ambient animation up the tree (e.g. `.animation`
-    /// modifiers elsewhere in `body` keyed to unrelated values) — belt-and-suspenders alongside the
-    /// fact that nothing here calls `withAnimation` in the first place.
+    /// BUG-41 (beta.18): the hybrid HIG contract (`docs/design/hig-hybrid-contract.md`) treats glass
+    /// as this page's RESTING-state material, so the swap back to glass when `chipGlassFlat` flips
+    /// to false (the background trailer ending or being dismissed) should read as "it was there all
+    /// along," not a visible pop/morph back in. `.transaction { $0.animation = nil }` forces a nil
+    /// transaction on this specific swap regardless of any ambient animation up the tree (e.g.
+    /// `.animation` modifiers elsewhere in `body` keyed to unrelated values) — belt-and-suspenders
+    /// alongside the fact that nothing here calls `withAnimation` in the first place.
+    ///
+    /// beta.19-rc1 verdict (D2, BUG-140): scrolling no longer flips `chipGlassFlat` (it used to, and
+    /// the glass popped flat and back on every scroll — Steven's video, 3:39.9), so the swap only
+    /// happens when a background trailer starts or stops playing behind the chips. The remaining
+    /// edge, by design: with a trailer playing the chips are flat while the action buttons stay
+    /// glass — a steady state, not a transition during scrolling.
     @ViewBuilder
     private func detailChipBackground(@ViewBuilder _ content: () -> some View) -> some View {
         Group {
@@ -1880,9 +1922,12 @@ struct DetailView: View {
                         // `prominentAccentLabel()` (already proven for `.borderedProminent` sites,
                         // BUG-4) covers both states: accent-contrasting text unfocused, dark text
                         // on the near-white focus lift.
+                        // beta.19-rc1 verdict (D1, BUG-137): both labels are localized
+                        // (`actionLabel` takes a `LocalizedStringResource`); "Play" used to be a
+                        // bare String literal, which `Label` never looks up.
                         actionButtonPadding(
                             actionLabel(
-                                model.isPlayEnabled ? "Play" : String(localized: "Playback unavailable"),
+                                model.isPlayEnabled ? "Play" : "Playback unavailable",
                                 systemImage: "play.fill",
                                 primary: true
                             )
@@ -1911,12 +1956,17 @@ struct DetailView: View {
                         seriesPlay = SeriesPlayRoute(meta: meta, action: action)
                     } label: {
                         // BUG-14: see the non-series Play button above.
+                        // beta.19-rc1 verdict (D1, BUG-137): `action.label` is already localized by
+                        // Kotlin (`SeriesContinuity.kt`), so it goes through `actionLabel(verbatim:)`;
+                        // the unavailable caption is a localized resource.
                         actionButtonPadding(
-                            actionLabel(
-                                model.isPlayEnabled ? action.label : String(localized: "Playback unavailable"),
-                                systemImage: "play.fill",
-                                primary: true
-                            )
+                            Group {
+                                if model.isPlayEnabled {
+                                    actionLabel(verbatim: action.label, systemImage: "play.fill", primary: true)
+                                } else {
+                                    actionLabel("Playback unavailable", systemImage: "play.fill", primary: true)
+                                }
+                            }
                             .font(Theme.Font.meta)
                             .prominentAccentLabel(),
                             horizontal: Theme.Spacing.lg,
@@ -2022,9 +2072,7 @@ struct DetailView: View {
                     } label: {
                         actionButtonPadding(
                             actionLabel(
-                                model.shuffleSettings.enabled
-                                    ? String(localized: "Shuffle On")
-                                    : String(localized: "Shuffle"),
+                                model.shuffleSettings.enabled ? "Shuffle On" : "Shuffle",
                                 systemImage: "shuffle"
                             )
                             .font(Theme.Font.meta),
@@ -2102,7 +2150,7 @@ struct DetailView: View {
                 }
             } label: {
                 actionButtonPadding(
-                    actionLabel(String(localized: "Start Over"), systemImage: "arrow.counterclockwise")
+                    actionLabel("Start Over", systemImage: "arrow.counterclockwise")
                         .font(Theme.Font.meta),
                     horizontal: Theme.Spacing.md
                 )
@@ -2115,8 +2163,29 @@ struct DetailView: View {
 
     /// FEAT-9: the underlying `Label` for one action-row button — icon + text normally, icon-only
     /// (with the title preserved for VoiceOver) when `actionIconsOnly` is on.
+    ///
+    /// beta.19-rc1 verdict (D1, BUG-137; Steven's French screenshot showed Play, Watch Trailer, Mark
+    /// Watched and Add to Library in English): the title is a `LocalizedStringResource`, resolved
+    /// with `String(localized:)`. It used to be a `String`, and `Label(String, …)` never looks a
+    /// `String` up in the catalog — so only the one label that was already wrapped in
+    /// `String(localized:)` (Playback unavailable) was translated. Every key used here already has a
+    /// translation; the call sites pass plain literals (English in code).
     @ViewBuilder
-    private func actionLabel(_ title: String, systemImage: String, primary: Bool = false) -> some View {
+    private func actionLabel(_ title: LocalizedStringResource, systemImage: String, primary: Bool = false) -> some View {
+        actionLabelBody(String(localized: title), systemImage: systemImage, primary: primary)
+    }
+
+    /// D1: the same label for a title that is already localized text, such as the series Play/Resume
+    /// caption Kotlin builds (`SeriesContinuity.kt`). Shown exactly as given.
+    @ViewBuilder
+    private func actionLabel(verbatim title: String, systemImage: String, primary: Bool = false) -> some View {
+        actionLabelBody(title, systemImage: systemImage, primary: primary)
+    }
+
+    /// D1: the one body behind both `actionLabel` overloads (icon + text, or icon-only with the
+    /// title kept for VoiceOver).
+    @ViewBuilder
+    private func actionLabelBody(_ title: String, systemImage: String, primary: Bool) -> some View {
         let label = Label(title, systemImage: systemImage)
         if usesIconOnlyLabel(primary: primary) {
             label.labelStyle(.iconOnly).accessibilityLabel(Text(title))
@@ -2176,6 +2245,11 @@ struct DetailView: View {
                     .padding(.vertical, Theme.Spacing.xs)
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (F, FEAT-54): the Appearance "Row Edge Fade" setting reaches
+                // the Detail rows too (Cast, More Like This, Collection, Trailers & Extras and the
+                // Episodes rows). The page's rows sit at the same 140 pt margin from the bezel as
+                // Home's, so the standard environment margins are right and no overrides are passed.
+                .rowEdgeEffectStyle()
             }
             .focusSection()
         }
@@ -2208,6 +2282,8 @@ struct DetailView: View {
                     .padding(.vertical, Theme.Spacing.md)
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
+                .rowEdgeEffectStyle()
             }
             .focusSection()
         }
@@ -2257,7 +2333,9 @@ struct DetailView: View {
         // Bare Kotlin `String?` reads can bridge as non-optional in this framework — widen before use.
         let country: String? = meta.country;   add(String(localized: "Country"), country ?? "")
         let language: String? = meta.language;  add(String(localized: "Language"), language ?? "")
-        let status: String? = meta.status;      add(String(localized: "Status"), status ?? "")
+        // beta.19-rc1 verdict (D1, BUG-137): known status words ("Released", "Ended", …) go through
+        // `DetailStatusText` so they translate; an unknown value shows as the add-on gave it.
+        let status: String? = meta.status;      add(String(localized: "Status"), DetailStatusText.localized(status) ?? "")
         let awards: String? = meta.awards;      add(String(localized: "Awards"), awards ?? "")
         let ratings = meta.externalRatings
         if !ratings.isEmpty {
@@ -2335,6 +2413,8 @@ struct DetailView: View {
                     .padding(.vertical, Theme.Spacing.md)
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
+                .rowEdgeEffectStyle()
             }
             .focusSection()
         }
@@ -2480,6 +2560,8 @@ struct DetailView: View {
                     .padding(.vertical, Theme.Spacing.md)
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (F, FEAT-54): row edge fade, see the Cast row.
+                .rowEdgeEffectStyle()
                 #if DEBUG
                 // UX-10 diagnostic (invisible, harness-readable): rendered trailer count vs. how
                 // many resolved a YouTube thumbnail, so a UITest can prove the shelf switched from
@@ -2997,8 +3079,9 @@ nonisolated enum DetailScrim {
     /// review r1 (P3-6): synopsis panel line cap (was 12, truncating long overviews).
     static let panelMaxLines = 18
 
-    static func panelUsesFlatFill(trailerActive: Bool, scrolling: Bool, glassDisabled: Bool) -> Bool {
-        DetailView.panelUsesFlatFill(trailerActive: trailerActive, scrolling: scrolling, glassDisabled: glassDisabled)
+    /// beta.19-rc1 verdict (D2, BUG-140): no `scrolling:` input — scrolling never changes glass.
+    static func panelUsesFlatFill(trailerActive: Bool, glassDisabled: Bool) -> Bool {
+        DetailView.panelUsesFlatFill(trailerActive: trailerActive, glassDisabled: glassDisabled)
     }
 
     // MARK: FEAT-35 Cinematic scrim
@@ -3008,16 +3091,29 @@ nonisolated enum DetailScrim {
     /// The classic stops above are the CEILING: `cinematicCompositeAlpha` must never exceed
     /// `classicCompositeAlpha` at any point (`DetailScrimCinematicTests`, 11 × 11 grid). If that
     /// test ever fails, lower `cinematicRadialOpacity` in 0.05 steps; never raise any value.
-    static let cinematicHorizontalLeading: Double = 0.55
-    static let cinematicHorizontalMid: Double = 0.15
+    ///
+    /// beta.19-rc1 verdict (D3, BUG-127; Steven's Oak Street and Monstre photos): the Cinematic art
+    /// still read darkened, so every stop is at or below its beta.18 value (the trailing stop and
+    /// the vertical start are unchanged) and the darkness now sits under the text column instead of
+    /// across the whole left half:
+    ///   - leading 0.55 → 0.30 and mid 0.15 → 0.06: the top-left composite goes 0.599 → 0.332;
+    ///   - over-poster trailing 0.10 → 0.06;
+    ///   - vertical bottom 0.60 → 0.55;
+    ///   - radial opacity 0.55 → 0.50 and end radius 0.70 → 0.62 of the width: the bottom-left
+    ///     corner goes 0.919 → 0.8425 and the synopsis/meta block (x 0.03–0.30, y 0.55–0.75) goes
+    ///     from a mean of 0.646 to 0.485 (minimum 0.477 → 0.311), which is the floor the text still
+    ///     needs (`DetailScrimCinematicTests.testTextBlockFloor`); the art region (x 0.5–1, y 0–0.6)
+    ///     goes from a mean of 0.081 to 0.031.
+    static let cinematicHorizontalLeading: Double = 0.30
+    static let cinematicHorizontalMid: Double = 0.06
     static let cinematicHorizontalTrailing: Double = 0.00
-    static let cinematicHorizontalTrailingOverPoster: Double = 0.10
+    static let cinematicHorizontalTrailingOverPoster: Double = 0.06
     static let cinematicVerticalClearUntil: Double = 0.60
-    static let cinematicVerticalBottom: Double = 0.60
+    static let cinematicVerticalBottom: Double = 0.55
     /// Black at this opacity at the bottom-leading corner, fading linearly to clear.
-    static let cinematicRadialOpacity: Double = 0.55
+    static let cinematicRadialOpacity: Double = 0.50
     /// The radial's end radius as a fraction of the screen WIDTH.
-    static let cinematicRadialEndRadiusFraction: Double = 0.70
+    static let cinematicRadialEndRadiusFraction: Double = 0.62
     /// The aspect the composite math measures radial distance in (the tvOS screen).
     static let compositeAspectWidth: Double = 1920
     static let compositeAspectHeight: Double = 1080

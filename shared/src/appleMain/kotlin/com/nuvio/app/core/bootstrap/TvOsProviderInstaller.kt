@@ -144,6 +144,12 @@ fun installTvOsSharedProviders() {
     // Only settings reach every add-on's and plugin's streams on tvOS (mobile stays debrid-only).
     com.nuvio.app.features.streams.StreamPresentationPlatform.filtersApplyToAllStreams = true
 
+    // beta.19-rc1 verdict (A, BUG-136): "Auto-Play Best Source" (the shared FIRST_STREAM mode)
+    // picks the best source among those that arrived (resolution > HDR/DV > cached > size), not
+    // the first one in list order. Mobile keeps list order.
+    com.nuvio.app.features.streams.StreamAutoPlayPlatform.firstStreamRanking =
+        com.nuvio.app.features.streams.StreamAutoPlayRanking.BEST_QUALITY
+
     // Theme persistence: the shared default ThemeSettingsStore is a no-op (theme would reset every
     // launch). The tvOS adapter persists to NSUserDefaults (profile-scoped keys) and defaults to
     // CRIMSON — the app's launch look. Installed before any ThemeSettingsRepository.ensureLoaded().

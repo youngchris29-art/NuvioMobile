@@ -218,7 +218,14 @@ struct TrailerBridgeCaption: View {
     @ViewBuilder
     private var titleContent: some View {
         if let logoURL, !logoURL.isEmpty {
-            CachedAsyncImage(string: logoURL, contentMode: .fit, failure: { titleText })
+            // beta.19-rc1 verdict (I1, BUG-134): asks for the same larger logo file the page's
+            // header uses (TMDB `original`) at the size it is drawn in. `ArtworkStore` treats the
+            // renditions of one logo as a family and serves a larger decode to a smaller request, so
+            // the header's decode is a hit here and the "already in the cache on the way in" rule
+            // above still holds.
+            CachedAsyncImage(string: logoURL, contentMode: .fit,
+                             decodeSize: .points(width: 360, height: 72), upgrade: .logo,
+                             failure: { titleText })
                 // Roughly the header's 600x180 lockup at caption scale; `.fit` keeps wide and tall
                 // logos inside the same box, and `.leading` keeps a narrow one on the left margin
                 // shared with the hint below it.

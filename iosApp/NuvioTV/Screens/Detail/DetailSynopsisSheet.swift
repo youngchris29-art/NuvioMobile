@@ -70,7 +70,12 @@ struct DetailSynopsisSheet: View {
             .font(Theme.Font.screenTitle)
             .foregroundStyle(Theme.Palette.textPrimary)
         if let logoURL, !logoURL.isEmpty {
-            CachedAsyncImage(string: logoURL, contentMode: .fit, failure: { fallback })
+            // beta.19-rc1 verdict (I1, BUG-134): the TMDB `original` logo (the data keeps w500; the
+            // w500 file is the automatic fallback), decoded for the 520×120 box it is drawn in. The
+            // spec lists 600×180 here; the box below is the real drawn size.
+            CachedAsyncImage(string: logoURL, contentMode: .fit,
+                             decodeSize: .points(width: 520, height: 120), upgrade: .logo,
+                             failure: { fallback })
                 .frame(maxWidth: 520, maxHeight: 120, alignment: .leading)
         } else {
             fallback

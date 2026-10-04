@@ -85,6 +85,10 @@ struct EpisodesSection: View {
                         .padding(.vertical, Theme.Spacing.md)
                     }
                     .scrollClipDisabled()
+                    // beta.19-rc1 verdict (F, FEAT-54): the season-poster row wears the Appearance
+                    // "Row Edge Fade" like every other row. The text season-chip row below has no
+                    // `scrollClipDisabled`, so it is left alone.
+                    .rowEdgeEffectStyle()
                     .focusSection()
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -149,6 +153,11 @@ struct EpisodesSection: View {
                     .padding(.vertical, Theme.Spacing.md)
                 }
                 .scrollClipDisabled()
+                // beta.19-rc1 verdict (F, FEAT-54): the episode cards fade at the screen edges like
+                // the other Detail rows (Christian 2026-10-03: the Episodes rows get it too). The
+                // fade only reads the horizontal scroll offset, so the `scrollTo` snap below is
+                // unaffected.
+                .rowEdgeEffectStyle()
                 .onChange(of: current) { _, _ in
                     // A new season can be shorter than the old scroll offset; snap back to the
                     // first episode without animating through the intermediate layout.

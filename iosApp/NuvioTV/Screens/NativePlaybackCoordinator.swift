@@ -30,6 +30,27 @@ nonisolated final class SelectedAudioBox: @unchecked Sendable {
     }
 }
 
+/// beta.19-rc1 verdict (P, BUG-139): the caption under the native player's preparing spinner.
+/// Pure so it unit-tests without a remux. Dolby Vision is the remux's own report: a Dolby Vision
+/// CODECS token (profile 5 is `dvh1.05.xx`, `dvhe` for the in-band variant) or a SUPPLEMENTAL-CODECS
+/// token (profile 8.x over an HDR10, SDR or HLG base). Anything else, and "not inspected yet", is
+/// plain playback.
+nonisolated enum NativePreparingLabel {
+    static func isDolbyVision(_ signaling: VideoSignaling?) -> Bool {
+        guard let signaling else { return false }
+        let codecs = signaling.codecs.lowercased()
+        if codecs.hasPrefix("dvh1") || codecs.hasPrefix("dvhe") { return true }
+        if let supplemental = signaling.supplementalCodecs, !supplemental.isEmpty { return true }
+        return false
+    }
+
+    static func text(for signaling: VideoSignaling?) -> String {
+        isDolbyVision(signaling)
+            ? String(localized: "Preparing Dolby Vision\u{2026}")
+            : String(localized: "Preparing playback\u{2026}")
+    }
+}
+
 @MainActor
 final class NativePlaybackCoordinator: ObservableObject {
     enum Phase: Equatable {
@@ -43,8 +64,10 @@ final class NativePlaybackCoordinator: ObservableObject {
     /// `selected` flag follows the track the remux is producing (the system Audio tab drives
     /// switching — info-panel W3 — through the master's audio renditions).
     @Published private(set) var audioTracks: [NativeAudioTrack] = []
-    /// Caption under the preparing spinner.
-    @Published private(set) var preparingLabel = String(localized: "Preparing Dolby Vision\u{2026}")
+    /// Caption under the preparing spinner. beta.19-rc1 verdict (P, BUG-139): "Preparing
+    /// playback…" until the remux reports a Dolby Vision stream; it used to say "Preparing Dolby
+    /// Vision…" for every native-engine file, SDR and HDR10 included.
+    @Published private(set) var preparingLabel = NativePreparingLabel.text(for: nil)
     private(set) var player: AVPlayer?
 
     /// Fired ~every few seconds with (position, duration) while playing — the screen forwards it to
@@ -448,6 +471,10 @@ final class NativePlaybackCoordinator: ObservableObject {
             for _ in 0..<240 {                          // ~60s ceiling
                 if Task.isCancelled { return }
                 if case .failed(let stage) = remux.state { self?.failIfPreplayback(stage); return }
+                // The worker publishes the video signaling when it inspects the streams, before the
+                // segment map exists; a Dolby Vision file flips the caption once, in the first few
+                // hundred milliseconds. (P, BUG-139)
+                self?.updatePreparingLabel(remux.videoSignaling)
                 let hasMap = remux.segmentMap != nil
                 let hasInit = Self.fileSize(dir, "init.mp4") > 0
                 // A finished remux (short clip that is a single segment) finalizes seg-00001 only at EOF.
@@ -467,6 +494,12 @@ final class NativePlaybackCoordinator: ObservableObject {
             }
             self?.failIfPreplayback("no segments produced")
         }
+    }
+
+    /// Assigns only on change, so the `@Published` caption does not re-render every poll tick.
+    private func updatePreparingLabel(_ signaling: VideoSignaling?) {
+        let text = NativePreparingLabel.text(for: signaling)
+        if text != preparingLabel { preparingLabel = text }
     }
 
     private static func fileSize(_ dir: URL, _ name: String) -> Int {

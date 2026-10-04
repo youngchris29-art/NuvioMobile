@@ -52,6 +52,94 @@ enum TabBarContentScrollLink {
     nonisolated(unsafe) static weak var homeRowsScrollView: UIScrollView?
 }
 
+/// T1 (Steven beta.19-rc1 verdict, 2026-10-03; BUG-66 residual): his Tab Bar Geometry pane read
+/// `y=-13 st=part` at rest after launch, the bar parked 13 pt up and half on screen. UIKit moves a
+/// linked bar 1:1 with the tracked scroll view's offset, so the rows rested 13 pt away from the
+/// baseline UIKit holds for them. There are two readings of that, and one candidate fix for each:
+///
+/// - Leg 1, relink (H2, a skewed baseline). `apply()` used to link BEFORE it switched the pinned
+///   rows to `.never`, so UIKit may have taken its baseline against the automatic inset. Leg 1
+///   sets `.never` first, and once per mount, after the first focus and the first decided rest,
+///   drops the link and makes it again, so the baseline is taken at a real rest.
+/// - Leg 2, top-rest snap (H1, the first row resting a few points deep). `PinnedRowSettle` scrolls
+///   the first row back to offset 0 as an ordinary settle correction (`topSnapApplies`).
+///
+/// Both legs ship OFF (Christian, 2026-10-03): leg 0 is today's behaviour, and the device session
+/// (three cold launches, `-debug.tabBarRestFix 0|1|2`, two pane photos each) picks the winner,
+/// which then becomes the default in a one-constant follow-up. Any value other than 1 or 2 reads
+/// as 0. Not `#if DEBUG`: the device session and Steven run the same Release-shaped binary with a
+/// launch argument, exactly like `TabBarStateProbe.enabled`.
+///
+/// Neither leg adds what the 08-27 trace banned (`docs/traces-2026-08-27-bug66-upcoming.md`): no
+/// scroll-driven `.toolbarVisibility`, no `.safeAreaInset` hero, no hero-refocus completion scroll.
+/// Leg 1 writes only the link UIKit already holds; leg 2 is a settle decision on a focused row,
+/// never a scroll fired by a focus change.
+nonisolated enum TabBarRestFix {
+    static let defaultsKey = "debug.tabBarRestFix"
+
+    /// Launch-latched, read once. 0 = today (default), 1 = relink, 2 = top-rest snap.
+    static let leg: Int = resolveLeg(UserDefaults.standard)
+
+    /// `integer(forKey:)` also converts the String "2" that `-debug.tabBarRestFix 2` lands in the
+    /// argument domain. Out-of-range values fall back to 0, so a typo can never enable a leg.
+    static func resolveLeg(_ defaults: UserDefaults) -> Int {
+        let raw = defaults.integer(forKey: defaultsKey)
+        return (1...2).contains(raw) ? raw : 0
+    }
+
+    /// Leg 1's wait before the relink: one poll every 0.25 s.
+    static let pollInterval: TimeInterval = 0.25
+    /// How long the relink waits for the first focus before it moves on without one. A cold launch
+    /// normally lands focus on the hero within a second; this cap only keeps a launch that never
+    /// gets focus (a covered Home, a sheet) from waiting forever.
+    static let focusWaitCap: TimeInterval = 4
+    /// The spec's 6 s ceiling on the rest wait. Reached only when the settle corrector stays busy
+    /// for 6 s straight; the relink then runs anyway and says so (`reason=restTimeout`).
+    static let restWaitCap: TimeInterval = 6
+    /// `PinnedRowSettle.isRestPending` must read false on this many consecutive polls.
+    static let quietPollsNeeded = 2
+
+    /// Leg 1's wait, as a value type so the gate is unit-testable without a window. One `poll`
+    /// per `pollInterval`: first until focus exists in the window (or `focusWaitCap` passes),
+    /// then until two consecutive polls see no rest decision pending (or `restWaitCap` passes).
+    /// The poll that first sees focus does not count as a rest poll: the engine's reveal scroll
+    /// for that focus may not have armed a settle yet.
+    nonisolated struct RelinkWait: Equatable, Sendable {
+        nonisolated enum Step: Equatable, Sendable {
+            case wait
+            case relink(reason: String)
+        }
+
+        private(set) var focusSeen = false
+        private(set) var focusTimedOut = false
+        private(set) var focusWaited: TimeInterval = 0
+        private(set) var restWaited: TimeInterval = 0
+        private(set) var quietPolls = 0
+
+        mutating func poll(focused: Bool, restPending: Bool, dt: TimeInterval) -> Step {
+            if !focusSeen {
+                focusWaited += dt
+                if focused {
+                    focusSeen = true
+                } else if focusWaited >= TabBarRestFix.focusWaitCap {
+                    focusSeen = true
+                    focusTimedOut = true
+                }
+                return .wait
+            }
+            restWaited += dt
+            quietPolls = restPending ? 0 : quietPolls + 1
+            if quietPolls >= TabBarRestFix.quietPollsNeeded {
+                return .relink(reason: focusTimedOut ? "firstRestNoFocus" : "firstRest")
+            }
+            if restWaited >= TabBarRestFix.restWaitCap {
+                return .relink(reason: "restTimeout")
+            }
+            return .wait
+        }
+    }
+}
+
 /// Zero-sized view mounted in the BACKGROUND of Home's rows `LazyVStack` (see
 /// `HomeView.rowsScroll`), so its `UIView` lives inside the rows `UIScrollView` and a `superview`
 /// walk finds exactly that scroll view. Mounted unconditionally; the knob is read inside.
@@ -87,6 +175,11 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
         private var focusObserver: NSObjectProtocol?
         private var loggedLink = false
         private var loggedFailure = false
+        /// T1 leg 1: the one wait-then-relink task of this mount, and whether it has run. A task
+        /// cancelled because the view left the window before it ran is restarted on the next
+        /// `didMoveToWindow`; once the relink has run (or been skipped at its moment), never again.
+        private var relinkTask: Task<Void, Never>?
+        private var relinkDone = false
 
         private struct WeakController {
             weak var controller: UIViewController?
@@ -102,6 +195,11 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
         /// heuristic. On return, `didMoveToWindow`, the retry ladder and the focus observer re-link.
         override func willMove(toWindow newWindow: UIWindow?) {
             super.willMove(toWindow: newWindow)
+            // T1 leg 1: a wait that has not relinked yet stops here; `didMoveToWindow` restarts it.
+            if newWindow == nil {
+                relinkTask?.cancel()
+                relinkTask = nil
+            }
             guard newWindow == nil, let linked = linkedScrollView else { return }
             for entry in linkedControllers {
                 guard let controller = entry.controller,
@@ -140,13 +238,17 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
                     self?.apply()
                 }
             }
+            startRelinkWaitIfNeeded()
         }
 
         deinit {
             if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+            relinkTask?.cancel()
         }
 
         func tearDown() {
+            relinkTask?.cancel()
+            relinkTask = nil
             if let focusObserver {
                 NotificationCenter.default.removeObserver(focusObserver)
                 self.focusObserver = nil
@@ -182,11 +284,24 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
             // review r1 (P2-1): navigation controllers are skipped (see `linkTargets`).
             let targets = TabBarContentScrollLink.linkTargets(in: chain)
             guard !targets.isEmpty else { return }
-            for vc in targets where vc.contentScrollView(for: .top) !== scrollView {
-                vc.setContentScrollView(scrollView, for: .top)
-            }
-            if pinnedContainer, scrollView.contentInsetAdjustmentBehavior != .never {
-                scrollView.contentInsetAdjustmentBehavior = .never
+            if TabBarRestFix.leg == 1 {
+                // T1 leg 1 (Steven beta.19-rc1 verdict, 2026-10-03): `.never` FIRST, so the link is
+                // made against the inset the pinned rows will keep. Linking first and changing the
+                // inset after is the skewed-baseline hypothesis (H2) this leg tests.
+                if pinnedContainer, scrollView.contentInsetAdjustmentBehavior != .never {
+                    scrollView.contentInsetAdjustmentBehavior = .never
+                }
+                for vc in targets where vc.contentScrollView(for: .top) !== scrollView {
+                    vc.setContentScrollView(scrollView, for: .top)
+                }
+            } else {
+                // Legs 0 and 2: today's order, unchanged.
+                for vc in targets where vc.contentScrollView(for: .top) !== scrollView {
+                    vc.setContentScrollView(scrollView, for: .top)
+                }
+                if pinnedContainer, scrollView.contentInsetAdjustmentBehavior != .never {
+                    scrollView.contentInsetAdjustmentBehavior = .never
+                }
             }
             linkedScrollView = scrollView
             linkedControllers = targets.map { WeakController(controller: $0) }
@@ -199,7 +314,7 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
                     String(describing: type(of: $0)) + ($0 is UINavigationController ? "(skip)" : "")
                 }.joined(separator: " > ")
                 let observed = targets.last.flatMap { $0.tabBarObservedScrollView }
-                NSLog("[TabBarLink] linked chain=%@ tab=%@ sv=%@ svh=%ld pinned=%ld legacyObserved=%@ adjBottom=%ld adjTop=%ld",
+                NSLog("[TabBarLink] linked chain=%@ tab=%@ sv=%@ svh=%ld pinned=%ld legacyObserved=%@ adjBottom=%ld adjTop=%ld restFix=%ld",
                       chainDesc,
                       tabController.map { String(describing: type(of: $0)) } ?? "none",
                       String(describing: type(of: scrollView)),
@@ -209,8 +324,73 @@ struct TabBarContentScrollLinkAttacher: UIViewRepresentable {
                       // review r1 (P3-8): `.never` applies to all edges; if SwiftUI had been
                       // adjusting the bottom inset the last-row floor would move.
                       Int(scrollView.adjustedContentInset.bottom.rounded()),
-                      Int(scrollView.adjustedContentInset.top.rounded()))
+                      Int(scrollView.adjustedContentInset.top.rounded()),
+                      // T1: which leg this launch runs, so a console capture names it.
+                      TabBarRestFix.leg)
                 TabBarStateProbe.noteAttached()
+            }
+        }
+
+        /// T1 leg 1 (Steven beta.19-rc1 verdict, 2026-10-03): once per mount, wait for the first
+        /// focus and the first decided rest (`TabBarRestFix.RelinkWait`), then relink. Polling
+        /// rather than awaiting `UIFocusSystem.didUpdateNotification`: at a cold launch the initial
+        /// focus can land before this view reaches the window, and a notification wait would then
+        /// sit until the user's first press, after the hero photo the device session takes.
+        /// `focusedItem != nil` is the same fact ("the first focus update has happened") either
+        /// way. No state is written per poll beyond the task's own local value.
+        private func startRelinkWaitIfNeeded() {
+            guard TabBarRestFix.leg == 1, !relinkDone, relinkTask == nil else { return }
+            relinkTask = Task { [weak self] in
+                var gate = TabBarRestFix.RelinkWait()
+                while true {
+                    try? await Task.sleep(for: .seconds(TabBarRestFix.pollInterval))
+                    guard !Task.isCancelled, let self else { return }
+                    let focused = UIFocusSystem.focusSystem(for: self)?.focusedItem != nil
+                    let step = gate.poll(focused: focused,
+                                         restPending: PinnedRowSettle.isRestPending,
+                                         dt: TabBarRestFix.pollInterval)
+                    if case .relink(let reason) = step {
+                        self.relinkTask = nil
+                        self.relink(reason: reason)
+                        return
+                    }
+                }
+            }
+        }
+
+        /// T1 leg 1: drop the link on every controller that still reports this scroll view, then
+        /// make it again on the next main-queue turn, so UIKit re-reads the scroll view at a rest
+        /// instead of keeping whatever it read at the first link. A focus move between the two
+        /// halves can re-link early through `apply()`; the second half then writes the same link
+        /// again, which is harmless.
+        private func relink(reason: String) {
+            relinkDone = true
+            guard TabBarContentScrollLink.enabled, !SidebarChrome.isEnabled(), window != nil,
+                  let linked = linkedScrollView else {
+                NSLog("[TabBarLink] relink skipped reason=%@ (no live link)", reason)
+                return
+            }
+            let controllers = linkedControllers.compactMap(\.controller)
+                .filter { $0.contentScrollView(for: .top) === linked }
+            guard !controllers.isEmpty else {
+                NSLog("[TabBarLink] relink skipped reason=%@ (no controller reports the rows)", reason)
+                return
+            }
+            for vc in controllers { vc.setContentScrollView(nil, for: .top) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil, self.linkedScrollView === linked else {
+                    NSLog("[TabBarLink] relink abandoned reason=%@ (the view left or the link moved)", reason)
+                    return
+                }
+                for entry in self.linkedControllers {
+                    entry.controller?.setContentScrollView(linked, for: .top)
+                }
+                NSLog("[TabBarLink] relinked reason=%@ off=%ld ins=%ld controllers=%ld",
+                      reason,
+                      Int(linked.contentOffset.y.rounded()),
+                      Int(linked.adjustedContentInset.top.rounded()),
+                      self.linkedControllers.count)
+                TabBarStateProbe.noteRelinked()
             }
         }
 
